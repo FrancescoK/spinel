@@ -9,7 +9,8 @@
 # same receiver kind) fails: the two halves of the compiler decided the
 # call differently. An "unrecorded" call (inference answered without a
 # row) and a "respecialized" one (the node is emitted per copy with its
-# receiver typed per copy) are reported as counts; -v lists all three.
+# receiver typed per copy) are reported as counts; -v lists all three. An
+# unrecorded call in one of the strict programs (STRICT_PROGRAMS, below) fails.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -84,5 +85,23 @@ rfw=$(grep -c ': plan-check: refuse-wrong:' "$OUT")
 irc=$(grep -c ': plan-check: iter-row-error:' "$OUT")
 grep ': plan-check: iter-row-error:' "$OUT" | head -20
 echo "plan-check: iterator rows: $irc errors"
+# The "unrecorded" count above is a report, not a failure: most of the corpus
+# is not meant to be strict about it. The programs listed here are, each pinning
+# a row flagged BOPF_INFERRED (inference types the call in a rule of its own,
+# so it records no row): such a row losing its flag would otherwise only add to
+# the count. A listed program must compile and report no unrecorded call.
+#   test/rational_round_inferred_plan.rb: Rational#round, #truncate, #floor and
+#   #ceil with a digit count (builtin_ops.c)
+STRICT_PROGRAMS="test/rational_round_inferred_plan.rb"
+sc=0
+for f in $STRICT_PROGRAMS; do
+  if ! grep -q "^$f: plan-check: " "$OUT"; then
+    echo "plan-check: strict program $f did not compile or is missing"
+    sc=$((sc + 1))
+  elif grep "^$f: plan-check: unrecorded:" "$OUT"; then
+    sc=$((sc + 1))
+  fi
+done
+echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]

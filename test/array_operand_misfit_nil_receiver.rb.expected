@@ -10,6 +10,13 @@ product_nil [2]: NoMethodError: undefined method 'product' for nil
 concat_int 5: NoMethodError: undefined method 'concat' for nil
 concat_int "s": NoMethodError: undefined method 'concat' for nil
 concat_int [2]: NoMethodError: undefined method 'concat' for nil
+difference_nil 5: NoMethodError: undefined method 'difference' for nil
+difference_nil "s": NoMethodError: undefined method 'difference' for nil
+difference_nil [2]: NoMethodError: undefined method 'difference' for nil
+intersection_nil 5: NoMethodError: undefined method 'intersection' for nil
+intersection_nil "s": NoMethodError: undefined method 'intersection' for nil
+intersection_nil [2]: NoMethodError: undefined method 'intersection' for nil
+replace_nil nil: NoMethodError: undefined method 'replace' for nil
 concat_nil 5: TypeError: no implicit conversion of Integer into Array
 concat_nil [2]: TypeError: no implicit conversion of nil into Array
 union_true 5: TypeError: no implicit conversion of Integer into Array
@@ -18,3 +25,8 @@ product_nil 5: TypeError: no implicit conversion of Integer into Array
 product_nil [2]: TypeError: no implicit conversion of nil into Array
 concat_int 5: TypeError: no implicit conversion of Integer into Array
 concat_int [2]: TypeError: no implicit conversion of Integer into Array
+difference_nil 5: TypeError: no implicit conversion of Integer into Array
+difference_nil [2]: TypeError: no implicit conversion of nil into Array
+intersection_nil 5: TypeError: no implicit conversion of Integer into Array
+intersection_nil [2]: TypeError: no implicit conversion of nil into Array
+replace_nil nil: TypeError: no implicit conversion of nil into Array

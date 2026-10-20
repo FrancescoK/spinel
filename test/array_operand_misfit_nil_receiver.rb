@@ -5,6 +5,8 @@
 # operand ahead of the misfit that is no Array was converted ahead of the
 # receiver's test and raised its TypeError instead. With the receiver set, the
 # TypeError of the first operand that is no Array is still the one raised.
+# concat, union, product, difference and intersection take several operands;
+# replace takes one, which is the misfit itself.
 class Q
   def fill; @a = [1]; end
 
@@ -12,6 +14,9 @@ class Q
   def union_true(x) = @a.union(x, true)
   def product_nil(x) = @a.product(x, nil)
   def concat_int(x) = @a.concat(x, 3)
+  def replace_nil(_x) = @a.replace(nil)
+  def difference_nil(x) = @a.difference(x, nil)
+  def intersection_nil(x) = @a.intersection(x, nil)
 end
 
 def attempt(q, m, v)
@@ -21,10 +26,12 @@ rescue => e
 end
 
 q = Q.new
-%i[concat_nil union_true product_nil concat_int].each do |m|
+%i[concat_nil union_true product_nil concat_int difference_nil intersection_nil].each do |m|
   [5, "s", [2]].each { |v| attempt(q, m, v) }
 end
+attempt(q, :replace_nil, nil)
 q.fill
-%i[concat_nil union_true product_nil concat_int].each do |m|
+%i[concat_nil union_true product_nil concat_int difference_nil intersection_nil].each do |m|
   [5, [2]].each { |v| attempt(q, m, v) }
 end
+attempt(q, :replace_nil, nil)
