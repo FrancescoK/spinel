@@ -824,7 +824,15 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s%s%s\")), ",
                      cg_key, cgq ? cgq : "", cgq ? "::" : "", cg_qm);
         }
-        buf_printf(b, "cst_%s", cg_key);
+        /* a constant holding the shared handle reads as a ConstantReadNode
+           of it does (emit_constant_expr): the String, or the handle where
+           the read is marked for it */
+        if (cgv && repr_of_slot(c, cgv).kind == RK_STRBUF && !cgv->init_guarded) {
+          char sref[256];
+          snprintf(sref, sizeof sref, "cst_%s", cg_key);
+          emit_strbuf_node_read(c, id, sref, b);
+        }
+        else buf_printf(b, "cst_%s", cg_key);
         if (const_has_flag(cgv)) buf_puts(b, ")");
         return 1;
       }
