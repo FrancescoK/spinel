@@ -211,6 +211,8 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 int masgn_face_elem(Compiler *c, int mw, int el);
 int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n);
 int masgn_const_elem_in_range(Compiler *c, int value, long long pos, long long lefts, long long rights);
+/* does the right side of multiple write mw change what `part` (a target's receiver or key) reads: user code beside an ivar, gvar or cvar read, or a write of a local it reads? */
+int masgn_value_changes(Compiler *c, int mw, int part);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);

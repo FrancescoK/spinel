@@ -5369,11 +5369,12 @@ static void emit_self_expr(Compiler *c, int id, Buf *b) {
   buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
 }
 
-/* A multiple assignment's targets' receivers and indexes that run code go
-   first, as Ruby evaluates them before the values: all the targets', in
-   Ruby's order (the splat's, the rights' and those nested in a `(a, b)`
-   too). Each is held in a rooted temp that its node reads through the
-   override table; answers how many were bound. */
+/* A multiple assignment's targets' receivers and indexes that run code, or
+   that read what the right side changes, go first, as Ruby evaluates them
+   before the values: all the targets', in Ruby's order (the splat's, the
+   rights' and those nested in a `(a, b)` too). Each is held in a rooted temp
+   that its node reads through the override table; answers how many were
+   bound. */
 static int masgn_hold_target_parts(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int held = 0;
@@ -5388,7 +5389,8 @@ static int masgn_hold_target_parts(Compiler *c, int id) {
     int parts[2] = { nt_ref(nt, flat[i], "receiver"), an == 1 ? av[0] : -1 };
     for (int p = 0; p < 2; p++) {
       int v = parts[p];
-      if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, v)) continue;
+      if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE ||
+          !(subtree_has_side_effect(c, v) || masgn_value_changes(c, id, v))) continue;
       Repr rp = repr_of(c, v);
       TyKind vt = rp.as_ty;
       if (vt == TY_UNKNOWN || vt == TY_NIL || vt == TY_VOID ||
