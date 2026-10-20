@@ -5108,6 +5108,11 @@ static SP_NOINLINE SP_COLD void sp_raise_frozen_obj(sp_RbVal v, const char *what
 static SP_NOINLINE SP_COLD void sp_raise_frozen_hash_at(void *h, int cls_id) {
   sp_raise_frozen_obj(sp_box_obj(h, cls_id), (&("\xff" "can't modify frozen Hash")[1]));
 }
+/* Builtin boxed Hash mutators check before lookup, layout checks or writes. */
+static SP_INLINE void sp_poly_hash_check_mutable(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id) && sp_gc_is_frozen(v.v.p))
+    sp_raise_frozen_hash_at(v.v.p, v.cls_id);
+}
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
@@ -12287,6 +12292,7 @@ static sp_RbVal sp_fmt_hash_fetch(sp_RbVal h, sp_sym k, const char *nm) {
    matched nothing and raised NoMethodError naming its own class. The receiver
    answers for itself here instead. */
 static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
+  sp_poly_hash_check_mutable(recv);
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
     if (recv.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
       key = sp_poly_strbuf_deref(key);
@@ -12375,6 +12381,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
 static sp_RbVal sp_poly_delete_key_bytes(sp_RbVal recv, sp_RbVal key) {
   if (recv.tag != SP_TAG_OBJ || recv.cls_id != SP_BUILTIN_STR_POLY_HASH)
     return sp_poly_delete_key(recv, key);
+  sp_poly_hash_check_mutable(recv);
   key = sp_poly_strbuf_deref(key);
   if (!sp_poly_has_key(recv, key)) return sp_box_nil();
   sp_RbVal was = sp_poly_index_poly(recv, key);
@@ -13127,6 +13134,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val);   /* f
 static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  sp_IntArray_oset((sp_IntArray*)v.v.p, idx,
                                                  sp_poly_elem_i(val)); break;
@@ -13159,6 +13167,7 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   /* An Array indexed by a String is a TypeError, not a write to be dropped:
      the static path raises it, and a boxed receiver reaching the same call
      used to absorb the assignment instead (#3925). */
@@ -13189,6 +13198,7 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   if (sp_poly_is_array_kind(v.cls_id))
     sp_raise_cls("TypeError", SPL("no implicit conversion of Symbol into Integer"));
   switch (v.cls_id) {
@@ -13408,6 +13418,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
     sp_user_aset_hook(v, key, val, &h);
     if (h) return val;
   }
+  sp_poly_hash_check_mutable(v);
   /* Every array arm below wants an integer index. A Float converts through
      #to_int, and anything else is the TypeError the static path raises rather
      than a write to drop on the floor (#3926). */

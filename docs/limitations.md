@@ -572,7 +572,11 @@ still works.
   symbol-to-proc forms that desugar to one, and user-owned methods still compile.
 
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
-  matching CRuby. String literals ARE frozen by default here
+  including `delete`, `clear`, and `[]=` on a Hash read from a mixed container,
+  matching CRuby.
+  Hash mutators check frozen state before lookup or writes, even on an empty
+  Hash or when a key is absent.
+  String literals ARE frozen by default here
   (`frozen_string_literal: true` semantics, with no opt-out) -- see
   "String literals are frozen by default" below for what that changes and
   where mutable strings come from.
