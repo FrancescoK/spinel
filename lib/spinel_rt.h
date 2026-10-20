@@ -3804,6 +3804,17 @@ static SP_INLINE sp_int sp_poly_arg_int_chk_w(sp_RbVal v, int wording) {
   if (v.tag == SP_TAG_NIL) sp_raise_nil_to_int(wording);
   return sp_poly_arg_int_chk(v);
 }
+/* The domain or socket type Socket.new, Socket.pair and UDPSocket.new take:
+   a String or Symbol names the constant (sp_sock_named_const), and anything
+   else converts as an Integer argument does, as CRuby's rsock_family_arg and
+   rsock_socktype_arg read it. */
+static sp_int sp_sock_family_arg(sp_RbVal v, int is_family) SP_UNUSED;
+static sp_int sp_sock_family_arg(sp_RbVal v, int is_family) {
+  v = sp_rbval_str(v);
+  if (v.tag == SP_TAG_STR) return sp_sock_named_const(v.v.s, is_family);
+  if (v.tag == SP_TAG_SYM) return sp_sock_named_const(sp_sym_to_s((sp_sym)v.v.i), is_family);
+  return sp_poly_arg_int_chk(v);
+}
 /* The digit count of Rational#round / #floor / #ceil / #truncate: CRuby takes
    an Integer only and raises TypeError "not an integer" for anything else (nil,
    true, a Float, a Rational, a String, an object answering to_int), where the

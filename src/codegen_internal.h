@@ -2733,6 +2733,8 @@ void emit_int_expr_conv(Compiler *c, int node, Buf *b);
 void emit_to_int_expr(Compiler *c, int node, Buf *b);
 void emit_seed_expr(Compiler *c, int node, Buf *b);
 void emit_int_expr_offt(Compiler *c, int node, Buf *b);
+/* a domain or socket type of Socket.new, Socket.pair, UDPSocket.new */
+void emit_sock_family_arg(Compiler *c, int arg, int is_family, Buf *b);
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
 int emit_unresolved_coerced_text(Compiler *c, int node, TyKind target, const char *txt, Buf *b);
 int call_answers_no_value(Compiler *c, int node);
