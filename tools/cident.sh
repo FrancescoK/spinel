@@ -123,8 +123,10 @@ if [ ! -f "$REFDIR/.done" ]; then
   # compiled again. Its .expected files are not read by the compiler.
   # (only this flag set's: the corpus key is hex, and another set's name
   # goes on with its flags, `<sha>-__int_overflow=promote-<key>`)
+  # The pattern opens with its own parenthesis: bash 3.2, macOS's /bin/bash,
+  # otherwise ends the command substitution at the pattern's closing one.
   PREV=$(ls -dt "$REFBASE"-*/ 2>/dev/null | while read -r d; do
-           d=${d%/}; case ${d#"$REFBASE"-} in *[!0-9a-f]*) continue;; esac
+           d=${d%/}; case ${d#"$REFBASE"-} in (*[!0-9a-f]*) continue;; esac
            [ "$d" != "$REFDIR" ] && [ -f "$d/.done" ] && [ -f "$d/.manifest" ] && { echo "$d"; break; }; done)
   ONLY=
   if [ -n "$PREV" ]; then
