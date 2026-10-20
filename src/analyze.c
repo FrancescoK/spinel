@@ -38711,6 +38711,24 @@ static int wnh_answering_read(const VpLeaf *leaf, void *ud) {
   const char *rn = nt_str(nt, leaf->node, "name");
   return rn && sp_streq(rn, r->name) && comp_scope_of(r->c, leaf->node) == r->sc;
 }
+/* Is the variable the write `w` stores into a box (a local or an ivar of the
+   poly kind)? */
+static int wnh_boxed_target(Compiler *c, int w) {
+  const NodeTable *nt = c->nt;
+  const char *wn = nt_str(nt, w, "name");
+  Scope *ws = comp_scope_of(c, w);
+  if (!wn || !ws) return 0;
+  if (nt_kind(nt, w) == NK_LocalVariableWriteNode) {
+    LocalVar *lv = scope_local(ws, wn);
+    return lv && lv->type == TY_POLY;
+  }
+  if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) {
+    int cid = ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], wn) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_POLY;
+  }
+  return 0;
+}
 /* `answered`, when given, lets a read that is sc's own answer (the method's
    last value, wnh_is_answer; a `return` still escapes) pass, and reports
    that one did: the caller then widens the method's return with the local */
@@ -38725,6 +38743,10 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
     /* a read whose value is dropped (the body of a begin with an `else`, which
        the else's value replaces) hands nothing on */
     if (an_value_dropped(nt, comp_parent_map(c), b[n - 1])) continue;
+    /* or one a box takes: `keep = (seen) || {}` with `keep` a box */
+    VpUp up;
+    if (vp_climb(nt, comp_parent_map(c), b[n - 1], VP_AND_LEFT | VPS_ALL, &up) == VPU_ENDED && up.parent >= 0 &&
+        wnh_boxed_target(c, up.parent)) continue;
     return 1;
   }
   if (answered && sc->def_node >= 0 && sc->body >= 0 && ty_is_hash(sc->ret)) {
@@ -38748,10 +38770,12 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
         av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
       }
       else { int v = nt_ref(nt, w, "value"); an = 0;
-        if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode) {
-          const char *rn = nt_str(nt, v, "name");
-          if (rn && sp_streq(rn, name) && comp_scope_of(c, v) == sc) return 1;
-        }
+        /* a write of the Hash itself or of a join with it (`keep = (seen) || {}`)
+           keeps it typed, unless the variable is a box, which takes the
+           widened Hash as the read now types it */
+        WnhReads r = { c, sc, name };
+        if (v >= 0 && !wnh_boxed_target(c, w) && for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, wnh_answering_read, &r))
+          return 1;
       }
       for (int k = 0; k < an; k++)
         if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode) {
