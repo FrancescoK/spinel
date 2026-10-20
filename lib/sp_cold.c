@@ -1327,8 +1327,9 @@ sp_IntArray *sp_file_binread_bytes(const char *path) {SP_GC_ROOT_STR(path);
    sum untruncated, like CRuby). The typed emitter inlines this same loop; the
    boxed receiver reaches it through sp_poly_sum. */
 sp_int sp_str_sum_bits(const char *s, sp_int bits) {
+  if (!s) sp_nil_recv("sum");
   sp_int acc = 0;
-  size_t bl = s ? sp_str_byte_len(s) : 0;   /* every byte, a NUL included (#4527) */
+  size_t bl = sp_str_byte_len(s);   /* every byte, a NUL included (#4527) */
   for (size_t i = 0; i < bl; i++) acc += (unsigned char)s[i];
   return (bits <= 0 || bits >= (sp_int)(sizeof(sp_int) * 8)) ? acc : (acc & ((((sp_int)1) << bits) - 1));
 }

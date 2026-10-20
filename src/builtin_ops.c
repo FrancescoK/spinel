@@ -1812,7 +1812,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "b",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_b($r)", 0 },
   { TY_STRING, "b",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "encode",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
+  { TY_STRING, "encode",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "((const char *)sp_nil_recv_named($r, \"encode\"))", 0 },  /* the receiver, so nil raises */
   { TY_STRING, "encode",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "encode!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "dump",            0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_dump($r)", 0 },
@@ -1832,7 +1832,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "count",           0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
   { TY_STRING, "oct",             0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_oct($r)", 0 },
   { TY_STRING, "oct",             0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
-  { TY_STRING, "hex",             0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_to_i_base($r, 16)", 0 },
+  { TY_STRING, "hex",             0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_to_i_base(sp_nil_recv_named($r, \"hex\"), 16)", 0 },  /* to_i(16)'s function, which reads nil as "" */
   { TY_STRING, "hex",             0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
   { TY_STRING, "ord",             0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_ord($r)", 0 },
   { TY_STRING, "ord",             0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
@@ -1888,8 +1888,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "to_f",            0, 127, BF_ANY,      TY_FLOAT,      BOPE_NONE },
   { TY_STRING, "to_r",            0,   0, BF_ANY,      TY_RATIONAL,   BOPE_TEMPLATE, "sp_str_to_r($r)", 0 },
   { TY_STRING, "to_c",            0,   0, BF_ANY,      TY_COMPLEX,    BOPE_TEMPLATE, "sp_str_to_c($r)", 0 },
-  { TY_STRING, "intern",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
-  { TY_STRING, "intern",          0,   0, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
+  /* intern and to_sym: sp_sym_intern_n reads a NULL name, so a nil receiver
+     raises ahead of it under the name as written (sp_nil_recv_named) */
+  { TY_STRING, "intern",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = sp_nil_recv_named($r, \"intern\"); sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
+  { TY_STRING, "intern",          0,   0, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = sp_nil_recv_named($r, \"intern\"); sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
   /* the iterators: blockless with no argument an Enumerator; with a block
      they iterate and answer the receiver */
   { TY_STRING, "each_char",       0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
@@ -1925,7 +1927,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "rjust",           2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_rjust2($r, $i0, $s1)", 0 },
   { TY_STRING, "rjust",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "*",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "to_sym",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
+  { TY_STRING, "to_sym",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = sp_nil_recv_named($r, \"to_sym\"); sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },  /* as intern */
   { TY_STRING, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? _t$t : sp_str_frozen_empty; })", 0, 0, BOPF_SELF_EXACT | BOPF_BOXED },
   { TY_STRING, "to_str",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; if (!_t$t) sp_nil_recv(\"to_str\"); _t$t; })", 0, 0, BOPF_SELF_EXACT },
   { TY_STRING, "empty?",          0, 127, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_empty_p($r)", 0 },
@@ -1943,8 +1945,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_bool(sp_str_casecmp_p(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
   { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_casecmp($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
   { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_casecmp_p($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
-  { TY_STRING, "lines",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines($r)", 0 },
-  { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0, 0, BOPF_SELF },  /* the block form iterates and answers the receiver */
+  /* sp_str_lines reads nil as "" (each_line's arms take it too); a nil
+     receiver raises as lines(sep)'s sp_str_lines_sep does */
+  { TY_STRING, "lines",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines(sp_nil_recv_named($r, \"lines\"))", 0 },
+  { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines(sp_nil_recv_named($r, \"lines\"))", 0, 0, BOPF_SELF },  /* the block form iterates and answers the receiver */
   /* lines(sep): without a block the Array, with one the receiver (the block
      form iterates), whatever the separator's kind */
   { TY_STRING, "lines",           1,   1, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },

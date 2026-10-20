@@ -7105,6 +7105,7 @@ static inline sp_String *sp_String_uplus(sp_String *h) {
 }
 /* +s: s itself unless it is frozen or chilled, else a plain copy (CRuby) */
 static inline const char *sp_str_uplus(const char *s) {
+  if (SP_UNLIKELY(!s)) sp_nil_recv("+@");
   return sp_str_is_frozen_val(s) || sp_str_is_chilled(s) ? sp_str_dup(s) : s;
 }
 /* +v on a boxed value: the same for a String, whether it is boxed as a
