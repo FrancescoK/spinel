@@ -1588,8 +1588,8 @@ static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap);
    share_target_reachable bounds), or a receiver the fact bounds nothing of.
    Listing every class's method joined the new String `[:a].map(&:inspect)`
    answers with the ivar a class's own inspect publishes, which no Symbol
-   reaches (#9258). */
-static int sh_target_armed(Compiler *c, int call, int mi) {
+   reaches (#9258). The fresh walk bounds its targets the same way. */
+int share_target_armed(Compiler *c, int call, int mi) {
   const CallPlan *p = cplan_user_fresh(c, call);
   if (p->via != UC_POLY || p->send_fallback == mi || mi < 0 || mi >= c->nscopes || c->scopes[mi].is_cmethod) return 1;
   int recv = nt_ref(c->nt, call, "receiver");
@@ -1617,7 +1617,7 @@ static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap
   if (n == CPT_UNKNOWN) return -1;
   if (n == 0) return sh_copied_self_targets(c, call, out, cap);
   for (int i = 0; i < n; i++)
-    if (share_target_reachable(c, call, out[i]) && sh_target_armed(c, call, out[i])) out[m++] = out[i];
+    if (share_target_reachable(c, call, out[i]) && share_target_armed(c, call, out[i])) out[m++] = out[i];
   return m;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
@@ -1682,7 +1682,7 @@ static int sh_has_targets(Compiler *c, int call) {
     return sh_copied_self_targets(c, call, tg, CPT_MAX) != 0;
   }
   /* (a boxed receiver's plan lists only the methods its arms reach:
-     share_target_reachable, sh_target_armed; none may be left) */
+     share_target_reachable, share_target_armed; none may be left) */
   if (p->via != UC_POLY) return 1;
   int tg[CPT_MAX];
   return sh_targets(c, call, tg, CPT_MAX) != 0;
