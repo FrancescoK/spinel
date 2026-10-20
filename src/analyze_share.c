@@ -1502,7 +1502,14 @@ int share_target_reachable(Compiler *c, int call, int mi) {
 /* does a call reach a user method (sh_targets != 0), without listing them */
 static int sh_has_targets(Compiler *c, int call) {
   const CallPlan *p = cplan_user_fresh(c, call);
-  if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
+  if (p->dispatch == CP_REFUSE) return 0;
+  /* (a module's self call that names no method of the module reaches the
+     includers' methods its copies call, sh_copied_self_targets: a `puts`
+     they define is no Kernel#puts) */
+  if (p->mi < 0) {
+    int tg[CPT_MAX];
+    return sh_copied_self_targets(c, call, tg, CPT_MAX) != 0;
+  }
   /* (a boxed receiver's plan lists only the methods its arms reach:
      share_target_reachable, sh_target_armed; none may be left) */
   if (p->via != UC_POLY) return 1;
