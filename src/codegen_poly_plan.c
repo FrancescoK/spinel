@@ -326,7 +326,10 @@ void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b)
   buf_printf(&hb, "const char *_t%d = %s; ", t, call);
   if (m->ret_nil_pickup) buf_printf(&hb, "!_t%d ? NULL : ", t);
   if (m->ret_handle) buf_puts(&hb, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
-  buf_printf(&hb, "sp_String_new_shared(_t%d); })", t);
+  str_new_handle_open(&hb);
+  buf_printf(&hb, "_t%d", t);
+  str_new_handle_close(&hb);
+  buf_puts(&hb, "; })");
   emit_boxed_text(c, TY_STRBUF, hb.p, b);
   free(hb.p);
 }
@@ -395,8 +398,16 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
          where the rule shares the call's String, publishes that String's
          handle, read through its handle form (repr_native_arm_handle), as
          a method arm's tail read does: the call's pickup takes it */
-      if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id))
-        snprintf(cbuf, sizeof cbuf, "sp_strbuf_read_pub(%s((%s *)_t%d.v.p))", nmet->share_csym, c->classes[nmet->class_id].c_struct, tv);
+      if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id)) {
+        Buf hc, rb;
+        memset(&hc, 0, sizeof hc);
+        memset(&rb, 0, sizeof rb);
+        buf_printf(&hc, "%s((%s *)_t%d.v.p)", nmet->share_csym, c->classes[nmet->class_id].c_struct, tv);
+        str_read_handle(&rb, hc.p, 1);
+        snprintf(cbuf, sizeof cbuf, "%s", rb.p);
+        free(hc.p);
+        free(rb.p);
+      }
       else
         snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[nmet->class_id].c_struct, tv, rest0);
       if (sp_streq(nmet->ret, "string?"))
@@ -599,9 +610,17 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
         if (repr_share_rule(c) && c->scopes[pf9 ? pfi9 : mi].ret_handle) {
           int pv = ++g_tmp;
           buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : _sp_ret_strbuf ? "
-                        "(sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", pv, call, pv, pv);
+                        "(sp_String *)_sp_ret_strbuf : ", pv, call, pv);
+          str_new_handle_open(b);
+          buf_printf(b, "_v%d", pv);
+          str_new_handle_close(b);
+          buf_puts(b, "; })");
         }
-        else buf_printf(b, "sp_String_new_shared(%s)", call);
+        else {
+          str_new_handle_open(b);
+          buf_puts(b, call);
+          str_new_handle_close(b);
+        }
       }
       else if (ret == TY_POLY && cret9 != TY_POLY) {
         emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b); pconv = PC_BOX;
@@ -670,13 +689,17 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
        call under the pickup's own view, which has dropped the box mark, and
        answered no, so the pickup wrapped the bytes in a new handle and the
        field's String lost its identity: `{ host: req.host }` held a copy) */
-    buf_printf(b, "%s(%s)", repr_share_rule(c) ? "sp_strbuf_read_pub" : "sp_strbuf_read", fld);
+    str_read_handle(b, fld, repr_share_rule(c));
     pconv = PC_COPY;
   }
   /* a plain String field (a Struct member) where the call answers a handle
      (other classes' fields are handles): wrapped in a new one, as a String
      argument to a handle parameter is; assigned bare, the C did not build */
-  else if (ivt == TY_STRING && ret == TY_STRBUF) buf_printf(b, "sp_String_new_shared(%s)", fld);
+  else if (ivt == TY_STRING && ret == TY_STRBUF) {
+    str_new_handle_open(b);
+    buf_puts(b, fld);
+    str_new_handle_close(b);
+  }
   else plan_put_plain(so, ret, fld, b);
   buf_puts(b, "; break;");
   if (g_plan_check) pa_observe(PA_READER, k, -1, ivt, pconv);
@@ -1482,7 +1505,10 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
       int temp = ++g_tmp;
       buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : ", temp, call, temp);
       if (ms && ms->ret_handle) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
-      buf_printf(b, "sp_String_new_shared(_v%d); })", temp);
+      str_new_handle_open(b);
+      buf_printf(b, "_v%d", temp);
+      str_new_handle_close(b);
+      buf_puts(b, "; })");
     }
     else if (ret != TY_POLY && mret == TY_POLY) {
       plan_put_boxed(c, so, is_scalar_ret(ret) ? ret : TY_INT, call, b);
@@ -1852,7 +1878,14 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      then a user object is the likelier receiver and it must win. */
   /* (a result slot that is a shared String's handle, beside user arms
      answering handles, takes the arms' text wrapped as one) */
-  const char *hopen = ret == TY_STRBUF ? "sp_String_new_shared(" : "", *hclose = ret == TY_STRBUF ? ")" : "";
+  Buf hob, hcb;
+  memset(&hob, 0, sizeof hob);
+  memset(&hcb, 0, sizeof hcb);
+  if (ret == TY_STRBUF) {
+    str_new_handle_open(&hob);
+    str_new_handle_close(&hcb);
+  }
+  const char *hopen = hob.p ? hob.p : "", *hclose = hcb.p ? hcb.p : "";
   if (is_class_named) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLASS_NAMED, -1, TY_UNKNOWN, PC_SAME);
     const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : hopen;
@@ -2120,6 +2153,8 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
       buf_puts(b, "; }\nelse ");
     }
   }
+  free(hob.p);
+  free(hcb.p);
 }
 
 /* The proc a boxed callable's pre-arm hands a `call`/`()`/`[]` with a
@@ -2414,12 +2449,15 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_TO_S, -1, TY_UNKNOWN, PC_SAME);
     const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
     buf_printf(b, " default: _t%d = ", tr);
-    if (ret == TY_STRBUF && repr_boxed_to_s_operand(c, id) >= 0)
+    if (ret == TY_STRBUF && repr_boxed_to_s_operand(c, id) >= 0) {
       buf_printf(b, "sp_poly_is_strbuf(_t%d) ? (sp_String *)_t%d.v.p : "
                     "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
                     "sp_is_exc_subclass_cls(_t%d.cls_id))) ? "
-                    "sp_exc_kept_message_handle((sp_Exception *)_t%d.v.p) : "
-                    "sp_String_new_shared(%s(_t%d))", tv, tv, tv, tv, tv, tv, pfn, tv);
+                    "sp_exc_kept_message_handle((sp_Exception *)_t%d.v.p) : ", tv, tv, tv, tv, tv, tv);
+      str_new_handle_open(b);
+      buf_printf(b, "%s(_t%d)", pfn, tv);
+      str_new_handle_close(b);
+    }
     /* A boxed to_s answers a String receiver itself: with sharing, the
        box it holds is the answer, not a copy of its bytes. */
     else if (ret == TY_POLY && repr_share_rule(c) && is_to_s_name(name))

@@ -12566,7 +12566,7 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   }
   buf_printf(b, " default: _t%d = ", rtmp);
   if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
-  else if (ret == TY_STRING && reader_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read(%s)", reader);
+  else if (ret == TY_STRING && reader_ty == TY_STRBUF) str_read_handle(b, reader, 0);
   else if (g_disp_ro && !reader_oint) buf_printf(b, "%s(%s)", oint_of(ret), reader);
   else buf_puts(b, reader);
   buf_printf(b, "; break; } _t%d; })", rtmp);
@@ -12633,7 +12633,9 @@ int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, 
       buf_puts(b, "; break; }");
       free(apre.p); free(call.p);
     }
-    buf_printf(b, " default: _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); break; } _t%d; })", rtmp, reader, rtmp);
+    buf_printf(b, " default: _t%d = ", rtmp);
+    str_box_handle(b, reader);
+    buf_printf(b, "; break; } _t%d; })", rtmp);
     return 1;
   }
   buf_printf(b, "({ sp_String *_t%d; switch (", rtmp);
@@ -12652,7 +12654,10 @@ int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, 
     buf_printf(b, " case %d: { %s%sconst char *_v%d = %s; _t%d = !_v%d ? NULL : ", k, apre.p ? apre.p : "",
                pub ? "_sp_ret_strbuf = NULL; " : "", tv, call.p, rtmp, tv);
     if (pub) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
-    buf_printf(b, "sp_String_new_shared(_v%d); break; }", tv);
+    str_new_handle_open(b);
+    buf_printf(b, "_v%d", tv);
+    str_new_handle_close(b);
+    buf_puts(b, "; break; }");
     free(apre.p); free(call.p);
   }
   buf_printf(b, " default: _t%d = %s; break; } _t%d; })", rtmp, reader, rtmp);

@@ -372,6 +372,15 @@ void str_read_handle(Buf *b, const char *h, int pub) {
 void str_read_handle_tmp(Buf *b, int tmp, int pub) {
   buf_printf(b, "%s(_t%d)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", tmp);
 }
+/* ...and around the handle's text the caller emits between the open and the
+   close, as the box of a handle and a new handle are written around theirs
+   (a return tail reads the handle that an emitter renders in place). */
+void str_read_handle_open(Buf *b, int pub) {
+  buf_puts(b, pub ? "sp_strbuf_read_pub(" : "sp_strbuf_read(");
+}
+void str_read_handle_close(Buf *b) {
+  buf_puts(b, ")");
+}
 
 /* A new handle around bytes no handle holds: the one place the text of its
    making is written, around the bytes the caller emits between the open
@@ -390,6 +399,14 @@ void str_new_handle_close(Buf *b) {
    else the shared one (strbuf_new_func chooses). */
 void str_new_handle_open_of(Compiler *c, int v, Buf *b) {
   buf_printf(b, "%s(", strbuf_new_func(c, v));
+}
+
+/* The box of a String's bytes (sp_box_str, the String row's box template),
+   written in one place beside the box of a handle: `e` is the bytes' text
+   already written, a temp or a C string. A return pickup boxes the bytes it
+   took where no handle was published. */
+void str_box_bytes(Buf *b, const char *e) {
+  buf_printf(b, "%s(%s)", ty_box_fn(TY_STRING), e);
 }
 
 /* The box of a String Range's endpoint held in temp `t` (an sp_StrRange):

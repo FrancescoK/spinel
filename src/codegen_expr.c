@@ -1051,11 +1051,9 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
      with a const char *, and the slot read the handle as bytes. */
   if (res == TY_STRING && repr_of(c, nd).as_ty == TY_STRBUF && nt_kind(nt, unwrap_parens(c, nd)) == NK_CallNode &&
       strbuf_call_picks_up(c, unwrap_parens(c, nd))) {
-    Buf hb;
-    memset(&hb, 0, sizeof hb);
-    emit_expr(c, nd, &hb);
-    str_read_handle(b, hb.p, 0);
-    free(hb.p);
+    str_read_handle_open(b, 0);
+    emit_expr(c, nd, b);
+    str_read_handle_close(b);
     return;
   }
   /* An arm with no C VALUE cannot sit in a C conditional beside a typed
