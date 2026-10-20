@@ -24618,8 +24618,9 @@ static int al_value(Compiler *c, int v, unsigned char *busy, int depth) {
   default: return AL_OTHER;
   }
 }
-/* the returns of the subtree at n (not a nested method's or lambda's) */
-static int al_returns(Compiler *c, int n, unsigned char *busy, int depth) {
+/* the returns of the subtree at n (not a nested method's or lambda's);
+   vdepth is the value walk's depth, which a return's value continues */
+static int al_returns(Compiler *c, int n, unsigned char *busy, int depth, int vdepth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
   if (depth > 200) return AL_OTHER;
@@ -24629,21 +24630,24 @@ static int al_returns(Compiler *c, int n, unsigned char *busy, int depth) {
     int a = nt_ref(nt, n, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an == 0) return AL_NIL;
-    return an == 1 ? al_value(c, av[0], busy, 0) : AL_OTHER;
+    return an == 1 ? al_value(c, av[0], busy, vdepth + 1) : AL_OTHER;
   }
   int m = 0;
   const SpNode *nd = &nt->nodes[n];
-  for (int i = 0; i < nd->nr; i++) m |= al_returns(c, nd->r[i].ref, busy, depth + 1);
+  for (int i = 0; i < nd->nr; i++) m |= al_returns(c, nd->r[i].ref, busy, depth + 1, vdepth);
   for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++) m |= al_returns(c, nd->a[i].ids[j], busy, depth + 1);
+    for (int j = 0; j < nd->a[i].n; j++) m |= al_returns(c, nd->a[i].ids[j], busy, depth + 1, vdepth);
   return m;
 }
+/* the methods one question may still ask (a call graph that fans out asks
+   the same method again on each path; past the budget it is AL_OTHER) */
+static int g_al_budget;
 static int al_method(Compiler *c, int mi, unsigned char *busy, int depth) {
-  if (mi <= 0 || mi >= c->nscopes || c->scopes[mi].body < 0 || depth > 16) return AL_OTHER;
+  if (mi <= 0 || mi >= c->nscopes || c->scopes[mi].body < 0 || depth > 16 || --g_al_budget < 0) return AL_OTHER;
   if (busy[mi]) return 0;
   busy[mi] = 1;
   int body = c->scopes[mi].body;
-  int m = al_value(c, body, busy, depth) | al_returns(c, body, busy, 0);
+  int m = al_value(c, body, busy, depth) | al_returns(c, body, busy, 0, depth);
   busy[mi] = 0;
   return m;
 }
@@ -24655,6 +24659,7 @@ int scope_ret_str_literal(Compiler *c, int mi) {
   if (an_tail_str_literals(nt, body, 0) && !an_subtree_has_return(nt, body, 0)) return 1;
   unsigned char *busy = calloc((size_t)c->nscopes + 1, 1);
   if (!busy) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_al_budget = 4096;
   int m = al_method(c, mi, busy, 0);
   free(busy);
   return m == AL_LIT;
