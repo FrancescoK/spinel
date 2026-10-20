@@ -1,0 +1,24 @@
+(pattern 0) Kondae [String]: "Kon"
+(pattern 1) Kondae [Regexp]: "dae"
+(pattern 1) Kondae [Regexp, 1]: "a"
+(pattern 0) Kondae slice(String): "Kon"
+(pattern 1) Kondae slice(Regexp): "dae"
+(pattern 2) Kondae split(String): ["Kondae", "station"]
+(pattern 1) Kondae split(Regexp): ["Kon", "a", " station"]
+(pattern 2) Kondae partition(String): ["Kondae", " ", "station"]
+(pattern 1) Kondae partition(Regexp): ["Kon", "dae", " station"]
+(pattern 2) Kondae rpartition(String): ["Kondae", " ", "station"]
+(pattern 0) Kondae start_with?(String): true
+(pattern 1) Kondae start_with?(Regexp): false
+(pattern 0) Achasan [String]: NoMethodError undefined method '[]' for nil
+(pattern 1) Achasan [Regexp]: NoMethodError undefined method '[]' for nil
+(pattern 1) Achasan [Regexp, 1]: NoMethodError undefined method '[]' for nil
+(pattern 0) Achasan slice(String): NoMethodError undefined method 'slice' for nil
+(pattern 1) Achasan slice(Regexp): NoMethodError undefined method 'slice' for nil
+(pattern 2) Achasan split(String): NoMethodError undefined method 'split' for nil
+(pattern 1) Achasan split(Regexp): NoMethodError undefined method 'split' for nil
+(pattern 2) Achasan partition(String): NoMethodError undefined method 'partition' for nil
+(pattern 1) Achasan partition(Regexp): NoMethodError undefined method 'partition' for nil
+(pattern 2) Achasan rpartition(String): NoMethodError undefined method 'rpartition' for nil
+(pattern 0) Achasan start_with?(String): NoMethodError undefined method 'start_with?' for nil
+(pattern 1) Achasan start_with?(Regexp): NoMethodError undefined method 'start_with?' for nil

@@ -9504,6 +9504,10 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
     int t1 = hold_operand(c, argv[1], comp_ntype(c, argv[1]), 0, ++g_tmp, 1, " ", &eb);
     bind1 = view_bind(argv[1], "_t%d", t1);
   }
+  /* a receiver that can be nil raises its NoMethodError here, once the
+     operands have run: the arms below read a NULL receiver as no match
+     (a Regexp) or hand it to strstr (a String) */
+  if (!recv_never_nil(c, recv)) { nil_recv_check(name, ts, &eb); buf_puts(&eb, " "); }
   buf_printf(&eb, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? (", tp, tp);
   int bind = view_bind(argv[0], "((mrb_regexp_pattern *)_t%d.v.p)", tp);
   int v = view_push(c, argv[0], TY_REGEX);
