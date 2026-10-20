@@ -4998,9 +4998,9 @@ void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
   if (arg_ran_first(base, 0)) {
     int th = ran_first_handle(base);
     if (th >= 0) { buf_printf(b, "_t%d", th); return; }
-    buf_printf(b, "%s(", strbuf_new_func(c, base));
+    str_new_handle_open_of(c, base, b);
     emit_str_expr(c, base, b);
-    buf_puts(b, ")");
+    str_new_handle_close(b);
     return;
   }
   if (nt_kind(nt, base) == NK_ParenthesesNode) {

@@ -1051,9 +1051,11 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
      with a const char *, and the slot read the handle as bytes. */
   if (res == TY_STRING && repr_of(c, nd).as_ty == TY_STRBUF && nt_kind(nt, unwrap_parens(c, nd)) == NK_CallNode &&
       strbuf_call_picks_up(c, unwrap_parens(c, nd))) {
-    buf_puts(b, "sp_strbuf_read(");
-    emit_expr(c, nd, b);
-    buf_puts(b, ")");
+    Buf hb;
+    memset(&hb, 0, sizeof hb);
+    emit_expr(c, nd, &hb);
+    str_read_handle(b, hb.p, 0);
+    free(hb.p);
     return;
   }
   /* An arm with no C VALUE cannot sit in a C conditional beside a typed
@@ -1410,7 +1412,7 @@ void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *
   else if (emit_strbuf_write_handle(c, v, &vval)) { }
   /* (--share-strings: in the String plan's form, a box's handle) */
   else if (c->share_plan) emit_str_form_handle(c, v, &vval);
-  else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
+  else { str_new_handle_open(&vval); emit_str_expr(c, v, &vval); str_new_handle_close(&vval); }
   g_pre = saved_pre;
   buf_printf(b, "if (%s%s) { ", is_or ? "!" : "", ref);
   if (vpre.p) buf_puts(b, vpre.p);
@@ -1532,7 +1534,9 @@ void emit_slot_orw_value_o(Compiler *c, TyKind t, int elems_handle, const char *
   if (t == TY_STRBUF) {
     buf_puts(b, "({ ");
     emit_strbuf_orw_guard(c, ref, v, is_or, b);
-    buf_printf(b, "%s%s sp_strbuf_read_pub(%s); })", mark ? " " : "", mark ? mark : "", ref);
+    buf_printf(b, "%s%s ", mark ? " " : "", mark ? mark : "");
+    str_read_handle(b, ref, 1);
+    buf_puts(b, "; })");
     return;
   }
   if (t == TY_POLY) {

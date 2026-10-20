@@ -516,6 +516,7 @@ void str_read_handle_tmp(Buf *b, int tmp, int pub);
    field `h`, String field `e`), written in one place (codegen_str.c) */
 void str_new_handle_open(Buf *b);
 void str_new_handle_close(Buf *b);
+void str_new_handle_open_of(Compiler *c, int v, Buf *b);
 void str_box_kept(Buf *b, int t, const char *h, const char *e);
 /* The box face's arms for a value boxed by its representation: a String
    the plan wraps as the new handle it is (`wrap`), else its bytes */
