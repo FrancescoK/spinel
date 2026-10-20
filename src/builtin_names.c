@@ -10,6 +10,10 @@ int is_zip_name(const char *n) {
   return sp_streq(n, "zip");
 }
 
+int is_dig_name(const char *n) {
+  return sp_streq(n, "dig");
+}
+
 /* the match name that takes a start position (match?(pattern, pos)) */
 int is_match_p_name(const char *n) {
   return sp_streq(n, "match?");

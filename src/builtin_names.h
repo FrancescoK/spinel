@@ -11,6 +11,7 @@
 #define SPINEL_BUILTIN_NAMES_H
 
 int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
+int is_dig_name(const char *n);       /* dig: a path through containers */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
 int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
 int is_bind_call(const char *n);  /* bind_call: an UnboundMethod bound and called in one */

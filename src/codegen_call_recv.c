@@ -5239,6 +5239,11 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = repr_of(c, id).as_ty;   /* a Hash result's C table (to_h) */
+  /* A splat's runtime depth needs a boxed result, even when the Array's
+     elements have one type. The fixed-key rows cannot read that list. */
+  if (recv >= 0 && ty_is_array(rt) && is_dig_name(name) &&
+      nt_argv_has_splat(nt, argv, argc))
+    return emit_dig_splat(c, recv, argc, argv, b);
   /* [].first / [].last on an empty literal: there is no element type to read;
      the value is nil (boxed -- the call types poly). */
   if (recv >= 0 && argc == 0 && (is_endpoint_query(name)) &&
@@ -6503,7 +6508,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            Emitting the splat as a single key read the key array through the
            key's own type and the C did not compile. */
         /* the receiver is held across the keys, which may allocate */
-        if (nt_kind(nt, argv[0]) == NK_SplatNode)
+        if (nt_argv_has_splat(nt, argv, argc))
           return emit_dig_splat(c, recv, argc, argv, b);
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
@@ -11008,7 +11013,9 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, " %s; })", raise_tail_c(c, id, z1));
     { *out = 1; return 1; }
   }
-  if (sp_streq(name, "dig") && argc >= 1) {
+  if (is_dig_name(name) && argc >= 1) {
+    if (nt_argv_has_splat(nt, argv, argc))
+      { *out = emit_dig_splat(c, recv, argc, argv, b); return 1; }
     /* literal key resolves a member at compile time */
     int mi = -1;
     const char *kty = nt_type(nt, argv[0]);
