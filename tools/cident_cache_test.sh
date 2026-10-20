@@ -16,10 +16,11 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -o) out=$2; shift;; *.rb) input=$1;; esac
   shift
 done
-cat "$input" test/support/input.txt > "$out"
+# a program reads the support file it names, as a require_relative does
+if grep -q 'support/input' "$input"; then cat "$input" test/support/input.txt > "$out"; else cat "$input" > "$out"; fi
 COMPILER
 chmod +x "$T/tree/bin/spinel"
-printf 'puts 1\n' > "$T/tree/test/a.rb"
+printf 'puts 1 # support/input\n' > "$T/tree/test/a.rb"
 printf 'support one\n' > "$T/tree/test/support/input.txt"
 touch "$T/tree/benchmark/.keep" "$T/tree/packages/p/test/.keep"
 cat > "$T/mock/make" <<'MAKE'
@@ -60,7 +61,7 @@ check() {
 if [ "$1" = corpus ]; then
   check cold
   check warm
-  printf 'puts 2\n' > test/a.rb
+  printf 'puts 2 # support/input\n' > test/a.rb
   check edited
   printf 'puts 3\n' > test/b.rb
   check added
