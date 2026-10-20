@@ -132,7 +132,8 @@ typedef struct sp_slab_chunk {
   uint8_t on_avail;                   /* listed on the owner's available list */
   uint8_t in_use;                     /* holds a class; 0 = empty, on the global pool */
   uint8_t touched;                    /* has resident pages since the last release */
-  uint8_t _pad[64 - sizeof(void *) * 3 - 4 - 2 * 3 - 3];   /* a 64-byte header on any pointer width */
+  uint8_t reusable;                   /* released as MADV_FREE_REUSABLE (macOS): reuse it first */
+  uint8_t _pad[64 - sizeof(void *) * 3 - 4 - 2 * 3 - 4];   /* a 64-byte header on any pointer width */
 } sp_slab_chunk;
 typedef char sp_slab_chunk_is_one_line[sizeof(sp_slab_chunk) == 64 ? 1 : -1];
 
@@ -420,6 +421,32 @@ static inline void sp_slab_locate(const void *p, sp_slab_loc *l) {
   l->bit = (uint64_t)1 << (idx & 63);
 }
 
+/* Handing a chunk's pages back to the kernel, and taking them again. Linux's
+   MADV_DONTNEED drops the pages at once. macOS's keeps them resident and
+   counted in the footprint -- and so does MADV_FREE -- until the system
+   needs the memory, so a process that came down from a peak still showed
+   it; MADV_FREE_REUSABLE takes the pages out of the footprint at once, and
+   the chunk is then marked reusable to the kernel again (MADV_FREE_REUSE)
+   when it is carved, before any slot of it is written, which is what keeps
+   the footprint's account of it right. A give-back the kernel refuses
+   answers 0: the pages are still resident, so the chunk stays touched (the
+   next release tries again) and is not reusable. A refused MADV_FREE_REUSE
+   leaves nothing to undo: the pages are the process's either way. The pages read as before or as
+   zero either way, which the carve does not depend on: each block is
+   zeroed as it is handed out. */
+#if defined(__APPLE__) && defined(MADV_FREE_REUSABLE) && defined(MADV_FREE_REUSE)
+#define SP_SLAB_REUSABLE 1
+static int sp_slab_give_back(char *lo, size_t len) { return madvise(lo, len, MADV_FREE_REUSABLE) == 0; }
+static void sp_slab_take_back(sp_slab_chunk *ch) {
+  madvise(sp_slab_chunk_base(ch), SP_SLAB_CHUNK, MADV_FREE_REUSE);
+  ch->reusable = 0;
+}
+#else
+#define SP_SLAB_REUSABLE 0
+static int sp_slab_give_back(char *lo, size_t len) { return madvise(lo, len, MADV_DONTNEED) == 0; }
+static void sp_slab_take_back(sp_slab_chunk *ch) { ch->reusable = 0; }
+#endif
+
 /* The next arena of the reservation: its header table and bitmaps are zero
    already (an untouched page reads as zero), so only the empty list needs
    writing. */
@@ -561,6 +588,7 @@ static SP_NOINLINE void *sp_slab_refill(sp_slab_worker *wk, int cls, unsigned cs
     sp_slab_empty = ch->next_avail;
     SP_SLAB_UNLOCK();
     ch->next_avail = NULL;
+    if (ch->reusable) sp_slab_take_back(ch);
     ch->nslots = sp_slab_nslots_of[cls];
     ch->hint = 0;
     ch->cls = (uint16_t)cls;
@@ -1451,9 +1479,10 @@ void sp_slab_release_worker(int wid) {
                run_end->next_avail->touched == touched) {
           run_end = run_end->next_avail; hi += SP_SLAB_CHUNK;
         }
+        int released = 0;
         if (touched) {
           double mt0 = sp_gc_ph_on ? sp_slab_now() : 0;
-          madvise(lo, (size_t)(hi - lo), MADV_DONTNEED);
+          released = sp_slab_give_back(lo, (size_t)(hi - lo));
           if (sp_gc_ph_on) { sp_slab_rel_madv++; sp_slab_rel_madv_t += sp_slab_now() - mt0; }
         }
         sp_slab_chunk *nx = run_end->next_avail;
@@ -1470,7 +1499,8 @@ void sp_slab_release_worker(int wid) {
           if (c2->own_next) c2->own_next->own_prev = c2->own_prev;
           c2->own_next = c2->own_prev = NULL;
           memset(sp_slab_bm_of(c2), 0, sizeof(sp_slab_bm));
-          c2->in_use = 0; c2->on_avail = 1; c2->touched = 0;
+          c2->in_use = 0; c2->on_avail = 1; c2->reusable = (uint8_t)(released && SP_SLAB_REUSABLE);
+          c2->touched = (uint8_t)(touched && !released);
           c2->nslots = 0; c2->hint = 0;
           if (c2 == run_end) break;
         }
