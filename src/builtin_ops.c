@@ -2459,7 +2459,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "none?",                 0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
   { BOP_ANY_ARRAY, "one?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
   { BOP_ANY_ARRAY, "dig",                   2, 127, BF_ANY,      TY_POLY,       BOPE_ARRAY_DIG_N },
-  { BOP_ANY_ARRAY, "sum",                   1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_SUM1 },
+  { BOP_ANY_ARRAY, "sum",                   1,   1, BF_NONE,     BOPR_ARRAY_SUM_SEED, BOPE_ARRAY_SUM1 },
   { BOP_ANY_ARRAY, "concat",                1, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_CONCAT, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "index",                 1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
   { BOP_ANY_ARRAY, "find_index",            1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
@@ -2791,13 +2791,16 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ARG0:
   case (int)BOPR_ARG1:
   case (int)BOPR_HASH_REPLACE:
+  case (int)BOPR_ARRAY_SUM_SEED:
   case (int)BOPR_HASH_STORE: return TY_UNKNOWN;
   default:                  return op->result;
   }
 }
 
-TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud) {
+TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int promote) {
   switch ((int)op->result) {
+  case (int)BOPR_ARRAY_SUM_SEED:
+    return argc == 1 ? fold_sum_type(arg_of(ud, 0), ty_array_elem(rt), promote) : TY_UNKNOWN;
   case (int)BOPR_ARRAY_PLUS:
   case (int)BOPR_ARRAY_SETOP:
     break;
