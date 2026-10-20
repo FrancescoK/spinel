@@ -448,13 +448,13 @@ int sp_net_udp_connect(int fd, const char *host, int port) {SP_GC_ROOT_STR(host)
     freeaddrinfo(head);
     return rc;
 }
-int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int port) {SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
+int sp_net_udp_send_to(int fd, const char *data, int len, int flags, const char *host, int port) {SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
     if (fd < 0) return -1;
-    if (!host || !*host) return (int)send(fd, data, (size_t)len, 0);
+    if (!host || !*host) return (int)send(fd, data, (size_t)len, flags);
     struct addrinfo *head = NULL;
     struct addrinfo *ai = sp_net_udp_resolve(fd, host, port, 0, &head);
     if (!ai) return -1;
-    int rc = (int)sendto(fd, data, (size_t)len, 0, ai->ai_addr, ai->ai_addrlen);
+    int rc = (int)sendto(fd, data, (size_t)len, flags, ai->ai_addr, ai->ai_addrlen);
     freeaddrinfo(head);
     return rc;
 }

@@ -84,7 +84,7 @@ int sp_net_udp_open(int family);
 int sp_net_fd_family(int fd);
 int sp_net_udp_bind(int fd, const char *host, int port);
 int sp_net_udp_connect(int fd, const char *host, int port);
-int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int port);
+int sp_net_udp_send_to(int fd, const char *data, int len, int flags, const char *host, int port);
 int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out);
 
 /* ---- UNIX-domain stream sockets ---- */
