@@ -24,6 +24,16 @@
 #include "repr.h"
 #include "share.h"
 
+/* Is node v a String whose producer the plan takes arm by arm (a
+   conditional, SPK_COND; a boxed receiver's call whose arms each answer a
+   String, SPK_POLY_ARMS)? Its box (emit_boxed) holds the String the taken
+   arm hands on, a handle's box where the arm holds one: its identity. The
+   value as it is emitted is the taken arm's bytes, a copy of a handle's. */
+static int str_ident_boxes_arms(Compiler *c, int v) {
+  int kind = share_plan_producer(c, v, NULL);
+  return kind == SPK_COND || kind == SPK_POLY_ARMS;
+}
+
 /* Node v's object id, in the plan's form: the handle's where the plan
    gives the handle -- strbuf_object_ref names it for each producer that
    has one: a variable's slot, a box, a Range's kept endpoint, a route over
@@ -40,6 +50,16 @@ static int str_render_id(Compiler *c, int v, int form, StrForm *sf) {
        exception message's and the endpoints') */
     if (!exc_message_identity_operand(c, v) && !strbuf_route_srange_end(c, v) && strbuf_route_srange_extreme(c, v))
       sf->needs |= SF_ALLOCATES;
+    return SPF_HANDLE;
+  }
+  /* (a conditional, or a boxed receiver's call, taken arm by arm: the
+     identity of its box, as the identity face takes it) */
+  if (form == SPF_HANDLE && str_ident_boxes_arms(c, v)) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, v, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? SP_NIL_OBJECT_ID : (sp_int)(uintptr_t)sp_poly_identity_ptr(_t%d); })", t, t);
+    sf->needs |= SF_ALLOCATES;
     return SPF_HANDLE;
   }
   if (comp_recv_type(c, v) == TY_STRING && repr_of(c, v).may_nil) {
@@ -330,6 +350,16 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
         if (g_share_check) share_check_declare_reads(b, at, v);
         return SPF_HANDLE;
       }
+    }
+    /* a conditional, or a boxed receiver's call, taken arm by arm: its box,
+       which holds the taken arm's handle where the arm has one (an arm can
+       box a new handle around a String no handle holds); emitted as it is,
+       it was the arm's bytes, a copy */
+    if (str_ident_boxes_arms(c, v)) {
+      sf->cty = TY_POLY;
+      sf->needs |= SF_ALLOCATES;
+      emit_boxed(c, v, b);
+      return SPF_HANDLE;
     }
   }
   sf->cty = r.as_ty == TY_STRBUF ? TY_STRBUF : r.as_ty == TY_POLY ? TY_POLY : TY_STRING;
