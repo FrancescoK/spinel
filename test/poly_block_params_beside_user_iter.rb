@@ -17,3 +17,11 @@ v.each_slice(2) { |s| p s }
 w = pick([[3, "a", 2], Node.new([1, 2, 3])], 1)
 w.each_cons(2) { |t1, t2| p [t1, t2] }
 w.each_slice(2) { |s| p s }
+
+# an optional block parameter destructures each window as a second one
+# does, and takes its default past the row
+x = pick([[3, "a", :b], Node.new([1, 2, 3])], 0)
+x.each_cons(2) { |t1, t2 = 0| p [t1, t2] }
+x.each_slice(2) { |s1, s2 = 9| p [s1, s2] }
+[1, 2, 3].each_slice(2) { |s1, s2 = 9| p [s1, s2] }
+[1, 2, 3].each_cons(3) { |a1, a2, a3 = 4| p [a1, a2, a3] }
