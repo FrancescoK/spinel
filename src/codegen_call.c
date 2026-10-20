@@ -23515,10 +23515,17 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     /* (a mutator's receiver that is a boxed receiver's call whose arms answer
        a String, or a sequence ending in one, is bound as its box's handle:
        strbuf_poly_user_base. An argument is read as its bytes) */
+    /* (...and so is an argument whose box the plan wants as that handle,
+       a container's element: bound as its bytes, the box was asked of a
+       const char * temp, #9758) */
     int bsh = operand[i] != harg &&
               (operand_binds_self_handle(c, operand[i]) || operand_binds_boxed_to_s(c, id, operand[i]) ||
                (operand[i] == recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
-                !arg_ran_first(operand[i], 0) && strbuf_poly_user_base(c, operand[i]) >= 0));
+                !arg_ran_first(operand[i], 0) && strbuf_poly_user_base(c, operand[i]) >= 0) ||
+               (operand[i] != recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
+                nt_kind(c->nt, operand[i]) == NK_CallNode && !arg_ran_first(operand[i], 0) &&
+                share_plan_of(c, operand[i], SPR_BOX, NULL).form == SPF_HANDLE &&
+                share_plan_of(c, operand[i], SPR_BOX, NULL).kind == SPK_POLY_ARMS));
     int bfb = bsh || operand[i] == harg ? 0
             : operand_binds_face_box(c, operand[i]) ? 1
             : operand_binds_identity_box(c, id, operand[i]) || operand_binds_user_box(c, operand[i]) ? 2 : 0;

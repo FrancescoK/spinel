@@ -11,7 +11,6 @@ test/share/env_default_param_computed_send.rb	?:0	CallNode (via_local)	plan wrap
 test/share/env_default_param_computed_send.rb	?:0	CallNode (via_local)	plan wrap (live), C bytes (take, argument)
 test/share/env_default_param_computed_send.rb	?:0	CallNode (via_local)	plan wrap (live), C bytes (take, argument)
 test/share/frozen_captured_local_string.rb	test/share/frozen_captured_local_string.rb:8	LocalVariableReadNode (a)	plan handle (live), C bytes (take, receiver)
-test/share/poly_route_arg_ran_first.rb	test/share/poly_route_arg_ran_first.rb:26	CallNode (to_html)	plan handle, C wrap (take, argument)
 test/share/reopen_yield_answer.rb	test/share/reopen_yield_answer.rb:24	CallNode (capitalize)	plan handle (live), C bytes (take, block tail)
 test/share/route_exception_conversion_reopen.rb	test/share/route_exception_conversion_reopen.rb:11	LocalVariableReadNode (x)	plan handle (live), C wrap (take, receiver)
 test/share/route_to_s_box_after_widening.rb	test/share/route_to_s_box_after_widening.rb:18	LocalVariableReadNode (c)	plan handle, C bytes (take, receiver)
