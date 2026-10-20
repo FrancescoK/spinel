@@ -314,7 +314,7 @@ void comp_free(Compiler *c) {
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
-  free(c->cls_fact); free(c->cls_pool);
+  free(c->cls_fact); free(c->cls_pool); free(c->cls_kind);
   free(c->send_param_memo);
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);

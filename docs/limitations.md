@@ -1715,7 +1715,18 @@ each Bignum and non-flonum Float), a Rational, a Complex, a Range, or a
 boxed value of no static kind -- added to a Set, looked up in one, or handed
 to one as a collection (`Set.new`, `Set[]`, `merge`, `|`, `to_set`, a
 `map!` block's answers, ...) is refused at compile time, naming the call, as
-`Hash#compare_by_identity` refuses such keys. A Set can be made to compare
+`Hash#compare_by_identity` refuses such keys. A boxed value, or a String,
+passes when every value that can reach it is one of the kinds above or a
+String made afresh (an interpolation, `dup`, `clone`, a unary plus,
+`String.new`), each one object here as in CRuby; an identity Set keeps
+such a String as itself, as CRuby's does, where a plain one keeps a frozen
+copy. What reaches a value is followed through variables, arguments,
+returns, containers and blocks; a read under the test of a predicate that
+the program's classes answer by a literal `true` or `false` (`if
+item.pair?`, or after `return unless item.pair?`) holds only instances of
+the classes that may answer it truthily, so their values alone reach it. A
+number, a String literal or a builtin's own answer that can reach the value
+keeps the refusal. A Set can be made to compare
 by identity after it was filled, so the check covers every call on the
 place the identity Set lives in: an instance variable or a local assigned
 only Sets made there (`@seen = Set.new.compare_by_identity`, `@seen ||=

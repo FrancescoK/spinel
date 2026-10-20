@@ -112,12 +112,15 @@ class Set
   # An unfrozen String joins as a frozen copy, as CRuby's Set (and a Hash, for
   # its keys) takes it: changing the String afterwards changes neither the
   # member nor whether the Set holds it, and the member itself is frozen. A
-  # frozen String joins as itself. add, add? and map! push through here. The
-  # test reads the member back from @data, whose elements are boxed: asked of
-  # x, where x is a user object's own type, frozen? would mark that class as
-  # one whose instances can be frozen, and guard every store to its ivars.
+  # frozen String joins as itself. An identity Set takes every String as
+  # itself, as CRuby's does: its members are the objects it was handed. add,
+  # add? and map! push through here. The test reads the member back from
+  # @data, whose elements are boxed: asked of x, where x is a user object's
+  # own type, frozen? would mark that class as one whose instances can be
+  # frozen, and guard every store to its ivars.
   def push_member(x)
     @data.push(x)
+    return if @ident
     e = @data[-1]
     @data[-1] = -e if e.is_a?(String) && !e.frozen?
   end

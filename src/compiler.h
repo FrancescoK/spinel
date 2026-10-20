@@ -1071,6 +1071,11 @@ typedef struct {
                        set of user classes its value can hold (analyze_cls.c,
                        #8530); 0 is every class. Read through cls_fact_node. */
   ClsSet *cls_pool; int ncls_pool, cls_fact_n;
+  unsigned char *cls_kind; /* [cls_fact_n] per node, in a program that calls
+                       compare_by_identity: the CK_* kinds its value, and
+                       (shifted by CK_CONTENTS) the elements of the
+                       containers it holds, can be (cls_fact_kinds) */
+  int cls_kind_n;
   int range_unheld; /* while the arguments of a call on a receiver of no known
                        class bind to every method of the name: a Range among
                        them makes no parameter range_held (slot_set) */
@@ -1874,6 +1879,20 @@ int cls_fact_excludes(Compiler *c, int recv, int k);
 /* the fact's own index for recv's set, which names the set uniquely: 0 or -1
    for every class (nothing to filter by) */
 int cls_fact_idx(Compiler *c, int node);
+/* What else than an object of a class of the program's node's value can be,
+   as the same walk follows it (analyze_cls.c), in a program that calls
+   compare_by_identity: CK_UNSAFE a value whose identity is not CRuby's here
+   or one the walk cannot name (a number, a Range, a builtin's answer, a
+   value from code it does not see), CK_LIT a String literal (one object
+   per text here), CK_STR a String made afresh (an interpolation, a dup, a
+   unary plus, String.new). A Symbol, nil, true, false, a container literal
+   or a Proc adds nothing. cls_fact_kinds answers for the value,
+   cls_fact_contents_kinds for the elements of the containers it holds;
+   CK_UNSAFE for a node the walk has no answer for. */
+enum { CK_UNSAFE = 1, CK_LIT = 2, CK_STR = 4, CK_CONTENTS = 3 };
+void an_cls_kinds(Compiler *c);   /* the walk, once: before the first ask */
+int cls_fact_kinds(Compiler *c, int node);
+int cls_fact_contents_kinds(Compiler *c, int node);
 
 typedef struct { int cls; int mi; int rdcls; int native; } PolyCand;
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n);
