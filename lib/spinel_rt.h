@@ -4103,9 +4103,11 @@ static SP_UNUSED sp_RbVal sp_float_clamp_range(double x, sp_Range r) {
    the largest value the receiver includes (an excluded Integer end is one
    less; an excluded Float end admits only an end that is excluded too) */
 static SP_UNUSED sp_bool sp_range_cover_frange(sp_Range r, sp_FloatRange a) {
-  /* an empty operand (2.0...2.0, 3.0..2.0) is covered by none, as CRuby's
-     r_cover_range_p answers */
-  if (!a.omitted && (a.first > a.last || (a.first == a.last && a.excl))) return 0;
+  /* an empty operand (2.0...2.0, 3.0..2.0, 2...2.0) is covered by none, as
+     CRuby's r_cover_range_p answers; only an omitted bound skips the test
+     (the other bits of `omitted` say a bound was written as an Integer) */
+  if (!(a.omitted & (SP_FRANGE_NO_BEGIN | SP_FRANGE_NO_END)) &&
+      (a.first > a.last || (a.first == a.last && a.excl))) return 0;
   if (a.first < (sp_float)r.first) return 0;
   if (!r.fe) return a.last <= (sp_float)(r.excl ? r.last - 1 : r.last);
   if (r.fe == 2) return a.last < r.fend || (a.last == r.fend && a.excl);
