@@ -24464,6 +24464,35 @@ static int an_tail_name_fresh(Compiler *c, RetHandles *R, int n, TailCount *tc) 
   if (ok) tc->reads++;
   return ok;
 }
+/* The handle walk's tail call n past the plan's list (#9258): every method
+   it can run (share_name_targets) publishes the handle, answers a new String
+   (which then clears the side channel at its tails, ret_pub_fresh), or
+   answers a String literal where nothing between the pickup's reset and its
+   return can publish another (share_plan_literal_pickup_clean), and one
+   publishes -- as for a call whose targets the plan lists. */
+static int an_tail_name_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
+  int *mis = malloc(sizeof(int) * (size_t)(c->nscopes + 1) * 2);
+  if (!mis) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int *fresh_t = mis + c->nscopes + 1;
+  int cnt = share_name_targets(c, n, mis, c->nscopes + 1), ok = cnt > 0, npub = 0, nfresh = 0;
+  for (int i = 0; ok && i < cnt; i++) {
+    Scope *m = &c->scopes[mis[i]];
+    if (an_ret_handle(c, R, mis[i])) { npub++; continue; }
+    if (scope_always_raises(c, mis[i]) || share_plan_literal_pickup_clean(c, n, mis[i])) continue;
+    if (m->ret_fresh && m->ret == TY_STRING) fresh_t[nfresh++] = mis[i];
+    else ok = 0;
+  }
+  if (ok && npub == 0) ok = 0;
+  if (ok && nfresh > 0) {
+    for (int i = 0; i < nfresh; i++) c->scopes[fresh_t[i]].ret_pub_fresh = 1;
+    tc->fresh++;
+  }
+  free(mis);
+  if (!ok) return 0;
+  tc->reads++;
+  if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+  return 1;
+}
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   /* the fresh walk: a receiver-answering String method's tail is its
@@ -24546,6 +24575,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
   /* past the plan's list: every method of the name (#9258) */
   if (R->fresh && cnt == CPT_UNKNOWN) return an_tail_name_fresh(c, R, n, tc);
+  if (!R->fresh && cnt == CPT_UNKNOWN) return an_tail_name_handle(c, R, n, tc);
   /* A raising arm contributes no String. A user override still returns. */
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;

@@ -1,15 +1,16 @@
-# spinel: reject-subclass: is shared with another name and changed in place
-# The same call past the plan, where one inspect's local is the default of
-# a literal block's parameter (a proc), which an ivar then keeps: the
-# String is held by another name, so the refusal stays.
+# A call past the plan's list over seventy inspects, where one inspect's
+# local is the default of a lambda's parameter, which an ivar then keeps:
+# the String is held by another name, so the inspect does not answer a new
+# String. Every inspect still publishes the handle, so the call hands it on,
+# and the ivar sees the change in place (#9258).
 
 class K0
   attr_reader :keep
   def initialize(items) = @items = items
   def inspect
     out = +"K0("
-    pr = proc { |k = out| @keep = k }
-    pr.call
+    f = ->(k = out) { @keep = k }
+    f.call
     out
   end
 end

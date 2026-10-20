@@ -1,21 +1,15 @@
-# spinel: reject-subclass: is shared with another name and changed in place
-# The same build-up local, where Bag#each keeps what its block answers: the
-# append's value, the String itself, is then held by the Bag too, so the
-# method's answer is no new String and the change stays refused.
+# A call past the plan's list over seventy inspects, where one inspect's
+# local is the default of a literal block's parameter (a proc), which an
+# ivar then keeps. Every inspect still publishes the handle, so the call
+# hands it on, and the ivar sees the change in place (#9258).
 
-class Bag
-  def initialize(*a) = @a = a
-  def each
-    @a.each { |x| @kept = yield x }
-    self
-  end
-end
 class K0
+  attr_reader :keep
   def initialize(items) = @items = items
   def inspect
     out = +"K0("
-    @items.each { |x| out << x.to_s << "," }
-    out << ")"
+    pr = proc { |k = out| @keep = k }
+    pr.call
     out
   end
 end
@@ -643,10 +637,10 @@ end
 module Util
   def self.lit(x) = x.inspect
 end
-objs = [K0.new(Bag.new(1, 2)), K1.new([3]), K2.new(Bag.new(1, 2)), K3.new([3]), K4.new(Bag.new(1, 2)), K5.new([3]), K6.new(Bag.new(1, 2)), K7.new([3]), K8.new(Bag.new(1, 2)), K9.new([3]), K10.new(Bag.new(1, 2)), K11.new([3]), K12.new(Bag.new(1, 2)), K13.new([3]), K14.new(Bag.new(1, 2)), K15.new([3]), K16.new(Bag.new(1, 2)), K17.new([3]), K18.new(Bag.new(1, 2)), K19.new([3]), K20.new(Bag.new(1, 2)), K21.new([3]), K22.new(Bag.new(1, 2)), K23.new([3]), K24.new(Bag.new(1, 2)), K25.new([3]), K26.new(Bag.new(1, 2)), K27.new([3]), K28.new(Bag.new(1, 2)), K29.new([3]), K30.new(Bag.new(1, 2)), K31.new([3]), K32.new(Bag.new(1, 2)), K33.new([3]), K34.new(Bag.new(1, 2)), K35.new([3]), K36.new(Bag.new(1, 2)), K37.new([3]), K38.new(Bag.new(1, 2)), K39.new([3]), K40.new(Bag.new(1, 2)), K41.new([3]), K42.new(Bag.new(1, 2)), K43.new([3]), K44.new(Bag.new(1, 2)), K45.new([3]), K46.new(Bag.new(1, 2)), K47.new([3]), K48.new(Bag.new(1, 2)), K49.new([3]), K50.new(Bag.new(1, 2)), K51.new([3]), K52.new(Bag.new(1, 2)), K53.new([3]), K54.new(Bag.new(1, 2)), K55.new([3]), K56.new(Bag.new(1, 2)), K57.new([3]), K58.new(Bag.new(1, 2)), K59.new([3]), K60.new(Bag.new(1, 2)), K61.new([3]), K62.new(Bag.new(1, 2)), K63.new([3]), K64.new(Bag.new(1, 2)), K65.new([3]), K66.new(Bag.new(1, 2)), K67.new([3]), K68.new(Bag.new(1, 2)), K69.new([3])]
-o = objs[ARGV.size * 3]
+objs = [K0.new([1, 2]), K1.new([1, 2]), K2.new([1, 2]), K3.new([1, 2]), K4.new([1, 2]), K5.new([1, 2]), K6.new([1, 2]), K7.new([1, 2]), K8.new([1, 2]), K9.new([1, 2]), K10.new([1, 2]), K11.new([1, 2]), K12.new([1, 2]), K13.new([1, 2]), K14.new([1, 2]), K15.new([1, 2]), K16.new([1, 2]), K17.new([1, 2]), K18.new([1, 2]), K19.new([1, 2]), K20.new([1, 2]), K21.new([1, 2]), K22.new([1, 2]), K23.new([1, 2]), K24.new([1, 2]), K25.new([1, 2]), K26.new([1, 2]), K27.new([1, 2]), K28.new([1, 2]), K29.new([1, 2]), K30.new([1, 2]), K31.new([1, 2]), K32.new([1, 2]), K33.new([1, 2]), K34.new([1, 2]), K35.new([1, 2]), K36.new([1, 2]), K37.new([1, 2]), K38.new([1, 2]), K39.new([1, 2]), K40.new([1, 2]), K41.new([1, 2]), K42.new([1, 2]), K43.new([1, 2]), K44.new([1, 2]), K45.new([1, 2]), K46.new([1, 2]), K47.new([1, 2]), K48.new([1, 2]), K49.new([1, 2]), K50.new([1, 2]), K51.new([1, 2]), K52.new([1, 2]), K53.new([1, 2]), K54.new([1, 2]), K55.new([1, 2]), K56.new([1, 2]), K57.new([1, 2]), K58.new([1, 2]), K59.new([1, 2]), K60.new([1, 2]), K61.new([1, 2]), K62.new([1, 2]), K63.new([1, 2]), K64.new([1, 2]), K65.new([1, 2]), K66.new([1, 2]), K67.new([1, 2]), K68.new([1, 2]), K69.new([1, 2])]
+o = objs[ARGV.size]
 s = Util.lit(o)
-t = Util.lit("str")
+t = Util.lit(objs[1])
 names = { a: s, b: t }
 s << "!"
-p names[:a], names[:b], s, Util.lit(objs[1])
+p names[:a], s, o.keep

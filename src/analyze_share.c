@@ -5903,11 +5903,47 @@ static int sh_name_methods_seen(Compiler *c, const char *nm) {
   for (int i = 0; i < g_ndyn_names; i++) if (sp_streq(g_dyn_names[i], nm)) return 0;
   return 1;
 }
+/* A receiverless call in an instance method can run, on each class made
+   whose instances run that method (the class or one below it whose chain
+   resolves the method's name to it), the method of the call's name that
+   class's chain has: those methods, each once, into out (at most cap), or
+   -1 where a builtin or method_missing may answer instead (#9258). A class
+   whose chain has none and nothing to answer raises NoMethodError, which
+   answers no String. */
+static int sh_self_call_targets(Compiler *c, int call, const char *nm, int *out, int cap) {
+  Scope *cur = comp_scope_of(c, call);
+  int ci = cur ? (int)(cur - c->scopes) : -1;
+  if (ci <= 0 || cur->is_cmethod || cur->class_id < 0 || !cur->name || cur->def_node < 0) return -1;
+  if (core_method_name(nm) || object_public_method_name(nm) || bop_share_named(BOP_KERNEL, nm) ||
+      bop_share_named(BOP_ANY_RECV, nm))
+    return -1;
+  int k = 0;
+  for (int cid = 0; cid < c->nclasses; cid++) {
+    if (!c->classes[cid].instantiated && !c->classes[cid].is_builtin_const) continue;
+    if (comp_method_in_chain(c, cid, cur->name, NULL) != ci) continue;
+    int mi = comp_method_in_chain(c, cid, nm, NULL);
+    if (mi < 0) {
+      if (comp_method_in_chain(c, cid, "method_missing", NULL) >= 0) return -1;
+      continue;
+    }
+    if (c->scopes[mi].is_cmethod) return -1;
+    int seen = 0;
+    for (int i = 0; i < k && !seen; i++) seen = out[i] == mi;
+    if (seen) continue;
+    if (k >= cap) return -1;
+    out[k++] = mi;
+  }
+  return k;
+}
 /* See share.h. */
 int share_name_targets(Compiler *c, int call, int *out, int cap) {
   const NodeTable *nt = c->nt;
-  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
-  if (nt_ref(nt, call, "receiver") < 0 || nt_ref(nt, call, "block") >= 0) return -1;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") >= 0) return -1;
+  if (nt_ref(nt, call, "receiver") < 0) {
+    const char *sn = nt_str(nt, call, "name");
+    if (cplan_targets_unknown_why(c, call, CPT_MAX) == CPT_WHY_NONE || !sh_name_methods_seen(c, sn)) return -1;
+    return sh_self_call_targets(c, call, sn, out, cap);
+  }
   int why = cplan_targets_unknown_why(c, call, CPT_MAX);
   if (why != CPT_WHY_CAP && why != CPT_WHY_RECV_UNTYPED) return -1;
   const char *nm = nt_str(nt, call, "name");
