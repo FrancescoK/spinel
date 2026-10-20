@@ -8636,7 +8636,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     int np = 0; while (block_param_name(c, blk, np)) np++;
     int body = nt_ref(nt, blk, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1;
+    int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1, trx = -1;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
     if (runtime_cap) {
@@ -8662,8 +8662,18 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          as whole statements rather than spliced into this initializer */
       Buf eb; memset(&eb, 0, sizeof eb);
       emit_expr(c, argv[0], &eb);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(%s, _t%d); SP_GC_ROOT(_t%d);\n",
-                 tm, eb.p ? eb.p : "NULL", tr, tm);
+      /* a body that walks the subject (below) reads the one pattern every
+         turn, so it is held in a temp */
+      if (subtree_reads_match_globals(c, body)) {
+        trx = ++g_tmp;
+        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = %s;\n", trx, eb.p ? eb.p : "NULL");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(_t%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                   tm, trx, tr, tm);
+      }
+      else
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(%s, _t%d); SP_GC_ROOT(_t%d);\n",
+                   tm, eb.p ? eb.p : "NULL", tr, tm);
       free(eb.p);
     }
     else if (comp_ntype(c, argv[0]) == TY_POLY) {
@@ -8697,7 +8707,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        match; walk the subject again per iteration when the body reads $~
        or a capture global (#3601). The walk reads the subject after the
        body has run, so it is rooted. */
-    int sc_pos = ((re_idx >= 0 || tpat >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
+    int sc_pos = ((re_idx >= 0 || tpat >= 0 || trx >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
     if (sc_pos >= 0) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
@@ -8711,10 +8721,12 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
     }
     else if (sc_pos >= 0) {
+      char pat[32];
+      snprintf(pat, sizeof pat, trx >= 0 ? "_t%d" : "sp_re_pat_%d", trx >= 0 ? trx : re_idx);
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
+      buf_printf(g_pre, "if (sp_re_match_at(%s, _t%d, _t%d) >= 0)"
                         " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;\n",
-                 re_idx, tr, sc_pos, sc_pos);
+                 pat, tr, sc_pos, sc_pos);
     }
     if (runtime_cap) {
       for (int pj = 0; pj < np; pj++) {
