@@ -10850,6 +10850,9 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
           }
           else emit_expr(c, val, b);
         }
+        /* a member that holds the shared handle takes the value's handle,
+           as the constructor's own call binds it */
+        else if (mt == TY_STRBUF) emit_strbuf_handle_of(c, val, b);
         else {
           emit_expr(c, val, b);
         }
