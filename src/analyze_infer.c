@@ -4453,7 +4453,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
                : sp_streq(name, "recv_nonblock") ? TY_STRING : TY_INT; return 1; }
       if (sp_streq(name, "recv") && argc == 1) { *out = TY_STRING; return 1; }
       if (sp_streq(name, "recvfrom") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
-      if (((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 2) ||
+      /* bind and connect take a host and a port, or (Socket's) a packed
+         sockaddr */
+      if (((sp_streq(name, "bind") || sp_streq(name, "connect")) &&
+           (argc == 2 || (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode))) ||
           (sp_streq(name, "send") && (argc == 2 || argc == 4)) ||
           (sp_streq(name, "shutdown") && argc <= 1) ||
           (sp_streq(name, "listen") && argc == 1) ||

@@ -62,6 +62,8 @@ int sp_net_accept(int sfd);
 int sp_net_accept_unless(int sfd, const unsigned char *cancel);
 int sp_net_accept_nb(int sfd);
 int sp_net_connect(const char *host, int port);
+/* connect an existing fd to a packed sockaddr, waiting as connect does */
+int sp_net_connect_sa(int fd, const void *sa, int len);
 
 /* connect with a deadline: gives up after timeout_s seconds and returns -1
  * (a negative timeout_s waits as connect does). The deadline covers every

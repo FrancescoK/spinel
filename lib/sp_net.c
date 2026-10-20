@@ -700,6 +700,12 @@ int sp_net_connect(const char *host, int port) {
     return fd;
 }
 
+/* Socket#connect(sockaddr): an address already packed, connected as
+   sp_net_connect connects each one it resolves (parked with threads). */
+int sp_net_connect_sa(int fd, const void *sa, int len) {
+    return sp_net_connect_wait(fd, (const struct sockaddr *)sa, (socklen_t)len);
+}
+
 /* sp_net_connect_wait with a deadline (an sp_net_now() value). Returns 0 when
    connected, -1 on failure, and -2 when the deadline passed first. The fd is
    non-blocking for the connect in every build, since a blocking connect

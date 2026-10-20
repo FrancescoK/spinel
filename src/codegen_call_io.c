@@ -1677,6 +1677,16 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         emit_io_socket_opt_call(c, nt, name, r, argc, argv, b);
         free(rb.p); return 1;
       }
+      /* Socket#bind and #connect take the address packed (Socket.sockaddr_in,
+         Addrinfo#to_sockaddr): a byte String, which may hold NUL */
+      if ((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 1 &&
+          !nt_argv_has_splat(nt, argv, argc)) {
+        int ts = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", ts);
+        emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; sp_sock_%s_sa(%s, _t%d, (sp_int)sp_str_byte_len(_t%d)); })", name, r, ts, ts);
+        free(rb.p); return 1;
+      }
     }
     if (sp_streq(name, "read") && nt_argv_has_splat(nt, argv, argc)) {
       /* read(*args), a wrapper handing its own arguments on: counted and
