@@ -4358,6 +4358,28 @@ void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *r
   buf_printf(b, "sp_str_bytesplice5(%s, _b%d, _l%d, _v%d, _vb%d, _vl%d); })", rs, t, t, t, t, t);
 }
 
+/* One argument of append_as_bytes, as the bytes it appends: an Integer's
+   low byte (CRuby masks it, so 256 appends "\x00" and -1 "\xff"), a String's
+   bytes, and a user object's as the String slot reads them. A boxed value
+   and every other kind (a Bignum, nil, a Float, an Array) are sorted at run
+   time by sp_poly_append_bytes_arg, held ahead of the call as a String
+   slot's conversion is, so its TypeError comes before any byte is appended. */
+static void emit_append_bytes_arg(Compiler *c, int arg, Buf *b) {
+  TyKind t = comp_ntype(c, arg);
+  if (t == TY_INT) { buf_puts(b, "sp_int_chr(0xff & ("); emit_int_expr(c, arg, b); buf_puts(b, "))"); return; }
+  int poly = yield_site_type(c, arg) == TY_POLY;
+  if (!poly && (t == TY_STRING || t == TY_STRBUF || (!conv_wrong_cls_name(t) && t != TY_NIL && t != TY_BOOL))) {
+    emit_str_expr(c, arg, b);
+    return;
+  }
+  int tmp; Buf *hb = conv_hold_begin(b, &tmp);
+  Buf *ob = hb ? hb : b;
+  buf_puts(ob, "sp_poly_append_bytes_arg(");
+  if (poly) emit_expr(c, arg, ob); else emit_boxed(c, arg, ob);
+  buf_puts(ob, ")");
+  if (hb) conv_hold_end(tmp);
+}
+
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -4727,8 +4749,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         emit_route_recv_root(c, hrAB, tm2, 0, NULL, TY_UNKNOWN, b);
         for (int a9 = 0; a9 < argc; a9++) {
           buf_printf(b, " sp_String_append_bytes(_t%d, ", tm2);
-          if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
-          else emit_str_expr(c, argv[a9], b);
+          emit_append_bytes_arg(c, argv[a9], b);
           buf_puts(b, ");");
         }
         buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
@@ -4737,16 +4758,15 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (hrecv) return 0;
     int lvw9 = str_mut_var_recv(c, recv) || sb_held_shadow(recv);
     int tn9 = ++g_tmp;
-    /* append_as_bytes accepts String AND Integer arguments; an Integer is the
-       raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). A
-       frozen receiver raises first, like every other in-place append (#3333). */
+    /* append_as_bytes accepts String AND Integer arguments; an Integer is its
+       low byte (100 -> "d"), materialized via sp_int_chr (#2463). A frozen
+       receiver raises first, like every other in-place append (#3333). */
     buf_puts(b, "({ ");
     int rh9 = emit_str_mut_recv_once(c, recv, lvw9, b);
     buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
     buf_printf(b, "const char *_t%d = sp_str_append_bytes(", tn9);
     emit_expr(c, recv, b); buf_puts(b, ", ");
-    if (comp_ntype(c, argv[0]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else emit_str_expr(c, argv[0], b);
+    emit_append_bytes_arg(c, argv[0], b);
     buf_puts(b, ")");
     /* each step answers a new String, held only in the temp while the next
        argument is made: an Integer's byte (sp_int_chr) or any argument that
@@ -4758,8 +4778,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       }
     for (int a9 = 1; a9 < argc; a9++) {
       buf_printf(b, "; _t%d = sp_str_append_bytes(_t%d, ", tn9, tn9);
-      if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
-      else emit_str_expr(c, argv[a9], b);
+      emit_append_bytes_arg(c, argv[a9], b);
       buf_puts(b, ")");
     }
     buf_puts(b, "; ");

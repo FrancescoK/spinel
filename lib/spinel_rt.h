@@ -3476,6 +3476,19 @@ static SP_INLINE const char *sp_poly_arg_str_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   return sp_poly_arg_str_chk_slow(v);
 }
+/* An argument of String#append_as_bytes, boxed: an Integer is its low byte
+   (CRuby masks it with 0xff, so 256 appends "\x00", -1 "\xff" and a Bignum
+   the last byte of its two's complement), a String its bytes. A user object
+   takes the String slot's check; any other value is the TypeError
+   rb_str_append_as_bytes raises. */
+static const char *sp_poly_append_bytes_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return sp_int_chr(v.v.i & 0xff);
+  if (v.tag == SP_TAG_BIGINT) return sp_int_chr(sp_bigint_to_int((sp_Bigint *)v.v.p) & 0xff);
+  if (v.tag != SP_TAG_STR && !sp_poly_is_strbuf(v) && !(v.tag == SP_TAG_OBJ && v.cls_id >= 0))
+    sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected String or Integer)",
+                                         sp_poly_class_name(v)));
+  return sp_poly_arg_str_chk(v);
+}
 /* The replacement String#[]= takes: a String, or an object's #to_str. Any
    other value is CRuby's TypeError, raised before the String is touched --
    not spliced in as its to_s. A Class or an Encoding has no #to_str either,
