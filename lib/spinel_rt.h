@@ -11750,22 +11750,39 @@ static SP_UNUSED sp_oint sp_array_fill_offset_arg(sp_RbVal v, int range_alone) {
     sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return sp_oint_of(sp_poly_arg_int_chk(v));
 }
-/* fill(value, x) with x boxed: a Range is the span, read as a typed Range
-   argument is (sp_range_ix), and *n, the Array's length on entry, becomes
-   its exclusive end; anything else is a start filled through to *n. */
-static SP_UNUSED sp_int sp_array_fill_span(sp_RbVal v, sp_int *n) {
-  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)) {
-    sp_oint o = sp_array_fill_offset_arg(v, 0);
-    return o.nil ? 0 : o.v;
+/* fill(value, range): the span as CRuby's rb_range_beg_len reads it for
+   fill. Each end goes through to_int (sp_range_ix); a begin before the
+   start is a RangeError, an end past the length grows the Array, and an
+   inclusive end of the largest Integer wraps to an empty span, as CRuby's
+   end + 1 does. A span reaching past the largest Array is CRuby's
+   ArgumentError. *n, the Array's length on entry, becomes the exclusive
+   end, and the start is returned. */
+static SP_UNUSED sp_int sp_array_fill_range(sp_Range r0, sp_int *n) {
+  sp_Range r = sp_range_ix(r0);
+  sp_int len = *n, s = r.nobeg ? 0 : r.first, e;
+  if (s < 0) {
+    if (s < -len) sp_raise_cls("RangeError", sp_sprintf("%s out of range", sp_range_str(r0)));
+    s += len;
   }
-  sp_Range r = sp_range_ix(*(sp_Range *)v.v.p);
-  sp_int s = r.first, e = r.last;
-  if (s < 0) s += *n;
-  if (s < 0) s = 0;
-  if (e == INTPTR_MAX) e = *n;
-  else { if (e < 0) e += *n; e += 1 - r.excl; }
+  if (r.noend) e = len;
+  else {
+    e = r.last;
+    if (e < 0) e += len;
+    if (!r.excl) e = e == INTPTR_MAX ? s : e + 1;
+  }
+  if (e < s) e = s;
+  sp_int max = INTPTR_MAX / (sp_int)sizeof(void *);
+  if (s >= max || e - s > max - s) sp_raise_cls("ArgumentError", "argument too big");
   *n = e;
   return s;
+}
+/* fill(value, x) with x boxed: a Range is the span (sp_array_fill_range);
+   anything else is a start filled through to *n. */
+static SP_UNUSED sp_int sp_array_fill_span(sp_RbVal v, sp_int *n) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
+    return sp_array_fill_range(*(sp_Range *)v.v.p, n);
+  sp_oint o = sp_array_fill_offset_arg(v, 0);
+  return o.nil ? 0 : o.v;
 }
 /* An Array's offset in fetch and values_at, as CRuby's NUM2LONG reads it:
    sp_poly_arg_int_chk, with Array#fill's check for a Float or a Bignum past a
