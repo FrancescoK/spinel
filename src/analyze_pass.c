@@ -5583,6 +5583,14 @@ static int widen_returned_hashes(Compiler *c, int call) {
   return changed;
 }
 
+/* The node an argument's or a literal's value comes from, when it is one
+   node: `(a; [1])` is the Array literal, `((x))` is x. Any other node, `()`
+   or several, stays as it is. */
+static int value_node_or_self(const NodeTable *nt, int n) {
+  int one;
+  return vp_one(nt, n, VPS_NONE, &one) == VP1_NODE ? one : n;
+}
+
 /* A callee stores into the hash argument `arg` names what its variant cannot
    hold: the caller's own hash has to be the poly-keyed variant. Widens the
    hashes the argument's slot is built from, and the slot, where every write
@@ -5590,7 +5598,7 @@ static int widen_returned_hashes(Compiler *c, int call) {
    own callers. Returns 1 on a change. */
 static int widen_arg_hash(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  { int one; if (vp_one(nt, arg, VPS_NONE, &one) == VP1_NODE) arg = one; }   /* `(a; {k: 1})` is the literal */
+  arg = value_node_or_self(nt, arg);   /* `(a; {k: 1})` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
   if (ak == NK_CallNode) { int w = widen_returned_hashes(c, arg); if (w >= 0) return w; }
@@ -5680,7 +5688,7 @@ int is_fresh_array(Compiler *c, int v) {
     "take", "drop", "take_while", "drop_while", "rotate", "shuffle", "each_slice",
     "each_cons", "+", "-", "*", "&", "|", NULL };
   const NodeTable *nt = c->nt;
-  { int one; if (vp_one(nt, v, VPS_NONE, &one) == VP1_NODE) v = one; }   /* `(a; [1])` builds the literal */
+  v = value_node_or_self(nt, v);   /* `(a; [1])` builds the literal */
   if (v < 0) return 0;
   if (nt_kind(nt, v) == NK_ArrayNode) {
     int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
@@ -5706,7 +5714,7 @@ int is_fresh_array(Compiler *c, int v) {
    the container-literal elements of those `x` can be. Returns the count. */
 static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth) {
   const NodeTable *nt = c->nt;
-  { int one; if (vp_one(nt, n, VPS_NONE, &one) == VP1_NODE) n = one; }   /* `(a; [1])` is the literal */
+  n = value_node_or_self(nt, n);   /* `(a; [1])` is the literal */
   if (n < 0 || depth > 4 || nout >= cap) return nout;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_ArrayNode || k == NK_HashNode) {
@@ -6392,7 +6400,7 @@ static int g_wcause_scope = -1;
 static const char *g_wcause_name = NULL;
 static int widen_arg_array(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  { int one; if (vp_one(nt, arg, VPS_NONE, &one) == VP1_NODE) arg = one; }   /* `(a; [1])` is the literal */
+  arg = value_node_or_self(nt, arg);   /* `(a; [1])` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_ArrayNode) {
     if (!c->arr_want || arg >= c->node_cap || !is_fresh_array(c, arg) || c->arr_want[arg] == TY_POLY_ARRAY) return 0;

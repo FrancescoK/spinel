@@ -1,5 +1,5 @@
-# A local receiver written from a yield holds whatever the block answers:
-# refused.
+# A local written from a yield holds the block's String, read through a
+# boxed to_s: the change reaches the block's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n

@@ -45762,6 +45762,15 @@ static int scan_subject_trusted(Compiler *c, int blk, int subj, ScanNamed *nm) {
   free(used.v);
   return ok;
 }
+/* Is call v, on a boxed receiver, a name no builtin answers whose dispatch
+   has only methods the program defines (no attr reader's arm)? */
+static int rd_dispatch_of_defs(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (ty_poly_face_owners(nt_str(nt, v, "name"), 0, 0, 1, 1)) return 0;
+  const PolyPlan *p = cplan_poly_arms(c, v);
+  for (int i = 0; i < p->n; i++) if (p->arm[i].kind != PA_USER) return 0;
+  return p->n > 0;
+}
 /* String routes the settled types show copying where CRuby hands over the
    one object (#6765), refused rather than compiled with the change lost:
    - `t = obj.text; t << x` on a boxed obj: the reader's dispatch answers a
@@ -45799,6 +45808,10 @@ static void refuse_string_read_copies(Compiler *c) {
        so does an exception's #message beside such readers
        (exc_message_boxed_call). */
     if (repr_boxed_reader_handle(c, v) || (c->share_strings && exc_message_boxed_call(c, v))) q.carry = v;
+    /* The methods' answers are not settled while the analysis runs, so a
+       dispatch of methods the program defines (`def m = @iv`, a new String)
+       is asked at the seal, from the final plan (share_node_carries_handle). */
+    else if (c->share_strings && rd_dispatch_of_defs(c, v)) q.carry = v;
     /* A boxed to_s has a builtin face, so the reader plan declines it. The
        seal asks repr_boxed_to_s_operand once the targets' returns settle:
        every arm's own answer (a field's handle, a fresh String, the handle

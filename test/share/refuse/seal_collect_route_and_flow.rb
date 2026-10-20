@@ -1,19 +1,23 @@
-# Two refusals of the seal: a route (a call answering its String argument
-# hands it to the boxed to_s as bytes) and a flow (an Object method's ivar
-# read stored as an element). Without SP_COLLECT_ERRORS the run stops at
-# the first; with it, it reports both (collect-errors-test).
+# Two refusals of the seal: a route (a boxed to_s with an arm answering nil
+# hands the String of the other arm on as a variable's write) and a flow (an
+# Object method's ivar read stored as an element). Without SP_COLLECT_ERRORS
+# the run stops at the first; with it, it reports both (collect-errors-test).
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n
+  def n = @n
 end
-def same(x) = x
+class Nope
+  def to_s = nil
+end
 def tidy(o)
   s = o.to_s
+  return "nil" if s.nil?
   s << "!"
-  [s, o.to_s]
+  s
 end
-b = +"b"
-p tidy(Own.new(+"a")), tidy(same(b)), b
+a = Own.new(+"a")
+p tidy(a), tidy(Nope.new), a.n
 class Object
   def label = @label
 end

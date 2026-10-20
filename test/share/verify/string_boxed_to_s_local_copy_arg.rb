@@ -1,5 +1,5 @@
-# A caller passes its own parameter on, and the String is boxed as bytes two
-# calls up: only the direct call sites are looked at, so it stays refused.
+# A local copied from a parameter holds the caller's String, read through a
+# boxed to_s: the change reaches the caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n
@@ -10,6 +10,9 @@ def tidy(o)
   s << "!"
   [s, o.to_s]
 end
-def outer(q) = tidy(q)
+def outer(q)
+  x = q
+  tidy(x)
+end
 b = +"b"
 p outer(Own.new(+"a")), outer(b.itself), b

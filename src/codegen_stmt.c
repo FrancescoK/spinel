@@ -22928,7 +22928,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
      nil one */
   if (nt_safe_nav(nt, id) &&
       ((rt == TY_POLY && is_push_alias(name)) ||
-       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil))) {
+       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil) ||
+       ((rt == TY_STRING || rt == TY_STRBUF) && sn_guard_pending(c, id)))) {
     TyKind st = repr_of(c, id).as_ty;
     emit_indent(b, indent);
     buf_puts(b, "(void)(");
@@ -24305,7 +24306,8 @@ static int bop_share_all_pure(const char *nm) {
    answers (or one every builtin answers with a new String), whose dispatch has a method arm for each class the receiver can
    hold, each answering a String that is either a handle it publishes
    (Scope.ret_handle), a new String (ret_fresh) or a literal
-   (scope_ret_frozen_lit), and one of them publishing?
+   (scope_ret_frozen_lit), or no String at all (share_scope_answers_no_string),
+   and one of them publishing?
    Boxed, the dispatch boxes each arm's own answer (emit_poly_user_box): the
    published handle, or a new handle around a fresh String, which reads no
    earlier publication. */
@@ -24337,7 +24339,11 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
     for (int j = 0; j < nk && !held; j++) held = p->arm[i].key == ks[j];
     if (!held) continue;
     int ami = p->arm[i].mi;
-    if (p->arm[i].kind != PA_USER || ami < 0 || c->scopes[ami].ret != TY_STRING ||
+    if (p->arm[i].kind != PA_USER || ami < 0) return 0;
+    /* (an arm that answers no String, nil or an Integer say, has none for
+       another name to see, and boxes as the value it is) */
+    if (share_scope_answers_no_string(c, ami)) continue;
+    if (c->scopes[ami].ret != TY_STRING ||
         (!scope_ret_handle(c, ami) && !scope_ret_fresh(c, ami) && !scope_ret_frozen_lit(c, ami))) return 0;
     pub |= scope_ret_handle(c, ami);
   }
