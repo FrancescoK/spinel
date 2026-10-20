@@ -24524,6 +24524,51 @@ int scope_ret_handle(Compiler *c, int mi) {
   an_ret_settle(c, mi, 0);
   return mi > 0 && mi < c->nscopes && c->scopes[mi].ret_handle;
 }
+/* Is every value node v can answer a String literal: v itself, the last
+   statement of a list, the arms of an `if`, `unless` or `case`? A `return`
+   anywhere in the method is not followed, so it answers 0. */
+static int an_tail_str_literals(const NodeTable *nt, int v, int depth) {
+  v = an_unparen(nt, v);
+  if (v < 0 || depth > 64) return 0;
+  switch (nt_kind(nt, v)) {
+    case NK_StringNode: return 1;
+    case NK_StatementsNode: {
+      int bn = 0; const int *b = nt_arr(nt, v, "body", &bn);
+      return bn > 0 && an_tail_str_literals(nt, b[bn - 1], depth + 1);
+    }
+    case NK_ElseNode: return an_tail_str_literals(nt, nt_ref(nt, v, "statements"), depth + 1);
+    case NK_IfNode: case NK_UnlessNode: {
+      int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+      return sub >= 0 && an_tail_str_literals(nt, nt_ref(nt, v, "statements"), depth + 1) &&
+             an_tail_str_literals(nt, sub, depth + 1);
+    }
+    case NK_CaseNode: {
+      int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
+      for (int k = 0; k < wn; k++)
+        if (!an_tail_str_literals(nt, nt_ref(nt, w[k], "statements"), depth + 1)) return 0;
+      return wn > 0 && an_tail_str_literals(nt, nt_ref(nt, v, "else_clause"), depth + 1);
+    }
+    default: return 0;
+  }
+}
+static int an_subtree_has_return(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ReturnNode) return 1;
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr; i++) if (an_subtree_has_return(nt, nd->r[i].ref, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) if (an_subtree_has_return(nt, nd->a[i].ids[j], depth + 1)) return 1;
+  return 0;
+}
+/* See analyze.h. */
+int scope_ret_str_literal(Compiler *c, int mi) {
+  if (mi <= 0 || mi >= c->nscopes || c->scopes[mi].body < 0) return 0;
+  const NodeTable *nt = c->nt;
+  int body = c->scopes[mi].body;
+  return an_tail_str_literals(nt, body, 0) && !an_subtree_has_return(nt, body, 0);
+}
 int scope_ret_fresh(Compiler *c, int mi) {
   an_ret_settle(c, mi, 1);
   return mi > 0 && mi < c->nscopes && c->scopes[mi].ret_fresh;

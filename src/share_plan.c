@@ -475,9 +475,53 @@ static int share_plan_poly_base(Compiler *c, int v) {
 static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
   return share_plan_supply_kind(c, v, share_plan_producer_at(c, v, op), op, depth);
 }
+/* Does an instance of some class the program makes reach instance method
+   mi as its `name`? */
+static int share_plan_method_reached(Compiler *c, int mi, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].instantiated && comp_method_in_chain(c, k, name, NULL) == mi) return 1;
+  return 0;
+}
+/* Is v a call every target of which answers a String literal on every
+   path (scope_ret_str_literal)? A frozen literal keeps one identity: its
+   bytes are the literal's own, and a handle made over them is the
+   literal's (SP_SHARE_STRING_LITERALS), so what the call hands on is the
+   object. */
+static int share_plan_call_answers_literal(Compiler *c, int v) {
+  int u = an_unparen(c->nt, v);
+  if (u < 0 || nt_kind(c->nt, u) != NK_CallNode || nt_ref(c->nt, u, "block") >= 0) return 0;
+  int tg[CPT_MAX], n = cplan_targets(c, u, tg, CPT_MAX);
+  const char *nm = nt_str(c->nt, u, "name");
+  if (n > 0) {
+    /* (a target no value can reach -- a base class's method that every
+       class made overrides -- answers nothing) */
+    int any = 0;
+    for (int i = 0; i < n; i++) {
+      if (scope_ret_str_literal(c, tg[i])) { any = 1; continue; }
+      if (!nm || c->scopes[tg[i]].is_cmethod || share_plan_method_reached(c, tg[i], nm)) return 0;
+    }
+    return any;
+  }
+  /* a receiverless call in an instance method the plan cannot list
+     (`cop_name` in a base class that only its subclasses define): self is
+     the class or one below it, and each of those answers by the method
+     its chain has, or raises */
+  Scope *s = comp_scope_of(c, u);
+  if (!nm || nt_ref(c->nt, u, "receiver") >= 0 || nt_ref(c->nt, u, "arguments") >= 0 ||
+      !s || s->is_cmethod || s->class_id < 0) return 0;
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != s->class_id && !is_descendant(c, k, s->class_id)) continue;
+    int mi = comp_method_in_chain(c, k, nm, NULL);
+    if (mi < 0 || !c->classes[k].instantiated) continue;
+    if (!scope_ret_str_literal(c, mi)) return 0;
+    any = 1;
+  }
+  return any;
+}
 static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth) {
   switch (k) {
-  case SPK_NONE: return 0;
+  case SPK_NONE: return share_plan_call_answers_literal(c, v);
   /* a call answering its receiver hands on its receiver's supply, but the
      face renders a chain over a boxed receiver's call whose arms answer a
      String (SPK_POLY_ARMS) as that call's bytes: no handle (the change
@@ -511,7 +555,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
      box's to_s, the box's own String (strbuf_poly_to_s) */
   case SPK_LIFT: {
     int k2 = share_plan_producer_core(c, v, op, 1);
-    if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v);
+    if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v) || share_plan_call_answers_literal(c, v);
     if (k2 == SPK_SEQUENCE && *op >= 0 && share_plan_poly_base(c, *op)) return 0;
     return k2 != SPK_LIFT && share_plan_supply_kind(c, v, k2, op, depth);
   }
