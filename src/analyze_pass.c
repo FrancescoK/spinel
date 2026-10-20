@@ -2948,6 +2948,22 @@ static int share_str_value_leaves(Compiler *c, int n) {
   if (lv != small) free(lv);
   return found;
 }
+/* A boxed ivar (its writes join an Array with a nil or another kind) holds
+   its arrays the way a boxed local does: a value of another kind pushed
+   widens the arrays it is written (`@a = c ? [1, 2] : nil`). */
+static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int cls, const char *inm, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    Scope *ws = comp_scope_of(c, wi);
+    if (!wnm || !sp_streq(wnm, inm) || nt_kind(nt, wi) != NK_InstanceVariableWriteNode ||
+        !ws || (ws->class_id >= 0 ? ws->class_id : cls) != cls) continue;
+    changed |= widen_boxed_array_sources(c, nt_ref(nt, wi, "value"), elem, 0);
+  }
+  return changed;
+}
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -3678,6 +3694,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       slot = ivar_evidence_slot(c, &ivw_ix, ivar_cls_id, inm, is_push, &ivt);
       if (!slot) continue;
       vt = ivt;
+      if (*slot == TY_POLY && is_push && vt != TY_UNKNOWN && vt != TY_POLY && !concat_scalar)
+        changed |= widen_boxed_ivar_array_sources(c, &ivw_ix, ivar_cls_id, inm, (TyKind)vt);
       watch_nm = inm;
       watch_cls = ivar_cls_id;
     }
