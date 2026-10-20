@@ -190,6 +190,9 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* and #kill, which a shutdown path reaches through the handle it kept in
        an Array or an ivar rather than a traceable local (#4619) */
     else if (sp_streq(name, "kill")) pm = "sp_poly_thread_kill";
+    /* and #kill's aliases, which a Fiber does not have */
+    else if (sp_streq(name, "exit")) pm = "sp_poly_thread_exit";
+    else if (sp_streq(name, "terminate")) pm = "sp_poly_thread_terminate_m";
     else if (sp_streq(name, "blocking?")) pm = "sp_poly_fiber_blocking";
     if (pm) {
       /* Attr readers count as user definitions too: `attr_accessor :value`

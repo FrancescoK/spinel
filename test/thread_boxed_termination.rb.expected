@@ -1,0 +1,3 @@
+[:exit, Thread, true]
+[:terminate, Thread, true]
+[:raise, NilClass, false]
