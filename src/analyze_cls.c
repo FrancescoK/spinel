@@ -1959,6 +1959,18 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
 static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   cf_all(f, v);
+  /* a reader of the name answers its ivar's object: the call's value holds
+     each such object, so what is stored into it (`x.items << y`) reaches the
+     containers the readers answer, as on a known receiver. Without it the
+     store went into no container, and an Array a reader answers kept only
+     the classes its own writes gave it (#9777) */
+  if (argc == 0)
+    for (int k = 0; k < c->nclasses; k++) {
+      int dc = -1;
+      if (!comp_reader_in_chain(c, k, nm, &dc) || dc != k) continue;
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
+      cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
+    }
   if (argc > 0 && (sp_streq(nm, "resume") || sp_streq(nm, "transfer"))) cf_all(f, f->fiber_ch);
   CFByName *b = cf_byname(f, nm);
   for (int i = 0; i < b->n; i++) { cf_bind_args(f, b->mi[i], argv, argc); cf_bind_block(f, b->mi[i], blk); }
