@@ -355,14 +355,15 @@ int repr_call_returns_handle(Compiler *c, int v) {
   /* a target that answers no value (every path raises: a base class's
      NotImplementedError stub a subclass overrides) hands on no String; a
      target answering a String literal publishes none, and the pickup's new
-     handle over its bytes is the literal's own, which keeps one identity
-     (scope_ret_str_literal); the others each publish their handle, and one
-     has to */
+     handle over its bytes is the literal's own, which keeps one identity,
+     where nothing between the pickup's reset and the target's return can
+     publish another handle (share_plan_literal_pickup_clean); the others
+     each publish their handle, and one has to */
   int npub = 0;
   for (int i = 0; i < n; i++) {
     if (scope_always_raises(c, mis[i])) continue;
     if (scope_ret_handle(c, mis[i])) { npub++; continue; }
-    if (!scope_ret_str_literal(c, mis[i])) return 0;
+    if (!share_plan_literal_pickup_clean(c, v, mis[i])) return 0;
   }
   return npub > 0;
 }
