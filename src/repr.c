@@ -5,6 +5,7 @@
 #include <string.h>
 #include <limits.h>
 #include "repr.h"
+#include "value_pos.h"
 #include "analyze_internal.h"
 #include "codegen_internal.h"
 #include "share.h"
@@ -247,6 +248,25 @@ const NativeMethod *repr_super_native_keeps(Compiler *c, int n) {
   return repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) ? m : NULL;
 }
 
+/* repr.h: does method mi answer no value -- every path of its body ends in
+   a raise (a receiverless raise or fail the program does not redefine), with
+   no `return` leaving it? A base class's NotImplementedError stub, which a
+   subclass overrides: its type is the family's, so its return type says
+   nothing of it. */
+static int repr_leaf_not_raise(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
+  if (lf->kind != VPK_EXPR) return 1;
+  int n = lf->node;
+  const char *nm = nt_kind(c->nt, n) == NK_CallNode && nt_ref(c->nt, n, "receiver") < 0 ? nt_str(c->nt, n, "name") : NULL;
+  return !(nm && is_raise_alias(nm) && !bare_call_class_owned(c, n));
+}
+int scope_always_raises(Compiler *c, int mi) {
+  const Scope *s = mi > 0 && mi < c->nscopes ? &c->scopes[mi] : NULL;
+  if (!s || s->body < 0) return 0;
+  for (int r = comp_ret_first(c, mi); r >= 0; r = comp_ret_next(c, r))
+    if (nt_kind(c->nt, r) == NK_ReturnNode && comp_scope_of(c, r) == s) return 0;
+  return !for_each_value_position(c->nt, s->body, VPS_ALL, repr_leaf_not_raise, c);
+}
 int repr_call_returns_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -332,8 +352,16 @@ int repr_call_returns_handle(Compiler *c, int v) {
      answering their objects' handles, which their arms publish */
   if (n == 0 && repr_boxed_native_handle(c, v)) return 1;
   if (n <= 0) return 0;
-  for (int i = 0; i < n; i++) if (!scope_ret_handle(c, mis[i])) return 0;
-  return 1;
+  /* a target that answers no value (every path raises: a base class's
+     NotImplementedError stub a subclass overrides) hands on no String; the
+     others each publish their handle, and one has to */
+  int any = 0;
+  for (int i = 0; i < n; i++) {
+    if (scope_always_raises(c, mis[i])) continue;
+    if (!scope_ret_handle(c, mis[i])) return 0;
+    any = 1;
+  }
+  return any;
 }
 /* A boxed receiver's reader arms already box their shared fields as
    handles. A String demand can take that boxed result without a copy.

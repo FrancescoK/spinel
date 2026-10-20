@@ -153,6 +153,7 @@ typedef enum {
 int repr_handle_apart(Compiler *c, int v, Repr r);
 /* Does a call's settled return route hand back a shared String handle? */
 int repr_call_returns_handle(Compiler *c, int v);
+int scope_always_raises(Compiler *c, int mi);
 const NativeMethod *repr_super_native_keeps(Compiler *c, int n); /* super into a native keeps binding (#9258) */
 /* The native binding whose handle a boxed call's arm for class k publishes. */
 const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k);

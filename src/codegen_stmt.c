@@ -24229,8 +24229,10 @@ int strbuf_flow_unseen_arms(Compiler *c, int v) {
    Targets the plan cannot list are left to the mark. */
 int strbuf_pickup_published(Compiler *c, int v) {
   int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
+  /* (a target that answers no value publishes nothing it would need to:
+     repr_call_returns_handle) */
   for (int i = 0; i < n; i++)
-    if (!scope_ret_handle(c, tg[i])) return 0;
+    if (!scope_always_raises(c, tg[i]) && !scope_ret_handle(c, tg[i])) return 0;
   return 1;
 }
 /* --share-strings: is v a String bang on a boxed receiver whose box holds
