@@ -492,12 +492,17 @@ san-check: $(SPINEL_SAN)
 # longer: a loaded machine slows a correct program down without making it a
 # runaway (scripts/spinel-timeout.c has the reasoning).
 SPINEL_TIMEOUT_SRC ?= scripts/spinel-timeout.c
-# Parallel sub-makes can both rebuild it while another leg runs it. Link to
-# a PID-specific name, then rename: a reader always gets a complete binary.
+# Parallel sub-makes can both rebuild it while another leg runs it. Link in
+# a PID-specific directory, then rename: a reader always gets a complete
+# binary. The binary keeps its own name there, because the macOS linker
+# writes the output's name into the binary (its code signature's
+# identifier), and the gate's result cache hashes this binary: a PID in the
+# name made every build differ, so no cached result matched after a rebuild
+# or in another checkout.
 $(SPINEL_TIMEOUT): $(SPINEL_TIMEOUT_SRC)
 	@mkdir -p $(@D)
-	t=$@.tmp.$$$$; trap 'rm -f $$t' 0; \
-	$(CC) $(CFLAGS) $< $(SPINEL_TIMEOUT_LDFLAGS) -o $$t && mv $$t $@
+	d=$@.tmp.$$$$; trap 'rm -rf $$d' 0; mkdir $$d && \
+	$(CC) $(CFLAGS) $< $(SPINEL_TIMEOUT_LDFLAGS) -o $$d/$(@F) && mv $$d/$(@F) $@
 
 # ---- RBS extractor ----
 # Reads sig/**/*.rbs, emits the seed-file format spinel_analyze consumes
