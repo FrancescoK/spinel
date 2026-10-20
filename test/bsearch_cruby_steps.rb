@@ -47,3 +47,19 @@ p fl(seen { fr.bsearch { |x| $m << x; x * x >= 2 } })
 rescue TypeError => e
   puts e.message
 end
+
+# a NaN answer raises ArgumentError (NaN <=> 0 is nil), and a Rational or
+# a Bignum answer is a number, by its sign, on every path
+def nan_case(d)
+  p [d, yield]
+rescue ArgumentError => e
+  p [d, e.message]
+end
+nan_case(:ary) { [1, 2, 3].bsearch { |x| Float::NAN } }
+nan_case(:idx) { [1, 2, 3].bsearch_index { |x| Float::NAN } }
+nan_case(:range) { (1..3).bsearch { |x| Float::NAN } }
+nan_case(:frange) { (1.0..3.0).bsearch { |x| Float::NAN } }
+p [1, 2, 3, 4].bsearch { |x| Rational(3 - x, 2) }
+p [1, 2, 3, 4].bsearch_index { |x| (3 - x) * 2**70 }
+p (1..10).bsearch { |x| Rational(7 - x, 3) }
+p (1..10).bsearch { |x| (6 - x) * 2**70 }

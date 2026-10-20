@@ -3888,8 +3888,15 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         /* An Integer-valued block selects find-ANY mode (CRuby dispatches on
            the block value's kind): 0 means found, negative searches left,
            positive right. A boolean block is find-minimum, as before. */
+        /* a Rational or a Bignum answer is a number, by its sign: boxed, it
+           takes the boxed answer's check below */
+        int boxed_num = bvt == TY_RATIONAL || bvt == TY_BIGINT;
+        if (boxed_num) {
+          Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bvt, cb.p ? cb.p : "sp_box_nil()", &bx);
+          free(cb.p); cb = bx;
+        }
         if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_BOOL && bvt != TY_NIL &&
-            bvt != TY_POLY && bvt != TY_UNKNOWN) {
+            bvt != TY_POLY && bvt != TY_UNKNOWN && !boxed_num) {
           emit_indent(g_pre, g_indent + 1);
           Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bvt, cb.p ? cb.p : "sp_box_nil()", &bx);
           buf_printf(g_pre, "sp_raise_cls(\"TypeError\", sp_sprintf(SPL(\"wrong argument type %%s (must be numeric, true, false or nil)\"), "
@@ -3924,6 +3931,9 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           int tcmp = ++g_tmp;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_float _t%d = %s;\n", tcmp, cb.p ? cb.p : "0.0");
+          /* NaN <=> 0 is nil, which CRuby's rb_cmpint refuses */
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (isnan(_t%d)) sp_raise_cls(\"ArgumentError\", SPL(\"comparison of Float with 0 failed\"));\n", tcmp);
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n", tcmp, tres, k, egn, trecv, tmid);
           emit_indent(g_pre, g_indent + 1);
@@ -3934,7 +3944,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "_t%d = _t%d + 1;\n", tlo, tmid);
         }
-        else if (bvt == TY_POLY) {
+        else if (bvt == TY_POLY || boxed_num) {
           /* a boxed answer takes CRuby's BSEARCH_CHECK (sp_bsearch_answer):
              a zero is the answer, true is kept and searches left, a number
              by its sign, nil or false right, anything else a TypeError */

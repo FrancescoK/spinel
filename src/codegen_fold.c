@@ -1273,6 +1273,11 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     int tcmp = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "%s _t%d = %s;\n", fa_t == TY_FLOAT ? "sp_float" : "sp_int", tcmp, cb.p ? cb.p : "0");
+    /* NaN <=> 0 is nil, which CRuby's rb_cmpint refuses */
+    if (fa_t == TY_FLOAT) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (isnan(_t%d)) sp_raise_cls(\"ArgumentError\", SPL(\"comparison of Float with 0 failed\"));\n", tcmp);
+    }
     /* an Integer block whose answer can be nil arrives plain: the nil
        raised at its coercion (a boxed block is the combined dispatch) */
     emit_indent(g_pre, g_indent + 1);
@@ -1282,7 +1287,13 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "else %s\n", left);
   }
-  else if (repr_of(c, bb[bn - 1]).kind == RK_BOXED) {
+  else if (repr_of(c, bb[bn - 1]).kind == RK_BOXED || fa_t == TY_RATIONAL || fa_t == TY_BIGINT) {
+    /* (a Rational or a Bignum answer is a number: boxed, it takes the same
+       check) */
+    if (repr_of(c, bb[bn - 1]).kind != RK_BOXED) {
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, fa_t, cb.p ? cb.p : "sp_box_nil()", &bx);
+      free(cb.p); cb = bx;
+    }
     /* a boxed answer takes CRuby's BSEARCH_CHECK (sp_bsearch_answer): a
        zero is the answer, true is kept and searches down, a number by its
        sign, nil or false up, anything else a TypeError */

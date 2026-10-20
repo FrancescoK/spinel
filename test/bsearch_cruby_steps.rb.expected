@@ -23,3 +23,11 @@ wrong argument type Symbol (must be numeric, true, false or nil)
 wrong argument type Symbol (must be numeric, true, false or nil)
 wrong argument type String (must be numeric, true, false or nil)
 wrong argument type Symbol (must be numeric, true, false or nil)
+[:ary, "comparison of Float with 0 failed"]
+[:idx, "comparison of Float with 0 failed"]
+[:range, "comparison of Float with 0 failed"]
+[:frange, "comparison of Float with 0 failed"]
+3
+2
+7
+6

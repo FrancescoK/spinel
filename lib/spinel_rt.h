@@ -4308,14 +4308,27 @@ static SP_UNUSED double sp_key2f(int64_t k) {
 /* CRuby's BSEARCH_CHECK (range.c) on a block's answer `r`: 1 when a number
    that is zero ends the search there. Else *smaller says the search goes
    left (true, or a negative number) or right (false, nil, a positive
-   number), and *sat that the answer was true; any other answer is CRuby's
-   TypeError. */
+   number), and *sat that the answer was true; a NaN is CRuby's
+   ArgumentError (its <=> 0 is nil), and any other answer its TypeError. */
+static sp_bool sp_poly_zero_p(sp_RbVal v);
+static sp_bool sp_poly_negative_p(sp_RbVal v);
+static inline int sp_poly_is_rat_kind(sp_RbVal v);
 static SP_UNUSED int sp_bsearch_answer(sp_RbVal r, int *smaller, int *sat) {
   *sat = 0;
   if (r.tag == SP_TAG_INT) { if (r.v.i == 0) return 1; *smaller = r.v.i < 0; }
   else if (r.tag == SP_TAG_BOOL && r.v.b) { *sat = 1; *smaller = 1; }
   else if (r.tag == SP_TAG_NIL || r.tag == SP_TAG_BOOL) *smaller = 0;
-  else if (r.tag == SP_TAG_FLT) { if (r.v.f == 0.0) return 1; *smaller = r.v.f < 0.0; }
+  else if (r.tag == SP_TAG_FLT) {
+    /* NaN <=> 0 is nil, which rb_cmpint refuses */
+    if (isnan(r.v.f)) sp_raise_cls("ArgumentError", SPL("comparison of Float with 0 failed"));
+    if (r.v.f == 0.0) return 1;
+    *smaller = r.v.f < 0.0;
+  }
+  /* a Bignum or a Rational is a number as an Integer is */
+  else if (r.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(r)) {
+    if (sp_poly_zero_p(r)) return 1;
+    *smaller = sp_poly_negative_p(r);
+  }
   else sp_raise_cls("TypeError", sp_sprintf(SPL("wrong argument type %s (must be numeric, true, false or nil)"),
                                             sp_poly_class_name(r)));
   return 0;
