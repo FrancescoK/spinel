@@ -31,3 +31,15 @@ end
 Hidden.new if ARGV.size > 5
 u = pick([[Tok.new(7), Tok.new(8)], Node.new([Tok.new(5), Tok.new(2)])], 0)
 u.each_cons(2) { |t1, t2| p [t1.b, t2.b] }
+
+# ...and so is one of the same name as the arm's own call: a block that
+# may call each_cons on a value whose each_cons is private leaves the
+# Array's arm standing
+class Shut
+  private def each_cons(n) = nil
+end
+sh = pick([Shut.new, Tok.new(0)], 1)
+u.each_cons(2) do |t1, t2|
+  sh.each_cons(2) { } if t1.b > 100
+  p [t2.b, t1.b]
+end
