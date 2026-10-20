@@ -362,6 +362,11 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "===")) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
   }
+  /* (a Rational --int-overflow=promote holds boxed walks the same way) */
+  if (rt == TY_POLY && recv >= 0 && an_rat_value(c, recv) && sp_streq(name, "step")) {
+    if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
+    { *out = TY_POLY_ARRAY; return 1; }
+  }
   if (rt == TY_RATIONAL) {
     /* step walks the sequence yielding Rational/Integer values: with a block it
        returns the receiver (self), without one it materializes a poly array of

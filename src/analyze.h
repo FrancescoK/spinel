@@ -65,6 +65,9 @@ void strbuf_arg_index_free(Compiler *c);
    exactly what promote mode is asking us to avoid. Off (0) for raise/wrap, so
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
+void an_rat_boxed_mark(int id);
+int an_rat_boxed(int id);
+int an_rat_value(Compiler *c, int n);
 extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
 /* is a def's value (the Symbol it names) used? par: an_parent_map */
 int an_def_value_used(const NodeTable *nt, const int *par, int v);

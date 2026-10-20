@@ -3181,7 +3181,7 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (rt != TY_INT && rt != TY_FLOAT && rt != TY_RATIONAL) return 0;
+  if (rt != TY_INT && rt != TY_FLOAT && rt != TY_RATIONAL && !(rt == TY_POLY && an_rat_value(c, recv))) return 0;
   int args = nt_ref(nt, id, "arguments");
   int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
   /* no limit, or a nil one, is no end: an Enumerator, decided from the
@@ -3204,7 +3204,8 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
      sequence boxed, exactly as a Rational receiver does (#3006). */
   int bn_bound = 0;
   for (int sk = 0; sk < sc; sk++) if (repr_of(c, sv[sk]).big) bn_bound = 1;
-  if (rt == TY_RATIONAL || bn_bound) {
+  /* (and a Rational --int-overflow=promote holds boxed) */
+  if (rt == TY_RATIONAL || bn_bound || (rt == TY_POLY && an_rat_value(c, recv))) {
     int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp, tdd = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", trr, trr);
     buf_printf(b, " sp_RbVal _t%d = ", tcc);

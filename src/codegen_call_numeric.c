@@ -622,7 +622,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           in expression position (#4763) */
        (is_step_call(name) &&
         (repr_of(c, recv).as_ty == TY_RATIONAL || repr_of(c, recv).as_ty == TY_FLOAT ||
-         repr_of(c, recv).big)))) {
+         repr_of(c, recv).big || an_rat_value(c, recv))))) {
     /* the receiver is read twice, by the loop and as the answer: one that
        acts (`next_n.times { }`) is bound once */
     int bound = iter_recv_bind_once(c, recv);

@@ -11314,6 +11314,56 @@ void an_ary_viewed_mark(Compiler *c, int id) {
 }
 int an_ary_viewed(Compiler *c, int id) { return id >= 0 && id < c->ary_viewed_cap && c->ary_viewed[id]; }
 
+/* The nodes --int-overflow=promote holds boxed that would be a Rational
+   (infer_type), which codegen may still render as an sp_Rational: emit_expr
+   boxes those (sp_promote_rat_box). */
+static unsigned char *g_rat_boxed;
+static int g_rat_boxed_cap;
+void an_rat_boxed_mark(int id) {
+  if (id >= g_rat_boxed_cap) {
+    int cap = g_rat_boxed_cap ? g_rat_boxed_cap : 1024;
+    while (cap <= id) cap *= 2;
+    unsigned char *p = realloc(g_rat_boxed, (size_t)cap);
+    if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(p + g_rat_boxed_cap, 0, (size_t)(cap - g_rat_boxed_cap));
+    g_rat_boxed = p; g_rat_boxed_cap = cap;
+  }
+  g_rat_boxed[id] = 1;
+}
+int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed[id]; }
+/* Is node n a Rational --int-overflow=promote holds boxed: one infer_type
+   boxed (an_rat_boxed), or the read of a local or an instance variable
+   whose every write is one. A parameter, or a slot written any other way,
+   is not known to be. */
+int an_rat_value(Compiler *c, int n) {
+  if (!g_promote_mode || n < 0) return 0;
+  n = an_unparen(c->nt, n);
+  if (an_rat_boxed(n)) return 1;
+  NodeKind k = nt_kind(c->nt, n);
+  if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
+  HolderRef h;
+  if (!holder_of_node(c, n, &h) || !h.name) return 0;
+  int key = -1;
+  if (k == NK_LocalVariableReadNode) {
+    if (!h.lv || h.lv->is_param) return 0;
+    for (int si = 0; si < c->nscopes && key < 0; si++)
+      if (h.lv >= c->scopes[si].locals && h.lv < c->scopes[si].locals + c->scopes[si].nlocals) key = si;
+  }
+  else key = h.cid;
+  if (key < 0) return 0;
+  int any = 0;
+  for (int e = comp_vsite_first(c, VS_WRITE, k, h.name, key); e >= 0; e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_node(c, e);
+    const char *wn = nt_str(c->nt, w, "name");
+    if (!wn || !sp_streq(wn, h.name)) continue;
+    NodeKind wk = nt_kind(c->nt, w);
+    if (wk != NK_LocalVariableWriteNode && wk != NK_InstanceVariableWriteNode) return 0;
+    if (!an_rat_boxed(w) && !an_rat_boxed(an_unparen(c->nt, nt_ref(c->nt, w, "value")))) return 0;
+    any = 1;
+  }
+  return any;
+}
+
 TyKind infer_type(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
   if (g_io_skip_reopen && id != g_io_skip_node) {
@@ -11365,6 +11415,10 @@ TyKind infer_type(Compiler *c, int id) {
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
+  /* --int-overflow=promote: a Rational is held boxed, where one whose terms
+     leave sp_int goes on as a big Rational (sp_poly_rat_op), as an Integer
+     goes on as a Bignum */
+  if (g_promote_mode && t == TY_RATIONAL) { t = TY_POLY; an_rat_boxed_mark(id); }
   /* an Array subclass instance read where an Array is wanted -- a splat, a
      destructuring, an element write that is no call (marked ary_operand) --
      is its Array (#7449) */

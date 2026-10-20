@@ -216,7 +216,11 @@ static sp_Rational sp_str_to_r_strict_wide(const char *s) {
   if (t != buf) free(t);
   return r;
 }
-sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
+sp_Rational sp_str_to_r_strict(const char *s) { return sp_str_to_r_strict_ex(s, NULL); }
+/* ...and with `ovf`, a literal whose value overflows sets *ovf and answers
+   0/1 rather than being valued here: --int-overflow=promote values it as
+   a big Rational (sp_str_to_r_strict_v) */
+sp_Rational sp_str_to_r_strict_ex(const char *s, int *ovf_out) {SP_GC_ROOT_STR(s);
   const char *p = s;
   if (!p) sp_raise_cls("TypeError", "can't convert nil into Rational");
   while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
@@ -267,6 +271,7 @@ sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
   }
   while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
   if (*p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Rational(): \"%s\"", s));
+  if (ovf && ovf_out) { *ovf_out = 1; return sp_rational_new(0, 1); }
   if (ovf) return sp_str_to_r_strict_wide(s);
   return sp_rational_new(sign * num, den);
 }
@@ -505,6 +510,31 @@ sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b) {
 sp_Rational sp_rational_div(sp_Rational a, sp_Rational b) {
   if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
   return sp_rational_new_wide(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(a.den, b.num));
+}
+/* The + - * / of two small Rationals (op 0..3) into *out, answering 0
+   rather than raising where the reduced result does not fit sp_int: under
+   --int-overflow=promote the boxed arithmetic then goes on as a big
+   Rational. A zero divisor still raises. */
+int sp_rational_op_ck(int op, sp_Rational a, sp_Rational b, sp_Rational *out) {
+  sp_rat_wide n, d;
+  switch (op) {
+  case 0: n = SP_RAT_ADD(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(b.num, a.den)); d = SP_RAT_MUL(a.den, b.den); break;
+  case 1: n = SP_RAT_SUB(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(b.num, a.den)); d = SP_RAT_MUL(a.den, b.den); break;
+  case 2: n = SP_RAT_MUL(a.num, b.num); d = SP_RAT_MUL(a.den, b.den); break;
+  default:
+    if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+    n = SP_RAT_MUL(a.num, b.den); d = SP_RAT_MUL(a.den, b.num); break;
+  }
+  sp_rat_uwide x = n < 0 ? (sp_rat_uwide)0 - (sp_rat_uwide)n : (sp_rat_uwide)n;
+  sp_rat_uwide y = d < 0 ? (sp_rat_uwide)0 - (sp_rat_uwide)d : (sp_rat_uwide)d;
+  sp_rat_uwide g = x, h = y;
+  while (h) { sp_rat_uwide t = h; h = g % h; g = t; }
+  x /= g; y /= g;
+  int neg = (n < 0) != (d < 0);
+  if (y > (sp_rat_uwide)INTPTR_MAX || x > (sp_rat_uwide)INTPTR_MAX + (sp_rat_uwide)neg) return 0;
+  out->num = (sp_int)(neg ? (uintptr_t)0 - (uintptr_t)x : (uintptr_t)x);
+  out->den = (sp_int)y;
+  return 1;
 }
 sp_Rational sp_rational_neg(sp_Rational a) { if (a.num == INTPTR_MIN) sp_raise_cls("RangeError", "Rational out of sp_int range"); a.num = -a.num; return a; }
 sp_Rational sp_rational_abs(sp_Rational a) { if (a.num == INTPTR_MIN) sp_raise_cls("RangeError", "Rational out of sp_int range"); if (a.num < 0) a.num = -a.num; return a; }

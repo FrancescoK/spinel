@@ -17915,7 +17915,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
     if (!has_user) {
-      if (sp_streq(name, "to_r")) {
+      /* (--int-overflow=promote holds the Rational boxed, a big one too:
+         the box is the answer, unopened) */
+      if (sp_streq(name, "to_r") && g_promote_mode) {
+        buf_puts(b, "sp_poly_to_r_m("); emit_expr(c, recv, b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "rationalize") && g_promote_mode) {
+        buf_puts(b, "sp_poly_rationalize_m("); emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", argc);
+        if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "to_r")) {
         buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
         emit_expr(c, recv, b);
         buf_puts(b, ").v.p)");

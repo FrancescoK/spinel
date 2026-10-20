@@ -506,6 +506,13 @@ static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
   if (blk >= 0) {
     if (nt_kind(c->nt, blk) != NK_BlockNode) return 1;
     et = infer_sum_block_ty(c, blk);
+    /* a block answering a Rational --int-overflow=promote holds boxed is a
+       number of the tower, no object's coerce */
+    if (et == TY_POLY) {
+      int body = nt_ref(c->nt, blk, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &bn) : NULL;
+      if (bn > 0 && an_rat_value(c, bb[bn - 1])) et = TY_RATIONAL;
+    }
   }
   else et = rt == TY_RANGE ? TY_INT : ty_array_elem(rt);
   return et == TY_UNKNOWN || et == TY_POLY || ty_is_object(et);

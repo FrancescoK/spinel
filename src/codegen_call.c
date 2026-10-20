@@ -19081,6 +19081,8 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   }
   else {
     TyKind rt = comp_ntype(c, recv);
+    /* (a Rational --int-overflow=promote holds boxed is a Rational) */
+    if (rt == TY_POLY && an_rat_value(c, recv)) rt = TY_RATIONAL;
     const char *bcn = rt == TY_STRING || rt == TY_STRBUF ? "String"
                     : rt == TY_INT ? "Integer" : rt == TY_FLOAT ? "Float"
                     : rt == TY_SYMBOL ? "Symbol"

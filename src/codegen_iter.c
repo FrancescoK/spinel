@@ -8016,7 +8016,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      a Rational operand rational), so the values stay exact (#2566). */
   /* a Bignum receiver walks the same boxed sequence: it does not fit the
      sp_int loop below, and it had no arm at all (#4779) */
-  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big)) {
+  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big || (rt == TY_POLY && an_rat_value(c, recv)))) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;

@@ -872,6 +872,15 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
 const TyTraits ty_traits[TY_TRAITS_N] = {
 #include "ty_traits.inc"
 };
+/* --int-overflow=promote holds a Rational boxed (infer_type), and a value
+   rendered as one may be the box already, a big Rational's: boxed through
+   sp_promote_rat_box, which boxes an sp_Rational and passes a box on. The
+   rest of the row is the table's. */
+int g_traits_promote = 0;
+const TyTraits ty_traits_promote_rational = {
+  "sp_Rational", "(sp_Rational){0}", "(sp_Rational){0}", NULL, "sp_promote_rat_box", NULL,
+  "sp_promote_rat_box($e)", NULL, NULL, "(*(sp_Rational *)($e).v.p)", "(*(sp_Rational *)($e).v.p)",
+  NULL, NULL, NULL, NULL, 0, 0, 1, 1, 3, 10 };
 
 /* A builtin value's type, which lays out no instance variables: a String,
    a number, true, false, nil, a Symbol, a Range (of any endpoints), a Random,

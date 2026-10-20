@@ -433,7 +433,10 @@ typedef struct {
 #define TY_TRAITS_N ((int)TY_STRH_ARRAY + 1)
 extern const TyTraits ty_traits[TY_TRAITS_N];
 /* the row of builtin kind t, or NULL (a user object's kind) */
+extern int g_traits_promote;   /* --int-overflow=promote (main.c) */
+extern const TyTraits ty_traits_promote_rational;
 static inline const TyTraits *ty_traits_of(TyKind t) {
+  if (t == TY_RATIONAL && g_traits_promote) return &ty_traits_promote_rational;
   return (int)t >= 0 && (int)t < TY_TRAITS_N ? &ty_traits[t] : (const TyTraits *)0;
 }
 

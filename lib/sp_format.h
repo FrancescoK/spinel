@@ -43,6 +43,7 @@ sp_Rational sp_rational_new(sp_int n, sp_int d);
 sp_Rational sp_rational_new_i64(int64_t n, int64_t d);   /* reduced before it is narrowed to sp_int: Time#to_r on a 32-bit sp_int */
 sp_Rational sp_str_to_r(const char *s);
 sp_Rational sp_str_to_r_strict(const char *s);   /* Kernel#Rational(String) */
+sp_Rational sp_str_to_r_strict_ex(const char *s, int *ovf);
 /* Kernel's `exception: false`: while set, an unparseable string sets
    sp_convert_failed instead of raising (defined in lib/sp_cold.c). */
 extern sp_bool sp_convert_soft;
@@ -54,6 +55,7 @@ sp_Rational sp_rational_div(sp_Rational a, sp_Rational b);
 sp_Rational sp_rational_neg(sp_Rational a);
 sp_Rational sp_rational_abs(sp_Rational a);
 sp_Rational sp_rational_pow(sp_Rational a, sp_int e);
+int sp_rational_op_ck(int op, sp_Rational a, sp_Rational b, sp_Rational *out);
 sp_int sp_rational_round_i(sp_Rational a);              /* Rational#round (no digits) */
 sp_int sp_rational_round_i_even(sp_Rational a);         /* Rational#round(half: :even) */
 sp_int sp_rational_round_i_down(sp_Rational a);         /* Rational#round(half: :down) */

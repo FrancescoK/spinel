@@ -1952,6 +1952,39 @@ void emit_slot_expr(Compiler *c, int id, Buf *b) {
    the native object's, cast where the receiver is emitted */
 int g_nsub_cast_node = -1;
 const char *g_nsub_cast_type = NULL;
+static int g_rat_box_node = -1;
+/* --int-overflow=promote: the conversions whose Rational is exact only as a
+   big one when its terms leave sp_int, rendered boxed (lib/spinel_rt.h):
+   Float#to_r and Kernel#Rational(String). 0 for any other node. */
+static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* (a `&.` call's emitter boxes the answer itself) */
+  if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0 || nt_safe_nav(nt, id)) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (!nm) return 0;
+  if (sp_streq(nm, "to_r") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
+      comp_method_in_chain(c, comp_class_index(c, "Float"), "to_r", NULL) < 0) {
+    /* boxed, so a Float that may be nil answers nil's (0/1) */
+    buf_puts(b, "sp_poly_to_r_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(nm, "rationalize") && argc <= 1 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
+      comp_method_in_chain(c, comp_class_index(c, "Float"), "rationalize", NULL) < 0) {
+    buf_puts(b, "sp_poly_rationalize_m("); emit_boxed(c, recv, b);
+    buf_printf(b, ", %d, ", argc);
+    if (argc) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
+    buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(nm, "Rational") && argc == 1 && recv < 0 && comp_method_index(c, "Rational") < 0 &&
+      (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_STRBUF)) {
+    buf_puts(b, "sp_str_to_r_strict_v("); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
   /* an argument of a call re-emitted as its builtin sees the reopenings */
@@ -1967,6 +2000,23 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     emit_expr(c, id, b);
     buf_puts(b, "))");
     g_nsub_cast_node = id;
+    return;
+  }
+  /* --int-overflow=promote holds a Rational boxed (infer_type); a builtin
+     that renders one as an sp_Rational is boxed here, a boxed one passed on.
+     A node an emitter has bound to a temp of its own (view_bind) is that
+     temp, whatever its C type. */
+  int rat_bound = 0;
+  for (int i = g_n_argov - 1; i >= 0 && !rat_bound; i--) if (g_argov_node[i] == id) rat_bound = 1;
+  if (g_promote_mode && id != g_rat_box_node && an_rat_boxed(id) && !rat_bound && emit_promote_rat_exact(c, id, b))
+    return;
+  if (g_promote_mode && id != g_rat_box_node && an_rat_boxed(id) && !rat_bound) {
+    int save = g_rat_box_node;
+    g_rat_box_node = id;
+    buf_puts(b, "sp_promote_rat_box(");
+    emit_expr(c, id, b);
+    buf_puts(b, ")");
+    g_rat_box_node = save;
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);

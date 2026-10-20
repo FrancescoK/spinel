@@ -841,6 +841,7 @@ int main(int argc, char **argv) {
   /* Let the analyzer widen accumulating int locals to bigint more freely in
      promote mode (block-iteration loops, not just `while`). See analyze.h. */
   g_promote_mode = sp_streq(int_overflow, "promote");
+  g_traits_promote = g_promote_mode;
   if (exc_abort && !target_wasi) {
     fprintf(stderr, "spinel: --exceptions=abort is for --target=wasm32-wasi\n");
     return 1;

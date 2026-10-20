@@ -1264,6 +1264,7 @@ int sp_bigint_sign(sp_Bigint *b);
 sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_new_int(int64_t v);
 int64_t sp_bigint_to_int(sp_Bigint *b);
+intptr_t sp_bigint_bit_length(sp_Bigint *b);
 sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_add(sp_Bigint *a, sp_Bigint *b);

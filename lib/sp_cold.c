@@ -5638,6 +5638,12 @@ sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) {
   sp_Bigint *g = sp_bigint_gcd(num, den);
   SP_GC_ROOT(g);
   if (sp_bigint_sign(g) != 0) { num = sp_bigint_div(num, g); den = sp_bigint_div(den, g); }
+  /* a value whose reduced terms fit sp_int is the small Rational, which
+     compares equal to the same value made small (`(a * b) / (a * b)` is
+     (1/1) the way Rational(1, 1) is) */
+  if (sp_bigint_bit_length(num) <= (intptr_t)(sizeof(sp_int) * 8 - 1) &&
+      sp_bigint_bit_length(den) <= (intptr_t)(sizeof(sp_int) * 8 - 1))
+    return sp_box_rational(sp_rational_new((sp_int)sp_bigint_to_int(num), (sp_int)sp_bigint_to_int(den)));
   sp_BigRational *p = (sp_BigRational *)sp_gc_alloc(sizeof(sp_BigRational), NULL, sp_brat_scan);
   p->num = num; p->den = den;
   return sp_box_obj(p, SP_BUILTIN_BIG_RATIONAL);
