@@ -1,0 +1,26 @@
+Han River length: 36
+Han River size: 36
+Han River bytesize: 36
+Han River empty?: false
+Han River upcase: "HAN RIVER > JAYANG STATION > SEONGSU"
+Han River chars: ["H", "a", "n"]
+Han River [0]: "H"
+Han River include?: true
+Han River start_with?: true
+Han River index: 12
+Han River split: ["Han River", "Jayang station", "Seongsu"]
+Han River to_i: 0
+Han River to_f: 0.0
+ICN length: NoMethodError undefined method 'length' for nil
+ICN size: NoMethodError undefined method 'size' for nil
+ICN bytesize: NoMethodError undefined method 'bytesize' for nil
+ICN empty?: NoMethodError undefined method 'empty?' for nil
+ICN upcase: NoMethodError undefined method 'upcase' for nil
+ICN chars: NoMethodError undefined method 'chars' for nil
+ICN [0]: NoMethodError undefined method '[]' for nil
+ICN include?: NoMethodError undefined method 'include?' for nil
+ICN start_with?: NoMethodError undefined method 'start_with?' for nil
+ICN index: NoMethodError undefined method 'index' for nil
+ICN split: NoMethodError undefined method 'split' for nil
+ICN to_i: 0
+ICN to_f: 0.0
