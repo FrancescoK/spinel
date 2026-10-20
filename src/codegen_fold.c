@@ -1488,9 +1488,14 @@ static int bp_slot_oint(Compiler *c, int block, const char *orig, const char *k)
    stays nil. */
 void bp_elem_read(Compiler *c, int block, const char *orig, const char *k, int ta, int ti, Buf *b) {
   int num = k && (sp_streq(k, "Int") || sp_streq(k, "Float"));
-  Scope *sc = num && orig ? comp_scope_of(c, block) : NULL;
+  int str = k && sp_streq(k, "Str");
+  Scope *sc = (num || str) && orig ? comp_scope_of(c, block) : NULL;
   LocalVar *lv = sc ? scope_local(sc, orig) : NULL;
-  if (lv && lv->type == TY_POLY)
+  /* a parameter the scope holds as the shared handle: each element is a
+     fresh String, which the handle wraps, as each and each_char bind it */
+  if (str && elem_param_is_handle(lv, TY_STRING))
+    buf_printf(b, "sp_String_new_shared(sp_StrArray_get(_t%d, _t%d))", ta, ti);
+  else if (!str && lv && lv->type == TY_POLY)
     buf_printf(b, "%s(sp_%sArray_oget(_t%d, _t%d))", oint_box(sp_streq(k, "Int") ? TY_INT : TY_FLOAT), k, ta, ti);
   else buf_printf(b, "sp_%sArray_%s(_t%d, _t%d)", k, bp_slot_oint(c, block, orig, k) ? "oget" : "get", ta, ti);
 }
@@ -2127,7 +2132,16 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         for (int pj = 0; pj < nps; pj++) {
           const char *pn = block_param_name(c, block, pj);
           LocalVar *plv = (pn && bsc) ? scope_local(bsc, pn) : NULL;
-          if (plv) buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d); ", rename_local(pn), te, pj);
+          if (!plv) continue;
+          /* a typed parameter takes its part unboxed, as the one-parameter
+             binding does (emit_sum_elem_bind): a String handle's slot took
+             the sp_RbVal and the C did not build */
+          char src[64];
+          snprintf(src, sizeof src, "sp_poly_massign_get(_t%d, %d)", te, pj);
+          buf_printf(b, "lv_%s = ", rename_local(pn));
+          if (plv->type != TY_POLY && plv->type != TY_UNKNOWN) emit_unbox_text(c, plv->type, src, b);
+          else buf_puts(b, src);
+          buf_puts(b, "; ");
         }
       }
       else if (p0) emit_sum_elem_bind(c, block, p0, k, ta, ti, b);
