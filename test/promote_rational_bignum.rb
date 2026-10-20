@@ -25,3 +25,11 @@ r = Rational(1, 3)
 s = r
 40.times { s *= r }
 p s.denominator == 3**41
+big = 2**64
+p Rational(1, 1) ** big, Rational(-1, 1) ** (big + 1), Rational(0, 1) ** big
+begin
+  p Rational(1, 2) ** big
+rescue ArgumentError => e
+  p e.message
+end
+p Rational(0) ** Rational(0), Rational(3, 4) ** Rational(2), Rational(4) ** Rational(1, 2)

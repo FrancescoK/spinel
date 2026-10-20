@@ -2801,10 +2801,31 @@ static void sp_poly_to_brat(sp_RbVal v, sp_Bigint **num, sp_Bigint **den) {
    same expression: a big Rational read back as (0/0), and the arithmetic
    segfaulted under SPINEL_GC_STRESS=1. Each operand is rooted as it is
    read and each product before the next allocation. */
-static sp_RbVal sp_brat_add_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *l = sp_bigint_mul(an,bd); SP_GC_ROOT(l); sp_Bigint *r = sp_bigint_mul(bn,ad); SP_GC_ROOT(r); sp_Bigint *num = sp_bigint_add(l,r); SP_GC_ROOT(num); return sp_box_brat(num, sp_bigint_mul(ad,bd)); }
-static sp_RbVal sp_brat_sub_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *l = sp_bigint_mul(an,bd); SP_GC_ROOT(l); sp_Bigint *r = sp_bigint_mul(bn,ad); SP_GC_ROOT(r); sp_Bigint *num = sp_bigint_sub(l,r); SP_GC_ROOT(num); return sp_box_brat(num, sp_bigint_mul(ad,bd)); }
-static sp_RbVal sp_brat_mul_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *num = sp_bigint_mul(an,bn); SP_GC_ROOT(num); return sp_box_brat(num, sp_bigint_mul(ad,bd)); }
-static sp_RbVal sp_brat_div_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); if (sp_bigint_sign(bn) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0"); sp_Bigint *num = sp_bigint_mul(an,bd); SP_GC_ROOT(num); return sp_box_brat(num, sp_bigint_mul(ad,bn)); }
+/* A big Rational's box: under --int-overflow=promote one whose reduced
+   terms fit sp_int is the small Rational again (sp_box_brat_norm); in the
+   other modes a Bignum's Rational stays big, as it always has */
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+# define SP_BRAT_BOX sp_box_brat_norm
+#else
+# define SP_BRAT_BOX sp_box_brat
+#endif
+static sp_RbVal sp_brat_add_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *l = sp_bigint_mul(an,bd); SP_GC_ROOT(l); sp_Bigint *r = sp_bigint_mul(bn,ad); SP_GC_ROOT(r); sp_Bigint *num = sp_bigint_add(l,r); SP_GC_ROOT(num); return SP_BRAT_BOX(num, sp_bigint_mul(ad,bd)); }
+static sp_RbVal sp_brat_sub_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *l = sp_bigint_mul(an,bd); SP_GC_ROOT(l); sp_Bigint *r = sp_bigint_mul(bn,ad); SP_GC_ROOT(r); sp_Bigint *num = sp_bigint_sub(l,r); SP_GC_ROOT(num); return SP_BRAT_BOX(num, sp_bigint_mul(ad,bd)); }
+static sp_RbVal sp_brat_mul_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); sp_Bigint *num = sp_bigint_mul(an,bn); SP_GC_ROOT(num); return SP_BRAT_BOX(num, sp_bigint_mul(ad,bd)); }
+static sp_RbVal sp_brat_div_poly(sp_RbVal a, sp_RbVal b) { sp_Bigint *an,*ad,*bn,*bd; sp_poly_to_brat(a,&an,&ad); SP_GC_ROOT(an); SP_GC_ROOT(ad); sp_poly_to_brat(b,&bn,&bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd); if (sp_bigint_sign(bn) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0"); sp_Bigint *num = sp_bigint_mul(an,bd); SP_GC_ROOT(num); return SP_BRAT_BOX(num, sp_bigint_mul(ad,bn)); }
+/* a Rational (small or big) to an Integer power, its parts raised as
+   Bignums; sp_box_brat brings a result that fits back to a small Rational */
+static sp_RbVal sp_poly_brat_pow(sp_RbVal a, sp_int e) {
+  sp_Bigint *n, *d;
+  sp_poly_to_brat(a, &n, &d); SP_GC_ROOT(n); SP_GC_ROOT(d);
+  if (e < 0) {
+    if (sp_bigint_sign(n) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+    sp_Bigint *t = n; n = d; d = t;
+    e = -e;
+  }
+  sp_Bigint *pn = sp_bigint_pow(n, (int64_t)e); SP_GC_ROOT(pn);
+  return SP_BRAT_BOX(pn, sp_bigint_pow(d, (int64_t)e));
+}
 /* A small Rational's + - * / on boxed operands. Under --int-overflow=promote
    a result whose reduced terms leave sp_int goes on as a big Rational, as an
    Integer's goes on as a Bignum; otherwise it raises RangeError. */
@@ -2823,19 +2844,6 @@ static sp_RbVal sp_poly_rat_op(int op, sp_RbVal a, sp_RbVal b) {
 /* a value the compiler holds boxed that a builtin rendered as an sp_Rational */
 static inline sp_RbVal sp_rbval_ident(sp_RbVal v) { return v; }
 # define sp_promote_rat_box(x) _Generic((x), sp_Rational: sp_box_rational, default: sp_rbval_ident)(x)
-/* a Rational (small or big) to an Integer power, its parts raised as
-   Bignums; sp_box_brat brings a result that fits back to a small Rational */
-static sp_RbVal sp_poly_brat_pow(sp_RbVal a, sp_int e) {
-  sp_Bigint *n, *d;
-  sp_poly_to_brat(a, &n, &d); SP_GC_ROOT(n); SP_GC_ROOT(d);
-  if (e < 0) {
-    if (sp_bigint_sign(n) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    sp_Bigint *t = n; n = d; d = t;
-    e = -e;
-  }
-  sp_Bigint *pn = sp_bigint_pow(n, (int64_t)e); SP_GC_ROOT(pn);
-  return sp_box_brat(pn, sp_bigint_pow(d, (int64_t)e));
-}
 # define SP_POLY_RAT_POW(a, ra, e) sp_poly_brat_pow(a, e)
 sp_Bigint *sp_bigint_new_str(const char *s, int base);
 /* --int-overflow=promote's conversions to a Rational, exact where the
@@ -2851,7 +2859,7 @@ static SP_UNUSED sp_RbVal sp_float_to_r_v(double f) {
   sp_Bigint *d = sp_bigint_new_int(1); SP_GC_ROOT(d);
   if (e >= 0) n = sp_bigint_shl(n, e);
   else d = sp_bigint_shl(d, -e);
-  return sp_box_brat(n, d);
+  return SP_BRAT_BOX(n, d);
 }
 /* Kernel#Rational(String): the strict reader's value, or, where its digits,
    scale or exponent leave sp_int, the same text read into Bignums */
@@ -2886,7 +2894,7 @@ static SP_UNUSED sp_RbVal sp_str_to_r_strict_v(const char *s) {
   if (scale > 0) bn = sp_bigint_mul(bn, sp_bigint_pow(ten, scale));
   else if (scale < 0) bd = sp_bigint_mul(bd, sp_bigint_pow(ten, -scale));
   if (neg) bn = sp_bigint_sub(sp_bigint_new_int(0), bn);
-  return sp_box_brat(bn, bd);
+  return SP_BRAT_BOX(bn, bd);
 }
 #else
 # define SP_POLY_RAT_OP(op, k, a, b) sp_box_rational(sp_rational_##op(sp_poly_as_rational(a), sp_poly_as_rational(b)))
@@ -5875,7 +5883,7 @@ static sp_RbVal sp_poly_round_n(sp_RbVal v, sp_int n) {
     t.num = n > 0 ? sp_bigint_mul(br->num, scale) : br->num; SP_GC_ROOT(t.num);
     t.den = n > 0 ? br->den : sp_bigint_mul(br->den, scale); SP_GC_ROOT(t.den);
     sp_Bigint *q = sp_brat_round_b(&t); SP_GC_ROOT(q);
-    if (n > 0) return sp_box_brat(q, scale);
+    if (n > 0) return SP_BRAT_BOX(q, scale);
     return sp_box_bigint(sp_bigint_mul(q, scale));
   }
   sp_raise_poly_nomethod("round", v);
@@ -7134,14 +7142,29 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_rational(a)) {
     sp_Rational ra = sp_poly_as_rational(a);
     if (b.tag == SP_TAG_INT) return SP_POLY_RAT_POW(a, ra, b.v.i);
+    /* a Bignum exponent: 1, -1 and 0 stay exact, as in CRuby, and any other
+       base is CRuby's "exponent is too large" */
+    if (b.tag == SP_TAG_BIGINT) {
+      sp_Bigint *e = (sp_Bigint *)b.v.p;
+      if (ra.num == 1 && ra.den == 1) return a;
+      if (ra.num == -1 && ra.den == 1)
+        return sp_box_rational(sp_rational_new(sp_bigint_even_p(e) ? 1 : -1, 1));
+      if (ra.num == 0) {
+        if (sp_bigint_sign(e) < 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+        return a;
+      }
+      sp_raise_cls("ArgumentError", "exponent is too large");
+    }
     if (sp_poly_is_rational(b)) {
       sp_Rational rb = sp_poly_as_rational(b);
       if (rb.den == 1) return SP_POLY_RAT_POW(a, ra, rb.num);
     }
   }
-#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+  /* a big Rational (a Bignum's, in any mode) to an Integer power, or to a
+     Rational one with denominator 1, is exact */
   if (sp_poly_is_brat(a) && a.v.p && b.tag == SP_TAG_INT) return sp_poly_brat_pow(a, b.v.i);
-#endif
+  if (sp_poly_is_brat(a) && a.v.p && sp_poly_is_rational(b) && sp_poly_as_rational(b).den == 1)
+    return sp_poly_brat_pow(a, sp_poly_as_rational(b).num);
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_COMPLEX) {
     sp_Complex ca = sp_poly_as_complex(a);
     if (b.tag == SP_TAG_INT) return sp_box_complex(sp_complex_pow(ca, b.v.i));
@@ -14276,7 +14299,7 @@ static sp_RbVal sp_rat_simplest_between_v(sp_RbVal a, sp_RbVal b) {
   sp_RbVal p = sp_poly_add(sp_poly_mul(c, p1), p0); SP_GC_ROOT_RBVAL(p);
   sp_RbVal q = sp_poly_add(sp_poly_mul(c, q1), q0); SP_GC_ROOT_RBVAL(q);
   sp_Bigint *bp = sp_poly_as_bigint(p); SP_GC_ROOT(bp);
-  return sp_box_brat(bp, sp_poly_as_bigint(q));
+  return SP_BRAT_BOX(bp, sp_poly_as_bigint(q));
 }
 /* Float#rationalize([eps]), as CRuby's float_rationalize: the simplest
    Rational within |eps| of the Float (a and b the Float's sum and
@@ -14302,8 +14325,8 @@ static sp_RbVal sp_float_rationalize_v(double d, int argc, sp_RbVal eps) {
     else {
       sp_Bigint *f2 = sp_bigint_new_int((int64_t)m * 2); SP_GC_ROOT(f2);
       sp_Bigint *den = sp_bigint_shl(sp_bigint_new_int(1), 1 - e); SP_GC_ROOT(den);
-      sp_RbVal a = sp_box_brat(sp_bigint_sub(f2, sp_bigint_new_int(1)), den); SP_GC_ROOT_RBVAL(a);
-      sp_RbVal b = sp_box_brat(sp_bigint_add(f2, sp_bigint_new_int(1)), den); SP_GC_ROOT_RBVAL(b);
+      sp_RbVal a = SP_BRAT_BOX(sp_bigint_sub(f2, sp_bigint_new_int(1)), den); SP_GC_ROOT_RBVAL(a);
+      sp_RbVal b = SP_BRAT_BOX(sp_bigint_add(f2, sp_bigint_new_int(1)), den); SP_GC_ROOT_RBVAL(b);
       r = sp_rat_simplest_between_v(a, b);
     }
   }

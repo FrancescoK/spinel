@@ -1275,6 +1275,7 @@ const char *sp_bigint_to_s(sp_Bigint *b);
 double sp_bigint_to_double(sp_Bigint *b);
 void sp_brat_scan(void *p);
 sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den);
+sp_RbVal sp_box_brat_norm(sp_Bigint *num, sp_Bigint *den);   /* promote: small when it fits */
 sp_RbVal sp_brat_from_bigint(sp_Bigint *n);
 const char *sp_brat_to_s(sp_BigRational *r);
 const char *sp_brat_inspect(sp_BigRational *r);

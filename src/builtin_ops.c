@@ -702,7 +702,9 @@ static const BuiltinOp bop_rows[] = {
   /* ** computes in floats except against an Integer (CRuby; a negative
      base with a fractional exponent would be Complex, out of the value
      model -- it yields NaN here) */
-  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
+  /* a Rational exponent with denominator 1 is the exact power, any other a
+     Float (CRuby's rational ** rational): which, only the run time knows */
+  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE, "sp_poly_pow(sp_box_rational($r), sp_box_rational($e0))", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_pow($r, (sp_int)($e0))", BOP_K(TY_INT) },
   { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "**", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
