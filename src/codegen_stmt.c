@@ -15723,6 +15723,22 @@ static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *na
   emit_node_or_tmp(c, recv, recv_tmp, b);
   buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
 }
+/* Does a receiver typed as class `cid` store through a writer a descendant
+   answers differently? Typed so, it can hold an instance of the descendant
+   (`self` in an inherited method), and the single setter dispatches on the
+   instance's class then. A descendant's own `def x=` does; so does its
+   attr_writer where the typed class's writer is a method. */
+static int masgn_writer_overridden(Compiler *c, int cid, const char *nm) {
+  if (c->classes[cid].is_native_class || c->classes[cid].c_struct) return 0;
+  if (cplan_overridden(c, cid, nm, 0)) return 1;
+  char base[256];
+  if (!setter_base_name(nm, base, sizeof base) || comp_method_in_chain(c, cid, nm, NULL) < 0) return 0;
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++)
+    if (ds[i] != cid && comp_is_writer(&c->classes[ds[i]], base)) return 1;
+  return 0;
+}
 static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const char *val, TyKind vt,
                        int recv_tmp, int key_tmp, int indent, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -15870,18 +15886,26 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     size_t snl = nm ? strlen(nm) : 0;
     if (!name_is_plain_setter(nm) || crecv < 0) { unsupported(c, id, "multiple assignment call target"); return 1; }
     TyKind crt = comp_ntype(c, crecv);
-    /* a boxed receiver dispatches on its class, as the single setter does */
-    if (crt == TY_POLY) {
+    /* a boxed receiver dispatches on its class, as the single setter does;
+       so does one typed as a class a descendant overrides the writer of */
+    int vdisp = ty_is_object(crt) && masgn_writer_overridden(c, ty_object_class(crt), nm);
+    if (crt == TY_POLY || vdisp) {
       char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
       TyKind at = val && vt != TY_NIL && vt != TY_VOID && vt != TY_UNKNOWN ? vt : TY_POLY;
       /* an element held with its nil beside it (masgn_elem_temp) is
          dispatched boxed as that oint, so a writer sees the nil */
       int oel = masgn_oint_temp(val) >= 0 && oint_kind(vt);
       if (oel) at = TY_POLY;
-      int tv = ++g_tmp, tval = ++g_tmp;
+      int tv = ++g_tmp, tval = ++g_tmp, tp = vdisp ? ++g_tmp : -1;
+      if (vdisp) masgn_recv_guard(c, crecv, recv_tmp, nm, indent, b);
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", tv);
-      if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
+      if (vdisp) {
+        buf_printf(b, "({ sp_%s *_t%d = ", c->classes[ty_object_class(crt)].c_name, tp);
+        emit_node_or_tmp(c, crecv, recv_tmp, b);
+        buf_printf(b, "; sp_box_obj((void *)_t%d, _t%d->cls_id); })", tp, tp);
+      }
+      else if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
       buf_puts(b, "; ");
       emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
       if (oel) masgn_conv(c, id, TY_POLY, vt, val, b);
@@ -17568,11 +17592,13 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         { unsupported(c, id, "multiple assignment call target non-object"); continue; }
       char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
       int rc2 = ty_object_class(rt2);
-      if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
+      int wr2 = comp_writer_in_chain(c, rc2, base2, NULL);
+      if (!wr2 || masgn_writer_overridden(c, rc2, setnm)) {
         /* a writer defined with `def x=`, or bound with `native_method :x=`,
-           runs as a call */
+           runs as a call, and so does an attr writer a descendant defines
+           its own `x=` for */
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        if (comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
+        if (!wr2 && comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
           unsupported(c, id, "multiple assignment call target no writer");
         else masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
