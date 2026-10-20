@@ -22606,10 +22606,14 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                    tbA, srefA.p, tbA);
         free(srefA.p);
-        size_t wb_at = b->len;
+        size_t wb_at = b->len, pre_at = g_pre ? g_pre->len : 0;
         emit_expr(c, id, b);
-        /* the transform reads the handle's bytes; set_bin takes its answer back */
-        if (g_share_check) share_check_declare_reads(b, wb_at, recv);
+        /* the transform reads the handle's bytes (a block form's loop, ahead
+           of the statement, too); set_bin takes its answer back */
+        if (g_share_check) {
+          share_check_declare_reads(b, wb_at, recv);
+          if (g_pre) share_check_declare_reads(g_pre, pre_at, recv);
+        }
         buf_puts(b, "); }\n");
         nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
         return 1;

@@ -2322,6 +2322,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(&rsn, "_t%d ? sp_String_cstr(_t%d) : (const char *)NULL", tsh, tsh);
         }
         else if (sn_scalar) emit_oint_expr(c, recv, rrt, &rsn); else rsn = expr_buf(c, recv);
+        size_t guard_at = g_pre->len;
         emit_indent(g_pre, g_indent);
         if (sn_obj)
           buf_printf(g_pre, "sp_%s *_sn%d = %s; SP_GC_ROOT(_sn%d);\n",
@@ -2387,6 +2388,13 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           /* an Integer / Float answer is the `&.`'s oint: the inner call's own
              form, or its plain value wrapped (the re-entry sees which) */
           if (oint_kind(ret2)) emit_oint_expr(c, id, ret2, &vb); else emit_expr(c, id, &vb);
+          /* a String bang writes what it computes from the guard's bytes
+             back into the receiver's handle: the guard's read and the
+             call's are the handle's, no copy */
+          if (g_share_check && rrt == TY_STRING && ty_str_typed_bang_flags(nt_str(nt, id, "name"))) {
+            share_check_declare_reads(&vb, 0, recv);
+            share_check_declare_reads(sv_pre2, guard_at, recv);
+          }
           if (vw >= 0) view_pop(c, vw);
           g_sn_skip = sv_skip;
           view_unbind(sn_base);

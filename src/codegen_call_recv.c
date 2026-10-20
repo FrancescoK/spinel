@@ -4182,7 +4182,8 @@ static int str_bang_chain_var(Compiler *c, int recv) {
    when it is a variable (lvw), else to the variable a bang chain receiver
    starts from, whose links the mutation reaches in CRuby (one object).
    1 when it writes into that variable's shared handle, whose buffer the
-   receiver's bytes may be (the chain's `sp_String_cstr`): they change. */
+   receiver's bytes may be (the chain's `sp_String_cstr`): they change; 2
+   when it writes into a boxed variable (sp_poly_str_become). */
 static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b) {
   if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return 0; }
   int base = str_bang_chain_var(c, recv);
@@ -4197,8 +4198,23 @@ static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b
   else if (comp_ntype(c, base) == TY_POLY) {
     emit_recv_slot(c, base, b); buf_puts(b, " = sp_poly_str_become(");
     emit_expr(c, base, b); buf_printf(b, ", _t%d); ", tn);
+    return 2;
   }
   return 0;
+}
+/* --share-check: the reads of the chain's receiver in b[from..], and in
+   the statement's prelude, where an operand run ahead holds it, that the
+   write-back wb (emit_str_mut_writeback) hands to the variable's handle or
+   box are no copy of it. */
+static void emit_str_mut_wb_declare(Compiler *c, int recv, int wb, Buf *b, size_t from) {
+  if (!g_share_check || !wb) return;
+  /* (every link of the chain above the variable: each answers its
+     receiver, and the chain's value is the variable's) */
+  for (int r = nt_paren_single(c->nt, recv); r >= 0 && nt_kind(c->nt, r) == NK_CallNode;
+       r = nt_paren_single(c->nt, nt_ref(c->nt, r, "receiver"))) {
+    share_check_declare_reads(b, from, r);
+    if (g_pre) share_check_declare_reads(g_pre, 0, r);
+  }
 }
 
 /* sub! / gsub! ask the runtime's flag whether the call made a substitution.
@@ -4406,6 +4422,7 @@ static void emit_append_bytes_arg(Compiler *c, int arg, Buf *b) {
 
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  size_t wb_at = b->len;   /* (where the call's text begins) */
   /* String value-form mutators: the expression yields the post-mutation
      string -- or nil for the no-change bang contract -- and reassigns an
      lvalue receiver (value-semantics strings). The transform reuses the
@@ -4499,8 +4516,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 0);
           /* the plain form read the handle's bytes, and the set_bin below
              writes its answer back into the handle (the bang's own answer,
-             when it is used, is the bytes: only a dropped one is declared) */
+             when it is used, is the bytes: only a dropped one is declared);
+             a block form's loop reads them ahead of the statement */
           if (g_share_check && share_node_transient(c, id)) share_check_declare_reads(&nbB, 0, recv);
+          if (g_share_check && g_pre) share_check_declare_reads(g_pre, 0, recv);
           int tsmB = g_sub_bang_tm; g_sub_bang_id = sv_sbB; g_sub_bang_tm = 0;
           char smB[40] = "";
           if (tsmB) snprintf(smB, sizeof smB, " || _t%d", tsmB);
@@ -4581,7 +4600,8 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          x).upcase!`), so "did it change?" is decided ahead of it, as the
          handle arm above does */
       Buf wb; memset(&wb, 0, sizeof wb);
-      int ttc = 0, inpl = emit_str_mut_writeback(c, recv, lvw, tn2, &wb) && repr_share_rule(c);
+      int wbk = emit_str_mut_writeback(c, recv, lvw, tn2, &wb);
+      int ttc = 0, inpl = wbk == 1 && repr_share_rule(c);
       if (inpl && sb_nil_nc) {
         ttc = ++g_tmp;
         buf_printf(b, "int _t%d = (sp_str_eq(_t%d, _t%d)%s); ", ttc, to, tn2, sm);
@@ -4590,7 +4610,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       free(wb.p);
       /* (the chain's bytes are the handle's buffer, read before the
          write-back hands the answer to that handle: no copy) */
-      if (inpl && g_share_check) share_check_declare_reads(b, recv_at, nt_paren_single(c->nt, recv));
+      emit_str_mut_wb_declare(c, recv, inpl || wbk == 2, b, recv_at);
       if (ttc)
         buf_printf(b, "_t%d ? NULL : _t%d; })", ttc, tn2);
       else if (sb_nil_nc)
@@ -4682,7 +4702,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          evaluates the args). sp_str_concat allocates a fresh string and never
          mutates the receiver, so a frozen receiver is still untouched here. */
       buf_printf(b, "sp_str_check_mutable(_t%d); ", trc);
-      emit_str_mut_writeback(c, recv, lvw, tn2, b);
+      emit_str_mut_wb_declare(c, recv, emit_str_mut_writeback(c, recv, lvw, tn2, b), b, wb_at);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -4705,7 +4725,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       /* -1 appends; an index past the ends raises IndexError, as CRuby */
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d == -1 ? (sp_int)sp_str_length(_t%d) : _t%d < 0 ? _t%d + 1 : _t%d, 0, _v%d, 0); ",
                  tn2, to, ti2, to, ti2, ti2, ti2, tn2);
-      emit_str_mut_writeback(c, recv, lvw, tn2, b);
+      emit_str_mut_wb_declare(c, recv, emit_str_mut_writeback(c, recv, lvw, tn2, b), b, wb_at);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -4736,7 +4756,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          argument's own pointer it became that object (`t.replace(s)` then
          `t.equal?(s)`, and `s.freeze` froze t) */
       buf_printf(b, "); const char *_t%d = sp_str_dup(", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "); ");
-      emit_str_mut_writeback(c, recv, lvw, tn2, b);
+      emit_str_mut_wb_declare(c, recv, emit_str_mut_writeback(c, recv, lvw, tn2, b), b, wb_at);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -4806,7 +4826,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, ")");
     }
     buf_puts(b, "; ");
-    emit_str_mut_writeback(c, recv, lvw9, tn9, b);
+    emit_str_mut_wb_declare(c, recv, emit_str_mut_writeback(c, recv, lvw9, tn9, b), b, wb_at);
     if (rh9 >= 0) view_unbind(rh9);
     buf_printf(b, "_t%d; })", tn9);
     { *out = 1; return 1; }
@@ -4843,7 +4863,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     emit_bytesplice_bytes(c, argv, argc, rb2.p ? rb2.p : "NULL", b);
     free(rb2.p);
     buf_puts(b, "; ");
-    emit_str_mut_writeback(c, recv, lvw, tn2, b);
+    emit_str_mut_wb_declare(c, recv, emit_str_mut_writeback(c, recv, lvw, tn2, b), b, wb_at);
     if (rh2 >= 0) view_unbind(rh2);
     buf_printf(b, "_t%d; })", tn2);
     { *out = 1; return 1; }
