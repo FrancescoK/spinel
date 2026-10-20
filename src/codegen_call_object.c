@@ -2284,8 +2284,15 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            that handle, run once here: the call's arms that read the handle
            take it from the guard (ran_first_handle), where they ran the
            receiver again */
-        int sn_hold = repr_share_rule(c) && rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont &&
+        /* ...or a boxed receiver's call whose every arm answers a String
+           or no String (`px.pick(s)&.<<(x)`, strbuf_poly_user_boxes): the
+           guard holds the handle its box carries, or NULL for the arm
+           that answers nil, where the bytes it read were a copy */
+        int sn_self = repr_share_rule(c) && rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont &&
                       strbuf_self_route(c, recv);
+        int sn_poly = !sn_self && repr_share_rule(c) && c->share_plan && rrt == TY_STRING && !sn_obj && !sn_scalar &&
+                      !sn_cont && share_plan_producer(c, recv, NULL) == SPK_POLY_ARMS;
+        int sn_hold = sn_self || sn_poly;
         /* arguments that run code, which a String receiver's change in
            place must reach (sn_args_run_late) */
         int sn_late = rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont && !sn_hold ? sn_args_run_late(c, id, recv) : 0;
@@ -2309,7 +2316,8 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           tsh = ++g_tmp;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_String *_t%d = ", tsh);
-          emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), g_pre);
+          if (sn_poly) emit_str_form_handle(c, recv, g_pre);
+          else emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), g_pre);
           buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tsh);
           buf_printf(&rsn, "_t%d ? sp_String_cstr(_t%d) : (const char *)NULL", tsh, tsh);
         }

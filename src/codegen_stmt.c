@@ -22913,7 +22913,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
      nil one */
   if (nt_safe_nav(nt, id) &&
       ((rt == TY_POLY && is_push_alias(name)) ||
-       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil))) {
+       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil) ||
+       ((rt == TY_STRING || rt == TY_STRBUF) && sn_guard_pending(c, id)))) {
     TyKind st = repr_of(c, id).as_ty;
     emit_indent(b, indent);
     buf_puts(b, "(void)(");
