@@ -281,8 +281,16 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
      Only numeric kinds take this path: widening a yield over String or
      Hash sites as well (`yield.inspect`) reaches emitters that do not yet
      box a per-site answer into the poly slot, and fails to compile. */
+  /* `<=>` is answered per site for every kind too: its result is an
+     Integer or nil, and a String or Array site answers nil where an
+     Integer site answers a number. With only the numeric kinds above, the
+     yield kept the first site's Integer type and the String site's nil was
+     stored in that Integer slot, raising TypeError when the program ran
+     (K-031). Other names over non-numeric kinds still take the old path:
+     the emitter does not yet box every per-site answer into a poly slot. */
   if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "builtin_only", 0) ||
-      !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind))) return 0;
+      !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind) ||
+        sp_streq(nt_str(nt, id, "name"), "<=>"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
