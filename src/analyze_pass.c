@@ -5547,7 +5547,7 @@ static int widen_returned_hashes(Compiler *c, int call) {
    own callers. Returns 1 on a change. */
 static int widen_arg_hash(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  { int one; if (vp_one(nt, arg, VPS_NONE, &one) == VP1_NODE) arg = one; }   /* `(a; {k: 1})` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
   if (ak == NK_CallNode) { int w = widen_returned_hashes(c, arg); if (w >= 0) return w; }
