@@ -5784,6 +5784,155 @@ int share_param_kept(Compiler *c, int mi, int pj) {
   }
   return F->pkept[alt ? sh_alt_find(F, F->helem[h]) : F->helem[h]] || lv->cell_outlives;
 }
+/* ---- calls whose members the plan does not list (#9258) ----
+   A call on a boxed receiver whose name more classes define than the plan
+   lists (CPT_MAX), or on a receiver of no settled type, has members the
+   plan cannot name. They are still among the program's methods of its
+   name, or a builtin's, where nothing defines or answers that name past
+   what the walk sees (share_name_targets): the freshness of the call's
+   answer is theirs (sh_name_call_fresh, an_tail_name_fresh). */
+/* names a method the walk does not see may answer: one defined at run
+   time, a singleton def on a value, an alias, a module_function copy;
+   dyn_all: method_missing, a computed definer, a String evaluated */
+static const char **g_dyn_names;
+static int g_ndyn_names, g_cdyn_names, g_dyn_all;
+static const Compiler *g_dyn_c;
+static int g_dyn_count = -1;
+
+static void sh_dyn_name_add(const char *nm) {
+  if (!nm) return;
+  for (int i = 0; i < g_ndyn_names; i++) if (sp_streq(g_dyn_names[i], nm)) return;
+  if (g_ndyn_names >= g_cdyn_names) {
+    g_cdyn_names = g_cdyn_names ? g_cdyn_names * 2 : 32;
+    g_dyn_names = realloc(g_dyn_names, sizeof(char *) * (size_t)g_cdyn_names);
+    if (!g_dyn_names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_dyn_names[g_ndyn_names++] = nm;
+}
+static const char *sh_lit_method_name(const NodeTable *nt, int a) {
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_SymbolNode) return nt_str(nt, a, "value");
+  if (k == NK_StringNode) return nt_str(nt, a, "content");
+  return NULL;
+}
+/* A call of a definer (define_method, alias_method, module_function, an
+   eval): the name it defines, or every name where it is computed */
+static void sh_dyn_definer_call(const NodeTable *nt, int id) {
+  static const char *const definers[] = { "define_method", "define_singleton_method", "alias_method",
+                                          "module_function", "instance_eval", "class_eval", "module_eval",
+                                          "class_exec", "module_exec", "instance_exec", "eval", NULL };
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  /* send(:define_method, ...) is the definer itself; a computed send
+     calls a method that exists */
+  if ((sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")) && an > 0) {
+    nm = sh_lit_method_name(nt, av[0]);
+    if (!nm) return;
+    av++; an--;
+  }
+  int k = 0;
+  while (definers[k] && !sp_streq(definers[k], nm)) k++;
+  if (!definers[k]) return;
+  /* module_function's names (a bare one: the defs after it, below) */
+  if (sp_streq(nm, "module_function")) {
+    for (int a = 0; a < an; a++) {
+      const char *ln = sh_lit_method_name(nt, av[a]);
+      if (ln) sh_dyn_name_add(ln);
+      else g_dyn_all = 1;
+    }
+    return;
+  }
+  /* a body evaluated from a String may def anything; a block's defs are
+     the walk's own */
+  if (strstr(nm, "eval") || strstr(nm, "exec")) {
+    if (an > 0) g_dyn_all = 1;
+    return;
+  }
+  if (an == 0) return;
+  const char *ln = sh_lit_method_name(nt, av[0]);
+  if (ln) sh_dyn_name_add(ln);
+  else g_dyn_all = 1;
+}
+static void sh_dyn_names_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_dyn_c == c && g_dyn_count == nt->count) return;
+  g_dyn_c = c;
+  g_dyn_count = nt->count;
+  g_ndyn_names = 0;
+  g_dyn_all = an_user_defines_method(c, "method_missing") || an_user_defines_method(c, "respond_to_missing?");
+  NT_FOREACH_KIND(nt, NK_CallNode, id) sh_dyn_definer_call(nt, id);
+  /* a bare module_function: the defs after it in the same body */
+  NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
+    int bn = 0;
+    const int *bv = nt_arr(nt, st, "body", &bn);
+    int on = 0;
+    for (int b = 0; b < bn; b++) {
+      NodeKind bk = nt_kind(nt, bv[b]);
+      if (bk == NK_CallNode && nt_ref(nt, bv[b], "receiver") < 0 && nt_ref(nt, bv[b], "arguments") < 0 &&
+          sp_streq(nt_str(nt, bv[b], "name"), "module_function")) on = 1;
+      else if (on && bk == NK_DefNode) sh_dyn_name_add(nt_str(nt, bv[b], "name"));
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    int r = nt_ref(nt, d, "receiver");
+    if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) sh_dyn_name_add(nt_str(nt, d, "name"));
+  }
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, a) {
+    int nn = nt_ref(nt, a, "new_name");
+    const char *ln = nn >= 0 ? sh_lit_method_name(nt, nn) : NULL;
+    if (ln) sh_dyn_name_add(ln);
+    else g_dyn_all = 1;
+  }
+}
+/* Does the walk see every method a call of nm can run? (a writer may be
+   an attr_writer's store, which is no method's scope) */
+static int sh_name_methods_seen(Compiler *c, const char *nm) {
+  sh_dyn_names_build(c);
+  if (g_dyn_all || !nm) return 0;
+  size_t l = strlen(nm);
+  if (l == 0 || nm[l - 1] == '=') return 0;
+  for (int i = 0; i < g_ndyn_names; i++) if (sp_streq(g_dyn_names[i], nm)) return 0;
+  return 1;
+}
+/* See share.h. */
+int share_name_targets(Compiler *c, int call, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
+  if (nt_ref(nt, call, "receiver") < 0 || nt_ref(nt, call, "block") >= 0) return -1;
+  int why = cplan_targets_unknown_why(c, call, CPT_MAX);
+  if (why != CPT_WHY_CAP && why != CPT_WHY_RECV_UNTYPED) return -1;
+  const char *nm = nt_str(nt, call, "name");
+  if (!sh_name_methods_seen(c, nm)) return -1;
+  int str_cid = comp_class_index(c, "String"), k = 0;
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->name || m->def_node < 0 || !sp_streq(m->name, nm)) continue;
+    /* a String reopen's method: its self is the receiver */
+    if (str_cid >= 0 && m->class_id == str_cid && !m->is_cmethod) return -1;
+    if (k >= cap) return -1;
+    out[k++] = mi;
+  }
+  return k;
+}
+/* A call past the plan's list answers a new String where its builtin arms
+   do and every method of its name answers one, answers nothing (it only
+   raises) or answers what Object's own inspect or to_s does
+   (share_name_targets, an_target_answers_new) */
+static int sh_name_call_fresh(Compiler *c, int call) {
+  const ShareFacts *F = c->share;
+  if (!share_builtin_fresh(c, call)) return 0;
+  int *tg = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int n = share_name_targets(c, call, tg, c->nscopes + 1), ok = n > 0;
+  for (int i = 0; ok && i < n; i++) {
+    if (an_target_answers_new(c, tg[i])) continue;
+    if (scope_ret_param(c, tg[i]) >= 0 || (F->ret_joined[tg[i]] && !scope_ret_fresh(c, tg[i]))) ok = 0;
+  }
+  free(tg);
+  return ok;
+}
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
   if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
@@ -5795,6 +5944,7 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   if (cplan_user_fresh(c, call)->via == UC_POLY && !share_builtin_fresh(c, call)) return 0;
   int tg[64];
   int n = cplan_targets(c, call, tg, 64);
+  if (n == CPT_UNKNOWN) return sh_name_call_fresh(c, call);
   if (n <= 0) return 0;
   for (int i = 0; i < n; i++) {
     if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
