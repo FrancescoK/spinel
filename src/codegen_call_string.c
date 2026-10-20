@@ -355,9 +355,16 @@ no_gsub_enum:
        (emit_poly_cls_value_builtin), where it handed the class to the
        matcher as its String */
     if (are >= 0 && sp_streq(name, "match?") && rt == TY_STRING) {
-      if (argc == 1) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, ", are); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      /* the matcher takes a NULL subject for no match, as Regexp#match?(nil)
+         answers: a receiver that can be nil raises nil's NoMethodError first */
+      int nn = !recv_never_nil(c, recv);
+      if (argc == 1) {
+        buf_printf(b, "sp_re_match_p(sp_re_pat_%d, %s", are, nn ? "sp_nil_recv_named(" : "");
+        emit_expr(c, recv, b); buf_puts(b, nn ? ", \"match?\"))" : ")");
+        return 1;
+      }
+      buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, %s", are, nn ? "sp_nil_recv_named(" : ""); emit_expr(c, recv, b);
+      buf_puts(b, nn ? ", \"match?\"), " : ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       return 1;
     }
     /* a program class answers match itself: the boxed dispatch has its arm,
@@ -407,7 +414,10 @@ no_gsub_enum:
       buf_printf(b, "({ const char *_t%d = ", ts); emit_str_expr(c, argv[0], b);
       buf_printf(b, "; mrb_regexp_pattern *_t%dp = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), 0); ",
                  ts, ts, ts, ts);
-      buf_printf(b, "%s(_t%dp, ", fn, ts); emit_expr(c, recv, b); buf_puts(b, "); })");
+      /* (match? with a receiver that can be nil raises, as above) */
+      int nn = sp_streq(name, "match?") && !recv_never_nil(c, recv);
+      buf_printf(b, "%s(_t%dp, %s", fn, ts, nn ? "sp_nil_recv_named(" : ""); emit_expr(c, recv, b);
+      buf_puts(b, nn ? ", \"match?\")); })" : "); })");
       return 1;
     }
   }
@@ -528,11 +538,18 @@ no_gsub_enum:
             /* emit_str_expr, not emit_expr: a poly receiver (a String read out
                of a widened container) needs coercing into the const char* slot
                the same way the precompiled-literal arms do it (#3389). */
-            else if (argc == 1) { buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_str_expr(c, recv, b); buf_puts(b, ")"); }
+            /* (a String receiver that can be nil raises, as the literal
+               pattern's arm has it) */
+            else if (argc == 1) {
+              int nn = rt == TY_STRING && !recv_never_nil(c, recv);
+              buf_printf(b, "sp_re_match_p(%s, %s", rp.p, nn ? "sp_nil_recv_named(" : "");
+              emit_str_expr(c, recv, b); buf_puts(b, nn ? ", \"match?\"))" : ")");
+            }
             /* match?(re, pos) starts the scan at pos */
             else {
-              buf_printf(b, "sp_str_re_match_p_at(%s, ", rp.p); emit_str_expr(c, recv, b);
-              buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+              int nn = rt == TY_STRING && !recv_never_nil(c, recv);
+              buf_printf(b, "sp_str_re_match_p_at(%s, %s", rp.p, nn ? "sp_nil_recv_named(" : ""); emit_str_expr(c, recv, b);
+              buf_puts(b, nn ? ", \"match?\"), " : ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
             }
             if (bx) buf_puts(b, ")");
             free(rp.p); return 1;
