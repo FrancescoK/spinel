@@ -12000,6 +12000,9 @@ static int class_marshalable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
   if (ci->is_native_class || ci->cext_extension) return 0;  /* native data has no generic Marshal representation */
+  /* nor has a subclass of a native class, which embeds that data (#9269)
+     and is built by the native constructor, not from a pool */
+  if (ci->nsub_root > 0) return 0;
   if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* value types: out of scope for v1 */
   for (int j = 0; j < ci->nivars; j++)
     if (!marshal_ivar_type_ok(ci->ivar_types[j])) return 0;
