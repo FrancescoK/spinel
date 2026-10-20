@@ -1,0 +1,16 @@
+2
+Integer imag: RangeError: can't convert 2+1i into Integer
+2
+2.0
+Float imag: RangeError: can't convert 2+1i into Float
+Float 0.0 imag: RangeError: can't convert 2+0.0i into Float
+2
+boxed Integer imag: RangeError: can't convert 2+1i into Integer
+2.0
+boxed Float imag: RangeError: can't convert 2+1i into Float
+2
+nil
+2.0
+nil
+2
+nil

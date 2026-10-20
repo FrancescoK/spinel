@@ -4861,6 +4861,14 @@ static sp_int sp_poly_Integer(sp_RbVal v) {
      unconvertible. A Bignum-numerator one answers the slot's RangeError. */
   if (sp_poly_is_rational(v) && v.v.p) { sp_Rational _r = *(sp_Rational *)v.v.p; return _r.den ? _r.num / _r.den : 0; }
   if (sp_poly_is_brat(v) && v.v.p) return sp_poly_to_i(v);
+  /* Integer(Complex) is Complex#to_int: the real part, or RangeError. A
+     Float real part past the slot is the RangeError Integer(Float) raises
+     (sp_float_fit_i); an Integer one converts as Complex#to_i does */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
+    sp_Complex c = *(sp_Complex *)v.v.p;
+    if ((c.fl & SP_CPLX_RE_F) && c.im == 0.0 && !(c.fl & SP_CPLX_IM_F) && isfinite(c.re)) return sp_float_fit_i(c.re);
+    return sp_complex_to_int(c);
+  }
   /* a user object converts through its own #to_int / #to_str / #to_i */
   if (sp_poly_is_user_obj(v)) return sp_poly_Integer_ex(v, 0, 1).v;   /* raise: never nil */
   sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Integer", sp_convert_src_name(v)));
@@ -19904,6 +19912,15 @@ static sp_RbVal sp_kernel_Integer_val(sp_RbVal v, sp_int base, int raise) {
     SP_GC_ROOT_RBVAL(v);
     return sp_poly_to_i_meth_v(v);
   }
+  /* a Complex is its real part when the imaginary part is an exact zero
+     and the real part finite and within the slot, as the strict form's
+     Complex#to_int; nil otherwise */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
+    sp_Complex c = *(sp_Complex *)v.v.p;
+    if (c.im != 0.0 || (c.fl & SP_CPLX_IM_F) || !isfinite(c.re) ||
+        c.re >= -(sp_float)INTPTR_MIN || c.re < (sp_float)INTPTR_MIN) return sp_box_nil();
+    return sp_box_int((sp_int)c.re);
+  }
   return sp_box_nil();
 }
 /* The entry points the Kernel#Integer / Kernel#Float emits call, one per
@@ -19940,6 +19957,12 @@ static sp_ofloat sp_poly_Float_ex(sp_RbVal v, int raise) {
   if (v.tag == SP_TAG_BIGINT) return sp_ofloat_of(sp_poly_to_f(v));
   if (sp_poly_is_rat_kind(v)) return sp_ofloat_of(sp_poly_to_f_with_rational(v));
   if (v.tag == SP_TAG_STR) return sp_str_to_f_lenient(v.v.s ? v.v.s : sp_str_empty);
+  /* a Complex is its real part when the imaginary part is an exact zero,
+     as the strict form's Complex#to_f; nil otherwise */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
+    sp_Complex c = *(sp_Complex *)v.v.p;
+    return c.im != 0.0 || (c.fl & SP_CPLX_IM_F) ? sp_ofloat_nil() : sp_ofloat_of(c.re);
+  }
   return sp_ofloat_nil();
 }
 
