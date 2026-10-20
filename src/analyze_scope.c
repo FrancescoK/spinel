@@ -8148,8 +8148,10 @@ void specialize_inherited_cls_new(Compiler *c) {
           mname && !sp_streq(mname, "new") && encl && !encl->is_cmethod && encl->class_id >= 0 &&
           nt_kind(nt, c->classes[encl->class_id].def_node) != NK_ModuleNode) {
         int base = encl->class_id;
+        /* the enclosing class too: one that inherits the method holds its
+           own class-level ivars as its descendants do */
         for (int k = 0; k < c->nclasses; k++) {
-          if (k == base || !is_descendant(c, k, base)) continue;
+          if (k != base && !is_descendant(c, k, base)) continue;
           if (comp_cmethod_in_class(c, k, mname) >= 0) continue;
           int def_cls = -1;
           int mi = comp_cmethod_in_chain(c, k, mname, &def_cls);

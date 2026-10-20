@@ -31,3 +31,20 @@ B.tag = :b
   p [o.with_arg, o.with_kw, o.by_string]
 end
 p A.public_send(:tagged), B.send(:tagged_with, 3)
+
+# written in a class that inherits the method itself: that class's own
+# class-level ivar, unset here, and its subclass's
+class Root
+  @tag = :root
+  def self.tagged = @tag
+end
+
+class Leaf < Root
+  def read = self.class.public_send(:tagged)
+  def read_direct = self.class.tagged
+end
+
+class Twig < Leaf
+  @tag = :twig
+end
+p [Leaf.new.read, Leaf.new.read_direct, Twig.new.read, Twig.new.read_direct]
