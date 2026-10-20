@@ -2177,6 +2177,11 @@ static void sp_sched_globals_mark(void) {
      collection freed the map while g_main_thread.tls still pointed at it,
      and the next Thread#[]= wrote into freed memory. */
   if (g_main_thread.tls) sp_gc_mark(g_main_thread.tls);
+  /* ...and so is its name: Thread#name= stores the String in the static
+     struct, where sp_gc_wb cannot remember it, so a heap String (not a
+     literal) was freed by the next collection and Thread#name read the
+     freed slot. */
+  sp_mark_rbval(g_main_thread.name);
   /* The main thread runs on worker 0's root fiber, which is thread-local, so
      sp_mark_fiber_root_storage reaches it only when worker 0 collects. Its
      storage (Fiber[:k] = v, Fiber.current.storage = h at top level) is marked
