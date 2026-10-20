@@ -1,0 +1,14 @@
+den: RangeError
+num: RangeError
+frac: RangeError
+exp: RangeError
+negexp: RangeError
+huge_exp: RangeError
+[:fits, (100/1)]
+[:fits_under, (-1/1)]
+[:fits_frac, (1/2)]
+[:small, (3/4)]
+[:dec, (-3/4)]
+zero: ZeroDivisionError
+trail: ArgumentError
+empty: ArgumentError

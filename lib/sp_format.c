@@ -194,7 +194,28 @@ sp_Rational sp_rational_new(sp_int n, sp_int d) {
 }
 /* Kernel#Rational(String): unlike String#to_r, the whole string must be a
    rational literal -- trailing text, an empty string and a second `/` are all
-   ArgumentError, and an exponent is honoured (#3720). */
+   ArgumentError, and an exponent is honoured (#3720). The value is built in
+   sp_int while it fits; a literal whose digits, scale or exponent do not
+   (`Rational("1/12345678901234567890123")`, which wrapped) is valued by
+   String#to_r's reader over its text without the `_`s, which answers it
+   exactly where the reduced value fits and raises RangeError where not. */
+static int sp_rstrict_mul_add(sp_int *v, sp_int mul, sp_int add) {
+  intptr_t r;
+  if (sp_ckd_mul_iptr(*v, mul, &r) || sp_ckd_add_iptr(r, add, &r)) return 1;
+  *v = (sp_int)r;
+  return 0;
+}
+static sp_Rational sp_str_to_r_strict_wide(const char *s) {
+  size_t n = strlen(s);
+  char buf[256], *t = n < sizeof buf ? buf : malloc(n + 1);
+  if (!t) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  size_t k = 0;
+  for (size_t i = 0; i < n; i++) if (s[i] != '_') t[k++] = s[i];
+  t[k] = 0;
+  sp_Rational r = sp_str_to_r(t);
+  if (t != buf) free(t);
+  return r;
+}
 sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
   const char *p = s;
   if (!p) sp_raise_cls("TypeError", "can't convert nil into Rational");
@@ -203,11 +224,20 @@ sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
   if (*p == '+') p++;
   else if (*p == '-') { sign = -1; p++; }
   sp_int num = 0, den = 1;
-  int any = 0;
-  while ((*p >= '0' && *p <= '9') || *p == '_') { if (*p != '_') { num = num * 10 + (*p - '0'); any = 1; } p++; }
+  int any = 0, ovf = 0;
+  while ((*p >= '0' && *p <= '9') || *p == '_') {
+    if (*p != '_') { ovf |= !ovf && sp_rstrict_mul_add(&num, 10, *p - '0'); any = 1; }
+    p++;
+  }
   if (*p == '.') {
     p++;
-    while ((*p >= '0' && *p <= '9') || *p == '_') { if (*p != '_') { num = num * 10 + (*p - '0'); den *= 10; any = 1; } p++; }
+    while ((*p >= '0' && *p <= '9') || *p == '_') {
+      if (*p != '_') {
+        ovf |= !ovf && (sp_rstrict_mul_add(&num, 10, *p - '0') || sp_rstrict_mul_add(&den, 10, 0));
+        any = 1;
+      }
+      p++;
+    }
   }
   if (!any) {
     if (sp_convert_soft) { sp_convert_failed = 1; return sp_rational_new(0, 1); }
@@ -218,22 +248,26 @@ sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
     sp_int esign = 1;
     if (*q == '+') q++; else if (*q == '-') { esign = -1; q++; }
     sp_int ev = 0; int anye = 0;
-    while (*q >= '0' && *q <= '9') { ev = ev * 10 + (*q - '0'); q++; anye = 1; }
+    while (*q >= '0' && *q <= '9') { ovf |= !ovf && sp_rstrict_mul_add(&ev, 10, *q - '0'); q++; anye = 1; }
     if (anye) {
-      for (sp_int k = 0; k < ev; k++) { if (esign > 0) num *= 10; else den *= 10; }
+      for (sp_int k = 0; k < ev && !ovf; k++) ovf = sp_rstrict_mul_add(esign > 0 ? &num : &den, 10, 0);
       p = q;
     }
   }
   if (*p == '/') {
     p++;
-    sp_int d2 = 0; int anyd = 0;
-    while ((*p >= '0' && *p <= '9') || *p == '_') { if (*p != '_') { d2 = d2 * 10 + (*p - '0'); anyd = 1; } p++; }
+    sp_int d2 = 0; int anyd = 0, z = 1;
+    while ((*p >= '0' && *p <= '9') || *p == '_') {
+      if (*p != '_') { ovf |= !ovf && sp_rstrict_mul_add(&d2, 10, *p - '0'); z &= *p == '0'; anyd = 1; }
+      p++;
+    }
     if (!anyd) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Rational(): \"%s\"", s));
-    if (d2 == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    den *= d2;
+    if (z) sp_raise_cls("ZeroDivisionError", "divided by 0");
+    if (!ovf && sp_rstrict_mul_add(&den, d2, 0)) ovf = 1;
   }
   while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
   if (*p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Rational(): \"%s\"", s));
+  if (ovf) return sp_str_to_r_strict_wide(s);
   return sp_rational_new(sign * num, den);
 }
 /* The products of two sp_int fit a 128-bit integer on the 64-bit build and a
