@@ -5003,7 +5003,9 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
     int wok = emit_iteration_stmt(c, id, &wb, 0);
     g_enum_walk_res = 0;
     if (!wok) { free(wb.p); return 0; }
-    if (sp_streq(name, "each")) {
+    /* (a bsearch Enumerator's walk takes the block as a proc, which a
+       program that makes none needs no arm for) */
+    if (sp_streq(name, "each") && an_program_makes_bsearch_enum(c)) {
       Buf eb; memset(&eb, 0, sizeof eb); emit_boxed(c, enum_node, &eb);
       Buf pb; memset(&pb, 0, sizeof pb); emit_proc_literal(c, block, &pb);
       int tenum = ++g_tmp, tproc = ++g_tmp;

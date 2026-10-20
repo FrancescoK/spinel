@@ -1553,6 +1553,31 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
   return 0;
 }
 
+/* Can the program make a bsearch Enumerator (Array#bsearch without a
+   block, or a bsearch it names by Symbol)? Only then does `e.each { }` over
+   an Enumerator hand its block on as a proc, to the walk a bsearch one
+   takes (codegen's sp_enum_bsearch_each_proc arm). */
+int an_program_makes_bsearch_enum(Compiler *c) {
+  static const NodeTable *memo_nt = NULL;
+  static int memo_n = -1, memo = 0;
+  const NodeTable *nt = c->nt;
+  if (memo_nt == nt && memo_n == nt->count) return memo;
+  memo = 0;
+  for (int id = 0; id < nt->count && !memo; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_CallNode) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && sp_streq(nm, "bsearch") && nt_ref(nt, id, "block") < 0) memo = 1;
+    }
+    else if (k == NK_SymbolNode) {
+      const char *v = nt_str(nt, id, "value");
+      if (v && sp_streq(v, "bsearch")) memo = 1;
+    }
+  }
+  memo_nt = nt; memo_n = nt->count;
+  return memo;
+}
+
 /* The block of a call whose target hands the block on to a poly receiver, or
    to a method that keeps it. The target is yield-inlined, so the block is
    spliced into its body -- and lands on the dispatch or the keeper's call
@@ -1583,6 +1608,13 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int recv = nt_ref(nt, id, "receiver");
+  /* `e.each { }` over an Enumerator (the walk behind the to_a hop) in a
+     program that can make a bsearch one, whose walk takes the block as a
+     proc */
+  if (sp_streq(name, "each") && recv >= 0 && nt_kind(nt, recv) == NK_CallNode &&
+      nt_str(nt, recv, "enum_each_wrap") && nt_ref(nt, recv, "receiver") >= 0 &&
+      infer_type(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR && an_program_makes_bsearch_enum(c))
+    return 1;
   int mi = -1, cls = -1;
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
