@@ -15225,6 +15225,23 @@ static int masgn_reads(const NodeTable *nt, int id, const char *rty, const char 
   }
   return 0;
 }
+/* Whether the subtree reads an instance, global or class variable. */
+static int masgn_reads_state(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (masgn_reads_state(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (masgn_reads_state(nt, ids[j])) return 1;
+  }
+  return 0;
+}
 /* Whether the target, or one nested in it, writes a variable the subtree
    reads. */
 static int masgn_target_writes(const NodeTable *nt, int t, int id) {
@@ -15250,12 +15267,19 @@ static int masgn_target_writes(const NodeTable *nt, int t, int id) {
     if (sp_streq(ty, VARS[v][0])) return masgn_reads(nt, id, VARS[v][1], nm);
   return 0;
 }
+static int masgn_store_runs_user_code(Compiler *c, int tgt);
 /* A part that answers the same whenever it runs: a read, a literal, or
    arithmetic over them -- unless a target assigned before its store writes
    what it reads (`i, a[i] = 1, 2`). */
 static int masgn_part_plain(Compiler *c, int id, const int *lefts, int before) {
   if (masgn_part_allocates(c, id) || subtree_has_side_effect(c, id)) return 0;
-  for (int i = 0; i < before; i++) if (masgn_target_writes(c->nt, lefts[i], id)) return 0;
+  for (int i = 0; i < before; i++) {
+    if (masgn_target_writes(c->nt, lefts[i], id)) return 0;
+    /* a store that runs user code (a writer, a `[]=`) can change an
+       instance, global or class variable the part reads, and the part is
+       read before any store */
+    if (masgn_store_runs_user_code(c, lefts[i]) && masgn_reads_state(c->nt, id)) return 0;
+  }
   return 1;
 }
 /* A literal that is not built -- rodata, which no sweep touches; a Bignum
@@ -15493,13 +15517,11 @@ static int masgn_index_writer(Compiler *c, TyKind rt, int *cdef, TyKind *kt) {
   }
   return wmi;
 }
-/* Whether storing into the target can allocate or run user code, and so
-   collect: an index store on a receiver typed at run time, on the general
-   hash, on a String-keyed hash (which copies a mutable key, #6410), on an
-   object with a user `[]=` or a Struct; an attribute store on a receiver
-   typed at run time or on an object whose writer is a user method (a plain
-   attr_writer is one field store). */
-static int masgn_store_allocates(Compiler *c, int tgt) {
+/* Whether storing into the target calls a method of the program: an index
+   store on a receiver typed at run time or on an object with a user `[]=`;
+   an attribute store on a receiver typed at run time or on an object whose
+   writer is a user method (a plain attr_writer is one field store). */
+static int masgn_store_runs_user_code(Compiler *c, int tgt) {
   int r, k;
   masgn_target_parts(c->nt, tgt, &r, &k);
   if (r < 0) return 0;
@@ -15510,10 +15532,19 @@ static int masgn_store_allocates(Compiler *c, int tgt) {
     return rt == TY_POLY || rt == TY_UNKNOWN ||
            (nm && ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), nm, &dc) >= 0 && dc >= 0);
   }
-  if (k < 0) return 0;
-  return rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH ||
-         (ty_is_hash(rt) && ty_hash_key(rt) == TY_STRING) ||
-         (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0) ||
+  return k >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN ||
+                    (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0));
+}
+/* Whether storing into the target can allocate or run user code, and so
+   collect: that, or an index store on the general hash, on a String-keyed
+   hash (which copies a mutable key, #6410) or on a Struct. */
+static int masgn_store_allocates(Compiler *c, int tgt) {
+  if (masgn_store_runs_user_code(c, tgt)) return 1;
+  int r, k;
+  masgn_target_parts(c->nt, tgt, &r, &k);
+  if (r < 0 || k < 0 || sp_streq(nt_type(c->nt, tgt), "CallTargetNode")) return 0;
+  TyKind rt = comp_ntype(c, r);
+  return rt == TY_POLY_POLY_HASH || (ty_is_hash(rt) && ty_hash_key(rt) == TY_STRING) ||
          nt_int(c->nt, tgt, "struct_aset", 0);
 }
 /* An index target's key as the `[]=` key parameter of type `kt` takes it. */
