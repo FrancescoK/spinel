@@ -208,6 +208,12 @@ static int poll_pure_op(const char *nm) {
   for (int i = 0; ops[i]; i++) if (sp_streq(nm, ops[i])) return 1;
   return 0;
 }
+static int poll_math_fn(const char *nm) {
+  static const char *const fns[] = { "sqrt", "cbrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh",
+                                     "cosh", "tanh", "exp", "log", "log2", "log10", "hypot", NULL };
+  for (int i = 0; fns[i]; i++) if (sp_streq(nm, fns[i])) return 1;
+  return 0;
+}
 static unsigned char *g_pure_cand;
 static int g_pure_n = -1;
 int g_pure_region = 0;   /* inside a marked pure loop being emitted */
@@ -257,6 +263,15 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
     }
     if (recv >= 0 && poll_scalar_ty(c->ntype[recv]) && poll_pure_op(nm))
       return an <= 1 && poll_pure_node(c, recv, ret_ok) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
+    /* a Float power, and Math's functions of Floats: libm, which touches
+       nothing of the runtime (an Integer power may grow into a Bignum) */
+    if (recv >= 0 && sp_streq(nm, "**") && c->ntype[n] == TY_FLOAT && c->ntype[recv] == TY_FLOAT)
+      return an == 1 && poll_pure_node(c, recv, ret_ok) && poll_scalar_ty(c->ntype[av[0]]);
+    if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(nt_str(nt, recv, "name"), "Math") &&
+        poll_math_fn(nm) && c->ntype[n] == TY_FLOAT && !an_user_defines_method(c, nm)) {
+      for (int i = 0; i < an; i++) if (!poll_scalar_ty(c->ntype[av[i]])) return 0;
+      return 1;
+    }
     if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && nt_kind(nt, recv) != NK_ConstantReadNode &&
         !poll_pure_node(c, recv, ret_ok)) return 0;
     if (!poll_scalar_ty(c->ntype[n])) return 0;
@@ -339,6 +354,63 @@ int poll_pure_loop(Compiler *c, int id) {
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
   return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0);
+}
+/* Is a statement an Integer or Float counting iterator whose block is pure
+   (`(a..b).each { |i| s += i % 7 }`, `n.times`, `a.upto(b)`, `a.downto(b)`,
+   `a.step(b, k)`, `(a..b).step(k)`)? Each is emitted as a C for loop over
+   scalars, with no allocation, so the whole statement is a pure loop, marked
+   around as a pure while is. reverse_each is not one (it builds an Array). */
+int poll_pure_iter(Compiler *c, int id) {
+  if (g_promote_mode || !sig_polls()) return 0;
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || recv < 0 || an_user_defines_method(c, nm)) return 0;
+  int is_each = sp_streq(nm, "each"), is_step = sp_streq(nm, "step");
+  if (!is_each && !is_step && !sp_streq(nm, "times") && !sp_streq(nm, "upto") && !sp_streq(nm, "downto")) return 0;
+  (void)poll_pure_method(c, 0);
+  int r = recv;
+  while (nt_kind(nt, r) == NK_ParenthesesNode) {
+    int bd = nt_ref(nt, r, "body"), bn = 0;
+    const int *bb = bd >= 0 ? nt_arr(nt, bd, "body", &bn) : NULL;
+    if (bn != 1) return 0;
+    r = bb[0];
+  }
+  if (nt_kind(nt, r) == NK_RangeNode) {
+    int lo = nt_ref(nt, r, "left"), hi = nt_ref(nt, r, "right");
+    if (lo < 0 || hi < 0 || c->ntype[lo] != TY_INT || c->ntype[hi] != TY_INT) return 0;
+    if (!poll_pure_node(c, lo, 0) || !poll_pure_node(c, hi, 0)) return 0;
+  }
+  else if (is_each || !poll_scalar_ty(c->ntype[r]) || c->ntype[r] == TY_BOOL || !poll_pure_node(c, r, 0)) return 0;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+    if (!poll_scalar_ty(c->ntype[av[i]]) || c->ntype[av[i]] == TY_BOOL || !poll_pure_node(c, av[i], 0)) return 0;
+  }
+  /* the block: plain parameters of a scalar kind, a body that is pure */
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp >= 0) {
+    int pl = nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+    if (pl < 0) return 0;
+    int rn = 0; const int *rq = nt_arr(nt, pl, "requireds", &rn);
+    int on = 0; nt_arr(nt, pl, "optionals", &on);
+    if (on || nt_ref(nt, pl, "rest") >= 0 || nt_ref(nt, pl, "block") >= 0 || nt_ref(nt, pl, "keyword_rest") >= 0) return 0;
+    int kn = 0; nt_arr(nt, pl, "keywords", &kn);
+    int pn = 0; nt_arr(nt, pl, "posts", &pn);
+    if (kn || pn || rn > 1) return 0;
+    Scope *sc = comp_scope_of(c, id);
+    for (int i = 0; i < rn; i++) {
+      if (nt_kind(nt, rq[i]) != NK_RequiredParameterNode) return 0;
+      const char *pnm = nt_str(nt, rq[i], "name");
+      LocalVar *lv = sc && pnm ? scope_local(sc, pnm) : NULL;
+      if (!lv || lv->is_cell || lv->byref_out || !poll_scalar_ty(lv->type)) return 0;
+    }
+  }
+  int body = nt_ref(nt, blk, "body");
+  return body < 0 || poll_pure_node(c, body, 0);
 }
 /* After pure method si was emitted at body[at..]: its C function becomes
    <name>__pure, its calls of pure methods call their __pure functions, and

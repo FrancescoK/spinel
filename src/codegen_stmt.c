@@ -14826,6 +14826,14 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* saved and restored like the other re-entry markers: a block body inlined
      at two sites shares its node ids, so a setter that is a statement at one
      site must still yield its value at a value-position site */
+  /* a counting iterator with a pure block is a pure loop (poll_pure_iter),
+     marked around as emit_while marks one */
+  if (g_pure_region == 0 && nt_kind(c->nt, id) == NK_CallNode && !poll_in_pure(c, id) && poll_pure_iter(c, id)) {
+    emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++;
+    emit_with_prelude(c, id, b, indent, emit_stmt_inner);
+    g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n");
+    return;
+  }
   int saved_setter = g_setter_stmt_id;
   if (nt_kind(c->nt, id) == NK_CallNode && name_is_plain_setter(nt_str(c->nt, id, "name")))
     g_setter_stmt_id = id;

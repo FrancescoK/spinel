@@ -4913,6 +4913,10 @@ signal-default-test: $(SPINEL)
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/tl" 2>/dev/null)" = "loop interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a loop with no call: #9222's poll)"; ok=0; }; \
 	fi; \
+	$(SPINEL) test/signal/interrupt_pure_iterator.rb -o "$$tmp/pi" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile pure iterator)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout 10 "$$tmp/pi" 2>/dev/null | tr '\n' ' ')" = "each interrupted times interrupted " ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a counting iterator with a pure block)"; ok=0; }; \
+	fi; \
 	$(SPINEL) test/signal/interrupt_recursion.rb -o "$$tmp/ir" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile recursion)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/ir" 2>/dev/null)" = "recursion interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a recursion with no loop: the call graph lost its cycle, #9377)"; ok=0; }; \

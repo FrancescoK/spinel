@@ -1064,6 +1064,7 @@ int poll_scope_on_cycle(Compiler *c, int si);
 int poll_is_method_name(Compiler *c, const char *nm);
 int poll_pure_method(Compiler *c, int si);
 int poll_pure_loop(Compiler *c, int id);
+int poll_pure_iter(Compiler *c, int id);
 int poll_pure_wrapped(Compiler *c, int si);
 extern int g_pure_region;
 /* inside a marked pure loop, or in a pure method's body: no poll */
