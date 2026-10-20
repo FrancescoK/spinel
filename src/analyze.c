@@ -38729,10 +38729,25 @@ static int wnh_boxed_target(Compiler *c, int w) {
   }
   return 0;
 }
+/* Is the write `w` of the value `v` a copy of local `name` into a local of the
+   same scope typed as the Hash is (`h = seen`), which hands nothing on whole
+   itself? The widening then retypes the copy with it (wnh_widen_copies). */
+static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered, int copies);
+static int wnh_copy_target(Compiler *c, int w, const char *name, Scope *sc) {
+  const NodeTable *nt = c->nt;
+  int v = an_unparen(nt, nt_ref(nt, w, "value"));
+  const char *wn = nt_str(nt, w, "name");
+  if (nt_kind(nt, w) != NK_LocalVariableWriteNode || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode ||
+      comp_scope_of(c, w) != sc || !wn || !sp_streq(nt_str(nt, v, "name"), name)) return 0;
+  LocalVar *y = scope_local(sc, wn);
+  if (!y || y->type != c->ntype[v] || !ty_is_hash(y->type)) return 0;
+  /* the copy's own reads, a copy of it not allowed to chain */
+  return !wnh_local_escapes_ex(c, sc, wn, NULL, 0);
+}
 /* `answered`, when given, lets a read that is sc's own answer (the method's
    last value, wnh_is_answer; a `return` still escapes) pass, and reports
    that one did: the caller then widens the method's return with the local */
-static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered) {
+static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered, int copies) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int n = 0; const int *b = nt_arr(nt, st, "body", &n);
@@ -38774,7 +38789,7 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
            keeps it typed, unless the variable is a box, which takes the
            widened Hash as the read now types it */
         WnhReads r = { c, sc, name };
-        if (v >= 0 && !wnh_boxed_target(c, w) && for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, wnh_answering_read, &r))
+        if (v >= 0 && !wnh_boxed_target(c, w) && !(copies && wnh_copy_target(c, w, name, sc)) && for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, wnh_answering_read, &r))
           return 1;
       }
       for (int k = 0; k < an; k++)
@@ -38787,7 +38802,7 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
   return 0;
 }
 static int wnh_local_escapes(Compiler *c, Scope *sc, const char *name) {
-  return wnh_local_escapes_ex(c, sc, name, NULL);
+  return wnh_local_escapes_ex(c, sc, name, NULL, 1);
 }
 /* The block parameters of a key/value iteration over a local the widening
    retyped (`g.each { |k, v| }`) were bound from the typed kind: a key or
@@ -38917,6 +38932,24 @@ static int wnh_widen_ret(Compiler *c, int mi, TyKind want) {
   }
   return 1;
 }
+/* The locals of `sc` written a copy of local `name` (`h = seen`) and typed as
+   the Hash was (`ht`) are retyped with it. */
+static void wnh_widen_copies(Compiler *c, Scope *sc, const char *name, TyKind ht, TyKind want, int kn, int vn) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !wnh_copy_target(c, w, name, sc)) continue;
+    LocalVar *y = scope_local(sc, wn);
+    if (!y || y->type != ht) continue;
+    lv_set_type(y, want);
+    wnh_widen_block_params(c, sc, wn, kn, vn);
+    comp_set_ntype(c, w, want);
+    NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, rr) {
+      const char *rn = nt_str(nt, rr, "name");
+      if (rn && sp_streq(rn, wn) && comp_scope_of(c, rr) == sc) comp_set_ntype(c, rr, want);
+    }
+  }
+}
 static void widen_nullable_keyed_hash_literals(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_HashNode, id) {
@@ -39004,7 +39037,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     LocalVar *lv = ln && sc ? scope_local(sc, ln) : NULL;
     if (!lv || lv->type != ht || lv->is_param || lv->rbs_seeded) continue;
     int answered = 0;
-    if (wnh_local_escapes_ex(c, sc, ln, &answered)) continue;
+    if (wnh_local_escapes_ex(c, sc, ln, &answered, 1)) continue;
     /* every write must be one the widening can rebuild */
     int ok = 1;
     for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
@@ -39041,6 +39074,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     }
     lv_set_type(lv, want);
     wnh_widen_block_params(c, sc, ln, kn, vn);
+    wnh_widen_copies(c, sc, ln, ht, want, kn, vn);
     for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
