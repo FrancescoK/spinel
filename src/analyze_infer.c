@@ -6054,7 +6054,8 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       if (comp_ivar_index(sc, hn2) < 0) { *out = TY_INT; return 1; }
     }
     if (sp_streq(name, "deconstruct_keys") && argc == 1) { *out = TY_SYM_POLY_HASH; return 1; }
-    if (sp_streq(name, "dig") && argc >= 1) {
+    if (is_dig_name(name) && argc >= 1) {
+      if (nt_argv_has_splat(nt, argv, argc)) { *out = TY_POLY; return 1; }
       int mi = struct_member_idx(c, sc, argv[0]);
       if (mi >= 0) {
         TyKind mt = sc->ivar_types[mi];
