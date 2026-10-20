@@ -1487,6 +1487,15 @@ precision as well) carry the NUL and its tail, as do `IO#write`,
 prints `\u0000`. `test/embedded_nul_method_partition.rb` pins which
 method is which, and `test/format_interp_binary.rb` the formatting.
 
+Float directives (`%f`, `%e`, `%E`, `%g`, `%G`, `%a`, `%A`) in `format`,
+`sprintf`, `printf` and `String#%` convert a user object through a `to_f`
+the program defines with `def` (in the class, a module it includes, or on
+the object itself) or `define_method`. The method must return a Float; a
+missing method or another return type raises `TypeError`, and an exception
+raised by the method propagates. A `to_f` made by `alias`, `alias_method`
+or `attr_reader` is called only when the program also defines a `to_f`
+with `def` or calls `Float()`; one answered by `method_missing` is not.
+
 #### Modules named after a builtin class
 
 `module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a

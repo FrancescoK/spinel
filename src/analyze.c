@@ -513,6 +513,21 @@ static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
 
 extern const ANameHash *g_cr_typed;
 void cr_class_only_names(Compiler *c, ANameHash *out);
+/* Can the receiver of the `%` call `id` be a format String? A String
+   literal can; once types are known (typed), a receiver typed String can.
+   A boxed one is not counted: the desugared Integer#fdiv takes a boxed `%`
+   of its own, which would turn the bridge on with no format at all. */
+static int format_recv_maybe_string(Compiler *c, int id, int typed) {
+  int r = nt_ref(c->nt, id, "receiver");
+  if (r < 0) return 0;
+  NodeKind k = nt_kind(c->nt, r);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_IntegerNode || k == NK_FloatNode) return 0;
+  if (!typed) return 1;
+  TyKind t = comp_ntype(c, r);
+  return t == TY_STRING || t == TY_STRBUF;
+}
+
 void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
@@ -775,7 +790,10 @@ void compute_reachable(Compiler *c, int typed) {
      then #to_i, and Kernel#Float through its #to_f -- calls the conversion
      site names nowhere in the AST. The receiver forms (obj.send(:Integer, x)
      desugared, Kernel.Float(x)) convert the same way, so any call by the name
-     counts, and the program is marked as one that converts at all. */
+     counts, and the program is marked as one that converts at all. Float
+     formatting directives also call a user object's #to_f (a def or a
+     define_method of it in the program) implicitly; format, sprintf, printf
+     and a String's % keep that conversion and its bridge. */
   {
     int has_kint = 0, has_kflt = 0, has_hmerge = 0;
     for (int id = 0; id < c->nt->count; id++) {
@@ -783,7 +801,10 @@ void compute_reachable(Compiler *c, int typed) {
       const char *nm = nt_str(c->nt, id, "name");
       if (!nm) continue;
       if (sp_streq(nm, "Integer")) has_kint = 1;
-      else if (sp_streq(nm, "Float")) has_kflt = 1;
+      else if (sp_streq(nm, "Float") ||
+               ((is_format_alias(nm) || sp_streq(nm, "printf") ||
+                 (sp_streq(nm, "%") && format_recv_maybe_string(c, id, typed))) &&
+                SN_FIRST("to_f") >= 0)) has_kflt = 1;
       else if (sp_streq(nm, "merge") || sp_streq(nm, "merge!") || sp_streq(nm, "update") || sp_streq(nm, "Hash")) has_hmerge = 1;
     }
     /* a Numeric of the program's own converts through its #to_f wherever a
