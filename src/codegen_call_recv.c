@@ -8971,8 +8971,11 @@ static int int_arms_clamp_pow(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   else if (sp_streq(name, "pow") && argc == 1 &&
            nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
            nt_int(nt, argv[0], "value", 0) < 0) {
-    buf_printf(b, "sp_rational_pow(sp_rational_new((sp_int)(%s), 1), %lldLL)",
-               r, (long long)nt_int(nt, argv[0], "value", 0));
+    long long ex = (long long)nt_int(nt, argv[0], "value", 0);
+    int ub = an_unit_int_literal(nt, recv);
+    /* a base of 1 or -1 is an Integer: 1, or -1 for an odd exponent */
+    if (ub) buf_printf(b, "(sp_int)%d", ub < 0 && (ex & 1) ? -1 : 1);
+    else buf_printf(b, "sp_rational_pow(sp_rational_new((sp_int)(%s), 1), %lldLL)", r, ex);
   }
   /* pow with a Float exponent is real exponentiation -> Float (#2604) */
   else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {

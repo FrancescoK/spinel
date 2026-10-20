@@ -5410,9 +5410,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
         !nt_str(nt, argv[0], "bigval") && nt_int(nt, argv[0], "value", 0) < 0) {
+      long long ex = (long long)nt_int(nt, argv[0], "value", 0);
+      int ub = an_unit_int_literal(nt, recv);
+      /* a base of 1 or -1 is an Integer: 1, or -1 for an odd exponent */
+      if (ub) { buf_printf(b, "(sp_int)%d", ub < 0 && (ex & 1) ? -1 : 1); return 1; }
       buf_puts(b, "sp_rational_pow(sp_rational_new((sp_int)(");
       emit_expr(c, recv, b);
-      buf_printf(b, "), 1), %lldLL)", (long long)nt_int(nt, argv[0], "value", 0));
+      buf_printf(b, "), 1), %lldLL)", ex);
       return 1;
     }
     /* Integer ** Complex = the complex power (real base, complex exponent). */

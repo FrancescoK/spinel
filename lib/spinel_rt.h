@@ -6772,7 +6772,11 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
        path squares-and-multiplies exactly (the old pow(double) round-trip was
        lossy past 2^53); an overflowing result promotes to Bignum under
        --int-overflow=promote, else sp_int_pow raises/wraps per mode. */
-    if (b.v.i < 0) return sp_box_rational(sp_rational_pow(sp_rational_new(a.v.i, 1), b.v.i));
+    if (b.v.i < 0) {
+      if (a.v.i == 1) return sp_box_int(1);
+      if (a.v.i == -1) return sp_box_int((b.v.i & 1) ? -1 : 1);
+      return sp_box_rational(sp_rational_pow(sp_rational_new(a.v.i, 1), b.v.i));
+    }
 #ifdef SP_INT_OVERFLOW_MODE_PROMOTE
     sp_int r = 1, base = a.v.i, exp = b.v.i;
     int ovf = 0;
