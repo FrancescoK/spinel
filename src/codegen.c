@@ -14566,10 +14566,13 @@ void emit_super(Compiler *c, int id, Buf *b) {
            too, as the explicit super(m) store above does (exc_msg_handle).
            `share`, not `handle`: the default build keeps its handle for a
            parameter changed in place, and shares no message. */
-        else if (repr_of_slot(c, p0).share)
-          buf_printf(b, "(%s->msg = sp_strbuf_read_pub(%s), sp_gc_wb((void *)%s), "
+        else if (repr_of_slot(c, p0).share) {
+          buf_printf(b, "(%s->msg = ", g_self);
+          str_read_handle(b, rn.p, 1);
+          buf_printf(b, ", sp_gc_wb((void *)%s), "
                         "(void)sp_exc_attach_msg((void *)%s, %s), %s->msg)",
-                     g_self, rn.p, g_self, g_self, rn.p, g_self);
+                     g_self, g_self, rn.p, g_self);
+        }
         else
           buf_printf(b, "(%s->msg = %s, sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         free(rn.p);
@@ -14798,10 +14801,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
         if (pub) c->uses_exc_text_handle |= 1;
         buf_printf(&mb, "sp_user_exc_to_s%s((sp_Exception *)%s)", pub ? "_shared" : "", g_self);
       }
-      else if (pub)
-        buf_printf(&mb, "sp_strbuf_read_pub(sp_exc_stored_message_handle((sp_Exception *)%s))", g_self);
+      else if (pub) {
+        Buf kb;
+        memset(&kb, 0, sizeof kb);
+        buf_printf(&kb, "sp_exc_stored_message_handle((sp_Exception *)%s)", g_self);
+        str_read_handle(&mb, kb.p, 1);
+        free(kb.p);
+      }
       else buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
-      if (rt_boxed) { buf_puts(b, "sp_box_str("); buf_puts(b, mb.p); buf_puts(b, ")"); }
+      if (rt_boxed) str_box_bytes(b, mb.p);
       else buf_puts(b, mb.p);
       free(mb.p);
       return;
@@ -19507,7 +19515,9 @@ static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode
     str_box_open(b, 0);
     buf_puts(b, "_sp_ret_strbuf");
     str_box_close(b);
-    buf_puts(b, " : _v ? sp_box_str(_v) : sp_box_nil(); }");
+    buf_puts(b, " : _v ? ");
+    str_box_bytes(b, "_v");
+    buf_puts(b, " : sp_box_nil(); }");
   }
   else buf_puts(b, "return _v; }");
 }
