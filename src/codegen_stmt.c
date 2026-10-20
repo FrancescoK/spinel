@@ -16576,7 +16576,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       else {
         char gx[80], ix[32]; snprintf(ix, sizeof ix, "%dLL", i);
         if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx,
-                             masgn_const_elem_in_range(c, value, i, ln, rn)))
+                             masgn_const_elem_in_range(c, value, i)))
           snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
         if (!masgn_store(c, id, mt, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
@@ -16725,7 +16725,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         char rgx[160], rix[32];
         snprintf(rix, sizeof rix, "_t%d", tix);
         if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx,
-                             masgn_const_elem_in_range(c, value, j - rn, ln, rn)))
+                             masgn_const_elem_in_range(c, value, j - rn)))
           snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
         if (!masgn_store(c, id, mt, rights[j], rgx, elem, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
