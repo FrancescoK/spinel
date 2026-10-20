@@ -1620,6 +1620,21 @@ static int infer_const_int_node(const NodeTable *nt, int id, long long *out) {
   return 1;
 }
 
+/* 1 or -1 when `id` is that Integer literal, parenthesized or not (`(-1)`);
+   0 otherwise. A power of either with a negative exponent is an Integer in
+   CRuby, not the Rational any other base gives. */
+int an_unit_int_literal(const NodeTable *nt, int id) {
+  while (id >= 0 && nt_kind(nt, id) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, id, "body"), n = 0;
+    const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (!st || n != 1) return 0;
+    id = st[0];
+  }
+  long long v;
+  if (!infer_const_int_node(nt, id, &v) || (v != 1 && v != -1)) return 0;
+  return (int)v;
+}
+
 /* Whether base**exp does not fit in signed 64 bits (so it must be a Bignum). */
 static int infer_int_pow_overflows(long long base, long long exp) {
   if (exp <= 0) return 0;
@@ -4968,10 +4983,11 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
-    /* pow with a literal negative exponent yields the exact Rational */
+    /* pow with a literal negative exponent yields the exact Rational, but
+       an Integer for a base of 1 or -1 */
     if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
         sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
-        nt_int(nt, argv[0], "value", 0) < 0) { *out = TY_RATIONAL; return 1; }
+        nt_int(nt, argv[0], "value", 0) < 0) { *out = an_unit_int_literal(nt, recv) ? TY_INT : TY_RATIONAL; return 1; }
     if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
     /* --int-overflow=promote: pow(n) is `**`: a pair that is not both known
        constants can leave the word and promotes (sp_poly_int_pow); a
@@ -8572,7 +8588,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       infer_type(c, recv) == TY_INT) {
     long long base, exp;
     int cexp = infer_const_int_node(nt, argv[0], &exp);
-    if (cexp && exp < 0) return TY_RATIONAL;
+    if (cexp && exp < 0) return an_unit_int_literal(nt, recv) ? TY_INT : TY_RATIONAL;
     /* --int-overflow=promote: an int `**` whose operands are not both known
        constants can escape the word at run time and promote to a Bignum
        (codegen lowers it to sp_poly_pow), the `<<` rule below. A const-const

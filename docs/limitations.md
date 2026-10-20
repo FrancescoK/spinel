@@ -729,7 +729,11 @@ or `Rational` from the sign at run time. The residual divergence is a
 statically int-typed runtime exponent (`x ** y` with plain int locals):
 typing it a sometimes-`Rational` would force the result poly and cascade
 through every int-arithmetic consumer, so a negative value there still
-raises `RangeError` rather than silently truncating. `Integer#pow(negative,
+raises `RangeError` rather than silently truncating. A base of 1 or -1 is
+an Integer in CRuby (`(-1) ** -3 # => -1`): Spinel answers it for a literal
+base and on the poly-dispatched path, and, outside `--int-overflow=promote`,
+the `Rational` for an int-typed runtime base (`x ** -1` with `x = 1` is
+`(1/1)`). `Integer#pow(negative,
 mod)` raises `RangeError` with CRuby's message.
 
 #### `Integer#**` / `Rational#**` with a `Rational` exponent

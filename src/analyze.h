@@ -154,6 +154,8 @@ void analyze_program(Compiler *c);
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);
 int an_prog_names_method(const char *nm);
+/* 1 or -1 when `id` is that Integer literal, parenthesized or not; 0 otherwise */
+int an_unit_int_literal(const NodeTable *nt, int id);
 /* a push onto a typed Array a builtin call just built, given an element of
    another kind: it answers the general Array (analyze_infer.c) */
 int an_push_widens_fresh(Compiler *c, int id);
