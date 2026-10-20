@@ -2615,6 +2615,26 @@ static inline sp_Rational sp_poly_kernel_rational_arg(sp_RbVal v) {
   if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't convert nil into Rational");
   return sp_poly_kernel_rational(v);
 }
+/* A value Kernel#Rational's one argument has no conversion for: true, false,
+   a Symbol, a Class, an Encoding, an instance of a program's class, and every
+   builtin object but the numbers and Time (Time#to_r). */
+static inline int sp_poly_no_rational(sp_RbVal v) {
+  if (v.tag == SP_TAG_BOOL || v.tag == SP_TAG_SYM || v.tag == SP_TAG_CLASS || v.tag == SP_TAG_ENCODING) return 1;
+  if (v.tag != SP_TAG_OBJ) return 0;
+  if (v.cls_id >= 0) return 1;
+  return v.cls_id != SP_BUILTIN_RATIONAL && v.cls_id != SP_BUILTIN_BIG_RATIONAL &&
+         v.cls_id != SP_BUILTIN_COMPLEX && v.cls_id != SP_BUILTIN_TIME;
+}
+/* Kernel#Rational's one argument: such a value is the TypeError CRuby raises,
+   naming true and false and the class of the others, where it read as an
+   integer; anything else converts as above. */
+static inline sp_Rational sp_poly_kernel_rational1(sp_RbVal v) {
+  v = sp_rbval_str(v);
+  if (sp_poly_no_rational(v))
+    sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Rational",
+                                         v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false") : sp_poly_class_name(v)));
+  return sp_poly_kernel_rational_arg(v);
+}
 /* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
    reduce accumulator typed when the block folds through the poly `+`. A Float
    real part stays Float-classed, as sp_poly_complex_arg keeps it: cleared, a

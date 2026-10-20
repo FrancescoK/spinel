@@ -4826,6 +4826,22 @@ static void emit_curry_apply_chain(Compiler *c, int recv, const int *argv, int a
   if (realize) buf_printf(b, " %s_t%d); })", rfn, t);
   else buf_printf(b, " _t%d; })", t);
 }
+/* The program may give some object a to_r or to_int that Kernel#Rational
+   would call: it defines either (or method_missing), names either (an
+   attr_reader, a Struct or Data member), or has a Numeric subclass, whose
+   Numeric#to_int calls its own to_i. */
+static int rational_conv_maybe(Compiler *c) {
+  if (an_user_defines_method(c, "to_r") || an_user_defines_method(c, "to_int") ||
+      an_user_defines_method(c, "method_missing") ||
+      an_prog_names_method("to_r") || an_prog_names_method("to_int")) return 1;
+  NT_FOREACH_KIND(c->nt, NK_ClassNode, cid) {
+    int sup = nt_ref(c->nt, cid, "superclass");
+    const char *sn = sup >= 0 ? nt_str(c->nt, sup, "name") : NULL;
+    if (sn && sp_streq(sn, "Numeric")) return 1;
+  }
+  return 0;
+}
+
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -5119,6 +5135,21 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     if (argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
       emit_expr(c, argv[0], b);
       return 1;
+    }
+    /* One argument that has no conversion to Rational (sp_poly_no_rational),
+       typed or boxed: the TypeError CRuby raises, where a typed one was cast
+       to an integer. Not in a program that may answer to_r or to_int itself
+       (rational_conv_maybe), which CRuby would call, nor with an exception:
+       keyword. */
+    if (argc == 1 && !soft_convert_r && !rational_conv_maybe(c)) {
+      TyKind t0 = comp_ntype(c, argv[0]);
+      if (repr_of(c, argv[0]).kind == RK_BOXED ||
+          (t0 != TY_INT && t0 != TY_BIGINT && t0 != TY_FLOAT && t0 != TY_RATIONAL && t0 != TY_COMPLEX &&
+           t0 != TY_STRING && t0 != TY_STRBUF && t0 != TY_NIL && t0 != TY_POLY && t0 != TY_UNKNOWN &&
+           t0 != TY_TIME && !repr_of(c, argv[0]).big)) {
+        buf_puts(b, "sp_poly_kernel_rational1("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
     }
     if (argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
       emit_rat_kernel_arg(c, argv[0], b);
