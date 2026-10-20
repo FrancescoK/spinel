@@ -24379,9 +24379,13 @@ int strbuf_flow_unseen_arms(Compiler *c, int v) {
 int strbuf_pickup_published(Compiler *c, int v) {
   int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
   /* (a target that answers no value publishes nothing it would need to:
-     repr_call_returns_handle) */
+     repr_call_returns_handle; a target answering a String literal
+     publishes none, and the pickup's new handle over its bytes is the
+     literal's own where nothing else can publish before it returns:
+     share_plan_literal_pickup_clean) */
   for (int i = 0; i < n; i++)
-    if (!scope_always_raises(c, tg[i]) && !scope_ret_handle(c, tg[i])) return 0;
+    if (!scope_always_raises(c, tg[i]) && !scope_ret_handle(c, tg[i]) && !share_plan_literal_pickup_clean(c, v, tg[i]))
+      return 0;
   return 1;
 }
 /* repr.c's flow check asks this (codegen_internal.h). */

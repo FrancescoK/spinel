@@ -475,9 +475,135 @@ static int share_plan_poly_base(Compiler *c, int v) {
 static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
   return share_plan_supply_kind(c, v, share_plan_producer_at(c, v, op), op, depth);
 }
+/* Does an instance of some class the program makes, or a builtin value
+   (whose class a reopening such as `class Object` reaches), reach
+   instance method mi as its `name`? */
+static int share_plan_method_reached(Compiler *c, int mi, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if ((c->classes[k].instantiated || c->classes[k].is_builtin_const) &&
+        comp_method_in_chain(c, k, name, NULL) == mi) return 1;
+  return 0;
+}
+/* Is call u an exception's message or to_s, whose targets the plan lists
+   as the overrides of the exception classes it may reach
+   (ct_exception_text)? */
+static int share_plan_exc_text_call(Compiler *c, int u) {
+  const char *nm = nt_str(c->nt, u, "name");
+  int recv = nt_ref(c->nt, u, "receiver");
+  if (!nm || !is_exception_message(nm) || recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  int cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
+  return rt == TY_EXCEPTION || (cid >= 0 && class_is_exc_subclass(c, cid));
+}
+/* Does each class or value of class cid or below it that the program has
+   (made by `new`, or a builtin's) answer `name` by a method of the
+   program's own? One whose chain has none answers by a builtin method or
+   raises, which no target the plan lists covers. */
+static int share_plan_below_has(Compiler *c, int cid, const char *name) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != cid && !is_descendant(c, k, cid)) continue;
+    if (!c->classes[k].instantiated && !c->classes[k].is_builtin_const) continue;
+    if (comp_method_in_chain(c, k, name, NULL) < 0) return 0;
+  }
+  return 1;
+}
+/* Does every value the receiver of call u can be (self for a receiverless
+   call) answer `name` by a method of the program's own, so the call's
+   targets (cplan_targets, which lists those methods only) are all it can
+   reach? A boxed receiver that may hold a builtin value, or whose classes
+   the analysis cannot bound, may not. Another receiver (a builtin's, a
+   class method's self) is taken as its targets say. */
+static int share_plan_recv_answers_by_targets(Compiler *c, int u, const char *name) {
+  int recv = nt_ref(c->nt, u, "receiver");
+  if (recv < 0) {
+    Scope *s = comp_scope_of(c, u);
+    return !s || s->is_cmethod || s->class_id < 0 || share_plan_below_has(c, s->class_id, name);
+  }
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_POLY) {
+    if (poly_recv_builtin(c, u)) return 0;
+    int nc = 0;
+    const int *cls = poly_recv_classes(c, u, &nc);
+    if (!cls) return 0;
+    for (int i = 0; i < nc; i++)
+      if (comp_method_in_chain(c, cls[i], name, NULL) < 0) return 0;
+    return 1;
+  }
+  return !ty_is_object(rt) || share_plan_below_has(c, ty_object_class(rt), name);
+}
+/* See share.h. The pickup resets the side channel before the call and
+   takes what is there after it, else a new handle of the bytes, which for
+   a literal is the literal's own. Such a target publishes nothing, and
+   neither does anything that runs between the reset and its return: no
+   argument, no receiver but self, a body that computes nothing (a
+   condition or a call may publish another String's handle, which the
+   pickup would then read as this target's answer). */
+int share_plan_literal_pickup_clean(Compiler *c, int v, int mi) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, v);
+  if (u < 0 || nt_kind(nt, u) != NK_CallNode) return 0;
+  int recv = nt_ref(nt, u, "receiver");
+  const char *nm = nt_str(nt, u, "name");
+  if ((recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) || nt_ref(nt, u, "arguments") >= 0 ||
+      nt_ref(nt, u, "block") >= 0 || !nm || mi <= 0 || mi >= c->nscopes || !scope_ret_str_literal(c, mi))
+    return 0;
+  int b = c->scopes[mi].body, bn = 1;
+  const int *bv = &b;
+  if (b >= 0 && nt_kind(nt, b) == NK_StatementsNode) bv = nt_arr(nt, b, "body", &bn);
+  return bv && bn == 1 && bv[0] >= 0 && nt_kind(nt, bv[0]) == NK_StringNode &&
+         share_plan_recv_answers_by_targets(c, u, nm);
+}
+/* Is v a call every target of which answers a String literal on every
+   path (scope_ret_str_literal)? A frozen literal keeps one identity: its
+   bytes are the literal's own, and a handle made over them is the
+   literal's (SP_SHARE_STRING_LITERALS, which the share rule sets), so
+   what the call hands on is the object. See share.h. */
+int share_plan_call_answers_literal(Compiler *c, int v) {
+  if (!repr_share_rule(c)) return 0;
+  int u = an_unparen(c->nt, v);
+  if (u < 0 || nt_kind(c->nt, u) != NK_CallNode || nt_ref(c->nt, u, "block") >= 0) return 0;
+  int tg[CPT_MAX], n = cplan_targets(c, u, tg, CPT_MAX);
+  const char *nm = nt_str(c->nt, u, "name");
+  if (n > 0) {
+    /* the targets are the program's methods only: a receiver that may be
+       a value whose class has none answers by a builtin method instead,
+       and an exception's message or to_s by the builtin text of an
+       exception class that overrides neither (ct_exception_text lists
+       only the overrides) */
+    if (!nm || !share_plan_recv_answers_by_targets(c, u, nm) || share_plan_exc_text_call(c, u)) return 0;
+    /* (a target no value can reach -- a base class's method that every
+       class made overrides -- answers nothing) */
+    int any = 0;
+    for (int i = 0; i < n; i++) {
+      if (scope_ret_str_literal(c, tg[i])) { any = 1; continue; }
+      if (!nm || c->scopes[tg[i]].is_cmethod || share_plan_method_reached(c, tg[i], nm)) return 0;
+    }
+    return any;
+  }
+  /* a receiverless call in an instance method the plan cannot list
+     (`cop_name` in a base class that only its subclasses define): self is
+     the class or one below it, and each of those made answers by the
+     method its chain has; one whose chain has none answers by a builtin
+     (Exception#message) or raises, which the plan does not tell apart,
+     so it supplies nothing. A builtin class among them (a reopened
+     `class Object`) holds values the program does not make by `new`, so
+     it counts as made */
+  Scope *s = comp_scope_of(c, u);
+  if (!nm || nt_ref(c->nt, u, "receiver") >= 0 || nt_ref(c->nt, u, "arguments") >= 0 ||
+      !s || s->is_cmethod || s->class_id < 0) return 0;
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != s->class_id && !is_descendant(c, k, s->class_id)) continue;
+    if (!c->classes[k].instantiated && !c->classes[k].is_builtin_const) continue;
+    int mi = comp_method_in_chain(c, k, nm, NULL);
+    if (mi < 0 || !scope_ret_str_literal(c, mi)) return 0;
+    any = 1;
+  }
+  return any;
+}
 static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth) {
   switch (k) {
-  case SPK_NONE: return 0;
+  case SPK_NONE: return share_plan_call_answers_literal(c, v);
   /* a call answering its receiver hands on its receiver's supply, but the
      face renders a chain over a boxed receiver's call whose arms answer a
      String (SPK_POLY_ARMS) as that call's bytes: no handle (the change
@@ -511,7 +637,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
      box's to_s, the box's own String (strbuf_poly_to_s) */
   case SPK_LIFT: {
     int k2 = share_plan_producer_core(c, v, op, 1);
-    if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v);
+    if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v) || share_plan_call_answers_literal(c, v);
     if (k2 == SPK_SEQUENCE && *op >= 0 && share_plan_poly_base(c, *op)) return 0;
     return k2 != SPK_LIFT && share_plan_supply_kind(c, v, k2, op, depth);
   }
@@ -802,8 +928,10 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
      so no other consumer has it */
   if (role == SPR_IDENTITY && p.supply == SPS_BYTES && exc_message_identity_operand(c, v)) p.supply = SPS_HANDLE;
   /* (an identity is the handle or the bytes' pointer; a frozen String's
-     is its bytes' pointer, which every handle of it names too) */
-  int bytes_id = role == SPR_IDENTITY && (p.supply == SPS_BYTES || share_frozen_string(c, v));
+     is its bytes' pointer, which every handle of it names too, and so is
+     a call's that answers a literal) */
+  int bytes_id = role == SPR_IDENTITY &&
+                 (p.supply == SPS_BYTES || share_frozen_string(c, v) || share_plan_call_answers_literal(c, v));
   p.form = (unsigned char)(bytes_id ? SPF_BYTES : share_plan_form(p.need, p.supply));
   return p;
 }

@@ -456,6 +456,18 @@ int share_plan_producer(Compiler *c, int v, int *operand);
 /* ...asked as if no store lifted v into a handle (poly_strbuf_lift): the
    route v hands its String on by itself */
 int share_plan_producer_unlifted(Compiler *c, int v, int *operand);
+/* Is v a call every target of which answers a String literal on every
+   path, whose bytes are the literal's own: a handle made over them, or a
+   box of them, is the literal's handle (SP_SHARE_STRING_LITERALS), and
+   its identity is its bytes' pointer, as a frozen String's is? */
+int share_plan_call_answers_literal(Compiler *c, int v);
+/* Is target mi of call v one answering a String literal whose answer the
+   pickup after the call renders as the literal itself, among targets that
+   publish their handle: a method whose body is one String literal
+   (`def tag_name = "Group/SectionName"`), called on self with no
+   arguments or block, every value of whose receiver answers the name by
+   the program's own methods? */
+int share_plan_literal_pickup_clean(Compiler *c, int v, int mi);
 const char *share_plan_role_name(int role);
 /* Is node v, a tail of a method whose value is a String, a box whose String
    the plan gives a taker as its handle (a taker needs the handle where its
