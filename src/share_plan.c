@@ -584,6 +584,9 @@ int share_plan_call_answers_literal(Compiler *c, int v) {
        class made overrides -- answers nothing) */
     int any = 0;
     for (int i = 0; i < n; i++) {
+      /* (a method of a class the receiver never holds, its class fact,
+         answers nothing here: share_target_armed) */
+      if (!share_target_armed(c, u, tg[i])) continue;
       if (scope_ret_str_literal(c, tg[i])) { any = 1; continue; }
       if (!nm || c->scopes[tg[i]].is_cmethod || share_plan_method_reached(c, tg[i], nm)) return 0;
     }

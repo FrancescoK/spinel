@@ -24875,6 +24875,25 @@ static int an_subtree_has_return(const NodeTable *nt, int n, int depth) {
    of its own; a `return` is followed to its value. */
 enum { AL_LIT = 1, AL_NIL = 2, AL_OTHER = 4 };
 static int al_method(Compiler *c, int mi, unsigned char *busy, int depth);
+/* The parameter method mi hands on as it is: a body that is a read of one
+   (`def zork(src) = src`), never written, with no return; -1 for any other
+   method. */
+static int al_param_passthrough(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  if (mi <= 0 || mi >= c->nscopes) return -1;
+  Scope *m = &c->scopes[mi];
+  int b = m->body, t = b;
+  if (b < 0 || an_subtree_has_return(nt, b, 0)) return -1;
+  if (nt_kind(nt, b) == NK_StatementsNode) {
+    int bn = 0; const int *bv = nt_arr(nt, b, "body", &bn);
+    if (bn != 1) return -1;
+    t = bv[0];
+  }
+  if (nt_kind(nt, t) != NK_LocalVariableReadNode || !nt_str(nt, t, "name")) return -1;
+  int p = an_param_idx(m, nt_str(nt, t, "name"));
+  if (p < 0 || p == m->rest_idx || p == m->kwrest_idx) return -1;
+  return p;
+}
 static int al_value(Compiler *c, int v, unsigned char *busy, int depth) {
   const NodeTable *nt = c->nt;
   v = an_unparen(nt, v);
@@ -24911,11 +24930,23 @@ static int al_value(Compiler *c, int v, unsigned char *busy, int depth) {
   case NK_CallNode: {
     if (isa_node_diverges(c, v)) return 0;
     int recv = nt_ref(nt, v, "receiver");
-    if ((recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) || nt_ref(nt, v, "block") >= 0) return AL_OTHER;
+    if (nt_ref(nt, v, "block") >= 0) return AL_OTHER;
     int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX), m = 0;
     if (n <= 0) return AL_OTHER;
     if (!share_plan_targets_cover(c, v)) return AL_OTHER;
-    for (int i = 0; i < n; i++) m |= al_method(c, tg[i], busy, depth + 1);
+    /* (a receiver other than self only where every target hands on the
+       argument it binds, whose value is asked: `I.new.zork("lit")` with
+       `def zork(src) = src`) */
+    int other_recv = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode;
+    for (int i = 0; i < n; i++) {
+      int p = al_param_passthrough(c, tg[i]);
+      if (p >= 0) {
+        int a = arg_layout_param_source(c, &c->scopes[tg[i]], v, p, NULL);
+        m |= a >= 0 ? al_value(c, a, busy, depth + 1) : AL_OTHER;
+      }
+      else if (other_recv) return AL_OTHER;
+      else m |= al_method(c, tg[i], busy, depth + 1);
+    }
     return m;
   }
   default: return AL_OTHER;
