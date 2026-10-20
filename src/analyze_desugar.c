@@ -361,7 +361,7 @@ int desugar_descendant_reader_calls(Compiler *c) {
     if (!hit) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
-    nt_node_set_int(nt, id, "vcall", 0);
+    nt_set_vcall(nt, id, 0);
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
@@ -2352,7 +2352,7 @@ int desugar_handle_reopen_self_recv(Compiler *c) {
     /* `Kernel.raise` written so, its receiver dropped (desugar_kernel_recv):
        Kernel's function, not the handle's method of the name */
     if (nt_int(nt, id, "kernel_recv", 0)) continue;
-    if (nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "arguments") < 0) {
+    if (nt_vcall(nt, id) && nt_ref(nt, id, "arguments") < 0) {
       /* a bare identifier is a local read when the scope declares that name
          (`message` in a LoadError reopening is the exception's message) */
       int is_local = 0;
@@ -15173,7 +15173,7 @@ int desugar_builtin_alias_calls(Compiler *c) {
         nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
         nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
         nt_node_set_ref(nt, id, "receiver", sf);
-        nt_node_set_int(nt, id, "vcall", 0);
+        nt_set_vcall(nt, id, 0);
         comp_grow_node_arrays(c);
         c->nscope[sf] = c->nscope[id];
       }

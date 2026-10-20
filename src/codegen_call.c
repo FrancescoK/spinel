@@ -21050,7 +21050,7 @@ static int unresolved_name_chain(Compiler *c, int node) {
     int r = nt_ref(nt, node, "receiver");
     if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
       int n = 0; call_args(nt, node, &n);
-      return n == 0 && nt_int(nt, node, "vcall", 0) && nt_ref(nt, node, "block") < 0;
+      return n == 0 && nt_vcall(nt, node) && nt_ref(nt, node, "block") < 0;
     }
     node = r;
   }
@@ -21080,7 +21080,7 @@ int call_misses_self_method(Compiler *c, int id) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   return name && nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && g_gate_raise &&
-         !nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "block") < 0 && argc > 0 &&
+         !nt_vcall(nt, id) && nt_ref(nt, id, "block") < 0 && argc > 0 &&
          g_emitting_class_id >= 0 && comp_method_in_chain(c, g_emitting_class_id, name, NULL) < 0 &&
          an_user_defines_method(c, name);
 }
@@ -21138,7 +21138,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
      one CRuby gives for a bare identifier, so the vcall flag the node still
      carries keeps that wording rather than falling to the method-call form. */
   if ((recv < 0 || (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"))) &&
-      nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "block") < 0 &&
+      nt_vcall(nt, id) && nt_ref(nt, id, "block") < 0 &&
       g_gate_raise) {
     int vac = 0; call_args(nt, id, &vac);
     if (vac == 0) {
@@ -21202,7 +21202,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
      that never runs it builds -- refused, it also cost a boxed receiver's
      arm around it (`n.times { send(:undo, nil) }` on an Integer n raised
      NoMethodError for times). */
-  if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && g_gate_raise && !nt_int(nt, id, "vcall", 0) &&
+  if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && g_gate_raise && !nt_vcall(nt, id) &&
       nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name) &&
       !builtin_object_method_known(name) &&
       (call_rescued_as_missing(nt, id) || nt_str(nt, id, "send_blind") || nt_str(nt, id, "vis_enforce"))) {
