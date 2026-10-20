@@ -287,6 +287,9 @@ enum {
 typedef struct PolyPlan_s {
   TyKind ret;           /* the call's type the arms answer into */
   TyKind ntype;         /* the node's type it was resolved for */
+  unsigned long edits;  /* comp_ty_edits when it was resolved: the arms read
+                           the receiver's type and the candidates' fields,
+                           which change with the tables, not with the node */
   unsigned flags;       /* PPF_* */
   int full;             /* every arm, not only the class arms (cplan_poly_arms) */
   int n;

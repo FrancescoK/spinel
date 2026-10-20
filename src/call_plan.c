@@ -2073,6 +2073,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
   free(p->arm);
   p->arm = NULL; p->n = 0; p->flags = 0; p->full = full;
   p->ntype = p->ret = comp_ntype(c, id);
+  p->edits = comp_ty_edits;
   const char *name = nt_str(c->nt, id, "name");
   int recv = nt_ref(c->nt, id, "receiver");
   int argc = 0;
@@ -2120,7 +2121,8 @@ static const PolyPlan *cplan_poly_level(Compiler *c, int id, int full) {
   const char *nm = nt_str(c->nt, id, "name");
   int plain = cplan_plain_ctx();
   if (plain && id < g_pp_cap && g_pp_name[id] && nm && sp_streq(g_pp_name[id], nm) &&
-      g_pp_memo[id].ntype == comp_ntype(c, id) && (g_pp_memo[id].full || !full))
+      g_pp_memo[id].ntype == comp_ntype(c, id) && g_pp_memo[id].edits == comp_ty_edits &&
+      (g_pp_memo[id].full || !full))
     return &g_pp_memo[id];
 #ifndef NDEBUG
   int tmp0 = g_tmp;
