@@ -126,6 +126,18 @@ enum {
    `ensure` clause is never one). Answers the first nonzero fn answered, else 0. */
 int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud);
 
+/* The one node the value of root comes from, for a caller that asks what an
+   expression is, and not which of several it may be. VP1_NODE: a single
+   ordinary expression, *node (root itself when nothing is a wrapper; `(a; b)`
+   answers b, and `((x))` x). VP1_NIL: the value is nil by absence (`()`, an
+   empty body), *node = -1. VP1_MANY: several positions, a jump that is not
+   followed or a gave-up leaf, or no expression at all (root < 0), *node = -1:
+   the caller does what it does for a value it cannot name. flags are the
+   iterator's; VPS_NONE looks through the wrappers only (parentheses,
+   statement lists, else), so an `if` or a `case` is one node. */
+typedef enum { VP1_NODE, VP1_NIL, VP1_MANY } Vp1Kind;
+Vp1Kind vp_one(const NodeTable *nt, int root, unsigned flags, int *node);
+
 /* ---- the upward half ----
 
    The walkers that ask how a node's parent uses its value (is it the method's
