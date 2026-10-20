@@ -30365,8 +30365,11 @@ void emit_published_pickup(Compiler *c, int id, Buf *b) {
      tail to answer nil through. */
   if (strbuf_pickup_answers_nil(c, id)) buf_printf(b, "!_v%d ? NULL : ", tvD);
   if (g_repr_check) repr_channel_pickup(c, id, strbuf_pickup_answers_nil(c, id));
-  buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
-                " : sp_String_new_shared(_v%d); })", tvD);
+  buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+  str_new_handle_open(b);
+  buf_printf(b, "_v%d", tvD);
+  str_new_handle_close(b);
+  buf_puts(b, "; })");
 }
 
 static int emit_const_user_call(Compiler *c, int id, Buf *b) {

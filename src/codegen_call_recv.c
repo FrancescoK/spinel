@@ -12208,7 +12208,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (piv < 0 || c->classes[pc].ivar_types[piv] != TY_STRBUF) pivn = NULL;
         }
         if (pivn) buf_printf(b, "_t%d->iv_%s; })", tG, iv_c(pivn + 1));
-        else if (retG == TY_STRING) buf_printf(b, "(_v%d ? sp_String_new_shared(_v%d) : NULL); })", tG, tG);
+        else if (retG == TY_STRING) {
+          buf_printf(b, "(_v%d ? ", tG);
+          str_new_handle_open(b);
+          buf_printf(b, "_v%d", tG);
+          str_new_handle_close(b);
+          buf_puts(b, " : NULL); })");
+        }
         else buf_printf(b, "_v%d; })", tG);
         return 1;
       }

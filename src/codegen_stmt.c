@@ -2513,7 +2513,11 @@ static void emit_exc_override_pickup(Compiler *c, int v, const char *e, int t, B
   /* (rooted: a fresh String an override answers is wrapped below, which
      allocates) */
   buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(%s); SP_GC_ROOT_STR(_v%d); ", t, message ? "message" : "to_s", e, t);
-  buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d);", t, t);
+  buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ", t);
+  str_new_handle_open(b);
+  buf_printf(b, "_v%d", t);
+  str_new_handle_close(b);
+  buf_puts(b, ";");
 }
 /* The handle exception text call v answers off exception `e` (C text):
    an override's published answer, else the kept message's handle. */
@@ -2847,11 +2851,21 @@ void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
   /* (as a box, the bytes it takes only where nothing was published are
      the String the call answered: no copy) */
   if (box) {
+    char vt[24];
+    snprintf(vt, sizeof vt, "_v%d", t);
     buf_puts(b, "_sp_ret_strbuf ? ");
     str_box_handle(b, "(sp_String *)_sp_ret_strbuf");
-    buf_printf(b, " : sp_box_str(_v%d); })", t);
+    buf_puts(b, " : ");
+    str_box_bytes(b, vt);
+    buf_puts(b, "; })");
   }
-  else buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
+  else {
+    buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+    str_new_handle_open(b);
+    buf_printf(b, "_v%d", t);
+    str_new_handle_close(b);
+    buf_puts(b, "; })");
+  }
   if (box && g_share_check) share_check_declare_reads(b, at, v);
 }
 /* --share-strings: the boxed operand whose String route v answers (`y.to_s`,

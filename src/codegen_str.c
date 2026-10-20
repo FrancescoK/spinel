@@ -401,6 +401,14 @@ void str_new_handle_open_of(Compiler *c, int v, Buf *b) {
   buf_printf(b, "%s(", strbuf_new_func(c, v));
 }
 
+/* The box of a String's bytes (sp_box_str, the String row's box template),
+   written in one place beside the box of a handle: `e` is the bytes' text
+   already written, a temp or a C string. A return pickup boxes the bytes it
+   took where no handle was published. */
+void str_box_bytes(Buf *b, const char *e) {
+  buf_printf(b, "%s(%s)", ty_box_fn(TY_STRING), e);
+}
+
 /* The box of a String Range's endpoint held in temp `t` (an sp_StrRange):
    the handle the Range keeps for it (field `h`), else the String it holds
    (field `e`) as bytes, else nil for an open end. */
