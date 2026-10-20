@@ -4142,7 +4142,12 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_FLT || _t%d.tag == SP_TAG_NIL) &&"
                     " sp_FloatArray_include_o((sp_FloatArray *)_t%d.v.p, sp_poly_as_float_or_nil(_t%d))%s; break;",
                  tr, ibo, atmp[0], atmp[0], tv, atmp[0], ibc);
-      buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %s_t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s)%s; break;", tr, ibo, atmp[0], tv, atmp[0], ibc);
+      /* a String handle's box (a String some name changes in place) is
+         a String too: its bytes are what the elements are compared with */
+      { int ts = ++g_tmp;
+        buf_printf(b, " case SP_BUILTIN_STR_ARRAY: { sp_RbVal _t%d = sp_poly_strbuf_deref(_t%d);"
+                      " _t%d = %s_t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s)%s; break; }",
+                   ts, atmp[0], tr, ibo, ts, tv, ts, ibc); }
       break;
     case TY_NIL:
       /* is there a nil element */
