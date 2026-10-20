@@ -364,7 +364,7 @@ no_gsub_enum:
         return 1;
       }
       buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, %s", are, nn ? "sp_nil_recv_named(" : ""); emit_expr(c, recv, b);
-      buf_puts(b, nn ? ", \"match?\"), " : ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      buf_puts(b, nn ? ", \"match?\"), " : ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return 1;
     }
     /* a program class answers match itself: the boxed dispatch has its arm,
