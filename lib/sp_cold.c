@@ -3354,6 +3354,12 @@ sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {SP_GC_ROOT(e);
   *d = *e;
   return d;
 }
+/* Public dup clears frozen state; clone and internal walkers keep raw copies. */
+sp_Enumerator *sp_Enumerator_dup_unfrozen(sp_Enumerator *e) {SP_GC_ROOT(e);
+  sp_Enumerator *d = sp_Enumerator_dup(e);
+  if (d) d->frozen = FALSE;
+  return d;
+}
 void sp_PolyArray_pack_scan(void *p) {
   sp_PolyArray *a = (sp_PolyArray *)p;
   for (sp_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]);

@@ -17833,6 +17833,7 @@ static void sp_mark_at_exit_hooks(void) {
    cursor rewinds independently; == compares by pointer, so dup != original). */
 void sp_Enumerator_scan(void *p);
 sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e);
+sp_Enumerator *sp_Enumerator_dup_unfrozen(sp_Enumerator *e);
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   SP_GC_ROOT_RBVAL(v);   /* the hash arm allocates before reading v again */
   if (v.tag == SP_TAG_OBJ) {
