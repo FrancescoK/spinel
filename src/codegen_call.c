@@ -3101,7 +3101,65 @@ void emit_poly_cmp_ordered(Compiler *c, const char *fn, int recv, int arg, Buf *
   emit_boxed(c, arg, b); buf_puts(b, ")");
   c->args_in_call = recv;
 }
+/* 1 for Encoding::BINARY or Encoding::ASCII_8BIT, 0 for Encoding::UTF_8, -1
+   for any other node: the two encodings a String reads as (String#encoding in
+   builtin_ops.c). The path (`Encoding::X` or `::Encoding::X`) must name the
+   builtin's own constant, as const_path_in_closed_builtin decides for the
+   read: an Encoding the program defines, at the top or nested where the path
+   is written, is none. */
+static int encoding_const_binary(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_ConstantPathNode) return -1;
+  int par = nt_ref(nt, node, "parent");
+  const char *nm = nt_str(nt, node, "name");
+  if (par < 0 || !nm || !sp_streq(nt_str(nt, par, "name"), "Encoding") || comp_class_index(c, "Encoding") >= 0 ||
+      !const_path_in_closed_builtin(c, node))
+    return -1;
+  if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) return 1;
+  if (sp_streq(nm, "UTF_8")) return 0;
+  return -1;
+}
+/* The receiver of `<String>.encoding`, a typed String's builtin call, or -1.
+   Only a variable read: the comparison may have evaluated the call into a
+   temp already (the argument-order hoist), and reading the variable again is
+   the one way to test its String without running anything twice. Not
+   `s&.encoding`, whose nil compares unequal to an Encoding. */
+static int str_encoding_recv(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode || !sp_streq(nt_str(nt, node, "name"), "encoding") ||
+      nt_ref(nt, node, "block") >= 0 || nt_safe_nav(nt, node))
+    return -1;
+  int argc = 0; call_args(nt, node, &argc);
+  int r = nt_ref(nt, node, "receiver");
+  if (argc != 0 || r < 0 || comp_ntype(c, r) != TY_STRING || string_reopen_defines(c, "encoding")) return -1;
+  int rk = nt_kind(nt, r);
+  return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ? r : -1;
+}
+/* `str.encoding == Encoding::BINARY` (UTF_8, either order, or !=) on a typed
+   String is its binary tag, as String#encoding reads it: no Encoding boxed
+   and no generic equality, which took a MessagePack packer a tenth of its
+   time on the one bin-or-str test it makes per String. A receiver that can
+   be nil raises the NoMethodError `nil.encoding` does. Nothing else runs,
+   so the call needs no head (args_in_call), as the generic comparison's does
+   not. 0, having emitted nothing, for any other shape. */
+static int emit_str_encoding_eq(Compiler *c, int recv, int arg, int eq, Buf *b) {
+  int s = str_encoding_recv(c, recv), k = encoding_const_binary(c, arg);
+  if (s < 0 || k < 0) { s = str_encoding_recv(c, arg); k = encoding_const_binary(c, recv); }
+  if (s < 0 || k < 0) return 0;
+  const char *test = (k == 1) == (eq != 0) ? "sp_str_is_binary" : "!sp_str_is_binary";
+  c->args_in_call = recv;
+  if (!repr_of(c, s).may_nil) {
+    buf_printf(b, "(%s(", test); emit_expr(c, s, b); buf_puts(b, "))");
+    return 1;
+  }
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", t); emit_expr(c, s, b);
+  buf_printf(b, "; if (SP_UNLIKELY(_t%d == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"encoding\", sp_box_nil())); %s(_t%d); })",
+             t, test, t);
+  return 1;
+}
 static void emit_poly_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) {
+  if (emit_str_encoding_eq(c, recv, arg, eq, b)) return;
   buf_puts(b, eq ? "" : "(!");
   emit_poly_cmp_ordered(c, "sp_poly_eq", recv, arg, b);
   buf_puts(b, eq ? "" : ")");
