@@ -757,6 +757,19 @@ int cplan_target_binds(Compiler *c, int id, int mi) {
   return poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, -1, exp, sizeof exp) >= 0;
 }
 
+/* See call_plan.h. ct_resolve answers CPT_UNKNOWN only for a member past
+   CPT_MAX or for a receiver of type unknown that no plan resolves. */
+int cplan_targets_unknown_why(Compiler *c, int id, int cap) {
+  int tmp[CPT_MAX];
+  if (cplan_targets(c, id, tmp, cap > CPT_MAX ? CPT_MAX : cap) != CPT_UNKNOWN) return CPT_WHY_NONE;
+  if (g_ct_n[id] >= 0) return CPT_WHY_CAP;   /* resolved, past the caller's cap */
+  const CallPlan *p = cplan_user_fresh(c, id);
+  int recv = nt_ref(c->nt, id, "receiver");
+  if ((p->mi < 0 || p->dispatch == CP_REFUSE) && recv >= 0 && comp_ntype(c, recv) == TY_UNKNOWN)
+    return CPT_WHY_RECV_UNTYPED;
+  return CPT_WHY_CAP;
+}
+
 int cplan_targets(Compiler *c, int id, int *out, int cap) {
   if (id < 0 || id >= c->node_cap) return 0;
   if (g_ct_c != c || g_ct_cap < c->node_cap) {

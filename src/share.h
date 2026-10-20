@@ -267,6 +267,15 @@ int share_target_reachable(Compiler *c, int call, int mi);
 int share_block_returns(const Compiler *c, int blk);
 /* The builtin arms of a boxed call, before checking its user targets. */
 int share_builtin_fresh(Compiler *c, int call);
+/* The methods call can run where its plan lists no members -- more than
+   CPT_MAX, or a receiver of no settled type -- and the walk sees every
+   method of its name (no method_missing, no computed definer, no String
+   evaluated, the name no alias's, singleton def's or module_function's):
+   their count into out (at most cap), or -1 (#9258). */
+int share_name_targets(Compiler *c, int call, int *out, int cap);
+/* Does method mi answer a new String or none: every way out raises, or it
+   is an inspect or to_s ending in a bare super that reaches Object's own? */
+int an_target_answers_new(Compiler *c, int mi);
 /* Is node n's String a new one no name holds yet, by where it comes from: a
    String literal, a method answering only its own locals' Strings, or an
    element read of a temporary container of new Strings (an Array literal of

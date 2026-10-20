@@ -24193,6 +24193,91 @@ static int an_tail_tap_blind(Compiler *c, int n) {
   int si = comp_class_index(c, "String");
   return si < 0 || comp_method_in_chain(c, si, "tap", NULL) < 0;
 }
+/* Does the subtree at n hold a return of its method (not one in a nested
+   method or lambda)? */
+static int an_has_method_return(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_LambdaNode) return 0;
+  if (k == NK_ReturnNode) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (an_has_method_return(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (an_has_method_return(nt, av[j])) return 1;
+  }
+  return 0;
+}
+/* Does instance method nm of class or module k come from the program? */
+static int an_defines_instance_method(Compiler *c, int k, const char *nm) {
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (m->class_id == k && !m->is_cmethod && m->def_node >= 0 && m->name && sp_streq(m->name, nm)) return 1;
+  }
+  return 0;
+}
+/* Does a bare super in instance method nm of class cid reach Object's own
+   nm? Every class of the chain is a plain class under Object (no Struct,
+   no Array or Hash subclass, no superclass the program does not define but
+   Object), none of them nor a module any includes defines nm above cid,
+   no builtin module but Comparable and Enumerable is included, and nothing
+   reopens Object or Kernel, or includes a module at the top level, with
+   its own nm. */
+static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
+  const NodeTable *nt = c->nt;
+  for (int k = cid; k >= 0; k = c->classes[k].parent) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_struct || ci->ary_root > 0 || ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode) return 0;
+    if (k != cid && an_defines_instance_method(c, k, nm)) return 0;
+    for (int i = 0; i < ci->nincluded_mods; i++) if (an_defines_instance_method(c, ci->included_mods[i], nm)) return 0;
+    for (int i = 0; i < ci->nincluded_mod_names; i++)
+      if (!sp_streq(ci->included_mod_names[i], "Comparable") && !sp_streq(ci->included_mod_names[i], "Enumerable")) return 0;
+    if (ci->parent < 0) {
+      int sup = nt_ref(nt, ci->def_node, "superclass");
+      if (sup >= 0 && !(nt_kind(nt, sup) == NK_ConstantReadNode && sp_streq(nt_str(nt, sup, "name"), "Object"))) return 0;
+    }
+  }
+  int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
+  if ((ob >= 0 && an_defines_instance_method(c, ob, nm)) || (ke >= 0 && an_defines_instance_method(c, ke, nm))) return 0;
+  for (int i = 0; i < c->ntoplevel_includes; i++) if (an_defines_instance_method(c, c->toplevel_includes[i], nm)) return 0;
+  return 1;
+}
+/* See share.h. A method no way out of which answers (its last statement
+   raises, and no return leaves it earlier) answers no String; Object's
+   inspect and to_s answer a new one each call. */
+int an_target_answers_new(Compiler *c, int mi) {
+  if (mi <= 0 || mi >= c->nscopes) return 0;
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) return 0;
+  int body = nt_ref(nt, m->def_node, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode || an_has_method_return(nt, body)) return 0;
+  int last = scope_body_last(c, mi);
+  if (last < 0) return 0;
+  if (isa_node_diverges(c, last)) return 1;
+  NodeKind lk = nt_kind(nt, last);
+  if (lk != NK_ForwardingSuperNode && lk != NK_SuperNode) return 0;
+  if (!m->name || m->is_cmethod || m->class_id < 0) return 0;
+  if (!sp_streq(m->name, "inspect") && !sp_streq(m->name, "to_s")) return 0;
+  return an_super_reaches_object(c, m->class_id, m->name);
+}
+/* The fresh walk's tail call n past the plan's list (#9258): a new String
+   where the builtin arms answer one and every method of the name does, or
+   answers none or Object's own (an_target_answers_new). */
+static int an_tail_name_fresh(Compiler *c, RetHandles *R, int n, TailCount *tc) {
+  if (!share_builtin_fresh(c, n)) return 0;
+  int *mis = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  if (!mis) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int cnt = share_name_targets(c, n, mis, c->nscopes + 1), ok = cnt > 0;
+  for (int i = 0; ok && i < cnt; i++) {
+    if (an_target_answers_new(c, mis[i])) continue;
+    Scope *m = &c->scopes[mis[i]];
+    if (!an_ret_handle(c, R, mis[i]) || (!m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc))) ok = 0;
+  }
+  free(mis);
+  if (ok) tc->reads++;
+  return ok;
+}
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   /* the fresh walk: a receiver-answering String method's tail is its
@@ -24271,6 +24356,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
+  /* past the plan's list: every method of the name (#9258) */
+  if (R->fresh && cnt == CPT_UNKNOWN) return an_tail_name_fresh(c, R, n, tc);
   /* A raising arm contributes no String. A user override still returns. */
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
