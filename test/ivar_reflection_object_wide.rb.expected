@@ -5,3 +5,30 @@
 :objwide
 [:ow]
 [:ow]
+:objwide
+:own
+:objwide
+:objwide
+:objwide
+:objwide
+[:set, :@p, 5]
+[:set, :@p, 5]
+[:set, :@p, 5]
+[:set, :@p, 5]
+[:set, :@p, 5]
+[:set, :@p, 5]
+:defd
+:defd
+:defd
+:defd
+:defd
+:defd
+[:ow]
+[:ow]
+[:ow]
+[:ow]
+[:ow]
+[:ow]
+:objwide
+:objwide
+[:ow]

@@ -10008,7 +10008,7 @@ int poly_recv_defines(Compiler *c, int call, const char *name) {
 /* See analyze.h. */
 int call_reaches_program_method(Compiler *c, int call) {
   int recv = nt_ref(c->nt, call, "receiver");
-  if (recv >= 0 && c->ntype[recv] == TY_POLY) return poly_recv_defines(c, call, nt_str(c->nt, call, "name"));
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY) return poly_recv_defines(c, call, nt_str(c->nt, call, "name"));
   int tg[CPT_MAX];
   return cplan_targets(c, call, tg, CPT_MAX) != 0;
 }

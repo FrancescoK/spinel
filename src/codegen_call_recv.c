@@ -16582,7 +16582,7 @@ static int poly_class_defines(Compiler *c, const char *name) {
    class is the program's method, and the classes without one re-enter here
    (g_poly_builtin_arm) for the layout's. */
 static int poly_ivar_builtin_arm(Compiler *c, int id, const char *name) {
-  return g_poly_builtin_arm || !poly_recv_defines(c, id, name);
+  return g_poly_builtin_arm ? !comp_call_reaches_own_any(c, id, name) : !poly_recv_defines(c, id, name);
 }
 
 /* `o.instance_variable_get(name)` on a receiver whose class is known

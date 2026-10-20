@@ -7905,6 +7905,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      (its bytes boxed anew are another String) */
   if (ret == TY_POLY && bt == TY_STRING && repr_share_rule(c) && bop_share_named(BOP_ANY_RECV, name) == BSH_IVAR_GET)
     bt = TY_POLY;
+  /* a reflection the program defines on Object is every object's, the
+     arm's receivers included: the arm is that method, and answers what it
+     does */
+  if (is_ivar_reflection_name(name) && comp_call_reaches_own_any(c, id, name))
+    bt = (TyKind)c->scopes[comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL)].ret;
   /* a writer's arm run for its effect (tr < 0), whose value is its
      argument's temp: the synthesized writers take the argument as it is,
      whatever the analysis recorded for an answer nothing reads */

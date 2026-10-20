@@ -1809,6 +1809,11 @@ static inline int comp_object_defines(Compiler *c, const char *name) {
   int oc = comp_class_index(c, "Object");
   return oc >= 0 && comp_method_in_chain(c, oc, name, NULL) >= 0;
 }
+/* does Object's program method of the name answer call id for the receivers no class arm of its
+   dispatch took (builtin values, instances of classes without a method of their own)? */
+static inline int comp_call_reaches_own_any(Compiler *c, int id, const char *name) {
+  return !nt_int(c->nt, id, "builtin_only", 0) && comp_object_defines(c, name);
+}
 static inline int comp_call_reaches_own(Compiler *c, int id, int class_id, const char *name) {
   if (nt_int(c->nt, id, "builtin_only", 0)) return 0;
   return comp_method_in_chain(c, class_id, name, NULL) >= 0 || comp_object_defines(c, name);

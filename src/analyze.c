@@ -42941,7 +42941,8 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
    call -- self as the receiver, the method's name, marked builtin_only so the
    method does not take it again -- as a super into a prepended builtin is
    (rewrite_prepended_builtin_supers). A bare `super` passes the parameters
-   on; one with keyword parameters is left alone. */
+   on; one with keyword parameters is left alone. The reflection defined on
+   Object itself reaches Kernel's the same way. */
 static void rewrite_ivar_reflection_supers(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -42952,7 +42953,8 @@ static void rewrite_ivar_reflection_supers(Compiler *c) {
     if (si < 0 || si >= c->nscopes) continue;
     Scope *s = &c->scopes[si];
     if (s->is_cmethod || !s->name || s->class_id < 0 || !is_ivar_reflection_name(s->name) ||
-        c->classes[s->class_id].is_native_class || is_builtin_reopen_name(c->classes[s->class_id].name)) continue;
+        c->classes[s->class_id].is_native_class ||
+        (is_builtin_reopen_name(c->classes[s->class_id].name) && s->class_id != comp_class_index(c, "Object"))) continue;
     if (super_reach(c, s) >= 0) continue;
     int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
     if (k == NK_ForwardingSuperNode) {
