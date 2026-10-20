@@ -24190,7 +24190,7 @@ int strbuf_flow_unseen_arms(Compiler *c, int v) {
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
   return (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
           k == NK_CaseMatchNode) &&
-         !strbuf_cond_arm_any(c, v, 0, strbuf_flow_seen_leaf, 1);
+         !strbuf_cond_arm_any(c, v, strbuf_flow_seen_leaf, 1);
 }
 
 /* Does every method the pickup call v reaches publish its handle (the
