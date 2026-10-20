@@ -361,6 +361,12 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     if (t == TY_POLY) emit_expr(c, arg, b); else emit_boxed(c, arg, b);
     buf_printf(b, "; sp_poly_print(_t%d); }\n", tv);
   }
+  else if (t == TY_CLASS) {
+    /* a class prints its to_s: its name, or its own class method's answer */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Class _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(%s(_t%d), stdout); }\n", comp_class_display_fn(c), tv);
+  }
   else if (t == TY_RANGE) {
     /* print of a Range renders its to_s ("first..last"), no newline. */
     int tv = ++g_tmp;
