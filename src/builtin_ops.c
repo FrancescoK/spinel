@@ -507,9 +507,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_COMPLEX, "rationalize", 0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "sp_complex_rationalize($r, 0, sp_box_nil())" },
   { TY_COMPLEX, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
     "({ sp_Complex _t$t = $r; sp_RbVal _t$u = $b0; sp_complex_rationalize(_t$t, 1, _t$u); })" },
-  { TY_COMPLEX, "numerator",   0,   0, BF_ANY, TY_COMPLEX,    BOPE_TEMPLATE, "$r" },
+  { TY_COMPLEX, "numerator",   0,   0, BF_ANY, TY_COMPLEX,    BOPE_TEMPLATE, "sp_complex_numerator($r)" },
   { TY_COMPLEX, "numerator",   0, 127, BF_ANY, TY_COMPLEX,    BOPE_NONE },
-  { TY_COMPLEX, "denominator", 0,   0, BF_ANY, TY_INT,        BOPE_TEMPLATE, "((void)($r), (sp_int)1)" },
+  { TY_COMPLEX, "denominator", 0,   0, BF_ANY, TY_INT,        BOPE_TEMPLATE, "sp_complex_denominator($r)" },
   { TY_COMPLEX, "denominator", 0, 127, BF_ANY, TY_INT,        BOPE_NONE },
   /* fdiv by a Complex is ordinary complex division in floats (#2555);
      coerce/fdiv against a non-numeric operand raise TypeError, not
