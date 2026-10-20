@@ -24,3 +24,19 @@ end
   p [n, m.slice!(pick(n)), m]
   p [n, [1, 2, 3, 4].slice(pick(n)), %w[a b c d].slice(pick(n))]
 end
+
+# An Integer index past either end is nil on every kind of Array, whether it
+# arrives boxed (the branch that takes the element beside its nil) or typed
+# (the Integer index's row states the element).
+def far(n) = n == 0 ? 99 : (n == 1 ? -99 : (1..2))
+3.times do |n|
+  a = [1, 2, 3]
+  p [n, a.slice!(far(n)), a]
+  f = [1.5, 2.5, 3.5]
+  p [n, f.slice!(far(n)), f]
+  s = %w[a b c]
+  p [n, s.slice!(far(n)), s]
+  m = [1, "b", :c]
+  p [n, m.slice!(far(n)), m]
+end
+p [[1, 2, 3].slice!(99), [1.5].slice!(-9), %w[a].slice!(5), [1, "b"].slice!(7)]

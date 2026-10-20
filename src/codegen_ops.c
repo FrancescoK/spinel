@@ -478,7 +478,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
 };
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                              const char *rtext, int t0, int stage, Buf *b) {
+                              const char *rtext, int t0, int stage, BopArgKind arg_of, Buf *b) {
   if (recv < 0) return 0;
   /* a Hash or Array receiver of any variant reads its family's rows */
   TyKind lk = bop_family_of(rt);
@@ -487,7 +487,7 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs a = { c, argv };
   const BuiltinOp *op = bop_find_stage(lk, name, argc, nt_ref(c->nt, id, "block") >= 0,
-                                       bop_arg_ntype, &a, stage);
+                                       arg_of, &a, stage);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext, t0 };
   if (!bop_emitters[op->emit](c, &x, b)) return 0;
@@ -497,19 +497,27 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
 
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
                           int stage, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, bop_arg_ntype, b);
+}
+
+/* The call emitted through the row of its name that guards no argument kind,
+   whatever the arguments are read as: a boxed index that may be a Range is
+   viewed as an Integer to emit the element branch, and the row of an
+   Integer index would state a result the held branch does not take. */
+int emit_builtin_op_unguarded(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, -1, NULL, b);
 }
