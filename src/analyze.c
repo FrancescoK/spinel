@@ -20125,6 +20125,16 @@ static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, i
     for (int e = 0; e < nst; e++) changed |= strbuf_store_leaf(c, stores.v[e], depth, mode);
   }
   free(stores.v);
+  /* `@h[k] ||= v` and `@h[k] &&= v` store v, as a local container's do
+     (strbuf_demand_container_stores_here): the write is no call */
+  for (int q = 0; q < 2; q++)
+    NT_FOREACH_KIND(nt, q ? NK_IndexAndWriteNode : NK_IndexOrWriteNode, w) {
+      int r = an_unparen(nt, nt_ref(nt, w, "receiver"));
+      const char *rn = r >= 0 && nt_kind(nt, r) == NK_InstanceVariableReadNode ? nt_str(nt, r, "name") : NULL;
+      if (!rn || !sp_streq(rn, ivn) || comp_ivar_owner(c, r) != cid) continue;
+      int v = nt_ref(nt, w, "value");
+      if (v >= 0) changed |= strbuf_store_leaf(c, v, depth, mode);
+    }
   return changed;
 }
 /* A builtin call whose result holds the receiver's own element objects,
