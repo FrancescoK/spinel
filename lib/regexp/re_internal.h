@@ -300,7 +300,8 @@ typedef struct mrb_regexp_pattern {
                               holds no match, which is answered without a
                               single attempt; see compute_required() */
   uint8_t required_len;
-  /* Cached VM state for pike_vm (avoids malloc per mrb_re_exec call) */
+  /* Cached VM state for pike_vm (avoids malloc per mrb_re_exec call), NULL
+     until the first search that uses it takes it (spinel) */
   uint32_t *cached_visited;     /* generation-based visited array */
   uint32_t cached_gen;          /* the highest key a search has marked
                                    cached_visited with: the next search's
@@ -481,8 +482,8 @@ typedef struct {
 #define RE_PASS_SPAN(depth) \
   ((uint32_t)((depth) < RE_MAX_PASS ? (depth) : RE_MAX_PASS) + 1)
 
-/* Capacity of one pike_vm thread list, shared by the VM and by the cache the
-   compiler pre-allocates for it so the two cannot drift. An instruction
+/* Capacity of one pike_vm thread list, shared by the VM and by the cache it
+   takes for the pattern so the two cannot drift. An instruction
    enqueues at most one thread per pass, and threads waiting on a later sp are
    carried over from the previous step on top of that. */
 #define RE_LIST_CAPA(code_len, depth) \
