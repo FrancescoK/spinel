@@ -6613,6 +6613,22 @@ static sp_RbVal sp_poly_coerce(sp_RbVal a, sp_RbVal b) {
     sp_PolyArray_push(ro, a);
     return sp_box_poly_array(ro);
   }
+  /* Complex#coerce: an Integer, a Float, a Rational or a Complex operand
+     becomes a Complex beside the receiver (a Rational's part a Float, as the
+     typed receiver makes it); a Bignum or a big Rational, which no Complex
+     part here holds, and any other operand are TypeError, naming its class */
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_COMPLEX && a.v.p) {
+    if (!sp_poly_tower_p(b) || b.tag == SP_TAG_BIGINT || sp_poly_is_brat(b))
+      sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Complex", sp_poly_class_name(b)));
+    sp_PolyArray *co = sp_PolyArray_new(); SP_GC_ROOT(co);
+    sp_RbVal x = b;
+    if (sp_poly_is_rational(b)) x = sp_box_complex((sp_Complex){sp_poly_to_f_with_rational(b), 0.0, SP_CPLX_RE_F});
+    else if (!(b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_COMPLEX)) x = sp_box_complex(sp_poly_as_complex(b));
+    SP_GC_ROOT_RBVAL(x);
+    sp_PolyArray_push(co, x);
+    sp_PolyArray_push(co, a);
+    return sp_box_poly_array(co);
+  }
   if (!sp_poly_numeric_p(a)) sp_raise_poly_nomethod("coerce", a);
   sp_PolyArray *out = sp_PolyArray_new();
   SP_GC_ROOT(out);

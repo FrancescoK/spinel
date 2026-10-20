@@ -1,0 +1,18 @@
+[(2+0i), (2+3i)]
+[(2+0i), (2+3i)]
+[(1.5+0i), (2+3i)]
+[(1.5+0i), (2+3i)]
+[(1+1i), (2+3i)]
+[(1+1i), (2+3i)]
+typed bad 0: String can't be coerced into Complex
+boxed bad 0: String can't be coerced into Complex
+typed bad 1: NilClass can't be coerced into Complex
+boxed bad 1: NilClass can't be coerced into Complex
+typed bad 2: Symbol can't be coerced into Complex
+boxed bad 2: Symbol can't be coerced into Complex
+typed bad 3: Array can't be coerced into Complex
+boxed bad 3: Array can't be coerced into Complex
+typed bad 4: TrueClass can't be coerced into Complex
+boxed bad 4: TrueClass can't be coerced into Complex
+[(2+0i), (2+3i)]
+literal bad: String can't be coerced into Complex
