@@ -10340,6 +10340,11 @@ static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
   return 1;
 }
 
+/* a kind a Complex `when` compares by value */
+static int when_complex_num(TyKind t) {
+  return t == TY_COMPLEX || t == TY_INT || t == TY_FLOAT || t == TY_RATIONAL;
+}
+
 static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   int reidx = re_lit_index(c, cond);
   /* `when nil` on an Integer or Float scrutinee matches its nil flag:
@@ -10427,6 +10432,15 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
     /* an Integer against the Float bounds exactly (#7505) */
     else if (pt == TY_INT) buf_printf(b, "; sp_frange_cover_i(_t%d, _t%d); })", tr, t);
     else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
+  }
+  else if ((pt == TY_COMPLEX || comp_ntype(c, cond) == TY_COMPLEX) &&
+           when_complex_num(pt) && when_complex_num(comp_ntype(c, cond))) {
+    /* a Complex on either side: #=== is #==, by value (Complex(3, 0)
+       matches 3); a C == on the struct did not compile */
+    buf_puts(b, "sp_complex_eq("); emit_complex_coerce(c, cond, b);
+    if (pt == TY_COMPLEX) buf_printf(b, ", _t%d)", t);
+    else if (pt == TY_RATIONAL) buf_printf(b, ", ((sp_Complex){sp_rational_to_f(_t%d), 0, 1}))", t);
+    else buf_printf(b, ", ((sp_Complex){(sp_float)(_t%d), 0, %d}))", t, pt == TY_FLOAT ? 1 : 0);
   }
   else if (comp_ntype(c, cond) == TY_CLASS) {
     /* `when <class value>`: Module#=== is instance membership, tested

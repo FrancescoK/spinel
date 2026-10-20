@@ -1,0 +1,19 @@
+true
+false
+true
+true
+true
+false
+false
+true
+true
+[(1+2i), (1+2i)]
+[(1+0i), 1]
+false
+false
+:hit
+:second
+:integer_label
+:float_subject
+:no_match
+:value
