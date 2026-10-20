@@ -573,6 +573,25 @@ static inline int nt_call_block_arg(const NodeTable *nt, int call) {
 static inline int nt_call_has_block_arg(const NodeTable *nt, int call) {
   return nt_call_block_arg(nt, call) >= 0;
 }
+/* The expression inside a run of parentheses that each hold exactly one
+   statement: `((x))` is x. It answers the syntactic question, "is this one
+   wrapped expression, and which?", so parentheses holding anything else
+   (`()`, `(a; b)`) are not peeled and the answer is the ParenthesesNode
+   itself, and any other node comes back as it is: a node never turns into -1.
+   It says nothing of the expression's value, which `(a; b)` takes from b and
+   `()` from nil; a caller that asks that does not use this. The statements
+   are counted rather than read from Prism's MULTIPLE_STATEMENTS flag: a
+   desugar builds ParenthesesNodes the parser never saw and edits a body in
+   place, and the flag is not exported. */
+static inline int nt_paren_single(const NodeTable *nt, int n) {
+  while (nt_kind(nt, n) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, n, "body"), cnt = 0;
+    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &cnt) : NULL;
+    if (cnt != 1) break;
+    n = stmts[0];
+  }
+  return n;
+}
 const char *nt_content(const NodeTable *nt, int id);
 
 /* Generic child iteration (for structural walks that don't know field

@@ -5886,16 +5886,7 @@ int kwh_only_spreads(const NodeTable *nt, int kwh) {
   return 1;
 }
 int unwrap_parens(Compiler *c, int id) {
-  while (id >= 0) {
-    const char *ty = nt_type(c->nt, id);
-    if (!ty || !sp_streq(ty, "ParenthesesNode")) break;
-    int body = nt_ref(c->nt, id, "body");
-    int n = 0;
-    const int *bd = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
-    if (n != 1) break;
-    id = bd[0];
-  }
-  return id;
+  return nt_paren_single(c->nt, id);
 }
 
 /* Walk a String `<<` chain (`(s << a) << b`) down to its base, peeling
