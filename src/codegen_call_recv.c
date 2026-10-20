@@ -12130,7 +12130,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        to a valid name absent from the fixed object layout (no field to write) --
        cannot be represented and is diagnosed. */
     /* instance_variables lists the assigned slots from the class layout. */
-    if (sp_streq(name, "instance_variables") && argc == 0 && ty_is_object(rt)) {
+    /* ...each of these reflections is the program's own where the class (or a
+       module it includes) defines a method of the name: a call that binds to
+       it is the method's, not the layout's */
+    int own_reflection = comp_call_reaches_own(c, id, cid, name);
+    if (sp_streq(name, "instance_variables") && argc == 0 && ty_is_object(rt) && !own_reflection) {
       int ivcid = ty_object_class(rt);
       if (ivcid >= 0 && ivcid < c->nclasses) {
         return emit_object_ivar_list(c, recv, ivcid, b);
@@ -12144,11 +12148,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                                        an_object_methods_all_arg(c, ty_object_class(rt), argc, argv),
                                        argc > 0 ? argv[0] : -1, b))
       return 1;
-    if (emit_object_ivar_call(c, id, name, recv, rt, cid, argc, argv, b)) return 1;
+    if (!own_reflection && emit_object_ivar_call(c, id, name, recv, rt, cid, argc, argv, b)) return 1;
     /* remove_instance_variable(:@x) returns the removed value. The fixed object
        layout can't truly undefine a slot, so a later read still sees the field;
        an undefined name raises NameError, matching CRuby (#3020). */
-    if (sp_streq(name, "remove_instance_variable") && argc == 1 && nt_type(nt, argv[0]) &&
+    if (!own_reflection && sp_streq(name, "remove_instance_variable") && argc == 1 && nt_type(nt, argv[0]) &&
         (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
       const char *a0ty = nt_type(nt, argv[0]);
       const char *sym = sp_streq(a0ty, "SymbolNode")
@@ -16574,6 +16578,14 @@ static int poly_class_defines(Compiler *c, const char *name) {
         comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
   return 0;
 }
+/* ...and may the literal-name reflection `name` on a boxed receiver be read
+   over the layouts of the classes? Where a class the receiver can be defines the
+   method, the call is the class dispatch (cplan_poly_arms): its arm for that
+   class is the program's method, and the classes without one re-enter here
+   (g_poly_builtin_arm) for the layout's. */
+static int poly_ivar_builtin_arm(Compiler *c, int id, const char *name) {
+  return g_poly_builtin_arm ? !comp_call_reaches_own_any(c, id, name) : !poly_recv_defines(c, id, name);
+}
 
 /* `o.instance_variable_get(name)` on a receiver whose class is known
    (`objp` the object's text with its `->` or `.`), or with `objp` NULL the
@@ -16833,7 +16845,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      inference registered the value's type on every class that has one). The
      call answers the value. */
   if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_set") &&
-      argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) && poly_ivar_builtin_arm(c, id, name) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *a0ty = nt_type(nt, argv[0]);
     const char *sym = sp_streq(a0ty, "SymbolNode")
@@ -16946,7 +16958,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      CRuby's unset-ivar behavior; the SP_TAG_OBJ guard keeps a boxed scalar
      (cls_id 0) from aliasing the user class at index 0 (cf. issue #1576). */
   if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_get") &&
-      argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) && poly_ivar_builtin_arm(c, id, name) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *a0ty = nt_type(nt, argv[0]);
     const char *sym = sp_streq(a0ty, "SymbolNode")
@@ -17023,7 +17035,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      forms do), a bare Object from its own table (sp_Object_ivar_defined,
      sp_Object_ivars), anything else has none. */
   if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) && poly_ivar_builtin_arm(c, id, name) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *sym = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
@@ -17095,7 +17107,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     *out = 1; return 1;
   }
   if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variables") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0) {
+      nt_ref(nt, id, "block") < 0 && poly_ivar_builtin_arm(c, id, name)) {
     int tv = ++g_tmp;
     buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, rt == TY_EXCEPTION, tv, 1, " ", b);
     buf_printf(b, "sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);

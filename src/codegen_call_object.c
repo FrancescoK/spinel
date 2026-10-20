@@ -3112,13 +3112,13 @@ int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_puts(b, "), stdout))");
     return 1;
   }
-  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name)) &&
+  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name)) && !comp_object_defines(c, name) &&
       emit_builtin_op(c, id, recv, BOP_IVAR_LESS, name, b)) return 1;
   if (recv >= 0 && rt == TY_EXCEPTION && emit_exc_ivar_call(c, id, name, recv, b)) return 1;
   /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
      the layout answers at compile time */
   if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      ty_is_object(rt) && nt_type(nt, argv[0]) &&
+      ty_is_object(rt) && !comp_call_reaches_own(c, id, ty_object_class(rt), name) && nt_type(nt, argv[0]) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
@@ -3668,19 +3668,19 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
   /* a computed name: the read by name over the class's ivars (#8219) */
   if (sp_streq(name, "instance_variable_get") && argc == 1 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
-      comp_method_in_chain(c, cid, name, NULL) < 0)
+      !comp_call_reaches_own(c, id, cid, name))
     return emit_object_ivar_get_computed(c, id, NULL, recv, cid, argv[0], b);
   /* a computed name's instance_variable_defined?: by name over the class's
      ivars and the object's table (#8219) */
   if (sp_streq(name, "instance_variable_defined?") && argc == 1 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
-      comp_method_in_chain(c, cid, name, NULL) < 0 && repr_of(c, recv).kind != RK_VOBJ)
+      !comp_call_reaches_own(c, id, cid, name) && repr_of(c, recv).kind != RK_VOBJ)
     return emit_object_ivar_defined_computed(c, recv, cid, argv[0], b);
   /* a computed name: the store by name over the class's ivars, a name the
      class does not declare into the object-keyed table (#8219) */
   if (sp_streq(name, "instance_variable_set") && argc == 2 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
-      comp_method_in_chain(c, cid, name, NULL) < 0) {
+      !comp_call_reaches_own(c, id, cid, name)) {
     if (repr_of(c, recv).kind == RK_VOBJ) {
       unsupported(c, id, "instance_variable_set with a computed name on a by-value object");
       return 1;

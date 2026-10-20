@@ -8,6 +8,7 @@
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "share.h"
 #include "codegen_call_arms.h"
 
 static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
@@ -1019,13 +1020,15 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
           /* an explicitly given message is kept even when empty, unlike the
              class-only form, which falls back to the class name (#3711) */
           Buf mh; memset(&mh, 0, sizeof mh);
-          if (comp_ntype(c, av[1]) == TY_STRING && exc_msg_handle(c, av[1], &mh)) {
+          int mk;
+          if (comp_ntype(c, av[1]) == TY_STRING && exc_msg_hold(c, av[1], b, &mh, &mk)) {
             /* the exception is built here, holding the handle, as the
                rescue would build it (sp_exc_new_for_catch) */
             buf_printf(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"%s\", "
                           "sp_exc_msg_given(", effn);
             emit_expr(c, av[1], b);
             buf_printf(b, ")), %s))", mh.p);
+            exc_msg_release(b, mk);
             free(mh.p);
           }
           else if (comp_ntype(c, av[1]) == TY_STRING) {
@@ -1081,15 +1084,17 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         /* `raise "msg"` raises RuntimeError with the message, holding a
            shared String's handle (exc_msg_handle) */
         Buf mh; memset(&mh, 0, sizeof mh);
+        int mk;
         if (strbuf_route_reader(c, av[0])) {
           /* A reader's box keeps its shared field as the message. */
           buf_puts(b, "sp_raise_poly("); emit_boxed(c, av[0], b); buf_puts(b, ")");
         }
-        else if (exc_msg_handle(c, av[0], &mh)) {
+        else if (exc_msg_hold(c, av[0], b, &mh, &mk)) {
           buf_puts(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"RuntimeError\", "
                       "sp_exc_msg_given(");
           emit_expr(c, av[0], b);
           buf_printf(b, ")), %s))", mh.p);
+          exc_msg_release(b, mk);
           free(mh.p);
         }
         else { buf_puts(b, "sp_raise(sp_exc_msg_given("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
@@ -1126,4 +1131,32 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
    String itself, as CRuby's does. 1 with the handle's text appended to b. */
 int exc_msg_handle(Compiler *c, int arg, Buf *b) {
   return arg >= 0 && strbuf_var_handle(c, arg, b);
+}
+/* ...and so does a message that is any other String value the plan hands
+   over as its handle (a reader's or a method's answer, a conversion, a
+   conditional): exc_msg_handle for a variable, else the handle held in a
+   temp the statement expression opened in b binds, which the message's
+   bytes read and the exception holds, so the value is evaluated once. 1
+   with *mh the handle's text, and *mark the bound node's mark when b was
+   opened (-1 otherwise); exc_msg_release closes it after the exception. */
+int exc_msg_holds(Compiler *c, int arg) {
+  return arg >= 0 && repr_share_rule(c) && comp_ntype(c, arg) == TY_STRING &&
+         share_plan_of(c, arg, SPR_TAKE, NULL).form == SPF_HANDLE;
+}
+int exc_msg_hold(Compiler *c, int arg, Buf *b, Buf *mh, int *mark) {
+  *mark = -1;
+  if (exc_msg_handle(c, arg, mh)) return 1;
+  if (!exc_msg_holds(c, arg)) return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = ", t);
+  emit_str_form_handle(c, arg, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", t);
+  *mark = view_bind(arg, "sp_strbuf_read_pub(_t%d)", t);
+  buf_printf(mh, "_t%d", t);
+  return 1;
+}
+void exc_msg_release(Buf *b, int mark) {
+  if (mark < 0) return;
+  view_unbind(mark);
+  buf_puts(b, "; })");
 }

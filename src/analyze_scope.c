@@ -9992,6 +9992,27 @@ const int *poly_recv_classes(Compiler *c, int call, int *n) {
   return pivs_call_set(c, call, &cls, n, 0) ? cls : NULL;
 }
 /* See analyze.h. */
+int poly_recv_defines(Compiler *c, int call, const char *name) {
+  if (an_builtin_only_p()) return 0;   /* deriving the builtin-only answer (#3459) */
+  if (comp_object_defines(c, name)) return 1;   /* every value is an Object */
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, call, &nk);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
+    int held = !ks;
+    for (int j = 0; j < nk && !held; j++) held = ks[j] == k;
+    if (held && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  }
+  return 0;
+}
+/* See analyze.h. */
+int call_reaches_program_method(Compiler *c, int call) {
+  int recv = nt_ref(c->nt, call, "receiver");
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY) return poly_recv_defines(c, call, nt_str(c->nt, call, "name"));
+  int tg[CPT_MAX];
+  return cplan_targets(c, call, tg, CPT_MAX) != 0;
+}
+/* See analyze.h. */
 int poly_recv_builtin(Compiler *c, int call) {
   if (!pivs_call_set(c, call, NULL, NULL, 0)) return 1;
   PivsFacts *f = c->pivs;

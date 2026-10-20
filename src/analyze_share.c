@@ -36,10 +36,13 @@
    compared by identity, or handed to a consumer that keeps or mutates it
    (sh_finalize reads it for a String reopening's receiver) */
 enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4,
-       SHE_IVARS = 8 /* the value keeps instance variables: the runtime's
-                        table is keyed by its handle, so its class is the
-                        shared object whatever holds it (SHF_IDENTITY) */,
-       SHE_ENVDEF = 16 };
+       SHE_IVARS = 8, /* the value keeps instance variables: the runtime's
+                         table is keyed by its handle, so its class is the
+                         shared object whatever holds it (SHF_IDENTITY) */
+       SHE_ENVDEF = 16,
+       SHE_STR_COMPARED = 32 /* the value, typed a String, is compared by
+                                identity (an exception's message is shared
+                                for it, sh_finalize) */ };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -3315,6 +3318,12 @@ static void sh_settle_env(ShareFacts *F) {
   }
 }
 
+/* does the identity query `name` compare node n, typed a String (a
+   receiver-less call has no node: -1)? `frozen?` asks the object's state,
+   not which object it is */
+static int sh_str_identity(Compiler *c, const char *name, int n) {
+  return n >= 0 && !is_frozen_query(name) && (c->ntype[n] == TY_STRING || c->ntype[n] == TY_STRBUF);
+}
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -3346,10 +3355,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (c->share_strings && is_identity_query(name) &&
       !((rt == TY_STRING || rt == TY_STRBUF) && share_builtin_overridden(c, "String", name))) {
     int identity = recv < 0 ? sh_self(F, c, sh_method_index(c, n)) : rv;
-    if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED;
+    if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED | (sh_str_identity(c, name, recv) ? SHE_STR_COMPARED : 0);
     if (argc == 1 && is_equality_name(name)) {
       int other = sh_val(F, c, argv[0]);
-      if (other >= 0) F->own[other] |= SHE_IDENTITY | SHE_COMPARED;
+      if (other >= 0) F->own[other] |= SHE_IDENTITY | SHE_COMPARED | (sh_str_identity(c, name, argv[0]) ? SHE_STR_COMPARED : 0);
     }
   }
   /* an instance variable kept on a String (`@x` in a String method, the
@@ -3668,6 +3677,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
         bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
       r = sh_join(F, r, sh_builtin(F, c, n, BSH_PACK, rv, blk, 1));
+    /* ...and a boxed receiver of a class that does not define the
+       reflection (`instance_variable_get`, `_set`) reads or stores the
+       layout's slot, as the call with no user target does */
+    int refl = bop_share_named(BOP_ANY_RECV, name);
+    if (refl == BSH_IVAR_GET || refl == BSH_IVAR_SET) return sh_join(F, r, sh_builtin(F, c, n, refl, rv, blk, 0));
     int share = 0, family = 0, container = 1;
     const BuiltinOp *row = NULL;
     TyKind plan_ret = TY_UNKNOWN;
@@ -3728,15 +3742,25 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (is_exc_message_name(name)) {
     /* Formatted exception text is a new String, not the stored message.
        User targets above retain their own return facts. */
-    if (c->share_strings && argc == 0 && blk < 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE &&
+    if (c->share_strings && blk < 0 &&
+        is_exception_full_message(name) &&
         (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
     /* (the renderings are no other value's method: off a boxed receiver
-       too, each is a new String) */
-    if (c->share_strings && argc == 0 && blk < 0 && is_exception_full_message(name) &&
+       too, each is a new String, with or without keywords) */
+    if (c->share_strings && blk < 0 && is_exception_full_message(name) &&
         (rt == TY_POLY || rt == TY_UNKNOWN)) return -1;
     return c->share_strings && is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F);
   }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
+    sh_exc_args(F, c, n);
+    return -1;
+  }
+  /* `Klass.exception(s)` and `e.exception(s)` make an exception that keeps s
+     as its message, as `Klass.new(s)` does */
+  if (c->share_strings && recv >= 0 && argc == 1 && blk < 0 && is_exception_factory(name) &&
+      !sh_has_targets(c, n) &&
+      (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))) ||
+       (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode))) {
     sh_exc_args(F, c, n);
     return -1;
   }
@@ -4585,10 +4609,17 @@ static void sh_finalize(ShareFacts *F) {
      hands to a consumer that keeps or mutates it, has to be the shared
      object; one that is only returned, yielded or captured is not. */
   unsigned char *compared = calloc((size_t)(n > 0 ? n : 1), 1);
-  for (int e = 0; e < n; e++)
-    if (F->own[e] & SHE_COMPARED) compared[sh_root(F, e)] = 1;
   for (int e = 0; e < n; e++) {
-    if (F->kind[e] == SHK_SELF && compared[sh_root(F, e)])
+    if (F->own[e] & SHE_COMPARED) compared[sh_root(F, e)] |= 1;
+    if (F->own[e] & SHE_STR_COMPARED) compared[sh_root(F, e)] |= 2;
+  }
+  /* The String an exception keeps as its message is #message's answer: one
+     the program compares by identity (`e.message.equal?(s)`) is the shared
+     object too, in the raise and in every name that holds it */
+  int excr = F->exc >= 0 ? sh_root(F, F->exc) : -1;
+  for (int e = 0; e < n; e++) {
+    if ((F->kind[e] == SHK_SELF && compared[sh_root(F, e)]) ||
+        (sh_root(F, e) == excr && (compared[excr] & 2)))
       F->flags[sh_root(F, e)] |= SHF_IDENTITY;
     /* a String that keeps instance variables is the object its table is
        keyed by, in every name that holds it */

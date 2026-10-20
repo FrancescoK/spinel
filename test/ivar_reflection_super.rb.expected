@@ -1,0 +1,17 @@
+"lg"
+"lg!"
+[:@n, :@n]
+10
+10
+true
+false
+false
+[:@n, :@log, :extra]
+:ours
+true
+[:@n, :@n, :@n, :removed]
+"lg"
+"pl"
+["lg?", "pl?"]
+"ex!"
+true

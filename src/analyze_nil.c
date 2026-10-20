@@ -1609,6 +1609,24 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
   }
 }
 
+/* The parameters of a lambda literal (`->(v) { }`): its callers are not seen,
+   so each object parameter may be nil, as a proc's are (nf_bind_block). */
+static void nf_bind_lambda(NF *f, int lam) {
+  const NodeTable *nt = f->nt;
+  int pn = nt_ref(nt, lam, "parameters");
+  if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) return;
+  static const char *const kinds[] = { "requireds", "optionals", "posts", "keywords", NULL };
+  int body = nt_ref(nt, lam, "body");
+  for (int o = 0; kinds[o]; o++) {
+    int n = 0; const int *ps = nt_arr(nt, pn, kinds[o], &n);
+    for (int i = 0; i < n; i++) {
+      const char *nm = nt_str(nt, ps[i], "name");
+      LocalVar *lv = nm ? nf_local_of(f, body >= 0 ? body : lam, nm) : NULL;
+      if (lv && nf_open(lv->obj_may_nil) && nf_tracked(f->c, lv->type)) nf_set(f, &lv->obj_may_nil, NFW_CALLER);
+    }
+  }
+}
+
 /* a `next` of block body n (not of a block or a method inside it) whose
    value may be nil */
 static int nf_next_nil(NF *f, int n, int depth) {
@@ -1705,6 +1723,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
       nf_set(f, &f->yield_nil[mi], nt_kind(nt, blk) != NK_BlockNode ? NFW_CALLER
              : nf_or(nf_list(f, nt_ref(nt, blk, "body")), nf_next_nil(f, nt_ref(nt, blk, "body"), 0)));
   }
+  NT_FOREACH_KIND(nt, NK_LambdaNode, id) nf_bind_lambda(f, id);
   /* `super(args)` binds the parent's, a bare `super` hands on the method's own */
   NT_FOREACH_KIND(nt, NK_SuperNode, id) {
     int mi = nf_plan(f, id, NULL, NULL);

@@ -321,6 +321,7 @@ int emit_strbuf_route_box(Compiler *c, int v, Buf *b);
 /* --share-strings: the boxed operand whose String a route answers, or -1
    (codegen_stmt.c) */
 int strbuf_route_box_operand(Compiler *c, int v);
+int kernel_string_operand(Compiler *c, int v);   /* String(x)'s x, else -1 */
 /* the deep-return pickup of a call publishing its handle: the handle
    (box 0) or a box of what the call answered (box 1) (codegen_stmt.c) */
 void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b);
@@ -358,9 +359,14 @@ int strbuf_route_clamp(Compiler *c, int v, int *ops);
    plus one, or zero when there is no route. */
 int strbuf_self_route_slot(Compiler *c, int v, int *uplus, Buf *out);
 /* --share-strings: an exception's message argument that reads a variable
-   holding the handle, which the exception then holds
+   holding the handle, which the exception then holds (exc_msg_handle), or
+   is any other String value the plan hands over as a handle, held in a
+   temp first (exc_msg_hold, closed by exc_msg_release)
    (codegen_call_exception.c) */
 int exc_msg_handle(Compiler *c, int arg, Buf *b);
+int exc_msg_holds(Compiler *c, int arg);
+int exc_msg_hold(Compiler *c, int arg, Buf *b, Buf *mh, int *mark);
+void exc_msg_release(Buf *b, int mark);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
 int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);

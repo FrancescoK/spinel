@@ -1,0 +1,34 @@
+raise s: true true true
+fail s: true true true
+raise Klass, s: true true true
+raise Klass, s, bt: true true true
+raise Klass, s, cause: true true true
+raise MyErr, s: true true true
+raise MyErr.new(s): true true true
+raise RuntimeError.new(s): true true true
+exception(s): true true true
+exception on an instance: true true true
+reader method: true true true
+attr_reader: true true true
+reader, Klass, s: true true true
+reader, Klass, s, bt: true true true
+reader, MyErr.new: true true true
+reader, RuntimeError.new: true true true
+super(reader): true true true
+parenthesized: true true true
+conditional: true true true
+itself: true true true
+String(): true true true
+to_s: true true true
+then: true true true
+hash element: true true true
+Array element: true true true
+a copy: false false false
+a literal: false false false
+true
+true
+true
+false
+false
+true
+true

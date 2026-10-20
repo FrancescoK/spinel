@@ -3177,10 +3177,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
              An ivar-bearing subclass needs its dedicated struct size (#2772). */
           const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
           const char *par = exc_builtin_parent(c, ci);
-          /* a shared String message is held as its handle (exc_msg_handle) */
+          /* a shared String message is held as its handle (exc_msg_hold) */
           Buf mh; memset(&mh, 0, sizeof mh);
-          int hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
-                   exc_msg_handle(c, argv[0], &mh);
+          int mk, hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
+                       exc_msg_hold(c, argv[0], b, &mh, &mk);
           if (hm) buf_printf(b, "((sp_%s *)sp_exc_attach_msg(", c->classes[ci].nivars > 0 ? c->classes[ci].c_name : "Exception");
           if (c->classes[ci].nivars > 0)
             buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
@@ -3195,6 +3195,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           else emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
           buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
           if (hm) buf_printf(b, ", %s))", mh.p);
+          if (hm) exc_msg_release(b, mk);
           free(mh.p);
         }
         return 1;
@@ -3235,14 +3236,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     }
     if (cn && is_exc_name(cn)) {
       if (emit_syserr_family_new(c, id, cn, argc, argv, b)) return 1;
-      Buf mh; memset(&mh, 0, sizeof mh);
-      int hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_handle(c, argv[0], &mh);
-      if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
-      buf_printf(b, "sp_exc_new(\"%s\", ", cn);
-      emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
-      buf_puts(b, ")");
-      if (hm) buf_printf(b, ", %s))", mh.p);
-      free(mh.p);
+      emit_exc_new_msg(c, cn, argc >= 1 ? argv[0] : -1, b);
       return 1;
     }
   }
@@ -3255,9 +3249,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     const char *qn = superclass_builtin_exc_name(nt, recv);
     if (qn) {
       if (emit_syserr_family_new(c, id, qn, argc, argv, b)) return 1;
-      buf_printf(b, "sp_exc_new(\"%s\", ", qn);
-      emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
-      buf_puts(b, ")");
+      emit_exc_new_msg(c, qn, argc >= 1 ? argv[0] : -1, b);
       return 1;
     }
   }

@@ -4747,6 +4747,19 @@ void emit_exc_msg_arg(Compiler *c, int arg, Buf *b) {
   else if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
   else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
 }
+/* A builtin exception class cn built with message argument arg (-1: none),
+   holding the handle of a shared String message (exc_msg_hold). */
+void emit_exc_new_msg(Compiler *c, const char *cn, int arg, Buf *b) {
+  Buf mh; memset(&mh, 0, sizeof mh);
+  int mk, hm = arg >= 0 && comp_ntype(c, arg) == TY_STRING && exc_msg_hold(c, arg, b, &mh, &mk);
+  if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
+  buf_printf(b, "sp_exc_new(\"%s\", ", cn);
+  emit_exc_msg_arg(c, arg, b);
+  buf_puts(b, ")");
+  if (hm) buf_printf(b, ", %s))", mh.p);
+  if (hm) exc_msg_release(b, mk);
+  free(mh.p);
+}
 
 /* Thread#raise / Fiber#raise: deliver an exception to the thread (it fires when
    the thread next runs) or inject it at the fiber's suspension point. The
@@ -7887,6 +7900,16 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     nt_node_set_ref((NodeTable *)nt, id, "block", fb1);
   }
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
+  /* --share-strings: a reflective read of a String ivar beside a user arm
+     answers the slot's box, a shared String's handle's, boxed as it is
+     (its bytes boxed anew are another String) */
+  if (ret == TY_POLY && bt == TY_STRING && repr_share_rule(c) && bop_share_named(BOP_ANY_RECV, name) == BSH_IVAR_GET)
+    bt = TY_POLY;
+  /* a reflection the program defines on Object is every object's, the
+     arm's receivers included: the arm is that method, and answers what it
+     does */
+  if (is_ivar_reflection_name(name) && comp_call_reaches_own_any(c, id, name))
+    bt = (TyKind)c->scopes[comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL)].ret;
   /* a writer's arm run for its effect (tr < 0), whose value is its
      argument's temp: the synthesized writers take the argument as it is,
      whatever the analysis recorded for an answer nothing reads */
@@ -13786,8 +13809,8 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
   const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
   const char *par = exc_builtin_parent(c, ci);
   Buf mh; memset(&mh, 0, sizeof mh);
-  int hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
-           exc_msg_handle(c, argv[0], &mh);
+  int mk, hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
+               exc_msg_hold(c, argv[0], b, &mh, &mk);
   if (hm) buf_printf(b, "((sp_%s *)sp_exc_attach_msg(", c->classes[ci].nivars > 0 ? c->classes[ci].c_name : "Exception");
   if (c->classes[ci].nivars > 0)
     buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
@@ -13814,6 +13837,7 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
   else buf_puts(b, "(&(\"\\xff\")[1])");
   buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
   if (hm) buf_printf(b, ", %s))", mh.p);
+  if (hm) exc_msg_release(b, mk);
   free(mh.p);
 }
 
@@ -14238,7 +14262,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int tex = clr_recv || clr_key ? ++g_tmp : 0;
       if (tex) buf_printf(b, "({ sp_Exception *_t%d = ", tex);
       Buf mh; memset(&mh, 0, sizeof mh);
-      int hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_handle(c, argv[0], &mh);
+      int mk, hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_hold(c, argv[0], b, &mh, &mk);
       if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
       if (argc >= 1) {
@@ -14259,6 +14283,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       else buf_puts(b, "(&(\"\\xff\")[1])");
       buf_puts(b, ")");
       if (hm) buf_printf(b, ", %s))", mh.p);
+      if (hm) exc_msg_release(b, mk);
       free(mh.p);
       if (tex) {
         buf_puts(b, ";");
@@ -23241,6 +23266,20 @@ static int operand_binds_handle(Compiler *c, int v, int harg) {
   return strbuf_poly_to_s(c, v) || repr_string_conversion_operand(c, v) >= 0;
 }
 
+/* --share-strings: is operand v the message of the `raise` or `fail` call id
+   (its second argument after a class, else its only one), a String
+   exc_msg_hold holds as a handle? Bound as its bytes, the exception was
+   built around a new handle of them, and `e.message` was another String
+   than the one raised. It is bound as the handle, run once, and read as that
+   handle's String (ran_first_bind_read). */
+static int operand_binds_exc_msg(Compiler *c, int id, int v) {
+  const char *name = nt_str(c->nt, id, "name");
+  int argc = 0;
+  const int *argv = call_args(c->nt, id, &argc);
+  return name && is_raise_alias(name) && nt_ref(c->nt, id, "receiver") < 0 && argc > 0 &&
+         v == argv[argc > 1 ? 1 : 0] && !arg_ran_first(v, 0) && exc_msg_holds(c, v);
+}
+
 /* --share-strings: is bound String operand v, among operand[0..nop), a
    call publishing the handle of a String the rule shares
    (call_publishes_shared_handle) before an operand that can change a
@@ -23542,6 +23581,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        const char * temp, #9758) */
     int bsh = operand[i] != harg &&
               (operand_binds_self_handle(c, operand[i]) || operand_binds_boxed_to_s(c, id, operand[i]) ||
+               operand_binds_exc_msg(c, id, operand[i]) ||
                (operand[i] == recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
                 !arg_ran_first(operand[i], 0) && strbuf_poly_user_base(c, operand[i]) >= 0) ||
                /* (...and an Object method's `@x` through its boxed self that
@@ -29529,7 +29569,7 @@ void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   /* --share-strings: a message read from a variable holding the shared
      handle is held as that handle (exc_msg_handle), as `C.new(s)` holds it */
   Buf mh; memset(&mh, 0, sizeof mh);
-  int hm = comp_ntype(c, arg) == TY_STRING && exc_msg_handle(c, arg, &mh);
+  int mk, hm = comp_ntype(c, arg) == TY_STRING && exc_msg_hold(c, arg, b, &mh, &mk);
   if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
   buf_puts(b, "sp_exc_exception((sp_Exception *)(");
   if (tr) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
@@ -29545,6 +29585,7 @@ void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   }
   buf_puts(b, ")");
   if (hm) buf_printf(b, ", %s))", mh.p);
+  if (hm) exc_msg_release(b, mk);
   free(mh.p);
   if (tr) buf_puts(b, "; })");
 }

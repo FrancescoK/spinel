@@ -286,10 +286,19 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
   }
   Repr r = repr_of(c, v);
   int bx, u = strbuf_srange_tail(c, v);
+  /* (a conversion that answers its String (`m.message.itself`,
+     `String(m.message)`) has the identity of the String it converts) */
+  int ev = v;
+  for (;;) {
+    int x = repr_string_conversion_operand(c, ev);
+    if (x < 0) x = kernel_string_operand(c, ev);
+    if (x < 0) break;
+    ev = unwrap_parens(c, x);
+  }
   sf->cty = TY_POLY;
   if (form != SPF_HANDLE) { }
-  else if (exc_message_identity_operand(c, v) || exc_message_box_operand(c, v)) {
-    emit_exc_message_idbox(c, v, b);
+  else if (exc_message_identity_operand(c, ev) || exc_message_box_operand(c, ev)) {
+    emit_exc_message_idbox(c, ev, b);
     return SPF_HANDLE;
   }
   else if (r.kind == RK_BOXED || r.strbuf_src == RS_SLOT_POLY || face_str_bang_call(c, v) || u >= 0) {
@@ -487,6 +496,55 @@ static void str_box_note(StrForm *sf, int rf, int rw) {
   sf->rw = rw;
 }
 
+/* --share-strings: Kernel#String of a boxed value (`String(v)`), boxed: a
+   String's own box, a plain String's or a shared handle's, which is the
+   String itself (String(s) answers s), else the String the value's #to_str
+   or #to_s answers, boxed as its bytes. Boxed as the bytes of a handle's
+   String it came out as a copy that a change through the result never
+   reached the original by. 1 with the box written; 0, nothing emitted, for
+   any other operand route (`+y`, `y.to_s`). */
+/* Does a class of the program define #to_str, and does each such method
+   publish the handle of the String it answers (Scope.ret_handle), which
+   String(o) then hands on as it is? */
+static int str_to_str_publishes(Compiler *c) {
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_chain(c, k, "to_str", NULL);
+    if (mi < 0) continue;
+    if (!scope_ret_handle(c, mi)) return 0;
+    any = 1;
+  }
+  return any;
+}
+static int str_box_kernel_string(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int x = strbuf_route_box_operand(c, v);
+  if (x < 0 || kernel_string_operand(c, v) < 0) return 0;
+  size_t at = b->len;
+  int t = ++g_tmp;
+  buf_puts(b, "({ ");
+  t = hold_operand(c, x, TY_POLY, 1, t, 1, " ", b);
+  if (str_to_str_publishes(c)) {
+    /* an object's #to_str answers a String of the program's, whose handle the
+       method published: that String is String(o)'s answer */
+    buf_printf(b, "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : ({ "
+                  "_sp_ret_strbuf = NULL; const char *_s%d = sp_poly_check_str(_t%d); "
+                  "_s%d ? (_sp_ret_strbuf ? ",
+               t, t, t, t, t, t, t);
+    str_box_handle(b, "(sp_String *)_sp_ret_strbuf");
+    buf_printf(b, " : sp_box_str(_s%d)) : sp_box_str(sp_poly_to_s(_t%d)); }); })", t, t);
+  }
+  else
+    buf_printf(b, "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : sp_box_str(({ "
+                  "const char *_s%d = sp_poly_check_str(_t%d); _s%d ? _s%d : sp_poly_to_s(_t%d); })); })",
+               t, t, t, t, t, t, t, t, t);
+  if (g_share_check) {
+    share_check_declare_reads(b, at, v);
+    share_check_declare_reads(b, at, x);
+  }
+  return 1;
+}
+
 /* --share-strings: the box face of a String value (or one the rule
    holds as the handle), by its producer's kind (share.h's SPK_*), asked
    where it is boxed; 0 with nothing emitted for any other value:
@@ -520,6 +578,10 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
       if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
       else emit_expr(c, v, b);
       view_pop(c, sv);
+      str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && emit_strbuf_route_box(c, node, b)) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
       return 1;
     }
@@ -561,7 +623,8 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
      pickup, boxed, where the bytes boxed whole were a copy that a later
      change to the String through the receiver never reached */
   case SPK_PUBLISHED: {
-    /* only a call to user methods, each publishing on its return: a builtin
+    /* only a call to user methods, each publishing on its return (or the
+       Kernel#String of an object, which calls its #to_str): a builtin
        (ENV.fetch with a default) never clears or sets the channel, so the
        pickup could take a handle an earlier call left there. A read into a
        buffer (strbuf_io_outbuf) is the builtin that does: it answers the
@@ -569,7 +632,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
     int u = unwrap_parens(c, node), tg[CPT_MAX];
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
         nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
-        (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0) &&
+        (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0 || kernel_string_operand(c, u) >= 0) &&
         strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
         !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
       str_box_open(b, 1);
@@ -592,7 +655,13 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
     }
     return 1;
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_COND: case SPK_SEQUENCE:
+  case SPK_OPERAND:
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && str_box_kernel_string(c, node, b)) {
+      str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
+  case SPK_ASSIGN: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;
   }

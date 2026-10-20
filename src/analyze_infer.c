@@ -6286,6 +6286,9 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
     const char *a0ty = nt_type(nt, argv[0]);
+    /* a class of the program's that defines the method answers it: anything,
+       beside the layout's read, so the call is boxed */
+    if (poly_recv_defines(c, id, name)) { *out = TY_POLY; return 1; }
     /* a computed name: whichever field it names when it runs, boxed (#8219) */
     if (argc == 1 && !(a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode")))) { *out = TY_POLY; return 1; }
     if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
@@ -6318,19 +6321,20 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      answered per class, a bare Object from its own table */
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
       sp_streq(name, "instance_variable_defined?") && argc == 1) {
-    /* a literal name, or a computed one (#8219) */
-    { *out = TY_BOOL; return 1; }
+    /* a literal name, or a computed one (#8219); a class's own method of the
+       name answers what it likes */
+    { *out = poly_recv_defines(c, id, name) ? TY_POLY : TY_BOOL; return 1; }
   }
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
       sp_streq(name, "instance_variables") && argc == 0 &&
       nt_ref(nt, id, "block") < 0)
-    { *out = TY_POLY_ARRAY; return 1; }
+    { *out = poly_recv_defines(c, id, name) ? TY_POLY : TY_POLY_ARRAY; return 1; }
 
   /* The row supplies the answer (a set's is its value, BOPR_ARG1). A
      builtin class's own ivar access answers the row's whatever the receiver
      kind, and a read of a value whose ivars the runtime's map can hold is
      whatever was stored, once the program can store one. */
-  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name))) {
+  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name)) && !comp_object_defines(c, name)) {
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
       { *out = TY_POLY; return 1; }
@@ -8805,7 +8809,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       !(rt == TY_POLY && an_user_defines_method(c, name)))
     return TY_NIL;
   if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      ty_is_object(rt)) return TY_BOOL;
+      ty_is_object(rt) && !comp_call_reaches_own(c, id, ty_object_class(rt), name)) return TY_BOOL;
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding"))
     return TY_POLY;  /* a boxed Encoding value */
   if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_FLOAT) && argc == 1 &&
