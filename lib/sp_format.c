@@ -493,11 +493,44 @@ static sp_rat_wide sp_rat_pow2(int e) {
   }
   return r;
 }
+/* The best rational approximation of |x| whose terms fit in sp_int: the last
+   convergent of x's continued fraction that fits, or the semiconvergent past
+   it when that is the closer one (the bounded best approximation). x is
+   positive and below INTPTR_MAX. */
+static sp_Rational sp_rat_best_bounded(long double x) {
+  const long double lim = (long double)INTPTR_MAX;
+  long double h0 = 0, h1 = 1, k0 = 1, k1 = 0;     /* convergents h1/k1 (current), h0/k0 (previous) */
+  long double v = x;
+  for (int i = 0; i < 128; i++) {
+    long double a = floorl(v);
+    long double h2 = a * h1 + h0, k2 = a * k1 + k0;
+    if (h2 > lim || k2 > lim) {
+      /* the largest t with t*h1+h0 and t*k1+k0 in range, a semiconvergent */
+      long double t = floorl((lim - h0) / (h1 > 0 ? h1 : 1));
+      long double tk = k1 > 0 ? floorl((lim - k0) / k1) : t;
+      if (tk < t) t = tk;
+      if (t >= 1) {
+        long double hs = t * h1 + h0, ks = t * k1 + k0;
+        if (fabsl(x - hs / ks) < fabsl(x - h1 / k1)) { h1 = hs; k1 = ks; }
+      }
+      break;
+    }
+    h0 = h1; k0 = k1; h1 = h2; k1 = k2;
+    long double fr = v - a;
+    if (fr == 0 || h1 / k1 == x) break;
+    v = 1 / fr;
+  }
+  sp_Rational r; r.num = (sp_int)h1; r.den = (sp_int)k1;
+  return r;
+}
 /* Float#to_r : the exact rational value of the double. A finite double equals
-   m * 2^e for a 53-bit integer mantissa m, so the conversion is exact. When the
-   exact numerator/denominator does not fit in sp_int (huge magnitude or a tiny
-   subnormal), it raises RangeError -- spinel's Rational is int64/int64 and does
-   not promote to a Bignum (matching the existing Rational-overflow behavior). */
+   m * 2^e for a 53-bit integer mantissa m, so the conversion is exact where its
+   terms fit in sp_int. A denominator past sp_int (a fraction finer than
+   1/2^63, or than 1/2^31 on a 32-bit build, as 0.1 is) has no exact form here:
+   spinel's Rational does not promote to a Bignum outside --int-overflow=promote,
+   so it answers the closest rational whose terms fit (sp_rat_best_bounded:
+   0.1 is 1/10 there, a value below the finest step 0). A magnitude past sp_int
+   raises RangeError, as the Integer it would be does. */
 sp_Rational sp_float_to_rational(sp_float f) {
   if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
   if (f == 0.0) { sp_Rational z; z.num = 0; z.den = 1; return z; }
@@ -514,7 +547,12 @@ sp_Rational sp_float_to_rational(sp_float f) {
       sp_raise_cls("RangeError", "Rational out of sp_int range");
     return sp_rational_new_wide(num * p, 1);
   }
-  return sp_rational_new_wide(num, sp_rat_pow2(-e));
+  /* the reduced exact form when it fits: num odd over 2^-e */
+  while (e < 0 && (num & 1) == 0) { num /= 2; e++; }
+  if (-e < (int)(sizeof(sp_int) * 8 - 1)) return sp_rational_new_wide(num, sp_rat_pow2(-e));
+  sp_Rational r = sp_rat_best_bounded(fabsl((long double)f));
+  if (f < 0) r.num = -r.num;
+  return r;
 }
 /* Simplest p/q with lo <= p/q <= hi, for 0 < lo <= hi. Classic continued-fraction
    "simplest rational in an interval" recursion; the convergent depth is bounded by
