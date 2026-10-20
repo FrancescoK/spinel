@@ -1728,7 +1728,11 @@ class of the program's but a reopened builtin's). Where an identity Set cannot b
 followed so -- it is handed on, its variable is assigned another Set, it is
 a parameter, a call answering it is kept, or a reflective read names its
 variable -- every Set shares one class, and the check covers the program's
-other Sets too.
+other Sets too. A `send` or `public_send` of a computed name counts as a
+`compare_by_identity` call only in a program that spells that name; a name
+listed only in a constant that is read as `K.include?(name)`
+(`K = %i[clear compare_by_identity].to_set.freeze`) does not count, since no
+computed call can be handed it.
 
 #### `String#equal?` and literal identity
 

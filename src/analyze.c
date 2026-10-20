@@ -44329,6 +44329,55 @@ static int sid_operator_answer(Compiler *c, int v) {
   if (sp_streq(nm, "[]") || sp_streq(nm, "[]=")) return 0;   /* an element read answers any member */
   return !an_user_defines_method(c, nm);
 }
+/* Is the name literal lit only a member of a constant's list the program
+   asks membership of (`K = %i[clear compare_by_identity].to_set.freeze`,
+   read only as `K.include?(name)`)? No computed call is handed such a
+   name. A read of K that does anything else, or a list written another
+   way, spells it. The list goes through to_a, to_set, freeze or Set.new
+   on its way to K. */
+static int sid_name_only_member(const NodeTable *nt, const int *parent, int lit) {
+  int u = parent[lit];
+  if (u < 0 || nt_kind(nt, u) != NK_ArrayNode) return 0;
+  for (int d = 0; d < 8; d++) {
+    int q = parent[u];
+    if (q < 0) return 0;
+    NodeKind qk = nt_kind(nt, q);
+    if (qk == NK_CallNode && an_unparen(nt, nt_ref(nt, q, "receiver")) == u) {
+      const char *m = nt_str(nt, q, "name");
+      if (!m || !(sp_streq(m, "to_set") || sp_streq(m, "to_a") || sp_streq(m, "freeze")) ||
+          nt_ref(nt, q, "arguments") >= 0 || nt_ref(nt, q, "block") >= 0) return 0;
+      u = q;
+      continue;
+    }
+    /* `Set.new(list)`, as `list.to_set` is lowered */
+    if (nt_type(nt, q) && sp_streq(nt_type(nt, q), "ArgumentsNode")) {
+      int an = 0; const int *av = nt_arr(nt, q, "arguments", &an);
+      int sn = parent[q], sr = sn >= 0 ? nt_ref(nt, sn, "receiver") : -1;
+      if (an != 1 || av[0] != u || sn < 0 || nt_kind(nt, sn) != NK_CallNode || nt_ref(nt, sn, "arguments") != q ||
+          !nt_str(nt, sn, "name") || !sp_streq(nt_str(nt, sn, "name"), "new") || nt_ref(nt, sn, "block") >= 0 ||
+          sr < 0 || nt_kind(nt, sr) != NK_ConstantReadNode || !sp_streq(nt_str(nt, sr, "name"), "Set")) return 0;
+      u = sn;
+      continue;
+    }
+    if (qk != NK_ConstantWriteNode || nt_ref(nt, q, "value") != u) return 0;
+    const char *kn = nt_str(nt, q, "name");
+    if (!kn) return 0;
+    for (int h = 0; h < 2; h++)
+      NT_FOREACH_KIND(nt, h ? NK_ConstantPathNode : NK_ConstantReadNode, r) {
+        const char *rn = nt_str(nt, r, "name");
+        const char *leaf = rn ? strrchr(rn, ':') : NULL;
+        leaf = leaf ? leaf + 1 : rn;
+        if (!leaf || !sp_streq(leaf, kn)) continue;
+        int w = r, rp = parent[w];
+        while (rp >= 0 && nt_kind(nt, rp) == NK_ParenthesesNode) { w = rp; rp = parent[w]; }
+        if (rp < 0 || nt_kind(nt, rp) != NK_CallNode || an_unparen(nt, nt_ref(nt, rp, "receiver")) != r) return 0;
+        const char *m = nt_str(nt, rp, "name");
+        if (!m || !(sp_streq(m, "include?") || sp_streq(m, "member?") || sp_streq(m, "==="))) return 0;
+      }
+    return 1;
+  }
+  return 0;
+}
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
@@ -44341,13 +44390,18 @@ static void refuse_set_identity_members(Compiler *c) {
      method(name) wrapper (__bam_*) -- is made for every name the program
      defines (Rack::Headers defines its own compare_by_identity): such a
      call is no Set's unless the program spells the name, as
-     `x.method(:compare_by_identity)` would */
-  int spelled = 0;
+     `x.method(:compare_by_identity)` would -- and a name only listed in a
+     constant the program asks membership of is not handed to any call */
+  int spelled = 0, *lit_parent = NULL;
   for (int k = 0; k < 2 && !spelled; k++)
     NT_FOREACH_KIND(nt, k ? NK_StringNode : NK_SymbolNode, lit) {
       const char *v = nt_str(nt, lit, k ? "content" : "value");
-      if (v && sp_streq(v, "compare_by_identity")) { spelled = 1; break; }
+      if (!v || !sp_streq(v, "compare_by_identity")) continue;
+      if (!lit_parent) lit_parent = an_parent_map(nt);
+      if (!lit_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      if (!sid_name_only_member(nt, lit_parent, lit)) { spelled = 1; break; }
     }
+  free(lit_parent);
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || asked || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
