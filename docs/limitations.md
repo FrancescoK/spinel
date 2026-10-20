@@ -1022,6 +1022,11 @@ String-keyed, String-valued type. The promotion preserves the Hash and stored
 String identities through callers and ivars. RBS-pinned returns and methods
 with nonempty or alternate Hash producers keep their existing inferred types.
 
+The shared String check for a boxed `[]=` store excludes Struct classes
+that the receiver's class facts rule out. A Hash or Array store is not
+refused because of a Struct that these facts exclude. The check still
+refuses a possible Struct member that cannot hold the shared String handle.
+
 A boxed call may also compose an exact String builtin
 row with same-named user-method returns when the settled dispatch plan accounts
 for both. For example, a blockless two-argument `String#sub` can return a fresh
