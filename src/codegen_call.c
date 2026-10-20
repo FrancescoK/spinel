@@ -2346,6 +2346,15 @@ int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
   return 0;
 }
 
+/* 1 iff a class of the program's own has a class method `name`: a Class or
+   Module read out of a container answers it through the poly dispatch. */
+int poly_name_cmethod_claimed(Compiler *c, const char *name) {
+  if (g_poly_builtin_arm) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return 1;
+  return 0;
+}
+
 /* 1 iff a user class that descends from an exception class defines `name`,
    as a method or an attr_reader (#8376): a rescued value is typed
    TY_EXCEPTION rather than as its user class, so the ordinary user-method

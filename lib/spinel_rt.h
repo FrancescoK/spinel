@@ -5283,6 +5283,16 @@ static sp_RbVal sp_poly_arg(sp_RbVal v, const char *m) {
   if (sp_poly_numeric_p(v) || sp_poly_is_rat_kind(v)) return sp_poly_negative_p(v) ? sp_box_float(3.141592653589793) : sp_box_int(0);
   sp_raise_poly_nomethod(m, v);
 }
+/* Numeric#i on a boxed value: 0+vi, as the typed Integer, Float and Rational
+   receivers build it; NoMethodError for any other kind (a Complex has no #i;
+   a Bignum or a big Rational has one in CRuby, which this does not build). */
+static sp_RbVal sp_poly_i(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return sp_box_complex((sp_Complex){0.0, (sp_float)v.v.i, 0});
+  if (v.tag == SP_TAG_FLT) return sp_box_complex((sp_Complex){0.0, v.v.f, SP_CPLX_IM_F});
+  if (sp_poly_is_rational(v) && v.v.p)
+    return sp_box_complex((sp_Complex){0.0, sp_rational_to_f(*(sp_Rational *)v.v.p), SP_CPLX_IM_F});
+  sp_raise_poly_nomethod("i", v);
+}
 static sp_PolyArray *sp_poly_rect(sp_RbVal v, const char *m) {
   int cx = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX;
   if (!cx && !sp_poly_numeric_p(v) && !sp_poly_is_rat_kind(v)) sp_raise_poly_nomethod(m, v);

@@ -1,0 +1,9 @@
+(0+42i)
+(0+2.5i)
+(0-3i)
+(0-1.5i)
+i 4: undefined method 'i' for an instance of Complex
+i 5: undefined method 'i' for an instance of String
+i 6: undefined method 'i' for nil
+(1+42i)
+2.5
