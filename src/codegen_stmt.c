@@ -1623,6 +1623,18 @@ static int strbuf_route_inject(Compiler *c, int v) {
          (repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle ||
           repr_of_slot(c, scope_local(bsc, rename_local(p0))).kind == RK_BOXED);
 }
+/* Kernel#String's operand when call v is `String(x)` with no method of the
+   program's own of the name (it converts x: its #to_str, then its #to_s),
+   else -1. */
+int kernel_string_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  if (!nm || !is_string_class_name(nm) || nt_ref(nt, v, "receiver") >= 0 || nt_ref(nt, v, "block") >= 0 ||
+      call_plain_argc(c, v) != 1 || comp_method_index(c, nm) >= 0 || bare_call_class_owned(c, v)) return -1;
+  int na = 0;
+  return call_args(nt, v, &na)[0];
+}
 /* --share-strings: a value route that answers the String it is handed, not
    a new one -- `+s` (s itself unless s is frozen), `String(s)` (s itself, ""
    for nil), `s.then { |x| ... }` (its block's value), `s.tap { |x| ... }`

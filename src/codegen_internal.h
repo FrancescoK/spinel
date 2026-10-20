@@ -318,6 +318,7 @@ int emit_strbuf_route_box(Compiler *c, int v, Buf *b);
 /* --share-strings: the boxed operand whose String a route answers, or -1
    (codegen_stmt.c) */
 int strbuf_route_box_operand(Compiler *c, int v);
+int kernel_string_operand(Compiler *c, int v);   /* String(x)'s x, else -1 */
 /* the deep-return pickup of a call publishing its handle: the handle
    (box 0) or a box of what the call answered (box 1) (codegen_stmt.c) */
 void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b);

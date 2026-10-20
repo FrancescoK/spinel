@@ -270,14 +270,8 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
      `String(m.message)`) has the identity of the String it converts) */
   int ev = v;
   for (;;) {
-    int u2 = unwrap_parens(c, ev), x = repr_string_conversion_operand(c, ev);
-    if (x < 0 && u2 >= 0 && nt_kind(nt, u2) == NK_CallNode && nt_ref(nt, u2, "receiver") < 0 &&
-        nt_ref(nt, u2, "block") < 0 && is_string_class_name(nt_str(nt, u2, "name")) &&
-        call_plain_argc(c, u2) == 1 && comp_method_index(c, nt_str(nt, u2, "name")) < 0 &&
-        !bare_call_class_owned(c, u2)) {
-      int na = 0;
-      x = call_args(nt, u2, &na)[0];
-    }
+    int x = repr_string_conversion_operand(c, ev);
+    if (x < 0) x = kernel_string_operand(c, ev);
     if (x < 0) break;
     ev = unwrap_parens(c, x);
   }
@@ -494,9 +488,8 @@ static int str_to_str_publishes(Compiler *c) {
 }
 static int str_box_kernel_string(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
-  int x = strbuf_route_box_operand(c, v), u = unwrap_parens(c, v);
-  if (x < 0 || nt_kind(nt, u) != NK_CallNode || nt_ref(nt, u, "receiver") >= 0 ||
-      !is_string_class_name(nt_str(nt, u, "name"))) return 0;
+  int x = strbuf_route_box_operand(c, v);
+  if (x < 0 || kernel_string_operand(c, v) < 0) return 0;
   size_t at = b->len;
   int t = ++g_tmp;
   buf_puts(b, "({ ");
@@ -600,7 +593,8 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
      pickup, boxed, where the bytes boxed whole were a copy that a later
      change to the String through the receiver never reached */
   case SPK_PUBLISHED: {
-    /* only a call to user methods, each publishing on its return: a builtin
+    /* only a call to user methods, each publishing on its return (or the
+       Kernel#String of an object, which calls its #to_str): a builtin
        (ENV.fetch with a default) never clears or sets the channel, so the
        pickup could take a handle an earlier call left there. A read into a
        buffer (strbuf_io_outbuf) is the builtin that does: it answers the
@@ -608,7 +602,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
     int u = unwrap_parens(c, node), tg[CPT_MAX];
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
         nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
-        (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0) &&
+        (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0 || kernel_string_operand(c, u) >= 0) &&
         strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
         !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
       str_box_open(b, 1);

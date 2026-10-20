@@ -31,3 +31,17 @@ p r
 a = [pr.call(ts), 1]
 a[0] << "#"
 p s, a[0].equal?(s)
+
+# a block, a proc and a lambda that only ever see the object: the parameter
+# is typed, and the String #to_str answers is still the answer
+t2 = ToStr.new(s)
+r = "a".pm(t2) { |v| String(v) }
+r << "$"
+p s, r.equal?(s)
+only = proc { |v| String(v) }
+r = only.call(t2)
+r << "%"
+p s, r.equal?(s)
+r = ->(v) { String(v) }.(t2)
+r << "^"
+p s, r.equal?(s)
