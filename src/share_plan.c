@@ -531,6 +531,28 @@ static int share_plan_recv_answers_by_targets(Compiler *c, int u, const char *na
   }
   return !ty_is_object(rt) || share_plan_below_has(c, ty_object_class(rt), name);
 }
+/* See share.h. The pickup resets the side channel before the call and
+   takes what is there after it, else a new handle of the bytes, which for
+   a literal is the literal's own. Such a target publishes nothing, and
+   neither does anything that runs between the reset and its return: no
+   argument, no receiver but self, a body that computes nothing (a
+   condition or a call may publish another String's handle, which the
+   pickup would then read as this target's answer). */
+int share_plan_literal_pickup_clean(Compiler *c, int v, int mi) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, v);
+  if (u < 0 || nt_kind(nt, u) != NK_CallNode) return 0;
+  int recv = nt_ref(nt, u, "receiver");
+  const char *nm = nt_str(nt, u, "name");
+  if ((recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) || nt_ref(nt, u, "arguments") >= 0 ||
+      nt_ref(nt, u, "block") >= 0 || !nm || mi <= 0 || mi >= c->nscopes || !scope_ret_str_literal(c, mi))
+    return 0;
+  int b = c->scopes[mi].body, bn = 1;
+  const int *bv = &b;
+  if (b >= 0 && nt_kind(nt, b) == NK_StatementsNode) bv = nt_arr(nt, b, "body", &bn);
+  return bv && bn == 1 && bv[0] >= 0 && nt_kind(nt, bv[0]) == NK_StringNode &&
+         share_plan_recv_answers_by_targets(c, u, nm);
+}
 /* Is v a call every target of which answers a String literal on every
    path (scope_ret_str_literal)? A frozen literal keeps one identity: its
    bytes are the literal's own, and a handle made over them is the
