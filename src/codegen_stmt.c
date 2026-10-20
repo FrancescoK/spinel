@@ -24311,7 +24311,12 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
        for a copy; a typed String container keeps a copy of each String it
        is handed (bad_lit refuses its literal) */
     if (kind == SHFL_ELEM && share_node_peeked(c, site)) return 1;
-    if (kind == SHFL_ELEM && site >= 0 && repr_typed_str_container(comp_ntype(c, site))) return 0;
+    /* nor does a typed one no holder keeps and UNKNOWN does not reach:
+       its copies die with it (repr_str_literal_shares demands only an
+       anchored literal's), as in `w.attributes` when the call's value, the
+       Hash literal the method answers, is dropped */
+    if (kind == SHFL_ELEM && site >= 0 && repr_typed_str_container(comp_ntype(c, site)))
+      return (nt_kind(nt, site) == NK_ArrayNode || nt_kind(nt, site) == NK_HashNode) && !share_node_anchored(c, site);
     return strbuf_box_carries(c, v);
   case SHFL_ARG:
     /* an argument is bound by the handle face (a parameter that is the
