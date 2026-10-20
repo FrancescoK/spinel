@@ -1,4 +1,5 @@
-# A lambda's value is the caller's String boxed as bytes: refused.
+# A lambda answering the caller's String, read through a boxed to_s: the
+# change reaches the caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n

@@ -1,5 +1,5 @@
-# A local receiver written by a multiple assignment is no fresh String:
-# refused.
+# A local written by a multiple assignment holds the caller's String, read
+# through a boxed to_s: the change reaches the caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n

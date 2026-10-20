@@ -1,5 +1,5 @@
-# An ivar written from a parameter holds a String boxed as bytes: the ivar's
-# writes are looked at one level only, so it stays refused.
+# An instance variable written from a parameter holds the String a boxed
+# to_s hands on: the change reaches the caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n

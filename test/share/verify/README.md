@@ -7,7 +7,8 @@ checking on and off, then runs each executable once against its expected
 output, without GC stress. These files have no sharing markers and do not
 join `share-strings-test`. The directory keeps 811 of the original 814
 programs after normalized-shape deduplication, plus the fresh-argument
-checker regression and 11 former conflict examples fixed on master.
+checker regression, 11 former conflict examples fixed on master and 10
+former refusal examples that compile since the route carries them.
 
 `conflicts/` contains two executable examples of existing compiler disagreements.
 Their `.expected` files also contain CRuby's output, but master answers

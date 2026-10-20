@@ -1,5 +1,5 @@
-# A local receiver written from a parameter holds whatever the caller boxed:
-# its writes are looked at one level only, so it stays refused.
+# A local written from a parameter holds the caller's String, read through
+# a boxed to_s: the change reaches the caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n

@@ -1,5 +1,6 @@
-# A call answering its String argument hands it to the boxed to_s as bytes,
-# so the caller's String would not see the change: refused.
+# A String handed through a call that answers its argument, then read
+# through a boxed to_s that is the String itself: the change reaches the
+# caller's String.
 class Own
   def initialize(n) = (@n = n)
   def to_s = @n
