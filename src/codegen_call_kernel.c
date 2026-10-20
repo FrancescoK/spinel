@@ -317,10 +317,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       /* (an Integer that can be nil hands its nil on: Integer(nil, exception: false) is nil) */
       if (at0 == TY_INT && ac == 1) { oint_open(c, id, TY_INT, b); emit_oint_expr(c, av[0], TY_INT, b); oint_close(c, id, b); return 1; }
       /* a user object, a boxed value that may hold one, a Float (NaN and
-         Infinity are nil, CRuby's FloatDomainError swallowed) or a Rational
-         converts through the runtime's Kernel#Integer path, nil for every
+         Infinity are nil, CRuby's FloatDomainError swallowed), a Rational or
+         a Complex converts through the runtime's Kernel#Integer path, nil for every
          failure */
-      if (ty_is_object(at0) || at0 == TY_POLY || ((at0 == TY_FLOAT || at0 == TY_RATIONAL) && ac == 1)) {
+      if (ty_is_object(at0) || at0 == TY_POLY || ((at0 == TY_FLOAT || at0 == TY_RATIONAL || at0 == TY_COMPLEX) && ac == 1)) {
         /* the runtime answers an sp_oint for an Integer-typed call */
         int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) oint_open(c, id, TY_INT, b);
@@ -338,7 +338,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (at0 == TY_STRING) { buf_puts(b, "sp_str_to_f_lenient("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at0 == TY_INT) { buf_puts(b, "sp_ofloat_of((sp_float)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "sp_ofloat_of("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
-      else if (ty_is_object(at0) || at0 == TY_POLY || at0 == TY_RATIONAL) {
+      else if (ty_is_object(at0) || at0 == TY_POLY || at0 == TY_RATIONAL || at0 == TY_COMPLEX) {
         buf_puts(b, "sp_poly_Float_ex("); emit_boxed(c, av[0], b); buf_puts(b, ", 0)");
       }
       else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_ofloat_nil())"); }
@@ -455,11 +455,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else if (at == TY_RATIONAL) {
         buf_puts(b, "sp_rational_to_f("); emit_expr(c, av[0], b); buf_puts(b, ")");
       }
+      /* a Complex is Complex#to_f: its real part, or RangeError naming it
+         for an imaginary part that is not an exact zero */
       else if (at == TY_COMPLEX) {
-        int tc = ++g_tmp;
-        buf_printf(b, "({ sp_Complex _t%d = ", tc); emit_expr(c, av[0], b);
-        buf_printf(b, "; if (_t%d.im != 0) sp_raise_cls(\"RangeError\", "
-                      "\"can't convert into Float\"); _t%d.re; })", tc, tc);
+        buf_puts(b, "sp_complex_to_f("); emit_expr(c, av[0], b); buf_puts(b, ")");
       }
       /* a user object converts through its own #to_f, the answer judged by
          the runtime as CRuby judges it */
