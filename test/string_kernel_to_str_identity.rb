@@ -45,3 +45,12 @@ p s, r.equal?(s)
 r = ->(v) { String(v) }.(t2)
 r << "^"
 p s, r.equal?(s)
+
+# ...and a lambda that is also called with nil: its parameter may be nil
+f = ->(v) { String(v) }
+p f.(nil)
+r = f.(t2)
+r << "&"
+p s, r.equal?(s)
+g = ->(v) { Array(v) }
+p g.(nil)
