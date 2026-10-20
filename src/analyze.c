@@ -24256,6 +24256,24 @@ static int bl_alias(const NodeTable *nt, int n, const char *name, int depth) {
   return bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth);
 }
 static int bl_walk(Compiler *c, int n, const char *name, int depth, int use, int ret);
+/* Does the subtree at n read or write a local of the name, at any block
+   depth? (a block's or lambda's parameter list: a default such as
+   `|k = out|` hands the String to another name) */
+static int bl_names_local(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) &&
+      sp_streq(nt_str(nt, n, "name"), name))
+    return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (bl_names_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (bl_names_local(nt, av[j], name)) return 1;
+  }
+  return 0;
+}
 /* each child of n but skip, used as BL_OTHER; ret is the use a `return`'s
    argument gets: BL_RET where it leaves the method, BL_OTHER inside a
    lambda or a block that may run as one */
@@ -24298,6 +24316,7 @@ static int bl_call(Compiler *c, int n, const char *name, int depth, int use, int
   int bk = nt_ref(nt, n, "block");
   if (bk < 0 || nt_kind(nt, bk) != NK_BlockNode) return bl_children(c, n, -1, name, depth, ret);
   int disc = an_iter_discards_block(c, n);
+  if (bl_names_local(nt, nt_ref(nt, bk, "parameters"), name)) return 0;
   return bl_children(c, n, bk, name, depth, ret) &&
          bl_stmts(c, nt_ref(nt, bk, "body"), name, depth + 1, disc ? BL_DROP : BL_OTHER, disc ? ret : BL_OTHER);
 }
@@ -24334,6 +24353,7 @@ static int bl_walk(Compiler *c, int n, const char *name, int depth, int use, int
   case NK_BlockNode: case NK_LambdaNode:
     /* (a lambda, or a block reached other than as its call's literal
        block: a `return` in it may answer its caller) */
+    if (bl_names_local(nt, nt_ref(nt, n, "parameters"), name)) return 0;
     return bl_stmts(c, nt_ref(nt, n, "body"), name, depth + 1, BL_OTHER, BL_OTHER);
   case NK_CallNode: return bl_call(c, n, name, depth, use, ret);
   default: break;
