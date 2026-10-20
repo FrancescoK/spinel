@@ -3618,23 +3618,15 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else emit_typed_elem_value(c, argv[0], ty_array_elem(fill_rt), b);
       buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
       if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
-        /* fill(val, range): use range as index span */
-        int tr = ++g_tmp, te = ++g_tmp;
-        buf_printf(b, " sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[1], b); buf_puts(b, ")");
-        buf_printf(b, "; sp_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;",
-                   ts, tr, ts, ts, tn, ts, ts);
-        /* a negative end counts from the end, an endless one runs to the
-           last element -- unnormalized, `fill(v, 2..)` grew the array
-           forever (#3605) and `fill(v, 1..-1)` filled nothing (#3606) */
-        buf_printf(b, " sp_int _t%d = _t%d.last;"
-                      " if (_t%d == INTPTR_MAX) _t%d = _t%d - 1;"
-                      " else { if (_t%d < 0) _t%d += _t%d; _t%d -= _t%d.excl; }",
-                   te, tr,
-                   te, te, tn,
-                   te, te, tn, te, tr);
-        buf_printf(b, " for (sp_int _t%d = _t%d; _t%d <= _t%d; _t%d++)"
+        /* fill(val, range): the range is the index span, its end in place
+           of the length (sp_array_fill_range) -- a negative end counts from
+           the end and an endless one runs to the last element (#3605,
+           #3606), a begin before the start is CRuby's RangeError */
+        buf_printf(b, " sp_int _t%d = sp_array_fill_range(", ts); emit_expr(c, argv[1], b);
+        buf_printf(b, ", &_t%d);", tn);
+        buf_printf(b, " for (sp_int _t%d = _t%d; _t%d < _t%d; _t%d++)"
                       " sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })",
-                   ti, ts, ti, te, ti, fk, fsfx, t, ti, tv, t);
+                   ti, ts, ti, tn, ti, fk, fsfx, t, ti, tv, t);
       }
       else if (argc >= 2) {
         /* nil start / length are legal: "from the start" / "to the end" */
