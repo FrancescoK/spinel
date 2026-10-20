@@ -353,15 +353,18 @@ int repr_call_returns_handle(Compiler *c, int v) {
   if (n == 0 && repr_boxed_native_handle(c, v)) return 1;
   if (n <= 0) return 0;
   /* a target that answers no value (every path raises: a base class's
-     NotImplementedError stub a subclass overrides) hands on no String; the
-     others each publish their handle, and one has to */
-  int any = 0;
+     NotImplementedError stub a subclass overrides) hands on no String; a
+     target answering a String literal publishes none, and the pickup's new
+     handle over its bytes is the literal's own, which keeps one identity
+     (scope_ret_str_literal); the others each publish their handle, and one
+     has to */
+  int npub = 0;
   for (int i = 0; i < n; i++) {
     if (scope_always_raises(c, mis[i])) continue;
-    if (!scope_ret_handle(c, mis[i])) return 0;
-    any = 1;
+    if (scope_ret_handle(c, mis[i])) { npub++; continue; }
+    if (!scope_ret_str_literal(c, mis[i])) return 0;
   }
-  return any;
+  return npub > 0;
 }
 /* A boxed receiver's reader arms already box their shared fields as
    handles. A String demand can take that boxed result without a copy.
