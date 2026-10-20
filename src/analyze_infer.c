@@ -7656,6 +7656,20 @@ static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const cha
 }
 
 /* A query on a class constant (a Struct class's members and keyword_init?, Math.sqrt, the try_converts) and the container-read pre-arms (infer_call_inner's rules, in their order) */
+/* Does every cover? a class of the program's own defines, among those the
+   receiver of call `id` may hold, answer a truth value? One not known yet
+   counts, as the fixpoint widens it once it is. */
+static int user_cover_answers_bool(Compiler *c, int id) {
+  int n = 0;
+  const PolyCand *pcs = comp_poly_candidates_at(c, id, "cover?", &n);
+  for (int i = 0; i < n; i++) {
+    if (pcs[i].native || pcs[i].mi < 0) continue;
+    TyKind r = (TyKind)c->scopes[pcs[i].mi].ret;
+    if (r != TY_BOOL && r != TY_UNKNOWN) return 0;
+  }
+  return 1;
+}
+
 static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
   /* A user singleton's return type wins over the builtin's, just as its
      call plan wins in emission and sharing. Inference reads a fresh plan. */
@@ -7723,7 +7737,10 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
        sp_streq(name, "sum") || sp_streq(name, "inject") ||
        sp_streq(name, "reduce")) &&
       infer_type(c, recv) == TY_POLY) {
-    if (sp_streq(name, "cover?")) { *out = TY_BOOL; return 1; }
+    /* a Range answers a truth value, and so does a class of the program's
+       own whose cover? does; one answering anything else ("odd", a boxed
+       @v) is answered as it is, so the call is boxed */
+    if (sp_streq(name, "cover?")) { *out = user_cover_answers_bool(c, id) ? TY_BOOL : TY_POLY; return 1; }
     if (sp_streq(name, "gcdlcm")) { *out = TY_POLY_ARRAY; return 1; }   /* a Bignum pair stays boxed (#4665) */
     if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) { *out = TY_POLY; return 1; }
     if ((is_reduce_alias(name)) &&
