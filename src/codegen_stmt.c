@@ -15312,32 +15312,9 @@ static int masgn_reads_state(const NodeTable *nt, int id) {
   }
   return 0;
 }
-/* Does the subtree write a local variable that `part` reads? */
-static int masgn_writes_local_read(const NodeTable *nt, int id, int part) {
-  if (id < 0) return 0;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_DefNode) return 0;
-  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
-       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode) &&
-      nt_str(nt, id, "name") && masgn_reads(nt, part, "LocalVariableReadNode", nt_str(nt, id, "name")))
-    return 1;
-  int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++)
-    if (masgn_writes_local_read(nt, nt_ref_at(nt, id, i), part)) return 1;
-  int na = nt_num_arrs(nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0;
-    const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int j = 0; j < n; j++)
-      if (masgn_writes_local_read(nt, ids[j], part)) return 1;
-  }
-  return 0;
-}
 int masgn_value_changes(Compiler *c, int mw, int part) {
   int value = part >= 0 ? nt_ref(c->nt, mw, "value") : -1;
-  if (value < 0) return 0;
-  return (masgn_reads_state(c->nt, part) && subtree_has_side_effect(c, value)) ||
-         masgn_writes_local_read(c->nt, value, part);
+  return value >= 0 && read_rebound_by(c, part, value);
 }
 /* Whether the target, or one nested in it, writes a variable the subtree
    reads. */
