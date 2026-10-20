@@ -15136,6 +15136,19 @@ static sp_RbVal sp_poly_thread_kill(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("kill", v));
   return sp_box_nil();
 }
+/* Thread#exit / #terminate on a boxed value: #kill's termination, the
+   receiver answered; a Fiber has #kill but neither alias, so any other
+   value is the NoMethodError naming the alias. */
+static sp_RbVal sp_poly_thread_terminate(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD && v.v.p) {
+    sp_Thread_kill((sp_thread *)v.v.p);
+    return v;
+  }
+  sp_raise_nomethod(sp_nomethod_msg(name, v));
+  return sp_box_nil();
+}
+static sp_RbVal sp_poly_thread_exit(sp_RbVal v) { return sp_poly_thread_terminate(v, "exit"); }
+static sp_RbVal sp_poly_thread_terminate_m(sp_RbVal v) { return sp_poly_thread_terminate(v, "terminate"); }
 /* The Fiber behind a boxed #resume / #transfer / #raise. */
 static sp_Fiber *sp_poly_as_fiber(sp_RbVal v, const char *name) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FIBER && v.v.p) return (sp_Fiber *)v.v.p;

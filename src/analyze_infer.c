@@ -3626,7 +3626,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join") ||
           sp_streq(name, "status") || sp_streq(name, "transfer") ||
-          (sp_streq(name, "kill") && argc == 0) ||
+          ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) ||
           (sp_streq(name, "raise") && argc <= 3))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       /* the Queue names no other builtin has: a popped value, the queue, a count */
