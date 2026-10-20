@@ -2877,6 +2877,20 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
   return op;
 }
 
+/* The row inference finds for call `id` on a receiver of kind `rt`, whatever
+   the call's own receiver was typed: the lookup an_bop_find_arg makes, with
+   the arguments read as inference reads them, and recording nothing.
+   --plan-check asks it for a call emitted once per site of a yield (the
+   receiver typed per site), whose recorded row is the last site's. */
+const BuiltinOp *an_bop_row_for_kind(Compiler *c, int id, TyKind rt) {
+  int an = nt_ref(c->nt, id, "arguments"), argc = 0;
+  const int *argv = an >= 0 ? nt_arr(c->nt, an, "arguments", &argc) : NULL;
+  AnBopArgs a = { c, argv };
+  const BuiltinOp *op = bop_find_arg(bop_family_of(rt), nt_str(c->nt, id, "name"), argc,
+                                     nt_ref(c->nt, id, "block") >= 0, an_bop_arg_type, &a);
+  return op && op->result != TY_UNKNOWN ? op : NULL;  /* as an_bop_find records */
+}
+
 /* bop_result_args with the call's arguments' kinds from infer_type, for the
    rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP,
    BOPR_ARG0, BOPR_ARG1, BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row

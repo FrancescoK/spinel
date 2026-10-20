@@ -209,7 +209,23 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (inf->mi == mi || (c->scopes[mi].is_proc_form && scope_proc_form_of(c, inf->mi) == mi)) {
     o->flags |= UO_MATCH; return;
   }
-  int miss = ucall_respec_ctx(c, id) ? UO_MISS_RESPEC : UO_MISS_PLAIN;
+  int respec = ucall_respec_ctx(c, id);
+  /* A call emitted once per copy resolves in its copy's class: a call on a
+     yield's value in its site's class, an implicit-self call of a spliced
+     method in the class it is emitted into. Inference keeps one copy's
+     method; the copy agrees when its class finds the method it was emitted
+     with. */
+  if (respec) {
+    int yv = nt_ref(c->nt, id, "receiver"), ccls = -1;
+    TyKind sk;
+    if (yv < 0) ccls = g_ie_class_id >= 0 ? g_ie_class_id : g_emitting_class_id;
+    else if (sp_yield_site_type(c, yv, &sk) && ty_is_object(sk)) ccls = ty_object_class(sk);
+    const char *cnm = nt_str(c->nt, id, "name");
+    if (ccls >= 0 && cnm && comp_method_in_chain(c, ccls, cnm, NULL) == mi) {
+      o->flags |= UO_MATCH; return;
+    }
+  }
+  int miss = respec ? UO_MISS_RESPEC : UO_MISS_PLAIN;
   if (!(o->flags & (UO_MISS_PLAIN | UO_MISS_RESPEC)) || miss == UO_MISS_PLAIN) {
     o->mi = mi; o->owner = (short)owner_ci;
   }
