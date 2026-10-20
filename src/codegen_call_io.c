@@ -1371,7 +1371,11 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         char op9[1][32];
         int rd9 = sp_streq(name, "read_nonblock");
         int no_exc9 = emit_nonblock_exc(c, nt, name, argv, argc, rd9 ? "i" : "w", op9, &pre9, &x9);
-        if (pre9.p) buf_puts(b, pre9.p);
+        /* pre allocates (an operand's to_s, an interpolated String) while
+           the handle is only in _t(tio2): a receiver nothing else holds,
+           such as a method's answer, is rooted first, or a collection there
+           closes it under the call */
+        if (pre9.p) { buf_printf(b, "SP_GC_ROOT(_t%d); ", tio2); buf_puts(b, pre9.p); }
         if (rd9) {
           if (no_exc9) {
             int tw9 = ++g_tmp, te9 = ++g_tmp;
