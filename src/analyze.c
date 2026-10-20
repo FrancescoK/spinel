@@ -24564,12 +24564,100 @@ static int an_subtree_has_return(const NodeTable *nt, int n, int depth) {
     for (int j = 0; j < nd->a[i].n; j++) if (an_subtree_has_return(nt, nd->a[i].ids[j], depth + 1)) return 1;
   return 0;
 }
+/* ---- what a method's value can be, for its String literals (#9258) ----
+   AL_LIT a String literal, AL_NIL nil (a missing arm, a bare `return`),
+   AL_OTHER anything else; none where the value only raises. A call of the
+   program's methods (its targets listed, on self) is what they answer, a
+   method asked again while it is being asked (a cycle) answering nothing
+   of its own; a `return` is followed to its value. */
+enum { AL_LIT = 1, AL_NIL = 2, AL_OTHER = 4 };
+static int al_method(Compiler *c, int mi, unsigned char *busy, int depth);
+static int al_value(Compiler *c, int v, unsigned char *busy, int depth) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0) return AL_NIL;
+  if (depth > 64) return AL_OTHER;
+  switch (nt_kind(nt, v)) {
+  case NK_StringNode: return AL_LIT;
+  case NK_NilNode: return AL_NIL;
+  case NK_StatementsNode: {
+    int bn = 0; const int *b = nt_arr(nt, v, "body", &bn);
+    for (int i = 0; i + 1 < bn; i++) if (isa_node_diverges(c, b[i])) return 0;
+    return bn > 0 ? al_value(c, b[bn - 1], busy, depth + 1) : AL_NIL;
+  }
+  case NK_ElseNode: return al_value(c, nt_ref(nt, v, "statements"), busy, depth + 1);
+  case NK_IfNode: case NK_UnlessNode: {
+    int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+    return al_value(c, nt_ref(nt, v, "statements"), busy, depth + 1) | (sub >= 0 ? al_value(c, sub, busy, depth + 1) : AL_NIL);
+  }
+  case NK_CaseNode: {
+    int wn = 0, m = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
+    for (int k = 0; k < wn; k++) m |= al_value(c, nt_ref(nt, w[k], "statements"), busy, depth + 1);
+    int e = nt_ref(nt, v, "else_clause");
+    return m | (e >= 0 ? al_value(c, e, busy, depth + 1) : AL_NIL);
+  }
+  case NK_OrNode: case NK_AndNode: {
+    int l = al_value(c, nt_ref(nt, v, "left"), busy, depth + 1);
+    if (l & AL_OTHER) return AL_OTHER;
+    int r = al_value(c, nt_ref(nt, v, "right"), busy, depth + 1);
+    /* `a || b` is a where a is a literal, b where it is nil; `a && b` the
+       reverse */
+    return nt_kind(nt, v) == NK_OrNode ? (l & AL_LIT) | ((l & AL_NIL) ? r : 0)
+                                      : (l & AL_NIL) | ((l & AL_LIT) ? r : 0);
+  }
+  case NK_CallNode: {
+    if (isa_node_diverges(c, v)) return 0;
+    int recv = nt_ref(nt, v, "receiver");
+    if ((recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) || nt_ref(nt, v, "block") >= 0) return AL_OTHER;
+    int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX), m = 0;
+    if (n <= 0) return AL_OTHER;
+    if (!share_plan_targets_cover(c, v)) return AL_OTHER;
+    for (int i = 0; i < n; i++) m |= al_method(c, tg[i], busy, depth + 1);
+    return m;
+  }
+  default: return AL_OTHER;
+  }
+}
+/* the returns of the subtree at n (not a nested method's or lambda's) */
+static int al_returns(Compiler *c, int n, unsigned char *busy, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  if (depth > 200) return AL_OTHER;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_ReturnNode) {
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 0) return AL_NIL;
+    return an == 1 ? al_value(c, av[0], busy, 0) : AL_OTHER;
+  }
+  int m = 0;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr; i++) m |= al_returns(c, nd->r[i].ref, busy, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) m |= al_returns(c, nd->a[i].ids[j], busy, depth + 1);
+  return m;
+}
+static int al_method(Compiler *c, int mi, unsigned char *busy, int depth) {
+  if (mi <= 0 || mi >= c->nscopes || c->scopes[mi].body < 0 || depth > 16) return AL_OTHER;
+  if (busy[mi]) return 0;
+  busy[mi] = 1;
+  int body = c->scopes[mi].body;
+  int m = al_value(c, body, busy, depth) | al_returns(c, body, busy, 0);
+  busy[mi] = 0;
+  return m;
+}
 /* See analyze.h. */
 int scope_ret_str_literal(Compiler *c, int mi) {
   if (mi <= 0 || mi >= c->nscopes || c->scopes[mi].body < 0) return 0;
   const NodeTable *nt = c->nt;
   int body = c->scopes[mi].body;
-  return an_tail_str_literals(nt, body, 0) && !an_subtree_has_return(nt, body, 0);
+  if (an_tail_str_literals(nt, body, 0) && !an_subtree_has_return(nt, body, 0)) return 1;
+  unsigned char *busy = calloc((size_t)c->nscopes + 1, 1);
+  if (!busy) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int m = al_method(c, mi, busy, 0);
+  free(busy);
+  return m == AL_LIT;
 }
 int scope_ret_fresh(Compiler *c, int mi) {
   an_ret_settle(c, mi, 1);

@@ -553,6 +553,11 @@ int share_plan_literal_pickup_clean(Compiler *c, int v, int mi) {
   return bv && bn == 1 && bv[0] >= 0 && nt_kind(nt, bv[0]) == NK_StringNode &&
          share_plan_recv_answers_by_targets(c, u, nm);
 }
+/* See share.h. */
+int share_plan_targets_cover(Compiler *c, int u) {
+  const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
+  return nm && share_plan_recv_answers_by_targets(c, u, nm) && !share_plan_exc_text_call(c, u);
+}
 /* Is v a call every target of which answers a String literal on every
    path (scope_ret_str_literal)? A frozen literal keeps one identity: its
    bytes are the literal's own, and a handle made over them is the
