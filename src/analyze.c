@@ -24551,8 +24551,10 @@ static int an_tail_str_literals(const NodeTable *nt, int v, int depth) {
     default: return 0;
   }
 }
+/* (a subtree too deep to walk counts as one with a return) */
 static int an_subtree_has_return(const NodeTable *nt, int n, int depth) {
-  if (n < 0 || depth > 200) return 0;
+  if (n < 0) return 0;
+  if (depth > 200) return 1;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_ReturnNode) return 1;
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
