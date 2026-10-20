@@ -6459,7 +6459,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            Emitting the splat as a single key read the key array through the
            key's own type and the C did not compile. */
         /* the receiver is held across the keys, which may allocate */
-        if (nt_kind(nt, argv[0]) == NK_SplatNode)
+        if (nt_argv_has_splat(nt, argv, argc))
           return emit_dig_splat(c, recv, argc, argv, b);
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
@@ -10932,7 +10932,9 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, " %s; })", raise_tail_c(c, id, z1));
     { *out = 1; return 1; }
   }
-  if (sp_streq(name, "dig") && argc >= 1) {
+  if (is_dig_name(name) && argc >= 1) {
+    if (nt_argv_has_splat(nt, argv, argc))
+      { *out = emit_dig_splat(c, recv, argc, argv, b); return 1; }
     /* literal key resolves a member at compile time */
     int mi = -1;
     const char *kty = nt_type(nt, argv[0]);
