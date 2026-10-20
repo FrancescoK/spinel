@@ -7316,6 +7316,17 @@ int method_takes_call_args(Compiler *c, Scope *m, int call_id) {
   return kwh >= 0 && !kws && pos + 1 >= req && pos + 1 <= max;
 }
 
+static int arr_box_other_form(Compiler *c, int v, TyKind seed, int depth);
+/* param_seed_holds for an argument node: an Array seed handed a box whose
+   every source is the seed's own form, or nil, unboxes to the object
+   itself and holds, as an Array return seed does (arr_box_other_form) */
+static int param_seed_holds_arg(Compiler *c, LocalVar *p, int anode, TyKind at) {
+  if (p->rbs_seeded && at == TY_POLY && anode >= 0 && ty_is_array(p->rbs_type) && p->rbs_type != TY_POLY_ARRAY &&
+      !arr_box_other_form(c, anode, p->rbs_type, 0))
+    return 1;
+  return param_seed_holds(p, at);
+}
+
 /* Type method mi's parameters from the arguments `argv` of call_id. */
 /* A module method an include copied away never runs as itself: each copy
    binds its own calls, typed against its class. The original, whose ivars
@@ -7715,7 +7726,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     if (!p || cext_scope(c, mi)) continue;
     int anode = layout_plain_arg(c, m, argv, &L, i);
-    if (p->rbs_seeded && (anode < 0 || param_seed_holds(p, infer_type(c, anode)))) continue;
+    if (p->rbs_seeded && (anode < 0 || param_seed_holds_arg(c, p, anode, infer_type(c, anode)))) continue;
     if (anode < 0 && !L.gather) {
       int src = from == ARG_KWH ? kwh : from == ARG_ELEM ? argv[L.splat] : argv[L.arg[i]];
       changed |= slot_take(c, p, bound_source_type(c, src, p), src);
@@ -8001,7 +8012,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         if (!callee_has_kwarg(c, m, kname)) continue;
         LocalVar *p = scope_local(m, kname);
         TyKind at = infer_type(c, val);
-        if (!p || param_seed_holds(p, at)) continue;
+        if (!p || param_seed_holds_arg(c, p, val, at)) continue;
         changed |= slot_take(c, p, at, val);
       }
     }
@@ -16797,6 +16808,157 @@ static TyKind irt_returns_hash(Compiler *c, int s, const IrtCtx *x, int *boxed) 
   return r;
 }
 
+/* Can value v, which Array seed `seed` (an Array of one form) takes, be an
+   Array of another form at run time? Its static type says so for an Array
+   of a known form; a box is followed to its sources: a conditional's and a
+   logical operator's arms, a local's writes and a parameter's arguments, an
+   instance variable's writes, a constant's value, a method's tails. nil and
+   a value that is no Array are no other form (the latter is a false seed,
+   the trusted case). Anything not followed, or too deep, may be. A value
+   not typed yet is taken as none for now: the next round asks again. */
+static int arr_src_param(Compiler *c, Scope *sc, const char *nm, TyKind seed, int depth);
+static int arr_box_other_form(Compiler *c, int v, TyKind seed, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  if (depth > 12) return 1;
+  TyKind t = infer_type(c, v);
+  if (ty_is_array(t)) return t != seed;
+  if (t != TY_POLY) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, v) == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v;
+    if (body < 0) return 0;
+    if (nt_kind(nt, body) != NK_StatementsNode) return arr_box_other_form(c, body, seed, depth + 1);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    return bn > 0 && arr_box_other_form(c, bb[bn - 1], seed, depth + 1);
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int els = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+    if (els >= 0 && nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
+    return arr_box_other_form(c, nt_ref(nt, v, "statements"), seed, depth + 1) ||
+           arr_box_other_form(c, els, seed, depth + 1);
+  }
+  case NK_OrNode: case NK_AndNode:
+    return arr_box_other_form(c, nt_ref(nt, v, "left"), seed, depth + 1) ||
+           arr_box_other_form(c, nt_ref(nt, v, "right"), seed, depth + 1);
+  case NK_LocalVariableReadNode: {
+    Scope *sc = comp_scope_of(c, v);
+    const char *nm = nt_str(nt, v, "name");
+    if (!sc || !nm) return 1;
+    int si = (int)(sc - c->scopes);
+    for (int w = comp_lvw_first_sc(c, si, nm); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      NodeKind k = nt_kind(nt, w);
+      if (k == NK_LocalVariableOperatorWriteNode) return 1;
+      if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) &&
+          nt_str(nt, w, "name") && sp_streq(nt_str(nt, w, "name"), nm) && comp_scope_of(c, w) == sc &&
+          arr_box_other_form(c, nt_ref(nt, w, "value"), seed, depth + 1)) return 1;
+    }
+    LocalVar *lv = scope_local(sc, nm);
+    if (lv && lv->is_param) return lv->is_block_param ? 1 : arr_src_param(c, sc, nm, seed, depth + 1);
+    return 0;
+  }
+  case NK_InstanceVariableReadNode: {
+    const char *nm = nt_str(nt, v, "name");
+    int cls = comp_ivar_owner(c, v);
+    if (!nm || cls < 0) return 1;
+    static const NodeKind wk[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+                                   NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode };
+    for (int k = 0; k < 4; k++)
+      NT_FOREACH_KIND(nt, wk[k], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !sp_streq(wn, nm) || comp_ivar_owner(c, w) != cls) continue;
+        if (wk[k] == NK_InstanceVariableOperatorWriteNode) return 1;
+        if (arr_box_other_form(c, nt_ref(nt, w, "value"), seed, depth + 1)) return 1;
+      }
+    /* a writer the class declares, or a reflective set, writes it from
+       outside: not followed */
+    const ClassInfo *ci = &c->classes[cls];
+    for (int w = 0; w < ci->nwriters; w++) if (sp_streq(ci->writers[w], nm + 1)) return 1;
+    NT_FOREACH_KIND(nt, NK_CallNode, cn) {
+      const char *n2 = nt_str(nt, cn, "name");
+      if (n2 && sp_streq(n2, "instance_variable_set")) return 1;
+    }
+    return 0;
+  }
+  case NK_ConstantReadNode: {
+    const char *nm = nt_str(nt, v, "name");
+    if (!nm) return 1;
+    int saw = 0;
+    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, nm)) continue;
+      saw = 1;
+      if (arr_box_other_form(c, nt_ref(nt, w, "value"), seed, depth + 1)) return 1;
+    }
+    return !saw;
+  }
+  case NK_CallNode: {
+    int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
+    if (n <= 0) return 1;
+    for (int i = 0; i < n; i++) {
+      Scope *m = &c->scopes[tg[i]];
+      if (m->yields || m->is_proc_form) return 1;
+      int last = scope_body_last(c, tg[i]);
+      if (last < 0 || arr_box_other_form(c, last, seed, depth + 1)) return 1;
+      NT_FOREACH_KIND(nt, NK_ReturnNode, r) {
+        if (comp_scope_of(c, r) != m) continue;
+        int ra = nt_ref(nt, r, "arguments"), rn = 0;
+        const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+        if (rn != 1 || arr_box_other_form(c, rv[0], seed, depth + 1)) return 1;
+      }
+    }
+    return 0;
+  }
+  default:
+    return 1;
+  }
+}
+/* A parameter's sources: the arguments its calls hand it (a call of the
+   method's name with that many positional arguments and no splat or
+   keywords; `new` for initialize, on a constant naming the class or one
+   below it) and its default. */
+static int arr_src_param(Compiler *c, Scope *sc, const char *nm, TyKind seed, int depth) {
+  const NodeTable *nt = c->nt;
+  int pj = -1;
+  for (int j = 0; j < sc->nparams; j++) if (sc->pnames[j] && sp_streq(sc->pnames[j], nm)) pj = j;
+  if (pj < 0 || pj == sc->rest_idx || pj == sc->kwrest_idx || !sc->name || sc->def_node < 0) return 1;
+  if (sc->pdefault && sc->pdefault[pj] >= 0 && arr_box_other_form(c, sc->pdefault[pj], seed, depth)) return 1;
+  int is_init = sp_streq(sc->name, "initialize") && sc->class_id >= 0 && !sc->is_cmethod;
+  int saw = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, cn) {
+    const char *n2 = nt_str(nt, cn, "name");
+    if (!n2) continue;
+    if (is_init) {
+      int r = nt_ref(nt, cn, "receiver");
+      if (!sp_streq(n2, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) {
+        if (sp_streq(n2, "send") || sp_streq(n2, "__send__") || sp_streq(n2, "public_send")) return 1;
+        continue;
+      }
+      int k = comp_class_index(c, nt_str(nt, r, "name"));
+      if (k < 0 || (k != sc->class_id && !is_descendant(c, k, sc->class_id))) continue;
+    }
+    else if (!sp_streq(n2, sc->name)) {
+      if (sp_streq(n2, "send") || sp_streq(n2, "__send__") || sp_streq(n2, "public_send") || sp_streq(n2, "method")) return 1;
+      continue;
+    }
+    int aa = nt_ref(nt, cn, "arguments"), argc = 0;
+    const int *argv = aa >= 0 ? nt_arr(nt, aa, "arguments", &argc) : NULL;
+    for (int a = 0; a < argc; a++) {
+      NodeKind ak = nt_kind(nt, argv[a]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 1;
+    }
+    if (pj >= argc) continue;
+    saw = 1;
+    if (arr_box_other_form(c, argv[pj], seed, depth)) return 1;
+  }
+  /* (a super into an initialize: not followed) */
+  if (is_init) {
+    NT_FOREACH_KIND(nt, NK_SuperNode, sn) if (comp_scope_of(c, sn)->name && sp_streq(comp_scope_of(c, sn)->name, "initialize")) return 1;
+    NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, sn) if (comp_scope_of(c, sn)->name && sp_streq(comp_scope_of(c, sn)->name, "initialize")) return 1;
+  }
+  (void)saw;
+  return 0;
+}
 /* infer_return_types' derivation of scope s's value from its body and its
    explicit returns (x's tables); 1 when anything it sets changed */
 static int irt_scope(Compiler *c, int s, IrtCtx *x) {
@@ -16830,12 +16992,21 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
     if (has_ret && has_ret[s]) hbr = ty_unify(hbr, irt_returns_hash(c, s, x, &boxed));
     if (boxed) hbr = TY_POLY_POLY_HASH;   /* an explicit return with boxed keys */
   }
-  /* an Array seed whose body, or an explicit return, answers a box: the box
-     keeps its form, and ret_seed_holds drops the seed for a checked one */
+  /* an Array seed whose body, or an explicit return, answers a box that may
+     hold an Array of another form (one built with mixed values that holds
+     only the seed's kind): unboxed into the seed's form it would be a copy,
+     so ret_seed_holds drops the seed for a checked one. A box whose every
+     source is the seed's own form, or nil, unboxes to the object itself
+     and keeps the seed (arr_box_other_form) */
   else if (sc->ret_rbs_seeded && ty_is_array(sc->ret) && sc->ret != TY_POLY_ARRAY) {
-    hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
-    if (hbr == TY_NIL) hbr = TY_UNKNOWN;
-    if (has_ret && has_ret[s] && ret_acc[s] == TY_POLY) hbr = TY_POLY;
+    int last = scope_body_last(c, s);
+    int other = last >= 0 && arr_box_other_form(c, last, sc->ret, 0);
+    for (int r = has_ret && has_ret[s] ? ret_head[s] : -1; r >= 0 && !other; r = ret_next[r]) {
+      int ra = nt_ref(nt, r, "arguments"), rn = 0;
+      const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      if (rn == 1) other = arr_box_other_form(c, rv[0], sc->ret, 0);
+    }
+    if (other) hbr = TY_POLY;
   }
   if (ret_seed_holds(sc, hbr)) {
     if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
