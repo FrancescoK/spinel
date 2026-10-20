@@ -43815,6 +43815,17 @@ static int sid_answers_set(const char *nm) {
   for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
   return 0;
 }
+/* Does a call named nm hand its receiver on to a block or as a value
+   no Set call is: a block parameter (`tap`, `then`), the block's self
+   (`instance_eval`), a computed call or a Method? */
+static int sid_hands_on_self(const char *nm) {
+  static const char *const names[] = {
+    "tap", "then", "yield_self", "instance_eval", "instance_exec", "send", "__send__", "public_send",
+    "method", "public_method", "singleton_method", "define_singleton_method", "extend", "to_enum",
+    "enum_for", NULL };
+  for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
+  return 0;
+}
 /* A use of alias node a: as a Set call's receiver whose answer is not
    one of the Set's (or is dropped), or as the value of a method, which
    is then a reader whose calls are aliases too. 0 for any other use. */
@@ -43826,7 +43837,7 @@ static int sid_alias_use_ok(Compiler *c, SidSources *S, int a) {
     if (p < 0) return 0;
     if (nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == an_unparen(nt, a)) {
       const char *nm = nt_str(nt, p, "name");
-      if (!nm) return 0;
+      if (!nm || sid_hands_on_self(nm)) return 0;
       if (!sid_answers_set(nm) || comp_value_dropped(c, p)) return 1;
       /* the call answers the Set or a copy that may compare by identity
          (`@seen.add(n)`): its value is an alias in turn */
@@ -43861,7 +43872,13 @@ static int sid_is_alias(Compiler *c, SidSources *S, int v) {
     for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], nm)) return 1;
     return 0;
   }
-  return k == NK_CallNode && nt_ref(nt, v, "block") < 0 && sid_name_in(S->readers, S->nreaders, nm);
+  if (k != NK_CallNode) return 0;
+  /* a reader's call, a block it ignores or not (`seen { }`) */
+  if (sid_name_in(S->readers, S->nreaders, nm)) return 1;
+  /* a call on an alias that answers the Set or a copy that compares the
+     same way (`@seen.add(n)`, `@seen | other`, `@seen.dup`) */
+  int r = nt_ref(nt, v, "receiver");
+  return r >= 0 && sid_answers_set(nm) && sid_is_alias(c, S, r);
 }
 /* Is Set allocation a (`Set.new(...)`, `Set[...]`) one an identity Set
    starts from: the receiver of a compare_by_identity, or a value written
@@ -43970,9 +43987,20 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       if (sid_name_in(S->ivars, S->nivars, nm)) return 0;
       for (int i = 0; i < S->nlocals; i++) if (sp_streq(S->locals[i], nm) && S->lscopes[i] == comp_scope_of(c, w)) return 0;
     }
+  /* a read of a place's local from another scope (a define_method's body
+     captures it) is not followed */
+  for (int k = 0; k < 2 && S->nlocals > 0; k++)
+    NT_FOREACH_KIND(nt, k ? NK_LocalVariableWriteNode : NK_LocalVariableReadNode, a) {
+      const char *nm = nt_str(nt, a, "name");
+      if (!nm || nt_int(nt, a, "depth", 0) <= 0) continue;
+      const Scope *as = comp_scope_of(c, a);
+      for (int i = 0; i < S->nlocals; i++)
+        if (sp_streq(S->locals[i], nm) && S->lscopes[i] != as) return 0;
+    }
   /* every read is used as a Set, and so is every call of a reader; a
      reader found on the way adds its calls, so this runs to a fixpoint */
-  for (int round = 0, before = -1; before != S->nreaders && round < 8; round++) {
+  int before = -1;
+  for (int round = 0; before != S->nreaders && round < 8; round++) {
     before = S->nreaders;
     for (int k = 0; k < 3; k++) {
       NodeKind rk = k == 0 ? NK_InstanceVariableReadNode : k == 1 ? NK_LocalVariableReadNode : NK_CallNode;
@@ -43983,7 +44011,8 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       }
     }
   }
-  return 1;
+  /* (a reader chain longer than the rounds is not followed) */
+  return before == S->nreaders;
 }
 
 static void refuse_set_identity_members(Compiler *c) {
