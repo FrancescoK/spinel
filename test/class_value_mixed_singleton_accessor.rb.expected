@@ -29,3 +29,6 @@ nil
 [:mark=]
 [:tag, :tag=]
 [:mark, :mark=]
+"seal:s"
+"seal:t"
+"wax"

@@ -3451,11 +3451,14 @@ void emit_boxed_cls_sg_first_arms(Compiler *c, int id, const char *name, int arg
 /* Is class method scope mi of class p a copy of an ancestor's method (the
    one an inherited method reading class-level ivars gets per subclass, see
    specialize_inherited_cls_new) rather than a method p's own body defines?
-   The copy keeps the original's def node. */
+   The copy keeps the original's def node, which an ancestor of p holds: the
+   original itself shares the node with the copies its subclasses get. */
 static int cmethod_is_inherited_copy(Compiler *c, int mi, int p) {
-  for (int o = 1; o < c->nscopes; o++)
+  for (int o = 1; o < c->nscopes; o++) {
+    int oc = c->scopes[o].class_id;
     if (o != mi && c->scopes[o].is_cmethod && c->scopes[o].def_node == c->scopes[mi].def_node &&
-        c->scopes[o].class_id != p) return 1;
+        oc >= 0 && oc != p && is_descendant(c, p, oc)) return 1;
+  }
   return 0;
 }
 /* Does class k answer `name` by a `class << self` accessor? The lookup
@@ -4411,9 +4414,12 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
                          ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
-          /* a class answering by its `class << self` accessor answers boxed */
+          /* a class answering by its `class << self` accessor answers boxed,
+             and so does the call the inference typed boxed because some
+             class has the accessor, though each class here answers by its
+             method (one defined beside the accessor, after it) */
           int sg9 = emit_cls_value_sg_arms(c, id, name, argc, argv, 0, NULL);
-          if (sg9) slot9 = TY_POLY;
+          if (sg9 || repr_of(c, id).as_ty == TY_POLY) slot9 = TY_POLY;
           int tk9 = ++g_tmp, tr9 = ++g_tmp, argsN9 = nt_ref(nt, id, "arguments");
           buf_puts(b, "({ ");
           /* The receiver, then each argument once, as the boxed class value's
