@@ -1,3 +1,4 @@
+# spinel: int64 -- a Float part's denominator passes 2^31
 # Complex#denominator is the lcm of its parts' denominators and #numerator
 # the value times it, in Integer parts; the same through an Array element
 [Complex(1, 2), Complex(1.5, 2), Complex(0.1, 0.25), Complex(2.0, 0), Complex(3, 0.5)].each do |c|
