@@ -1067,7 +1067,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_ENUMERATOR, "sum",             0,   0, BF_REQUIRED, TY_POLY,        BOPE_NONE },
   { TY_ENUMERATOR, "to_a",            0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
   { TY_ENUMERATOR, "entries",         0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
-  { TY_ENUMERATOR, "dup",             0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },
+  { TY_ENUMERATOR, "dup",             0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_Enumerator_dup_unfrozen($r)", 0 },
   { TY_ENUMERATOR, "clone",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },
   { TY_ENUMERATOR, "inspect",         0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_enum_inspect($r)" },
   { TY_ENUMERATOR, "to_s",            0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_enum_inspect($r)" },
