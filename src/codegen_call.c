@@ -16359,6 +16359,14 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   else buf_printf(b, "%s; })", valtmp);
 }
 
+/* Float repeat counts use NUM2LONG, including its range errors. The Array
+   offset converter's nonempty form also rejects nil rather than defaulting
+   it to zero. Other counts retain their existing conversion path. */
+static void emit_array_repeat_count(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) != TY_FLOAT) { emit_int_expr(c, node, b); return; }
+  buf_puts(b, "sp_poly_ary_offset("); emit_boxed(c, node, b); buf_puts(b, ", 1)");
+}
+
 static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -16369,8 +16377,8 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
   /* Array#* (repeat): arr * n  ->  new array with elements repeated n times.
-     The count is emitted via emit_int_expr, which unboxes a promote-widened
-     poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
+     An Integer count is emitted via emit_int_expr, which unboxes a promote-widened
+     poly count (a Float one goes through emit_array_repeat_count), so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
      with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
   if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
       ty_is_object(a0) && res == TY_STRING) {
@@ -16383,11 +16391,11 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
-      (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED || ty_is_object(a0))) {
+      (a0 == TY_INT || a0 == TY_FLOAT || repr_of(c, argv[0]).kind == RK_BOXED || ty_is_object(a0))) {
     int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
     if (rt == TY_POLY_ARRAY) {
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, tn); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, tn); emit_array_repeat_count(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
                     " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
@@ -16403,7 +16411,7 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       /* Only IntArray has a start offset; Float/StrArray index directly. */
       int has_start = (rt == TY_INT_ARRAY);
       buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, tn); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, tn); emit_array_repeat_count(c, argv[0], b);
       /* the repeated elements carry the receiver's nils, unless it is a
          literal that cannot hold one (`[0] * 8192`) */
       char nf[64] = "";
