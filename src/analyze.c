@@ -21363,6 +21363,10 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
       for (int q = 0; q < npc; q++) {
         if (pc[q].mi < 0 || pc[q].native) continue;
         Scope *pm = &c->scopes[pc[q].mi];
+        /* not a class no value of the receiver can be (its class fact):
+           a poly read of an ivar that only ever holds Hashes would
+           otherwise reach every program class's `[]=` */
+        if (pm->class_id >= 0 && cls_fact_excludes(c, rv, pm->class_id)) continue;
         for (int j = 0; j < pm->nparams && j < 32; j++) {
           int an = arg_layout_param_node(c, pm, node, j, NULL);
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
