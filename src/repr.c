@@ -1355,12 +1355,27 @@ static int repr_value_raises_first(Compiler *c, int v) {
   return 0;
 }
 
+/* A call on a boxed receiver that no class the box can hold answers, and
+   that no builtin value answers by name, raises NoMethodError before it
+   answers: no String flows from it. (`route.int_params` in a program that
+   never makes a Route: the box holds only the classes it does make.) */
+static int repr_call_answers_nothing(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  int recv = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (recv < 0 || !nm || !repr_recv_boxed(c, recv)) return 0;
+  int argc = call_plain_argc(c, v);
+  if (argc < 0 || ty_poly_face_owners(nm, argc, 0, 1, 1)) return 0;
+  return cplan_poly_arms(c, v)->n == 0;
+}
+
 /* Does flow value node v need the route check: a String (or a box that may
    hold one) whose class the rule shares? */
 static int repr_flow_checked(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (v < 0) return 0;
-  if (repr_value_raises_first(c, v)) return 0;
+  if (repr_value_raises_first(c, v) || repr_call_answers_nothing(c, v)) return 0;
   NodeKind k = nt_kind(c->nt, v);
   if (k == NK_NilNode || k == NK_StringNode || k == NK_InterpolatedStringNode) return 0;
   TyKind t = c->ntype[v];
