@@ -456,6 +456,10 @@ int share_plan_producer(Compiler *c, int v, int *operand);
 /* ...asked as if no store lifted v into a handle (poly_strbuf_lift): the
    route v hands its String on by itself */
 int share_plan_producer_unlifted(Compiler *c, int v, int *operand);
+/* Are the targets the plan lists for call u all it can reach: every value
+   its receiver can be answers the name by a method of the program's own,
+   and it is no exception's builtin message or to_s? */
+int share_plan_targets_cover(Compiler *c, int u);
 /* Is v a call every target of which answers a String literal on every
    path, whose bytes are the literal's own: a handle made over them, or a
    box of them, is the literal's handle (SP_SHARE_STRING_LITERALS), and
