@@ -1,0 +1,7 @@
+"FooBar"
+"foo_bar"
+[[:Group, "SectionName"], [:Area, "FooBar"], [:XSpec, "X"], 1]
+["a", "b"]
+[" a !", " b !"]
+[" A ", " B "]
+" a , b "
