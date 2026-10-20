@@ -11697,6 +11697,23 @@ static SP_UNUSED sp_oint sp_array_fill_offset_arg(sp_RbVal v, int range_alone) {
     sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return sp_oint_of(sp_poly_arg_int_chk(v));
 }
+/* fill(value, x) with x boxed: a Range is the span, read as a typed Range
+   argument is (sp_range_ix), and *n, the Array's length on entry, becomes
+   its exclusive end; anything else is a start filled through to *n. */
+static SP_UNUSED sp_int sp_array_fill_span(sp_RbVal v, sp_int *n) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)) {
+    sp_oint o = sp_array_fill_offset_arg(v, 0);
+    return o.nil ? 0 : o.v;
+  }
+  sp_Range r = sp_range_ix(*(sp_Range *)v.v.p);
+  sp_int s = r.first, e = r.last;
+  if (s < 0) s += *n;
+  if (s < 0) s = 0;
+  if (e == INTPTR_MAX) e = *n;
+  else { if (e < 0) e += *n; e += 1 - r.excl; }
+  *n = e;
+  return s;
+}
 /* An Array's offset in fetch and values_at, as CRuby's NUM2LONG reads it:
    sp_poly_arg_int_chk, with Array#fill's check for a Float or a Bignum past a
    word in front of it (a NaN converted to the smallest Integer). The smallest

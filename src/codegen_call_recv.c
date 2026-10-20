@@ -3629,9 +3629,13 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (argc >= 2) {
         /* nil start / length are legal: "from the start" / "to the end" */
         buf_printf(b, " sp_int _t%d = ", ts);
-        /* a boxed start may be a Range or no number at all; a nil one is 0 */
-        if (repr_of(c, argv[1]).kind == RK_BOXED) {
-          buf_puts(b, "({ sp_oint _o = sp_array_fill_offset_arg("); emit_expr(c, argv[1], b); buf_printf(b, ", %d); _o.nil ? 0 : _o.v; })", argc == 2);
+        /* a boxed start may be a Range, the span alone (its end replaces
+           the length), or no number at all; a nil one is 0 */
+        if (argc == 2 && repr_of(c, argv[1]).kind == RK_BOXED) {
+          buf_puts(b, "sp_array_fill_span("); emit_expr(c, argv[1], b); buf_printf(b, ", &_t%d)", tn);
+        }
+        else if (repr_of(c, argv[1]).kind == RK_BOXED) {
+          buf_puts(b, "({ sp_oint _o = sp_array_fill_offset_arg("); emit_expr(c, argv[1], b); buf_puts(b, ", 0); _o.nil ? 0 : _o.v; })");
         }
         else emit_int_expr_bound(c, argv[1], "0", b);
         buf_printf(b, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts);
