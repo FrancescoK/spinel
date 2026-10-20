@@ -2453,6 +2453,11 @@ static sp_PolyArray *sp_sock_addr_rl(sp_File *f, int peer, int rl) {
 }
 static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) SP_UNUSED;
 static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) { return sp_sock_addr_rl(f, peer, -1); }
+/* Is a boxed value a socket? Its #send is BasicSocket#send, which a send
+   on a boxed receiver takes ahead of Object#send's dispatch. */
+static inline sp_bool sp_poly_is_socket(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p && ((sp_File *)v.v.p)->is_sock;
+}
 /* addr / peeraddr's flag as CRuby reads it: true or :hostname looks the
    name up (1), false or :numeric does not (0), nil follows the socket (-1).
    Another Symbol is ArgumentError, anything else TypeError. */

@@ -261,6 +261,7 @@ int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc);
 int class_method_named(Compiler *c, const char *name);
 void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b);
 void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv, const char *r, Buf *b);
+void emit_io_socket_send_call(Compiler *c, const char *r, int argc, const int *argv, Buf *b);
 void emit_push_arg_list(Compiler *c, const int *argv, int argc, int tpa, Buf *b);
 void emit_stat_handle_nomethod(int th, int tv, const char *name, Buf *b);
 void emit_stat_handle_only(int th, const char *name, Buf *b);

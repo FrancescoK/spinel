@@ -526,6 +526,27 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b) {
 static void emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc,
                                    const char *expected, Buf *b);
 
+/* send(data, flags[, host, port]) of the socket in C expression r: the
+   typed arm's, and a boxed receiver's when its value is a socket
+   (emit_dynamic_send) */
+void emit_io_socket_send_call(Compiler *c, const char *r, int argc, const int *argv, Buf *b) {
+  int tsd = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", tsd); emit_str_expr(c, argv[0], b);
+  buf_printf(b, "; sp_sock_send(%s, _t%d, (sp_int)sp_str_byte_len(_t%d), ", r, tsd, tsd);
+  if (argc == 4) { emit_str_expr(c, argv[2], b); buf_puts(b, ", "); emit_int_expr(c, argv[3], b); }
+  else buf_puts(b, "NULL, 0");
+  buf_puts(b, "); })");
+}
+
+/* send as a socket writes: at the typed arm's arities, with a flags argument
+   that is an Integer literal or a constant path, and no Symbol payload (a
+   method's name for Object#send) */
+static int socket_send_call(const NodeTable *nt, const char *name, int argc, const int *argv) {
+  if (!sp_streq(name, "send") || (argc != 2 && argc != 4) || nt_argv_has_splat(nt, argv, argc)) return 0;
+  NodeKind flags = nt_kind(nt, argv[1]);
+  return (flags == NK_IntegerNode || flags == NK_ConstantPathNode) && nt_kind(nt, argv[0]) != NK_SymbolNode;
+}
+
 /* The socket calls emit_io_socket_opt_call answers, at the arities it does */
 static int boxed_socket_opt(const char *name, int argc) {
   return (sp_streq(name, "connect_nonblock") && argc >= 1 && argc <= 3) ||
@@ -806,6 +827,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           an Array when a signal stops the server */
        (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1 &&
         !nt_argv_has_splat(nt, argv, argc)) ||
+       /* and its send, where the receiver is typed after the send-family
+          passes (a thread's parameter) and so no dispatch was lowered for
+          it: one that was is emit_dynamic_send's */
+       (sp_feature_required("socket") && socket_send_call(nt, name, argc, argv)) ||
        /* and its reads: a socket a block or Thread.new takes as its parameter
           is a boxed handle, as an Array element is */
        (sp_feature_required("socket") && socket_recv_call(name, argc) &&
@@ -939,6 +964,18 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         snprintf(rsock, sizeof rsock, "sp_poly_as_io(_t%d, \"%s\")", trv, name);
         if (sockcall) emit_io_socket_call(c, nt, name, rsock, argc, argv, b);
         else emit_io_socket_opt_call(c, nt, name, rsock, argc, argv, b);
+        buf_puts(b, "; })");
+        return 1;
+      }
+      if (socket_send_call(nt, name, argc, argv)) {
+        /* the receiver first, then the typed arm's write on the unboxed handle */
+        int trv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+        char rsock[64];
+        snprintf(rsock, sizeof rsock, "sp_poly_as_io(_t%d, \"send\")", trv);
+        emit_io_socket_send_call(c, rsock, argc, argv, b);
         buf_puts(b, "; })");
         return 1;
       }
@@ -1655,12 +1692,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       /* UDPSocket#send's 3-arg form carries the destination, the 2-arg form
          goes to the connected peer */
       if (sp_streq(name, "send") && (argc == 2 || argc == 4)) {
-        int tsd = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", tsd); emit_str_expr(c, argv[0], b);
-        buf_printf(b, "; sp_sock_send(%s, _t%d, (sp_int)sp_str_byte_len(_t%d), ", r, tsd, tsd);
-        if (argc == 4) { emit_str_expr(c, argv[2], b); buf_puts(b, ", "); emit_int_expr(c, argv[3], b); }
-        else buf_puts(b, "NULL, 0");
-        buf_puts(b, "); })");
+        emit_io_socket_send_call(c, r, argc, argv, b);
         free(rb.p); return 1;
       }
       if (socket_recv_call(name, argc)) {
