@@ -13971,7 +13971,14 @@ static void ple_build(Compiler *c) {
         /* one of several values of a join (`f && lambda { }`, `f ? lambda { } :
            nil`): the slot is shared with values this scan cannot see, and is
            called as a poly, as a `||=` fallback's is */
-        if (pl.nleaf > 1) ple_escaped[pl.lit[q]] = 1;
+        int shared = pl.nleaf > 1;
+        /* or one of several writes of a local (`x = nil; x = ->(s) { }`) */
+        if (!shared && kind == 0 && sc) {
+          const char *wn = nt_str(nt, w, "name");
+          for (int o = comp_lvw_first_sc(c, (int)(sc - c->scopes), wn); o >= 0 && !shared; o = comp_lvw_next_sc(c, o))
+            shared = o != w && c->nscope[o] == c->nscope[w] && sp_streq(nt_str(nt, o, "name"), wn);
+        }
+        if (shared) ple_escaped[pl.lit[q]] = 1;
         if (kind < 0 || (!sc && kind != 1)) continue;
         if (ple_npw >= cap) {
           cap = cap ? cap * 2 : 64;
