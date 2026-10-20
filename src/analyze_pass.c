@@ -3982,6 +3982,52 @@ static int masgn_poly_local(Compiler *c, Scope *ms, int tgt, TyKind t, int value
   return lv->rbs_seeded;
 }
 
+/* One write of a proc-typed local and the answer of the proc it writes; the
+   sort groups a local's writes and keeps them in program order (the join is
+   not associative: String, StrBuf, nil) */
+typedef struct { LocalVar *lv; int pr; int seq; } ProcRetWrite;
+static int proc_ret_write_cmp(const void *a, const void *b) {
+  const ProcRetWrite *x = (const ProcRetWrite *)a, *y = (const ProcRetWrite *)b;
+  if (x->lv != y->lv) return x->lv < y->lv ? -1 : 1;
+  return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+/* The answer of a proc-typed local: the join of the answers of the procs it is
+   written. A local written procs that answer different kinds answers their
+   join; the last write's alone was read at the first call's type. What counts
+   as a change is the value the pass leaves against the one it found. Comparing
+   write by write reported both writes of `sh = ->(x) { x }; sh = ->(a, b, c) {
+   a + b + c }` as changes every round, and the fixpoint ran to its cap (#4962). */
+int join_local_proc_rets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = 0, cap = 0, changed = 0;
+  ProcRetWrite *ws = NULL;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    if (!lv || lv->type != TY_PROC) continue;
+    int vnode = nt_ref(nt, id, "value");
+    TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
+    if (pr == TY_UNKNOWN) continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 16;
+      ws = (ProcRetWrite *)realloc(ws, sizeof(ProcRetWrite) * (size_t)cap);
+      if (!ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    ws[n].lv = lv; ws[n].pr = (int)pr; ws[n].seq = n; n++;
+  }
+  if (n > 1) qsort(ws, (size_t)n, sizeof(ProcRetWrite), proc_ret_write_cmp);
+  for (int i = 0; i < n; ) {
+    int j = i, joined = ws[i].pr;
+    while (++j < n && ws[j].lv == ws[i].lv) joined = (int)ty_unify((TyKind)joined, (TyKind)ws[j].pr);
+    if (ws[i].lv->proc_ret != joined) { lv_set_proc_ret(ws[i].lv, joined); changed = 1; }
+    i = j;
+  }
+  free(ws);
+  return changed;
+}
+
 /* infer_write_types's pass over multiple assignments: each target takes its
    element's type (answers whether it changed a type) */
 static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
@@ -4901,38 +4947,9 @@ int infer_write_types(Compiler *c) {
      inside the proc body. Running after the first pass ensures those locals
      have their correct types (e.g. `x = 10` -> TY_INT) before proc_node_ret
      evaluates the body's return type.
-     A local written with two procs of different return types takes the
-     last write's, as before; what counts as a change is the value the pass
-     leaves against the one it found. Comparing write by write reported both
-     writes of `sh = ->(x) { x }; sh = ->(a, b, c) { a + b + c }` as changes
-     every round, and the fixpoint ran to its cap (#4962). */
-  {
-    int npr = 0, cappr = 0;
-    LocalVar **pr_lv = NULL; int *pr_old = NULL;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm) continue;
-      LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-      if (!lv || lv->type != TY_PROC) continue;
-      int vnode = nt_ref(nt, id, "value");
-      TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
-      if (pr == TY_UNKNOWN || (TyKind)lv->proc_ret == pr) continue;
-      int seen = 0;
-      for (int k = 0; k < npr && !seen; k++) if (pr_lv[k] == lv) seen = 1;
-      if (!seen) {
-        if (npr == cappr) {
-          cappr = cappr ? cappr * 2 : 8;
-          pr_lv = (LocalVar **)realloc(pr_lv, sizeof(LocalVar *) * (size_t)cappr);
-          pr_old = (int *)realloc(pr_old, sizeof(int) * (size_t)cappr);
-          if (!pr_lv || !pr_old) { fprintf(stderr, "oom\n"); exit(1); }
-        }
-        pr_lv[npr] = lv; pr_old[npr] = lv->proc_ret; npr++;
-      }
-      lv_set_proc_ret(lv, (int)pr);
-    }
-    for (int k = 0; k < npr; k++) if (pr_lv[k]->proc_ret != pr_old[k]) changed = 1;
-    free(pr_lv); free(pr_old);
-  }
+     A local written with two procs of different return types takes their
+     join (join_local_proc_rets). */
+  changed |= join_local_proc_rets(c);
 
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)

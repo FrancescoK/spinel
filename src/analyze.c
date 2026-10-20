@@ -50592,17 +50592,7 @@ static void an_phase_proc_returns(Compiler *c) {
         if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { scope_set_ret_proc_ret(sc, (int)pr); changed = 1; }
       }
       /* (2) proc-typed locals: proc_ret from the assigned proc / factory call. */
-      for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
-        const char *nm = nt_str(nt, id, "name");
-        if (!nm) continue;
-        LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-        if (!lv || lv->type != TY_PROC) continue;
-        int vnode = nt_ref(nt, id, "value");
-        TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
-        if (pr != TY_UNKNOWN && (TyKind)lv->proc_ret != pr) { lv_set_proc_ret(lv, (int)pr); changed = 1; }
-      }
+      changed |= join_local_proc_rets(c);
       /* (3) a typed-array-returning method whose elements widened now yields a
          poly array in its body (e.g. `[a/b, a%b]` with poly a,b builds a
          PolyArray), so its return type must follow to TY_POLY_ARRAY. */
