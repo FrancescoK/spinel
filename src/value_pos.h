@@ -134,7 +134,7 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
    followed or a gave-up leaf, or no expression at all (root < 0), *node = -1:
    the caller does what it does for a value it cannot name. flags are the
    iterator's; VPS_NONE looks through the wrappers only (parentheses,
-   statement lists, else), so an `if` or a `case` is one node. */
+   statement lists, else and `in` clauses), so an `if` or a `case` is one node. */
 typedef enum { VP1_NODE, VP1_NIL, VP1_MANY } Vp1Kind;
 Vp1Kind vp_one(const NodeTable *nt, int root, unsigned flags, int *node);
 

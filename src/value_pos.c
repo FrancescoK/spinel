@@ -704,6 +704,8 @@ static int vp_check_one(void) {
   ok &= vp_one(nt, iff, VPS_NONE, &n) == VP1_NODE && n == iff;
   ok &= vp_one(nt, iff, VPS_ALL, &n) == VP1_MANY && n == -1;
   ok &= vp_one(nt, -1, VPS_NONE, &n) == VP1_MANY && n == -1;
+  int ret = nt_new_node(nt, "ReturnNode");   /* a jump that is not followed is no value */
+  ok &= vp_one(nt, ret, VPS_NONE, &n) == VP1_MANY && n == -1;
   int cp = nt_new_node(nt, "ParenthesesNode"), cs = nt_new_node(nt, "StatementsNode");
   int cyc[1] = { cp };
   nt_node_set_ref(nt, cp, "body", cs);
