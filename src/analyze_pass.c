@@ -13989,14 +13989,7 @@ static void ple_build(Compiler *c) {
         /* one of several values of a join (`f && lambda { }`, `f ? lambda { } :
            nil`): the slot is shared with values this scan cannot see, and is
            called as a poly, as a `||=` fallback's is */
-        int shared = pl.nleaf > 1;
-        /* or one of several writes of a local (`x = nil; x = ->(s) { }`) */
-        if (!shared && kind == 0 && sc) {
-          const char *wn = nt_str(nt, w, "name");
-          for (int o = comp_lvw_first_sc(c, (int)(sc - c->scopes), wn); o >= 0 && !shared; o = comp_lvw_next_sc(c, o))
-            shared = o != w && c->nscope[o] == c->nscope[w] && sp_streq(nt_str(nt, o, "name"), wn);
-        }
-        if (shared) ple_escaped[pl.lit[q]] = 1;
+        if (pl.nleaf > 1) ple_escaped[pl.lit[q]] = 1;
         if (kind < 0 || (!sc && kind != 1)) continue;
         if (ple_npw >= cap) {
           cap = cap ? cap * 2 : 64;
@@ -14139,7 +14132,15 @@ static void ple_build(Compiler *c) {
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
   if (ple_nt != nt || ple_ntc != nt->count) ple_build(c);
-  return ple_escaped && lit >= 0 && lit < nt->count && ple_escaped[lit];
+  if (!ple_escaped || lit < 0 || lit >= nt->count) return 0;
+  if (ple_escaped[lit]) return 1;
+  /* one write of a local that holds more than procs (`x = nil; x = ->(s) { }`)
+     shares the slot with the others: the local's type is the join of its writes */
+  VpUp up;
+  if (vp_climb(nt, comp_parent_map(c), lit, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+      nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) return 0;
+  LocalVar *lv = scope_local(comp_scope_of(c, up.parent), nt_str(nt, up.parent, "name"));
+  return lv && lv->type != TY_PROC && lv->type != TY_UNKNOWN;
 }
 
 /* Type a proc literal's required params from one `.call` site, unless the
