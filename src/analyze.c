@@ -24222,14 +24222,18 @@ static int an_defines_instance_method(Compiler *c, int k, const char *nm) {
    Object), none of them nor a module any includes defines nm above cid,
    no builtin module but Comparable and Enumerable is included, and nothing
    reopens Object or Kernel, or includes a module at the top level, with
-   its own nm. */
+   its own nm (a method or an attr_reader). */
 static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
   const NodeTable *nt = c->nt;
   for (int k = cid; k >= 0; k = c->classes[k].parent) {
     ClassInfo *ci = &c->classes[k];
     if (ci->is_struct || ci->ary_root > 0 || ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode) return 0;
-    if (k != cid && an_defines_instance_method(c, k, nm)) return 0;
-    for (int i = 0; i < ci->nincluded_mods; i++) if (an_defines_instance_method(c, ci->included_mods[i], nm)) return 0;
+    /* (an attr_reader of the name answers its ivar's String) */
+    if (k != cid && (an_defines_instance_method(c, k, nm) || comp_is_reader(ci, nm))) return 0;
+    for (int i = 0; i < ci->nincluded_mods; i++) {
+      int mk = ci->included_mods[i];
+      if (an_defines_instance_method(c, mk, nm) || (mk >= 0 && comp_is_reader(&c->classes[mk], nm))) return 0;
+    }
     for (int i = 0; i < ci->nincluded_mod_names; i++)
       if (!sp_streq(ci->included_mod_names[i], "Comparable") && !sp_streq(ci->included_mod_names[i], "Enumerable")) return 0;
     if (ci->parent < 0) {
@@ -24238,8 +24242,12 @@ static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
     }
   }
   int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
-  if ((ob >= 0 && an_defines_instance_method(c, ob, nm)) || (ke >= 0 && an_defines_instance_method(c, ke, nm))) return 0;
-  for (int i = 0; i < c->ntoplevel_includes; i++) if (an_defines_instance_method(c, c->toplevel_includes[i], nm)) return 0;
+  if ((ob >= 0 && (an_defines_instance_method(c, ob, nm) || comp_is_reader(&c->classes[ob], nm))) ||
+      (ke >= 0 && (an_defines_instance_method(c, ke, nm) || comp_is_reader(&c->classes[ke], nm)))) return 0;
+  for (int i = 0; i < c->ntoplevel_includes; i++) {
+    int mk = c->toplevel_includes[i];
+    if (an_defines_instance_method(c, mk, nm) || (mk >= 0 && comp_is_reader(&c->classes[mk], nm))) return 0;
+  }
   return 1;
 }
 /* See share.h. A method no way out of which answers (its last statement

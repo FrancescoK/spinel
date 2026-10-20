@@ -5901,6 +5901,9 @@ int share_name_targets(Compiler *c, int call, int *out, int cap) {
   if (why != CPT_WHY_CAP && why != CPT_WHY_RECV_UNTYPED) return -1;
   const char *nm = nt_str(nt, call, "name");
   if (!sh_name_methods_seen(c, nm)) return -1;
+  /* an attr_reader of the name answers the String its ivar holds, and is
+     no method's scope the walk below sees */
+  for (int ci = 0; ci < c->nclasses; ci++) if (comp_is_reader(&c->classes[ci], nm)) return -1;
   int str_cid = comp_class_index(c, "String"), k = 0;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
@@ -5913,18 +5916,19 @@ int share_name_targets(Compiler *c, int call, int *out, int cap) {
   return k;
 }
 /* A call past the plan's list answers a new String where its builtin arms
-   do and every method of its name answers one, answers nothing (it only
-   raises) or answers what Object's own inspect or to_s does
-   (share_name_targets, an_target_answers_new) */
+   do and every method of its name answers one (ret_fresh), answers nothing
+   (it only raises) or answers what Object's own inspect or to_s does
+   (share_name_targets, an_target_answers_new). A method that answers
+   anything else (its self, which may be the String receiver, among them)
+   leaves the call's answer unknown. */
 static int sh_name_call_fresh(Compiler *c, int call) {
-  const ShareFacts *F = c->share;
   if (!share_builtin_fresh(c, call)) return 0;
   int *tg = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
   if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int n = share_name_targets(c, call, tg, c->nscopes + 1), ok = n > 0;
   for (int i = 0; ok && i < n; i++) {
     if (an_target_answers_new(c, tg[i])) continue;
-    if (scope_ret_param(c, tg[i]) >= 0 || (F->ret_joined[tg[i]] && !scope_ret_fresh(c, tg[i]))) ok = 0;
+    if (scope_ret_param(c, tg[i]) >= 0 || !scope_ret_fresh(c, tg[i])) ok = 0;
   }
   free(tg);
   return ok;
