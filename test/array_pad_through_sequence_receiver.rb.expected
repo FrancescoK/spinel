@@ -1,0 +1,12 @@
+[1, 2, nil, nil, 7]
+[false, false, true, true, false]
+true
+[1.5, nil, nil, 2.5]
+[false, true, true, false]
+[1, nil, nil, 8]
+[false, true, true, false]
+[false, true, true, false]
+[false, true, true, false]
+[1, 2, nil, nil, 6]
+[false, false, true, true, false]
+[:a1, :b1, :b2, :h1, :e1]

@@ -34374,8 +34374,11 @@ static int nullable_elem_mutation(Compiler *c, int call, int depth) {
 int mutated_array(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   for (int d = 0; d < 8; d++) {
-    recv = an_unparen(nt, recv);
-    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || !self_mutator_call(nt_str(nt, recv, "name")) ||
+    /* (the array is the one the receiver's value comes from: `(a; b)`'s is b) */
+    int one;
+    if (vp_one(nt, recv, VPS_NONE, &one) != VP1_NODE) return -1;
+    recv = one;
+    if (nt_kind(nt, recv) != NK_CallNode || !self_mutator_call(nt_str(nt, recv, "name")) ||
         nt_ref(nt, recv, "receiver") < 0)
       break;
     recv = nt_ref(nt, recv, "receiver");
