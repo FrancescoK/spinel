@@ -6537,7 +6537,7 @@ static int cond_operand_testable(Compiler *c, int v) {
   return v >= 0 && vt != TY_UNKNOWN && vt != TY_VOID;
 }
 static int cond_is_andor(const NodeTable *nt, int n) {
-  NodeKind k = nt_kind(nt, an_unparen(nt, n));
+  NodeKind k = nt_kind(nt, nt_paren_single(nt, n));
   return k == NK_AndNode || k == NK_OrNode;
 }
 static int emit_cond_andor(Compiler *c, int id, TyKind t, Buf *b) {
