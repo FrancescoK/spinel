@@ -5946,7 +5946,9 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     }
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
     for (int k = 0; k < nuse; k++) {
-      if (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy")) continue;
+      /* (a boxed socket write's literal keeps them: its arm is the
+         retargeted call, which reaches them as send does) */
+      if (!sock_name && (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy"))) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
          that count gets no arm (a reader takes none, a writer one). The
