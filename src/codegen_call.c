@@ -4199,8 +4199,29 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     free(rpre.p);
     memset(&rpre, 0, sizeof rpre);
   }
+  /* a socket write on a boxed receiver (sock_send, desugar_dynamic_send):
+     a value that is a socket takes BasicSocket#send, which overrides
+     Object#send, as the case the name never selects; the payload is held
+     once for either, and not interned for the socket's */
+  Buf sockr; memset(&sockr, 0, sizeof sockr);
+  if (nt_int(nt, id, "sock_send", 0) && rt == TY_POLY) {
+    int tp = ++g_tmp;
+    Buf ppre, ph; memset(&ppre, 0, sizeof ppre); memset(&ph, 0, sizeof ph);
+    int pstr = repr_of(c, sym).as_ty == TY_STRING;
+    if (dsr) g_pre = &ppre;
+    tp = hold_operand(c, sym, pstr ? TY_STRING : TY_POLY, !pstr, tp, 1, " ", &ph);
+    g_pre = outer_pre;
+    if (ppre.p) buf_puts(b, ppre.p);
+    if (ph.p) buf_puts(b, ph.p);
+    free(ppre.p); free(ph.p);
+    view_bind(sym, "_t%d", tp);
+    /* the receiver as the arms read it: its temp, or the local a
+       --share-strings receiver was evaluated into */
+    emit_boxed(c, dsr && !recv_held ? nt_ref(nt, arms[0], "receiver") : recv, &sockr);
+  }
   if (dsr) g_pre = &npre;
   else buf_printf(b, "sp_sym _t%d = ", t);
+  if (sockr.p) buf_printf(dsr ? &nb : b, "sp_poly_is_socket(%s) ? (sp_sym)-1 : ", sockr.p);
   emit_dyn_name_sym(c, sym, dsr ? &nb : b);
   g_pre = outer_pre;
   if (dsr) {
@@ -4212,6 +4233,19 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
      per method name the program defines, and a chain of thousands nested
      each `else` a level deeper, past what clang's parser has stack for */
   buf_printf(b, "; sp_RbVal _r%d; switch (_t%d) { ", t, t);
+  if (sockr.p) {
+    /* (its conversions in the case, where the held payload is read: a hold
+       in front of the call converted it before it was held) */
+    ConvHold *sv_conv = g_conv_hold; g_conv_hold = NULL;
+    Buf hs; memset(&hs, 0, sizeof hs);
+    buf_printf(&hs, "((sp_File *)(%s).v.p)", sockr.p);
+    buf_printf(b, "case -1: { _r%d = sp_box_int(", t);
+    emit_io_socket_send_call(c, hs.p, argc, argv, b);
+    buf_puts(b, "); break; }\n");
+    free(hs.p);
+    g_conv_hold = sv_conv;
+  }
+  free(sockr.p);
   Buf *sv_pre = g_pre;
   int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {

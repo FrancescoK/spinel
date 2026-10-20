@@ -3859,6 +3859,20 @@ static int socket_send_untyped(const NodeTable *nt, int id, TyKind recv_ty) {
   return flags == NK_IntegerNode || flags == NK_ConstantPathNode;
 }
 
+/* The same write on a boxed receiver (a socket a block or a thread takes as
+   its parameter, an Array element), at the typed arm's arities: the value's
+   class is the run time's, so the send is lowered as Object#send's dispatch
+   and stamped `sock_send`, and the dispatch takes BasicSocket#send first when
+   the value is a socket (emit_dynamic_send). A Symbol payload is a method's
+   name, never a socket's message. */
+static int socket_send_boxed(Compiler *c, const NodeTable *nt, int id, TyKind recv_ty) {
+  if (recv_ty != TY_POLY || !socket_send_untyped(nt, id, TY_UNKNOWN)) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int argc = 0; const int *argv = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &argc);
+  if ((argc != 2 && argc != 4) || nt_argv_has_splat(nt, argv, argc) || nt_argv_kwh(nt, argv, argc) >= 0) return 0;
+  return nt_kind(nt, argv[0]) != NK_SymbolNode && infer_type(c, argv[0]) != TY_SYMBOL;
+}
+
 /* `recv.public_send(:m, args)` with a literal name -> a direct `recv.m(args)`
    call stamped `vis_enforce`, so codegen raises NoMethodError for a
    private/protected target. send/__send__ keep the visibility-blind textual
@@ -3893,6 +3907,9 @@ int desugar_public_send_recv(Compiler *c) {
          otherwise retarget to a method named "ping" (#2922). */
       if (sp_streq(nm, "send") && (bsrt == TY_IO || socket_send_untyped(nt, id, bsrt)) &&
           sp_feature_required("socket")) continue;
+      /* and on a boxed receiver, the dispatch desugar_dynamic_send lowers it
+         to takes the literal as its one name */
+      if (sp_streq(nm, "send") && socket_send_boxed(c, nt, id, bsrt)) continue;
     }
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
@@ -5590,7 +5607,9 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
       if (ac < 1 || !av) continue;
       const char *a0 = nt_type(nt, av[0]);
-      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode")) &&
+          !(sp_streq(nm, "send") && nt_ref(nt, id, "receiver") >= 0 &&
+            socket_send_boxed(c, nt, id, infer_type(c, nt_ref(nt, id, "receiver"))))) continue;
       any = 1;
     }
     if (!any) return 0;
@@ -5635,9 +5654,11 @@ static int desugar_dynamic_send_inner(Compiler *c) {
        The literal-name retarget above already leaves it alone (#2922); a
        payload held in a variable reached here and became a dispatch over the
        program's method names on the payload's bytes (#7193). */
+    int sock = 0;
     if (sp_streq(nm, "send") && recv >= 0 && sp_feature_required("socket")) {
       TyKind rt = infer_type(c, recv);
       if (rt == TY_IO || socket_send_untyped(nt, id, rt)) continue;
+      sock = socket_send_boxed(c, nt, id, rt);
     }
     { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }  /* already lowered */
     int args = nt_ref(nt, id, "arguments");
@@ -5645,7 +5666,14 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || !argv) continue;
     const char *a0 = nt_type(nt, argv[0]);
-    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;  /* literal: handled earlier */
+    if (a0 && (sp_streq(a0, "SymbolNode") || (sp_streq(a0, "StringNode") && !sock))) continue;  /* literal: handled earlier */
+    /* a boxed socket write's literal payload is Object#send's one name for a
+       value that is no socket: the method the retarget would have called */
+    char sock_lit[256], *sock_name = NULL;
+    if (sock && a0 && sp_streq(a0, "StringNode")) {
+      snprintf(sock_lit, sizeof sock_lit, "%s", nt_str(nt, argv[0], "content"));   /* copy before realloc */
+      sock_name = sock_lit;
+    }
     /* `recv.public_send(*args, &blk)` (activesupport's Object#try): the name
        is the array's first element and the rest are the arguments. The name
        reads as `args[0]` and every arm takes `*args.drop(1)`; the array is
@@ -5864,6 +5892,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       if (nown == 0 || nown > 1024) { for (int k = 0; k < nown; k++) free(own[k]); free(own); continue; }
       use = own; nuse = nown;
     }
+    if (sock_name) { use = &sock_name; nuse = 1; }
     int rest[64]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
     /* the send's block goes to whichever method the name selects: a
        forwarded `&blk` or the block written at the send (the arms are
@@ -5926,7 +5955,10 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          inline expands at the arm, expanded without end. */
       /* not for a builtin receiver's arms: another class's `empty?(x)` says
          nothing about String#empty? */
-      if (splat_src < 0 && !rest_variadic && !builtin_recv && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
+      /* (nor for a boxed socket write's literal: its arm is the retargeted
+         call, which answers a wrong count as that call does) */
+      if (splat_src < 0 && !rest_variadic && !builtin_recv && !sock_name &&
+          dsend_defined_arity_excludes(c, use[k], nrest)) continue;
       /* (under --share-strings an arm with no argument has no arguments
          node, as the literal call it stands for has none: the String
          routes ask for the absence of one, and an empty node made a reader
@@ -5954,6 +5986,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
+    if (sock) nt_node_set_int(nt, id, "sock_send", 1);
     /* --share-strings: a receiver that runs code (a call, a conditional, a
        sequence) is evaluated once into a local the arms read, as `x = recv;
        x.send(name)` has it: every arm then sees a variable's read, and the

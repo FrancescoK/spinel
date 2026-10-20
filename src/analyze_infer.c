@@ -3648,6 +3648,12 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* and its shutdown, as the TY_IO arm types it */
       if (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1)
         { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+      /* and its send, where no dispatch was lowered for it (the poly-IO arm's
+         socket_send_call): the byte count */
+      if (sp_feature_required("socket") && sp_streq(name, "send") && (argc == 2 || argc == 4) &&
+          !nt_argv_has_splat(nt, argv, argc) && nt_kind(nt, argv[0]) != NK_SymbolNode &&
+          (nt_kind(nt, argv[1]) == NK_IntegerNode || nt_kind(nt, argv[1]) == NK_ConstantPathNode))
+        { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       /* and its reads, as the TY_IO arm types them */
       if (sp_feature_required("socket") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) {
         if (sp_streq(name, "recv")) { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
