@@ -2561,6 +2561,18 @@ static SP_NOINLINE sp_float sp_complex_to_f(sp_Complex c) {
     sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Float", sp_complex_to_s(c)));
   return c.re;
 }
+/* Complex#denominator: the lcm of its parts' denominators (an Integer part's
+   is 1, a Float part's its Float#denominator); #numerator is the value times
+   it, in Integer parts, as CRuby builds them. */
+static SP_NOINLINE sp_int sp_complex_denominator(sp_Complex c) {
+  sp_int dr = (c.fl & SP_CPLX_RE_F) ? sp_float_denominator(c.re) : 1;
+  sp_int di = (c.fl & SP_CPLX_IM_F) ? sp_float_denominator(c.im) : 1;
+  return sp_lcm(dr, di);
+}
+static SP_NOINLINE sp_Complex sp_complex_numerator(sp_Complex c) {
+  sp_float d = (sp_float)sp_complex_denominator(c);
+  return (sp_Complex){ c.re * d, c.im * d, 0 };
+}
 static SP_NOINLINE sp_Rational sp_complex_to_r(sp_Complex c) {
   if (c.im != 0.0)
     sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Rational", sp_complex_to_s(c)));
@@ -5823,8 +5835,8 @@ static sp_RbVal sp_brat_part_v(sp_Bigint *b) {
 #endif
   return sp_box_int(sp_brat_part_i(b));
 }
-static sp_RbVal sp_poly_numerator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return v; if (v.tag == SP_TAG_FLT) return sp_float_numerator(v.v.f); /* as the typed Float arm (#3011) */ if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).num); if (sp_poly_is_brat(v) && v.v.p) return sp_brat_part_v(((sp_BigRational *)v.v.p)->num); sp_raise_poly_nomethod("numerator", v); }
-static sp_RbVal sp_poly_denominator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return sp_box_int(1); if (v.tag == SP_TAG_FLT) return sp_box_int(sp_float_denominator(v.v.f)); if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).den); if (sp_poly_is_brat(v) && v.v.p) return sp_brat_part_v(((sp_BigRational *)v.v.p)->den); sp_raise_poly_nomethod("denominator", v); }
+static sp_RbVal sp_poly_numerator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return v; if (v.tag == SP_TAG_FLT) return sp_float_numerator(v.v.f); /* as the typed Float arm (#3011) */ if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).num); if (sp_poly_is_brat(v) && v.v.p) return sp_brat_part_v(((sp_BigRational *)v.v.p)->num); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return sp_box_complex(sp_complex_numerator(*(sp_Complex *)v.v.p)); sp_raise_poly_nomethod("numerator", v); }
+static sp_RbVal sp_poly_denominator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return sp_box_int(1); if (v.tag == SP_TAG_FLT) return sp_box_int(sp_float_denominator(v.v.f)); if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).den); if (sp_poly_is_brat(v) && v.v.p) return sp_brat_part_v(((sp_BigRational *)v.v.p)->den); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return sp_box_int(sp_complex_denominator(*(sp_Complex *)v.v.p)); sp_raise_poly_nomethod("denominator", v); }
 static sp_RbVal sp_poly_nonzero(sp_RbVal v) { if (!sp_poly_tower_p(v)) sp_raise_poly_nomethod("nonzero?", v); return sp_poly_zero_p(v) ? sp_box_nil() : v; }
 /* String#getbyte on a poly value; nil (not 0) for an out-of-range index, per
    CRuby, so the result is boxed. */
