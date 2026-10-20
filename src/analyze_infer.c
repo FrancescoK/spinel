@@ -254,7 +254,8 @@ TyKind an_builtin_answer(Compiler *c, int id) {
    The answer is computed during analysis and recorded per (call, kind);
    codegen (yield_builtin_method_site_type) and any inference asked after
    analysis read the record, so the two agree and codegen re-infers nothing. */
-static struct { int node; TyKind kind, ans; } *ysa_tab;
+static int an_bop_records(Compiler *c, int id);  /* defined with an_bop_find */
+static struct { int node; TyKind kind, ans; const BuiltinOp *row; } *ysa_tab;
 static int ysa_n, ysa_cap;
 static int ysa_find(int id, TyKind kind) {
   for (int i = 0; i < ysa_n; i++)
@@ -277,6 +278,9 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   if (g_scopes_settled) {
     if (at < 0 || ysa_tab[at].ans == TY_UNKNOWN) return 0;
     *out = ysa_tab[at].ans;
+    /* the row the site's answer came from is the call's, as for any call a
+       row answers (the last site's stays, codegen emits the node per site) */
+    if (ysa_tab[at].row && an_bop_records(c, id)) c->bop_inf[id] = ysa_tab[at].row;
     return 1;
   }
   /* The pinned re-inference can ask this chain's per-site question again
@@ -301,10 +305,14 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
+  const BuiltinOp *rkeep = c->bop_inf[id];
+  c->bop_inf[id] = NULL;
   an_face_push(recv, kind);
   TyKind ft = infer_call(c, id);
   an_face_pop();
   busy = 0;
+  const BuiltinOp *srow = c->bop_inf[id];
+  c->bop_inf[id] = srow ? srow : rkeep;
   if (ft == TY_VOID) ft = TY_UNKNOWN;
   if (ft == TY_POLY) {
     int an = nt_ref(nt, id, "arguments"), ac = 0;
@@ -327,6 +335,7 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
     ysa_tab[at].node = id; ysa_tab[at].kind = kind;
   }
   ysa_tab[at].ans = ft;
+  ysa_tab[at].row = srow;
   if (ft == TY_UNKNOWN) return 0;
   *out = ft;
   return 1;
@@ -2529,7 +2538,6 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
       *range_has_float_bound = 1;
   }
 }
-static int an_bop_records(Compiler *c, int id);  /* defined with an_bop_find */
 /* What the chain from the yield up to `node` answers at a site whose block
    answers `bt`, by ty_recv_builtin_result one link at a time. */
 static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) {
