@@ -174,6 +174,10 @@ int an_tail_answers_nil(Compiler *c, int mi);
    the methods are defined in; after it, the facts as decided. */
 int scope_ret_handle(Compiler *c, int mi);
 int scope_ret_fresh(Compiler *c, int mi);
+/* Does call's iterator drop what its block answers: one of the each family,
+   builtin, or every program method of the name yields only where the value
+   is dropped and hands its block on only to such an iterator? */
+int an_iter_discards_block(Compiler *c, int call);
 int scope_ret_param(Compiler *c, int mi);
 /* A String `||` or `&&` over a String left operand: a tail whose operands
    are its arms (an_tail_is_shared_handle, emit_tail_value). */

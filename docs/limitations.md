@@ -1716,7 +1716,9 @@ by identity after it was filled, so the check covers every call on the
 place the identity Set lives in: an instance variable or a local assigned
 only Sets made there (`@seen = Set.new.compare_by_identity`, `@seen ||=
 ...`), read only as a Set's receiver, directly or through a method that
-answers it (`def seen = @seen ||= ...`). Where an identity Set cannot be
+answers it (`def seen = @seen ||= ...`, also as the last value of an `if`
+or a `begin` in it), or as the dropped value of a block of the `each`
+family (one whose methods of the program's own drop it too). Where an identity Set cannot be
 followed so -- it is handed on, its variable is assigned another Set, it is
 a parameter, a call answering it is kept, or a reflective read names its
 variable -- every Set shares one class, and the check covers the program's
