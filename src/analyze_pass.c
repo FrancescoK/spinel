@@ -5663,7 +5663,7 @@ int is_fresh_array(Compiler *c, int v) {
    the container-literal elements of those `x` can be. Returns the count. */
 static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth) {
   const NodeTable *nt = c->nt;
-  n = unwrap_parens(c, n);
+  { int one; if (vp_one(nt, n, VPS_NONE, &one) == VP1_NODE) n = one; }   /* `(a; [1])` is the literal */
   if (n < 0 || depth > 4 || nout >= cap) return nout;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_ArrayNode || k == NK_HashNode) {
