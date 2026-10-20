@@ -44102,6 +44102,19 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
   return before == S->nreaders;
 }
 
+/* Is v the answer of an operator no class of the program defines -- not
+   Set, whose operators are its own methods, nor any other (`bits >> 32` on a
+   boxed value)? Such an answer is a builtin's, an Integer's or a Float's, and
+   no Set: the builtins answer one only from a Set's own methods. */
+static int sid_operator_answer(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "receiver") < 0) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm || !nm[0] || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z') || nm[0] == '_') return 0;
+  if (sp_streq(nm, "[]") || sp_streq(nm, "[]=")) return 0;   /* an element read answers any member */
+  return !an_user_defines_method(c, nm);
+}
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
@@ -44184,7 +44197,7 @@ static void refuse_set_identity_members(Compiler *c) {
     else {
       TyKind rt = infer_type(c, recv);
       int maybe_set = (ty_is_object(rt) && (ty_object_class(rt) == set_cid || is_descendant(c, ty_object_class(rt), set_cid))) ||
-                      (rt == TY_POLY && !cls_fact_excludes(c, recv, set_cid));
+                      (rt == TY_POLY && !cls_fact_excludes(c, recv, set_cid) && !sid_operator_answer(c, recv));
       if (!maybe_set) continue;
       int is_elem = 0, is_coll = 0;
       for (int k = 0; elem_names[k] && !is_elem; k++) is_elem = sp_streq(nm, elem_names[k]);
