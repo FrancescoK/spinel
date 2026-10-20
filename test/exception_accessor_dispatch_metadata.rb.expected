@@ -1,0 +1,37 @@
+["undefined method 'key' for nil", true, :key, [], false]
+["undefined method 'key' for true", true, :key, [], false]
+["undefined method 'key' for false", true, :key, [], false]
+["undefined method 'key' for an instance of Integer", true, :key, [], false]
+["undefined method 'key' for an instance of String", true, :key, [], false]
+[StandardError, :key, []]
+[:al]
+:b
+"undefined method 'key' for nil"
+"undefined method 'args' for nil"
+"undefined method 'reason' for nil"
+"undefined method 'private_call?' for nil"
+"undefined method 'key' for true"
+"undefined method 'args' for true"
+"undefined method 'reason' for true"
+"undefined method 'private_call?' for true"
+"undefined method 'key' for false"
+"undefined method 'args' for false"
+"undefined method 'reason' for false"
+"undefined method 'private_call?' for false"
+"undefined method 'key' for an instance of Float"
+"undefined method 'args' for an instance of Float"
+"undefined method 'reason' for an instance of Float"
+"undefined method 'private_call?' for an instance of Float"
+"undefined method 'key' for an instance of Symbol"
+"undefined method 'args' for an instance of Symbol"
+"undefined method 'reason' for an instance of Symbol"
+"undefined method 'private_call?' for an instance of Symbol"
+[:parent]
+:reader
+:actual
+["undefined method 'key' for an instance of String", "temporary", :key, [], 1]
+[true, Err, "kept", :key, [], false]
+[true, "ordinary", :reason, [], false]
+[true, :args, [], false]
+[:al3]
+:b
