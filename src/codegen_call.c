@@ -14691,15 +14691,15 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* UDPSocket.new / UDPSocket.new(Socket::AF_INET6) */
     if (cn && sp_streq(cn, "UDPSocket") && sp_feature_required("socket") && argc <= 1) {
       buf_puts(b, "sp_sock_udp_new(");
-      if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "0");
+      if (argc == 1) emit_sock_family_arg(c, argv[0], 1, b); else buf_puts(b, "0");
       buf_puts(b, ")");
       { *out = 1; return 1; }
     }
     /* Socket.new(domain, type, protocol) */
     if (cn && sp_streq(cn, "Socket") && sp_feature_required("socket") && argc >= 2) {
       buf_puts(b, "sp_sock_new(");
-      emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-      emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
+      emit_sock_family_arg(c, argv[0], 1, b); buf_puts(b, ", ");
+      emit_sock_family_arg(c, argv[1], 0, b); buf_puts(b, ", ");
       if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
       buf_puts(b, ")");
       { *out = 1; return 1; }

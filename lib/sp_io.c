@@ -1154,11 +1154,25 @@ sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which
   return sp_io_fdopen_sock(fd, SPL("socket"));
 }
 
+/* A family or socket type named by a String or Symbol, with or without its
+   AF_ or PF_ (SOCK_) prefix, as CRuby reads the name. An unknown name is
+   CRuby's SocketError, which names it. */
+sp_int sp_sock_named_const(const char *name, sp_int is_family) {SP_GC_ROOT_STR(name);
+  const char *bare = name;
+  if (is_family && (strncmp(bare, "AF_", 3) == 0 || strncmp(bare, "PF_", 3) == 0)) bare += 3;
+  else if (!is_family && strncmp(bare, "SOCK_", 5) == 0) bare += 5;
+  if (is_family && strcmp(bare, "UNSPEC") == 0) return 0;
+  char full[64];
+  snprintf(full, sizeof full, "%s%s", is_family ? "AF_" : "SOCK_", bare);
+  sp_int r = sp_sock_const(full);
+  if (r < 0)
+    sp_raise_cls("SocketError", sp_sprintf("unknown socket %s: %s", is_family ? "domain" : "type", name));
+  return r;
+}
 /* Socket.getaddrinfo: one row per resolution, in CRuby's 7-element shape. */
 /* A family or socktype argument of Socket.getaddrinfo: nil is 0
-   (unrestricted), an Integer as given, a String or Symbol by name with or
-   without its AF_ / SOCK_ prefix, as CRuby reads it. An unknown name is CRuby's
-   SocketError. */
+   (unrestricted), an Integer as given, a String or Symbol by name
+   (sp_sock_named_const). */
 sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family) {
   v = sp_rbval_str(v);
   if (v.tag == SP_TAG_NIL) return 0;
@@ -1167,15 +1181,7 @@ sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family) {
   if (v.tag == SP_TAG_STR) name = v.v.s;
   else if (v.tag == SP_TAG_SYM && sp_sym_name_fn) name = sp_sym_name_fn((sp_sym)v.v.i);
   if (!name) sp_raise_cls("TypeError", "no implicit conversion into Integer");
-  const char *prefix = is_family ? "AF_" : "SOCK_";
-  size_t pl = strlen(prefix);
-  if (strncmp(name, prefix, pl) == 0) name += pl;
-  if (is_family && strcmp(name, "UNSPEC") == 0) return 0;
-  char full[64];
-  snprintf(full, sizeof full, "%s%s", prefix, name);
-  sp_int r = sp_sock_const(full);
-  if (r < 0) sp_raise_cls("SocketError", is_family ? "unknown socket domain" : "unknown socket type");
-  return r;
+  return sp_sock_named_const(name, is_family);
 }
 
 /* Socket.getaddrinfo(host, port [, family [, socktype]]): a family or socktype

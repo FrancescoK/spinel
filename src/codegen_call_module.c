@@ -1377,6 +1377,20 @@ static void emit_getaddrinfo_hint(Compiler *c, int arg, int is_family, Buf *b) {
   buf_printf(b, ", %d)", is_family);
 }
 
+/* A domain or socket type argument of Socket.new, Socket.pair or
+   UDPSocket.new: an Integer as it is, and a value that may be a String or a
+   Symbol naming the constant through sp_sock_family_arg, as CRuby reads it */
+void emit_sock_family_arg(Compiler *c, int arg, int is_family, Buf *b) {
+  TyKind t = comp_ntype(c, arg);
+  if (t != TY_STRING && t != TY_SYMBOL && t != TY_POLY) {
+    emit_int_expr(c, arg, b);
+    return;
+  }
+  buf_puts(b, "sp_sock_family_arg(");
+  emit_boxed(c, arg, b);
+  buf_printf(b, ", %d)", is_family);
+}
+
 int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
      constant). Handled before the Class.new dispatch since they are not `new`. */
@@ -1515,8 +1529,8 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       if ((is_socket_pair_alias(name)) && argc >= 2) {
         int tp0 = ++g_tmp, tp1 = ++g_tmp, tpa = ++g_tmp;
         buf_printf(b, "({ sp_File *_t%d = sp_sock_pair_end(", tp0);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
+        emit_sock_family_arg(c, argv[0], 1, b); buf_puts(b, ", ");
+        emit_sock_family_arg(c, argv[1], 0, b); buf_puts(b, ", ");
         if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
         buf_printf(b, ", 0); SP_GC_ROOT(_t%d); sp_File *_t%d = sp_sock_pair_end(0, 0, 0, 1);"
                       " SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"

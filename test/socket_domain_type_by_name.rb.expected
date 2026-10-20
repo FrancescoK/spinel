@@ -1,0 +1,19 @@
+[:INET, :STREAM, Socket, :stream]
+["INET", "DGRAM", Socket, :dgram]
+[:AF_INET, :SOCK_STREAM, Socket, :stream]
+[:PF_INET, "SOCK_DGRAM", Socket, :dgram]
+[2, :DGRAM, Socket, :dgram]
+[:INET, 1, Socket, :stream]
+0
+"127.0.0.1"
+0
+"127.0.0.1"
+"Seongsu Bridge"
+"Jayang-dong"
+true
+"127.0.0.1"
+["AF_INET", "127.0.0.1"]
+[SocketError, "unknown socket domain: FOO"]
+[SocketError, "unknown socket type: BAR"]
+[TypeError, "no implicit conversion from nil to integer"]
+[SocketError, "unknown socket domain: APPLE"]
