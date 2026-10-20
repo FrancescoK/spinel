@@ -862,8 +862,14 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
 static int emit_dig_splat(Compiler *c, int recv, int argc, const int *argv, Buf *b) {
   Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
   if (argc == 1) {
-    buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p);
-    emit_boxed(c, argv[0], b); buf_puts(b, "))");
+    /* the argument's hoists run after the rooted receiver, not in the
+       caller's prelude, where they ran before the receiver expression */
+    Buf pre = {0}, value = {0}; Buf *saved_pre = g_pre;
+    g_pre = &pre; emit_boxed(c, argv[0], &value); g_pre = saved_pre;
+    if (pre.p) buf_printf(b, "({ %s", pre.p);
+    buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(%s))", rb.p, value.p);
+    if (pre.p) buf_puts(b, "; })");
+    free(pre.p); free(value.p);
   }
   else {
     int tk = ++g_tmp;
