@@ -171,3 +171,42 @@ Lid.new.remark("l")
 p Lid.new.mark, Cap.new.mark
 p Cup.singleton_methods(false).sort, Cap.singleton_methods(false).sort
 p Cup.singleton_methods.sort, Cap.singleton_methods.sort
+
+# A class method defined after the accessor in the same class replaces it,
+# also when a subclass gets a copy of the method (it reads a class-level
+# ivar) and when no class answers by the accessor at all.
+class Seal
+  class << self
+    attr_accessor :mark
+  end
+
+  def self.mark
+    "seal:#{@mark}"
+  end
+
+  def mark
+    k = self.class
+    k.mark
+  end
+end
+
+class Stamp < Seal
+end
+
+Seal.mark = "s"
+Stamp.mark = "t"
+p Seal.new.mark, Stamp.new.mark
+
+class Wax
+  class << self
+    attr_reader :hue
+  end
+
+  def self.hue = "wax"
+
+  def hue
+    k = self.class
+    k.hue
+  end
+end
+p Wax.new.hue
