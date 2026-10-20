@@ -44094,7 +44094,9 @@ static int sid_fresh_set(const NodeTable *nt, int v) {
 }
 /* The method or block whose value node n is, or -1: n is the last
    statement of its body, or of an arm of a conditional, a case or a begin
-   (its body, a rescue, its else; not its ensure) that is in turn */
+   (its body, a rescue, its else; not its ensure) that is in turn. -2 when
+   the climb meets a statement that is not the last of its statements: its
+   value is dropped there (`if a then x.m end; more`). */
 static int sid_tail_owner(Compiler *c, const int *parent, int n) {
   const NodeTable *nt = c->nt;
   for (int d = 0; n >= 0 && d < 64; d++) {
@@ -44109,7 +44111,11 @@ static int sid_tail_owner(Compiler *c, const int *parent, int n) {
     if (pk == NK_DefNode || pk == NK_BlockNode) return nt_ref(nt, p, "body") == n ? p : -1;
     if (pk == NK_StatementsNode) {
       int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
-      if (bn == 0 || bb[bn - 1] != n) return -1;
+      if (bn == 0) return -1;
+      if (bb[bn - 1] != n) {
+        for (int i = 0; i + 1 < bn; i++) if (bb[i] == n) return -2;
+        return -1;
+      }
     }
     else if (pk == NK_IfNode || pk == NK_UnlessNode) {
       if (nt_ref(nt, p, "predicate") == n) return -1;
@@ -44169,6 +44175,7 @@ static int sid_alias_use_ok(Compiler *c, SidSources *S, int a) {
       continue;
     }
     int def = sid_tail_owner(c, S->parent, a);
+    if (def == -2) return 1;
     /* a block's value, which an iterator of the each family drops */
     if (def >= 0 && nt_kind(nt, def) == NK_BlockNode) {
       int call = S->parent[def];
