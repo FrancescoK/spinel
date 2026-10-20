@@ -2111,6 +2111,9 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   if (strbuf_tail_answers_block(c, mi, t, 0) || k == NK_LocalVariableReadNode ||
       k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
     return 1;
+  /* (a call whose every target publishes its handle, which the slot picks
+     up after it: emit_strbuf_value's pickup) */
+  if (k == NK_CallNode && repr_call_returns_handle(c, t) && strbuf_pickup_published(c, t)) return 1;
   if (depth == 0) return 0;
   if (k == NK_NilNode || share_value_fresh(c, t, 0)) return 1;
   /* (a frozen literal is its own handle; a String's conversion answers
@@ -2123,10 +2126,11 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   return x >= 0 && repr_of(c, x).kind != RK_BOXED && comp_ntype(c, x) != TY_POLY && !strbuf_boxed_local(c, x) &&
          strbuf_inline_tail_ok(c, mi, x, depth + 1);
 }
-/* ...and every arm of an `if` or `unless` tail t, an elsif's included,
-   which the iterator reads; `depth` is the flag strbuf_inline_tail_ok takes
-   (0 for a tail beside no `return`), and an arm is one level deeper. A
-   missing arm answers nil, which the slot takes. */
+/* ...and every arm of an `if`, `unless` or `case` tail t, an elsif's and
+   each `when`'s included, which the iterator reads; `depth` is the flag
+   strbuf_inline_tail_ok takes (0 for a tail beside no `return`), and an
+   arm is one level deeper. A missing arm answers nil, which the slot
+   takes. */
 typedef struct { Compiler *c; int mi; int depth; } StrbufInlineArms;
 static int strbuf_inline_arm_bad(const VpLeaf *lf, void *ud) {
   const StrbufInlineArms *a = ud;
@@ -2136,7 +2140,7 @@ static int strbuf_inline_arm_bad(const VpLeaf *lf, void *ud) {
 }
 static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
   StrbufInlineArms a = { c, mi, depth };
-  return !for_each_value_position(c->nt, t, VPS_IF | VPS_UNLESS, strbuf_inline_arm_bad, &a);
+  return !for_each_value_position(c->nt, t, VPS_IF | VPS_UNLESS | VPS_CASE, strbuf_inline_arm_bad, &a);
 }
 /* Does each `return` in subtree n of spliced method mi hand the result
    slot what strbuf_inline_tail_ok takes (a bare one nil)? The splice
