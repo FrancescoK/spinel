@@ -1281,6 +1281,7 @@ int g_fiber_body = -1;
 const char *g_fn_pr_label = NULL;
 const char *g_fn_pr_var = NULL;
 TyKind g_fn_ret_type = TY_UNKNOWN;
+int g_fn_ret_oint = 0;   /* g_ret_oint of the real function, beside g_fn_ret_type */
 /* The slot the proc body being emitted answers through, or NULL when the C
    function being emitted is not a value-carrying proc's (a method, a fiber
    body, a proc whose value is nil). An exit that leaves the proc writes

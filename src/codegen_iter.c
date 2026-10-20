@@ -283,7 +283,7 @@ static void yield_target_enter(int fe) {
    the inline's `_yretN`, not the real function's. Recorded per block node
    while the call holding the block is spliced, and given back after (the
    splices nest, so the recording does too). */
-typedef struct { const char *label, *var; TyKind rt; int exc, ens, set; } BlockRetHome;
+typedef struct { const char *label, *var; TyKind rt; int ro, exc, ens, set; } BlockRetHome;
 static BlockRetHome *g_blk_ret_home; static int g_blk_ret_cap;
 
 BlockRetHome block_ret_home_enter(int block, int saved_block) {
@@ -302,7 +302,7 @@ BlockRetHome block_ret_home_enter(int block, int saved_block) {
   /* only an inline's funnel (the inliners name it `_yretN`); otherwise the
      block's return is the real function's, as before */
   if (g_method_pr_label && strncmp(g_method_pr_label, "_yret", 5) == 0) {
-    h.label = g_method_pr_label; h.var = g_method_pr_var; h.rt = g_ret_type;
+    h.label = g_method_pr_label; h.var = g_method_pr_var; h.rt = g_ret_type; h.ro = g_ret_oint;
     h.exc = g_method_pr_exc_depth; h.ens = g_method_pr_ensure_depth; h.set = 1;
   }
   g_blk_ret_home[block] = h;
@@ -3247,17 +3247,19 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      function's own return funnel. */
   const char *sv_bl = g_method_pr_label, *sv_bv = g_method_pr_var;
   TyKind sv_bt = g_ret_type;
+  int sv_bro = g_ret_oint;
   int sv_bexc = g_method_pr_exc_depth;
   int sv_bens = g_method_pr_ensure_depth;
   g_method_pr_label = g_fn_pr_label; g_method_pr_var = g_fn_pr_var;
-  g_ret_type = g_fn_ret_type;
+  /* (and the slot's form: an inline answering its oint set g_ret_oint) */
+  g_ret_type = g_fn_ret_type; g_ret_oint = g_fn_ret_oint;
   g_method_pr_exc_depth = 0;   /* the real function's funnel sits at depth 0 */
   g_method_pr_ensure_depth = 0;
   /* ... unless the block was written in a method body that is itself
      spliced: its `return` leaves that inline */
   { const BlockRetHome *h = block_ret_home(blk);
     if (h) {
-      g_method_pr_label = h->label; g_method_pr_var = h->var; g_ret_type = h->rt;
+      g_method_pr_label = h->label; g_method_pr_var = h->var; g_ret_type = h->rt; g_ret_oint = h->ro;
       g_method_pr_exc_depth = h->exc; g_method_pr_ensure_depth = h->ens;
     } }
   /* likewise, the block body's `self` is the CALLER's (an ivar read inside
@@ -3707,7 +3709,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_lowered_blk_name = sv_blbn;
   g_yield_proc_ref = sv_bypr; g_yield_slot_ty = sv_byslot;
   g_yield_proc_ref_fallback = sv_yprf; g_yield_slot_ty_fallback = sv_yslotf;
-  g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
+  g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt; g_ret_oint = sv_bro;
   g_method_pr_exc_depth = sv_bexc;
   g_method_pr_ensure_depth = sv_bens;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc; g_brk_rescue_base = svbres;
