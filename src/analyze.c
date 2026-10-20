@@ -48644,6 +48644,10 @@ static void an_phase_procs(Compiler *c) {
      blk_param pass above already kept it yields=0 when self-recursive);
      this loop covers bodies with literal `yield`s. */
   int lowered_recursive_yield = 0;
+  /* a caller whose block goes to a method lowered after it (a returning proc
+     asks whether its block is lifted) is looked at again */
+  for (int again_ret = 1; again_ret; ) {
+  again_ret = 0;
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (!m->name || !m->reachable) continue;
@@ -48689,7 +48693,12 @@ static void an_phase_procs(Compiler *c) {
        standing between the method and the ordinary proc-parameter form it
        already compiles without the `yield`. */
     int blk_value_use = !self_rec && !thread_yld && m->blk_param_value_use;
-    if (!self_rec && !thread_yld && !blk_value_use) continue;
+    /* A proc the method creates that `return`s leaves it through the method's
+       own proc-return frame, which a method spliced into its caller does not
+       have: the splice named the frame's `_h` where none was declared. As a
+       function of its own it has one. */
+    int ret_proc = !self_rec && !thread_yld && !blk_value_use && scope_creates_returning_proc(c, mi);
+    if (!self_rec && !thread_yld && !blk_value_use && !ret_proc) continue;
     m->is_lowered_yield = 1;
     m->lowered_lifted_yield = thread_yld;
     m->yields = 0;
@@ -48736,6 +48745,8 @@ static void an_phase_procs(Compiler *c) {
       yblk->is_cell = 1;
     }
     lowered_recursive_yield = 1;
+    again_ret |= ret_proc;
+  }
   }
 
   /* A method lowered just above (yields=1 -> a real &block-forwarding function)
