@@ -43958,6 +43958,72 @@ static int iter_disc_blk_fwd(Compiler *c, int n, const char *bp, int depth) {
   }
   return 1;
 }
+/* Is t the type of a value of a kind the analysis knows that is no
+   Enumerator: an Array, a Hash, a Range, an object of a class of the
+   program's? -1 for a builtin's, its class for an object, -3 for none. */
+static int iter_disc_known_kind(TyKind t) {
+  if (ty_is_object(t)) return ty_object_class(t);
+  if (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE) return -1;
+  return -3;
+}
+/* The methods receiverless call n in an instance method can run: on each
+   class made whose instances run that method, the one its chain has (a
+   class with none raises NoMethodError); -1 where method_missing may
+   answer instead, or they are more than cap. */
+static int iter_disc_self_targets(Compiler *c, int n, int *out, int cap) {
+  Scope *cur = comp_scope_of(c, n);
+  int ci = cur ? (int)(cur - c->scopes) : -1;
+  const char *nm = nt_str(c->nt, n, "name");
+  if (ci <= 0 || !nm || cur->is_cmethod || cur->class_id < 0 || !cur->name || cur->def_node < 0) return -1;
+  int k = 0;
+  for (int cid = 0; cid < c->nclasses; cid++) {
+    if (!c->classes[cid].instantiated && !c->classes[cid].is_builtin_const) continue;
+    if (comp_method_in_chain(c, cid, cur->name, NULL) != ci) continue;
+    int mi = comp_method_in_chain(c, cid, nm, NULL);
+    /* (a class with none raises NoMethodError, unless method_missing answers) */
+    if (mi < 0) {
+      if (comp_method_in_chain(c, cid, "method_missing", NULL) >= 0) return -1;
+      continue;
+    }
+    int seen = 0;
+    for (int i = 0; i < k && !seen; i++) seen = out[i] == mi;
+    if (seen) continue;
+    if (k >= cap) return -1;
+    out[k++] = mi;
+  }
+  return k;
+}
+/* A boxed receiver r that is a call (no block) of methods of the program
+   only -- the targets the plan lists, or a receiverless call's on each
+   class made that runs the method it is in -- each answering a value of a
+   kind the analysis knows that is no Enumerator (iter_disc_known_kind):
+   the class iter_disc_call asks the methods of (-1 for a builtin's, -2 for
+   any, where the answers are of more than one class), or -3. */
+static int iter_disc_call_recv(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  r = an_unparen(nt, r);
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "block") >= 0) return -3;
+  const char *nm = nt_str(nt, r, "name");
+  /* (no builtin answers it: on self, none of Object's or Kernel's; on a
+     receiver, one of a class of the program's) */
+  int rr = nt_ref(nt, r, "receiver");
+  if (!nm || (rr < 0 ? object_public_method_name(nm) || bop_share_named(BOP_KERNEL, nm)
+                     : !ty_is_object(infer_type(c, rr))))
+    return -3;
+  int *tg = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int n = cplan_targets(c, r, tg, CPT_MAX);
+  if (n == CPT_UNKNOWN && nt_ref(nt, r, "receiver") < 0) n = iter_disc_self_targets(c, r, tg, c->nscopes + 1);
+  int cls = n > 0 ? -4 : -3;
+  for (int i = 0; i < n && cls != -3; i++) {
+    int k = iter_disc_known_kind((TyKind)c->scopes[tg[i]].ret);
+    if (k == -3) cls = -3;
+    else if (cls == -4) cls = k;
+    else if (cls != k) cls = -2;
+  }
+  free(tg);
+  return cls;
+}
 static int iter_disc_call(Compiler *c, int call, int depth) {
   static const char *const names[] = {
     "each", "each_with_index", "each_with_object", "each_char", "each_byte", "each_line", "each_key",
@@ -43982,7 +44048,11 @@ static int iter_disc_call(Compiler *c, int call, int depth) {
   if (r >= 0) {
     TyKind rt = infer_type(c, r);
     rcls = ty_is_object(rt) ? ty_object_class(rt) : -1;
-    if (rt == TY_ENUMERATOR || rt == TY_POLY || rt == TY_UNKNOWN) return 0;
+    /* (a boxed receiver that is a call of the program's methods answering
+       each a known kind, no Enumerator: iter_disc_call_recv) */
+    if (rt == TY_POLY || rt == TY_UNKNOWN) rcls = iter_disc_call_recv(c, r);
+    else if (rt == TY_ENUMERATOR) return 0;
+    if (rcls == -3) return 0;
   }
   static int busy[64], nbusy;
   for (int mi = 0; mi < c->nscopes; mi++) {
