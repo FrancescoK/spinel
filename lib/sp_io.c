@@ -1404,10 +1404,10 @@ sp_int sp_sock_connect_sa(sp_File *f, const char *sa, sp_int salen) {SP_GC_ROOT(
     sp_file_raise_errno("connect", "");
   return 0;
 }
-sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
-  extern int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int port);
+sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, sp_int flags, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
+  extern int sp_net_udp_send_to(int fd, const char *data, int len, int flags, const char *host, int port);
   sp_sock_require(f, "send");
-  int n = sp_net_udp_send_to(fileno(f->fp), data, (int)len, host, (int)port);
+  int n = sp_net_udp_send_to(fileno(f->fp), data, (int)len, sp_sock_int_arg(flags), host, (int)port);
   if (n < 0) {
     sp_sock_raise_if_unresolved("getaddrinfo");
     sp_file_raise_errno("send", host ? host : "");
