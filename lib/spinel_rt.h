@@ -2979,6 +2979,13 @@ static inline sp_StrRange sp_srange_need_end(sp_StrRange r, int last) {
                                     : "cannot get the first element of beginless range");
   return r;
 }
+/* ...the Range `s.upto(t)` walks (desugar_string_upto), made once both ends
+   have run: a nil s is nil's NoMethodError for upto, not the TypeError a
+   walk from a nil begin raises */
+static inline sp_StrRange sp_srange_upto_recv(sp_StrRange r) {
+  if (SP_UNLIKELY(!r.first && !r.hf)) sp_nil_recv("upto");
+  return r;
+}
 /* ...and #min (greatest 0) / #max (1) with no block as a String, as
    CRuby's range_min / range_max answer them. #min walks nothing: a
    beginless Range raises, one empty by <=> (the begin past the end, or at

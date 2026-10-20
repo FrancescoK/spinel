@@ -5042,9 +5042,8 @@ static int emit_range_boxed_ends(Compiler *c, int id, int left, int right, int e
   buf_printf(b, ", %d); })", excl);
   return 1;
 }
-/* A Range literal in value position (a..b, a...b, endless and beginless) (emit_expr_node's arms, in their order) */
-static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
-  if (!(sp_streq(ty, "RangeNode"))) return 0;
+/* A Range literal in value position (a..b, a...b, endless and beginless) */
+static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) {
   int left = nt_ref(nt, id, "left");
   int right = nt_ref(nt, id, "right");
   int excl = nt_range_excl(nt, id);
@@ -5313,6 +5312,21 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   buf_printf(b, ", %d)", excl);
   return 1;
   return 0;
+}
+/* ...the arm (emit_expr_node's arms, in their order): the Range `s.upto(t)`
+   walks (desugar_string_upto) tests an s that can be nil, or is boxed, once
+   both ends have run (sp_srange_upto_recv) */
+static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "RangeNode"))) return 0;
+  int left = nt_ref(nt, id, "left");
+  Repr r = repr_of(c, id);
+  if (!nt_int(nt, id, "made_upto", 0) || left < 0 || r.kind == RK_BOXED || r.range != TY_STRING ||
+      (repr_of(c, left).kind != RK_BOXED && recv_never_nil(c, left)))
+    return emit_range_literal(c, id, b, nt);
+  buf_puts(b, "sp_srange_upto_recv(");
+  emit_range_literal(c, id, b, nt);
+  buf_puts(b, ")");
+  return 1;
 }
 
 /* The tail of a multi-statement `(a; b)`, and the type its C value has. An

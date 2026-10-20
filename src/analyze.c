@@ -11692,6 +11692,8 @@ static int desugar_string_upto(Compiler *c) {
     nt_node_set_ref(nt, rng, "left", recv);
     nt_node_set_ref(nt, rng, "right", av[0]);
     nt_range_set_excl(nt, rng, excl);
+    /* nil has no upto: the Range tests a begin that can be nil (emit_range_expr) */
+    nt_node_set_int(nt, rng, "made_upto", 1);
     nt_node_set_ref(nt, id, "receiver", rng);
     nt_node_set_str(nt, id, "name", "each");
     nt_node_set_ref(nt, id, "arguments", -1);

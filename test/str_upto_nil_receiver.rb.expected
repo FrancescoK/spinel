@@ -1,0 +1,14 @@
+block: NoMethodError: undefined method 'upto' for nil
+exclusive: NoMethodError: undefined method 'upto' for nil
+limit ICN
+limit first: NoMethodError: undefined method 'upto' for nil
+to_a: NoMethodError: undefined method 'upto' for nil
+map: NoMethodError: undefined method 'upto' for nil
+param: NoMethodError: undefined method 'upto' for nil
+aa ab ac ad 
+ivar: NoMethodError: undefined method 'upto' for nil
+reader: NoMethodError: undefined method 'upto' for nil
+GMN GMO GMP 
+["Ha", "Hb", "Hc"]
+Achasan Achasao 
+"Achasan"
