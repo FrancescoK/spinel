@@ -14842,13 +14842,23 @@ static sp_PolyArray*sp_PolyPolyHash_values(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_P
    runtime hash variant, returning a poly array of the (boxed) keys or values.
    A non-hash poly value raises NoMethodError, as CRuby does for keys/values.
    Each typed intermediate is rooted before the converter allocates. */
+/* A String-keyed Hash's keys, in order, as the boxed Array a poly `keys`
+   answers, boxed straight off the order list. Building the String Array
+   sp_*Hash_keys answers and then boxing it into a second Array cost an
+   Array per call, which a MessagePack packer paid on every map it wrote. */
+static sp_PolyArray *sp_poly_str_keys(void *h, const char **order, sp_int len) {
+  SP_GC_ROOT(h);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  for (sp_int i = 0; i < len; i++) sp_PolyArray_push(a, sp_box_str(order[i]));
+  return a;
+}
 static sp_PolyArray *sp_poly_keys(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) switch (v.cls_id) {
-    case SP_BUILTIN_STR_INT_HASH:  { sp_StrArray *k = sp_StrIntHash_keys((sp_StrIntHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
-    case SP_BUILTIN_STR_STR_HASH:  { sp_StrArray *k = sp_StrStrHash_keys((sp_StrStrHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
+    case SP_BUILTIN_STR_INT_HASH:  { sp_StrIntHash *h = (sp_StrIntHash*)v.v.p; return sp_poly_str_keys(h, h->order, h->len); }
+    case SP_BUILTIN_STR_STR_HASH:  { sp_StrStrHash *h = (sp_StrStrHash*)v.v.p; return sp_poly_str_keys(h, h->order, h->len); }
     case SP_BUILTIN_INT_STR_HASH:  { sp_IntArray *k = sp_IntStrHash_keys((sp_IntStrHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_int_array(k); }
     case SP_BUILTIN_INT_INT_HASH:  { sp_IntArray *k = sp_IntIntHash_keys((sp_IntIntHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_int_array(k); }
-    case SP_BUILTIN_STR_POLY_HASH: { sp_StrArray *k = sp_StrPolyHash_keys((sp_StrPolyHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
+    case SP_BUILTIN_STR_POLY_HASH: { sp_StrPolyHash *h = (sp_StrPolyHash*)v.v.p; return sp_poly_str_keys(h, h->order, h->len); }
     case SP_BUILTIN_SYM_POLY_HASH: { sp_IntArray *k = sp_SymPolyHash_keys((sp_SymPolyHash*)v.v.p); SP_GC_ROOT(k); sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a); for (sp_int i = 0; i < k->len; i++) sp_PolyArray_push(a, sp_box_sym((sp_sym)k->data[k->start + i])); return a; }
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_keys((sp_PolyPolyHash*)v.v.p);
   }
