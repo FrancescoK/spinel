@@ -759,6 +759,8 @@ void a_collect_used(Compiler *c, int id, ANameSet *out);
 int a_proc_params_node(Compiler *c, int create);
 int a_proc_body(Compiler *c, int create);
 int a_block_is_lifted(Compiler *c, int id);
+/* 1 if scope `si` creates a proc whose `return` leaves it (codegen.c): the method needs a proc-return frame. */
+int scope_creates_returning_proc(Compiler *c, int si);
 int a_proc_create_or_lifted(Compiler *c, int id);
 void mark_proc_captures(Compiler *c);
 void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *cap);
