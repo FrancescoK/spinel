@@ -11913,6 +11913,11 @@ static int desugar_multi_yield_map_param(Compiler *c) {
   return changed;
 }
 
+/* What the search reads: the compiler, and the class of the method's `self`
+   (-1 where there is none). A call whose type is that class answers the
+   receiver, as `self` does, and is no value of the block form. */
+typedef struct { Compiler *c; int cls; } TeCtx;
+static int te_tail_is_value(const TeCtx *x, int n);
 /* Does a def's body answer a VALUE on some path -- a local or ivar read, a
    literal, an assignment -- as the last expression or through a `return`?
    The `each`-like idiom answers self, nil or an iterator call, whose value
@@ -11921,8 +11926,8 @@ static int desugar_multi_yield_map_param(Compiler *c) {
    modifier, `||` and `&&`, parentheses and a `return`'s value); a `return`
    that hands out several values is judged by its first. A return before the
    tail is not a value position: te_guard_value reads those. */
-static int te_tail_is_value(const NodeTable *nt, int n);
-static int te_value_leaf(const NodeTable *nt, int n) {
+static int te_value_leaf(const TeCtx *x, int n) {
+  const NodeTable *nt = x->c->nt;
   switch (nt_kind(nt, n)) {
     case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
     case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode:
@@ -11941,6 +11946,8 @@ static int te_value_leaf(const NodeTable *nt, int n) {
       /* nor is the guard's own Enumerator a value of the block form */
       if (sp_streq(cn, "to_enum") || sp_streq(cn, "enum_for") || strncmp(cn, "__to_enum_", 10) == 0)
         return 0;
+      /* `return self.dup`, `return clone`: the receiver's class is the each-like idiom's self */
+      if (x->cls >= 0 && infer_type(x->c, n) == ty_object(x->cls)) return 0;
       return 1;
     }
     default: return 0;
@@ -11949,14 +11956,15 @@ static int te_value_leaf(const NodeTable *nt, int n) {
 /* One value position of the tail. A walk that gave up, which a tree cannot
    cause, is a value: the method is left unpinned. */
 static int te_tail_leaf(const VpLeaf *leaf, void *ud) {
-  const NodeTable *nt = ud;
+  const TeCtx *x = ud;
+  const NodeTable *nt = x->c->nt;
   if (leaf->kind == VPK_GAVE_UP) return 1;
   if (leaf->kind == VPK_JUMP && nt_kind(nt, leaf->node) == NK_ReturnNode) {
     int a = nt_ref(nt, leaf->node, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    return ac > 0 && te_tail_is_value(nt, av[0]);
+    return ac > 0 && te_tail_is_value(x, av[0]);
   }
-  return leaf->kind == VPK_EXPR && te_value_leaf(nt, leaf->node);
+  return leaf->kind == VPK_EXPR && te_value_leaf(x, leaf->node);
 }
 /* A `return v`, `if` or `unless` among the statements before the last of a
    list answers a value too (the guard `return @cache if @cache`), and so
@@ -11965,7 +11973,8 @@ static int te_tail_leaf(const VpLeaf *leaf, void *ud) {
    clauses of a case or a case/in and its else, the body, the rescue
    clauses and the else of a begin, and a `return`'s value. A return in a
    block is not read. */
-static int te_guard_value(const NodeTable *nt, int n) {
+static int te_guard_value(const TeCtx *x, int n) {
+  const NodeTable *nt = x->c->nt;
   for (;;) {
     switch (nt_kind(nt, n)) {
       case NK_StatementsNode: {
@@ -11974,30 +11983,30 @@ static int te_guard_value(const NodeTable *nt, int n) {
         for (int i = 0; i < bn - 1; i++) {
           NodeKind k = nt_kind(nt, bb[i]);
           if (k == NK_ReturnNode || k == NK_IfNode || k == NK_UnlessNode) {
-            if (te_tail_is_value(nt, bb[i])) return 1;
+            if (te_tail_is_value(x, bb[i])) return 1;
           }
           else if ((k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_BeginNode) &&
-                   te_guard_value(nt, bb[i]))
+                   te_guard_value(x, bb[i]))
             return 1;
         }
         n = bb[bn - 1];
         continue;
       }
       case NK_IfNode: case NK_UnlessNode:
-        if (te_guard_value(nt, nt_ref(nt, n, "statements"))) return 1;
+        if (te_guard_value(x, nt_ref(nt, n, "statements"))) return 1;
         n = nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause");
         continue;
       case NK_CaseNode: case NK_CaseMatchNode: {
         int cn = 0; const int *cv = nt_arr(nt, n, "conditions", &cn);
         for (int i = 0; i < cn; i++)
-          if (te_guard_value(nt, nt_ref(nt, cv[i], "statements"))) return 1;
+          if (te_guard_value(x, nt_ref(nt, cv[i], "statements"))) return 1;
         n = nt_ref(nt, n, "else_clause");
         continue;
       }
       case NK_BeginNode:
-        if (te_guard_value(nt, nt_ref(nt, n, "statements"))) return 1;
+        if (te_guard_value(x, nt_ref(nt, n, "statements"))) return 1;
         for (int r = nt_ref(nt, n, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
-          if (te_guard_value(nt, nt_ref(nt, r, "statements"))) return 1;
+          if (te_guard_value(x, nt_ref(nt, r, "statements"))) return 1;
         n = nt_ref(nt, n, "else_clause");
         continue;
       case NK_ElseNode: n = nt_ref(nt, n, "statements"); continue;
@@ -12005,16 +12014,16 @@ static int te_guard_value(const NodeTable *nt, int n) {
       case NK_ReturnNode: {
         int a = nt_ref(nt, n, "arguments");
         int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-        return ac > 0 && te_tail_is_value(nt, av[0]);
+        return ac > 0 && te_tail_is_value(x, av[0]);
       }
       default: return 0;
     }
   }
 }
-static int te_tail_is_value(const NodeTable *nt, int n) {
+static int te_tail_is_value(const TeCtx *x, int n) {
   if (n < 0) return 0;
-  return for_each_value_position(nt, n, VP_FOLLOW_RETURN | VP_AND_LEFT | VPS_ALL, te_tail_leaf, (void *)nt) ||
-         te_guard_value(nt, n);
+  return for_each_value_position(x->c->nt, n, VP_FOLLOW_RETURN | VP_AND_LEFT | VPS_ALL, te_tail_leaf, (void *)x) ||
+         te_guard_value(x, n);
 }
 
 /* Is `call` the value of a `return` guarded by block_given? alone at the top
@@ -12144,13 +12153,14 @@ static int desugar_scan_enum_consumer(Compiler *c, int te) {
    if yield(x) > 1 }`) leaves the method with a value, which neither the tail
    nor the statements before it show (te_guard_value reads no block): the
    block form answers it as much as a value tail does. */
-static int te_block_return_value(Compiler *c, int si) {
+static int te_block_return_value(const TeCtx *x, int si) {
+  Compiler *c = x->c;
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
     if (c->nscope[rid] != si || return_in_lambda(c, rid)) continue;
     int a = nt_ref(nt, rid, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    if (ac > 0 && te_tail_is_value(nt, av[0])) return 1;
+    if (ac > 0 && te_tail_is_value(x, av[0])) return 1;
   }
   return 0;
 }
@@ -12238,8 +12248,9 @@ static int desugar_to_enum(Compiler *c) {
          through an Enumerator-typed C signature, a type error; widened, a
          blockless call site reads a boxed Enumerator its consumers dispatch
          on. */
+      TeCtx tx = { c, es && es->class_id >= 0 && !es->is_cmethod ? es->class_id : -1 };
       int value_form = es && es->body >= 0 &&
-                       (te_tail_is_value(nt, es->body) || te_block_return_value(c, (int)(es - c->scopes)));
+                       (te_tail_is_value(&tx, es->body) || te_block_return_value(&tx, (int)(es - c->scopes)));
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
