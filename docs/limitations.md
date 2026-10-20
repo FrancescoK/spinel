@@ -187,7 +187,11 @@ variable (activesupport's `Object#try`) dispatches too: the arms take
 `*args.drop(1)`. The send's block -- written at the send or a forwarded `&blk`
 -- goes to the method the name selects. A receiverless `send` / `public_send`
 in a method is the `self.` form. `respond_to?(name)` with a runtime name is
-answered over the same closed set (false outside it).
+answered over the same closed set (false outside it). A receiverless one in a
+class's instance method is the `self.` form, which checks the class's own methods
+(`respond_to_missing?` is not consulted); in a module method, a class method or a
+class body it checks only the names the program mentions (`def self.k?(n) =
+respond_to?(n.to_sym)` answers false for `"new"`).
 
 ### `Class.new` cases
 

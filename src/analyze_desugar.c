@@ -6086,18 +6086,42 @@ int desugar_dynamic_method(Compiler *c) {
   return changed;
 }
 
+/* the first argument of a `respond_to?` call names the method at run time:
+   not a literal and not a splat */
+static int rto_runtime_name(const NodeTable *nt, int id) {
+  int args = nt_ref(nt, id, "arguments"); if (args < 0) return 0;
+  int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+  if (argc < 1 || !argv) return 0;
+  NodeKind k0 = nt_kind(nt, argv[0]);
+  return k0 != NK_SymbolNode && k0 != NK_StringNode && k0 != NK_SplatNode;
+}
+
+/* a class of CID's line (an ancestor, CID itself or a subclass) undefs a
+   method: the `self.` check does not see an undef, so the arms answer */
+static int rto_undef_in_line(Compiler *c, int cid) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].nundefs == 0) continue;
+    for (int a = k; a >= 0; a = c->classes[a].parent) if (a == cid) return 1;
+    for (int a = cid; a >= 0; a = c->classes[a].parent) if (a == k) return 1;
+  }
+  return 0;
+}
+
 /* `recv.respond_to?(name)` with a NAME known only at run time (`respond_to?(
    args.first)` in activesupport's Object#try): the answer is decided at the
    dispatch, over the same closed set of names a runtime send resolves over,
    one synthesized `recv.respond_to?(:m)` arm per candidate for the literal
    fold to answer against the receiver's class (a boxed receiver's arms are
    its own runtime test). The arm ids are stashed under "dyn_rto_arms" and
-   codegen emits `name == :m1 ? arm1 : ... : false`. A receiverless call stays
-   receiverless: the fold resolves it against the enclosing class. A name in
-   none of the arms answers false -- the set is the program's literals and
-   definitions, so a builtin method named only at run time is the shape it
-   does not cover. Before this a user object raised NoMethodError for
-   respond_to? itself and the receiverless form was refused. */
+   codegen emits `name == :m1 ? arm1 : ... : false`. A receiverless call in a
+   class's instance method becomes the `self.` form, whose run-time check
+   covers every method of the class; elsewhere (a module, a class method, a
+   class body) it stays receiverless and the fold resolves it against the
+   enclosing class. A name in none of the arms answers false -- the set is the
+   program's literals and definitions, so a builtin method named only at run
+   time is the shape it does not cover. Before this a user object raised
+   NoMethodError for respond_to? itself and the receiverless form was
+   refused. */
 int desugar_dynamic_respond_to(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -6109,7 +6133,18 @@ int desugar_dynamic_respond_to(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "respond_to?") || nt_int(nt, id, "dyn_arm", 0)) continue;
-    if (!self_is_main(c, id)) continue;
+    if (!self_is_main(c, id)) {
+      /* a computed name in a class's instance method is the `self.` form's
+         run-time check over the class's methods, which no candidate list can
+         cut short. A module's method may run on main, which that check does
+         not see the mixins of; a class method or a class body keeps the arms
+         below too */
+      Scope *es = comp_scope_of(c, id);
+      if (!es || es->class_id < 0 || es->is_cmethod || ie_class_of(c, id) != -1) continue;
+      if (comp_class_is_module(c, &c->classes[es->class_id])) continue;
+      if (rto_undef_in_line(c, es->class_id)) continue;
+      if (!rto_runtime_name(nt, id)) continue;
+    }
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
@@ -6143,11 +6178,7 @@ int desugar_dynamic_respond_to(Compiler *c) {
     if (nt_int(nt, id, "dyn_arm", 0)) continue;
     { int dn = 0; nt_arr(nt, id, "dyn_rto_arms", &dn); if (dn > 0) continue; }
     if (nt_ref(nt, id, "receiver") >= 0) continue;
-    int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
-    int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
-    if (ac < 1 || !av) continue;
-    NodeKind k0 = nt_kind(nt, av[0]);
-    if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
+    if (!rto_runtime_name(nt, id)) continue;
     any = 1;
   }
   if (!any) return changed;
@@ -6169,12 +6200,13 @@ int desugar_dynamic_respond_to(Compiler *c) {
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || argc > 2 || !argv) continue;
-    NodeKind k0 = nt_kind(nt, argv[0]);
-    if (k0 == NK_SymbolNode || k0 == NK_StringNode || k0 == NK_SplatNode) continue;
+    if (!rto_runtime_name(nt, id)) continue;
     int extra = argc == 2 ? argv[1] : -1;                    /* include_all */
     int base = nt->count;
-    int arms[256]; int narm = 0;
-    for (int k = 0; k < ncand && narm < 256; k++) {
+    int *arms = (int *)malloc(sizeof(int) * (size_t)ncand);
+    if (!arms) break;
+    int narm = 0;
+    for (int k = 0; k < ncand; k++) {
       int sym = nt_new_node(nt, "SymbolNode"); if (sym < 0) break;
       nt_node_set_str(nt, sym, "value", cand[k]);
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
@@ -6191,6 +6223,7 @@ int desugar_dynamic_respond_to(Compiler *c) {
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_rto_arms", arms, narm);
+    free(arms);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
