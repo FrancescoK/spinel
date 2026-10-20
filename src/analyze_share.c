@@ -3838,9 +3838,12 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
   int blk = nt_ref(nt, n, "block");
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
+  int cur = sh_method_index(c, n);
+  /* Kernel#inspect and #to_s, a plain class's `def inspect = super`: a
+     new String each call, which no other name holds (an_super_object_text) */
+  if (ntg <= 0 && cur >= 0 && an_super_object_text(c, n, cur)) return sh_new(F, SHK_VALUE);
   if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
-  int cur = sh_method_index(c, n);
   int r = -1;
   for (int i = 0; i < ntg; i++) {
     Scope *m = &c->scopes[tg[i]];

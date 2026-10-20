@@ -12925,6 +12925,131 @@ static int class_inspectable(Compiler *c, int i) {
      and printed #<Object> (#3813) */
   return 1;
 }
+/* Does the program have a `def inspect = super` reaching Kernel#inspect
+   (an_super_object_text)? Only then is sp_obj_kernel_inspect emitted. */
+int obj_kernel_inspect_used(Compiler *c) {
+  for (int q = 0; q < 2; q++)
+    NT_FOREACH_KIND(c->nt, q ? NK_ForwardingSuperNode : NK_SuperNode, sn) {
+      Scope *ss = comp_scope_of(c, sn);
+      if (ss && ss->name && sp_streq(ss->name, "inspect") && an_super_object_text(c, sn, (int)(ss - c->scopes))) return 1;
+    }
+  return 0;
+}
+/* The default ivar walk of class i (CRuby's Kernel#inspect): the arm
+   `case i: { ... return #<Name:0x... @a=..>; }` of an inspect dispatcher */
+static void emit_obj_default_inspect_arm(Compiler *c, Buf *b, int i) {
+  ClassInfo *ci = &c->classes[i];
+  buf_printf(b, "    case %d: {\n", i);
+  buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
+  /* The object itself is read after the builder's first allocation, and a
+     caller may hand over a fresh temporary held nowhere else (`p A.new`,
+     `A.new.inspect` boxed): unrooted, a collection there swept it and the
+     walk read whatever reused its slot (#<A:0x @a=26, @x=60>). */
+  if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(o);\n");
+  /* An ivar can point back at the object (a tree node's @parent), and the
+     walk below renders each ivar through the inspects that come back here.
+     CRuby shows the repeated object as #<N:0x... ...>; an object with no
+     ivars cannot be reached from inside itself and keeps its old body. */
+  char wname[512], warg[96];
+  obj_default_name(c, i, wname, sizeof wname, warg, sizeof warg);
+  if (ci->nivars > 0)
+    buf_printf(b, "      if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, p, NULL))\n"
+                  "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", %s(unsigned long long)(uintptr_t)p);\n"
+                  "      int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, p, NULL);\n",
+               wname, warg);
+  buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", %s(unsigned long long)(uintptr_t)p));\n",
+             wname, warg);
+  /* The builder is live across every allocation the ivar walk below makes --
+     each element's own inspect, and the sp_sprintf that renders an ivar
+     pointing back at this object. Unrooted, a collection mid-walk swept it
+     and the appends wrote into a freed buffer (the Struct/Data inspect above
+     has always rooted its builder for the same reason). A class with no
+     ivars has no such walk: it appends one byte, which reallocs off the GC
+     heap and cannot collect, so its arm is left as it was. */
+  if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(_s);\n");
+  /* the names a computed instance_variable_set put in the object's table
+     follow the declared ones (#8219): the builder's length now tells
+     whether one was shown before them */
+  if (ci->computed_ivar_set) {
+    if (ci->nivars == 0) buf_puts(b, "      SP_GC_ROOT(o); SP_GC_ROOT(_s);\n");
+    buf_puts(b, "      int64_t _hl = _s->len;\n");
+  }
+  /* an ivar nothing has set yet is not shown (ivar_set_kind): with one
+     such, the separator ahead of each shown ivar is decided at run time */
+  int any1 = 0;
+  for (int j = 0; j < ci->nivars && !any1; j++) any1 = (ivar_set_kind(c, i, ci->ivars[j]) & 1);
+  if (any1) buf_puts(b, "      int _ivsep = 0; (void)_ivsep;\n");
+  /* a ranked class shows them in the order they were first assigned */
+  int ranked = ivar_ranked(c, i);
+  if (ranked) { buf_puts(b, "      "); emit_ivar_order_open(c, i, "o", b); buf_puts(b, "\n"); }
+  int *ord = ivar_listing_order_new(c, i);
+  for (int jj = 0; jj < ci->nivars; jj++) {
+    int j = ord[jj];
+    char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+    char tb[256];
+    const char *set = any1 && !ranked ? ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb) : NULL;
+    if (ranked) buf_printf(b, "      case %d: ", j);
+    else if (set) buf_printf(b, "      if %s { ", set);
+    else if (any1) buf_puts(b, "      ");
+    if (ranked)
+      buf_printf(b, "sp_String_append(_s, _ixk ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
+                 ci->ivars[j], ci->ivars[j]);
+    else if (any1)
+      buf_printf(b, "sp_String_append(_s, _ivsep++ ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
+                 ci->ivars[j], ci->ivars[j]);
+    else
+      buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
+                 jj ? ", " : " ", ci->ivars[j]);
+    TyKind ivt = ci->ivar_types[j];
+    /* containers have their own typed inspect; scalars box through the
+       marshal helper into sp_poly_inspect; an UNKNOWN (never usefully
+       typed) ivar occupies an int slot in the layout and renders as its
+       nil default. */
+    if (ty_is_obj_array(ivt)) {
+      int eci = ty_obj_array_class(ivt);
+      int edyn = class_has_subclass(c, eci) && !class_is_exc_subclass(c, eci);
+      buf_printf(b, "(%s ? sp_ObjPtrArray_inspect(%s, %d) : \"nil\")", expr, expr, edyn ? -1 : eci);
+    }
+    else if (ivt == TY_INT_ARRAY_ARRAY)
+      buf_printf(b, "(%s ? sp_IntArrayPtrArray_inspect(%s) : \"nil\")", expr, expr);
+    else if (ivt == TY_FLOAT_ARRAY_ARRAY)
+      buf_printf(b, "(%s ? sp_FloatArrayPtrArray_inspect(%s) : \"nil\")", expr, expr);
+    else if (ty_is_array(ivt) && ivt != TY_POLY_ARRAY && array_kind(ivt))
+      buf_printf(b, "(%s ? sp_%sArray_inspect(%s) : \"nil\")", expr, array_kind(ivt), expr);
+    else if (ivt == TY_POLY_ARRAY)
+      buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
+    /* --share-strings: an Array of handles renders as the pointer Array it is */
+    else if (ivt == TY_STRH_ARRAY)
+      buf_printf(b, "(%s ? sp_PtrArray_inspect_k(%s) : \"nil\")", expr, expr);
+    else if (ty_is_hash(ivt) && ty_hash_cname(ivt))
+      buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(ivt), expr);
+    /* an Integer / Float ivar boxes by its nil bit */
+    else if (ivt == TY_INT || ivt == TY_FLOAT) {
+      buf_puts(b, "sp_poly_inspect(");
+      emit_marshal_box_ivar_of(c, i, j, "o->", expr, b);
+      buf_puts(b, ")");
+    }
+    else if (marshal_ivar_type_ok(ivt) && !marshal_container_type(ivt) && ivt != TY_UNKNOWN) {
+      buf_puts(b, "sp_poly_inspect(");
+      emit_marshal_box_ivar(c, ivt, expr, b);
+      buf_puts(b, ")");
+    }
+    else if (ivt == TY_UNKNOWN) {
+      buf_puts(b, "sp_poly_inspect(");
+      emit_marshal_box_ivar(c, TY_INT, expr, b);
+      buf_puts(b, ")");
+    }
+    else
+      buf_puts(b, "\"#<?>\"");
+    buf_puts(b, ranked ? "); break;\n" : set ? "); }\n" : ");\n");
+  }
+  free(ord);
+  if (ranked) { buf_puts(b, "      "); emit_ivar_order_close(b); buf_puts(b, "\n"); }
+  if (ci->computed_ivar_set) buf_puts(b, "      sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n");
+  buf_puts(b, "      sp_String_append(_s, \">\");\n");
+  if (ci->nivars > 0) buf_puts(b, "      sp_poly_recur_pop(_rcm);\n");
+  buf_puts(b, "      return _s->data;\n    }\n");
+}
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   /* Forward-declare the user to_s/inspect methods the switches dispatch to --
      the switch bodies are emitted ahead of the method definitions. */
@@ -13103,118 +13228,24 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "    case %d: return %s_inspect((%s *)p);\n", i, at, at);
       continue;
     }
-    buf_printf(b, "    case %d: {\n", i);
-    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
-    /* The object itself is read after the builder's first allocation, and a
-       caller may hand over a fresh temporary held nowhere else (`p A.new`,
-       `A.new.inspect` boxed): unrooted, a collection there swept it and the
-       walk read whatever reused its slot (#<A:0x @a=26, @x=60>). */
-    if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(o);\n");
-    /* An ivar can point back at the object (a tree node's @parent), and the
-       walk below renders each ivar through the inspects that come back here.
-       CRuby shows the repeated object as #<N:0x... ...>; an object with no
-       ivars cannot be reached from inside itself and keeps its old body. */
-    char wname[512], warg[96];
-    obj_default_name(c, i, wname, sizeof wname, warg, sizeof warg);
-    if (ci->nivars > 0)
-      buf_printf(b, "      if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, p, NULL))\n"
-                    "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", %s(unsigned long long)(uintptr_t)p);\n"
-                    "      int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, p, NULL);\n",
-                 wname, warg);
-    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", %s(unsigned long long)(uintptr_t)p));\n",
-               wname, warg);
-    /* The builder is live across every allocation the ivar walk below makes --
-       each element's own inspect, and the sp_sprintf that renders an ivar
-       pointing back at this object. Unrooted, a collection mid-walk swept it
-       and the appends wrote into a freed buffer (the Struct/Data inspect above
-       has always rooted its builder for the same reason). A class with no
-       ivars has no such walk: it appends one byte, which reallocs off the GC
-       heap and cannot collect, so its arm is left as it was. */
-    if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(_s);\n");
-    /* the names a computed instance_variable_set put in the object's table
-       follow the declared ones (#8219): the builder's length now tells
-       whether one was shown before them */
-    if (ci->computed_ivar_set) {
-      if (ci->nivars == 0) buf_puts(b, "      SP_GC_ROOT(o); SP_GC_ROOT(_s);\n");
-      buf_puts(b, "      int64_t _hl = _s->len;\n");
-    }
-    /* an ivar nothing has set yet is not shown (ivar_set_kind): with one
-       such, the separator ahead of each shown ivar is decided at run time */
-    int any1 = 0;
-    for (int j = 0; j < ci->nivars && !any1; j++) any1 = (ivar_set_kind(c, i, ci->ivars[j]) & 1);
-    if (any1) buf_puts(b, "      int _ivsep = 0; (void)_ivsep;\n");
-    /* a ranked class shows them in the order they were first assigned */
-    int ranked = ivar_ranked(c, i);
-    if (ranked) { buf_puts(b, "      "); emit_ivar_order_open(c, i, "o", b); buf_puts(b, "\n"); }
-    int *ord = ivar_listing_order_new(c, i);
-    for (int jj = 0; jj < ci->nivars; jj++) {
-      int j = ord[jj];
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      char tb[256];
-      const char *set = any1 && !ranked ? ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb) : NULL;
-      if (ranked) buf_printf(b, "      case %d: ", j);
-      else if (set) buf_printf(b, "      if %s { ", set);
-      else if (any1) buf_puts(b, "      ");
-      if (ranked)
-        buf_printf(b, "sp_String_append(_s, _ixk ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
-                   ci->ivars[j], ci->ivars[j]);
-      else if (any1)
-        buf_printf(b, "sp_String_append(_s, _ivsep++ ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
-                   ci->ivars[j], ci->ivars[j]);
-      else
-        buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
-                   jj ? ", " : " ", ci->ivars[j]);
-      TyKind ivt = ci->ivar_types[j];
-      /* containers have their own typed inspect; scalars box through the
-         marshal helper into sp_poly_inspect; an UNKNOWN (never usefully
-         typed) ivar occupies an int slot in the layout and renders as its
-         nil default. */
-      if (ty_is_obj_array(ivt)) {
-        int eci = ty_obj_array_class(ivt);
-        int edyn = class_has_subclass(c, eci) && !class_is_exc_subclass(c, eci);
-        buf_printf(b, "(%s ? sp_ObjPtrArray_inspect(%s, %d) : \"nil\")", expr, expr, edyn ? -1 : eci);
-      }
-      else if (ivt == TY_INT_ARRAY_ARRAY)
-        buf_printf(b, "(%s ? sp_IntArrayPtrArray_inspect(%s) : \"nil\")", expr, expr);
-      else if (ivt == TY_FLOAT_ARRAY_ARRAY)
-        buf_printf(b, "(%s ? sp_FloatArrayPtrArray_inspect(%s) : \"nil\")", expr, expr);
-      else if (ty_is_array(ivt) && ivt != TY_POLY_ARRAY && array_kind(ivt))
-        buf_printf(b, "(%s ? sp_%sArray_inspect(%s) : \"nil\")", expr, array_kind(ivt), expr);
-      else if (ivt == TY_POLY_ARRAY)
-        buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
-      /* --share-strings: an Array of handles renders as the pointer Array it is */
-      else if (ivt == TY_STRH_ARRAY)
-        buf_printf(b, "(%s ? sp_PtrArray_inspect_k(%s) : \"nil\")", expr, expr);
-      else if (ty_is_hash(ivt) && ty_hash_cname(ivt))
-        buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(ivt), expr);
-      /* an Integer / Float ivar boxes by its nil bit */
-      else if (ivt == TY_INT || ivt == TY_FLOAT) {
-        buf_puts(b, "sp_poly_inspect(");
-        emit_marshal_box_ivar_of(c, i, j, "o->", expr, b);
-        buf_puts(b, ")");
-      }
-      else if (marshal_ivar_type_ok(ivt) && !marshal_container_type(ivt) && ivt != TY_UNKNOWN) {
-        buf_puts(b, "sp_poly_inspect(");
-        emit_marshal_box_ivar(c, ivt, expr, b);
-        buf_puts(b, ")");
-      }
-      else if (ivt == TY_UNKNOWN) {
-        buf_puts(b, "sp_poly_inspect(");
-        emit_marshal_box_ivar(c, TY_INT, expr, b);
-        buf_puts(b, ")");
-      }
-      else
-        buf_puts(b, "\"#<?>\"");
-      buf_puts(b, ranked ? "); break;\n" : set ? "); }\n" : ");\n");
-    }
-    free(ord);
-    if (ranked) { buf_puts(b, "      "); emit_ivar_order_close(b); buf_puts(b, "\n"); }
-    if (ci->computed_ivar_set) buf_puts(b, "      sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n");
-    buf_puts(b, "      sp_String_append(_s, \">\");\n");
-    if (ci->nivars > 0) buf_puts(b, "      sp_poly_recur_pop(_rcm);\n");
-    buf_puts(b, "      return _s->data;\n    }\n");
+    emit_obj_default_inspect_arm(c, b, i);
   }
   buf_puts(b, "    default: return \"#<Object>\";\n  }\n}\n");
+  /* Kernel#inspect itself, which `def inspect = super` reaches: the default
+     walk of every class, whatever inspect it defines (emit_super). Only a
+     program with such a super has it. */
+  if (!obj_kernel_inspect_used(c)) return;
+  buf_puts(b, "static const char *sp_obj_kernel_inspect(int cls_id, void *p) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT", "p");
+  buf_puts(b, "  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (ci->is_native_class || comp_class_is_module(c, ci) || !class_inspectable(c, i) || ci->is_struct || ci->is_data ||
+        class_is_exc_subclass(c, i) || ci->ary_root > 0)
+      continue;
+    emit_obj_default_inspect_arm(c, b, i);
+  }
+  buf_puts(b, "    default: return sp_sprintf(\"#<%s:0x%016llx>\", sp_obj_cls_name_rt(cls_id), (unsigned long long)(uintptr_t)p);\n  }\n}\n");
 }
 
 /* The C expression that reads the name assigned to the Class.new class `ci`
@@ -14377,6 +14408,22 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (ss && ss->class_id >= 0 && ss->name) refuse_super_splat(c, id, a_super_target(c, ss)); }
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) { unsupported(c, id, "super (not in a method)"); return; }
+  /* `def inspect = super` / `def to_s = super` reaching Kernel's: the default
+     rendering of self's class, which no override of the program's takes
+     (sp_obj_kernel_inspect; #<Name:0x...> for to_s) */
+  if (an_super_object_text(c, id, (int)(s - c->scopes))) {
+    int cid = s->class_id;
+    int vt = comp_ty_value_obj(c, ty_object(cid));
+    char cls[96];
+    if (!vt && class_has_subclass(c, cid)) snprintf(cls, sizeof cls, "(%s)->cls_id", g_self);
+    else snprintf(cls, sizeof cls, "%d", cid);
+    if (sp_streq(s->name, "inspect"))
+      buf_printf(b, "sp_obj_kernel_inspect(%s, (void *)%s%s)", cls, vt ? "&" : "", g_self);
+    else
+      buf_printf(b, "sp_sprintf(\"#<%%s:0x%%016llx>\", sp_obj_cls_name_rt(%s), (unsigned long long)(uintptr_t)%s%s)",
+                 cls, vt ? "&" : "", g_self);
+    return;
+  }
   const char *ty = nt_type(c->nt, id);
   /* Prepend chain: super goes to the next shadow in the same class (a class
      method's chain is taken below, in the class-method form). */
@@ -20253,6 +20300,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_emit_obj_dispatch) {
     buf_puts(&b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
+    if (obj_kernel_inspect_used(c)) buf_puts(&b, "static const char *sp_obj_kernel_inspect(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static sp_int sp_obj_to_int_sw(int cls_id, void *p, int *ok) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_to_str_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_to_path_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");

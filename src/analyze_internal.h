@@ -183,6 +183,9 @@ int builtin_object_method_known(const char *m);
 int core_method_name(const char *n);   /* analyze_desugar.c: a core class's public method */
 int object_public_method_name(const char *n); /* analyze_desugar.c: one of Object's public instance methods */
 int class_inherits_builtin_exception(Compiler *c, int ci);
+/* 1 if super node n, in instance method mi `inspect` / `to_s` of a plain
+   class, reaches Kernel's, which builds a new String each call. */
+int an_super_object_text(Compiler *c, int n, int mi);
 int an_user_defines_or_reads(Compiler *c, const char *name);
 /* The universal "what a receiver answers" table (analyze_infer.c) and the
    lookup its consumers use. See the note on AN_POLY_RAW. */

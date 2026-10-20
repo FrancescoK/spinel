@@ -10890,6 +10890,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int subs_super = s->is_cmethod && uname && sp_streq(uname, "subclasses") &&
                      nt_ref(nt, id, "arguments") < 0;
     TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING
+                : an_super_object_text(c, id, (int)(s - c->scopes)) ? TY_STRING
                 : subs_super ? TY_POLY_ARRAY
                 : rto_super ? TY_BOOL
                 : freeze_super ? ty_object(s->class_id) : TY_UNKNOWN;
