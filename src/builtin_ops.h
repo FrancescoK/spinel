@@ -337,6 +337,8 @@ typedef struct BuiltinOp {
 #define BOPR_HASH_STORE  ((TyKind)-26)  /* Hash#[]= and store(key, value): the
                                            value's kind unified with the Hash's
                                            value kind */
+#define BOPR_ARRAY_SUM_SEED ((TyKind)-27) /* blockless Array#sum(seed): the seed
+                                           and element kinds, in the build mode */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
@@ -386,8 +388,9 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt);
    does. arg_of(ud, i) answers argument i's kind, as for
    bop_find_arg, and is called only for those rows. TY_UNKNOWN where the row
    states no kind for these operands. It reads no node: the caller brings
-   the kinds. */
-TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud);
+   the kinds. BOPR_ARRAY_SUM_SEED reads the seed through fold_seed_kind at
+   the caller and takes the integer overflow mode through promote. */
+TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int promote);
 
 /* The BOPF_BOXED row of kind rt for `name`, or NULL. */
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);

@@ -2816,6 +2816,12 @@ static TyKind an_bop_arg_type(const void *ud, int i) {
   return infer_type(a->c, a->argv[i]);
 }
 
+/* An empty literal seed still carries its container kind. */
+static TyKind an_bop_seed_type(const void *ud, int i) {
+  const AnBopArgs *a = ud;
+  return fold_seed_kind(an_bop_arg_type(ud, i), nt_type(a->c->nt, a->argv[i]));
+}
+
 /* an_bop_find over the call's arguments (argv, argc of them): the rows that
    guard an argument's kind are read too, as codegen reads them. An argument
    no guard holds (a user object, a Bignum) finds the unguarded row of its
@@ -2832,10 +2838,12 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
 /* bop_result_args with the call's arguments' kinds from infer_type, for the
    rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP,
    BOPR_ARG0, BOPR_ARG1, BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row
-   answers as bop_result does */
+   answers as bop_result does. Seeded sums also read the seed's literal kind
+   and the integer overflow mode. */
 TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
   AnBopArgs a = { c, argv };
-  return bop_result_args(op, rt, argc, an_bop_arg_type, &a);
+  BopArgKind arg_of = op->result == BOPR_ARRAY_SUM_SEED ? an_bop_seed_type : an_bop_arg_type;
+  return bop_result_args(op, rt, argc, arg_of, &a, g_promote_mode);
 }
 
 /* Does the program give a builtin class or module (String, Comparable,

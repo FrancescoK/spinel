@@ -312,6 +312,12 @@ static TyKind bop_arg_ntype(const void *ud, int i) {
   return comp_ntype(a->c, a->argv[i]);
 }
 
+/* The same empty-literal seed kind that inference supplied to the row. */
+static TyKind bop_seed_ntype(const void *ud, int i) {
+  const BopArgs *a = ud;
+  return fold_seed_kind(bop_arg_ntype(ud, i), nt_type(a->c->nt, a->argv[i]));
+}
+
 /* --plan-check: the row codegen emitted the call with should be the row
    inference answered it with (the same receiver kind, name and result; a
    row guarded on its first argument stands for its unguarded sibling).
@@ -344,24 +350,25 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
   int argc = 0;
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs ba = { c, argv };
+  BopArgKind arg_of = op->result == BOPR_ARRAY_SUM_SEED ? bop_seed_ntype : bop_arg_ntype;
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
-      bop_result_args(inf, rt, argc, bop_arg_ntype, &ba) == bop_result_args(op, rt, argc, bop_arg_ntype, &ba)) return;
+      bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode) == bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)) return;
   /* inference answered from a row that stands for a boxed receiver
      (BOPF_BOXED), and codegen emitted the call typed (the box respecialized,
      a face): the call answers the same whatever the box holds, so the row of
      the kind it was emitted with agrees when it states the same result */
   if (inf && (inf->flags & BOPF_BOXED) && inf->recv != op->recv &&
-      bop_result_args(inf, rt, argc, bop_arg_ntype, &ba) == bop_result_args(op, rt, argc, bop_arg_ntype, &ba)) return;
+      bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode) == bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)) return;
   if (inf && inf->recv != op->recv)
     fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
             id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
   else if (inf)
     fprintf(stderr, "plan-check: conflict: node %d %s#%s: codegen row %d..%d -> %s, inference row %s#%s -> %s\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, bop_arg_ntype, &ba)),
-            ty_name(inf->recv), inf->name, ty_name(bop_result_args(inf, rt, argc, bop_arg_ntype, &ba)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)),
+            ty_name(inf->recv), inf->name, ty_name(bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode)));
   else
     fprintf(stderr, "plan-check: unrecorded: node %d %s#%s: codegen row %d..%d -> %s, inference answered without a row\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, bop_arg_ntype, &ba)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)));
 }
 
 static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *) = {
