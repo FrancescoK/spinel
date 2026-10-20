@@ -504,17 +504,19 @@ static int share_plan_call_answers_literal(Compiler *c, int v) {
   }
   /* a receiverless call in an instance method the plan cannot list
      (`cop_name` in a base class that only its subclasses define): self is
-     the class or one below it, and each of those answers by the method
-     its chain has, or raises */
+     the class or one below it, and each of those made answers by the
+     method its chain has; one whose chain has none answers by a builtin
+     (Exception#message) or raises, which the plan does not tell apart,
+     so it supplies nothing */
   Scope *s = comp_scope_of(c, u);
   if (!nm || nt_ref(c->nt, u, "receiver") >= 0 || nt_ref(c->nt, u, "arguments") >= 0 ||
       !s || s->is_cmethod || s->class_id < 0) return 0;
   int any = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (k != s->class_id && !is_descendant(c, k, s->class_id)) continue;
+    if (!c->classes[k].instantiated) continue;
     int mi = comp_method_in_chain(c, k, nm, NULL);
-    if (mi < 0 || !c->classes[k].instantiated) continue;
-    if (!scope_ret_str_literal(c, mi)) return 0;
+    if (mi < 0 || !scope_ret_str_literal(c, mi)) return 0;
     any = 1;
   }
   return any;
