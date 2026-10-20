@@ -8382,7 +8382,18 @@ static int str_hold_operands(Compiler *c, int argc, const int *argv, Buf *b) {
       if (v < 0 || !subtree_has_side_effect(c, v) || arg_ran_first(v, 0)) continue;
       got |= operand_may_allocate(c, v) ? 3 : 1;
       if (!b) continue;
-      int t = hold_operand(c, v, comp_ntype(c, v), 0, ++g_tmp, 1, " ", b);
+      /* an Integer that can be nil (a Range's open end) is held with its
+         nil, and converts where the arm reads it, after the receiver test */
+      TyKind vt = comp_ntype(c, v);
+      if (oint_kind(vt) && node_has_oint_form(c, v)) {
+        int t = ++g_tmp;
+        buf_printf(b, "%s _t%d = ", oint_ctype(vt), t);
+        emit_oint_expr(c, v, vt, b);
+        buf_puts(b, "; ");
+        view_bind_o(v, "_t%d", t);
+        continue;
+      }
+      int t = hold_operand(c, v, vt, 0, ++g_tmp, 1, " ", b);
       view_bind(v, "_t%d", t);
     }
   }

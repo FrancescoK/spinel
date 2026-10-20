@@ -1,0 +1,16 @@
+Seongsu slice(1..2): stop -> "eo"
+Seongsu [2..]: stop -> "ongsu"
+Seongsu slice(2...5): stop -> "ong"
+Seongsu [2..2]: stop stop -> "o"
+Seongsu slice(1..nil): stop -> "eongsu"
+Seongsu [nil..]: stop -> "Seongsu"
+Seongsu slice(nil...5): stop -> "Seong"
+Seongsu [nil..nil]: stop stop -> "Seongsu"
+Achasan slice(1..2): stop -> NoMethodError undefined method 'slice' for nil
+Achasan [2..]: stop -> NoMethodError undefined method '[]' for nil
+Achasan slice(2...5): stop -> NoMethodError undefined method 'slice' for nil
+Achasan [2..2]: stop stop -> NoMethodError undefined method '[]' for nil
+Achasan slice(1..nil): stop -> NoMethodError undefined method 'slice' for nil
+Achasan [nil..]: stop -> NoMethodError undefined method '[]' for nil
+Achasan slice(nil...5): stop -> NoMethodError undefined method 'slice' for nil
+Achasan [nil..nil]: stop stop -> NoMethodError undefined method '[]' for nil
