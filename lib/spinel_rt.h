@@ -20950,6 +20950,21 @@ static void sp_bm_enter(sp_BoundMethod *m, sp_int n, sp_int *slots, int kwpos, s
   _sp_proc_blk = thunk ? blk : NULL;
   sp_method_proc_tramp((void *)m, n, slots);
 }
+/* A boxed callable called with a block (`slot.call(x) { }`): a bound
+   Method enters its thunk with the block, a Proc takes it on the block
+   channel as sp_proc_call_blk hands it, and a curried Proc, which no block
+   reaches, takes the arguments. */
+static sp_RbVal sp_poly_callable_call_blk(sp_RbVal v, sp_int n, const sp_int *args, int kwpos, sp_Proc *blk) SP_UNUSED;
+static sp_RbVal sp_poly_callable_call_blk(sp_RbVal v, sp_int n, const sp_int *args, int kwpos, sp_Proc *blk) {
+  if (v.tag == SP_TAG_OBJ && v.v.p && (v.cls_id == SP_BUILTIN_METHOD || v.cls_id == SP_BUILTIN_PROC)) {
+    sp_int slots_s[16], *slots = n > 16 ? (sp_int *)args : slots_s;
+    for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
+    if (v.cls_id == SP_BUILTIN_METHOD) sp_bm_enter((sp_BoundMethod *)v.v.p, n, slots, kwpos, blk);
+    else { _sp_proc_kwpos = kwpos; sp_proc_call_blk((sp_Proc *)v.v.p, blk, n, slots); }
+    return _sp_proc_poly_ret;
+  }
+  return sp_poly_callable_call_kw(v, n, args, kwpos);
+}
 /* sp_bm_call_boxed for a site that says what its trailing argument is: a
    Method call of plain positionals passes a Hash as a positional, which the
    thunk, told nothing, took as keywords past the required count. */
