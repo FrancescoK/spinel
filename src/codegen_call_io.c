@@ -638,6 +638,55 @@ static void emit_io_socket_recv_call(Compiler *c, const char *name, const char *
              ti, tp, ti, to, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
 }
 
+/* The socket calls emit_io_socket_call answers, at the arities it does:
+   recv_nonblock takes its length and an `exception:` keyword */
+static int socket_handle_call(const NodeTable *nt, const char *name, int argc, const int *argv) {
+  if (sp_streq(name, "bind") || sp_streq(name, "connect")) return argc == 2;
+  if (sp_streq(name, "listen")) return argc == 1;
+  if (sp_streq(name, "recv_nonblock")) return argc - (nt_argv_kwh(nt, argv, argc) >= 0) == 1;
+  return argc == 0 && (sp_streq(name, "local_address") || sp_streq(name, "remote_address") ||
+                       sp_streq(name, "getsockname") || sp_streq(name, "getpeername"));
+}
+
+/* bind, connect, listen, recv_nonblock and the two ends' addresses of the
+   socket in C expression r: the typed arm's, and a socket a block or a
+   thread takes as its parameter, or one read back out of a container (a
+   boxed handle), answers the same way. */
+static void emit_io_socket_call(Compiler *c, const NodeTable *nt, const char *name, const char *r,
+                                int argc, const int *argv, Buf *b) {
+  if (sp_streq(name, "bind") || sp_streq(name, "connect")) {
+    buf_printf(b, "sp_sock_%s(%s, ", name, r);
+    emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "listen")) {
+    buf_printf(b, "sp_sock_listen(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "recv_nonblock")) {
+    int kwh9 = nt_argv_kwh(nt, argv, argc);
+    int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
+    if (exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode")) {
+      /* NULL is nil at EOF (Ruby 3.3 and later) and would-block
+         otherwise, which the eof out-parameter tells apart, as for
+         read_nonblock */
+      int tw = ++g_tmp, te = ++g_tmp;
+      buf_printf(b, "({ sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tw, r);
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, ", 0, 1, &_e%d); _t%d ? sp_box_str(_t%d)"
+                    " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
+                 te, tw, tw, te);
+    }
+    else {
+      buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", 1, 1, NULL)");
+    }
+  }
+  else if (sp_streq(name, "local_address") || sp_streq(name, "remote_address"))
+    buf_printf(b, "sp_sock_address(%s, %d)", r, sp_streq(name, "remote_address") ? 1 : 0);
+  else if (sp_streq(name, "getsockname") || sp_streq(name, "getpeername"))
+    buf_printf(b, "sp_sock_getname(%s, %d)", r, sp_streq(name, "getpeername") ? 1 : 0);
+}
+
 /* accept_nonblock as the boxed arm takes it: bare, or with a literal
    `exception: false` alone; any other keyword stays with the general
    dispatch, which words it */
@@ -761,6 +810,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           is a boxed handle, as an Array element is */
        (sp_feature_required("socket") && socket_recv_call(name, argc) &&
         !nt_argv_has_splat(nt, argv, argc)) ||
+       /* and the rest of what the typed arm answers on a socket: binding,
+          connecting, listening, the non-blocking read and the addresses */
+       (sp_feature_required("socket") && socket_handle_call(nt, name, argc, argv) &&
+        !nt_argv_has_splat(nt, argv, argc)) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
           a condition it was refused as non-bool. IO#wait stays off the list,
@@ -875,7 +928,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         c->args_in_call = recv;
         return 1;
       }
-      if (boxed_socket_opt(name, argc)) {
+      int sockcall = socket_handle_call(nt, name, argc, argv);
+      if (boxed_socket_opt(name, argc) || sockcall) {
         /* the receiver first, then the typed arm's call on the unboxed handle */
         int trv = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", trv);
@@ -883,7 +937,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
         char rsock[64];
         snprintf(rsock, sizeof rsock, "sp_poly_as_io(_t%d, \"%s\")", trv, name);
-        emit_io_socket_opt_call(c, nt, name, rsock, argc, argv, b);
+        if (sockcall) emit_io_socket_call(c, nt, name, rsock, argc, argv, b);
+        else emit_io_socket_opt_call(c, nt, name, rsock, argc, argv, b);
         buf_puts(b, "; })");
         return 1;
       }
@@ -1572,8 +1627,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
        exception for the :wait_readable / :wait_writable marker, which changes
        the result type, so the two forms take different arms. */
     if (sp_feature_required("socket") &&
-        (sp_streq(name, "accept_nonblock") || sp_streq(name, "connect_nonblock") ||
-         sp_streq(name, "recv_nonblock"))) {
+        (sp_streq(name, "accept_nonblock") || sp_streq(name, "connect_nonblock"))) {
       int kwh9 = nt_argv_kwh(nt, argv, argc);
       int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
       int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
@@ -1588,48 +1642,18 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         else buf_printf(b, "sp_sock_accept_nb(%s, 1)", r);
         free(rb.p); return 1;
       }
-      if (sp_streq(name, "recv_nonblock") && pos9 == 1) {
-        if (no_exc) {
-          /* NULL is nil at EOF (Ruby 3.3 and later) and would-block
-             otherwise, which the eof out-parameter tells apart, as for
-             read_nonblock */
-          int tw = ++g_tmp, te = ++g_tmp;
-          buf_printf(b, "({ sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tw, r);
-          emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 0, 1, &_e%d); _t%d ? sp_box_str(_t%d)"
-                        " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
-                     te, tw, tw, te);
-        }
-        else {
-          buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
-          buf_puts(b, ", 1, 1, NULL)");
-        }
-        free(rb.p); return 1;
-      }
       if (sp_streq(name, "connect_nonblock") && (pos9 == 1 || pos9 == 2)) {
         emit_io_socket_opt_call(c, nt, name, r, argc, argv, b);
         free(rb.p); return 1;
       }
     }
-    if (sp_feature_required("socket") && argc == 0 &&
-        (sp_streq(name, "local_address") || sp_streq(name, "remote_address"))) {
-      buf_printf(b, "sp_sock_address(%s, %d)", r, sp_streq(name, "remote_address") ? 1 : 0);
-      free(rb.p); return 1;
-    }
-    if (sp_feature_required("socket") && argc == 0 &&
-        (sp_streq(name, "getsockname") || sp_streq(name, "getpeername"))) {
-      buf_printf(b, "sp_sock_getname(%s, %d)", r, sp_streq(name, "getpeername") ? 1 : 0);
+    if (sp_feature_required("socket") && socket_handle_call(nt, name, argc, argv)) {
+      emit_io_socket_call(c, nt, name, r, argc, argv, b);
       free(rb.p); return 1;
     }
     if (sp_feature_required("socket")) {
-      /* the address-taking pair; UDPSocket#send's 3-arg form carries the
-         destination, the 2-arg form goes to the connected peer */
-      if ((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 2) {
-        buf_printf(b, "sp_sock_%s(%s, ", name, r);
-        emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-        free(rb.p); return 1;
-      }
+      /* UDPSocket#send's 3-arg form carries the destination, the 2-arg form
+         goes to the connected peer */
       if (sp_streq(name, "send") && (argc == 2 || argc == 4)) {
         int tsd = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tsd); emit_str_expr(c, argv[0], b);
@@ -1647,10 +1671,6 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_sock_shutdown(%s, ", r);
         if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "2");
         buf_puts(b, ")");
-        free(rb.p); return 1;
-      }
-      if (sp_streq(name, "listen") && argc == 1) {
-        buf_printf(b, "sp_sock_listen(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
         free(rb.p); return 1;
       }
       if ((sp_streq(name, "setsockopt") && argc == 3) || (sp_streq(name, "getsockopt") && argc == 2)) {
