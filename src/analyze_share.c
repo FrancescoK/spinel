@@ -4636,6 +4636,10 @@ static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
   const char *nm = nt_str(c->nt, n, "name");
   TyKind t = c->ntype[n];
   if (!nm || !sh_may_hold(c, t)) return -1;
+  /* `File::SEPARATOR`: a builtin's own constant, which no program constant
+     of the leaf's name is (const_path_in_closed_builtin, as the emitter
+     reads it): a frozen String of the builtin's, no holder of the program */
+  if (const_path_in_closed_builtin(c, n) && share_frozen_string(c, n)) return -1;
   if (c->share_strings && (t == TY_STRING || t == TY_STRBUF))
     return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   for (int i = 0; i < F->nmconst; i++)
@@ -6041,7 +6045,10 @@ int share_frozen_string(Compiler *c, int n) {
   if (u >= 0 && nt_kind(nt, u) == NK_ConstantPathNode) {
     int par = nt_ref(nt, u, "parent");
     const char *pn = par >= 0 && nt_kind(nt, par) == NK_ConstantReadNode ? nt_str(nt, par, "name") : NULL;
-    return pn && sp_streq(pn, "File") && comp_class_index(c, "File") < 0 && is_file_string_const(nt_str(nt, u, "name"));
+    /* (or while a File of the program writes no constant of the name: a
+       reopen with methods of its own, const_path_in_closed_builtin) */
+    return pn && sp_streq(pn, "File") && (comp_class_index(c, "File") < 0 || const_path_in_closed_builtin(c, u)) &&
+           is_file_string_const(nt_str(nt, u, "name"));
   }
   return share_frozen_literal(c, n);
 }
