@@ -1,0 +1,36 @@
+line 7 count: 7
+line 7 count(2): 13
+line 7 sum: 4927
+line 7 sum(8): 63
+line 7 hex: 12
+line 7 lines: ["Children's Grand Park, Achasan\n", "Guui, Jayang-dong, Kondae\n"]
+line 7 partition: ["Children's Grand Park", ", ", "Achasan\nGuui, Jayang-dong, Kondae\n"]
+line 7 rpartition: ["Children's Grand Park, Achasan\nGuui, Jayang-dong", ", ", "Kondae\n"]
+line 7 +@: "Children's Grand Park, Achasan\nGuui, Jayang-dong, Kondae\n"
+line 7 encode: "Children's Grand Park, Achasan\nGuui, Jayang-dong, Kondae\n"
+line 7 to_sym: :"Children's Grand Park, Achasan\nGuui, Jayang-dong, Kondae\n"
+line 7 intern: :"Children's Grand Park, Achasan\nGuui, Jayang-dong, Kondae\n"
+unset count: NoMethodError undefined method 'count' for nil
+unset count(2): NoMethodError undefined method 'count' for nil
+unset sum: NoMethodError undefined method 'sum' for nil
+unset sum(8): NoMethodError undefined method 'sum' for nil
+unset hex: NoMethodError undefined method 'hex' for nil
+unset lines: NoMethodError undefined method 'lines' for nil
+unset partition: NoMethodError undefined method 'partition' for nil
+unset rpartition: NoMethodError undefined method 'rpartition' for nil
+unset +@: NoMethodError undefined method '+@' for nil
+unset encode: NoMethodError undefined method 'encode' for nil
+unset to_sym: NoMethodError undefined method 'to_sym' for nil
+unset intern: NoMethodError undefined method 'intern' for nil
+cleared count: NoMethodError undefined method 'count' for nil
+cleared count(2): NoMethodError undefined method 'count' for nil
+cleared sum: NoMethodError undefined method 'sum' for nil
+cleared sum(8): NoMethodError undefined method 'sum' for nil
+cleared hex: NoMethodError undefined method 'hex' for nil
+cleared lines: NoMethodError undefined method 'lines' for nil
+cleared partition: NoMethodError undefined method 'partition' for nil
+cleared rpartition: NoMethodError undefined method 'rpartition' for nil
+cleared +@: NoMethodError undefined method '+@' for nil
+cleared encode: NoMethodError undefined method 'encode' for nil
+cleared to_sym: NoMethodError undefined method 'to_sym' for nil
+cleared intern: NoMethodError undefined method 'intern' for nil

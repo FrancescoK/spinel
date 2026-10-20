@@ -335,6 +335,7 @@ sp_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeE
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 sp_StrArray *sp_str_partition(const char *s, const char *sep) {
+  if (!s) sp_nil_recv("partition");
   if (!sep) sp_raise_cls("TypeError", "wrong argument type nil (expected Regexp)");
   SP_GC_ROOT_STR(s); SP_GC_ROOT_STR(sep);
   sp_StrArray *r = sp_StrArray_new();
@@ -353,6 +354,7 @@ sp_StrArray *sp_str_partition(const char *s, const char *sep) {
 /* rpartition: split at the last sep; no match -> ["", "", s]. */
 /* rpartition: split at the last sep; no match -> ["", "", s]. */
 sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
+  if (!s) sp_nil_recv("rpartition");
   if (!sep) sp_raise_cls("TypeError", "wrong argument type nil (expected Regexp)");
   SP_GC_ROOT_STR(s); SP_GC_ROOT_STR(sep);
   sp_StrArray *r = sp_StrArray_new();
@@ -987,8 +989,8 @@ const char*sp_str_sub_range_len_r(const char*s,sp_int cl,sp_int start,sp_int end
 /* walks by INDEX to the header length: `while(*p)` stopped at an embedded NUL
    and reversed only the prefix */
 const char*sp_str_reverse(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("reverse");size_t bl=sp_str_byte_len(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;for(size_t i=0;i<bl;){int cn=sp_utf8_advance(s+i);if(cn<1)cn=1;if((size_t)cn>bl-i)cn=(int)(bl-i);end-=(size_t)cn;memcpy(r+end,s+i,(size_t)cn);i+=(size_t)cn;}r[bl]=0;sp_str_set_len(r,bl);return sp_str_bin_like(s,r);}
-sp_int sp_str_count(const char*s,const char*chars){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(chars);if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");int negate;size_t setn;uint32_t*set=sp_str_charset(s,chars,&negate,&setn);sp_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);int bin=sp_str_is_binary(s);while(p<end){uint32_t cp;p+=sp_str_cp_at(p,&cp,bin);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(in_set)c++;}free(set);return c;}
-sp_int sp_str_count_n(const char*s,const char**chars,sp_int n){SP_GC_ROOT_STR(s);if(n<=0)return 0;size_t*setns=(size_t*)malloc(n*sizeof(size_t));uint32_t**sets=(uint32_t**)malloc(n*sizeof(uint32_t*));int*negs=(int*)malloc(n*sizeof(int));for(sp_int i=0;i<n;i++){if(!chars[i])sp_raise_cls("TypeError","no implicit conversion of nil into String");sets[i]=sp_str_charset(s,chars[i],&negs[i],&setns[i]);}sp_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);int bin=sp_str_is_binary(s);while(p<end){uint32_t cp;p+=sp_str_cp_at(p,&cp,bin);int all=1;for(sp_int i=0;i<n;i++){int in_set=sp_utf8_set_has(sets[i],setns[i],cp);if(negs[i])in_set=!in_set;if(!in_set){all=0;break;}}if(all)c++;}for(sp_int i=0;i<n;i++)free(sets[i]);free(sets);free(setns);free(negs);return c;}
+sp_int sp_str_count(const char*s,const char*chars){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(chars);if(!s)sp_nil_recv("count");if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");int negate;size_t setn;uint32_t*set=sp_str_charset(s,chars,&negate,&setn);sp_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);int bin=sp_str_is_binary(s);while(p<end){uint32_t cp;p+=sp_str_cp_at(p,&cp,bin);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(in_set)c++;}free(set);return c;}
+sp_int sp_str_count_n(const char*s,const char**chars,sp_int n){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("count");if(n<=0)return 0;size_t*setns=(size_t*)malloc(n*sizeof(size_t));uint32_t**sets=(uint32_t**)malloc(n*sizeof(uint32_t*));int*negs=(int*)malloc(n*sizeof(int));for(sp_int i=0;i<n;i++){if(!chars[i])sp_raise_cls("TypeError","no implicit conversion of nil into String");sets[i]=sp_str_charset(s,chars[i],&negs[i],&setns[i]);}sp_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);int bin=sp_str_is_binary(s);while(p<end){uint32_t cp;p+=sp_str_cp_at(p,&cp,bin);int all=1;for(sp_int i=0;i<n;i++){int in_set=sp_utf8_set_has(sets[i],setns[i],cp);if(negs[i])in_set=!in_set;if(!in_set){all=0;break;}}if(all)c++;}for(sp_int i=0;i<n;i++)free(sets[i]);free(sets);free(setns);free(negs);return c;}
 /* The codepoints walked to the recorded byte length, as sp_str_chars walks:
    a BINARY String's are its bytes, and a NUL is a character like any other.
    String#codepoints with a block yields these. */
