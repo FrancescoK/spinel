@@ -5715,14 +5715,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
    into a scalar parameter that is an oint keeps its nil: under
    --int-overflow=promote the row is boxed while the parameter is not, and
    the plain assignment did not build. */
-static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, TyKind rt,
-                                int ta, int ti, int tn, long long lit, int indent, Buf *b) {
-  const char *pn = block_param_name(c, block, pj);
-  if (!pn) return;
-  const char *rpn = rename_local(pn);
-  Scope *sc = comp_scope_of(c, block);
-  LocalVar *lv = sc ? scope_local(sc, rpn) : NULL;
-  TyKind pt = lv ? lv->type : TY_UNKNOWN;
+/* The element at pj of a row of rt (_t<ta> from _t<ti>) as parameter slot
+   lv of type pt takes it, into `out` */
+static void row_param_value(Compiler *c, LocalVar *lv, TyKind pt, const char *k, TyKind rt, int ta, int ti,
+                            int pj, Buf *out) {
   char get[200];
   if (rt == TY_POLY_ARRAY && (pt == TY_INT || pt == TY_FLOAT))
     snprintf(get, sizeof get, "%s(sp_PolyArray_get(_t%d, _t%d + %d))",
@@ -5734,18 +5730,67 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
   else snprintf(get, sizeof get, "sp_%sArray_get(_t%d, _t%d + %d)", k, ta, ti, pj);
   /* A typed row can feed a boxed parameter. Keep missed reads nil when
      boxing the element, including the short final slice. */
-  Buf boxed; memset(&boxed, 0, sizeof boxed);
   if (pt == TY_POLY && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY))
-    buf_printf(&boxed, "%s(%s)", oint_box(ty_array_elem(rt)), get);
+    buf_printf(out, "%s(%s)", oint_box(ty_array_elem(rt)), get);
   else if (pt == TY_POLY && rt != TY_POLY_ARRAY)
-    emit_boxed_text(c, ty_array_elem(rt), get, &boxed);
-  const char *value = boxed.p ? boxed.p : get;
+    emit_boxed_text(c, ty_array_elem(rt), get, out);
+  else buf_puts(out, get);
+}
+static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, TyKind rt,
+                                int ta, int ti, int tn, long long lit, int indent, Buf *b) {
+  const char *pn = block_param_name(c, block, pj);
+  if (!pn) return;
+  const char *rpn = rename_local(pn);
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, rpn) : NULL;
+  TyKind pt = lv ? lv->type : TY_UNKNOWN;
+  Buf val; memset(&val, 0, sizeof val);
+  row_param_value(c, lv, pt, k, rt, ta, ti, pj, &val);
+  const char *value = val.p ? val.p : "0";
   const char *nil = pt == TY_UNKNOWN ? NULL : (oint_kind(pt) && lv && slot_is_oint(lv)) ? oint_nil(pt)
                   : nil_value(pt) ? nil_value(pt) : default_value_from_compiler(c, pt);
   emit_indent(b, indent);
   if (pj == 0 || pj < lit || !nil) buf_printf(b, "lv_%s = %s;\n", rpn, value);
   else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, value, nil);
-  free(boxed.p);
+  free(val.p);
+}
+/* The optional parameters of `block` (`|a, b = 0|`), their nodes in *opts */
+static int row_block_optionals(const NodeTable *nt, int block, const int **opts) {
+  int bpn = nt_ref(nt, block, "parameters");
+  int ppn = bpn >= 0 ? nt_ref(nt, bpn, "parameters") : -1;
+  int on = 0;
+  *opts = ppn >= 0 ? nt_arr(nt, ppn, "optionals", &on) : NULL;
+  return *opts ? on : 0;
+}
+/* A row's optional parameters, after the np required ones: a block with one
+   destructures each row as one with two required does, and an optional past
+   the row (_t<tn> long, and the array's end) takes its default, as CRuby
+   binds `|a, b = 0|` to a row of one. */
+static void emit_row_optional_binds(Compiler *c, int block, int np, const char *k, TyKind rt, int ta, int ti,
+                                    int tn, int indent, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const int *opts = NULL;
+  int on = row_block_optionals(nt, block, &opts);
+  Scope *sc = comp_scope_of(c, block);
+  for (int j = 0; j < on; j++) {
+    const char *pn = nt_str(nt, opts[j], "name");
+    if (!pn) continue;
+    const char *rpn = rename_local(pn);
+    LocalVar *lv = sc ? scope_local(sc, rpn) : NULL;
+    TyKind pt = lv ? lv->type : TY_POLY;
+    int pj = np + j;
+    Buf val; memset(&val, 0, sizeof val);
+    row_param_value(c, lv, pt, k, rt, ta, ti, pj, &val);
+    Buf dv; memset(&dv, 0, sizeof dv);
+    int dn = nt_ref(nt, opts[j], "value");
+    if (dn < 0) buf_puts(&dv, pt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, pt));
+    else if (pt == TY_POLY) emit_boxed(c, dn, &dv);
+    else emit_expr(c, dn, &dv);
+    emit_indent(b, indent);
+    buf_printf(b, "lv_%s = (%d < _t%d && _t%d + %d < sp_%sArray_length(_t%d)) ? %s : %s;\n", rpn, pj, tn, ti, pj,
+               k, ta, val.p ? val.p : "0", dv.p ? dv.p : "0");
+    free(val.p); free(dv.p);
+  }
 }
 
 /* emit_iteration_stmt_body's tap, Array#each_slice, and String#split / scan
@@ -5871,6 +5916,8 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
     int np_es = 0; while (block_param_name(c, block, np_es)) np_es++;
+    const int *es_opts = NULL;
+    int nopt_es = row_block_optionals(nt, block, &es_opts);
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
     TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
@@ -5889,11 +5936,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d += _t%d) {\n",
                ti, ti, k, ta, ti, ts);
     int bodyIndent = indent + 1;
-    if (np_es > 1) {
+    if (np_es > 1 || (np_es == 1 && nopt_es > 0)) {
       /* multi-param: destructure slice elements into individual params */
       long long lit = nt_kind(nt, es_argv[0]) == NK_IntegerNode ? nt_int(nt, es_argv[0], "value", 0) : 0;
       for (int pj = 0; pj < np_es; pj++)
         emit_row_param_bind(c, block, pj, k, rt, ta, ti, ts, lit, bodyIndent, b);
+      emit_row_optional_binds(c, block, np_es, k, rt, ta, ti, ts, bodyIndent, b);
       emit_loop_body(c, body, b, bodyIndent);
     }
     else if (use_shadow_es) {
@@ -6414,6 +6462,8 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
     int np = 0; while (block_param_name(c, block, np)) np++;
+    const int *ec_opts = NULL;
+    int nopt_ec = row_block_optionals(nt, block, &ec_opts);
     int ta = ++g_tmp, tnn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s; ", ta, rb.p ? rb.p : ""); free(rb.p);
@@ -6423,7 +6473,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
     buf_printf(b, "if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"invalid size\");\n", tnn);
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d + _t%d - 1 < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, tnn, k, ta, ti);
-    if (np == 1) {
+    if (np == 1 && nopt_ec == 0) {
       const char *pn = block_param_name(c, block, 0);
       const char *rpn = rename_local(pn);
       Scope *csc_ec = comp_scope_of(c, block);
@@ -6451,6 +6501,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
       long long lit = nt_kind(nt, eav[0]) == NK_IntegerNode ? nt_int(nt, eav[0], "value", 0) : 0;
       for (int pj = 0; pj < np; pj++)
         emit_row_param_bind(c, block, pj, k, rt, ta, ti, tnn, lit, indent + 1, b);
+      emit_row_optional_binds(c, block, np, k, rt, ta, ti, tnn, indent + 1, b);
       emit_loop_body(c, body, b, indent + 1);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");

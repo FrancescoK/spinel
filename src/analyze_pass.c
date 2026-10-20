@@ -15653,6 +15653,13 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
         int bdflt = rt0 == TY_POLY &&
                     (sp_streq(name, "fetch") || sp_streq(name, "delete") ||
                      sp_streq(name, "merge!") || sp_streq(name, "update"));
+        /* ...and any other block an Array or a Hash yields to (each_cons,
+           each_slice, ...): its dispatch default walks the container, whose
+           elements the adopted method's yields do not describe */
+        { TyKind byt[4];
+          if (rt0 == TY_POLY && !bdflt && (ty_block_yield(TY_POLY_ARRAY, name, byt, 4) > 0 ||
+                                           ty_block_yield(TY_POLY_POLY_HASH, name, byt, 4) > 0))
+            bdflt = 1; }
         if (ndef > 0 && (poly_enum_op_for(name) || bdflt || (mi < 0 && rt0 == TY_POLY))) {
           Scope *bs2 = comp_scope_of(c, block);
           for (int k = 0; ; k++) {
