@@ -172,6 +172,11 @@ ShareRoute share_route(int site, int value, int elems);
 /* Is node n's value a String the walk reached and found no identity in (a
    fresh one no other name holds)? */
 int share_node_fresh(const Compiler *c, int n);
+/* Does method scope mi answer no String: each expression its value can be
+   (a nil among them) is none a String can be, by its type or form or by what
+   is written to an instance variable it reads? Asked of the final facts; a
+   method whose values the walk does not follow answers 0. */
+int share_scope_answers_no_string(Compiler *c, int mi);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
 /* Is node n an element read (`a[i]`, `a.first`) out of a general Array

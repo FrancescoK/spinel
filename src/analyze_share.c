@@ -3025,6 +3025,22 @@ static int sh_ivar_string(void *ctx, Compiler *c, const char *ivn) {
   return may;
 }
 
+/* Does method scope mi answer no String: each expression its value can be
+   (a nil among them) is none a String can be, by its type or form or by what
+   is written to an instance variable it reads (an_recv_may_be_string)? A
+   method whose values the walk does not follow answers 0. */
+int share_scope_answers_no_string(Compiler *c, int mi) {
+  ShareFacts *F = c->share;
+  if (!F || mi <= 0 || mi >= c->nscopes) return 0;
+  int out[16];
+  int n = method_value_leaves_or_nil(c, mi, out, 16);
+  if (n < 0) return 0;
+  const PolyLits lits = { sh_blk_bound, F, sh_ivar_string };
+  for (int i = 0; i < n; i++)
+    if (an_recv_may_be_string(c, out[i], &lits)) return 0;
+  return 1;
+}
+
 /* An argument of kind t that a String's method could take as a String:
    a String, a value whose class is not known, or a user object (which may
    define to_str); an Integer too where `int_ok` (`<<` and concat append a
