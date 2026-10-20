@@ -2207,8 +2207,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* Random#rand(1.0..2.0) -> a Float in [first, last), exact endpoints. */
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, argv[0], b);
-        buf_puts(b, "; sp_Random_rand_float_range("); emit_expr(c, recv, b);
-        buf_printf(b, ", _t%d.first, _t%d.last); })", tr, tr);
+        buf_puts(b, "; sp_random_rand_frange("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d); })", tr);
       }
       else if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
@@ -2226,9 +2226,9 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (is_float) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
-          buf_puts(b, "; sp_Random_rand_float_range(");
+          buf_puts(b, "; sp_random_rand_fend(");
           emit_expr(c, recv, b);
-          buf_printf(b, ", (sp_float)_t%d.first, sp_range_end_num(_t%d)); })", tr, tr);
+          buf_printf(b, ", _t%d); })", tr);
         }
         else {
           buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
