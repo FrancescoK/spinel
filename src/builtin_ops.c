@@ -2802,10 +2802,12 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   }
 }
 
-TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int promote) {
+TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int facts) {
   switch ((int)op->result) {
   case (int)BOPR_ARRAY_SUM_SEED:
-    return argc == 1 ? fold_sum_type(arg_of(ud, 0), ty_array_elem(rt), promote) : TY_UNKNOWN;
+    return argc == 1 ? fold_sum_type(arg_of(ud, 0), ty_array_elem(rt), facts & BOPX_PROMOTE) : TY_UNKNOWN;
+  case (int)BOPR_ARRAY_TUPLES:
+    return rt == TY_POLY_ARRAY && !(facts & BOPX_KEPT) ? TY_ENUMERATOR : bop_result(op, rt);
   case (int)BOPR_ARRAY_PLUS:
   case (int)BOPR_ARRAY_SETOP:
     break;

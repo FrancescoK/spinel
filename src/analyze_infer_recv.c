@@ -491,7 +491,7 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        state their result by the arguments' kinds */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) { *out = an_bop_result(c, op, rt, argc, argv); return 1; }
+      if (op && op->result != TY_UNKNOWN) { *out = an_bop_result(c, op, rt, id, argc, argv); return 1; }
     }
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) { *out = TY_SYMBOL; return 1; }
     if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }  /* the key (boxed) or nil (#2352) */
@@ -713,12 +713,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       *out = TY_POLY_ARRAY;
       return 1;
     }
-    /* a poly Array's blockless combination & co.: its tuples laid out only
-       where the call on them answers alike, else the Enumerator */
-    if (rt == TY_POLY_ARRAY && block < 0 && is_combination_family(name) &&
-        (argc == 1 || (argc == 0 && sp_streq(name, "permutation"))) &&
-        !an_blockless_tuples_kept(c, id))
-      { *out = TY_ENUMERATOR; return 1; }
     /* dig(*keys) walks a runtime key list: the depth, and so the value's
        type, is not known here. A sole splat has the kind of its elements, so
        the dig row's one-key result cannot tell it from a key: answered ahead
@@ -730,7 +724,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        guard an argument's kind (an index, a count, slice!'s Range) */
     {
       const BuiltinOp *op = array_call_row(c, id, name, argc, argv, block >= 0);
-      if (op && (*out = an_bop_result(c, op, rt, argc, argv)) != TY_UNKNOWN) return 1;
+      if (op && (*out = an_bop_result(c, op, rt, id, argc, argv)) != TY_UNKNOWN) return 1;
     }
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP)

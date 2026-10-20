@@ -303,8 +303,9 @@ typedef struct BuiltinOp {
                                            Str or Float array's boxed (nil on a miss),
                                            any other's an Integer */
 #define BOPR_ARRAY_TUPLES ((TyKind)-19) /* blockless combination & co.: a poly array
-                                           materializes the tuples, any other array
-                                           answers an Enumerator */
+                                           whose position keeps the tuples (BOPX_KEPT)
+                                           materializes them, any other call answers an
+                                           Enumerator */
 #define BOPR_ARRAY_PLUS  ((TyKind)-20)  /* Array#+(other): bop_result_args. An Array
                                            of the receiver's kind or an untyped one
                                            (an empty literal) keeps the receiver's
@@ -389,8 +390,13 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt);
    bop_find_arg, and is called only for those rows. TY_UNKNOWN where the row
    states no kind for these operands. It reads no node: the caller brings
    the kinds. BOPR_ARRAY_SUM_SEED reads the seed through fold_seed_kind at
-   the caller and takes the integer overflow mode through promote. */
-TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int promote);
+   the caller and takes the integer overflow mode, and BOPR_ARRAY_TUPLES
+   whether the call keeps its tuples, through facts (BOPX_*). */
+TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud, int facts);
+/* Facts about the call that no operand's kind carries, for bop_result_args */
+#define BOPX_PROMOTE 1  /* --int-overflow=promote */
+#define BOPX_KEPT    2  /* a blockless combination & co. whose position keeps
+                           the tuples as an Array (an_blockless_tuples_kept) */
 
 /* The BOPF_BOXED row of kind rt for `name`, or NULL. */
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);

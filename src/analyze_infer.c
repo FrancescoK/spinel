@@ -2874,10 +2874,18 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
    BOPR_ARG0, BOPR_ARG1, BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row
    answers as bop_result does. Seeded sums also read the seed's literal kind
    and the integer overflow mode. */
-TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
+TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int id, int argc, const int *argv) {
   AnBopArgs a = { c, argv };
   BopArgKind arg_of = op->result == BOPR_ARRAY_SUM_SEED ? an_bop_seed_type : an_bop_arg_type;
-  return bop_result_args(op, rt, argc, arg_of, &a, g_promote_mode);
+  return bop_result_args(op, rt, argc, arg_of, &a, an_bop_facts(c, op, id));
+}
+
+/* The facts bop_result_args reads beside the operands' kinds: the build
+   mode, and for a blockless combination & co. whether its position keeps
+   the tuples. Inference and --plan-check ask the same. */
+int an_bop_facts(Compiler *c, const BuiltinOp *op, int id) {
+  return (g_promote_mode ? BOPX_PROMOTE : 0) |
+         (op->result == BOPR_ARRAY_TUPLES && an_blockless_tuples_kept(c, id) ? BOPX_KEPT : 0);
 }
 
 /* Does the program give a builtin class or module (String, Comparable,
@@ -6318,7 +6326,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
       { *out = TY_POLY; return 1; }
-    if (op) { *out = an_bop_result(c, op, rt, argc, argv); return 1; }
+    if (op) { *out = an_bop_result(c, op, rt, id, argc, argv); return 1; }
   }
 
   /* define_singleton_method(:m) { } that register_singleton_defs resolved
