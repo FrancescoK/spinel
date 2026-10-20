@@ -410,26 +410,53 @@ static void sp_str_to_c_zero_den(const char *dp, double d) {
     sp_raise_cls("ZeroDivisionError", "divided by 0");
   }
 }
+/* One number of a Complex string, by Ruby's syntax: digits, a fraction
+   (".5" too) and an exponent. strtod also reads "nan", "inf", "infinity",
+   hex ("0x10") and a trailing "." ("1."), none of which Ruby's Complex()
+   takes: the number ends where Ruby's would. */
+static double sp_c_num(const char *p, char **end) {
+  const char *q = p;
+  if (*q == '+' || *q == '-') q++;
+  const char *d = q;
+  while (*q >= '0' && *q <= '9') q++;
+  if (*q == '.' && q[1] >= '0' && q[1] <= '9') { q++; while (*q >= '0' && *q <= '9') q++; }
+  else if (q == d) { *end = (char *)p; return 0.0; }
+  if (*q == 'e' || *q == 'E') {
+    const char *e = q + 1;
+    if (*e == '+' || *e == '-') e++;
+    if (*e >= '0' && *e <= '9') { while (*e >= '0' && *e <= '9') e++; q = e; }
+  }
+  size_t n = (size_t)(q - p);
+  char sb[64], *buf = n < sizeof sb ? sb : (char *)malloc(n + 1);
+  if (!buf) sp_raise_cls("NoMemoryError", "failed to allocate memory");
+  memcpy(buf, p, n); buf[n] = '\0';
+  double v = strtod(buf, NULL);
+  if (buf != sb) free(buf);
+  *end = (char *)q;
+  return v;
+}
 static sp_Complex sp_str_to_c_impl(const char *s, int strict) {
   double re = 0, im = 0;
   int parsed = 0;
   const char *fin = s;   /* first byte NOT consumed by the parse */
   if (s) {
     const char *p = s;
-    while (*p == ' ' || *p == '\t') p++;
+    /* leading whitespace of any kind, as strtod skipped it; none between
+       the parts ("1 2i" is invalid) */
+    while (*p == ' ' || (*p >= '\t' && *p <= '\r')) p++;
     char *end = NULL;
-    double a = strtod(p, &end);
+    double a = sp_c_num(p, &end);
     if (end != p) {
       parsed = 1;
       /* rational-syntax component "n/d" */
-      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); a /= d; end = de; } }
+      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = sp_c_num(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); a /= d; end = de; } }
       if (*end == 'i') { im = a; fin = end + 1; }
       else {
         re = a;
         const char *q = end;
-        double b2 = strtod(q, &end);
+        double b2 = sp_c_num(q, &end);
         if (end != q) {
-          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); b2 /= d; end = de; } }
+          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = sp_c_num(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); b2 /= d; end = de; } }
           if (*end == 'i') { im = b2; fin = end + 1; }
           else fin = q;   /* an imaginary number without the 'i' suffix ("1+2") is invalid */
         }

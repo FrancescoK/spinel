@@ -1,0 +1,40 @@
+invalid value for convert(): "nan"
+invalid value for convert(): "NaN"
+invalid value for convert(): "inf"
+invalid value for convert(): "Infinity"
+invalid value for convert(): "-Infinity"
+invalid value for convert(): "1+NaNi"
+invalid value for convert(): "NaN+1i"
+invalid value for convert(): "1+Infinityi"
+invalid value for convert(): "NaNi"
+invalid value for convert(): "0x10"
+invalid value for convert(): "0X1"
+invalid value for convert(): "1."
+invalid value for convert(): "1.+2i"
+invalid value for convert(): "1+0x2i"
+(0+0i)
+(0+1i)
+(0+0i)
+(1+0i)
+(1+0i)
+(0.5+0i)
+(-0.5+0i)
+(0+0.0015i)
+(1+2i)
+(3-4i)
+(1+0i)
+(1+0i)
+(1+0i)
+(1+0i)
+(1+2i)
+(1+2i)
+(2+3i)
+(2+3i)
+invalid value for convert(): "1 2i"
+(1+0i)
+invalid value for convert(): "1 +2i"
+(1+0i)
+invalid value for convert(): "5.e3"
+invalid value for convert(): "1+5.i"
+invalid value for convert(): "NaN"
+nil
