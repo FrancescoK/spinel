@@ -1376,7 +1376,7 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 }
 
 static int str_append_chain_base(Compiler *c, int id);
-int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
+int strbuf_cond_has_handle_leaf(Compiler *c, int v);
 static int strbuf_gvar_write_handle(Compiler *c, int v, Buf *out);
 static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
 static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b);
@@ -1803,7 +1803,7 @@ int strbuf_tail_plain(Compiler *c, int v) {
   /* an exception's #message hands on the handle it holds too
      (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
-         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, v, 0) ||
+         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, v) ||
          repr_call_returns_handle(c, v) || strbuf_route_exc_message(c, v) ||
          strbuf_assign_leaf(c, v) ||
          /* a write whose slot holds the rule's handle (an ivar's, a global's,
@@ -1877,7 +1877,8 @@ int strbuf_yield_proc_box(Compiler *c, int v) {
   int mi = sc ? (int)(sc - c->scopes) : -1, last = mi > 0 ? scope_body_last(c, mi) : -1;
   return (vt == TY_STRING || vt == TY_STRBUF) && mi > 0 && last != v && block_given_tail_then_last(c, last) != v;
 }
-static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep);
+static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep);
+static int strbuf_cond_arm_any_in(Compiler *c, int v, unsigned extra, int (*leaf)(Compiler *, int), int deep);
 /* A leaf of the arm walk: a String Range's endpoint (strbuf_srange_tail), a
    `next` of one, or a `begin` (with no rescue, else or ensure) ending in one */
 static int strbuf_value_held(Compiler *c, int v);
@@ -1889,26 +1890,19 @@ static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
   int (*leaf)(Compiler *, int) = unheld ? strbuf_srange_unheld_leaf : strbuf_srange_leaf;
   v = unwrap_parens(c, v);
   /* a begin's value is its body's, a rescue's or its else's (an ensure's is
-     dropped), as strbuf_begin_arm_leaf takes them */
-  if (v >= 0 && nt_kind(nt, v) == NK_BeginNode) {
-    int el = nt_ref(nt, v, "else_clause");
-    if (el < 0 && strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), 1, leaf, 0)) return 1;
-    for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (strbuf_cond_arm_any(c, nt_ref(nt, rc, "statements"), 1, leaf, 0)) return 1;
-    return el >= 0 && strbuf_cond_arm_any(c, nt_ref(nt, el, "statements"), 1, leaf, 0);
-  }
-  if (v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode)
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "expression"), 1, leaf, 0) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, "rescue_expression"), 1, leaf, 0);
+     dropped), as strbuf_begin_arm_leaf takes them; a rescue modifier's is
+     its expression's or its fallback's */
+  if (v >= 0 && (nt_kind(nt, v) == NK_BeginNode || nt_kind(nt, v) == NK_RescueModifierNode))
+    return strbuf_cond_arm_any_in(c, v, VPS_BEGIN | VPS_RESCUE_MOD, leaf, 0);
   if (v >= 0 && nt_kind(nt, v) == NK_NextNode) {
     int na = 0; const int *av = call_args(nt, v, &na);
-    return na == 1 && strbuf_cond_arm_any(c, av[0], 1, leaf, 0);
+    return na == 1 && strbuf_cond_arm_any(c, av[0], leaf, 0);
   }
   /* a call of a yielding method with a literal block answers what the
      block's last statement does */
   if (v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "block") >= 0 &&
       nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode && strbuf_route_inline_call(c, v))
-    return strbuf_cond_arm_any(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), 1, leaf, 0);
+    return strbuf_cond_arm_any(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), leaf, 0);
   /* (unheld: an endpoint the String plan shares is the handle its Range
      keeps, which the handle route hands on) */
   return strbuf_srange_tail(c, v) >= 0 && !(unheld && strbuf_value_held(c, v));
@@ -1919,7 +1913,7 @@ static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
    the endpoint's own String, where the handle route would wrap a new String
    around the bytes of one the Range keeps none for. */
 int strbuf_srange_arm(Compiler *c, int v) {
-  return repr_share_rule(c) && v >= 0 && strbuf_cond_arm_any(c, v, 0, strbuf_srange_leaf, 0);
+  return repr_share_rule(c) && v >= 0 && strbuf_cond_arm_any(c, v, strbuf_srange_leaf, 0);
 }
 /* ...and is `next v` one whose value v is such, with no handle the plan
    shares for the endpoint? The handle face leaves it to the Range's own
@@ -1927,7 +1921,7 @@ int strbuf_srange_arm(Compiler *c, int v) {
 int strbuf_next_srange_value(Compiler *c, int v) {
   int na = 0;
   const int *av = nt_kind(c->nt, v) == NK_NextNode ? call_args(c->nt, v, &na) : NULL;
-  return repr_share_rule(c) && na == 1 && av[0] >= 0 && strbuf_cond_arm_any(c, av[0], 0, strbuf_srange_unheld_leaf, 0);
+  return repr_share_rule(c) && na == 1 && av[0] >= 0 && strbuf_cond_arm_any(c, av[0], strbuf_srange_unheld_leaf, 0);
 }
 /* ...and is the value of the literal block spliced here (no `next` in it) one
    (strbuf_srange_arm)? */
@@ -2021,11 +2015,11 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
   if (k == NK_NilNode) return want == SLK_FRESH;
   if (k == NK_NextNode) {
     int na = 0; const int *av = call_args(nt, v, &na);
-    return na != 1 ? want == SLK_HELD : strbuf_cond_arm_any(c, av[0], 1, walk, 0);
+    return na != 1 ? want == SLK_HELD : strbuf_cond_arm_any(c, av[0], walk, 0);
   }
   int blk = k == NK_CallNode ? nt_ref(nt, v, "block") : -1;
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && strbuf_route_inline_call(c, v))
-    return strbuf_cond_arm_any(c, nt_ref(nt, blk, "body"), 1, walk, 0);
+    return strbuf_cond_arm_any(c, nt_ref(nt, blk, "body"), walk, 0);
   int kind = SLK_HELD;
   if (strbuf_srange_tail(c, v) >= 0)
     kind = strbuf_value_held(c, v) ? SLK_HELD : SLK_UNHELD;
@@ -2038,8 +2032,8 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
 }
 /* ...is the value v of a block's tail one the demand has a handle for? */
 int strbuf_value_handleish(Compiler *c, int v) {
-  return strbuf_cond_arm_any(c, v, 0, strbuf_leaf_held, 1) ||
-         (strbuf_cond_arm_any(c, v, 0, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, 0, strbuf_leaf_unheld, 0));
+  return strbuf_cond_arm_any(c, v, strbuf_leaf_held, 1) ||
+         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 0));
 }
 int strbuf_yield_tail_held(Compiler *c) {
   int tail = strbuf_site_tail(c);
@@ -2129,24 +2123,20 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   return x >= 0 && repr_of(c, x).kind != RK_BOXED && comp_ntype(c, x) != TY_POLY && !strbuf_boxed_local(c, x) &&
          strbuf_inline_tail_ok(c, mi, x, depth + 1);
 }
+/* ...and every arm of an `if` or `unless` tail t, an elsif's included,
+   which the iterator reads; `depth` is the flag strbuf_inline_tail_ok takes
+   (0 for a tail beside no `return`), and an arm is one level deeper. A
+   missing arm answers nil, which the slot takes. */
+typedef struct { Compiler *c; int mi; int depth; } StrbufInlineArms;
+static int strbuf_inline_arm_bad(const VpLeaf *lf, void *ud) {
+  const StrbufInlineArms *a = ud;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  if (lf->kind == VPK_NIL) return lf->parent < 0;
+  return !strbuf_inline_tail_ok(a->c, a->mi, lf->node, a->depth + (lf->cond_depth > 0));
+}
 static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
-  const NodeTable *nt = c->nt;
-  t = unwrap_parens(c, t);
-  if (t < 0 || depth > 8) return 0;
-  NodeKind k = nt_kind(nt, t);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int arms[2] = { nt_ref(nt, t, "statements"), nt_ref(nt, t, k == NK_IfNode ? "subsequent" : "else_clause") };
-    for (int i = 0; i < 2; i++) {
-      int a = arms[i];
-      if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
-      if (a < 0) continue;
-      if (nt_kind(nt, a) == NK_IfNode) { if (!strbuf_inline_arms_ok(c, mi, a, depth + 1)) return 0; continue; }
-      int n = 0; const int *st = nt_kind(nt, a) == NK_StatementsNode ? nt_arr(nt, a, "body", &n) : NULL;
-      if (n == 0 || !strbuf_inline_arms_ok(c, mi, st[n - 1], depth + 1)) return 0;
-    }
-    return 1;
-  }
-  return strbuf_inline_tail_ok(c, mi, t, depth);
+  StrbufInlineArms a = { c, mi, depth };
+  return !for_each_value_position(c->nt, t, VPS_IF | VPS_UNLESS, strbuf_inline_arm_bad, &a);
 }
 /* Does each `return` in subtree n of spliced method mi hand the result
    slot what strbuf_inline_tail_ok takes (a bare one nil)? The splice
@@ -2758,7 +2748,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
      handle arm hands on what it ends in, as emit_strbuf_handle_of takes
      it: `(t = 5; s).itself`, the splice of a builtin receiver's
      instance_exec) */
-  if (x >= 0) return depth < 8 && (strbuf_route_carries(c, x, depth + 1) || strbuf_cond_has_handle_leaf(c, x, 0));
+  if (x >= 0) return depth < 8 && (strbuf_route_carries(c, x, depth + 1) || strbuf_cond_has_handle_leaf(c, x));
   /* Ask the slot's call facts without rendering its receiver in analysis. */
   if (v >= 0 && nt_kind(c->nt, v) == NK_CallNode)
     return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v);
@@ -2818,7 +2808,7 @@ int strbuf_route_kind(Compiler *c, int v, int *op) {
   /* (an operand that hands on the handle, as strbuf_route_carries asks
      it; one that does not leaves the route none) */
   if (x >= 0) {
-    if (repr_of(c, x).kind != RK_BOXED && !strbuf_route_carries(c, x, 1) && !strbuf_cond_has_handle_leaf(c, x, 0))
+    if (repr_of(c, x).kind != RK_BOXED && !strbuf_route_carries(c, x, 1) && !strbuf_cond_has_handle_leaf(c, x))
       return SPK_NONE;
     *op = x;
     return SPK_OPERAND;
@@ -3366,7 +3356,7 @@ int strbuf_value_carries(Compiler *c, int v) {
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, NULL)) return 1;
   /* a variable's write whose slot holds the handle hands it on, as a
      parenthesized one does (strbuf_cond_has_handle_leaf) */
-  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, NULL) ||
+  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v) || strbuf_opwrite_handle(c, v, NULL) ||
          (k != NK_CallNode && repr_write_share(c, v));
 }
 /* The String plan's producer kind (SPK_*) of value v by the arms of
@@ -3402,7 +3392,7 @@ int strbuf_value_kind(Compiler *c, int v, int *op) {
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, NULL)) { *op = cb; return SPK_SELF; }
   int rk = strbuf_route_kind(c, v, op);
   if (rk != SPK_NONE) return rk;
-  if (strbuf_cond_has_handle_leaf(c, v, 0)) return SPK_COND;
+  if (strbuf_cond_has_handle_leaf(c, v)) return SPK_COND;
   if (strbuf_opwrite_handle(c, v, NULL) || (k != NK_CallNode && repr_write_share(c, v))) return SPK_WRITE;
   return SPK_NONE;
 }
@@ -3422,42 +3412,32 @@ int strbuf_arg_carries(Compiler *c, int v) {
          (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0);
 }
 /* Does a value conditional v hands on, taken arm by arm, answer leaf: a
-   conditional's arms, a sequence's last statement? Past the depth the walk
-   answers deep. */
-static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep) {
-  const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
-  if (v < 0) return 0;
-  if (depth > 16) return deep;
-  switch (nt_kind(nt, v)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-    return n > 0 && strbuf_cond_arm_any(c, bb[n - 1], depth + 1, leaf, deep);
-  }
-  case NK_ElseNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep);
-  case NK_IfNode: case NK_UnlessNode:
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1,
-                               leaf, deep);
-  case NK_OrNode:
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "left"), depth + 1, leaf, deep) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
-  case NK_AndNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
-  case NK_CaseNode: case NK_CaseMatchNode: {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; w < nw; w++)
-      if (strbuf_cond_arm_any(c, nt_ref(nt, whens[w], "statements"), depth + 1, leaf, deep)) return 1;
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "else_clause"), depth + 1, leaf, deep);
-  }
-  default: return leaf(c, v);
-  }
+   conditional's arms, a sequence's last statement? Read through the
+   iterator with the if, unless, case, case/in and `||` and `&&` shapes (a
+   begin and a rescue modifier are leaves, which a leaf may take apart); the
+   walk has no depth, and answers deep if it is cut short. */
+typedef struct { Compiler *c; int (*leaf)(Compiler *, int); int deep; } StrbufArmAny;
+static int strbuf_cond_arm_leaf(const VpLeaf *lf, void *ud) {
+  const StrbufArmAny *a = ud;
+  if (lf->kind == VPK_GAVE_UP) return a->deep;
+  return lf->kind != VPK_NIL && a->leaf(a->c, lf->node);
+}
+/* (`extra` adds shapes the leaf test does not take apart itself: strbuf_srange_leaf_d reads
+   a begin and a rescue modifier through it) */
+static int strbuf_cond_arm_any_in(Compiler *c, int v, unsigned extra, int (*leaf)(Compiler *, int), int deep) {
+  StrbufArmAny a = { c, leaf, deep };
+  return for_each_value_position(c->nt, v, extra | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                                 strbuf_cond_arm_leaf, &a);
+}
+static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep) {
+  return strbuf_cond_arm_any_in(c, v, 0, leaf, deep);
 }
 /* ...is v such a bang, or a conditional that takes its arms one by one as
    handles (strbuf_cond_has_handle_leaf) with such a bang among the values
    it hands on? An argument that runs ahead of the binding takes its handle
    there (emit_arg_temp), which the binding then takes (ran_first_handle). */
 int strbuf_arg_bang_value(Compiler *c, int v) {
-  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_cond_arm_any(c, v, 0, strbuf_arg_bang, 0));
+  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v) && strbuf_cond_arm_any(c, v, strbuf_arg_bang, 0));
 }
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
@@ -3733,55 +3713,36 @@ static int g_strbuf_case_node = -1;
 static LocalVar *g_strbuf_case_lv;
 /* Is a String local that is the shared handle one of the values conditional
    `v` can hand over (an_strbuf_alias_leaves' arms)? */
-/* Is a handle among the values begin v hands on: its body's (no else
-   follows it), each rescue's and its else's, an ensure's being dropped (the
-   values mark_value_nexts walks)? */
-static int strbuf_begin_arm_leaf(Compiler *c, int v, int depth) {
-  const NodeTable *nt = c->nt;
-  int el = nt_ref(nt, v, "else_clause");
-  if (el < 0 && strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth)) return 1;
-  for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-    if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, rc, "statements"), depth)) return 1;
-  return el >= 0 && strbuf_cond_has_handle_leaf(c, nt_ref(nt, el, "statements"), depth);
+/* Is a handle among the values conditional (or begin) v hands on? The arms
+   are read through the iterator with the if, unless, case, case/in, begin
+   and `||` and `&&` shapes (`&&` by its right operand: the left is a value
+   only when falsy). A begin's value is its body's (no else follows it),
+   each rescue's and its else's, an ensure's being dropped (the values
+   mark_value_nexts walks). The walk has no depth; what each leaf is, is
+   told by whether a conditional or a wrapper lies between it and the value
+   itself, which the read arms leave to the caller: `(1; s)` hands over s's
+   handle. `under` is that, for a walk that starts below the value (the
+   operand of `+g`, the value of a `next`). A begin on its own is a route
+   (strbuf_route_begin), which emit_strbuf_value takes after this test. */
+typedef struct { Compiler *c; int root; int under; } StrbufHandleWalk;
+static int strbuf_handle_arm(const VpLeaf *lf, void *ud);
+static int strbuf_handle_walk(Compiler *c, int v, int under) {
+  if (v < 0 || (!under && nt_kind(c->nt, v) == NK_BeginNode)) return 0;
+  StrbufHandleWalk w = { c, v, under };
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_LOGIC,
+                                 strbuf_handle_arm, &w);
 }
-int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
+static int strbuf_begin_arm_leaf(Compiler *c, int v) { return strbuf_handle_walk(c, v, 1); }
+int strbuf_cond_has_handle_leaf(Compiler *c, int v) { return strbuf_handle_walk(c, v, 0); }
+static int strbuf_handle_arm(const VpLeaf *lf, void *ud) {
+  const StrbufHandleWalk *w = ud;
+  Compiler *c = w->c;
   const NodeTable *nt = c->nt;
-  /* depth counts the conditionals the walk is inside (a wrapper adds none);
-     emit_strbuf_cond_value reaches any depth (its arms past its own limit
-     start a walk of their own), so this one looks as deep as is sane */
-  if (v < 0 || depth > 64) return 0;
+  int v = lf->node;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  if (lf->kind == VPK_NIL) return 0;
+  int deep = w->under || v != w->root;
   switch (nt_kind(nt, v)) {
-    /* a wrapper adds no conditional level, but what it holds is no longer
-       the value itself (depth 0, which the read arms leave to the caller):
-       `(1; s)` hands over s's handle */
-    case NK_ParenthesesNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "body"), depth ? depth : 1);
-    case NK_StatementsNode: {
-      int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-      return n > 0 && strbuf_cond_has_handle_leaf(c, bb[n - 1], depth ? depth : 1);
-    }
-    case NK_ElseNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth ? depth : 1);
-    case NK_IfNode: case NK_UnlessNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth + 1) ||
-             strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
-                                         depth + 1);
-    case NK_OrNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "left"), depth + 1) ||
-             strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
-    case NK_AndNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-      for (int w = 0; w < nw; w++)
-        if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "else_clause"), depth + 1);
-    }
-    /* a begin among a conditional's arms hands on what its body, rescues and
-       else do (strbuf_begin_arm_leaf); on its own it is a route
-       (strbuf_route_begin), which emit_strbuf_value takes after this test */
-    case NK_BeginNode:
-      return depth > 0 && strbuf_begin_arm_leaf(c, v, depth);
     /* a `next v` written where the block's value is (next_is_block_value)
        hands on what v does, as an arm of its own; a String Range's endpoint
        is boxed by the Range's own test for the handle it keeps
@@ -3790,39 +3751,37 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
     case NK_NextNode: {
       int na = 0; const int *av = call_args(nt, v, &na);
       return repr_share_rule(c) && na == 1 && next_is_block_value(c, v) && !strbuf_next_srange_value(c, v) &&
-             strbuf_cond_has_handle_leaf(c, av[0], depth ? depth : 1);
+             strbuf_handle_walk(c, av[0], 1);
     }
     /* `+g` is g itself unless g is frozen (sp_String_uplus) */
     /* (--share-strings: any route over a handle, emit_strbuf_route) */
     case NK_CallNode:
-      if (depth > 0 && repr_share_rule(c) && (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v))) return 1;
-      return (strbuf_uplus_operand(c, v) >= 0 && strbuf_cond_has_handle_leaf(c, strbuf_uplus_operand(c, v), depth + 1)) ||
-             (depth > 0 && repr_share_rule(c) && (strbuf_route_carries(c, v, 0) || repr_of(c, v).kind == RK_BOXED ||
-                                                   strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v) ||
-                                                   strbuf_assign_leaf(c, v)));
+      if (deep && repr_share_rule(c) && (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v))) return 1;
+      return (strbuf_uplus_operand(c, v) >= 0 && strbuf_handle_walk(c, strbuf_uplus_operand(c, v), 1)) ||
+             (deep && repr_share_rule(c) && (strbuf_route_carries(c, v, 0) || repr_of(c, v).kind == RK_BOXED ||
+                                              strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v) ||
+                                              strbuf_assign_leaf(c, v)));
     /* a read, or an arm's chained write (`c ? (t = g) : x`), whose value is
        its target's */
     case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
-      if (depth == 0) return 0;
+      if (!deep) return 0;
       const char *vn = nt_str(nt, v, "name");
       LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
       /* (--share-strings: or a boxed local, lifted to its handle's box) */
       return repr_of_slot(c, vl).handle || (repr_share_rule(c) && strbuf_boxed_local(c, v));
     }
     /* a global holding the handle (--share-strings), read or written */
-    case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode: {
-      return depth > 0 && strbuf_slot_has(c, v);
-    }
+    case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
+      return deep && strbuf_slot_has(c, v);
     case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
-    case NK_ConstantWriteNode: {
-      return depth > 0 && strbuf_gvar_write_handle(c, v, NULL);
-    }
+    case NK_ConstantWriteNode:
+      return deep && strbuf_gvar_write_handle(c, v, NULL);
     /* any other write whose slot holds the rule's handle (an ivar's, a
        class variable's, an `||=`): emit_strbuf_value hands it over; and a
        box (--share-strings), whose handle emit_strbuf_value takes out */
     default:
-      return depth > 0 && (repr_write_share(c, v) || (repr_share_rule(c) && strbuf_route_carries(c, v, 0)) ||
-                           (repr_share_rule(c) && repr_of(c, v).kind == RK_BOXED));
+      return deep && (repr_write_share(c, v) || (repr_share_rule(c) && strbuf_route_carries(c, v, 0)) ||
+                      (repr_share_rule(c) && repr_of(c, v).kind == RK_BOXED));
   }
 }
 /* Assign conditional `v`'s value to the handle temp `dst` as statements,
@@ -5118,7 +5077,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      : g`, paired by an_strbuf_alias_leaves): each arm hands over its own
      object, the handle for such a local and a fresh String for any other
      value. Wrapped whole, the value forked h off the String g names. */
-  else if (shared && strbuf_cond_has_handle_leaf(c, v, 0)) {
+  else if (shared && strbuf_cond_has_handle_leaf(c, v)) {
     char dst[32];
     snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
     buf_printf(b, "({ sp_String *%s = NULL; ", dst);
@@ -5294,7 +5253,7 @@ static int strbuf_tail_self_mutator(Compiler *c, int v) {
    a bang that answers its receiver (`@r = @s.concat(x, y)`)? A call with a
    splat argument is none of the last two. */
 int strbuf_ivar_store_aliases(Compiler *c, int v) {
-  return strbuf_cond_has_handle_leaf(c, v, 0) ||
+  return strbuf_cond_has_handle_leaf(c, v) ||
          (!call_takes_splat(c->nt, v) && (strbuf_chain_over_handle(c, v) || strbuf_plain_self_call(c, v)));
 }
 /* --share-strings: does an instance variable's write take value v by a
@@ -10941,37 +10900,24 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int 
    attribute write on a boxed receiver? Their value forms answer the bytes
    and publish nothing, so such a tail is emitted arm by arm, each leaf by
    emit_tail_value. */
+static int tail_pub_arm(const VpLeaf *lf, void *ud);
 int tail_pub_leaf(Compiler *c, int v) {
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD,
+                                 tail_pub_arm, c);
+}
+/* (a String `||` or `&&` is a leaf of the walk: the return analysis reads
+   its operands only where an_tail_logic_op says it took them) */
+static int tail_pub_arm(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
-  int n = 0;
-  const int *bb;
-  switch (k) {
-    case NK_ParenthesesNode: return tail_pub_leaf(c, nt_ref(nt, v, "body"));
-    case NK_StatementsNode:
-      bb = nt_arr(nt, v, "body", &n);
-      return n > 0 && tail_pub_leaf(c, bb[n - 1]);
-    case NK_ElseNode: return tail_pub_leaf(c, nt_ref(nt, v, "statements"));
-    case NK_IfNode: case NK_UnlessNode:
-      return tail_pub_leaf(c, nt_ref(nt, v, "statements")) ||
-             tail_pub_leaf(c, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
-    case NK_CaseNode: case NK_CaseMatchNode:
-      bb = nt_arr(nt, v, "conditions", &n);
-      for (int w = 0; w < n; w++)
-        if (tail_pub_leaf(c, nt_ref(nt, bb[w], "statements"))) return 1;
-      return tail_pub_leaf(c, nt_ref(nt, v, "else_clause"));
-    case NK_BeginNode:
-      for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-        if (tail_pub_leaf(c, nt_ref(nt, rc, "statements"))) return 1;
-      return tail_pub_leaf(c, nt_ref(nt, v, nt_ref(nt, v, "else_clause") >= 0 ? "else_clause" : "statements"));
-    case NK_RescueModifierNode:
-      return tail_pub_leaf(c, nt_ref(nt, v, "expression")) || tail_pub_leaf(c, nt_ref(nt, v, "rescue_expression"));
-    case NK_OrNode: case NK_AndNode:
-      return an_tail_logic_op(c, v) &&
-             ((k == NK_OrNode && tail_pub_leaf(c, nt_ref(nt, v, "left"))) || tail_pub_leaf(c, nt_ref(nt, v, "right")));
-    default:
-      return strbuf_builtin_tail(c, v) || (strbuf_assign_leaf(c, v) && strbuf_assign_boxed_recv(c, v));
-  }
+  int v = lf->node;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  if (lf->kind == VPK_NIL) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_OrNode || k == NK_AndNode)
+    return an_tail_logic_op(c, v) &&
+           ((k == NK_OrNode && tail_pub_leaf(c, nt_ref(nt, v, "left"))) || tail_pub_leaf(c, nt_ref(nt, v, "right")));
+  return strbuf_builtin_tail(c, v) || (strbuf_assign_leaf(c, v) && strbuf_assign_boxed_recv(c, v));
 }
 
 /* A String result slot uses the return-tail emitter even when control
@@ -16945,7 +16891,7 @@ int masgn_boxed_index_keeps(Compiler *c, int t, int e) {
   TyKind et = c->ntype[e];
   NodeKind ek = nt_kind(nt, e);
   return (et == TY_STRING || et == TY_STRBUF) &&
-         (ek == NK_ParenthesesNode || ek == NK_IfNode || ek == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, e, 0);
+         (ek == NK_ParenthesesNode || ek == NK_IfNode || ek == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, e);
 }
 int masgn_face_elem(Compiler *c, int mw, int el) {
   const NodeTable *nt = c->nt;
@@ -20665,7 +20611,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        Lift at the arms, so a frozen literal keeps its own identity. */
     int share_box = repr_share_rule(c) && (rt == TY_STRING || rt == TY_STRBUF) &&
                     (g_result_var ? g_result_poly : g_ret_type == TY_POLY) &&
-                    (share_node_shares(c, id) || strbuf_begin_arm_leaf(c, id, 1));
+                    (share_node_shares(c, id) || strbuf_begin_arm_leaf(c, id));
     if (share_box) rt = TY_POLY;
     /* --share-strings: a begin whose value the slot it tails reads as the
        handle (a spliced block's under the demand) holds its arms' values as
@@ -24292,7 +24238,7 @@ int face_bang_on_runtime_elems(Compiler *c, int v) {
 static int face_bang_cond_on_runtime_elems(Compiler *c, int v) {
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
   return (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
-         strbuf_cond_arm_any(c, v, 0, face_bang_on_runtime_elems, 1);
+         strbuf_cond_arm_any(c, v, face_bang_on_runtime_elems, 1);
 }
 /* repr.c's flow check asks this (codegen_internal.h). */
 int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {

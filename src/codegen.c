@@ -2409,7 +2409,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
       emit_boxed_self_answer_cond(c, node, b))
     return 1;
   if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
-      !strbuf_cond_has_handle_leaf(c, node, 0))
+      !strbuf_cond_has_handle_leaf(c, node))
     return 0;
   /* an argument that ran ahead as the handle it hands on (emit_arg_temp):
      that handle's box, not the arms run again */
@@ -2449,7 +2449,7 @@ static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
   TyKind t = repr_of(c, node).as_ty;
   int body = nt_ref(nt, node, plain_begin ? "statements" : "body"), n = 0;
   if ((t != TY_STRING && t != TY_STRBUF) || body < 0 ||
-      !strbuf_cond_has_handle_leaf(c, plain_begin ? body : node, 0)) return 0;
+      !strbuf_cond_has_handle_leaf(c, plain_begin ? body : node)) return 0;
   nt_arr(nt, body, "body", &n);
   if (n < 2) return 0;
   if (plain_begin) node = body;

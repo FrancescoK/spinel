@@ -5,6 +5,7 @@
 #include "share.h"
 #include "repr.h"
 #include "call_plan.h"
+#include "value_pos.h"
 #include <errno.h>
 
 /* Is `s` the C text of an integer literal (`589LL`, `-8LL`, `(-8LL)`)? Its
@@ -4406,54 +4407,24 @@ int subtree_owns_next(const NodeTable *nt, int body, int next) {
 /* Mark every `next` written where the value of `id` is: `id` itself, the
    last statement of a sequence, an arm of an `if`, `unless`, `case` or
    `begin`, the right of an `and` or `or`. An `ensure` clause, a condition
-   and every other operand are not: their value is not the node's. */
+   and every other operand are not: their value is not the node's. The arms
+   are read through the iterator; `&&` and `||` are leaves of it, whose right
+   operand is walked from here (the left is not the block's value). */
+static void mark_value_nexts(const NodeTable *nt, int id, char *mark);
+typedef struct { const NodeTable *nt; char *mark; } MarkNexts;
+static int mark_next_leaf(const VpLeaf *lf, void *ud) {
+  const MarkNexts *m = ud;
+  if (lf->kind != VPK_EXPR && lf->kind != VPK_JUMP) return 0;
+  NodeKind k = nt_kind(m->nt, lf->node);
+  if (k == NK_NextNode) m->mark[lf->node] = 1;
+  else if (k == NK_AndNode || k == NK_OrNode) mark_value_nexts(m->nt, nt_ref(m->nt, lf->node, "right"), m->mark);
+  return 0;
+}
 static void mark_value_nexts(const NodeTable *nt, int id, char *mark) {
   if (id < 0 || id >= nt->count) return;
-  int n = 0; const int *a;
-  switch (nt_kind(nt, id)) {
-  case NK_NextNode: mark[id] = 1; return;
-  case NK_StatementsNode:
-    a = nt_arr(nt, id, "body", &n);
-    if (n > 0) mark_value_nexts(nt, a[n - 1], mark);
-    return;
-  case NK_ParenthesesNode: mark_value_nexts(nt, nt_ref(nt, id, "body"), mark); return;
-  case NK_IfNode:
-    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
-    return;
-  case NK_UnlessNode:
-    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
-    return;
-  case NK_ElseNode: case NK_InNode:
-    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    return;
-  case NK_CaseNode: case NK_CaseMatchNode:
-    a = nt_arr(nt, id, "conditions", &n);
-    for (int i = 0; i < n; i++) mark_value_nexts(nt, a[i], mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
-    return;
-  case NK_BeginNode:
-    /* with an `else`, the body's last statement is not the begin's value */
-    if (nt_ref(nt, id, "else_clause") < 0) mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "rescue_clause"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
-    return;
-  case NK_RescueNode:
-    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
-    return;
-  case NK_RescueModifierNode:
-    mark_value_nexts(nt, nt_ref(nt, id, "expression"), mark);
-    mark_value_nexts(nt, nt_ref(nt, id, "rescue_expression"), mark);
-    return;
-  case NK_AndNode: case NK_OrNode: mark_value_nexts(nt, nt_ref(nt, id, "right"), mark); return;
-  default:
-    /* a `when` has no kind of its own */
-    if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "WhenNode"))
-      mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
-    return;
-  }
+  MarkNexts m = { nt, mark };
+  for_each_value_position(nt, id, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD,
+                          mark_next_leaf, &m);
 }
 
 /* Is this `next` the value of the block it leaves: written where the block's

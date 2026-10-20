@@ -18312,42 +18312,22 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
    (promote_local_alias_pairs), and the write emits the handle per arm
    (emit_strbuf_cond_value). Answers the count written to `out` (at most
    `cap`). */
-static int an_strbuf_alias_leaves(Compiler *c, int v, int *out, int cap, int depth) {
-  const NodeTable *nt = c->nt;
-  if (v < 0 || cap <= 0 || depth > 8) return 0;
-  int one = an_strbuf_alias_source(c, v);
-  if (one >= 0) { out[0] = one; return 1; }
-  switch (nt_kind(nt, v)) {
-    case NK_ParenthesesNode:
-      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "body"), out, cap, depth + 1);
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
-      return n > 0 ? an_strbuf_alias_leaves(c, b[n - 1], out, cap, depth + 1) : 0;
-    }
-    case NK_ElseNode:
-      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
-    case NK_IfNode: case NK_UnlessNode: {
-      /* a missing arm is nil */
-      int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-      int n = an_strbuf_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
-      return n + an_strbuf_alias_leaves(c, sub, out + n, cap - n, depth + 1);
-    }
-    case NK_OrNode: {
-      int n = an_strbuf_alias_leaves(c, nt_ref(nt, v, "left"), out, cap, depth + 1);
-      return n + an_strbuf_alias_leaves(c, nt_ref(nt, v, "right"), out + n, cap - n, depth + 1);
-    }
-    /* `a && g` answers a only when a is nil or false, never a String */
-    case NK_AndNode:
-      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "right"), out, cap, depth + 1);
-    case NK_CaseNode: {
-      int nw = 0, n = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-      for (int w = 0; w < nw; w++)
-        n += an_strbuf_alias_leaves(c, nt_ref(nt, whens[w], "statements"), out + n, cap - n, depth + 1);
-      return n + an_strbuf_alias_leaves(c, nt_ref(nt, v, "else_clause"), out + n, cap - n, depth + 1);
-    }
-    default:
-      return 0;
-  }
+typedef struct { Compiler *c; int *out; int cap, n; } AliasLeaves;
+static int alias_leaf(const VpLeaf *lf, void *ud) {
+  AliasLeaves *a = ud;
+  if (lf->kind == VPK_NIL || lf->kind == VPK_GAVE_UP) return 0;
+  int one = an_strbuf_alias_source(a->c, lf->node);
+  if (one >= 0) a->out[a->n++] = one;
+  return a->n >= a->cap;
+}
+/* (the arms are read through the iterator: if, unless, case, `||` both
+   operands and `&&` its right; a missing arm is nil, and the walk has no
+   depth) */
+static int an_strbuf_alias_leaves(Compiler *c, int v, int *out, int cap) {
+  if (v < 0 || cap <= 0) return 0;
+  AliasLeaves a = { c, out, cap, 0 };
+  for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, alias_leaf, &a);
+  return a.n;
 }
 /* The local read a multiple assignment's value hands target `t` (a
    LocalVariableTargetNode among its `lefts`): `t, u = s, 1` makes t another
@@ -18418,7 +18398,7 @@ static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
     if (si < 0 || si >= c->nscopes) continue;
     const char *wn = nt_str(nt, w, "name");
     int lv[16];
-    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16);
     for (int l = 0; l < nl; l++) an_local_aliases_add(t, &cap, si, wn, nt_str(nt, lv[l], "name"));
   }
   /* `h ||= g`, `h &&= g` */
@@ -18430,7 +18410,7 @@ static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
       int si = ws ? (int)(ws - c->scopes) : -1;
       if (si < 0 || si >= c->nscopes) continue;
       int lv[16];
-      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16);
       for (int l = 0; l < nl; l++) an_local_aliases_add(t, &cap, si, nt_str(nt, w, "name"), nt_str(nt, lv[l], "name"));
     }
   /* `t, u = s, 1`: each target an element names */
@@ -19044,50 +19024,38 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
    branch of a conditional that is one, or an element read of an Array or
    Hash literal holding one? Unlike poly_var_may_hold_string, a value it
    cannot see answers no: what asks is a refusal. */
-static int poly_value_shows_string(Compiler *c, int v, int depth) {
+static int poly_value_shows_string(Compiler *c, int v);
+static int poly_leaf_shows_string(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 8) return 0;
+  /* (a walk cut short saw nothing: a value it cannot see answers no) */
+  if (lf->kind != VPK_EXPR && lf->kind != VPK_JUMP) return 0;
+  int v = lf->node;
   TyKind vt = infer_type(c, v);
   if (vt == TY_STRING || vt == TY_STRBUF) return 1;
-  switch (nt_kind(nt, v)) {
-    case NK_IfNode: case NK_UnlessNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1) ||
-             poly_value_shows_string(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
-                                      depth + 1);
-    case NK_ElseNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1);
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
-      return n > 0 && poly_value_shows_string(c, b[n - 1], depth + 1);
-    }
-    case NK_OrNode: case NK_AndNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "left"), depth + 1) ||
-             poly_value_shows_string(c, nt_ref(nt, v, "right"), depth + 1);
-    case NK_CallNode: {
-      int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
-      if (r < 0 || !container_elem_read_p(nt, v)) return 0;
-      int en = 0; const int *el = NULL;
-      if (nt_kind(nt, r) == NK_ArrayNode) el = nt_arr(nt, r, "elements", &en);
-      for (int e = 0; e < en; e++) if (poly_value_shows_string(c, el[e], depth + 1)) return 1;
-      if (nt_kind(nt, r) == NK_HashNode) {
-        el = nt_arr(nt, r, "elements", &en);
-        for (int e = 0; e < en; e++)
-          if (nt_kind(nt, el[e]) == NK_AssocNode && poly_value_shows_string(c, nt_ref(nt, el[e], "value"), depth + 1))
-            return 1;
-      }
-      return 0;
-    }
-    default:
-      return 0;
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  if (r < 0 || !container_elem_read_p(nt, v)) return 0;
+  int en = 0; const int *el = NULL;
+  if (nt_kind(nt, r) == NK_ArrayNode) el = nt_arr(nt, r, "elements", &en);
+  for (int e = 0; e < en; e++) if (poly_value_shows_string(c, el[e])) return 1;
+  if (nt_kind(nt, r) == NK_HashNode) {
+    el = nt_arr(nt, r, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocNode && poly_value_shows_string(c, nt_ref(nt, el[e], "value")))
+        return 1;
   }
+  return 0;
+}
+static int poly_value_shows_string(Compiler *c, int v) {
+  return for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, poly_leaf_shows_string, c);
 }
 /* Can boxed local (vn, vs) hold a String, by what one of its writes shows? */
 static int poly_local_shows_string(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w))
     if (nt_kind(nt, w) == NK_LocalVariableWriteNode && comp_scope_of(c, w) == vs &&
-        sp_streq(nt_str(nt, w, "name"), vn) && poly_value_shows_string(c, nt_ref(nt, w, "value"), 0))
+        sp_streq(nt_str(nt, w, "name"), vn) && poly_value_shows_string(c, nt_ref(nt, w, "value")))
       return 1;
   return 0;
 }
@@ -21218,57 +21186,42 @@ static LocalVar *strbuf_poly_gvar(Compiler *c, int node, const char **grn) {
    it reads: a string-valued expression marks for a fresh-handle wrap, an
    eligible string local promotes. */
 static int strbuf_demand_elem_arg(Compiler *c, int an);
-static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
+typedef struct { Compiler *c; int depth; int changed; } StrbufDemand;
+static int strbuf_demand_leaf(const VpLeaf *lf, void *ud) {
+  StrbufDemand *w = ud;
+  Compiler *c = w->c;
   const NodeTable *nt = c->nt;
-  if (node < 0 || depth > 16) return 0;
+  int node = lf->node, depth = w->depth;
+  if (lf->kind != VPK_EXPR && lf->kind != VPK_JUMP) return 0;
   switch (nt_kind(nt, node)) {
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int changed = 0;
-      int nw = 0; const int *whens = nt_arr(nt, node, "conditions", &nw);
-      for (int w = 0; w < nw; w++)
-        changed |= strbuf_demand_value_leaves(c, nt_ref(nt, whens[w], "statements"), depth + 1);
-      return changed | strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
-    }
     case NK_InstanceVariableReadNode: {
       int cid;
       if (!strbuf_poly_ivar_read(c, node, &cid)) return 0;
-      return strbuf_demand_ivar_writes(c, cid, nt_str(nt, node, "name"), depth + 4);
+      w->changed |= strbuf_demand_ivar_writes(c, cid, nt_str(nt, node, "name"), depth + 4);
+      return 0;
     }
     case NK_GlobalVariableReadNode: {
       const char *grn;
       if (!strbuf_poly_gvar(c, node, &grn)) return 0;
-      return strbuf_demand_gvar_writes(c, grn, depth + 4);
+      w->changed |= strbuf_demand_gvar_writes(c, grn, depth + 4);
+      return 0;
     }
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, node, "body", &n);
-      return n > 0 ? strbuf_demand_value_leaves(c, b[n - 1], depth + 1) : 0;
-    }
-    case NK_ParenthesesNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "body"), depth + 1);
-    case NK_ElseNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1);
-    case NK_IfNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "subsequent"), depth + 1);
-    case NK_UnlessNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
-    case NK_OrNode: case NK_AndNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "left"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "right"), depth + 1);
     case NK_LocalVariableReadNode: {
       if (c->strbuf_box[node]) return 0;
       const char *vn = nt_str(nt, node, "name");
       Scope *vs = vn ? comp_scope_of(c, node) : NULL;
       LocalVar *vlv = vs ? scope_local(vs, vn) : NULL;
-      if (vlv && vlv->type == TY_POLY && !vlv->is_param)
-        return strbuf_demand_local_writes(c, vn, vs, depth + 4);
+      if (vlv && vlv->type == TY_POLY && !vlv->is_param) {
+        w->changed |= strbuf_demand_local_writes(c, vn, vs, depth + 4);
+        return 0;
+      }
       if (!vlv || !strbuf_slot_eligible(c, vn, vs, vlv)) return 0;
       if (strbuf_mut_kind(c, vn, vs) < 0) return 0;
       lv_set_type(vlv, TY_STRBUF); vlv->str_shared = 1;
       comp_set_strbuf_box(c, node, 1);
       sbd_gen++;
-      return 1;
+      w->changed = 1;
+      return 0;
     }
     default: {
       if (c->strbuf_box[node]) return 0;
@@ -21277,14 +21230,25 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
       if (infer_type(c, node) == TY_POLY) {
         int d = strbuf_demand_elem_arg(c, node);
         if (d >= 0) sbd_gen++;   /* it may have marked stores, changed or not */
-        return d > 0 ? d : 0;
+        w->changed |= d > 0 ? d : 0;
+        return 0;
       }
       if (infer_type(c, node) != TY_STRING) return 0;
       comp_set_strbuf_box(c, node, 1);
       sbd_gen++;
-      return 1;
+      w->changed = 1;
+      return 0;
     }
   }
+}
+/* (the walk is the arms of a conditional, each leaf demanded in turn; `depth`
+   counts the variables hopped through, not the shapes) */
+static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
+  if (node < 0 || depth > 16) return 0;
+  StrbufDemand w = { c, depth, 0 };
+  for_each_value_position(c->nt, node, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                          strbuf_demand_leaf, &w);
+  return w.changed;
 }
 
 /* String methods that only READ the receiver's bytes and keep no pointer past
@@ -21625,21 +21589,20 @@ static unsigned share_types_digest(Compiler *c) {
 static int share_lift_value(Compiler *c, int v);
 static int share_lift_jumps(Compiler *c, int n, NodeKind k);
 /* An arm of a conditional value: its last statement, through parentheses
-   and an `else`. */
-static int share_lift_arms(Compiler *c, int n) {
-  const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 16; d++) {
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
-    if (k == NK_ParenthesesNode) { n = nt_ref(nt, n, "body"); continue; }
-    if (k == NK_StatementsNode) {
-      int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
-      n = bn > 0 ? bv[bn - 1] : -1;
-      continue;
-    }
-    return share_lift_value(c, n);
-  }
+   and an `else`, which the iterator peels. No shape is looked through, so
+   the arm is the leaf, whatever it is: share_lift_value takes a conditional
+   in an arm apart, or marks it whole where it is String-typed (it needs the
+   conditional itself, which a flat walk of its arms does not give). */
+typedef struct { Compiler *c; int changed; } ShareLiftArm;
+static int share_lift_arm(const VpLeaf *lf, void *ud) {
+  ShareLiftArm *a = ud;
+  if (lf->kind == VPK_EXPR || lf->kind == VPK_JUMP) a->changed = share_lift_value(a->c, lf->node);
   return 0;
+}
+static int share_lift_arms(Compiler *c, int n) {
+  ShareLiftArm a = { c, 0 };
+  for_each_value_position(c->nt, n, VPS_NONE, share_lift_arm, &a);
+  return a.changed;
 }
 static int share_lift_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
@@ -21920,49 +21883,35 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
    v itself, a `return`'s argument, the last statement of a list, the arms of
    an `if`, `unless` or `case`, and the body, rescues and else of a `begin`.
    Answers the new count, which counts what out[] (cap long) had no room for. */
-static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap, int depth) {
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 64) return n;
-  switch (nt_kind(nt, v)) {
+typedef struct { const NodeTable *nt; int *out, n, cap; } RetLits;
+static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap);
+static int share_ret_lit_leaf(const VpLeaf *lf, void *ud) {
+  RetLits *r = ud;
+  if (lf->kind == VPK_NIL || lf->kind == VPK_GAVE_UP) return 0;
+  const NodeTable *nt = r->nt;
+  switch (nt_kind(nt, lf->node)) {
     case NK_ArrayNode: case NK_HashNode:
-      if (n < cap) out[n] = v;
-      return n + 1;
-    case NK_ReturnNode: {
-      int ra = nt_ref(nt, v, "arguments"), rn = 0;
-      const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-      return rn == 1 ? share_ret_literals(nt, rv[0], out, n, cap, depth + 1) : n;
-    }
-    case NK_StatementsNode: {
-      int bn = 0; const int *b = nt_arr(nt, v, "body", &bn);
-      return bn > 0 ? share_ret_literals(nt, b[bn - 1], out, n, cap, depth + 1) : n;
-    }
-    case NK_ElseNode:
-      return share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-    case NK_IfNode: case NK_UnlessNode: {
-      /* (the `elsif` links of a chain are followed in a loop, as the rescues
-         of a begin are, so a long chain costs no depth) */
-      for (int d = 0; v >= 0 && d < 64; d++) {
-        n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-        int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-        if (sub >= 0 && nt_kind(nt, sub) == NK_IfNode) { v = sub; continue; }
-        return share_ret_literals(nt, sub, out, n, cap, depth + 1);
-      }
-      return n;
-    }
-    case NK_BeginNode:
-      n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-      n = share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
-      for (int rc = nt_ref(nt, v, "rescue_clause"), d = 0; rc >= 0 && d < 64; rc = nt_ref(nt, rc, "subsequent"), d++)
-        n = share_ret_literals(nt, nt_ref(nt, rc, "statements"), out, n, cap, depth + 1);
-      return n;
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
-      for (int k = 0; k < wn; k++) n = share_ret_literals(nt, nt_ref(nt, w[k], "statements"), out, n, cap, depth + 1);
-      return share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
+      if (r->n < r->cap) r->out[r->n] = lf->node;
+      r->n++;
+      return 0;
+    /* a begin is a leaf of the walk: its body, its else and its rescues, in that order */
+    case NK_BeginNode: {
+      int v = lf->node;
+      r->n = share_ret_literals(nt, nt_ref(nt, v, "statements"), r->out, r->n, r->cap);
+      r->n = share_ret_literals(nt, nt_ref(nt, v, "else_clause"), r->out, r->n, r->cap);
+      for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+        r->n = share_ret_literals(nt, nt_ref(nt, rc, "statements"), r->out, r->n, r->cap);
+      return 0;
     }
     default:
-      return n;
+      return 0;
   }
+}
+static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap) {
+  RetLits r = { nt, out, n, cap };
+  for_each_value_position(nt, v, VP_FOLLOW_RETURN | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN,
+                          share_ret_lit_leaf, &r);
+  return r.n;
 }
 /* The literals of typed Strings (`const char *` elements, which cannot hold
    the shared handle) method mi answers, as its last value or through a
@@ -21971,10 +21920,10 @@ static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int c
 static int share_ret_typed_str_literals(Compiler *c, int mi, int *out, int cap) {
   TyKind t = c->scopes[mi].ret;
   if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
-  int n = share_ret_literals(c->nt, scope_body_value(c, mi), out, 0, cap, 0);
+  int n = share_ret_literals(c->nt, scope_body_value(c, mi), out, 0, cap);
   for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
     if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi])
-      n = share_ret_literals(c->nt, u, out, n, cap, 0);
+      n = share_ret_literals(c->nt, u, out, n, cap);
   return n;
 }
 static int share_ret_typed_str_literal(Compiler *c, int mi) {
@@ -22216,47 +22165,40 @@ static int strh_pure_index(const NodeTable *nt, int a) {
 /* Is the value of node n unused: a statement that is not its list's last, or
    the last of a loop's body, of a block an iterator that ignores its block's
    value (each, times, ...) runs, or of an `if` arm or a begin or rescue body
-   whose own value is unused? */
+   whose own value is unused? Climbs from the node (vp_climb, over the edges
+   strh_value_returned climbs), so its cost is the nesting depth. */
 static int strh_value_ignored(Compiler *c, const int *par, int n) {
   const NodeTable *nt = c->nt;
-  for (int depth = 0; depth < 8 && n >= 0 && n < nt->count; depth++) {
-    if (comp_value_dropped(c, n)) return 1;
-    int p = par[n];
-    if (p < 0) return 0;
-    NodeKind pk = nt_kind(nt, p);
-    if (pk == NK_StatementsNode) {
-      int g = par[p];
-      NodeKind gk = g >= 0 ? nt_kind(nt, g) : NK_NONE;
-      if (gk == NK_WhileNode || gk == NK_UntilNode || gk == NK_ForNode) return nt_ref(nt, g, "statements") == p;
-      if (gk == NK_BlockNode) {
-        int call = par[g];
-        if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != g) return 0;
-        const char *nm = nt_str(nt, call, "name");
-        int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
-        TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-        if (!nm || r < 0) return 0;
-        /* (the iterators of a builtin receiver, not a user class's own
-           `each` or one a reopening redefines; a receiver not typed yet is
-           asked again, and refused for good, once it is) */
-        int owner = builtin_iter_owner(nm);
-        if (owner == BITER_ARRAY)
-          return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
-                 !share_builtin_overridden(c, "Array", nm);
-        if (owner == BITER_INTEGER)
-          return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
-        if (owner == BITER_STRING)
-          return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
-        return 0;
-      }
-      if (g >= 0 && is_ensure_node_type(nt_type(nt, g))) return 1;
-      if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode && gk != NK_BeginNode && gk != NK_RescueNode)
-        return 0;
-      n = g;
-    }
-    else if (pk == NK_ElseNode || pk == NK_BeginNode || pk == NK_RescueNode) n = p;
-    else if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") != n) n = p;
-    else return 0;
+  if (n < 0 || n >= nt->count) return 0;
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, n, STRH_CLIMB, &up);
+  /* the old climb stopped at parentheses, whatever it had met before them */
+  for (int q = n; q >= 0 && q != up.node; q = par[q]) {
+    if (comp_value_dropped(c, q)) return 1;
+    if (nt_kind(nt, q) == NK_ParenthesesNode) return 0;
   }
+  if (ended == VPU_DROPPED) return 1;
+  if (ended != VPU_ENDED) return 0;
+  NodeKind gk = nt_kind(nt, up.parent);
+  if (vp_up_loop(nt, &up) >= 0 || (gk == NK_ForNode && nt_ref(nt, up.parent, "statements") == up.node)) return 1;
+  if (vp_up_effect_clause(nt, &up)) return 1;
+  int call = vp_up_block_call(nt, par, &up);
+  if (call < 0) return 0;
+  const char *nm = nt_str(nt, call, "name");
+  int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!nm || r < 0) return 0;
+  /* (the iterators of a builtin receiver, not a user class's own
+     `each` or one a reopening redefines; a receiver not typed yet is
+     asked again, and refused for good, once it is) */
+  int owner = builtin_iter_owner(nm);
+  if (owner == BITER_ARRAY)
+    return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
+           !share_builtin_overridden(c, "Array", nm);
+  if (owner == BITER_INTEGER)
+    return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
+  if (owner == BITER_STRING)
+    return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
   return 0;
 }
 /* Where may the String an element read, pop or shift of a handle Array
@@ -23243,7 +23185,7 @@ static int promote_local_alias_pairs(Compiler *c) {
        `s2 = (s1 << x)`, whose value IS the base object, and each arm of a
        conditional (an_strbuf_alias_leaves) */
     int lv[16];
-    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16);
     for (int l = 0; l < nl; l++)
       changed |= promote_local_alias_pair(c, comp_scope_of(c, w), nt_str(nt, lv[l], "name"), nt_str(nt, w, "name"));
   }
@@ -23253,7 +23195,7 @@ static int promote_local_alias_pairs(Compiler *c) {
          w = comp_kind_next(c, w)) {
       if (nt_kind(nt, w) != (k ? NK_LocalVariableAndWriteNode : NK_LocalVariableOrWriteNode)) continue;
       int lv[16];
-      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16);
       for (int l = 0; l < nl; l++)
         changed |= promote_local_alias_pair(c, comp_scope_of(c, w), nt_str(nt, lv[l], "name"), nt_str(nt, w, "name"));
     }
@@ -27609,18 +27551,15 @@ static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v,
    by its form (poly_lit_may_be_string): a literal of another
    class is no String whatever its type settled as (an untyped method's
    `acc = []`), and a conditional is one of its arms (`c ? [0] : 1`). The
-   lifts ask without it, and their answers and C stay as they were. An
-   arm: its last statement, through an `else`. */
-static int poly_arm_may_be_string(Compiler *c, const HandleArgTab *hat, int n, int depth, const PolyLits *lits) {
-  const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 16; d++) {
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
-    if (k != NK_StatementsNode) return poly_value_may_be_string(c, hat, n, depth, lits);
-    int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
-    n = bn > 0 ? bv[bn - 1] : -1;
-  }
-  return n >= 0;   /* an empty one answers nil */
+   lifts ask without it, and their answers and C stay as they were. The
+   arms are read through the iterator: an arm's last statement, through an
+   `else` and parentheses, and a missing arm answers nil. */
+typedef struct { Compiler *c; const HandleArgTab *hat; int depth; const PolyLits *lits; } PolyArms;
+static int poly_arm_may_be_string(const VpLeaf *lf, void *ud) {
+  const PolyArms *a = ud;
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  return poly_value_may_be_string(a->c, a->hat, lf->node, a->depth, a->lits);
 }
 /* 0 or 1 for a literal or a conditional, -1 for any other form */
 static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
@@ -27630,16 +27569,10 @@ static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, i
   case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_RangeNode: case NK_LambdaNode:
   case NK_RegularExpressionNode:
     return 0;
-  case NK_IfNode: case NK_UnlessNode: {
-    int el = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-    int st = nt_ref(nt, v, "statements");
-    /* a missing arm answers nil */
-    return (st >= 0 && poly_arm_may_be_string(c, hat, st, depth, lits)) ||
-           (el >= 0 && poly_arm_may_be_string(c, hat, el, depth, lits));
+  case NK_IfNode: case NK_UnlessNode: case NK_OrNode: case NK_AndNode: {
+    PolyArms a = { c, hat, depth, lits };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, poly_arm_may_be_string, &a);
   }
-  case NK_OrNode: case NK_AndNode:
-    return poly_value_may_be_string(c, hat, nt_ref(nt, v, "left"), depth, lits) ||
-           poly_value_may_be_string(c, hat, nt_ref(nt, v, "right"), depth, lits);
   default:
     return -1;
   }
@@ -44589,31 +44522,29 @@ typedef struct { int v[8], n; } ScanNamed;
    call's answer can otherwise be a String another name holds in CRuby (an
    exception's `to_s` is its message, `gets` sets `$_`), which no share fact
    knows. */
-static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
+static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm);
+typedef struct { Compiler *c; ScanNamed *nm; } ScanFresh;
+static int scan_fresh_leaf_bad(const VpLeaf *lf, void *ud) {
+  const ScanFresh *f = ud;
+  Compiler *c = f->c;
+  ScanNamed *nm = f->nm;
   const NodeTable *nt = c->nt;
-  r = an_unparen(nt, r);
-  if (r < 0) return 1;  /* a conditional's missing arm: nil */
+  if (lf->kind == VPK_NIL) return 0;   /* a conditional's missing arm: nil */
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  int r = lf->node;
   NodeKind k = nt_kind(nt, r);
   if (k == NK_StringNode || k == NK_InterpolatedStringNode || k == NK_IntegerNode || k == NK_FloatNode ||
       k == NK_SymbolNode || k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode)
-    return 1;
+    return 0;
   if (k == NK_LocalVariableReadNode) {
-    if (nm->n >= 8) return 0;
+    if (nm->n >= 8) return 1;
     nm->v[nm->n++] = r;
-    return 1;
+    return 0;
   }
-  if (k == NK_StatementsNode || k == NK_ElseNode) {
-    int b = k == NK_ElseNode ? nt_ref(nt, r, "statements") : r, n = 0;
-    const int *st = b >= 0 ? nt_arr(nt, b, "body", &n) : NULL;
-    return n == 0 || scan_fresh_string(c, st[n - 1], nm);
-  }
-  if (k == NK_IfNode || k == NK_UnlessNode)
-    return scan_fresh_string(c, nt_ref(nt, r, "statements"), nm) &&
-           scan_fresh_string(c, nt_ref(nt, r, k == NK_IfNode ? "subsequent" : "else_clause"), nm);
   const char *name = k == NK_CallNode ? nt_str(nt, r, "name") : NULL;
   int rv = name ? an_unparen(nt, nt_ref(nt, r, "receiver")) : -1;
-  if (!name || rv < 0 || nt_ref(nt, r, "block") >= 0) return 0;
-  if (is_unary_plus(name)) return nt_kind(nt, rv) == NK_StringNode;
+  if (!name || rv < 0 || nt_ref(nt, r, "block") >= 0) return 1;
+  if (is_unary_plus(name)) return nt_kind(nt, rv) != NK_StringNode;
   int args = nt_ref(nt, r, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (nt_kind(nt, rv) == NK_ArrayNode) {
@@ -44621,12 +44552,12 @@ static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
        `[](0)`): one of its elements, or nil */
     if (!((is_endpoint_query(name) && argc == 0) ||
           (is_aref_name(name) && argc == 1 && nt_kind(nt, argv[0]) != NK_RangeNode)))
-      return 0;
+      return 1;
     int n = 0;
     const int *el = nt_arr(nt, rv, "elements", &n);
     for (int i = 0; i < n; i++)
-      if (!scan_fresh_string(c, el[i], nm)) return 0;
-    return 1;
+      if (!scan_fresh_string(c, el[i], nm)) return 1;
+    return 0;
   }
   /* the String row, else the any-receiver one (`itself`), else String's
      default */
@@ -44634,7 +44565,12 @@ static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
   int sh = bop_share_named(TY_STRING, name);
   if (!sh) sh = bop_share_named(BOP_ANY_RECV, name);
   if (!sh) sh = bop_share(TY_STRING, name);
-  return (rt == TY_STRING || rt == TY_STRBUF) && sh == BSH_PURE && rd_builtin_string_method(c, name);
+  return !((rt == TY_STRING || rt == TY_STRBUF) && sh == BSH_PURE && rd_builtin_string_method(c, name));
+}
+/* (the arms of an `if` or `unless`, each of which must be such a value) */
+static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
+  ScanFresh f = { c, nm };
+  return !for_each_value_position(c->nt, r, VPS_IF | VPS_UNLESS, scan_fresh_leaf_bad, &f);
 }
 /* The locals a chain of writes has followed: one met again adds no String. */
 typedef struct ScanChain { const struct ScanChain *up; int root; const char *name; int depth; } ScanChain;

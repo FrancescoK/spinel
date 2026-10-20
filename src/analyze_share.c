@@ -30,6 +30,7 @@
 #include "share.h"
 #include "repr.h"
 #include "codegen_internal.h"
+#include "value_pos.h"
 
 /* element-own flags (not merged by a union). SHE_COMPARED: the value is
    compared by identity, or handed to a consumer that keeps or mutates it
@@ -3226,30 +3227,20 @@ static void sh_assign_join_later(ShareFacts *F, int v, int s) {
 int share_assign_call(const Compiler *c, int n) { return sh_assign_call(c, n); }
 /* Is node n (through parentheses, a unary plus and the branches of a
    conditional) an attribute assignment, or a chain over one? */
-static int sh_freeze_recv_assign(const Compiler *c, int n, int depth) {
+static int sh_freeze_recv_assign(const Compiler *c, int n);
+static int sh_freeze_assign_leaf(const VpLeaf *lf, void *ud) {
+  const Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
-  if (n < 0 || depth > 8) return 0;
-  switch (nt_kind(nt, n)) {
-  case NK_IfNode: case NK_UnlessNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1) ||
-           sh_freeze_recv_assign(c, nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  case NK_ElseNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1);
-  case NK_StatementsNode: {
-    int k = 0; const int *bb = nt_arr(nt, n, "body", &k);
-    return k > 0 && sh_freeze_recv_assign(c, bb[k - 1], depth + 1);
-  }
-  case NK_OrNode: case NK_AndNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "left"), depth + 1) || sh_freeze_recv_assign(c, nt_ref(nt, n, "right"), depth + 1);
-  case NK_CallNode: {
-    const char *nm = nt_str(nt, n, "name");
-    if (nm && is_unary_plus(nm) && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0)
-      return sh_freeze_recv_assign(c, nt_ref(nt, n, "receiver"), depth + 1);
-    return sh_assign_chain(c, n, 0);
-  }
-  default: return 0;
-  }
+  if (lf->kind == VPK_NIL || lf->kind == VPK_GAVE_UP || nt_kind(nt, lf->node) != NK_CallNode) return 0;
+  int n = lf->node;
+  const char *nm = nt_str(nt, n, "name");
+  if (nm && is_unary_plus(nm) && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0)
+    return sh_freeze_recv_assign(c, nt_ref(nt, n, "receiver"));
+  return sh_assign_chain(c, n, 0);
+}
+static int sh_freeze_recv_assign(const Compiler *c, int n) {
+  return for_each_value_position(c->nt, n, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC,
+                                 sh_freeze_assign_leaf, (void *)c);
 }
 
 static int sh_uplus_copies(Compiler *c, int n);
@@ -3387,7 +3378,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* a freeze changes no bytes: the value of an attribute assignment it
        freezes is one pointer all its names read, frozen in place, so no
        slot needs the new pointer back */
-    int frz = is_freeze_name(name) && argc == 0 && sh_freeze_recv_assign(c, recv, 0);
+    int frz = is_freeze_name(name) && argc == 0 && sh_freeze_recv_assign(c, recv);
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, base) || frz ? 0 : SHF_INDIRECT) | (is_freeze_name(name) ? SHF_FRZ : 0), n);
     sh_flow(F, SHFL_MUTATE, n, base, -1);
   }
@@ -4245,31 +4236,31 @@ static int sh_if_narrows_off_string(Compiler *c, int n) {
    a node typed as a container or as a type that holds no String, a branch
    narrowed off String (sh_if_narrows_off_string), or a conditional all of
    whose arms are such? */
-static int sh_value_no_string(Compiler *c, int n, int depth) {
+static int sh_leaf_has_string(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  if (n < 0) return 1;
-  if (depth > 16) return 0;
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  int n = lf->node;
+  /* (the branch of an `if x.is_a?(Hash)` that answers x alone: the parent
+     is the `if` whose then-arm it is) */
+  if (lf->parent >= 0 && nt_kind(nt, lf->parent) == NK_IfNode) {
+    int st = nt_ref(nt, lf->parent, "statements"), sn = 0;
+    const int *sb = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
+    if (sn == 1 && sb[0] == n && sh_if_narrows_off_string(c, lf->parent)) return 0;
+  }
   switch (nt_kind(nt, n)) {
   case NK_NilNode: case NK_HashNode: case NK_ArrayNode: case NK_IntegerNode: case NK_FloatNode:
   case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
-    return 1;
-  case NK_StatementsNode: {
-    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
-    return bn == 0 || sh_value_no_string(c, bb[bn - 1], depth + 1);
-  }
-  case NK_ParenthesesNode: return sh_value_no_string(c, nt_ref(nt, n, "body"), depth + 1);
-  case NK_ElseNode: return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1);
-  case NK_IfNode:
-    return (sh_if_narrows_off_string(c, n) || sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1)) &&
-           sh_value_no_string(c, nt_ref(nt, n, "subsequent"), depth + 1);
-  case NK_UnlessNode:
-    return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1) &&
-           sh_value_no_string(c, nt_ref(nt, n, "else_clause"), depth + 1);
+    return 0;
   default: {
     TyKind t = n < c->nt->count ? c->ntype[n] : TY_UNKNOWN;
-    return t != TY_UNKNOWN && t != TY_POLY && (ty_is_hash(t) || ty_is_array(t) || !sh_may_hold(c, t));
+    return !(t != TY_UNKNOWN && t != TY_POLY && (ty_is_hash(t) || ty_is_array(t) || !sh_may_hold(c, t)));
   }
   }
+}
+static int sh_value_no_string(Compiler *c, int n) {
+  return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_leaf_has_string, c);
 }
 /* Does method mi answer no String (sh_value_no_string of its body), with no
    `return` anywhere in it that could answer something else? */
@@ -4291,7 +4282,7 @@ static int sh_method_answers_no_string(Compiler *c, int mi) {
       for (int j = 0; j < k; j++) { if (sp >= 255) { ok = 0; break; } if (ids[j] >= 0) stack[sp++] = ids[j]; }
     }
   }
-  return ok && sh_value_no_string(c, m->body, 0);
+  return ok && sh_value_no_string(c, m->body);
 }
 static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (n < 0 || n >= F->nnodes) return -1;
@@ -6052,24 +6043,6 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
   return ok;
 }
 
-/* Is arm a of a conditional (its statements, an else or an elsif) a new
-   String or nil, or does it leave no value (none, or empty)? */
-static int sh_arm_fresh(Compiler *c, int a, int depth) {
-  const NodeTable *nt = c->nt;
-  if (a < 0) return 1;
-  switch (nt_kind(nt, a)) {
-  case NK_NilNode: return 1;
-  /* parentheses answer their last statement, or nil when empty
-     (an_unparen reads only one statement) */
-  case NK_ParenthesesNode: return sh_arm_fresh(c, nt_ref(nt, a, "body"), depth);
-  case NK_ElseNode: return sh_arm_fresh(c, nt_ref(nt, a, "statements"), depth);
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, a, "body", &n);
-    return n == 0 || sh_arm_fresh(c, bb[n - 1], depth);
-  }
-  default: return share_value_fresh(c, a, depth);
-  }
-}
 /* Is node n the frozen String literal itself: a literal of a file whose
    literals are frozen (`fzl`), or a `freeze`, `-@` or `dedup` of one, which
    answer their receiver? Every evaluation answers the one object the
@@ -6120,20 +6093,14 @@ int share_frozen_string(Compiler *c, int n) {
   }
   return share_frozen_literal(c, n);
 }
-int share_value_fresh(Compiler *c, int n, int depth) {
+/* Is value n, a leaf of share_value_fresh's walk, a new String or nil: a call the walk
+   found answers no String any name holds, a conversion, a yield or a super
+   that answers one, an element read of a temporary container of them? */
+static int sh_value_fresh_leaf(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
-  if (n < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_NilNode) return 1;
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
-  if (k == NK_RescueModifierNode)
-    return share_value_fresh(c, nt_ref(nt, n, "expression"), depth + 1) &&
-           share_value_fresh(c, nt_ref(nt, n, "rescue_expression"), depth + 1);
-  /* a conditional each of whose arms is one, or nil */
-  if (k == NK_IfNode || k == NK_UnlessNode)
-    return sh_arm_fresh(c, nt_ref(nt, n, "statements"), depth + 1) &&
-           sh_arm_fresh(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
   /* a call the walk found answers no String any name holds (a share row's
      new or frozen String) */
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
@@ -6199,6 +6166,29 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0 &&
       !share_builtin_overridden(c, "Array", nm)) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
+}
+typedef struct { Compiler *c; int depth; } ShFresh;
+static int sh_fresh_arm_bad(const VpLeaf *lf, void *ud) {
+  const ShFresh *f = ud;
+  /* a conditional's missing arm and an empty body answer nil */
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  /* a rescue modifier is a leaf of the walk: each operand is a value of its
+     own, asked as the whole is */
+  if (nt_kind(f->c->nt, lf->node) == NK_RescueModifierNode)
+    return !(share_value_fresh(f->c, nt_ref(f->c->nt, lf->node, "expression"), f->depth + 1) &&
+             share_value_fresh(f->c, nt_ref(f->c->nt, lf->node, "rescue_expression"), f->depth + 1));
+  return !sh_value_fresh_leaf(f->c, lf->node, f->depth);
+}
+/* Is value n a new String or nil: a conditional each of whose arms is one
+   (or nil), a rescue modifier whose expression and fallback are, or such a
+   leaf? The arms of the conditional are read through the iterator. `depth`
+   bounds the leaves' own chains of calls, not the shapes. */
+int share_value_fresh(Compiler *c, int n, int depth) {
+  n = an_unparen(c->nt, n);
+  if (n < 0 || depth > 8) return 0;
+  ShFresh f = { c, depth };
+  return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
 }
 int share_tail_fresh(Compiler *c, int n) {
   if (share_node_fresh(c, n)) return 1;

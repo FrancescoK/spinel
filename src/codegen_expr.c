@@ -4552,7 +4552,7 @@ static int logic_left_carries(Compiler *c, int left) {
   int u = unwrap_parens(c, left);
   NodeKind k = u >= 0 ? nt_kind(c->nt, u) : NK_NONE;
   if (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) return strbuf_value_carries(c, u);
-  return (k == NK_IfNode || k == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, u, 0);
+  return (k == NK_IfNode || k == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, u);
 }
 
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
