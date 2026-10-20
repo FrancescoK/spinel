@@ -11418,9 +11418,10 @@ static int desugar_method_block_arg(Compiler *c) {
    rewrite still serves every body that genuinely does not care. */
 /* The first module, in the ancestor order module m and the modules it
    includes take (m, then its includes from the last made), that has a
-   module_function named nm; -1 for none. */
+   module_function named nm; -1 for none. depth only stops an include
+   cycle: no chain of distinct modules is longer than the class count. */
 static int module_function_owner(Compiler *c, int m, const char *nm, int depth) {
-  if (m < 0 || m >= c->nclasses || depth > 16) return -1;
+  if (m < 0 || m >= c->nclasses || depth > c->nclasses) return -1;
   for (int si = 1; si < c->nscopes; si++) {
     const Scope *ms = &c->scopes[si];
     if (ms->class_id == m && ms->is_module_function && ms->name && sp_streq(ms->name, nm)) return m;
