@@ -17114,6 +17114,10 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "_brkend%d: SP_UNUSED;\n", tS);
   }
   else {
+    /* the guard drops the scope on any exit from it but a longjmp
+       (sp_brk_scope_end): a `return` in the body leaves past the pops */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "{ int SP_CLEANUP(sp_brk_scope_end) _brkg%d = sp_brk_top; (void)_brkg%d;\n", tS, tS);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_int _brkser%d = sp_brk_push(); (void)_brkser%d;\n", tS, tS);
     emit_indent(g_pre, g_indent);
@@ -17138,6 +17142,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     if (brkic) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_inflight_cause = _brkic%d; sp_rescue_sp = _brkicr%d;\n", tS, tS); }
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = sp_brk_val[sp_brk_top - 1];\n", tR);
     emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_brk_top--;\n");
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   }
   free(body.p);
