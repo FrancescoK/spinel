@@ -795,7 +795,7 @@ no_gsub_enum:
       /* the one-element list is held by `_fa` alone while an argument that
          allocates is built (`"%5s|" % ("q" + i.to_s)`); one that already
          ran into a temp was built before the list */
-      int an = arg_ran_first(argv[0], 0) ? argv[0] : unwrap_parens(c, argv[0]);
+      int an = arg_ran_first(argv[0], 0) ? argv[0] : nt_paren_single(c->nt, argv[0]);
       /* not asked of a statement left alone, and the walk of the argument
          (subtree_is_pure_read) last */
       int runs = !(!fend && str_format_left_alone(c, recv, argv[0])) &&

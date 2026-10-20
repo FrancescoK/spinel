@@ -2092,7 +2092,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   Buf sb; memset(&sb, 0, sizeof sb);
   strbuf_slot_text(c, r, &sb);
   /* (read ahead of a block's prelude where it can rebind the slot) */
-  strbuf_hold_slot(c, node, unwrap_parens(c, r), &sb);
+  strbuf_hold_slot(c, node, nt_paren_single(c->nt, r), &sb);
   int tb = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tb);
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
@@ -3087,10 +3087,10 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
        method they call included; a tap takes it as the handle, an each_char
        as its String) */
     {
-      int first = unwrap_parens(c, node), next = -1;
-      while (first >= 0 && unwrap_parens(c, nt_ref(c->nt, first, "receiver")) != base) {
+      int first = nt_paren_single(c->nt, node), next = -1;
+      while (first >= 0 && nt_paren_single(c->nt, nt_ref(c->nt, first, "receiver")) != base) {
         next = first;
-        first = unwrap_parens(c, nt_ref(c->nt, first, "receiver"));
+        first = nt_paren_single(c->nt, nt_ref(c->nt, first, "receiver"));
       }
       const char *fn = first >= 0 ? nt_str(c->nt, first, "name") : NULL;
       const char *xn = next >= 0 ? nt_str(c->nt, next, "name") : NULL;
@@ -3117,8 +3117,8 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
      the slot's is frozen once the chain has run, as a freeze straight on
      the slot does) */
   int frz = 0;
-  for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode;
-       n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+  for (int n = nt_paren_single(c->nt, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode;
+       n = nt_paren_single(c->nt, nt_ref(c->nt, n, "receiver"))) {
     const char *nm = nt_str(c->nt, n, "name");
     if (nm && is_freeze_name(nm)) frz = 1;
   }
@@ -3129,7 +3129,7 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
   /* (the chain runs over the handle held ahead of its blocks: the reads
      its links make of that handle, in the prelude and here, are no copy) */
   if (g_share_check && bound) {
-    for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+    for (int n = nt_paren_single(c->nt, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode; n = nt_paren_single(c->nt, nt_ref(c->nt, n, "receiver"))) {
       if (g_pre) share_check_declare_reads(g_pre, pre_at, n);
       share_check_declare_reads(b, b_at, n);
     }
@@ -3156,7 +3156,7 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
   if (lift && emit_boxed_self_chain(c, node, b)) return 1;
   /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,
      strbuf_held_chain) is boxed as the handle it holds */
-  if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b))
+  if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, nt_paren_single(c->nt, node), b))
     return 1;
   /* --share-strings: a boxed receiver's call whose every target answers a
      String, a handle it publishes or a new one (strbuf_poly_user_boxes):
@@ -3165,8 +3165,8 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      `equal?` operand): with the demand the dispatch typed its temp a handle,
      which the box took bare */
   if (strbuf_poly_user_boxes(c, node)) {
-    int sv = view_push(c, unwrap_parens(c, node), TY_POLY);
-    int sd = view_push_repr(c, unwrap_parens(c, node), VR_HANDLE_DEMAND, 0);
+    int sv = view_push(c, nt_paren_single(c->nt, node), TY_POLY);
+    int sd = view_push_repr(c, nt_paren_single(c->nt, node), VR_HANDLE_DEMAND, 0);
     emit_expr(c, node, b);
     view_pop(c, sd);
     view_pop(c, sv);

@@ -1001,7 +1001,7 @@ static int ffi_arg_plain_reader(Compiler *c, int node);
 static int ffi_held_obj_read(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (subtree_is_pure_read(c, node)) return 1;
-  int id = unwrap_parens(c, node);
+  int id = nt_paren_single(c->nt, node);
   if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -1027,7 +1027,7 @@ static int ffi_held_obj_read(Compiler *c, int node) {
    method_missing answers it. */
 static int ffi_arg_plain_reader(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int id = unwrap_parens(c, node);
+  int id = nt_paren_single(c->nt, node);
   if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -1067,7 +1067,7 @@ static int ffi_arg_allocates(Compiler *c, int node) {
   if (arg_ran_first(node, 0) || !operand_may_allocate(c, node) || operand_is_held_read(c, node) ||
       ffi_arg_plain_reader(c, node))
     return 0;
-  int n = unwrap_parens(c, node);
+  int n = nt_paren_single(c->nt, node);
   return !(repr_of(c, n).read_raw && decide_node(c->nt, n, "strbuf-raw", NULL));
 }
 

@@ -1129,10 +1129,10 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
   }
   /* (or a bang over one, `id(t).upcase!.freeze`: its handle, or nil) */
   else if (strbuf_value_carries(c, recv) ||
-           (nt_kind(c->nt, unwrap_parens(c, recv)) == NK_CallNode &&
-            bop_share_self_answer(nt_str(c->nt, unwrap_parens(c, recv), "name"),
-                                  nt_ref(c->nt, unwrap_parens(c, recv), "block") >= 0) &&
-            strbuf_bang_self_local(c, unwrap_parens(c, recv)))) {
+           (nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_CallNode &&
+            bop_share_self_answer(nt_str(c->nt, nt_paren_single(c->nt, recv), "name"),
+                                  nt_ref(c->nt, nt_paren_single(c->nt, recv), "block") >= 0) &&
+            strbuf_bang_self_local(c, nt_paren_single(c->nt, recv)))) {
     th = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", th);
     emit_strbuf_handle_of(c, recv, b);
@@ -1327,7 +1327,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        then frozen for every name of the String. A reader call's read is the
        handle itself, which the chain takes from the temp; a variable's slot
        is read again. */
-    int fzu = unwrap_parens(c, recv);
+    int fzu = nt_paren_single(c->nt, recv);
     int fzb = !assignable_f && fzu >= 0 && nt_kind(nt, fzu) == NK_CallNode ? str_alias_chain_base(c, fzu) : fzu;
     if (fzb != fzu && g_n_argov < MAX_ARG_OVERRIDE && strbuf_slot_text(c, fzb, &fzref)) {
       int th = ++g_tmp;
@@ -1337,7 +1337,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          (`s.to_s.freeze`, `s.itself`), have nothing to run: no chain is
          emitted for them */
       int fzrun = 0;
-      for (int k = fzu; k != fzb && k >= 0 && !fzrun; k = unwrap_parens(c, nt_ref(nt, k, "receiver"))) {
+      for (int k = fzu; k != fzb && k >= 0 && !fzrun; k = nt_paren_single(c->nt, nt_ref(nt, k, "receiver"))) {
         if (nt_kind(nt, k) != NK_CallNode || call_plain_argc(c, k) != 0 || !str_self_call(nt, k) ||
             bop_name_mutates(nt_str(nt, k, "name"), BOP_MUT_LOCAL))
           fzrun = 1;
@@ -1838,7 +1838,7 @@ static int emit_safe_nav_route_hold(Compiler *c, int id, int recv, const char *n
   int th = ++g_tmp, tv = ++g_tmp;
   Buf vb; memset(&vb, 0, sizeof vb);
   buf_printf(b, "({ sp_String *_t%d = ", th);
-  emit_strbuf_handle_of(c, unwrap_parens(c, recv), b);
+  emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), b);
   buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = _t%d ? sp_String_cstr(_t%d) : NULL; (void)_t%d; ",
              th, tv, th, th, tv);
   int mark = g_n_argov;
@@ -2304,7 +2304,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           tsh = ++g_tmp;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_String *_t%d = ", tsh);
-          emit_strbuf_handle_of(c, unwrap_parens(c, recv), g_pre);
+          emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), g_pre);
           buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tsh);
           buf_printf(&rsn, "_t%d ? sp_String_cstr(_t%d) : (const char *)NULL", tsh, tsh);
         }

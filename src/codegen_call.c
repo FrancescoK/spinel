@@ -3279,7 +3279,7 @@ static int lazy_alias_src_hoist_1(Compiler *c, int write) {
   for (int cur = nt_ref(nt, write, "value"), hops = 0; cur >= 0 && hops < 32; hops++) {
     if (nt_kind(nt, cur) != NK_CallNode) return -1;
     const char *nm = nt_str(nt, cur, "name");
-    int r = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+    int r = nt_paren_single(c->nt, nt_ref(nt, cur, "receiver"));
     if (is_lazy_name(nm) && nt_ref(nt, cur, "block") < 0 && !chain_is_lazy_valued(c, r)) { src = r; break; }
     cur = r;
   }
@@ -3293,7 +3293,7 @@ static int lazy_alias_src_hoist_1(Compiler *c, int write) {
       break;
     }
     if (!lazy_src_view(c, src)) break;
-    src = unwrap_parens(c, nt_ref(nt, src, "receiver"));
+    src = nt_paren_single(c->nt, nt_ref(nt, src, "receiver"));
   }
   if (lazy_src_constant(nt, src) || lazy_src_stable_local(c, src, write)) return -1;
   TyKind st = repr_of(c, src).as_ty;
@@ -3333,7 +3333,7 @@ static int lazy_src_hoist_write(Compiler *c, int src) {
   if (n < 0) return -1;
   for (int w = comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)) {
     int h = lazy_alias_src_hoist(c, w);
-    for (int v = src, d = 0; h >= 0 && v >= 0 && d < 9; v = unwrap_parens(c, nt_ref(c->nt, v, "receiver")), d++) {
+    for (int v = src, d = 0; h >= 0 && v >= 0 && d < 9; v = nt_paren_single(c->nt, nt_ref(c->nt, v, "receiver")), d++) {
       if (v == h) return w;
       if (nt_kind(c->nt, v) != NK_CallNode) break;
     }
@@ -3359,7 +3359,7 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
   while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
-    if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver")); break; }
+    if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_paren_single(c->nt, nt_ref(nt, cur, "receiver")); break; }
     int blk = nt_ref(nt, cur, "block");
     if (nops >= 32) return 0;
     if ((is_take_drop(nm)) && blk < 0) {
@@ -3582,7 +3582,7 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
     if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
-      int lrcv = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+      int lrcv = nt_paren_single(c->nt, nt_ref(nt, cur, "receiver"));
       /* re-lazy on an already-lazy chain (`...lazy.each_cons(2).lazy.select`)
          is transparent: keep walking the underlying chain (#3318) */
       if (chain_is_lazy_valued(c, lrcv)) { cur = lrcv; continue; }
@@ -3648,7 +3648,7 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
      than answering the leading windows (#3840). A bounded range keeps the
      eager path, which the redispatch already serves. */
   if (lazy_src < 0 && nops > 0 && cur >= 0) {
-    int rr = unwrap_parens(c, cur);
+    int rr = nt_paren_single(c->nt, cur);
     if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
         nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
       lazy_src = rr;
@@ -4655,9 +4655,9 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
     buf_printf(b, "; sp_Exception *_%ce%d = (sp_Exception *)(", pfx, t); emit_expr(c, argv[0], b);
     /* an Exception slot that holds nil (a NULL pointer) is no exception, and
        the caller gets CRuby's TypeError; a constructor call holds none */
-    int ctor = nt_kind(nt, unwrap_parens(c, argv[0])) == NK_CallNode &&
-               nt_str(nt, unwrap_parens(c, argv[0]), "name") && sp_streq(nt_str(nt, unwrap_parens(c, argv[0]), "name"), "new") &&
-               nt_ref(nt, unwrap_parens(c, argv[0]), "receiver") >= 0;
+    int ctor = nt_kind(nt, nt_paren_single(c->nt, argv[0])) == NK_CallNode &&
+               nt_str(nt, nt_paren_single(c->nt, argv[0]), "name") && sp_streq(nt_str(nt, nt_paren_single(c->nt, argv[0]), "name"), "new") &&
+               nt_ref(nt, nt_paren_single(c->nt, argv[0]), "receiver") >= 0;
     if (ctor) buf_puts(b, "); ");
     else buf_printf(b, "); if (!_%ce%d) sp_raise_cls(\"TypeError\", \"exception class/object expected\"); ", pfx, t);
     buf_printf(b, "%s(_%cr%d, sp_exc_class_name(_%ce%d), sp_exc_message(_%ce%d), _%ce%d); })",
@@ -21770,7 +21770,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           /* through parentheses: `({a: 1}).nope` names the same literal, and
              reading the ParenthesesNode's kind left the receiver unstaged so
              NoMethodError#receiver answered nil (#3891) */
-          int _rvnode = recv >= 0 ? unwrap_parens(c, recv) : -1;
+          int _rvnode = recv >= 0 ? nt_paren_single(c->nt, recv) : -1;
           const char *_rvty = _rvnode >= 0 ? nt_type(nt, _rvnode) : NULL;
           int recv_stageable = _rvty && (sp_streq(_rvty, "LocalVariableReadNode") ||
               sp_streq(_rvty, "SelfNode") || sp_streq(_rvty, "InstanceVariableReadNode") ||
@@ -22994,7 +22994,7 @@ static int operand_binds_self_handle(Compiler *c, int v) {
   if (!repr_share_rule(c) || nt_kind(c->nt, v) != NK_CallNode || comp_ntype(c, v) != TY_STRING ||
       arg_ran_first(v, 0))
     return 0;
-  int r = unwrap_parens(c, nt_ref(c->nt, v, "receiver"));
+  int r = nt_paren_single(c->nt, nt_ref(c->nt, v, "receiver"));
   return r >= 0 && nt_kind(c->nt, r) == NK_CallNode && strbuf_bang_emits(c, v);
 }
 
@@ -23976,7 +23976,7 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
 int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
   TyKind rt = repr_of(c, recv).as_ty;
   const char *nm = nt_str(c->nt, id, "name");
-  if (nt_kind(c->nt, unwrap_parens(c, recv)) != NK_InstanceVariableReadNode || !ty_is_array(rt) ||
+  if (nt_kind(c->nt, nt_paren_single(c->nt, recv)) != NK_InstanceVariableReadNode || !ty_is_array(rt) ||
       !nm || is_nil_method(nm)) {
     buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
     return 0;
@@ -26666,7 +26666,7 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
   refuse_string_copies(c, id);
   int grecv = -1;
   int guard = nil_recv_guard(c, id, &grecv);
-  if (guard && nt_kind(c->nt, unwrap_parens(c, grecv)) == NK_CallNode) {
+  if (guard && nt_kind(c->nt, nt_paren_single(c->nt, grecv)) == NK_CallNode) {
     /* a call's result is read once, into a rooted temp the call reads */
     int tg = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -30488,7 +30488,7 @@ static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, cons
   const int *argv = an >= 0 ? nt_arr(c->nt, an, "arguments", &argc) : NULL;
   Scope *m = &c->scopes[mi];
   int reread = rt == TY_STRING && ((subtree_is_pure_read(c, recv) && sn_arg_runs_nothing(c, recv)) ||
-                                   nt_kind(c->nt, unwrap_parens(c, recv)) == NK_GlobalVariableReadNode);
+                                   nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_GlobalVariableReadNode);
   if (rt == TY_STRING && !reread) {
     if (repr_self_handle(c, mi)) return 0;
     int given = argc - (nt_argv_kwh(c->nt, argv, argc) >= 0);
@@ -30933,7 +30933,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
        (int-block) bsearch still reaches the reject like other iterations. */
     int bsearch_float_ok = 0;
     if (rcv >= 0 && cn && sp_streq(cn, "step") == 0 && sp_streq(cn, "bsearch")) {
-      int brn = unwrap_parens(c, rcv);
+      int brn = nt_paren_single(c->nt, rcv);
       if (brn >= 0 && nt_type(nt, brn) && !sp_streq(nt_type(nt, brn), "RangeNode"))
         brn = local_sole_range_node(c, brn);
       int bl = brn >= 0 ? nt_ref(nt, brn, "left") : -1;

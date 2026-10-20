@@ -52,7 +52,7 @@ static void emit_pack_kw_writeback(Compiler *c, int kwh, int tr, Buf *b) {
     }
     HolderRef h; Buf ref; char val[32];
     memset(&ref, 0, sizeof ref);
-    int vslot = unwrap_parens(c, v), rebound = 0;
+    int vslot = nt_paren_single(c->nt, v), rebound = 0;
     for (int j = e + 1; j < en; j++)
       rebound |= read_rebound_by(c, v, nt_ref(nt, el[j], "value"));
     if (!rebound && holder_of_node(c, vslot, &h) && holder_slot_buf(c, &h, &ref) &&
@@ -104,7 +104,7 @@ int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
   }
   Buf ref; memset(&ref, 0, sizeof ref);
   HolderRef h;
-  int source = unwrap_parens(c, ob), slot = kh < 0 && holder_of_node(c, source, &h);
+  int source = nt_paren_single(c->nt, ob), slot = kh < 0 && holder_of_node(c, source, &h);
   int handle = kh < 0 && strbuf_slot_text(c, slot ? source : ob, &ref);
   slot = !handle && slot && holder_slot_buf(c, &h, &ref);
   if (handle)
@@ -2414,7 +2414,7 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
    --int-overflow=promote) is no empty literal. */
 static int untyped_empty_array(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  recv = unwrap_parens(c, recv);
+  recv = nt_paren_single(c->nt, recv);
   if (recv < 0) return 0;
   if (nt_kind(nt, recv) == NK_ArrayNode) {
     int en = 0;
