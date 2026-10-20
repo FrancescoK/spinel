@@ -3930,7 +3930,8 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         TyKind et = ty_array_elem(rt);
         const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
         if (!k) { *out = 0; return 1; }
-        int trecv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp;
+        int trecv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp, tsat = ++g_tmp;
+        int mixed = 0;   /* a boxed answer: CRuby's answer is the element at low when one was true */
         Buf rbs = expr_buf(c, recv);
         emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
         buf_printf(g_pre, " _t%d = %s; ", trecv, rbs.p ? rbs.p : "NULL"); free(rbs.p);
@@ -3939,7 +3940,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
            on every turn, and the block allocates between turns */
         emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1;\n", tlo, thi, k, trecv);
+        buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d);\n", tlo, thi, k, trecv);
         emit_indent(g_pre, g_indent);
         /* the answer is an element read with its nil for a number array */
         const char *egn = oint_kind(et) ? "oget" : "get";
@@ -3952,9 +3953,9 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
            an Integer or Float answer roots to nothing, which is why
            bsearch_index needs none. */
         if (needs_root(et)) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, et, tres, g_pre); }
-        buf_puts(g_pre, "\n");
+        buf_printf(g_pre, " int _t%d = 0; (void)_t%d;\n", tsat, tsat);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
+        buf_printf(g_pre, "while (_t%d < _t%d) {\n", tlo, thi);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
         if (bp) emit_bsearch_param(c, block, bp, k, rt, trecv, tmid);
@@ -3967,11 +3968,20 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         /* An Integer-valued block selects find-ANY mode (CRuby dispatches on
            the block value's kind): 0 means found, negative searches left,
            positive right. A boolean block is find-minimum, as before. */
+        /* a Rational or a Bignum answer is a number, by its sign: boxed, it
+           takes the boxed answer's check below */
+        int boxed_num = bvt == TY_RATIONAL || bvt == TY_BIGINT;
+        if (boxed_num) {
+          Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bvt, cb.p ? cb.p : "sp_box_nil()", &bx);
+          free(cb.p); cb = bx;
+        }
         if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_BOOL && bvt != TY_NIL &&
-            bvt != TY_POLY && bvt != TY_UNKNOWN) {
+            bvt != TY_POLY && bvt != TY_UNKNOWN && !boxed_num) {
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "(void)(%s); sp_raise_cls(\"TypeError\", \"wrong argument type for Array#bsearch block\");\n",
-                     cb.p ? cb.p : "sp_box_nil()");
+          Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bvt, cb.p ? cb.p : "sp_box_nil()", &bx);
+          buf_printf(g_pre, "sp_raise_cls(\"TypeError\", sp_sprintf(SPL(\"wrong argument type %%s (must be numeric, true, false or nil)\"), "
+                            "sp_poly_class_name(%s)));\n", bx.p ? bx.p : "sp_box_nil()");
+          free(bx.p);
         }
         else if (bvt == TY_INT && bv_o) {
           int tcmp = ++g_tmp;
@@ -3983,7 +3993,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           buf_printf(g_pre, "else if (_t%d.v == 0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n",
                      tcmp, tres, k, egn, trecv, tmid);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d.v < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+          buf_printf(g_pre, "else if (_t%d.v < 0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
         }
         else if (bvt == TY_INT) {
@@ -3994,63 +4004,54 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           buf_printf(g_pre, "if (_t%d == 0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n",
                      tcmp, tres, k, egn, trecv, tmid);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+          buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
         }
         else if (bvt == TY_FLOAT) {
           int tcmp = ++g_tmp;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_float _t%d = %s;\n", tcmp, cb.p ? cb.p : "0.0");
+          /* NaN <=> 0 is nil, which CRuby's rb_cmpint refuses */
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (isnan(_t%d)) sp_raise_cls(\"ArgumentError\", SPL(\"comparison of Float with 0 failed\"));\n", tcmp);
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n", tcmp, tres, k, egn, trecv, tmid);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d < 0.0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+          buf_printf(g_pre, "else if (_t%d < 0.0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
         }
         else if (bvt == TY_NIL) {
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "_t%d = _t%d + 1;\n", tlo, tmid);
         }
-        else if (bvt == TY_POLY) {
-          /* mixed block: Integer is find-any (0 found, positive right,
-             negative left), other truthy is find-min, nil/false right */
-          int tv = ++g_tmp;
+        else if (bvt == TY_POLY || boxed_num) {
+          /* a boxed answer takes CRuby's BSEARCH_CHECK (sp_bsearch_answer):
+             a zero is the answer, true is kept and searches left, a number
+             by its sign, nil or false right, anything else a TypeError */
+          int tv = ++g_tmp, tsm = ++g_tmp, tsa = ++g_tmp;
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tv, cb.p ? cb.p : "sp_box_nil()");
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; int _t%d, _t%d;\n", tv, cb.p ? cb.p : "sp_box_nil()", tsm, tsa);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT) {\n", tv);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "if (_t%d.v.i == 0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n",
-                     tv, tres, k, egn, trecv, tmid);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "else if (_t%d.v.i > 0) { _t%d = _t%d + 1; }\n", tv, tlo, tmid);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
-          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+          buf_printf(g_pre, "if (sp_bsearch_answer(_t%d, &_t%d, &_t%d)) { _t%d = sp_%sArray_%s(_t%d, _t%d); _t%d = 0; break; }\n",
+                     tv, tsm, tsa, tres, k, egn, trecv, tmid, tsat);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_FLT) {\n", tv);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "if (_t%d.v.f == 0.0) { _t%d = sp_%sArray_%s(_t%d, _t%d); break; }\n", tv, tres, k, egn, trecv, tmid);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "else if (_t%d.v.f < 0.0) { _t%d = _t%d - 1; }\n", tv, thi, tmid);
-          emit_indent(g_pre, g_indent + 2); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
-          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+          buf_printf(g_pre, "if (_t%d) _t%d = 1;\n", tsa, tsat);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_BOOL || _t%d.tag == SP_TAG_NIL) {\n", tv, tv);
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) { _t%d = sp_%sArray_%s(_t%d, _t%d); _t%d = _t%d - 1; } else { _t%d = _t%d + 1; }\n", tv, tres, k, egn, trecv, tmid, thi, tmid, tlo, tmid);
-          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else { sp_raise_cls(\"TypeError\", \"wrong argument type for Array#bsearch block\"); }\n");
+          buf_printf(g_pre, "if (_t%d) _t%d = _t%d; else _t%d = _t%d + 1;\n", tsm, thi, tmid, tlo, tmid);
+          mixed = 1;
         }
         else {
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_%s(_t%d, _t%d); _t%d = _t%d - 1; }\n",
+          buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_%s(_t%d, _t%d); _t%d = _t%d; }\n",
                      cb.p ? cb.p : "0", tres, k, egn, trecv, tmid, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
         }
         free(cb.p);
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        if (mixed) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (_t%d) _t%d = sp_%sArray_%s(_t%d, _t%d);\n", tsat, tres, k, egn, trecv, tlo);
+        }
         if (oint_kind(et)) oint_open(c, id, et, b);
         buf_printf(b, "_t%d", tres);
         if (oint_kind(et)) oint_close(c, id, b);
@@ -4078,9 +4079,12 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
            is an index rather than an element, so it needs no root of its own. */
         emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1; sp_oint _t%d = sp_oint_nil();\n", tlo, thi, bk, trecv, tres);
+        buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d); sp_oint _t%d = sp_oint_nil();\n", tlo, thi, bk, trecv, tres);
+        int tsat_ix = ++g_tmp;   /* set once an answer was true */
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
+        buf_printf(g_pre, "sp_oint _t%d = sp_oint_nil(); (void)_t%d;\n", tsat_ix, tsat_ix);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "while (_t%d < _t%d) {\n", tlo, thi);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
         if (bp) emit_bsearch_param(c, block, bp, bk, rt, trecv, tmid);
@@ -4100,18 +4104,29 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (_t%d == 0) { _t%d = sp_oint_of(_t%d); break; }\n", tcmp, tres, tmid);
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+          buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           free(ib.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
           oint_open(c, id, TY_INT, b); buf_printf(b, "_t%d", tres); oint_close(c, id, b); { *out = 1; return 1; }
         }
-        emit_iter_step_cond(c, &st, 0, &cb); g_indent = sv;
+        /* any other answer takes CRuby's BSEARCH_CHECK (sp_bsearch_answer),
+           boxed: the index is low's once one was true */
+        emit_iter_step_tail(c, &st, &cb); g_indent = sv;
+        int tv = ++g_tmp, tsm = ++g_tmp, tsa = ++g_tmp, tsat = tsat_ix;
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (%s) { _t%d = sp_oint_of(_t%d); _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s; int _t%d, _t%d;\n", tv, cb.p ? cb.p : "sp_box_nil()", tsm, tsa);
         free(cb.p);
-        emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (sp_bsearch_answer(_t%d, &_t%d, &_t%d)) { _t%d = sp_oint_of(_t%d); break; }\n",
+                   tv, tsm, tsa, tres, tmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (_t%d) _t%d = sp_oint_of(-1);\n", tsa, tsat);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (_t%d) _t%d = _t%d; else _t%d = _t%d + 1;\n", tsm, thi, tmid, tlo, tmid);
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d.nil && !_t%d.nil) _t%d = sp_oint_of(_t%d);\n", tres, tsat, tres, tlo);
         oint_open(c, id, TY_INT, b); buf_printf(b, "_t%d", tres); oint_close(c, id, b); { *out = 1; return 1; }
       }
     }

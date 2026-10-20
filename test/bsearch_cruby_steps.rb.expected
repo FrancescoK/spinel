@@ -1,0 +1,33 @@
+[9, [7, 11, 9]]
+[nil, [7, 11]]
+[2, [3, 2]]
+[5, [4, 6, 5]]
+[1.5, [1.5]]
+["e", ["e", "c"]]
+[3, [3, 5, 4]]
+[1, [3, 2]]
+[4, [4, 6, 5]]
+[9, [7, 11, 9]]
+[9, [7, 11, 9]]
+[4, [5, 2, 3, 4]]
+[42, [50, 24, 37, 43, 40, 41, 42]]
+[0.5, 62, ["1ff8000000000000", "2ff4000000000000", "37f2000000000000", "3bf1000000000000"]]
+[nil, 62, ["1ff7ffffffffffff", "2ff3ffffffffffff", "37f1ffffffffffff", "3bf0ffffffffffff"]]
+[2.0, 52, ["3ffa000000000000", "3fff000000000000", "4001800000000000", "4000400000000000"]]
+[3.0, 59, ["2012000000000000", "301b000000000000", "381f800000000000", "3c21c00000000000"]]
+[100.0, 62, ["5ff0000000000000", "4fefffffffffffff", "47efffffffffffff", "43efffffffffffff"]]
+[-1.0, 63, ["bff8000000000000", "9ffbffffffffffff", "affa000000000000", "b7f9000000000000"]]
+[1.4142135623730951, 54, ["3ff0000000000000", "4000000000000000", "3ff8000000000000", "3ff4000000000000"]]
+wrong argument type String (must be numeric, true, false or nil)
+wrong argument type Symbol (must be numeric, true, false or nil)
+wrong argument type Symbol (must be numeric, true, false or nil)
+wrong argument type String (must be numeric, true, false or nil)
+wrong argument type Symbol (must be numeric, true, false or nil)
+[:ary, "comparison of Float with 0 failed"]
+[:idx, "comparison of Float with 0 failed"]
+[:range, "comparison of Float with 0 failed"]
+[:frange, "comparison of Float with 0 failed"]
+3
+2
+7
+6
