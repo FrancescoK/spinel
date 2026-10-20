@@ -310,6 +310,29 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
   return vp_walk(nt, root, flags, fn, ud, NULL);
 }
 
+/* vp_one's callback: the first leaf is the answer, and a second leaf, a jump
+   or a gave-up leaf ends the walk with no single answer. */
+typedef struct { int seen, many, nil, node; } Vp1State;
+static int vp1_leaf(const VpLeaf *leaf, void *ud) {
+  Vp1State *o = (Vp1State *)ud;
+  if (o->seen || leaf->kind == VPK_JUMP || leaf->kind == VPK_GAVE_UP) { o->many = 1; return 1; }
+  o->seen = 1;
+  o->nil = leaf->kind == VPK_NIL;
+  o->node = leaf->node;
+  return 0;
+}
+
+Vp1Kind vp_one(const NodeTable *nt, int root, unsigned flags, int *node) {
+  Vp1State o = { 0, 0, 0, -1 };
+  *node = -1;
+  if (root < 0) return VP1_MANY;
+  for_each_value_position(nt, root, flags, vp1_leaf, &o);
+  if (o.many || !o.seen) return VP1_MANY;
+  if (o.nil) return VP1_NIL;
+  *node = o.node;
+  return VP1_NODE;
+}
+
 /* ---- the upward half ---- */
 
 /* How a child hangs from its parent: not a value position of it, a wrapper's
@@ -650,6 +673,46 @@ static int vp_check_budget(void) {
   return ok;
 }
 
+/* vp_one over parentheses built by hand: `()` is nil, `(a; b)` and `((b))`
+   are b, an `if` is one node when only the wrappers are looked through (and
+   two leaves when its shape is walked), a cycle and no expression are no
+   single answer. */
+static int vp_check_one(void) {
+  NodeTable *nt = nt_new_table();
+  int a = nt_new_node(nt, "IntegerNode"), b = nt_new_node(nt, "IntegerNode");
+  int ps = nt_new_node(nt, "ParenthesesNode"), ss = nt_new_node(nt, "StatementsNode");
+  int two[2] = { a, b };
+  nt_node_set_ref(nt, ps, "body", ss);
+  nt_node_set_arr(nt, ss, "body", two, 2);
+  int empty = nt_new_node(nt, "ParenthesesNode");
+  int inner = nt_new_node(nt, "ParenthesesNode"), is = nt_new_node(nt, "StatementsNode");
+  int one[1] = { b };
+  nt_node_set_ref(nt, inner, "body", is);
+  nt_node_set_arr(nt, is, "body", one, 1);
+  int outer = nt_new_node(nt, "ParenthesesNode"), os = nt_new_node(nt, "StatementsNode");
+  int wrapped[1] = { inner };
+  nt_node_set_ref(nt, outer, "body", os);
+  nt_node_set_arr(nt, os, "body", wrapped, 1);
+  int iff = nt_new_node(nt, "IfNode");
+  nt_node_set_ref(nt, iff, "statements", a);
+  nt_node_set_ref(nt, iff, "subsequent", b);
+  int n = -2, ok = 1;
+  ok &= vp_one(nt, ps, VPS_NONE, &n) == VP1_NODE && n == b;
+  ok &= vp_one(nt, empty, VPS_NONE, &n) == VP1_NIL && n == -1;
+  ok &= vp_one(nt, outer, VPS_NONE, &n) == VP1_NODE && n == b;
+  ok &= vp_one(nt, a, VPS_NONE, &n) == VP1_NODE && n == a;
+  ok &= vp_one(nt, iff, VPS_NONE, &n) == VP1_NODE && n == iff;
+  ok &= vp_one(nt, iff, VPS_ALL, &n) == VP1_MANY && n == -1;
+  ok &= vp_one(nt, -1, VPS_NONE, &n) == VP1_MANY && n == -1;
+  int cp = nt_new_node(nt, "ParenthesesNode"), cs = nt_new_node(nt, "StatementsNode");
+  int cyc[1] = { cp };
+  nt_node_set_ref(nt, cp, "body", cs);
+  nt_node_set_arr(nt, cs, "body", cyc, 1);
+  ok &= vp_one(nt, cp, VPS_NONE, &n) == VP1_MANY && n == -1;
+  nt_free(nt);
+  return ok;
+}
+
 /* A case with 100 when clauses and no else (the stack outgrows its 32 entries
    on the C stack) and an if/elsif chain of 5000 arms (no recursion to cut):
    every arm is seen once, in source order, with its place in the chain. */
@@ -754,6 +817,7 @@ int value_pos_check(void) {
   if (!vp_check_climb_budget()) { fprintf(stderr, "value-pos-check: a cycle did not end a climb in one gave-up answer\n"); ok = 0; }
   if (!vp_check_logic()) { fprintf(stderr, "value-pos-check: the logical operators did not yield their node and their truth values\n"); ok = 0; }
   if (!vp_check_long()) { fprintf(stderr, "value-pos-check: a wide case or a long elsif chain was not walked in order, or not climbed back\n"); ok = 0; }
+  if (!vp_check_one()) { fprintf(stderr, "value-pos-check: vp_one did not name the one node of a sequence, nil for () and no answer for several\n"); ok = 0; }
   if (ok) printf("value-pos-check: ok\n");
   return ok ? 0 : 1;
 }
