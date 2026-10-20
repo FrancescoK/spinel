@@ -3746,6 +3746,16 @@ static SP_INLINE sp_int sp_poly_arg_int_chk_w(sp_RbVal v, int wording) {
   if (v.tag == SP_TAG_NIL) sp_raise_nil_to_int(wording);
   return sp_poly_arg_int_chk(v);
 }
+/* The digit count of Rational#round / #floor / #ceil / #truncate: CRuby takes
+   an Integer only and raises TypeError "not an integer" for anything else (nil,
+   true, a Float, a Rational, a String, an object answering to_int), where the
+   Integer conversion read some of them as a count. A Bignum is the RangeError
+   the conversion raises. */
+static inline sp_int sp_rational_digits(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag != SP_TAG_BIGINT) sp_raise_cls("TypeError", "not an integer");
+  return sp_poly_arg_int_chk(v);
+}
 /* Integer#div / #modulo with a divisor known only at run time, in a call
    typed Integer. A Float divisor floors the real quotient for div; for
    modulo its answer is a Float, which the Integer slot cannot hold, so that
