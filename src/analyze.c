@@ -43872,7 +43872,10 @@ static int iter_disc_yields(Compiler *c, int n, int drop, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 1;
   NodeKind k = nt_kind(nt, n);
-  if (k == NK_DefNode || k == NK_LambdaNode) return 1;
+  if (k == NK_DefNode) return 1;
+  /* a lambda's yield is the method's block's, and the lambda may answer
+     what it got: its body's value is taken as kept */
+  if (k == NK_LambdaNode) return iter_disc_yields(c, nt_ref(nt, n, "body"), 0, depth);
   if (k == NK_YieldNode) return drop && iter_disc_yields(c, nt_ref(nt, n, "arguments"), 0, depth);
   if (k == NK_StatementsNode) {
     int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
@@ -43937,6 +43940,14 @@ static int iter_disc_call(Compiler *c, int call, int depth) {
   int k = 0;
   while (nm && names[k] && !sp_streq(names[k], nm)) k++;
   if (!nm || !names[k] || depth > 16) return 0;
+  /* the receiver has to be no Enumerator, whose each answers what its
+     method does with the block's values (`a.map.each { }`): one of a kind
+     the analysis knows, or self. A boxed receiver may be one. */
+  int r = nt_ref(nt, call, "receiver");
+  if (r >= 0) {
+    TyKind rt = infer_type(c, r);
+    if (rt == TY_ENUMERATOR || rt == TY_POLY || rt == TY_UNKNOWN) return 0;
+  }
   static int busy[64], nbusy;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
@@ -43947,11 +43958,15 @@ static int iter_disc_call(Compiler *c, int call, int depth) {
     if (nbusy >= 64 || nt_kind(nt, m->def_node) != NK_DefNode) return 0;
     busy[nbusy++] = mi;
     int ok = 1;
-    if (m->blk_param) {
-      int prm = nt_ref(nt, m->def_node, "parameters");
+    /* a `...` forwarder hands its block on unseen (to a super that may
+       yield it): kept */
+    int prm = nt_ref(nt, m->def_node, "parameters");
+    int kwr = prm >= 0 ? nt_ref(nt, prm, "keyword_rest") : -1;
+    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "ForwardingParameterNode")) ok = 0;
+    if (ok && m->blk_param) {
       int bpn = prm >= 0 ? nt_ref(nt, prm, "block") : -1;
       const char *bp = bpn >= 0 ? nt_str(nt, bpn, "name") : NULL;
-      ok = !bp || iter_disc_blk_fwd(c, nt_ref(nt, m->def_node, "body"), bp, depth);
+      ok = bp && iter_disc_blk_fwd(c, nt_ref(nt, m->def_node, "body"), bp, depth);
     }
     ok = ok && iter_disc_yields(c, nt_ref(nt, m->def_node, "body"), 0, depth);
     nbusy--;
