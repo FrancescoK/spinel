@@ -1,0 +1,7 @@
+["send", :call, ["node", :leaf]]
+["outer", :call, ["inner", :leaf]]
+["node", :leaf]
+["node", :call, ["node", :leaf]]
+"relabeled"
+"<doc>"
+"<page>"

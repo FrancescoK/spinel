@@ -45420,6 +45420,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_alias_method_values(c);       /* r = alias_method :a, :b -> alias_method :a, :b; r = :a */
   desugar_inherited_aliases(c);         /* alias_method :next, :inherited_m -> a forwarding def */
   desugar_reader_aliases_before_redef(c); /* attr_reader :v; alias w v; def v -> def w = @v */
+  desugar_readers_over_inherited_defs(c); /* def r in Base; attr_reader :r in Sub < Base -> Sub: def r = @r */
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */

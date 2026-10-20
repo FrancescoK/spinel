@@ -15244,6 +15244,127 @@ int desugar_reader_aliases_before_redef(Compiler *c) {
   return changed;
 }
 
+/* ---- a reader over a method an ancestor defines ----
+ *
+ * `class Node; def receiver = nil; end; class Send < Node; attr_reader
+ * :receiver; end`: Send's reader answers for a Send, through a call in
+ * Node's own methods too, which dispatches on the runtime class over the
+ * classes that define the method. A reader is no method there, so the call
+ * reached Node's and answered nil. Such a reader becomes the def it stands
+ * for, `def receiver = @receiver`, placed after the declaration. */
+static const char *rod_leaf(const NodeTable *nt, int path) {
+  NodeKind k = path >= 0 ? nt_kind(nt, path) : NK__COUNT;
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, path, "name") : NULL;
+}
+static int rod_body_defs(const NodeTable *nt, int body, const char *meth) {
+  int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int d = fwd_body_def(nt, st[k]);
+    if (d >= 0 && nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), meth))
+      return 1;
+  }
+  return 0;
+}
+/* Does a class or module named `nm`, or one up its chain (a superclass, a
+   module it includes), define the instance method `meth`? */
+static int rod_chain_defines(const NodeTable *nt, const char *nm, const char *meth, int depth) {
+  if (!nm || depth > 32) return 0;
+  for (int pass = 0; pass < 2; pass++)
+    NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
+      const char *mn = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
+      if (!mn || !sp_streq(mn, nm)) continue;
+      int body = nt_ref(nt, m, "body");
+      if (rod_body_defs(nt, body, meth)) return 1;
+      if (!pass && rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, m, "superclass")), meth, depth + 1)) return 1;
+      int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+      for (int k = 0; k < n; k++) {
+        const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
+        if (!cn || !sp_streq(cn, "include")) continue;
+        int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
+        for (int a = 0; a < ac; a++)
+          if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, depth + 1)) return 1;
+      }
+    }
+  return 0;
+}
+/* Does class `cls` take `meth` from above its own body: its superclass's
+   chain or a module its body includes? */
+static int rod_inherits(const NodeTable *nt, int cls, const char *meth) {
+  if (rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, cls, "superclass")), meth, 0)) return 1;
+  int body = nt_ref(nt, cls, "body");
+  int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
+    if (!cn || !sp_streq(cn, "include")) continue;
+    int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
+    for (int a = 0; a < ac; a++) if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, 0)) return 1;
+  }
+  return 0;
+}
+/* `def meth = @meth` like node `like` */
+static int rod_reader_def(NodeTable *nt, int like, const char *meth) {
+  char ivc[260]; snprintf(ivc, sizeof ivc, "@%s", meth);
+  int d = fwd_new_node_like(nt, like, "DefNode");
+  int rd = fwd_new_node_like(nt, like, "InstanceVariableReadNode");
+  int bd = fwd_new_node_like(nt, like, "StatementsNode");
+  if (d < 0 || rd < 0 || bd < 0) return -1;
+  nt_node_set_str(nt, rd, "name", ivc);
+  nt_node_set_arr(nt, bd, "body", &rd, 1);
+  nt_node_set_str(nt, d, "name", meth);
+  nt_node_set_ref(nt, d, "parameters", -1);
+  nt_node_set_ref(nt, d, "body", bd);
+  nt_node_set_ref(nt, d, "receiver", -1);
+  return d;
+}
+int desugar_readers_over_inherited_defs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* the names some class or module body defines: a reader of any other name
+     has nothing to stand over, and is passed without walking the chain */
+  ANameHash defs = {0};
+  for (int pass = 0; pass < 2; pass++)
+    NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
+      int bd = nt_ref(nt, m, "body");
+      int bn = 0; const int *bs = bd >= 0 && nt_kind(nt, bd) == NK_StatementsNode ? nt_arr(nt, bd, "body", &bn) : NULL;
+      for (int k = 0; k < bn; k++) {
+        int d = fwd_body_def(nt, bs[k]);
+        if (d >= 0 && nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name")) anh_add(&defs, nt_str(nt, d, "name"));
+      }
+    }
+  for (int cls = 0; cls < n0 && defs.n > 0; cls++) {
+    if (nt_kind(nt, cls) != NK_ClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    int *nb = NULL, nbn = 0, any = 0;
+    for (int k = 0; k < n; k++) {
+      int s = st[k];
+      const char *cn = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 ? nt_str(nt, s, "name") : NULL;
+      int ac = 0; const int *av = cn && (is_attr_reader_family(cn) || sp_streq(cn, "attr"))
+                                  ? nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &ac) : NULL;
+      if (!nb) { nb = malloc(sizeof(int) * (size_t)(n + 1)); if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+      nb[nbn++] = s;
+      for (int a = 0; a < ac; a++) {
+        const char *meth = sym_or_str_literal(nt, av[a]);
+        if (!meth || !anh_has(&defs, meth) || rod_body_defs(nt, body, meth) || !rod_inherits(nt, cls, meth)) continue;
+        char mb[256]; snprintf(mb, sizeof mb, "%s", meth);
+        int d = rod_reader_def(nt, s, mb);
+        if (d < 0) continue;
+        nb = realloc(nb, sizeof(int) * (size_t)(n + nbn + 2));
+        if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        nb[nbn++] = d;
+        any = 1;
+        st = nt_arr(nt, body, "body", &n);   /* the node table may have moved */
+        av = nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &ac);
+      }
+    }
+    if (any) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
+    free(nb);
+  }
+  anh_free(&defs);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- a block parameter the block body assigns ----
  *
  * `prepare(sql) do |stmt| stmt = build_result_set(stmt); ... end`: the body
