@@ -1,0 +1,6 @@
+[hide]
+[hello!]
+line
+more
+"[hide]\n[hello!]\nline\nmore\n"
+NoMethodError

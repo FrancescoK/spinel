@@ -7778,6 +7778,9 @@ static int bi_default_probe(Compiler *c, int id, int recv, const char *name, int
     /* --share-strings: one the dispatch bound with its handle keeps that
        binding (ran_first_handle), the same temp */
     if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
+    /* (a temp that holds the argument's handle: the arm's String reads are
+       that handle's String, its handle reads the handle itself) */
+    if (repr_share_rule(c) && atmp_ty[a] == TY_STRBUF) { ran_first_bind_read(argv[a], atmp[a]); continue; }
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
   int va = view_push_arm(id, g_prbd_skip, 1);
