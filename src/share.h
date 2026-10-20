@@ -263,6 +263,10 @@ int share_param_kept(Compiler *c, int mi, int pj);
    class reaching it by that name can be a value (comp_class_may_be_value):
    no box ever holds that class object. */
 int share_target_reachable(Compiler *c, int call, int mi);
+/* Is user method mi, a target cplan_targets lists for boxed call `call`,
+   one its dispatch arms: does a class the receiver's class fact keeps reach
+   it (comp_poly_candidates_at)? */
+int share_target_armed(Compiler *c, int call, int mi);
 /* Can block node blk hand control back to the call that yields to it: does
    its body fall off its end, or hold a `next` of its own (not a nested
    block's, lambda's, method's or loop's)? A body whose last statement is a

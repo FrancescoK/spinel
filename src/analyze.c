@@ -23821,8 +23821,10 @@ int an_tail_logic_op(Compiler *c, int node) {
    how many decisions where an answer was asked (an_ret_settle) are open.
    prev (the fresh walk only): per method, what the previous round found for
    it -- 0 no, 1 only new Strings, 2 + p its parameter p -- which a method
-   still being walked (a cycle) answers this round */
-typedef struct RetHandles { unsigned char *st; int *prev; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
+   still being walked (a cycle) answers this round; with meet set, each
+   method's answer this round is also held to no more than its prev
+   (an_fresh_meet) */
+typedef struct RetHandles { unsigned char *st; int *prev; int *ret_start, *ret_list; int fresh, settling, meet; int *par; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
@@ -24272,8 +24274,10 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   for (int i = 0; i < cnt; i++) {
     /* (a target that cannot bind the arguments only raises) */
     if (R->fresh && !cplan_target_binds(c, n, mis[i])) continue;
-    /* (a class method no box can reach) */
-    if (R->fresh && !share_target_reachable(c, n, mis[i])) continue;
+    /* (a class method no box can reach, or a method of a class the
+       receiver's class fact rules out: an inspect of a box that holds its
+       own object or a String reaches no other class's inspect, #9258) */
+    if (R->fresh && (!share_target_reachable(c, n, mis[i]) || !share_target_armed(c, n, mis[i]))) continue;
     Scope *m = &c->scopes[mis[i]];
     if (!an_ret_handle(c, R, mis[i])) {
       if (R->fresh || !m->ret_fresh || m->ret != TY_STRING) return 0;
@@ -24342,6 +24346,26 @@ static int an_ret_box_tail(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   tc->nils++;
   return 1;
 }
+/* The fresh walk's answer for method mi this round, taken as no more than
+   the previous round's: only new Strings ranks above its parameter p,
+   which ranks above no, and two different parameters meet at no. A
+   method's answer can then only fall from round to round, so the rounds
+   settle (a method answering its parameter once a cycle answers no, and
+   no once it answers its parameter, would turn round forever), and where
+   they settle every answer holds of the answers the round read. */
+static void an_fresh_meet(Compiler *c, RetHandles *R, int mi) {
+  Scope *m = &c->scopes[mi];
+  int p = R->prev[mi];
+  if (p == 1 || R->st[mi] != RH_YES) return;
+  if (p == 0 || (!m->ret_fresh && m->ret_param != p - 2)) {
+    R->st[mi] = RH_NO;
+    m->ret_fresh = 0;
+    m->ret_param = -1;
+    return;
+  }
+  m->ret_fresh = 0;
+  m->ret_param = p - 2;
+}
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES || (R->st[mi] == RH_BUSY && R->prev && R->prev[mi]);
   Scope *m = &c->scopes[mi];
@@ -24387,6 +24411,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->fresh) {
     m->ret_fresh = R->st[mi] == RH_YES && tc.param < 0;
     m->ret_param = R->st[mi] == RH_YES ? tc.param : -1;
+    if (R->meet) an_fresh_meet(c, R, mi);
   }
   return R->st[mi] == RH_YES;
 }
@@ -24395,8 +24420,9 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
    calls inspect on a box that may hold its own object -- answers what the
    previous round found for it, every method answering only new Strings at
    first. Rounds repeat until no method's answer changes; each only takes
-   answers away, so a cycle stays fresh only if every way out of it answers
-   a new String. Each round starts from the marks the rounds do not own.
+   answers away (an_fresh_meet), so a cycle stays fresh only if every way
+   out of it answers a new String. Each round starts from the marks the
+   rounds do not own.
    (A walk that does not settle within its rounds falls back to taking a
    cycle as not fresh, from no method known fresh.) */
 static void an_fresh_returns(Compiler *c, RetHandles *R) {
@@ -24406,6 +24432,7 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
   if (!pub || !R->prev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int mi = 0; mi <= n; mi++) R->prev[mi] = 1;
   R->fresh = 1;
+  R->meet = 1;
   for (int mi = 1; mi < n; mi++) {
     pub[mi] = c->scopes[mi].ret_pub_fresh;
     /* (a method whose body the walk does not take answers no new String) */
@@ -24416,6 +24443,7 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
     /* (the fallback round: a cycle is not fresh, as nothing it answers is
        known yet) */
     if (round == 16) {
+      R->meet = 0;
       for (int mi = 0; mi <= n; mi++) R->prev[mi] = 0;
       for (int mi = 1; mi < n; mi++) {
         c->scopes[mi].ret_fresh = 0;
@@ -24436,6 +24464,7 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
   free(pub);
   free(R->prev);
   R->prev = NULL;
+  R->meet = 0;
 }
 static void an_mark_handle_returns(Compiler *c) {
   RetHandles R = { 0 };

@@ -1,0 +1,30 @@
+"Set[leaf]!"
+"leaf?"
+["Set[leaf]!"]
+["sym!"]
+"sym!"
+true
+["sym!+"]
+"sym!+"
+["text!?"]
+"text!?"
+["text!?%"]
+"text!?%"
+"{a: hv}!"
+"hv?"
+["hv?#"]
+"hv?#"
+"j1,j2!"
+"j1?"
+"Set[ba-pre]!"
+"ba-pre-post"
+"Set[ba-pre-post]"
+"Set[frozen]!"
+"frozen"
+true
+true
+"Set[two, lf]!"
+"two?"
+["two?*", "lf*"]
+"two?*"
+["Set[leaf]!", "sym!+", "text!?%", "{a: hv}!", "j1,j2!", "Set[ba-pre]!", "Set[frozen]!", "Set[two, lf]!"]
