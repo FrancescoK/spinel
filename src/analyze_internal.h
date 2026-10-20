@@ -503,6 +503,8 @@ const struct BuiltinOp *an_bop_find_boxed(Compiler *c, int id, TyKind rt, const 
    guard an argument are read too */
 const struct BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *name,
                                         int argc, const int *argv, int has_block);
+/* the row inference finds for call `id` on a receiver of kind `rt`, recording nothing */
+const struct BuiltinOp *an_bop_row_for_kind(Compiler *c, int id, TyKind rt);
 /* bop_result_args with the call's arguments' kinds (inferred) */
 TyKind an_bop_result(Compiler *c, const struct BuiltinOp *op, TyKind rt, int id, int argc, const int *argv);
 /* the facts bop_result_args reads beside the operands' kinds (BOPX_*) */

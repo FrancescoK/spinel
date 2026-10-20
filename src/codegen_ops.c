@@ -336,6 +336,16 @@ static TyKind bop_seed_ntype(const void *ud, int i) {
 static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *op) {
   if (view_depth() > 0 || id < 0 || id >= c->node_cap) return;
   const BuiltinOp *inf = c->bop_inf[id];
+  /* A call on a yield's value is emitted once per site of the yield, its
+     receiver typed per site, and inference keeps the last site's row (or
+     none, when a later pass erased it). The copy is compared with the row
+     inference finds for its own site's kind; a copy whose site has no row,
+     or another, still reports below. */
+  if (!inf || inf->recv != op->recv) {
+    int yv = nt_ref(c->nt, id, "receiver");
+    TyKind sk;
+    if (yv >= 0 && sp_yield_site_type(c, yv, &sk)) inf = an_bop_row_for_kind(c, id, rt);
+  }
   /* A row flagged BOPF_INFERRED says inference types the call in a rule of
      its own; inference records no row for it (an_bop_find), so answering
      without one is what the row says. The call still has to have been
