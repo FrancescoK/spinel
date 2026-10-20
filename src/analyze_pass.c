@@ -1383,6 +1383,14 @@ static TyKind push_elem_ty(Compiler *c, int node) {
   return t;
 }
 
+/* Is a pushed value of kind `t` evidence for the arrays the slot is written?
+   A kind decided at run time widens them to the general Array as any other
+   does; an analysis-only respond_to? probe (`o.push(o)`) stores nothing, and
+   its dummy argument is no evidence. */
+static int push_widens_arrays(const NodeTable *nt, int call, TyKind t) {
+  return t != TY_UNKNOWN && !(t == TY_POLY && nt_int(nt, call, "rt_probe", 0));
+}
+
 /* ---- "this poly slot can hold a builtin container" ----
    TY_POLY is a top type with no member list, so a call on a poly receiver
    cannot tell a union that really includes an Array/Hash from a user object
@@ -3403,8 +3411,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          parameter does: a store of another kind promotes a copy into this
          one slot, and wherever else the array is held keeps it typed. Its
          arrays widen where they are built instead. A value whose kind is
-         decided at run time is exempt, as it is for a typed parameter
-         (#4481): the boxed store checks it, and raises for a foreign one. */
+         decided at run time widens them to the general Array too: a store
+         the typed array took checked at run time raised for a foreign one,
+         where CRuby appends it. */
       if (lv && (!lv->is_param || lv->is_block_param) && lv->type == TY_POLY && (is_push || (is_idx_write && (is_splice || kt == TY_INT))) &&
           !concat_scalar && (!is_splice || is_fill || splice_arr)) {
         /* each pushed value is its own evidence (`z.push(1, [2])`): their
@@ -3412,10 +3421,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         if (elem_argv && elem_an - elem_from > 1) {
           for (int ai = elem_from; ai < elem_an; ai++) {
             TyKind et = push_elem_ty(c, elem_argv[ai]);
-            if (et != TY_UNKNOWN && et != TY_POLY) changed |= widen_boxed_array_sources(c, recv, et, 0);
+            if (push_widens_arrays(nt, id, et)) changed |= widen_boxed_array_sources(c, recv, et, 0);
           }
         }
-        else if (vt != TY_UNKNOWN && vt != TY_POLY)
+        else if (push_widens_arrays(nt, id, (TyKind)vt))
           changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
       }
       /* A proc or lambda literal's boxed parameter written as a Hash
@@ -3694,7 +3703,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       slot = ivar_evidence_slot(c, &ivw_ix, ivar_cls_id, inm, is_push, &ivt);
       if (!slot) continue;
       vt = ivt;
-      if (*slot == TY_POLY && is_push && vt != TY_UNKNOWN && vt != TY_POLY && !concat_scalar)
+      if (*slot == TY_POLY && is_push && push_widens_arrays(nt, id, (TyKind)vt) && !concat_scalar)
         changed |= widen_boxed_ivar_array_sources(c, &ivw_ix, ivar_cls_id, inm, (TyKind)vt);
       watch_nm = inm;
       watch_cls = ivar_cls_id;
