@@ -370,6 +370,15 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
      the kind it was emitted with agrees when it states the same result */
   if (inf && (inf->flags & BOPF_BOXED) && inf->recv != op->recv &&
       bop_result_args(inf, rt, argc, arg_of, &ba, facts) == bop_result_args(op, rt, argc, arg_of, &ba, facts)) return;
+  /* a call over a String Range that a pass reached through a `to_a` hop
+     (srange_member_hop): inference answered it on the hop's Array of
+     Strings, codegen emits the Range's own row. They agree when the two rows
+     state the same result */
+  if (inf && inf->recv != op->recv) {
+    int hv = nt_ref(c->nt, id, "receiver");
+    if (hv >= 0 && srange_member_hop(c, hv) >= 0 &&
+        bop_result_args(inf, TY_STR_ARRAY, argc, arg_of, &ba, facts) == bop_result_args(op, rt, argc, arg_of, &ba, facts)) return;
+  }
   if (inf && inf->recv != op->recv)
     fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
             id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
