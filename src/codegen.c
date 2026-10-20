@@ -13281,167 +13281,365 @@ static void emit_cext_marshal_check(Compiler *c, Buf *b) {
               "    rb_raise(rb_eTypeError, \"no _dump_data is defined for class %s\", sp_obj_cls_name_fn((int)*(sp_int *)p));\n"
               "  break; default: break; } }\n");
 }
-/* Does the program name Marshal other than to load (to dump), or other
-   than to dump (to load)? (scan_prologue_features) The dispatch half no call
-   can reach is left a stub: each arm is a class's, and a program of many
-   classes carried megabytes of them for a Marshal.load of plain data. */
-static int g_marshal_dumps = 1, g_marshal_loads = 1;
-
-static void emit_marshal_dump_dispatch(Compiler *c, Buf *b) {
-  if (!g_marshal_dumps) {
-    buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n"
-                "  (void)b; (void)cls_id; (void)p; return 0;\n}\n");
-    return;
+/* ---- Marshal of user objects: a table, read by one dumper and one loader ----
+   Each class Marshal reaches has a row in sp_mar_tab (by cls_id): its Ruby
+   name (or the slot an anonymous class's assigned name lands in), how it is
+   written (an `o` object, an Array subclass's `C`, an exception's head, a
+   singleton that raises), its allocator, and its ivars. An ivar's row is
+   plain numbers: its name's place in one string pool, its field's offset,
+   its nil byte, how its presence is read and marked, and how its value is
+   boxed and unboxed -- an object by its class id, any other kind through
+   one pair of functions per kind (sp_mar_bx_<kind> / sp_mar_ux_<kind>),
+   shared by every class. The generated C grows with the classes and ivars
+   by table rows, where an arm per class and a branch per ivar in each of
+   the two functions grew it by code, and a load finds its class by binary
+   search over the sorted names instead of comparing each in turn. */
+enum { MSET_ALWAYS, MSET_FLAG, MSET_UMARK, MSET_NB, MSET_POLY, MSET_NONNULL, MSET_BOOL };
+/* How ivar j of class cid is told set, as ivar_set_test words it. */
+static int marshal_iv_set_kind(Compiler *c, int cid, int j) {
+  ClassInfo *ci = &c->classes[cid];
+  const char *ivn = ci->ivars[j];
+  int kind = ivar_set_kind(c, cid, ivn);
+  int iv = comp_ivar_index(ci, ivn);
+  if (kind == 3) return MSET_FLAG;
+  if (kind == 2 && poly_ivar_unset_marked(c, cid, iv)) return MSET_UMARK;
+  if (kind != 1) return MSET_ALWAYS;
+  TyKind t = ci->ivar_types[iv];
+  if (oint_kind(t)) return ivar_has_nilbit(c, cid, iv) && ivar_nilbit_index(c, cid, iv) >= 0 ? MSET_NB : MSET_ALWAYS;
+  if (t == TY_POLY) return MSET_POLY;
+  /* a Boolean field is one byte, its value the test */
+  if (t == TY_BOOL) return MSET_BOOL;
+  return MSET_NONNULL;
+}
+/* What the rows are built from: the kinds converted by function, and the
+   string pool of the ivar names. */
+typedef struct {
+  TyKind *kinds; int nk, ck;
+  Buf pool; int pool_len;
+  const char **pnames; int *poffs; int npn, cpn;
+  int any_rank;
+} MarRows;
+static int marshal_kind_index(MarRows *R, TyKind t) {
+  for (int k = 0; k < R->nk; k++) if (R->kinds[k] == t) return k;
+  if (R->nk == R->ck) {
+    R->ck = R->ck ? R->ck * 2 : 16;
+    R->kinds = realloc(R->kinds, sizeof *R->kinds * (size_t)R->ck);
+    if (!R->kinds) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
-  if (c->n_cext_extensions) buf_puts(b, "  _sp_cext_marshal_check(cls_id, p);\n");
-  buf_puts(b, "  switch (cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    /* an object with singleton methods has nothing to load them back from;
-       a box carries the binding's class from before its first `def obj.m`
-       ran, so the object's own id says whether it has them yet */
-    if (c->classes[i].is_singleton_of && sg_has_own_method(c, i)) {
-      buf_printf(b, "    case %d: { int _k = ((sp_%s *)p)->cls_id;\n"
-                    "      if (_k == %d) sp_raise_cls(\"TypeError\", \"singleton can't be dumped\");\n"
-                    "      return sp_marshal_obj_dump(b, _k, p); }\n", i, c->classes[i].c_name, i);
-      continue;
-    }
-    if (!class_marshalable(c, i)) continue;
-    ClassInfo *ci = &c->classes[i];
-    /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
-    const char *mname = class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name;
-    /* a Class.new class dumps under the constant that names it, and has no
-       name to dump under before one does (CRuby: can't dump anonymous class) */
-    char mnq[160];
-    if (comp_class_anonymous(c, i)) anon_name_expr(mnq, sizeof mnq, i);
-    else snprintf(mnq, sizeof mnq, "\"%s\"", mname);
-    buf_printf(b, "    case %d: {\n", i);
-    if (comp_class_anonymous(c, i))
-      buf_printf(b, "      if (!%s)\n"
-                    "        sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %%s\", sp_class_display((sp_Class){%d})));\n", mnq, i);
-    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
-    /* an ivar nothing has set yet is not written, as CRuby leaves it out
-       (ivar_set_test, the presence inspect and instance_variables read) */
-    /* ivar_set_test only formats the test, so each pass asks it again:
-       no table bounded by the class's ivar count */
-    char tb[256];
-    int fixed = 0;
-    /* a ranked class writes them in the order they were first assigned */
-    int ranked = ivar_ranked(c, i);
+  if (R->nk == 255) { fprintf(stderr, "spinel: too many ivar kinds for the Marshal table\n"); exit(1); }
+  R->kinds[R->nk] = t;
+  return R->nk++;
+}
+/* name's place in the pool, each name once */
+static int marshal_pool_name(MarRows *R, const char *name) {
+  for (int k = 0; k < R->npn; k++) if (!strcmp(R->pnames[k], name)) return R->poffs[k];
+  if (R->npn == R->cpn) {
+    R->cpn = R->cpn ? R->cpn * 2 : 64;
+    R->pnames = realloc(R->pnames, sizeof *R->pnames * (size_t)R->cpn);
+    R->poffs = realloc(R->poffs, sizeof *R->poffs * (size_t)R->cpn);
+    if (!R->pnames || !R->poffs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  int off = R->pool_len;
+  R->pnames[R->npn] = name; R->poffs[R->npn++] = off;
+  buf_printf(&R->pool, "\"%s\\0\"\n", name);
+  R->pool_len += (int)strlen(name) + 1;
+  return off;
+}
+/* the conversion pair of kind t */
+static void emit_marshal_kind_fns(Compiler *c, TyKind t, int k, Buf *b) {
+  char *ct = ivar_field_ctype(c, t);
+  char expr[256]; snprintf(expr, sizeof expr, "(*(%s *)s)", ct);
+  buf_printf(b, "static sp_RbVal sp_mar_bx_%d(void *s, const uint8_t *nb) { (void)nb; return ", k);
+  emit_marshal_box_ivar_n(c, t, expr, oint_kind(t) ? "(nb && *nb)" : NULL, b);
+  buf_printf(b, "; }\nstatic void sp_mar_ux_%d(void *s, sp_RbVal val) { %s = ", k, expr);
+  emit_marshal_unbox_ivar(c, t, b);
+  buf_puts(b, "; }\n");
+  free(ct);
+}
+static int marshal_name_cmp(const void *a, const void *b) {
+  const char *const *x = a, *const *y = b;
+  int r = strcmp(x[0], y[0]);
+  return r ? r : (x[1] < y[1] ? -1 : x[1] > y[1]);
+}
+/* Does class i dump as a singleton that raises? An object with singleton
+   methods has nothing to load them back from; a box carries the binding's
+   class from before its first `def obj.m` ran, so the object's own id says
+   whether it has them yet. */
+static int marshal_sg_raises(Compiler *c, int i) {
+  return c->classes[i].is_singleton_of && sg_has_own_method(c, i);
+}
+/* the rows of class i, ahead of the table; 1 when it has one */
+static int emit_marshal_class_row(Compiler *c, int i, MarRows *R, Buf *b) {
+  ClassInfo *ci = &c->classes[i];
+  if (marshal_sg_raises(c, i)) {
+    buf_printf(b, "static const sp_mar_cls sp_mar_c_%d = { NULL, NULL, SP_MARC_SGRAISE, 0, 0, "
+                  "__builtin_offsetof(sp_%s, cls_id), 0, 0, NULL, NULL, NULL, 0, NULL, { NULL } };\n", i, ci->c_name);
+    return 1;
+  }
+  if (!class_marshalable(c, i)) return 0;
+  int exc = class_is_exc_subclass(c, i), ranked = ivar_ranked(c, i), use_ord = 0;
+  if (ci->nivars > 0) {
+    /* the rows keep the offsets in 16 bits */
+    buf_printf(b, "_Static_assert(sizeof(sp_%s) <= 32767, \"sp_%s: too large for the Marshal table\");\n",
+               ci->c_name, ci->c_name);
+    buf_printf(b, "static const sp_mar_iv sp_mar_iv_%d[] = {\n", i);
     for (int j = 0; j < ci->nivars; j++) {
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      if (!ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb)) fixed++;
+      TyKind t = ci->ivar_types[j];
+      const char *iv = iv_c(ci->ivars[j] + 1);
+      int sk = marshal_iv_set_kind(c, i, j), ivx = comp_ivar_index(ci, ci->ivars[j]);
+      int nbk = ivar_has_nilbit(c, i, j) ? ivar_nilbit_index(c, i, j) : -1;
+      int snb = sk == MSET_NB ? ivar_nilbit_index(c, i, ivx) : -1;
+      int mark = ivar_set_kind(c, i, ci->ivars[j]) == 3 ? (ranked ? 2 : 1) : 0;
+      if (mark == 2) R->any_rank = 1;
+      int obj = ty_is_object(t) ? (repr_dyn_cls(c, t) ? 2 : 1) : 0;
+      /* a store of a reference is recorded for the collector, as the
+         barrier pass records one through `->iv_` */
+      int wb = !(t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL);
+      buf_printf(b, "  { %d, ", marshal_pool_name(R, ci->ivars[j]));
+      /* an object: its class id, or the id a subclass's may carry for it;
+         any other kind: its conversion pair */
+      if (obj == 1) buf_printf(b, "%d, ", ty_object_class(t));
+      else if (obj == 2) { arysub_box_id(c, t, b); buf_puts(b, ", "); }
+      else buf_printf(b, "%d, ", marshal_kind_index(R, t));
+      buf_printf(b, "__builtin_offsetof(sp_%s, iv_%s), ", ci->c_name, iv);
+      if (nbk >= 0) buf_printf(b, "__builtin_offsetof(sp_%s, iv__nilb) + %d, ", ci->c_name, nbk);
+      else buf_puts(b, "-1, ");
+      if (sk == MSET_FLAG || mark) buf_printf(b, "__builtin_offsetof(sp_%s, _sp_set_%s), ", ci->c_name, iv);
+      else if (snb >= 0) buf_printf(b, "__builtin_offsetof(sp_%s, iv__nilb) + %d, ", ci->c_name, snb);
+      else buf_puts(b, "-1, ");
+      /* what the allocator seeds it with, as emit_ivar_nil_inits_from does:
+         a poly field nil, or the unset mark; a Symbol field its nil */
+      int init = t == TY_POLY ? (poly_ivar_unset_marked(c, i, j) ? 2 : 1) : t == TY_SYMBOL ? 3 : 0;
+      buf_printf(b, "%d, %d, %d, %d, %d },\n", sk, mark, obj, wb, init);
     }
-    if (ranked) {
-      buf_printf(b, "      int _ixv[%d]; sp_int _niv = sp_%s_ivar_order(o, _ixv);\n",
-                 ci->nivars > 0 ? ci->nivars : 1, ci->c_name);
-    }
-    else {
-      buf_printf(b, "      sp_int _niv = %d", fixed);
-      for (int j = 0; j < ci->nivars; j++) {
-        char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-        const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
-        if (set) buf_printf(b, " + !!%s", set);
-      }
-      buf_puts(b, ";\n");
-    }
-    /* an Array subclass instance (#7449) is written as CRuby writes it:
-       `C`, its class, its elements as an Array's, and its ivars after them
-       under `I` when it has any */
-    if (ci->ary_root > 0) {
-      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, %s);\n"
-                    "      sp_mar_w_body(b, ", mnq);
-      emit_boxed_text(c, ty_object(i), "o", b);
-      buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
-    }
-    /* an exception subclass writes its message and backtrace first, as
-       CRuby does, then its own ivars */
-    else if (class_is_exc_subclass(c, i))
-      buf_printf(b, "      sp_mar_w_exc_head(b, %s, o, _niv);\n", mnq);
-    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, %s);\n      sp_mar_long(b, _niv);\n", mnq);
-    if (ranked)
-      buf_puts(b, "      for (int _ixk = 0; _ixk < _niv; _ixk++) switch (_ixv[_ixk]) {\n");
-    int *ord = ivar_listing_order_new(c, i);
-    for (int jj = 0; jj < ci->nivars; jj++) {
-      int j = ord[jj];
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      const char *set = ranked ? NULL : ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
-      if (ranked) buf_printf(b, "      case %d:\n", j);
-      if (set) buf_printf(b, "      if %s {\n", set);
-      buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
-      emit_marshal_box_ivar_of(c, i, j, "o->", expr, b);
-      buf_puts(b, ");\n");
-      if (set) buf_puts(b, "      }\n");
-      if (ranked) buf_puts(b, "      break;\n");
+    buf_puts(b, "};\n");
+    /* a ranked class writes them in the order they were first assigned; any
+       other in its listing order, kept when it is not the layout's */
+    int *ord = ivar_listing_order_new(c, i), ident = 1;
+    for (int j = 0; j < ci->nivars; j++) ident &= ord[j] == j;
+    use_ord = !ranked && !ident;
+    if (use_ord) {
+      buf_printf(b, "static const unsigned short sp_mar_ord_%d[] = {", i);
+      for (int j = 0; j < ci->nivars; j++) buf_printf(b, "%s%d", j ? ", " : " ", ord[j]);
+      buf_puts(b, " };\n");
     }
     free(ord);
-    if (ranked) buf_puts(b, "      }\n");
-    buf_puts(b, "      return 1;\n    }\n");
   }
-  buf_puts(b, "    default: return 0;\n  }\n}\n");
+  /* an exception dumps but does not load back yet */
+  int load = !exc;
+  /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
+  const char *mname = class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name;
+  int flags = (load ? 1 : 0) | (exc ? 2 : 0) | (ci->ary_root > 0 ? 4 : 0) | (ranked ? 8 : 0);
+  buf_printf(b, "static const sp_mar_cls sp_mar_c_%d = { ", i);
+  if (comp_class_anonymous(c, i)) buf_printf(b, "NULL, &sp_class_assigned_name_%d, ", i);
+  else buf_printf(b, "\"%s\", NULL, ", mname);
+  buf_printf(b, "%d, %d, %d, ", flags, repr_dyn_cls(c, ty_object(i)) ? 1 : 0, ci->nivars);
+  if (ranked) buf_printf(b, "__builtin_offsetof(sp_%s, cls_id), __builtin_offsetof(sp_%s, _sp_ord), ", ci->c_name, ci->c_name);
+  else buf_puts(b, "0, 0, ");
+  /* boxed as the class boxes (an Array subclass instance as its Array) */
+  arysub_box_id(c, ty_object(i), b);
+  if (ci->nivars > 0) buf_printf(b, ", sp_mar_iv_%d, ", i); else buf_puts(b, ", NULL, ");
+  if (use_ord) buf_printf(b, "sp_mar_ord_%d, ", i); else buf_puts(b, "NULL, ");
+  if (ranked) buf_printf(b, "(int (*)(void *, int *))sp_%s_ivar_order, ", ci->c_name);
+  else buf_puts(b, "NULL, ");
+  /* what a load allocates the object from (the reader registers it before it
+     reads what can link back to it): an Array subclass's own allocator, or
+     the class's pool, as emit_obj_alloc_expr allocates */
+  if (load) buf_printf(b, "__builtin_offsetof(sp_%s, cls_id), ", ci->c_name); else buf_puts(b, "0, ");
+  if (load && ci->ary_root > 0) buf_printf(b, "(void *(*)(void))sp_%s__alloc, { NULL } };\n", ci->c_name);
+  else if (load)
+    buf_printf(b, "NULL, { &sp_%s_pool_head, &sp_%s_pool_count, &sp_%s_pool_pops, sp_%s_pool_recycle, sizeof(sp_%s), %s%s%s } };\n",
+               ci->c_name, ci->c_name, ci->c_name, ci->c_name, ci->c_name,
+               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
+               class_needs_scan(ci) ? "__gc_scan" : "");
+  else buf_puts(b, "NULL, { NULL } };\n");
+  return 1;
 }
-
-static void emit_marshal_load_dispatch(Compiler *c, Buf *b) {
-  /* `into` nil allocates the object (the reader registers it before it
-     reads what can link back to it); an object sets its ivars from iv */
-  if (!g_marshal_loads) {
-    buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n"
-                "  (void)name; (void)into; (void)iv_boxed; *ok = 0; return sp_box_nil();\n}\n");
-    return;
-  }
-  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n");
-  buf_puts(b, "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n");
-  buf_puts(b, "  *ok = 1; (void)iv;\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    /* an exception dumps (above) but does not load back yet */
-    if (!class_marshalable(c, i) || class_is_exc_subclass(c, i)) continue;
-    ClassInfo *ci = &c->classes[i];
-    if (comp_class_anonymous(c, i)) {
-      char nx[96]; anon_name_expr(nx, sizeof nx, i);
-      buf_printf(b, "  if (%s && !strcmp(name, %s)) {\n", nx, nx);
-    }
-    else buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
-    buf_printf(b, "    sp_%s *o = into.tag == SP_TAG_OBJ ? (sp_%s *)into.v.p : ", ci->c_name, ci->c_name);
-    emit_obj_alloc_expr(c, i, b);
-    buf_puts(b, ";\n");
-    buf_puts(b, "    SP_GC_ROOT(o);\n");
-    if (ci->nivars > 0) {
-      buf_puts(b, "    for (sp_int k = 0; k + 1 < iv->len; k += 2) {\n");
-      buf_puts(b, "      const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(iv, k).v.i);\n");
-      buf_puts(b, "      sp_RbVal val = sp_PolyArray_get(iv, k + 1); (void)val; (void)nm;\n");
-      for (int j = 0; j < ci->nivars; j++) {
-        char mk[300];
-        const char *mark = ivar_set_mark(c, i, ci->ivars[j], "o", "->", mk, sizeof mk);
-        int nb = ivar_has_nilbit(c, i, j);
-        buf_printf(b, mark || nb ? "      %sif (!strcmp(nm, \"%s\")) { o->iv_%s = " :
-                                   "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
-                   j ? "else " : "", ci->ivars[j], iv_c(ci->ivars[j] + 1));
-        emit_marshal_unbox_ivar(c, ci->ivar_types[j], b);
-        buf_puts(b, ";\n");
-        if (nb) {
-          /* a loaded nil sets the ivar's bit; a value clears it */
-          char bs[160], bc[160];
-          ivar_nilbit_set(c, i, j, "o->", bs, sizeof bs);
-          ivar_nilbit_clear(c, i, j, "o->", bc, sizeof bc);
-          buf_printf(b, "      if (val.tag == SP_TAG_NIL) %s; else %s;\n", bs, bc);
-        }
-        if (mark) buf_printf(b, "      %s", mark);
-        if (mark || nb) buf_puts(b, " }\n");
-      }
-      buf_puts(b, "    }\n");
-    }
-    /* boxed as the class boxes (an Array subclass instance as its Array) */
-    buf_puts(b, "    return ");
-    emit_boxed_text(c, ty_object(i), "o", b);
-    buf_puts(b, ";\n  }\n");
-  }
-  buf_puts(b, "  *ok = 0; return sp_box_nil();\n}\n");
+/* The generic dumper and loader, over the rows */
+static void emit_marshal_generic(Compiler *c, int nn, int nanon, int any_anon, int any_rank, Buf *b) {
+  const char *anon_load = g_uses_threads ? "SP_ATOMIC_LOAD(d->anon, __ATOMIC_ACQUIRE)" : "(*d->anon)";
+  buf_printf(b,
+    "static sp_RbVal sp_mar_iv_box(const sp_mar_iv *v, char *o) {\n"
+    "  void *s = o + v->off;\n"
+    "  if (v->obj == 2) return sp_box_nullable_obj_dyn(*(void **)s, v->arg);\n"
+    "  if (v->obj) return *(void **)s ? sp_box_obj(*(void **)s, v->arg) : sp_box_nil();\n"
+    "  return sp_mar_bx[v->arg](s, v->nb >= 0 ? (const uint8_t *)(o + v->nb) : NULL);\n"
+    "}\n"
+    "static int sp_mar_iv_set(const sp_mar_iv *v, const char *o) {\n"
+    "  switch (v->set) {\n"
+    "    case %d: return *(const sp_bool *)(o + v->setoff);\n"
+    "    case %d: return ((const sp_RbVal *)(o + v->off))->cls_id != 0x%x;\n"
+    "    case %d: return !*(const uint8_t *)(o + v->setoff);\n"
+    "    case %d: return ((const sp_RbVal *)(o + v->off))->tag != SP_TAG_NIL;\n"
+    "    case %d: return *(void *const *)(o + v->off) != NULL;\n"
+    "    case %d: return *(const sp_bool *)(o + v->off);\n"
+    "    default: return 1;\n"
+    "  }\n"
+    "}\n",
+    MSET_FLAG, MSET_UMARK, SP_IVAR_UNSET_MARK, MSET_NB, MSET_POLY, MSET_NONNULL, MSET_BOOL);
+  /* the allocation emit_obj_alloc_expr writes, from the row: zeroed, the
+     class id stamped, each Integer / Float ivar's nil byte set and each
+     field whose zero is not nil seeded */
+  buf_printf(b,
+    "static void *sp_mar_alloc(const sp_mar_cls *d, int cls_id) {\n"
+    "  if (d->alloc) return d->alloc();\n"
+    "  char *o = (char *)sp_pool_new_at(&d->pool);\n"
+    "  memset(o, 0, d->pool.size);\n"
+    "  *(sp_int *)(o + d->idoff) = cls_id;\n"
+    "  for (int j = 0; j < d->niv; j++) if (d->ivs[j].nb >= 0) *(uint8_t *)(o + d->ivs[j].nb) = 1;\n"
+    "  for (int j = 0; j < d->niv; j++) {\n"
+    "    const sp_mar_iv *v = &d->ivs[j];\n"
+    "    if (v->init == 1) *(sp_RbVal *)(o + v->off) = sp_box_nil();\n"
+    "    else if (v->init == 2) *(sp_RbVal *)(o + v->off) = (sp_RbVal){SP_TAG_NIL, 0x%x, {0}};\n"
+    "    else if (v->init == 3) *(sp_sym *)(o + v->off) = (sp_sym)-1;\n"
+    "  }\n"
+    "  return o;\n"
+    "}\n", SP_IVAR_UNSET_MARK);
+  buf_printf(b,
+    "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n"
+    "%s"
+    "  const sp_mar_cls *d = cls_id >= 0 && cls_id < %d ? sp_mar_tab[cls_id] : NULL;\n"
+    "  if (!d) return 0;\n"
+    "  char *o = (char *)p;\n"
+    "  if (d->flags & SP_MARC_SGRAISE) { int _k = (int)*(sp_int *)(o + d->clsoff);\n"
+    "    if (_k == cls_id) sp_raise_cls(\"TypeError\", \"singleton can't be dumped\");\n"
+    "    return sp_marshal_obj_dump(b, _k, p); }\n"
+    /* a Class.new class dumps under the constant that names it, and has no
+       name to dump under before one does (CRuby: can't dump anonymous class) */
+    "  const char *nm = d->anon ? %s : d->name;\n"
+    "%s"
+    /* an ivar nothing has set yet is not written, as CRuby leaves it out */
+    "  int _ixv[d->niv > 0 ? d->niv : 1]; sp_int _niv = 0;\n"
+    "  if (d->flags & SP_MARC_RANKED) _niv = d->order(p, _ixv);\n"
+    "  else for (int j = 0; j < d->niv; j++) _niv += sp_mar_iv_set(&d->ivs[j], o);\n"
+    /* an Array subclass instance (#7449) is written as CRuby writes it: `C`,
+       its class, its elements as an Array's, and its ivars after them under
+       `I` when it has any; an exception subclass writes its message and
+       backtrace first, as CRuby does, then its own ivars */
+    "  if (d->flags & SP_MARC_ARY) {\n"
+    "    if (_niv) sp_mar_b(b, 'I');\n"
+    "    sp_mar_b(b, 'C'); sp_mar_sym(b, nm);\n"
+    "    sp_mar_w_body(b, d->dyn ? sp_box_nullable_obj_dyn(p, d->boxid) : sp_box_nullable_obj(p, d->boxid));\n"
+    "    if (_niv) sp_mar_long(b, _niv);\n"
+    "  }\n"
+    "  else if (d->flags & SP_MARC_EXC) sp_mar_w_exc_head(b, nm, p, _niv);\n"
+    "  else { sp_mar_b(b, 'o'); sp_mar_sym(b, nm); sp_mar_long(b, _niv); }\n"
+    "  if (d->flags & SP_MARC_RANKED)\n"
+    "    for (sp_int k = 0; k < _niv; k++) {\n"
+    "      const sp_mar_iv *v = &d->ivs[_ixv[k]];\n"
+    "      sp_mar_sym(b, sp_mar_pool + v->name); sp_mar_w(b, sp_mar_iv_box(v, o));\n"
+    "    }\n"
+    "  else\n"
+    "    for (int jj = 0; jj < d->niv; jj++) {\n"
+    "      const sp_mar_iv *v = &d->ivs[d->ord ? d->ord[jj] : jj];\n"
+    "      if (sp_mar_iv_set(v, o)) { sp_mar_sym(b, sp_mar_pool + v->name); sp_mar_w(b, sp_mar_iv_box(v, o)); }\n"
+    "    }\n"
+    "  return 1;\n"
+    "}\n",
+    c->n_cext_extensions ? "  _sp_cext_marshal_check(cls_id, p);\n" : "",
+    c->nclasses > 0 ? c->nclasses : 1, anon_load,
+    any_anon ? "  if (!nm) sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %s\", "
+               "sp_class_display((sp_Class){cls_id})));\n" : "");
+  buf_printf(b,
+    "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n"
+    "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n"
+    "  *ok = 1; (void)iv;\n"
+    /* the first class of the name: the leftmost of the sorted names, unless
+       an anonymous class ahead of it is assigned the name now */
+    "  int found = -1, lo = 0, hi = %d;\n"
+    "  while (lo < hi) { int mid = lo + (hi - lo) / 2; if (strcmp(sp_mar_names[mid].name, name) < 0) lo = mid + 1; else hi = mid; }\n"
+    "  if (lo < %d && !strcmp(sp_mar_names[lo].name, name)) found = sp_mar_names[lo].cls;\n"
+    "  for (int a = 0; a < %d; a++) {\n"
+    "    if (found >= 0 && sp_mar_anon[a] > found) break;\n"
+    "    const sp_mar_cls *d = sp_mar_tab[sp_mar_anon[a]]; const char *an = %s;\n"
+    "    if (an && !strcmp(name, an)) { found = sp_mar_anon[a]; break; }\n"
+    "  }\n"
+    "  if (found < 0) { *ok = 0; return sp_box_nil(); }\n"
+    "  const sp_mar_cls *d = sp_mar_tab[found];\n"
+    "  void *p = into.tag == SP_TAG_OBJ ? into.v.p : sp_mar_alloc(d, found);\n"
+    "  SP_GC_ROOT(p);\n"
+    "  char *o = (char *)p;\n"
+    "  if (d->niv > 0)\n"
+    "    for (sp_int k = 0; k + 1 < iv->len; k += 2) {\n"
+    "      const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(iv, k).v.i);\n"
+    "      sp_RbVal val = sp_PolyArray_get(iv, k + 1);\n"
+    "      for (int j = 0; j < d->niv; j++) {\n"
+    "        const sp_mar_iv *v = &d->ivs[j];\n"
+    "        if (strcmp(nm, sp_mar_pool + v->name)) continue;\n"
+    "        if (v->obj) *(void **)(o + v->off) = val.tag == SP_TAG_OBJ ? val.v.p : NULL;\n"
+    "        else sp_mar_ux[v->arg](o + v->off, val);\n"
+    "        if (v->wb) sp_gc_wb(p);\n"
+    /* a loaded nil sets the ivar's nil byte; a value clears it */
+    "        if (v->nb >= 0) *(uint8_t *)(o + v->nb) = val.tag == SP_TAG_NIL;\n"
+    "        if (v->mark == 1) *(sp_bool *)(o + v->setoff) = 1;\n"
+    "%s"
+    "        break;\n"
+    "      }\n"
+    "    }\n"
+    "  return d->dyn ? sp_box_nullable_obj_dyn(p, d->boxid) : sp_box_nullable_obj(p, d->boxid);\n"
+    "}\n",
+    nn, nn, nanon, anon_load,
+    any_rank ? "        else if (v->mark == 2) sp_ivar_rank((sp_ivrank *)(o + v->setoff), (sp_ivrank *)(o + d->ordoff), "
+               "sp_ivar_renumber, (int)*(sp_int *)(o + d->clsoff), p);\n" : "");
 }
-
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   emit_cext_marshal_check(c, b);
-  emit_marshal_dump_dispatch(c, b);
-  emit_marshal_load_dispatch(c, b);
+  buf_puts(b,
+    "typedef struct { int name, arg; unsigned short off; short nb, setoff;\n"
+    "  unsigned char set : 4, mark : 2, obj : 2; unsigned char wb : 1, init : 2; } sp_mar_iv;\n"
+    "typedef struct { const char *name; const char **anon; unsigned char flags, dyn; unsigned short niv;\n"
+    "  int clsoff, ordoff, boxid; const sp_mar_iv *ivs; const unsigned short *ord;\n"
+    "  int (*order)(void *, int *); int idoff; void *(*alloc)(void); sp_pool_ref pool; } sp_mar_cls;\n"
+    "enum { SP_MARC_LOAD = 1, SP_MARC_EXC = 2, SP_MARC_ARY = 4, SP_MARC_RANKED = 8, SP_MARC_SGRAISE = 16 };\n");
+  MarRows R; memset(&R, 0, sizeof R);
+  Buf rows; memset(&rows, 0, sizeof rows);
+  unsigned char *has = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+  if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int any_anon = 0;
+  for (int i = 0; i < c->nclasses; i++) {
+    has[i] = (unsigned char)emit_marshal_class_row(c, i, &R, &rows);
+    any_anon |= has[i] && !marshal_sg_raises(c, i) && comp_class_anonymous(c, i);
+  }
+  /* the conversion pairs, then the pool, the rows and the table */
+  for (int k = 0; k < R.nk; k++) emit_marshal_kind_fns(c, R.kinds[k], k, b);
+  buf_puts(b, "static sp_RbVal (*const sp_mar_bx[])(void *, const uint8_t *) = {");
+  for (int k = 0; k < R.nk; k++) buf_printf(b, "%s sp_mar_bx_%d", k ? "," : "", k);
+  buf_puts(b, R.nk ? " };\n" : " NULL };\n");
+  buf_puts(b, "static void (*const sp_mar_ux[])(void *, sp_RbVal) = {");
+  for (int k = 0; k < R.nk; k++) buf_printf(b, "%s sp_mar_ux_%d", k ? "," : "", k);
+  buf_puts(b, R.nk ? " };\n" : " NULL };\n");
+  buf_puts(b, "static const char sp_mar_pool[] =\n");
+  buf_puts(b, R.pool.p ? R.pool.p : "\"\"\n");
+  buf_puts(b, ";\n");
+  if (rows.p) buf_puts(b, rows.p);
+  free(rows.p); free(R.pool.p); free(R.kinds); free(R.pnames); free(R.poffs);
+  buf_printf(b, "static const sp_mar_cls *const sp_mar_tab[%d] = {", c->nclasses > 0 ? c->nclasses : 1);
+  int col = 0;
+  for (int i = 0; i < c->nclasses; i++)
+    if (has[i]) buf_printf(b, "%s[%d] = &sp_mar_c_%d", col++ ? ", " : " ", i, i);
+  buf_puts(b, col ? " };\n" : " NULL };\n");
+  /* the names a load looks classes up by: sorted, and a name two classes
+     give, the first of them; an anonymous class's is the run time's, so
+     those are asked in class order beside it */
+  const char **names = malloc(sizeof(char *) * 2 * (size_t)(c->nclasses + 1));
+  int nn = 0, nanon = 0;
+  if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  buf_puts(b, "static const int sp_mar_anon[] = {");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!has[i] || marshal_sg_raises(c, i) || class_is_exc_subclass(c, i)) continue;
+    if (comp_class_anonymous(c, i)) { buf_printf(b, " %d,", i); nanon++; continue; }
+    names[2 * nn] = class_ruby_name(c, i) ? class_ruby_name(c, i) : c->classes[i].name;
+    names[2 * nn + 1] = (const char *)(intptr_t)i;
+    nn++;
+  }
+  buf_puts(b, nanon ? " };\n" : " -1 };\n");
+  qsort(names, (size_t)nn, 2 * sizeof(char *), marshal_name_cmp);
+  buf_puts(b, "static const struct { const char *name; int cls; } sp_mar_names[] = {");
+  for (int k = 0; k < nn; k++) buf_printf(b, "%s{ \"%s\", %d }", k ? ", " : " ", names[2 * k], (int)(intptr_t)names[2 * k + 1]);
+  buf_puts(b, nn ? " };\n" : " { NULL, -1 } };\n");
+  free(names);
+  free(has);
+  emit_marshal_generic(c, nn, nanon, any_anon, R.any_rank, b);
 }
 
 /* A parent parameter a bare `super` has no argument for: `*rest` takes an
@@ -17251,7 +17449,6 @@ static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
-  int mar_refs = 0, mar_load_refs = 0, mar_dump_refs = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0; g_uses_traps = 0;
   g_uses_ensure = 0;
   g_uses_program_name = 0;
@@ -17332,7 +17529,7 @@ static void scan_prologue_features(Compiler *c) {
       /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
          table (sp_sym_intern / sp_sym_to_s) emitted even if the program uses no
          symbol literals; it also drives the sp_marshal_v vtable install. */
-      else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; mar_refs++; }
+      else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
     }
     else if (sp_streq(ty, "GlobalVariableReadNode") || sp_streq(ty, "GlobalVariableWriteNode")) {
       const char *nm = nt_str(nt, i, "name");
@@ -17344,15 +17541,6 @@ static void scan_prologue_features(Compiler *c) {
     else if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
-      /* `Marshal.load` / `.restore` and `Marshal.dump`: the half of the object
-         dispatch each needs (emit_marshal_dispatch) */
-      { int mr = nt_ref(nt, i, "receiver");
-        NodeKind mk = mr >= 0 ? nt_kind(nt, mr) : NK_CallNode;
-        if ((mk == NK_ConstantReadNode || mk == NK_ConstantPathNode) && nt_str(nt, mr, "name") &&
-            sp_streq(nt_str(nt, mr, "name"), "Marshal")) {
-          if (sp_streq(nm, "load") || sp_streq(nm, "restore")) mar_load_refs++;
-          else if (sp_streq(nm, "dump")) mar_dump_refs++;
-        } }
       /* Reflection that YIELDS symbols the source never spells: without this
          the program has no SymbolNode, so sp_sym_name_fn stays uninstalled and
          sp_poly_cmp falls back to comparing symbols by id -- `constants.sort`
@@ -17499,11 +17687,6 @@ static void scan_prologue_features(Compiler *c) {
        fallbacks only when BOTH are absent. */
     if (g_emit_sym_rt || g_emit_class_names) { g_emit_sym_rt = 1; g_emit_class_names = 1; }
   }
-  /* a reference to Marshal other than as the receiver of a load (a dump, a
-     send, a constant handed on) may dump, and one other than a dump's may
-     load */
-  g_marshal_dumps = mar_refs > mar_load_refs;
-  g_marshal_loads = mar_refs > mar_dump_refs;
 }
 
 /* ---- collect-mode unit state ----

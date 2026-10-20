@@ -840,6 +840,29 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   } \
   _p; \
 }))
+/* SP_POOL_NEW for a caller that knows the class only at run time (the
+   Marshal loader's table): the pool's variables by address, and the size
+   and the scan as values. */
+typedef struct {
+  sp_gc_hdr **head; long *count, *pops; void (*recycle)(sp_gc_hdr *);
+  size_t size; void (*scan)(void *);
+} sp_pool_ref;
+static SP_UNUSED void *sp_pool_new_at(const sp_pool_ref *q) {
+  void *p;
+  sp_gc_hdr *h = sp_slab_on > 0 ? NULL : sp_pool_try_pop(q->head);
+  if (h) {
+    SP_POOL_CTR_DEC(*q->count);
+    SP_POOL_CTR_INC(*q->pops);
+    sp_gc_pool_relink(h);
+    h->recycle = q->recycle;
+    p = (char *)h + sizeof(sp_gc_hdr);
+    memset(p, 0, q->size);   /* a recycled slot is not zeroed; a fresh one is, by the allocator */
+    if (sp_alloc_report_on) sp_alloc_report_count((void *)(q->scan), q->size);
+  }
+  else if (sp_slab_on > 0) p = sp_gc_alloc_sized(q->size, q->scan);
+  else p = sp_gc_alloc_pool(q->size, q->scan, q->recycle);
+  return p;
+}
 
 /* `Object.new` -- a sentinel object whose meaningful properties are
    identity and the instance variables instance_variable_set gives it,
