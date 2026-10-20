@@ -1,0 +1,12 @@
+read_nonblock, nil switch: ArgumentError (ran [32])
+read_nonblock, nil length and switch: TypeError (ran [])
+read_nonblock, nil length: TypeError (ran [false])
+read_nonblock: :wait_readable (ran [32, false])
+boxed read_nonblock, nil length: TypeError (ran [false])
+write_nonblock, nil switch: ArgumentError (ran [nil, "to_s"])
+write_nonblock: 14 (ran [false, "to_s"])
+boxed write_nonblock, nil switch: ArgumentError (ran [nil, "to_s"])
+"Seongsu Bridge"
+recv_nonblock, nil length: TypeError (ran [false])
+recv_nonblock: :wait_readable (ran [32, false])
+connect_nonblock, nil address: TypeError (ran [false])
