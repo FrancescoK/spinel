@@ -4818,7 +4818,7 @@ collect-errors-test: $(SPINEL)
 	rm -f "$$tmp/sr.json"; \
 	$(SPINEL) --share-strings "$$sr" --emit-types -o "$$tmp/sr.json" >"$$tmp/sr3.err" 2>&1; rc=$$?; \
 	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr3.err"); \
-	[ $$rc -ne 0 ] && [ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (under --emit-types the seal reported $$n of its 3 refusals, rc=$$rc: the run goes on past each and fails at the end)"; ok=0; }; \
+	[ $$rc -eq 1 ] && [ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (under --emit-types the seal reported $$n of its 3 refusals, rc=$$rc: the run goes on past each and exits 1)"; ok=0; }; \
 	[ -f "$$tmp/sr.json" ] || { echo "collect-errors-test: FAIL (a program the seal refuses left no --emit-types JSON)"; ok=0; }; \
 	n=$$(grep -c '"severity":"error"' "$$tmp/sr.json" 2>/dev/null); \
 	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (the --emit-types JSON carries $$n of the seal's 3 refusals)"; ok=0; }; \
