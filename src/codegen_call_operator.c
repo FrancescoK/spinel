@@ -1655,7 +1655,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int th = ++g_tmp, tb = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_String *_t%d = ", th);
-      emit_strbuf_handle_of(c, unwrap_parens(c, recv), g_pre);
+      emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), g_pre);
       buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", th);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"[]=\", sp_box_nil()));\n", th);

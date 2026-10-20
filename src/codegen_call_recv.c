@@ -627,7 +627,7 @@ static int sb_reader_expr_shim(Compiler *c, int id, int recvS, Buf *b,
    and the handle's buffer takes the change. */
 static int sb_route_expr_shim(Compiler *c, int id, int recvS, Buf *b,
                               int (*rerun)(Compiler *, int, Buf *)) {
-  int u = unwrap_parens(c, recvS);
+  int u = nt_paren_single(c->nt, recvS);
   if (!repr_share_rule(c) || u < 0 || nt_kind(c->nt, u) != NK_CallNode || sb_shadowed_reader(recvS) ||
       g_n_argov + 1 >= MAX_ARG_OVERRIDE)
     return 0;
@@ -4154,14 +4154,14 @@ static int str_self_mutator_name(const char *n) {
 }
 static int str_bang_chain_var(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  int cur = unwrap_parens(c, recv), links = 0;
+  int cur = nt_paren_single(c->nt, recv), links = 0;
   /* insert / prepend / concat / replace / << answer their receiver always,
      so a bang on their result (`s.insert(1, "-").sub!("-", "+")`) mutates
      the variable too; the chain passes through them as through a bang */
   while (nt_kind(nt, cur) == NK_CallNode && nt_ref(nt, cur, "receiver") >= 0 &&
          (ty_str_typed_bang_flags(nt_str(nt, cur, "name")) ||
           str_self_mutator_name(nt_str(nt, cur, "name")))) {
-    cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+    cur = nt_paren_single(c->nt, nt_ref(nt, cur, "receiver"));
     links++;
   }
   TyKind bt = links ? comp_ntype(c, cur) : TY_UNKNOWN;
@@ -4582,7 +4582,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       free(wb.p);
       /* (the chain's bytes are the handle's buffer, read before the
          write-back hands the answer to that handle: no copy) */
-      if (inpl && g_share_check) share_check_declare_reads(b, recv_at, unwrap_parens(c, recv));
+      if (inpl && g_share_check) share_check_declare_reads(b, recv_at, nt_paren_single(c->nt, recv));
       if (ttc)
         buf_printf(b, "_t%d ? NULL : _t%d; })", ttc, tn2);
       else if (sb_nil_nc)
@@ -5005,7 +5005,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        (`id(s).concat(x).force_encoding(e)`, after a `&.`) tags that handle,
        read once, and answers its bytes, as on a handle variable */
     if (nmS && recvS >= 0 && repr_share_rule(c) && is_encoding_mutator(nmS) && repr_of(c, recvS).as_ty == TY_STRBUF &&
-        nt_kind(ntS, unwrap_parens(c, recvS)) == NK_CallNode) {
+        nt_kind(ntS, nt_paren_single(c->nt, recvS)) == NK_CallNode) {
       int acE = 0;
       const int *avE = call_args(ntS, id, &acE);
       Buf feref; memset(&feref, 0, sizeof feref);
@@ -8227,11 +8227,11 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
       int lo_alloc = lo_n >= 0 && operand_may_allocate(c, lo_n);
       int hi_alloc = hi_n >= 0 && operand_may_allocate(c, hi_n);
       if ((lo_alloc || hi_alloc) && operand_may_allocate(c, recv) &&
-          nt_kind(c->nt, unwrap_parens(c, recv)) != NK_StringNode)
+          nt_kind(c->nt, nt_paren_single(c->nt, recv)) != NK_StringNode)
         buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tc);
       buf_printf(b, "const char *_t%d = ", tlo);
       if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
-      if (hi_alloc && lo_alloc && nt_kind(c->nt, unwrap_parens(c, lo_n)) != NK_StringNode)
+      if (hi_alloc && lo_alloc && nt_kind(c->nt, nt_paren_single(c->nt, lo_n)) != NK_StringNode)
         buf_printf(b, "; SP_GC_ROOT_STR(_t%d)", tlo);
       buf_printf(b, "; const char *_t%d = ", thi);
       if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
@@ -9527,7 +9527,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      the call a second time (the arm itself uses the handle) */
   if (rt == TY_STRING && repr_share_rule(c) && name && is_encoding_mutator(name) &&
       argc <= encoding_mutator_max_argc(name) &&
-      nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode) {
+      nt_kind(nt, nt_paren_single(c->nt, recv)) == NK_CallNode) {
     Buf *pre = g_pre;
     size_t pre_mark = pre ? pre->len : 0;
     Buf feref; memset(&feref, 0, sizeof feref);
@@ -9635,7 +9635,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      String a holder keeps reads the yield's handle once, in equal?'s own
      arm (str_arms_convert): held here as its bytes, the handle was lost) */
   int y_ident = repr_share_rule(c) && name && is_equal_name(name) && recv >= 0 &&
-                nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode && strbuf_yield_tail_held(c);
+                nt_kind(nt, nt_paren_single(c->nt, recv)) == NK_YieldNode && strbuf_yield_tail_held(c);
   /* (encode and encode! hold and root their receiver themselves, after
      the arguments where CRuby reads it there, or take a shared String's
      handle: encode_hold) */
@@ -9887,7 +9887,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
     }
     else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE &&
-             nt_type(nt, unwrap_parens(c, argv[0])) && !sp_streq(nt_type(nt, unwrap_parens(c, argv[0])), "RangeNode")) {
+             nt_type(nt, nt_paren_single(c->nt, argv[0])) && !sp_streq(nt_type(nt, nt_paren_single(c->nt, argv[0])), "RangeNode")) {
       /* Float#clamp(float_range) held in a variable: clamp against sp_FloatRange
          (boxed, matching the literal path and TY_POLY inference). */
       int tf = ++g_tmp;
@@ -9901,7 +9901,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          own class); an in-range receiver stays the Float. A literal range
          with a Float bound cannot ride sp_Range (sp_int bounds truncate
          it), so it clamps against typed endpoint temps directly. */
-      int rn3 = unwrap_parens(c, argv[0]);
+      int rn3 = nt_paren_single(c->nt, argv[0]);
       int is_lit = rn3 >= 0 && nt_type(nt, rn3) && sp_streq(nt_type(nt, rn3), "RangeNode");
       int flo = is_lit ? nt_ref(nt, rn3, "left") : -1;
       int fhi = is_lit ? nt_ref(nt, rn3, "right") : -1;
@@ -11875,7 +11875,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      the endpoints' class, so the range helper would compare raw pointers). */
   if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 1 &&
       comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
-    int rn2 = unwrap_parens(c, argv[0]);
+    int rn2 = nt_paren_single(c->nt, argv[0]);
     if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
       int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
       /* a side is present unless it is absent (-1) or an explicit nil */
@@ -13125,7 +13125,7 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1) { buf_puts(b, "sp_IntArray_new()"); return TY_INT_ARRAY; }
-  int rn = unwrap_parens(c, recv);
+  int rn = nt_paren_single(c->nt, recv);
   int is_lit = rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode");
   int lo = is_lit ? nt_ref(nt, rn, "left") : -1;
   int hi = is_lit ? nt_ref(nt, rn, "right") : -1;
@@ -13276,7 +13276,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        (#3670). A Float begin has no enumeration, as CRuby's TypeError says. */
     if ((is_size_or_count(name)) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
-      int rq2 = unwrap_parens(c, recv);
+      int rq2 = nt_paren_single(c->nt, recv);
       int lo2 = (rq2 >= 0 && nt_type(nt, rq2) && sp_streq(nt_type(nt, rq2), "RangeNode"))
                   ? nt_ref(nt, rq2, "left") : -1;
       if (lo2 >= 0 && comp_ntype(c, lo2) == TY_INT) {
@@ -13345,7 +13345,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     if (block >= 0 && argc == 0 && nt_type(nt, block) &&
         sp_streq(nt_type(nt, block), "BlockNode") &&
         (is_find_or_take_while(name))) {
-      int rn8 = unwrap_parens(c, recv);
+      int rn8 = nt_paren_single(c->nt, recv);
       if (rn8 >= 0 && nt_type(nt, rn8) && !sp_streq(nt_type(nt, rn8), "RangeNode")) {
         int sl8 = local_sole_range_node(c, rn8);
         if (sl8 >= 0) rn8 = sl8;
@@ -13397,7 +13397,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        it (#3914). */
     if (block >= 0 && argc == 0 && nt_type(nt, block) &&
         sp_streq(nt_type(nt, block), "BlockNode") && sp_streq(name, "reverse_each")) {
-      int rn7 = unwrap_parens(c, recv);
+      int rn7 = nt_paren_single(c->nt, recv);
       if (rn7 >= 0 && nt_type(nt, rn7) && !sp_streq(nt_type(nt, rn7), "RangeNode")) {
         int sl7 = local_sole_range_node(c, rn7);
         if (sl7 >= 0) rn7 = sl7;
@@ -13438,7 +13438,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* endless literal: size is infinite; take/first(n) count from the start
        (an endless range cannot materialize) */
     {
-      int rn9 = unwrap_parens(c, recv);
+      int rn9 = nt_paren_single(c->nt, recv);
       /* a local holding only such a literal counts too (sole-assignment);
          the arms below never evaluate the receiver, so skipping the local
          read loses no side effect */
@@ -13607,7 +13607,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        literal renders statically (int-backed sp_Range cannot). */
     if ((is_text_conversion(name)) &&
         argc == 0 && nt_ref(nt, id, "block") < 0) {
-      int rq = unwrap_parens(c, recv);
+      int rq = nt_paren_single(c->nt, recv);
       if (rq >= 0 && nt_type(nt, rq) && !sp_streq(nt_type(nt, rq), "RangeNode")) {
         int sl = local_sole_range_node(c, rq);
         if (sl >= 0) rq = sl;
@@ -13678,7 +13678,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_Range _t%d = ", trr); emit_expr(c, recv, b);
       buf_printf(b, "; sp_int _t%d = ", tnn); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tnn);
-      int rq = unwrap_parens(c, recv);
+      int rq = nt_paren_single(c->nt, recv);
       if (nt_kind(nt, rq) != NK_RangeNode) rq = local_sole_range_node(c, rq);
       if (!want_min && nt_kind(nt, rq) == NK_RangeNode && comp_ntype(c, nt_ref(nt, rq, "right")) == TY_FLOAT)
         buf_printf(b, " if (_t%d.nobeg) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");", trr);
@@ -13727,7 +13727,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((is_size_or_count(name)) && argc == 0) {
-        int rn = unwrap_parens(c, recv);
+        int rn = nt_paren_single(c->nt, recv);
         if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
           int lo = nt_ref(nt, rn, "left");
           if (lo >= 0 && comp_ntype(c, lo) == TY_STRING) {
@@ -13823,7 +13823,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
            only record as "unbounded" -- answer the Float itself (#3670) */
         buf_puts(b, node_is_oint(c, id) ? "sp_ofloat_of(HUGE_VAL)" : "HUGE_VAL"); (void)t;   /* never nil */
       }
-      else if (sp_streq(name, "end") && ({ int _rr = unwrap_parens(c, recv);
+      else if (sp_streq(name, "end") && ({ int _rr = nt_paren_single(c->nt, recv);
                nt_type(nt, _rr) && sp_streq(nt_type(nt, _rr), "RangeNode") &&
                nt_ref(nt, _rr, "right") < 0; })) {
         /* an ENDLESS literal range: #end is nil (#2413) */
@@ -14104,7 +14104,7 @@ int emit_aset_recv_read(Compiler *c, int recv, Buf *b) {
 }
 /* See codegen_internal.h. */
 void emit_recv_slot(Compiler *c, int recv, Buf *b) {
-  int rv = unwrap_parens(c, recv);
+  int rv = nt_paren_single(c->nt, recv);
   const char *rn = rv >= 0 && nt_kind(c->nt, rv) == NK_LocalVariableReadNode ? nt_str(c->nt, rv, "name") : NULL;
   Scope *sc = rn ? comp_scope_of(c, rv) : NULL;
   LocalVar *lv = sc ? scope_local(sc, rn) : NULL;
@@ -14214,7 +14214,7 @@ static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
   int argc, n = 0;
   const int *argv = call_args(c->nt, id, &argc);
   for (int i = 0; i < argc && n + 1 < cap; i++) {
-    int a = unwrap_parens(c, argv[i]);
+    int a = nt_paren_single(c->nt, argv[i]);
     if (nt_kind(c->nt, a) != NK_RangeNode || nt_int(c->nt, a, "index_of", 0) - 1 != id) continue;
     TyKind at = cg_natural_type(c, a);
     if (at != comp_ntype(c, a)) toks[n++] = view_push(c, a, at);

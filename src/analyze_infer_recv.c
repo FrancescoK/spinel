@@ -119,7 +119,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        TypeError CRuby raises. */
     if ((is_size_or_count(name)) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
-      int rq3 = an_unparen(nt, nt_ref(nt, id, "receiver"));
+      int rq3 = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
       int lo3 = (rq3 >= 0 && nt_kind(nt, rq3) == NK_RangeNode) ? nt_ref(nt, rq3, "left") : -1;
       if (lo3 >= 0 && infer_type(c, lo3) == TY_INT) { *out = TY_FLOAT; return 1; }
     }
@@ -169,7 +169,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       range_lit_float_end(c, recv) >= 0)
     { *out = TY_FLOAT; return 1; }
   if (rt == TY_RANGE && recv >= 0) {
-    int rnA = an_unparen(nt, recv);
+    int rnA = nt_paren_single(nt, recv);
     /* a local holding only such a literal counts too (sole-assignment) */
     if (rnA >= 0 && nt_type(nt, rnA) && !sp_streq(nt_type(nt, rnA), "RangeNode")) {
       int slA = local_sole_range_node(c, rnA);
@@ -1356,7 +1356,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
       /* a literal range with same-class endpoints unfolds to the object
          clamp, whose result is one of the three same-class values */
-      int rn2 = an_unparen(nt, argv[0]);
+      int rn2 = nt_paren_single(nt, argv[0]);
       if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
         int rlo2 = nt_ref(nt, rn2, "left"), rhi2 = nt_ref(nt, rn2, "right");
         /* two-sided, beginless (`..hi`), and endless (`lo..`) object ranges all

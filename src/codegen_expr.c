@@ -1041,7 +1041,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
    arm is its oint form, a nil arm its nil */
 static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (node_is_empty_container(nt, nd)) nd = unwrap_parens(c, nd);   /* `([])` is `[]` */
+  if (node_is_empty_container(nt, nd)) nd = nt_paren_single(c->nt, nd);   /* `([])` is `[]` */
   const char *bty = nt_type(nt, nd);
   if (res_o && oint_kind(res)) { emit_oint_expr(c, nd, res, b); return; }
   if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
@@ -1116,7 +1116,7 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
   {
     Buf ab; memset(&ab, 0, sizeof ab);
     emit_expr(c, nd, &ab);
-    int un = unwrap_parens(c, nd);
+    int un = nt_paren_single(c->nt, nd);
     /* An arm that compiles to a NoMethodError raise (e.g. `u.details` where u is
        unresolvable) evaluates to sp_RbVal but never returns; the sibling arm has
        the concrete result type, so coerce the raise to it -- `(raise, default)`
@@ -5570,7 +5570,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
        `break`'s value (nil for a bare one). The collection -- for a range
        literal, its endpoints -- is evaluated once into temps that the loop
        then reads through the argument overrides. */
-    int coll = unwrap_parens(c, nt_ref(nt, id, "collection"));
+    int coll = nt_paren_single(c->nt, nt_ref(nt, id, "collection"));
     int subs[2] = { -1, -1 }, ns = 0;
     if (coll >= 0 && nt_kind(nt, coll) == NK_RangeNode && repr_of(c, coll).range == TY_INT) {
       subs[ns++] = nt_ref(nt, coll, "left");

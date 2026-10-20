@@ -558,9 +558,9 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
   /* A string-range LITERAL is the distinct sp_StrRange value type now, served
      by emit_range_call; this arm is left for the shapes that still type as the
      int TY_RANGE (a mixed or beginless/endless string range). (#3064) */
-  if (recv >= 0 && rt == TY_RANGE && nt_type(nt, unwrap_parens(c, recv)) &&
-      sp_streq(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
-    int rnode = unwrap_parens(c, recv);
+  if (recv >= 0 && rt == TY_RANGE && nt_type(nt, nt_paren_single(c->nt, recv)) &&
+      sp_streq(nt_type(nt, nt_paren_single(c->nt, recv)), "RangeNode")) {
+    int rnode = nt_paren_single(c->nt, recv);
     int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
     if (lo >= 0 && hi >= 0 && repr_of(c, lo).as_ty == TY_STRING && repr_of(c, hi).as_ty == TY_STRING) {
       int excl = nt_range_excl(nt, rnode);

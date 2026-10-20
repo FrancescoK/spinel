@@ -3435,8 +3435,8 @@ static void vsite_build(Compiler *c, int toplevel) {
           nt_kind(nt, ru) == NK_ClassVariableReadNode)
         vsite_add(c, VS_RECV, u, ru);
       if (un && sp_str_mutator(un, SP_MUT_LOCAL)) {
-        while (str_self_call(nt, an_unparen(nt, r))) r = nt_ref(nt, an_unparen(nt, r), "receiver");
-        int base = an_unparen(nt, r);
+        while (str_self_call(nt, nt_paren_single(nt, r))) r = nt_ref(nt, nt_paren_single(nt, r), "receiver");
+        int base = nt_paren_single(nt, r);
         if (vsite_is_read(nt, base)) vsite_add(c, VS_MUT, u, base);
       }
     }

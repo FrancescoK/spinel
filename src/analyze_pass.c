@@ -2603,7 +2603,7 @@ static int *fiber_new_blocks(Compiler *c, int *out_n) {
 
 static int recv_hash_or_write(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  int n = unwrap_parens(c, recv);
+  int n = nt_paren_single(c->nt, recv);
   if (n >= 0 && nt_kind(nt, n) == NK_CallNode) {
     int gr = nt_ref(nt, n, "receiver");
     int ga = nt_ref(nt, n, "arguments");
@@ -3278,7 +3278,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
        (`(log << :d; a).push(x)` fills a as `a.push(x)` does); a single
        parenthesized expression keeps the readings below */
     int recv0 = recv;  /* as written, for widen_nested_literals */
-    if (nt_kind(nt, unwrap_parens(c, recv)) == NK_ParenthesesNode) {
+    if (nt_kind(nt, nt_paren_single(c->nt, recv)) == NK_ParenthesesNode) {
       int leaf = -1;
       if (value_leaves(c, recv, &leaf, 0, 1) == 1) recv = leaf;
     }
@@ -3309,7 +3309,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
        here left an Integer-keyed hash that dropped a String key (#4902). */
     {
       int orw = recv_hash_or_write(c, recv);
-      if (orw >= 0 && !(nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode &&
+      if (orw >= 0 && !(nt_kind(nt, nt_paren_single(c->nt, recv)) == NK_CallNode &&
                         ty_is_hash(infer_type(c, orw)))) {
         recv = orw;
         rty = nt_kind(nt, orw) == NK_InstanceVariableOrWriteNode ? "InstanceVariableReadNode"
@@ -5761,7 +5761,7 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
    Returns 1 on a change. */
 static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt) {
   const NodeTable *nt = c->nt;
-  int r = unwrap_parens(c, recv), seq = 0;
+  int r = nt_paren_single(c->nt, recv), seq = 0;
   /* `(log << :d; [9]).push([2])`: the sequence's value, its last statement,
      is the literal stored into (a bare literal receiver is its own call's) */
   if (r >= 0 && nt_kind(nt, r) == NK_ParenthesesNode) {
@@ -6082,7 +6082,7 @@ static int local_rows_escape(Compiler *c, int r) {
     if (comp_scope_of(c, u) == sc && sp_streq(nt_str(nt, u, "name"), nm)) nread++;
   NT_FOREACH_KIND(nt, NK_CallNode, call) {
     const char *cn = nt_str(nt, call, "name");
-    int rc = unwrap_parens(c, nt_ref(nt, call, "receiver"));
+    int rc = nt_paren_single(c->nt, nt_ref(nt, call, "receiver"));
     if (!cn) continue;
     if (rc >= 0 && nt_kind(nt, rc) == NK_LocalVariableReadNode && comp_scope_of(c, rc) == sc &&
         sp_streq(nt_str(nt, rc, "name"), nm)) {
@@ -6108,7 +6108,7 @@ static int local_rows_escape(Compiler *c, int r) {
 static int literal_rows_read(Compiler *c, int v, int apply) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, v, "name");
-  int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), a = nt_ref(nt, v, "arguments"), an = 0;
+  int r = nt_paren_single(c->nt, nt_ref(nt, v, "receiver")), a = nt_ref(nt, v, "arguments"), an = 0;
   if (a >= 0) nt_arr(nt, a, "arguments", &an);
   if (!nm || r < 0 || nt_ref(nt, v, "block") >= 0 ||
       !((sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an == 1) ||
@@ -6503,7 +6503,7 @@ int proc_lit_carrier(Compiler *c, int v, int lit) {
   /* a local any write of which is the literal may hold it at the call */
   for (int w = si >= 0 ? comp_lvw_first_sc(c, si, vn) : -1; w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
-    if (nt_kind(nt, w) == NK_LocalVariableWriteNode && unwrap_parens(c, nt_ref(nt, w, "value")) == lit) return 1;
+    if (nt_kind(nt, w) == NK_LocalVariableWriteNode && nt_paren_single(c->nt, nt_ref(nt, w, "value")) == lit) return 1;
   }
   return 0;
 }
@@ -16261,7 +16261,7 @@ int infer_block_params(Compiler *c) {
       int args = nt_ref(nt, id, "arguments");
       int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
       int isf = sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT;
-      int rnn = an_unparen(nt, recv);
+      int rnn = nt_paren_single(nt, recv);
       if (rnn >= 0 && nt_type(nt, rnn) && sp_streq(nt_type(nt, rnn), "RangeNode")) {
         int lo = nt_ref(nt, rnn, "left"), hi = nt_ref(nt, rnn, "right");
         if ((lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
@@ -16343,7 +16343,7 @@ int infer_block_params(Compiler *c) {
       if (rt == TY_FLOAT_RANGE) { pt = TY_FLOAT; }
       else {
       /* a float-bounded int range binds a FLOAT element (bsearch bisects the reals) */
-      int frn = an_unparen(nt, recv);
+      int frn = nt_paren_single(nt, recv);
       int fl9 = frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "RangeNode");
       int fb = fl9 ? nt_ref(nt, frn, "left") : -1, fe = fl9 ? nt_ref(nt, frn, "right") : -1;
       TyKind fbt = fb >= 0 ? infer_type(c, fb) : TY_NIL;
