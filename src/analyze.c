@@ -34598,6 +34598,19 @@ static int const_array_index_in_range(Compiler *c, int recv, int idx) {
   return 0;
 }
 
+/* Is position `pos` of a multiple assignment's value, read from the constant
+   Array `value` of a proven length, within it? A negative position counts
+   from the end, past `lefts` targets before it and `rights` after the splat
+   (elem_miss_call's rule): the element is then no miss. */
+int masgn_const_elem_in_range(Compiler *c, int value, long long pos, long long lefts, long long rights) {
+  const NodeTable *nt = c->nt;
+  const char *nm = value >= 0 ? nt_str(nt, value, "name") : NULL;
+  if (!nm || !carr_is_read(nt, value, nm)) return 0;
+  const CArr *ca = const_array(c, nm);
+  if (!ca) return 0;
+  return pos < 0 ? lefts + pos + rights < ca->len : pos < ca->len;
+}
+
 /* Can position `pos` of a multiple assignment's value be nil, where the
    value is a constant Array of a known length, or a conditional or a
    sequence whose value positions are such (1 when any is anything else)?

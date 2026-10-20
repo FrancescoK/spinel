@@ -15460,13 +15460,22 @@ static int masgn_target_takes_nil(Compiler *c, int id, int tgt) {
   }
   return 1;
 }
+/* Is the target an attribute of a receiver typed at run time? */
+static int masgn_poly_attr_target(Compiler *c, int tgt) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_kind(nt, tgt) == NK_CallTargetNode ? nt_ref(nt, tgt, "receiver") : -1;
+  return recv >= 0 && comp_ntype(c, recv) == TY_POLY;
+}
 /* Element `ix` of the Integer or Float Array _t<arr> (kind k) as a temp
    with its nil beside it, for a target that can hold the nil (masgn_conv_o):
    a read past the end is nil, as in CRuby. Names the temp in `out` and
    answers 1, or answers 0 for an element that holds no nil. */
 static int masgn_elem_temp(Compiler *c, int id, int tgt, TyKind st, TyKind elem, const char *k, int arr, const char *ix,
-                           int indent, Buf *b, char *out, size_t on) {
+                           int indent, Buf *b, char *out, size_t on, int in_range) {
   if (!oint_kind(elem) || st == TY_POLY_ARRAY || g_masgn_notmps >= 64 || !masgn_target_takes_nil(c, id, tgt)) return 0;
+  /* a boxed receiver takes the nil whatever its writers are, but an element
+     the constant Array has needs no oint beside it */
+  if (in_range && masgn_poly_attr_target(c, tgt)) return 0;
   int tv = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "%s _t%do = sp_%sArray_oget(_t%d, %s); %s _t%d = _t%do.v;\n",
@@ -16468,7 +16477,8 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       }
       else {
         char gx[80], ix[32]; snprintf(ix, sizeof ix, "%dLL", i);
-        if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx))
+        if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx,
+                             masgn_const_elem_in_range(c, value, i, ln, rn)))
           snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
         if (!masgn_store(c, id, mt, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
@@ -16616,7 +16626,8 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         }
         char rgx[160], rix[32];
         snprintf(rix, sizeof rix, "_t%d", tix);
-        if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx))
+        if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx,
+                             masgn_const_elem_in_range(c, value, j - rn, ln, rn)))
           snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
         if (!masgn_store(c, id, mt, rights[j], rgx, elem, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");

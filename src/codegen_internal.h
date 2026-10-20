@@ -210,6 +210,7 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 /* --share-strings: is element el of plain multiple write mw rendered through the handle face into a held temp? */
 int masgn_face_elem(Compiler *c, int mw, int el);
 int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n);
+int masgn_const_elem_in_range(Compiler *c, int value, long long pos, long long lefts, long long rights);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);
