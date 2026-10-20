@@ -363,6 +363,17 @@ no_gsub_enum:
         emit_expr(c, recv, b); buf_puts(b, nn ? ", \"match?\"))" : ")");
         return 1;
       }
+      /* a position that runs code runs ahead of the test, as CRuby runs the
+         arguments ahead of the missing method: the receiver and it are held */
+      if (nn && subtree_has_side_effect(c, argv[1]) && !arg_ran_first(argv[1], 0)) {
+        int tr = ++g_tmp, tp = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+        if (operand_may_allocate(c, argv[1])) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
+        buf_printf(b, "sp_int _t%d = ", tp); emit_int_expr(c, argv[1], b); buf_puts(b, "; ");
+        nil_recv_check("match?", tr, b);
+        buf_printf(b, " sp_str_re_match_p_at(sp_re_pat_%d, _t%d, _t%d); })", are, tr, tp);
+        return 1;
+      }
       buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, %s", are, nn ? "sp_nil_recv_named(" : ""); emit_expr(c, recv, b);
       buf_puts(b, nn ? ", \"match?\"), " : ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return 1;
@@ -411,13 +422,19 @@ no_gsub_enum:
         (sp_streq(name, "match?") || sp_streq(name, "match"))) {
       int ts = ++g_tmp;
       const char *fn = sp_streq(name, "match?") ? "sp_re_match_p" : "sp_re_matchdata";
+      /* (match? with a receiver that can be nil holds it and tests it once
+         the pattern has run, ahead of the compile: nil's NoMethodError, not
+         the pattern's RegexpError) */
+      int tr = sp_streq(name, "match?") && !recv_never_nil(c, recv) ? ++g_tmp : 0;
+      if (tr) { buf_printf(b, "({ const char *_t%d = ", tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT_STR(_t%d); ", tr); }
       buf_printf(b, "({ const char *_t%d = ", ts); emit_str_expr(c, argv[0], b);
-      buf_printf(b, "; mrb_regexp_pattern *_t%dp = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), 0); ",
+      buf_puts(b, "; ");
+      if (tr) { nil_recv_check("match?", tr, b); buf_puts(b, " "); }
+      buf_printf(b, "mrb_regexp_pattern *_t%dp = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), 0); ",
                  ts, ts, ts, ts);
-      /* (match? with a receiver that can be nil raises, as above) */
-      int nn = sp_streq(name, "match?") && !recv_never_nil(c, recv);
-      buf_printf(b, "%s(_t%dp, %s", fn, ts, nn ? "sp_nil_recv_named(" : ""); emit_expr(c, recv, b);
-      buf_puts(b, nn ? ", \"match?\")); })" : "); })");
+      buf_printf(b, "%s(_t%dp, ", fn, ts);
+      if (tr) buf_printf(b, "_t%d); }); })", tr);
+      else { emit_expr(c, recv, b); buf_puts(b, "); })"); }
       return 1;
     }
   }
@@ -539,7 +556,21 @@ no_gsub_enum:
                of a widened container) needs coercing into the const char* slot
                the same way the precompiled-literal arms do it (#3389). */
             /* (a String receiver that can be nil raises, as the literal
-               pattern's arm has it) */
+               pattern's arm has it: held with the pattern and the position
+               when one of them runs code, and tested once they have run) */
+            else if (rt == TY_STRING && !recv_never_nil(c, recv) &&
+                     ((subtree_has_side_effect(c, argv[0]) && !arg_ran_first(argv[0], 0)) ||
+                      (argc == 2 && subtree_has_side_effect(c, argv[1]) && !arg_ran_first(argv[1], 0)))) {
+              int tr = ++g_tmp, tq = ++g_tmp, tp = argc == 2 ? ++g_tmp : 0;
+              buf_printf(b, "({ const char *_t%d = ", tr); emit_str_expr(c, recv, b); buf_puts(b, "; ");
+              if (operand_may_allocate(c, argv[0]) || (tp && operand_may_allocate(c, argv[1])))
+                buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
+              buf_printf(b, "mrb_regexp_pattern *_t%d = %s; ", tq, rp.p);
+              if (tp) { buf_printf(b, "sp_int _t%d = ", tp); emit_int_expr(c, argv[1], b); buf_puts(b, "; "); }
+              nil_recv_check("match?", tr, b);
+              if (tp) buf_printf(b, " sp_str_re_match_p_at(_t%d, _t%d, _t%d); })", tq, tr, tp);
+              else buf_printf(b, " sp_re_match_p(_t%d, _t%d); })", tq, tr);
+            }
             else if (argc == 1) {
               int nn = rt == TY_STRING && !recv_never_nil(c, recv);
               buf_printf(b, "sp_re_match_p(%s, %s", rp.p, nn ? "sp_nil_recv_named(" : "");

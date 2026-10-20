@@ -20489,12 +20489,23 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(b, "({ const char *_t%d = ", tsrc3);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc3);
-    if (!recv_never_nil(c, recv)) { nil_recv_check("each_line", tsrc3, b); buf_puts(b, " "); }   /* as above */
+    /* (as above, once the separator and chomp: have run, in their order:
+       CRuby runs the arguments ahead of the missing method) */
+    int tsep = 0, tkw = 0, nn = !recv_never_nil(c, recv);
+    if (nn && ((subtree_has_side_effect(c, argv[0]) && !arg_ran_first(argv[0], 0)) ||
+               (sep_kw >= 0 && subtree_has_side_effect(c, sep_kw) && !arg_ran_first(sep_kw, 0)))) {
+      tsep = ++g_tmp;
+      buf_printf(b, "const char *_t%d = ", tsep); emit_lines_sep(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); ", tsep);
+      if (sep_kw >= 0) { tkw = ++g_tmp; buf_printf(b, "int _t%d = ", tkw); emit_cond(c, sep_kw, b); buf_puts(b, "; "); }
+    }
+    if (nn) { nil_recv_check("each_line", tsrc3, b); buf_puts(b, " "); }
     buf_puts(b, "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(");
-    if (sep_kw >= 0) { buf_puts(b, "("); emit_cond(c, sep_kw, b); buf_puts(b, " ? sp_str_lines_sep_chomp : sp_str_lines_sep)"); }
+    if (tkw) buf_printf(b, "(_t%d ? sp_str_lines_sep_chomp : sp_str_lines_sep)", tkw);
+    else if (sep_kw >= 0) { buf_puts(b, "("); emit_cond(c, sep_kw, b); buf_puts(b, " ? sp_str_lines_sep_chomp : sp_str_lines_sep)"); }
     else buf_puts(b, "sp_str_lines_sep");
     buf_printf(b, "(_t%d, ", tsrc3);
-    emit_lines_sep(c, argv[0], b);
+    if (tsep) buf_printf(b, "_t%d", tsep); else emit_lines_sep(c, argv[0], b);
     buf_printf(b, "))), sp_box_str(_t%d), SPL(\"each_line\")); })", tsrc3);
     return 1;
   }
@@ -20509,11 +20520,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(b, "({ const char *_t%d = ", tsrc2);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc2);
-    if (!recv_never_nil(c, recv)) { nil_recv_check("each_line", tsrc2, b); buf_puts(b, " "); }   /* as above */
     buf_printf(b, "int _t%d = ", tch);
     if (is_chomp < 0) emit_cond(c, chomp_v, b);
     else buf_printf(b, "%d", is_chomp);
-    buf_printf(b, "; sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(_t%d ? sp_str_lines_chomp(_t%d) : sp_str_lines(_t%d))), "
+    buf_puts(b, "; ");
+    if (!recv_never_nil(c, recv)) { nil_recv_check("each_line", tsrc2, b); buf_puts(b, " "); }   /* as above, once chomp: has run */
+    buf_printf(b, "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(_t%d ? sp_str_lines_chomp(_t%d) : sp_str_lines(_t%d))), "
                   "sp_box_str(_t%d), _t%d ? SPL(\"each_line(chomp: true)\") : SPL(\"each_line(chomp: false)\")); })",
                tch, tsrc2, tsrc2, tsrc2, tch);
     return 1;
