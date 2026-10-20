@@ -17003,6 +17003,22 @@ static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_box_sym(sp_sym_intern(v.v.s));
   return v;
 }
+/* Builtin detailed_message's option validation precedes message rendering. */
+static sp_Exception *sp_exc_detailed_receiver(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id)))
+    return (sp_Exception *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg("detailed_message", v));
+  return NULL;
+}
+static sp_bool sp_exc_highlight_check(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return FALSE;
+  if (v.tag == SP_TAG_BOOL) return v.v.b;
+  SP_GC_ROOT_RBVAL(v);
+  const char *text = sp_poly_inspect(v); SP_GC_ROOT_STR(text);
+  sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as highlight: %s", text));
+  return FALSE;
+}
 static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   /* a user exception subclass boxes under its own class id; its object is
      an sp_Exception all the same */

@@ -1188,6 +1188,41 @@ const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
   if (tail) memcpy(r + first + 2 + lc + 1, msg + first, tail);
   return r;
 }
+/* CRuby bolds message lines and underlines the class on the first line.
+   Counted copies preserve embedded NULs and existing escape sequences. */
+const char *sp_exc_detailed_highlight(volatile sp_Exception *ve, const char *msg) {
+  sp_Exception *e = (sp_Exception *)ve; SP_GC_ROOT(e); SP_GC_ROOT_STR(msg);
+  const char *cn = sp_exc_cls_display(e && e->cls_name ? e->cls_name : "RuntimeError");
+  size_t lm = sp_str_byte_len(msg);
+  if (!lm) return sp_exc_cat(3, SPL("\033[1;4m"),
+      !strcmp(cn, "RuntimeError") ? SPL("unhandled exception") : cn, SPL("\033[m"));
+  sp_String *s = sp_String_new("\033[1m"); SP_GC_ROOT(s);
+  const char *nl = memchr(msg, '\n', lm);
+  size_t first = nl ? (size_t)(nl - msg) : lm;
+  sp_String_append_n(s, msg, first);
+  /* an unnamed Class.new class leaves the first line's bold open, as CRuby does */
+  if (!sp_exc_cls_unnamed(cn)) {
+    sp_String_append(s, " (\033[1;4m"); sp_String_append(s, cn);
+    sp_String_append(s, "\033[m\033[1m)\033[m");
+  }
+  size_t pos = first + 1;
+  if (nl && pos < lm) {
+    sp_String_append(s, "\n");
+    while (pos < lm) {
+      nl = memchr(msg + pos, '\n', lm - pos);
+      size_t n = nl ? (size_t)(nl - msg - pos) : lm - pos;
+      if (n) {
+        sp_String_append(s, "\033[1m"); sp_String_append_n(s, msg + pos, n);
+        sp_String_append(s, "\033[m");
+      }
+      if (nl) sp_String_append(s, "\n");
+      pos += n + 1;
+    }
+  }
+  char *r = sp_str_alloc_nogc((size_t)s->len);
+  memcpy(r, s->data, (size_t)s->len);
+  return r;
+}
 const char *sp_exc_inspect(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (!e) return SPL("nil");

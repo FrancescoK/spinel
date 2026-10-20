@@ -1,0 +1,9 @@
+"\e[1mboom (\e[1;4mRuntimeError\e[m\e[1m)\e[m"
+"\e[1mboxed (\e[1;4mRuntimeError\e[m\e[1m)\e[m"
+[NoMethodError, :detailed_message]
+[NoMethodError, :detailed_message]
+"\e[1msub (\e[1;4mSubError\e[m\e[1m)\e[m"
+"\e[1msub (\e[1;4mSubError\e[m\e[1m)\e[m"
+"\e[1morder (\e[1;4mOrderError\e[m\e[1m)\e[m"
+[ArgumentError, "expected true or false as highlight: 1"]
+[:receiver, :extra, :option, :message, :extra]
