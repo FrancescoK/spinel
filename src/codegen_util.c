@@ -3929,26 +3929,37 @@ int g_idset_marks = 0;
    temp the check reads, then answered. The check raises NotImplementedError
    in the refusal's words, at the call's line, for a value whose identity
    Spinel does not keep, and passes any other. boxed: the value is wanted
-   boxed (emit_boxed). 0 for any other node, or one already being rendered
-   so. */
+   boxed (emit_boxed). 0 for any other node, or for the node this call is
+   rendering (emit_boxed renders through emit_expr). A refusal that unwinds
+   past the rendering (a probe's, whose text is dropped) goes through here
+   first and puts the guard back, so a later rendering of the node -- the
+   next arm a probe tries -- is checked too. */
+static int g_idset_busy = -1;
 int emit_idset_checked(Compiler *c, int id, Buf *b, int boxed) {
-  static int busy = -1;
-  if (id < 0 || id == busy) return 0;
+  if (id < 0 || id == g_idset_busy) return 0;
   long long call = nt_int(c->nt, id, "idset_check", 0);
   if (call <= 0) return 0;
-  int save = busy;
-  busy = id;
   int ln; const char *file = unsup_pos(c, (int)(call - 1), &ln);
   char dmsg[2600];
   if (ln > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", file, ln, g_sid_refusal_msg);
   else snprintf(dmsg, sizeof dmsg, "%s", g_sid_refusal_msg);
   int t = ++g_tmp;
+  volatile int save = g_idset_busy;
+  jmp_buf outer;
+  memcpy(outer, g_unsup_recover, sizeof outer);
+  if (setjmp(g_unsup_recover) != 0) {
+    g_idset_busy = save;
+    memcpy(g_unsup_recover, outer, sizeof outer);
+    longjmp(g_unsup_recover, 1);
+  }
+  g_idset_busy = id;
   if (boxed) { buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, id, b); }
   else { buf_printf(b, "({ __auto_type _t%d = ", t); emit_expr(c, id, b); }
+  g_idset_busy = save;
+  memcpy(g_unsup_recover, outer, sizeof outer);
   buf_printf(b, "; sp_idset_check(_t%d, \"", t);
   emit_c_escaped(b, dmsg);
   buf_printf(b, "\"); _t%d; })", t);
-  busy = save;
   return 1;
 }
 
