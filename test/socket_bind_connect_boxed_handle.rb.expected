@@ -1,0 +1,20 @@
+[0, 0]
+["127.0.0.1", "127.0.0.1"]
+["127.0.0.1", "127.0.0.1"]
+true
+0
+0
+true
+true
+[:wait_readable, :wait_readable]
+true
+["Seongsu Bridge", "Jayang-dong"]
+["Children's Grand Park", :wait_readable]
+[0]
+["127.0.0.1"]
+[true]
+[true]
+true
+true
+["ferry to 127.0.0.1", 0]
+undefined method 'listen' for an instance of Integer

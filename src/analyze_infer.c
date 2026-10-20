@@ -3654,6 +3654,18 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (sp_streq(name, "recv")) { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
         if (sp_streq(name, "recvfrom")) { *out = an_poly_concrete(c, name, TY_POLY_ARRAY); return 1; }
       }
+      /* and the rest of its socket calls, as the TY_IO arm types them */
+      if (sp_feature_required("socket") && !nt_argv_has_splat(nt, argv, argc)) {
+        if (((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 2) ||
+            (sp_streq(name, "listen") && argc == 1))
+          { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+        if (sp_streq(name, "recv_nonblock") && argc - (nt_argv_kwh(nt, argv, argc) >= 0) == 1)
+          { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_STRING); return 1; }
+        if ((sp_streq(name, "local_address") || sp_streq(name, "remote_address")) && argc == 0)
+          { *out = an_poly_concrete(c, name, TY_ADDRINFO); return 1; }
+        if ((sp_streq(name, "getsockname") || sp_streq(name, "getpeername")) && argc == 0)
+          { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
+      }
       if (sp_feature_required("socket") && sp_streq(name, "accept_nonblock"))
         { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_IO); return 1; }
       if (sp_streq(name, "to_io") && argc == 0)
