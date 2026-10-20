@@ -10128,12 +10128,16 @@ static int infer_param_types_ex(Compiler *c, int settle) {
            no candidate's parameter range_held */
         c->range_unheld = cls_fact_idx(c, recv) < 0;
         for (int pi = 0; pi < npc; pi++)
-          if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
+          if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id)) {
+            if (pcs[pi].mi >= 0) c->scopes[pcs[pi].mi].cand_bound = 1;
             changed |= bind_call_params(c, id, pcs[pi].mi);
+          }
         pcs = comp_cmethod_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
-          if (method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
+          if (method_takes_call_args(c, &c->scopes[pcs[pi].mi], id)) {
+            c->scopes[pcs[pi].mi].cand_bound = 1;
             changed |= bind_call_params(c, id, pcs[pi].mi);
+          }
         c->range_unheld = 0;
       }
     }

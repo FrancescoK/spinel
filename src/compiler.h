@@ -364,6 +364,10 @@ typedef struct {
   int class_id;     /* owning class index, or -1 for free functions */
   int yields;       /* body contains a YieldNode (inlined at call sites) */
   int reachable;    /* method name is referenced somewhere (else dead code) */
+  unsigned char cand_bound; /* a call on a poly receiver bound its arguments
+                               here as one of the methods it may reach
+                               (analyze_pass.c): what its parameters hold is
+                               what that call hands, should it reach this one */
   int is_cmethod;   /* `def self.foo`: a class (singleton) method, no instance self */
   int is_module_function; /* `module_function`: ALSO a private instance method of
                              every includer. The body cannot depend on the

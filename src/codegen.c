@@ -1117,6 +1117,21 @@ static int emit_obj_conv(Compiler *c, int node, const char *conv, TyKind want,
     }
     if (wmi >= 0) return 0;  /* another shape entirely (parameters): old path */
   }
+  /* In a method a call on a poly receiver bound its arguments to, as one of
+     the methods it may reach, the class may be only what that call would
+     hand: the receiver may never be of this method's class (an Array's `<<`
+     beside a Digest's). CRuby raises if it ever is, so the raise is left to
+     run time rather than refusing the program. */
+  { Scope *es = comp_scope_of(c, node);
+    if (es && es->cand_bound) {
+      snprintf(msg, sizeof msg, "no implicit conversion of %s into %s", cn ? cn : "Object", into);
+      buf_puts(b, "((void)(");
+      emit_expr(c, node, b);
+      buf_puts(b, "), sp_raise_cls(\"TypeError\", ");
+      emit_str_literal(b, msg);
+      buf_printf(b, "), (%s)0)", c_type_name(want));
+      return 1;
+    } }
   snprintf(msg, sizeof msg, "no implicit conversion of %s into %s (%s defines no #%s)",
            cn ? cn : "Object", into, cn ? cn : "the class", conv);
   unsupported_feature(c, node, msg);
