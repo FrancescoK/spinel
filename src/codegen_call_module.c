@@ -1231,7 +1231,7 @@ else {
     /* expm1/log1p keep their precision near zero, where exp(x)-1 and log(1+x)
        cancel away most of the significant digits */
     else if (sp_streq(name, "expm1")) cfn = "expm1";
-    else if (sp_streq(name, "log1p")) cfn = "log1p";
+    else if (sp_streq(name, "log1p")) cfn = "sp_math_log1p";
     else if (sp_streq(name, "erf"))   cfn = "erf";
     else if (sp_streq(name, "erfc"))  cfn = "erfc";
     else if (sp_streq(name, "gamma")) cfn = "sp_math_gamma";
