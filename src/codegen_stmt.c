@@ -2117,6 +2117,9 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   if (strbuf_tail_answers_block(c, mi, t, 0) || k == NK_LocalVariableReadNode ||
       k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
     return 1;
+  /* (a call whose every target publishes its handle, which the slot picks
+     up after it: emit_strbuf_value's pickup) */
+  if (k == NK_CallNode && repr_call_returns_handle(c, t) && strbuf_pickup_published(c, t)) return 1;
   if (depth == 0) return 0;
   if (k == NK_NilNode || share_value_fresh(c, t, 0)) return 1;
   /* (a frozen literal is its own handle; a String's conversion answers
@@ -2141,6 +2144,20 @@ static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
       if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
       if (a < 0) continue;
       if (nt_kind(nt, a) == NK_IfNode) { if (!strbuf_inline_arms_ok(c, mi, a, depth + 1)) return 0; continue; }
+      int n = 0; const int *st = nt_kind(nt, a) == NK_StatementsNode ? nt_arr(nt, a, "body", &n) : NULL;
+      if (n == 0 || !strbuf_inline_arms_ok(c, mi, st[n - 1], depth + 1)) return 0;
+    }
+    return 1;
+  }
+  /* (a `case` takes each `when`'s last statement and its else's; with no
+     else, the nil the slot takes) */
+  if (k == NK_CaseNode) {
+    int nw = 0;
+    const int *whens = nt_arr(nt, t, "conditions", &nw);
+    for (int w = 0; w <= nw; w++) {
+      int a = w < nw ? nt_ref(nt, whens[w], "statements") : nt_ref(nt, t, "else_clause");
+      if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
+      if (a < 0) continue;
       int n = 0; const int *st = nt_kind(nt, a) == NK_StatementsNode ? nt_arr(nt, a, "body", &n) : NULL;
       if (n == 0 || !strbuf_inline_arms_ok(c, mi, st[n - 1], depth + 1)) return 0;
     }
