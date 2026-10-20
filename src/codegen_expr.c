@@ -5369,6 +5369,45 @@ static void emit_self_expr(Compiler *c, int id, Buf *b) {
   buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
 }
 
+/* A multiple assignment's targets' receivers and indexes that run code go
+   first, as Ruby evaluates them before the values: all the targets', in
+   Ruby's order (the splat's, the rights' and those nested in a `(a, b)`
+   too). Each is held in a rooted temp that its node reads through the
+   override table; answers how many were bound. */
+static int masgn_hold_target_parts(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int held = 0;
+  int nf = masgn_flat_targets(nt, id, NULL, 0);
+  int *flat = nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL;
+  masgn_flat_targets(nt, id, flat, 0);
+  for (int i = 0; i < nf; i++) {
+    NodeKind tk = nt_kind(nt, flat[i]);
+    if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
+    int args = tk == NK_IndexTargetNode ? nt_ref(nt, flat[i], "arguments") : -1, an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int parts[2] = { nt_ref(nt, flat[i], "receiver"), an == 1 ? av[0] : -1 };
+    for (int p = 0; p < 2; p++) {
+      int v = parts[p];
+      if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, v)) continue;
+      Repr rp = repr_of(c, v);
+      TyKind vt = rp.as_ty;
+      if (vt == TY_UNKNOWN || vt == TY_NIL || vt == TY_VOID ||
+          rp.kind == RK_STRUCT || rp.kind == RK_VOBJ) continue;
+      Buf vb; memset(&vb, 0, sizeof vb);
+      emit_expr(c, v, &vb);
+      int t = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, vt, g_pre);
+      buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
+      emit_gc_root_tmp(c, vt, t, g_pre);
+      buf_puts(g_pre, "\n");
+      free(vb.p);
+      view_bind(v, "_t%d", t);
+      held++;
+    }
+  }
+  return held;
+}
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -6015,36 +6054,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (nt_kind(nt, els[i]) == NK_SplatNode) { els = NULL; en = 0; break; }
     int one = els ? -1 : value;
     int held = 0;
-    /* a target's receiver and index that run code go first, as Ruby
-       evaluates them before the values */
-    int ln = 0;
-    const int *lefts = nt_arr(nt, id, "lefts", &ln);
-    for (int i = 0; i < ln; i++) {
-      NodeKind tk = nt_kind(nt, lefts[i]);
-      if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
-      int args = tk == NK_IndexTargetNode ? nt_ref(nt, lefts[i], "arguments") : -1, an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      int parts[2] = { nt_ref(nt, lefts[i], "receiver"), an == 1 ? av[0] : -1 };
-      for (int p = 0; p < 2; p++) {
-        int v = parts[p];
-        if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, v)) continue;
-        Repr rp = repr_of(c, v);
-        TyKind vt = rp.as_ty;
-        if (vt == TY_UNKNOWN || vt == TY_NIL || vt == TY_VOID ||
-            rp.kind == RK_STRUCT || rp.kind == RK_VOBJ) continue;
-        Buf vb; memset(&vb, 0, sizeof vb);
-        emit_expr(c, v, &vb);
-        int t = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        emit_ctype(c, vt, g_pre);
-        buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
-        emit_gc_root_tmp(c, vt, t, g_pre);
-        buf_puts(g_pre, "\n");
-        free(vb.p);
-        view_bind(v, "_t%d", t);
-        held++;
-      }
-    }
+    held += masgn_hold_target_parts(c, id);
     for (int i = els ? 0 : -1; i < en; i++) {
       int v = i < 0 ? one : els[i];
       if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE) continue;

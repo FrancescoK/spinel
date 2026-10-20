@@ -16960,7 +16960,7 @@ int masgn_face_elem(Compiler *c, int mw, int el) {
    them: a multiple assignment's lefts, its splat target and its rights, a
    nested `(a, b)` expanded where it stands. Fills `out` when given; answers
    the count. */
-static int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n) {
+int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n) {
   int ln = 0, rn = 0;
   const int *ls = nt_arr(nt, node, "lefts", &ln), *rs = nt_arr(nt, node, "rights", &rn);
   int rest = nt_ref(nt, node, "rest");
