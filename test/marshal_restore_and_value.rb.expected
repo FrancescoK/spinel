@@ -1,0 +1,11 @@
+[1, "a", {b: 2}]
+Marshal
+"Marshal"
+Module
+8
+[1, 2]
+[1, 2]
+Point
+3
+"four"
+undefined method 'dump' for module Math

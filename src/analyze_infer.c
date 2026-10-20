@@ -4109,6 +4109,14 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "dump") && argc == 2) { *out = TY_IO; return 1; }
       if (sp_streq(name, "load") && argc == 1) { *out = TY_POLY; return 1; }
     }
+    /* the same load through the module as a value (`m = Marshal`), which
+       emit_marshal_value_call answers by the class at run time */
+    if (rty && !sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode") &&
+        (sp_streq(name, "load") || sp_streq(name, "restore")) && argc == 1 &&
+        !an_user_defines_method(c, name)) {
+      TyKind vrt = infer_type(c, recv);
+      if (vrt == TY_POLY || vrt == TY_CLASS) { *out = TY_POLY; return 1; }
+    }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         (sp_streq(name, "sin") || sp_streq(name, "cos") || sp_streq(name, "tan") ||

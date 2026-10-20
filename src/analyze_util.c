@@ -142,6 +142,7 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "IO::WaitReadable",             0,     BC_EXCEPTION },
   { "IO::WaitWritable",             0,     BC_EXCEPTION },
   { "LoadError",                    0,     BC_EXCEPTION },
+  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
   { "Method",                       0,     BC_CLASS },
   { "NoMemoryError",                0,     BC_EXCEPTION },
   { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
