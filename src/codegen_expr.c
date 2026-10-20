@@ -2624,12 +2624,15 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
-    else if (ivt2 == TY_STRBUF && rp.as_ty != TY_STRBUF && rp.kind != RK_BOXED) {
+    else if (ivt2 == TY_STRBUF && (rp.as_ty != TY_STRBUF || repr_handle_apart(c, v, rp)) && rp.kind != RK_BOXED) {
       /* a shared-handle slot takes an alias RHS by handle and wraps anything
          else in a fresh handle, exactly as the statement form does; the raw
          const char * went into the sp_String * slot here (a value-position
-         write, `def w(v) = (@body = v.to_s)`, #3993 / #4567). The value of
-         the expression is the slot's ordinary read face below. */
+         write, `def w(v) = (@body = v.to_s)`, #3993 / #4567). A value typed
+         as the handle whose text is its String's bytes (repr_handle_apart:
+         a new String the slot's handle mark reaches, `(@log = pier.dup)`)
+         is wrapped too. The value of the expression is the slot's ordinary
+         read face below. */
       Buf srefW2; memset(&srefW2, 0, sizeof srefW2);
       /* nil is the slot's nil, as the statement form stores it; converted,
          it raised TypeError (`def initialize = (@a = nil)`) */
