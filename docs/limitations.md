@@ -1745,6 +1745,20 @@ listed only in a constant that is read as `K.include?(name)`
 (`K = %i[clear compare_by_identity].to_set.freeze`) does not count, since no
 computed call can be handed it.
 
+With `--defer-refusals`, a refused member or lookup (`add`, `<<`, `add?`,
+`delete`, `delete?`, `include?`, `member?`, `===`, `Set[]`) is not raised
+where it is written. Its value is checked when it arrives, and the check
+raises the refusal as `NotImplementedError` only when the value is one
+whose identity Spinel does not keep: an Integer outside CRuby's fixnum
+range (`-2**62 ... 2**62`), a Bignum, a Float that is no flonum in CRuby
+(`-0.0`, a NaN, an infinity, or a magnitude of at least `2**257` or at most
+`2**-255`), a Rational, a Complex, a Range, a Time, a `Process::Tms`, a
+String that `Symbol#to_s` answers or `-@` interned (other than a literal),
+or a Regexp literal. Any other value passes, and the Set finds it as CRuby's
+does. A refused collection operand (`Set.new(list)`, `merge`, `|`,
+`to_set`, a `map!` block, ...) raises where it is written, as any other
+deferred refusal does.
+
 #### `String#equal?` and literal identity
 
 `equal?` on strings is pointer identity. Equal frozen literals are one
