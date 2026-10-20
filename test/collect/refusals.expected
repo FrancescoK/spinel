@@ -1272,6 +1272,14 @@ spinel: test/reject/set_identity_reader_by_send.rb:13: a value whose identity is
 spinel: test/reject/set_identity_reopened_array_each.rb:23: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
 == test/reject/set_identity_reopened_array_each.rb [promote] rc=1
 spinel: test/reject/set_identity_reopened_array_each.rb:23: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
+== test/reject/set_identity_send_name_made.rb [default] rc=1
+spinel: test/reject/set_identity_send_name_made.rb:13: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
+== test/reject/set_identity_send_name_made.rb [promote] rc=1
+spinel: test/reject/set_identity_send_name_made.rb:13: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
+== test/reject/set_identity_send_name_writer.rb [default] rc=1
+spinel: test/reject/set_identity_send_name_writer.rb:14: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
+== test/reject/set_identity_send_name_writer.rb [promote] rc=1
+spinel: test/reject/set_identity_send_name_writer.rb:14: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
 == test/reject/set_identity_string_member.rb [default] rc=1
 spinel: test/reject/set_identity_string_member.rb:8: a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, or one of no static kind) enters or is looked up in a Set, in a program that calls Set#compare_by_identity: an identity Set would find it otherwise than CRuby's
 == test/reject/set_identity_string_member.rb [promote] rc=1
