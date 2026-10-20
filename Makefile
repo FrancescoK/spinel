@@ -255,11 +255,18 @@ prism-missing:
 	 exit 1
 endif
 
+# Archives are written without member dates: macOS ar stamps each member with
+# the time it was added, so two builds of the same objects gave different
+# archives, and the gate's result cache, whose fingerprint hashes the runtime
+# archives, started empty after every rebuild and in every other checkout.
+# ZERO_AR_DATE=1 makes ar write zero instead; GNU ar ignores the variable.
+AR_DET = ZERO_AR_DATE=1
+
 # ---- Prism static library ----
 
 build/libprism.a: $(PRISM_OBJ)
 	@mkdir -p build
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 build/prism/%.o: $(PRISM_DIR)/src/%.c
 	@mkdir -p $(dir $@)
@@ -269,7 +276,7 @@ build/prism/%.o: $(PRISM_DIR)/src/%.c
 
 build/librbs.a: $(RBS_OBJ)
 	@mkdir -p build
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 build/rbs/%.o: $(RBS_DIR)/src/%.c
 	@mkdir -p $(dir $@)
@@ -677,7 +684,7 @@ build/cext/sp_exc.o: lib/sp_exc.c $(RT_HDRS) include/ruby.h
 	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
 lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_exc sp_poly_cold,$(RT_MEMBERS)))) build/cext/sp_poly_cold.o build/cext/sp_gc.o build/cext/sp_exc.o build/cext/sp_cext.o build/cext/sp_cext_exc.o build/cext/sp_cext_bridge.o build/cext/sp_cext_thread.o $(PLATFORM_OBJ)
 	@rm -f $@
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 cext-gc-test: lib/libspinel_cext_rt.a
 	$(CC) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/handles.c $< $(LDFLAGS) -lm -o build/cext/handles-test
 	./build/cext/handles-test
@@ -691,7 +698,7 @@ build/cext/recorder.o: tools/cext/recorder.c tools/cext/recorder.h include/ruby.
 	@mkdir -p build/cext
 	$(CC) -std=c11 -O0 -DSP_CEXT_RECORDER -Iinclude -Itools/cext -c $< -o $@
 lib/libspinel_cext_rec.a: build/cext/recorder.o
-	$(AR) rcs $@ $<
+	$(AR_DET) $(AR) rcs $@ $<
 cext-recorder-test:
 	@CC="$(CC)" ruby test/cext/recorder-test.rb
 # The extension builder (`spin` with [cext.*] recipes, a gem's extconf.rb run
@@ -722,7 +729,7 @@ cext-exceptions-test: lib/libspinel_cext_rt.a build/cext/host.c
 
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 # ---- Threaded runtime variant (-DSP_THREADS) ----
 # Same sources, compiled with -DSP_THREADS, linked when the program uses
@@ -748,7 +755,7 @@ build/mt/%.o: lib/%.c $(RT_HDRS)
 RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
@@ -773,7 +780,7 @@ build/mt-tsan/%.o: lib/%.c $(RT_HDRS)
 RE_MT_TSAN_OBJ = $(patsubst lib/regexp/%.c,build/mt-tsan/regexp/%.o,$(RE_SRC))
 
 $(SP_RT_MT_TSAN_LIB): $(RE_MT_TSAN_OBJ) $(addprefix build/mt-tsan/,$(addsuffix .o,$(RT_MEMBERS)))
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 tsan-archive: $(SP_RT_MT_TSAN_LIB)
 
@@ -825,9 +832,9 @@ $(RT_SAN_DIR)/%.o: lib/%.c $(RT_HDRS)
 	$(CC) -c $(RT_SAN_COPT) -Wno-all $(SEC_FLAGS) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
 
 $(SP_RT_SAN_LIB): $(patsubst lib/regexp/%.c,$(RT_SAN_DIR)/regexp/%.o,$(RE_SRC)) $(addprefix $(RT_SAN_DIR)/,$(addsuffix .o,$(RT_MEMBERS)))
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 $(SP_RT_MT_SAN_LIB): $(patsubst lib/regexp/%.c,$(RT_SAN_DIR)/mt/regexp/%.o,$(RE_SRC)) $(addprefix $(RT_SAN_DIR)/mt/,$(addsuffix .o,$(RT_MEMBERS)))
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 # The programs `make test` leaves out on this host and in this mode (the
 # complement of its TESTS and PKG_TESTS, a short list) go to the script by
@@ -5601,7 +5608,7 @@ build/cext-mt/%.o: lib/%.c $(RT_HDRS) lib/sp_cext.h include/ruby.h include/ruby/
 
 CEXT_MT_MEMBERS = $(RT_MEMBERS) sp_cext sp_cext_exc sp_cext_bridge sp_cext_thread
 lib/libspinel_cext_rt_mt.a: $(RE_MT_OBJ) $(addprefix build/cext-mt/,$(addsuffix .o,$(CEXT_MT_MEMBERS))) $(PLATFORM_MT_OBJ)
-	ar rcs $@ $^
+	$(AR_DET) ar rcs $@ $^
 
 .PHONY: cext-threads-test
 cext-threads-test: $(SPINEL) lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a
