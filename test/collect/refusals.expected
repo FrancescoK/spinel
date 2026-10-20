@@ -1140,6 +1140,12 @@ spinel: test/reject/reopen_redef_poly_call_between.rb:13: a method redefined by 
 spinel: test/reject/reopen_redef_subclass_override_between.rb:10: a method redefined by a later reopening of its class is called between the two definitions on an object of a subclass that overrides it, so which definition the call reaches depends on where the override is defined. Define the method once, or the override before the call.
 == test/reject/reopen_redef_subclass_override_between.rb [promote] rc=1
 spinel: test/reject/reopen_redef_subclass_override_between.rb:10: a method redefined by a later reopening of its class is called between the two definitions on an object of a subclass that overrides it, so which definition the call reaches depends on where the override is defined. Define the method once, or the override before the call.
+== test/reject/rescue_modifiers_nested_too_deep.rb [default] rc=1
+spinel: test/reject/rescue_modifiers_nested_too_deep.rb:6: this expression nests more levels of conditionals, rescue modifiers or blocks than the compiler's emission stack holds; bind an inner part to a local or a method
+spinel: 1 refusal, nothing written
+== test/reject/rescue_modifiers_nested_too_deep.rb [promote] rc=1
+spinel: test/reject/rescue_modifiers_nested_too_deep.rb:6: this expression nests more levels of conditionals, rescue modifiers or blocks than the compiler's emission stack holds; bind an inner part to a local or a method
+spinel: 1 refusal, nothing written
 == test/reject/retry_in_ensure.rb [default] rc=1
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
 == test/reject/retry_in_ensure.rb [promote] rc=1

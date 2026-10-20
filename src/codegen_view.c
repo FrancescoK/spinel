@@ -161,10 +161,22 @@ static void view_write(Compiler *c, int kind, int id, int v) {
   }
 }
 
+/* The stack is full: the program nests more conditionals, rescue modifiers
+   or blocks than it holds. A refusal at the innermost open view that names a
+   node, as any other construct the compiler does not take; with none, the
+   plain error. */
+static __attribute__((noreturn)) void view_too_deep(void) {
+  static const char msg[] = "this expression nests more levels of conditionals, rescue modifiers or blocks than "
+                            "the compiler's emission stack holds; bind an inner part to a local or a method";
+  for (int i = view_sp - 1; i >= 0; i--)
+    if (view_stack[i].c && view_stack[i].id >= 0) unsupported_feature(view_stack[i].c, view_stack[i].id, msg);
+  fprintf(stderr, "spinel: %s\n", msg);
+  exit(1);
+}
+
 static int view_open(Compiler *c, int id, int kind, int v) {
   if (view_sp >= VIEW_MAX) {
-    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
-    exit(1);
+    view_too_deep();
   }
   int tok = view_sp++;
   view_stack[tok].c = c;
@@ -179,8 +191,7 @@ static int view_open(Compiler *c, int id, int kind, int v) {
 
 int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm) {
   if (view_sp >= VIEW_MAX) {
-    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
-    exit(1);
+    view_too_deep();
   }
   int tok = view_sp++;
   view_stack[tok].c = NULL;
@@ -195,8 +206,7 @@ int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm) {
 
 int view_push_face(int node, TyKind kind) {
   if (view_sp >= VIEW_MAX) {
-    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
-    exit(1);
+    view_too_deep();
   }
   int tok = view_sp++;
   view_stack[tok].c = NULL;
@@ -239,8 +249,7 @@ int view_stmt_top(int *node, const void **pre) {
 
 static int view_open_mark(int kind, int node, int v, const void *p) {
   if (view_sp >= VIEW_MAX) {
-    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
-    exit(1);
+    view_too_deep();
   }
   int tok = view_sp++;
   view_stack[tok].c = NULL;
