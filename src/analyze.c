@@ -22195,11 +22195,6 @@ static int strh_value_ignored(Compiler *c, const int *par, int n) {
   if (n < 0 || n >= nt->count) return 0;
   VpUp up;
   VpUpKind ended = vp_climb(nt, par, n, STRH_CLIMB, &up);
-  /* the old climb stopped at parentheses, whatever it had met before them */
-  for (int q = n; q >= 0 && q != up.node; q = par[q]) {
-    if (comp_value_dropped(c, q)) return 1;
-    if (nt_kind(nt, q) == NK_ParenthesesNode) return 0;
-  }
   if (ended == VPU_DROPPED) return 1;
   if (ended != VPU_ENDED) return 0;
   NodeKind gk = nt_kind(nt, up.parent);

@@ -110,9 +110,10 @@ void du_memo_free(void);
    the block that holds it. */
 enum { AN_DROP_CLIMB = VPS_ALL };
 /* The edges the String handle Array walkers climb (strh_value_returned,
-   strh_value_ignored): `if`, `unless` and a begin, its body beside an else
-   too (the answer errs on the side of an Array that escapes). */
-enum { STRH_CLIMB = VPS_IF | VPS_UNLESS | VPS_BEGIN | VP_BEGIN_BOTH };
+   strh_value_ignored): `if`, `unless`, `case`, `case`/`in` and a begin, its
+   body beside an else too (the answer errs on the side of an Array that
+   escapes). */
+enum { STRH_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int cow_user_block_value(Compiler *c, const int *parent, int id);
 /* The methods the default build may lend a String parameter's slot by

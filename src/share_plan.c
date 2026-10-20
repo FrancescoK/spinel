@@ -324,7 +324,7 @@ static int share_plan_arm_bad(const VpLeaf *lf, void *ud) {
   const SharePlanArms *a = ud;
   Compiler *c = a->c;
   const NodeTable *nt = c->nt;
-  int v = lf->node, depth = a->depth + lf->cond_depth;
+  int v = lf->node, depth = a->depth;
   if (lf->kind == VPK_NIL) return 0;
   if (lf->kind == VPK_GAVE_UP) return 1;
   if (nt_kind(nt, v) == NK_BeginNode) {
@@ -351,57 +351,37 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
 
 /* Does the handle face render a spliced block's value a, a tail or a
    `next`'s, as the handle it names, where the splice reads it under the
-   handle demand (emit_block_invoke)? Every producer kind but a few: a bang
-   on a runtime element of a container a builtin made, whose answer is a
-   new String the container never sees, and a call answering its own
-   block's value that is no route the face takes (strbuf_tail_plain). The
-   value's other kinds and a chain over one of these can, and a conditional
-   each of whose arms is one. */
-static int share_plan_tail_renders(Compiler *c, int a, int depth) {
+   handle demand (emit_block_invoke)? Every producer kind but a call
+   answering its own block's value that is no route the face takes
+   (strbuf_tail_plain). The value's other kinds and a chain over one of
+   these can, and a conditional each of whose arms is one. */
+static int share_plan_tail_renders(Compiler *c, int a);
+static int share_plan_tail_unrendered(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  a = an_unparen(nt, a);
-  if (a < 0) return 1;
-  if (depth > 16) return 0;
-  switch (nt_kind(nt, a)) {
-  case NK_IfNode: case NK_UnlessNode:
-    return share_plan_tail_renders(c, nt_ref(nt, a, "statements"), depth + 1) &&
-           share_plan_tail_renders(c, nt_ref(nt, a, nt_kind(nt, a) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  case NK_OrNode: case NK_AndNode:
-    return share_plan_tail_renders(c, nt_ref(nt, a, "left"), depth + 1) &&
-           share_plan_tail_renders(c, nt_ref(nt, a, "right"), depth + 1);
-  case NK_ElseNode:
-    return share_plan_tail_renders(c, nt_ref(nt, a, "statements"), depth + 1);
-  case NK_StatementsNode: {
-    int n = 0;
-    const int *bb = nt_arr(nt, a, "body", &n);
-    return n == 0 || share_plan_tail_renders(c, bb[n - 1], depth + 1);
-  }
-  case NK_CaseNode: case NK_CaseMatchNode: {
-    int nw = 0;
-    const int *whens = nt_arr(nt, a, "conditions", &nw);
-    for (int w = 0; w < nw; w++)
-      if (!share_plan_tail_renders(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 0;
-    return share_plan_tail_renders(c, nt_ref(nt, a, "else_clause"), depth + 1);
-  }
-  default: break;
-  }
-  if (face_bang_on_runtime_elems(c, a)) return 0;
+  int a = lf->node;
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
   int o, k = share_plan_producer_at(c, a, &o);
   if (k == SPK_LIFT) k = share_plan_producer_core(c, a, &o, 1);
   switch (k) {
   case SPK_BLOCK_VALUE:
-    return strbuf_tail_plain(c, a);
+    return !strbuf_tail_plain(c, a);
   case SPK_OPERAND: {
     /* (tap answers its receiver through its own block) */
     const char *nm = nt_kind(nt, a) == NK_CallNode ? nt_str(nt, a, "name") : NULL;
-    if (nm && is_tap_name(nm) && nt_ref(nt, a, "block") >= 0) return 0;
-    return o < 0 || share_plan_tail_renders(c, o, depth + 1);
+    if (nm && is_tap_name(nm) && nt_ref(nt, a, "block") >= 0) return 1;
+    return o >= 0 && !share_plan_tail_renders(c, o);
   }
   case SPK_SELF: case SPK_SEQUENCE:
-    return o < 0 || share_plan_tail_renders(c, o, depth + 1);
+    return o >= 0 && !share_plan_tail_renders(c, o);
   default:
-    return 1;
+    return 0;
   }
+}
+static int share_plan_tail_renders(Compiler *c, int a) {
+  return !for_each_value_position(c->nt, a, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                                  share_plan_tail_unrendered, c);
 }
 
 /* Does call v, which answers its literal block's value (SPK_BLOCK_VALUE),
@@ -420,7 +400,7 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
      share_plan_tail_renders) */
   int bn = 0;
   const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (!strbuf_route_loop(c, u) && bn > 0 && !share_plan_tail_renders(c, bb[bn - 1], 0)) return 0;
+  if (!strbuf_route_loop(c, u) && bn > 0 && !share_plan_tail_renders(c, bb[bn - 1])) return 0;
   if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, 0, depth);
   if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, 1, depth);
   if (strbuf_route_inline_call(c, u)) {
@@ -464,7 +444,7 @@ static int share_plan_yield_supply(Compiler *c, int v, int depth) {
   for (int i = 0; i < n; i++) {
     int body = nt_ref(c->nt, blocks[i], "body"), bn = 0;
     const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &bn) : NULL;
-    if ((bn > 0 && !share_plan_tail_renders(c, bb[bn - 1], 0)) || !share_plan_body_ok(c, body, NK_NextNode, 0, depth + 1))
+    if ((bn > 0 && !share_plan_tail_renders(c, bb[bn - 1])) || !share_plan_body_ok(c, body, NK_NextNode, 0, depth + 1))
       return 0;
   }
   return 1;

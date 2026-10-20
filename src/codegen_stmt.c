@@ -1767,7 +1767,6 @@ static int strbuf_freeze_leaf_d(Compiler *c, int v, int depth) {
 }
 int strbuf_freeze_leaf(Compiler *c, int v) { return strbuf_freeze_leaf_d(c, v, 0); }
 int strbuf_assign_route(Compiler *c, int v) { return strbuf_assign_route_d(c, v, 0); }
-int face_bang_on_runtime_elems(Compiler *c, int v);
 static int strbuf_route_carries(Compiler *c, int v, int depth);
 static int strbuf_route_proc_call(Compiler *c, int v);
 int strbuf_route_ie(Compiler *c, int v);
@@ -1815,7 +1814,7 @@ int strbuf_tail_plain(Compiler *c, int v) {
             `loop`, an inlined call, a begin, a chain over a handle ...), but
             a yield: whose tail is asked by strbuf_route_yield, looping */
          (k != NK_YieldNode && strbuf_route_carries(c, v, 1)) ||
-         (face_str_bang_call(c, v) && !face_bang_on_runtime_elems(c, v)) ||
+         face_str_bang_call(c, v) ||
          (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0);
 }
 /* ...and is the last statement of statement list st? */
@@ -2033,7 +2032,7 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
 /* ...is the value v of a block's tail one the demand has a handle for? */
 int strbuf_value_handleish(Compiler *c, int v) {
   return strbuf_cond_arm_any(c, v, strbuf_leaf_held, 1) ||
-         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 0));
+         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 1));
 }
 int strbuf_yield_tail_held(Compiler *c) {
   int tail = strbuf_site_tail(c);
@@ -24235,46 +24234,6 @@ int strbuf_pickup_published(Compiler *c, int v) {
     if (!scope_always_raises(c, tg[i]) && !scope_ret_handle(c, tg[i])) return 0;
   return 1;
 }
-/* --share-strings: is v a String bang on a boxed receiver whose box holds
-   the bytes, an element of a container a builtin call made (each_slice's
-   rows, split's Strings: share_node_runtime_elems)? The bang answers a new
-   String the container never sees, where the box a holder made holds the
-   String's handle (sp_box_str_new) and the bang answers that box. */
-/* (Not an element read out of a variable whose slot holds its Strings as
-   boxed handles, which the builtin's Array became where it was written,
-   `a = s.split`: the box the read answers is the slot's own element, and
-   the bang's box is that element.) */
-static int face_bang_elem_of_handle_slot(Compiler *c, int recv) {
-  const NodeTable *nt = c->nt;
-  if (recv < 0 || !container_elem_read_p(nt, recv)) return 0;
-  int x = nt_paren_single(c->nt, nt_ref(nt, recv, "receiver"));
-  NodeKind xk = x >= 0 ? nt_kind(nt, x) : NK_NONE;
-  if (xk == NK_LocalVariableReadNode) {
-    const char *nm = nt_str(nt, x, "name");
-    Scope *sc = nm ? comp_scope_of(c, x) : NULL;
-    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
-    return lv && repr_of_slot(c, lv).elems_handle;
-  }
-  if (xk == NK_InstanceVariableReadNode) {
-    const char *nm = nt_str(nt, x, "name");
-    int cid = nm ? strbuf_ivar_owner(c, x) : -1;
-    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
-    return iv >= 0 && repr_of_ivar(c, cid, iv).elems_handle;
-  }
-  return 0;
-}
-int face_bang_on_runtime_elems(Compiler *c, int v) {
-  if (!face_str_bang_call(c, v)) return 0;
-  int recv = nt_paren_single(c->nt, nt_ref(c->nt, v, "receiver"));
-  return share_node_runtime_elems(c, recv) && !face_bang_elem_of_handle_slot(c, recv);
-}
-/* ...and is v a conditional (`||`, `&&`, `if`, `case`) with such a bang on
-   an arm, which the handle face takes arm by arm? */
-static int face_bang_cond_on_runtime_elems(Compiler *c, int v) {
-  NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
-  return (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
-         strbuf_cond_arm_any(c, v, face_bang_on_runtime_elems, 1);
-}
 /* repr.c's flow check asks this (codegen_internal.h). */
 int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
   const NodeTable *nt = c->nt;
@@ -24289,10 +24248,6 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
     HolderRef h;
     int boxed = holder_of_node(c, site, &h) && h.r.kind == RK_BOXED;
     SharePlan p = share_plan_of(c, v, boxed ? SPR_BOX : SPR_STORE, NULL);
-    /* (a shared slot takes a `||` or `&&` with a bang on a runtime element
-       on an arm as its bytes, face_bang_on_runtime_elems) */
-    if (!boxed && p.form == SPF_HANDLE && face_bang_cond_on_runtime_elems(c, nt_paren_single(c->nt, v)))
-      return p.need != SPN_OBJECT;
     return p.form != SPF_REFUSE;
   }
   case SHFL_MEMBER: case SHFL_MULTI: {
@@ -24343,30 +24298,14 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
        producer kind: it is carried where the String plan does not refuse
        it (#8328) */
   {
-    /* (a `||` or `&&` with a bang on a runtime element of a container a
-       builtin made on an arm is its bytes: that bang answers a new String
-       the container never sees, face_bang_on_runtime_elems) */
-    SharePlan p = share_plan_of(c, v, SPR_TAKE, NULL);
-    if (p.form == SPF_HANDLE && face_bang_cond_on_runtime_elems(c, nt_paren_single(c->nt, v))) return p.need != SPN_OBJECT;
-    return p.form != SPF_REFUSE;
+    return share_plan_of(c, v, SPR_TAKE, NULL).form != SPF_REFUSE;
   }
   case SHFL_YIELD: {
     /* a yield's value is bound by the block parameter's binder (the
        handle face for a parameter that is the handle) or boxed (the box
        face), and each renders every producer kind: it is carried where
-       the String plan does not refuse it (#8328). A bare bang on a boxed
-       receiver the binders take as the receiver's box, which holds the
-       bytes where the runtime boxed an element of a container a builtin
-       made (each_slice's rows, split's Strings): the bang's answer is
-       then a new String the container never sees
-       (share_node_runtime_elems) */
-    int u = nt_paren_single(c->nt, v);
-    if (face_bang_on_runtime_elems(c, u)) return 0;
-    SharePlan p = share_plan_of(c, v, SPR_TAKE, NULL);
-    /* (and a `||` or `&&` with such a bang on an arm is its bytes to the
-       binder) */
-    if (p.form == SPF_HANDLE && face_bang_cond_on_runtime_elems(c, u)) return p.need != SPN_OBJECT;
-    return p.form != SPF_REFUSE;
+       the String plan does not refuse it (#8328) */
+    return share_plan_of(c, v, SPR_TAKE, NULL).form != SPF_REFUSE;
   }
   default: return 0;
   }

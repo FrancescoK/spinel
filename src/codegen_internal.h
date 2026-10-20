@@ -369,7 +369,6 @@ int strbuf_yield_tail_held(Compiler *c);
    container a builtin made, whose answer is a new String the container
    never sees? */
 int strbuf_tail_plain(Compiler *c, int v);
-int face_bang_on_runtime_elems(Compiler *c, int v);
 int strbuf_route_srange_end(Compiler *c, int v);
 int strbuf_route_srange_extreme(Compiler *c, int v);
 int strbuf_route_srange_kept(Compiler *c, int v);

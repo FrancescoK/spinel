@@ -181,10 +181,6 @@ int share_str_elem_read(Compiler *c, int n);
    the rule does not share it, and it meets nothing the walk does not
    follow? */
 int share_node_elems_local(const Compiler *c, int n);
-/* Can node n's String be an element of a container a builtin call made (its
-   class is, or the facts do not place it)? The runtime boxes such an
-   element as its bytes, never as its handle. */
-int share_node_runtime_elems(Compiler *c, int n);
 /* Is node n a blockless builtin's new Array of new Strings whose elements
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
