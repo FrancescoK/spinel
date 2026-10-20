@@ -5637,7 +5637,7 @@ int is_fresh_array(Compiler *c, int v) {
     "take", "drop", "take_while", "drop_while", "rotate", "shuffle", "each_slice",
     "each_cons", "+", "-", "*", "&", "|", NULL };
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  { int one; if (vp_one(nt, v, VPS_NONE, &one) == VP1_NODE) v = one; }   /* `(a; [1])` builds the literal */
   if (v < 0) return 0;
   if (nt_kind(nt, v) == NK_ArrayNode) {
     int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
@@ -6349,7 +6349,7 @@ static int g_wcause_scope = -1;
 static const char *g_wcause_name = NULL;
 static int widen_arg_array(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  { int one; if (vp_one(nt, arg, VPS_NONE, &one) == VP1_NODE) arg = one; }   /* `(a; [1])` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_ArrayNode) {
     if (!c->arr_want || arg >= c->node_cap || !is_fresh_array(c, arg) || c->arr_want[arg] == TY_POLY_ARRAY) return 0;
