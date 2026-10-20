@@ -38,3 +38,13 @@ w = [Logged.new, Plain.new].map { |x| x.instance_variable_get(:@n) }
 w[0] << "?"
 w[1] << "?"
 p w
+
+# the explicit-argument form of the read, in an endless def
+class Explicit
+  def initialize = (@n = +"ex")
+  def instance_variable_get(x) = super(x)
+end
+e = Explicit.new
+w = e.instance_variable_get(:@n)
+w << "!"
+p e.instance_variable_get(:@n), w.equal?(e.instance_variable_get(:@n))
