@@ -828,9 +828,12 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            of it does (emit_constant_expr): the String, or the handle where
            the read is marked for it */
         if (cgv && repr_of_slot(c, cgv).kind == RK_STRBUF && !cgv->init_guarded) {
-          char sref[256];
-          snprintf(sref, sizeof sref, "cst_%s", cg_key);
+          size_t sref_len = strlen(cg_key) + 5;
+          char *sref = malloc(sref_len);
+          if (!sref) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          snprintf(sref, sref_len, "cst_%s", cg_key);
           emit_strbuf_node_read(c, id, sref, b);
+          free(sref);
         }
         else buf_printf(b, "cst_%s", cg_key);
         if (const_has_flag(cgv)) buf_puts(b, ")");
