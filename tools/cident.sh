@@ -121,8 +121,11 @@ if [ ! -f "$REFDIR/.done" ]; then
   # corpus cannot reach: only a program that is new or changed, or that names
   # a file that is new or changed (require_relative, a compile-time read), is
   # compiled again. Its .expected files are not read by the compiler.
+  # (only this flag set's: the corpus key is hex, and another set's name
+  # goes on with its flags, `<sha>-__int_overflow=promote-<key>`)
   PREV=$(ls -dt "$REFBASE"-*/ 2>/dev/null | while read -r d; do
-           d=${d%/}; [ "$d" != "$REFDIR" ] && [ -f "$d/.done" ] && [ -f "$d/.manifest" ] && { echo "$d"; break; }; done)
+           d=${d%/}; case ${d#"$REFBASE"-} in *[!0-9a-f]*) continue;; esac
+           [ "$d" != "$REFDIR" ] && [ -f "$d/.done" ] && [ -f "$d/.manifest" ] && { echo "$d"; break; }; done)
   ONLY=
   if [ -n "$PREV" ]; then
     ONLY=$(mktemp "${TMPDIR:-/tmp}/spinel-cident-only.XXXXXX")
