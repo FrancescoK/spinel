@@ -44106,11 +44106,18 @@ static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
    Float, as Hash#compare_by_identity's keys are refused for. Every Set shares
    one class, so in a program that calls compare_by_identity anywhere, a
    value that may be of one of those kinds -- or of no kind the analysis
-   knows -- entering a Set or looked up in one is refused. */
+   knows -- entering a Set or looked up in one is refused.
+   A boxed value, or a String, is judged by what the class facts' walk saw
+   reach it (cls_fact_kinds): objects of the program's classes, Symbols,
+   nil, true, false, containers and Procs, and Strings made afresh (an
+   interpolation, a dup, a unary plus), each one object here as in CRuby;
+   a number, a String literal, a builtin's own answer or a value the walk
+   does not follow keeps the refusal. */
 static int sid_kind_ok(Compiler *c, TyKind t) {
   if (t == TY_SYMBOL || t == TY_NIL || t == TY_BOOL || t == TY_PROC || t == TY_CLASS) return 1;
   return ty_is_object(t) || ty_is_array(t) || ty_is_hash(t);
 }
+static int sid_kinds_ok(int k) { return !(k & (CK_UNSAFE | CK_LIT)); }
 /* Is value v statically one whose identity is CRuby's? A boxed local whose
    every write in its scope is such a value counts. */
 static int sid_value_ok(Compiler *c, int v, int depth) {
@@ -44118,7 +44125,9 @@ static int sid_value_ok(Compiler *c, int v, int depth) {
   v = an_unparen(nt, v);
   if (v < 0 || depth > 8) return 0;
   TyKind t = infer_type(c, v);
-  if (t != TY_POLY) return sid_kind_ok(c, t);
+  if (t != TY_POLY && sid_kind_ok(c, t)) return 1;
+  if ((t == TY_POLY || t == TY_STRING || t == TY_STRBUF) && sid_kinds_ok(cls_fact_kinds(c, v))) return 1;
+  if (t != TY_POLY) return 0;
   if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, v, "name");
   Scope *vs = comp_scope_of(c, v);
@@ -44151,11 +44160,26 @@ static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
   if (ty_is_array(t)) {
     TyKind et = ty_array_elem(t);
-    if (et != TY_POLY && et != TY_UNKNOWN) return sid_kind_ok(c, et);
-    if (nt_kind(nt, v) != NK_ArrayNode) return 0;
-    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
-    for (int e = 0; e < en; e++) if (!sid_value_ok(c, el[e], 0)) return 0;
-    return 1;
+    if (et != TY_POLY && et != TY_UNKNOWN && sid_kind_ok(c, et)) return 1;
+    if (nt_kind(nt, v) == NK_ArrayNode) {
+      int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+      for (int e = 0; e < en; e++) if (!sid_value_ok(c, el[e], 0)) return 0;
+      return 1;
+    }
+    /* boxed or String elements: what reaches the containers it holds */
+    return (et == TY_POLY || et == TY_UNKNOWN || et == TY_STRING || et == TY_STRBUF) &&
+           sid_kinds_ok(cls_fact_contents_kinds(c, v));
+  }
+  /* a boxed Array or Set: one with no object of another class of the
+     program's (a Set's members were judged as they entered it) */
+  if (t == TY_POLY) {
+    const ClsSet *s = cls_fact_node(c, v);
+    if (!s) return 0;
+    for (int i = 0; i < s->n; i++) {
+      int k = s->cls[i];
+      if (k < c->nclasses && k != set_cid && !is_descendant(c, k, set_cid)) return 0;
+    }
+    return sid_kinds_ok(cls_fact_kinds(c, v)) && sid_kinds_ok(cls_fact_contents_kinds(c, v));
   }
   return 0;
 }
@@ -44784,6 +44808,7 @@ static void refuse_set_identity_members(Compiler *c) {
       asked = 1;
   }
   if (!asked) return;
+  an_cls_kinds(c);
   /* where the identity Sets live, when every one can be followed there:
      then only the calls on them are checked (sid_sources) */
   SidSources S;
