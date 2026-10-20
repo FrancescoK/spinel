@@ -15441,6 +15441,14 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); { *out = 1; return 1; }
     }
   }
+  /* Numeric#i on a poly value: 0+vi for an Integer, a Float or a Rational
+     (sp_poly_i), NoMethodError for the rest, as the typed arms answer. A
+     user method, reader or class method of the name wins via poly dispatch,
+     as for #rect and #arg. */
+  if (sp_streq(name, "i") && argc == 0 && !poly_name_user_claimed(c, name, argc) &&
+      !poly_name_cmethod_claimed(c, name)) {
+    buf_puts(b, "sp_poly_i("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+  }
   /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
      CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch.
      `intern` answers as `to_sym` does on both, and stands aside, as the
