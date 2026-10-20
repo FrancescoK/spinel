@@ -170,9 +170,6 @@ typedef struct ShareFacts {
                              a flow takes the value of a read of it */
   unsigned char *anchored;   /* per root, once built: a container of the class
                                 can be reached again (sh_finalize) */
-  /* per root, built when first asked (share_node_runtime_elems): the
-     elements of a container a builtin call makes */
-  unsigned char *rt_elems;
   unsigned char *kind, *flags, *own;
   /* the holders, and their element */
   ShareHolder *h;
@@ -4700,7 +4697,7 @@ static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
   free(F->parent); free(F->alt); free(F->kp_e); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
-  free(F->owner); free(F->hcount); free(F->pkept); free(F->anchored); free(F->rt_elems); free(F->mconst);
+  free(F->owner); free(F->hcount); free(F->pkept); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
   free(F->aj_v); free(F->aj_s); free(F->aj_done);
   free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
@@ -5506,54 +5503,6 @@ int share_node_anchored(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);
   return r >= 0 && F->anchored && F->anchored[r];
-}
-/* Does builtin call k pass on Strings it was handed (its receiver's
-   elements, its arguments, its block's values), which keep the boxes they
-   came in, rather than make new ones the runtime boxes as bytes? */
-static int sh_call_passes_strings(Compiler *c, int k) {
-  const char *nm = nt_str(c->nt, k, "name");
-  int recv = nt_ref(c->nt, k, "receiver");
-  if (!nm) return 0;
-  TyKind fams[5];
-  int nf = 0;
-  if (recv >= 0 && c->ntype[recv] != TY_POLY && c->ntype[recv] != TY_UNKNOWN) fams[nf++] = sh_family(c->ntype[recv]);
-  else if (recv >= 0) { fams[nf++] = BOP_ANY_ARRAY; fams[nf++] = BOP_ANY_HASH; fams[nf++] = TY_STRING; }
-  else fams[nf++] = BOP_KERNEL;
-  fams[nf++] = BOP_ANY_RECV;
-  for (int i = 0; i < nf; i++) {
-    int row = bop_share_named(fams[i], nm);
-    if (!row) continue;
-    return row != BSH_PURE && row != BSH_FROZEN && row != BSH_ITER_FRESH && row != BSH_ITER_FRESH_RECV &&
-           row != BSH_PACK;
-  }
-  /* no row: a call answering a boxed value (a Struct member's reader)
-     answers what it holds; one answering a container is taken to make it */
-  return c->ntype[k] == TY_POLY;
-}
-int share_node_runtime_elems(Compiler *c, int n) {
-  ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 0);
-  if (r < 0) return 1;
-  if (!F->rt_elems) {
-    F->rt_elems = calloc((size_t)(F->n > 0 ? F->n : 1), 1);
-    if (!F->rt_elems) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    for (int k = 0; k < F->nnodes; k++) {
-      TyKind kt = c->ntype[k];
-      int mark = 0;
-      /* the elements of a typed String container are its bytes: boxed,
-         they are boxed as bytes */
-      if (repr_typed_str_container(kt)) mark = 1;
-      /* a container a builtin call made of Strings of its own */
-      else if (nt_kind(c->nt, k) == NK_CallNode &&
-               (ty_is_array(kt) || ty_is_ptr_array(kt) || ty_is_hash(kt) || kt == TY_POLY)) {
-        const CallPlan *cp = cplan_user(c, k);
-        mark = cp->mi < 0 && cp->dispatch == CP_NONE && !sh_call_passes_strings(c, k);
-      }
-      int e = mark ? sh_node_root(F, k, 1) : -1;
-      if (e >= 0) F->rt_elems[e] = 1;
-    }
-  }
-  return F->rt_elems[r];
 }
 int share_node_elems_local(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
