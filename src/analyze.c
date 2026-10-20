@@ -24653,6 +24653,16 @@ static int str_append_arg_not_string(Compiler *c, int call) {
   return 0;
 }
 static const char *hp_call(const NodeTable *nt, int x, int *recv, int *argc, char *buf, size_t bn);
+/* Can the deep-return pickup's caller slot `lv` (`rr = mk`) hold the String
+   mk hands out? For the demand that promotes mk's tails, while the fixpoint
+   runs, an untyped slot waits (the second stage still takes it): `hi = mk;
+   hi << 32` demanded mk's untyped tail local, and the next `lo = mk` was
+   then picked up as its handle for good, a String though the tail settles
+   an Integer. */
+static int pickup_caller_may_be_str(const LocalVar *lv, int demand) {
+  if (!lv || (demand && g_infer_optimistic && lv->type == TY_UNKNOWN)) return 0;
+  return lv->type == TY_UNKNOWN || lv->type == TY_STRING || lv->type == TY_STRBUF || lv->type == TY_POLY;
+}
 static int promote_shared_stored_strings_pass(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
@@ -25497,11 +25507,8 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
        `[]` a strbuf -- which then flowed back and retyped rr itself, so the
        array literal was emitted as sp_String_new_shared(sp_IntArray_new()). */
     LocalVar *clv3 = (lname3 && ls3) ? scope_local(ls3, lname3) : NULL;
-    int caller_may_be_str = clv3 && (clv3->type == TY_UNKNOWN ||
-                                     clv3->type == TY_STRING ||
-                                     clv3->type == TY_STRBUF ||
-                                     clv3->type == TY_POLY);
-    if (saw_tail && !shared_ok && lname3 && ls3 && caller_may_be_str &&
+    int caller_may_be_str = pickup_caller_may_be_str(clv3, 0);
+    if (saw_tail && !shared_ok && lname3 && ls3 && pickup_caller_may_be_str(clv3, 1) &&
         strbuf_mut_kind(c, lname3, ls3) == 1) {
       /* the CALLER mutates the result (`rr = mk; rr << x`): demand the
          callee's returned locals into the shared set; the uniform gate then
