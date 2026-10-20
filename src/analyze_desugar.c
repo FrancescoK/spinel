@@ -5491,6 +5491,64 @@ static int dsend_recv_local_ok(Compiler *c, const NodeTable *nt, int n, int *run
   }
 }
 
+/* Does a send's receiver take its value, through the locals and the joins it
+   reads, from an expression whose type the inference has not reached yet
+   (`o = [W.from_row(r), 1][0]`, `o = c ? w : 1` with w the answer of a
+   method not yet typed)? The type asked here, ahead of the fixpoint, then
+   names only the kinds known so far (Integer), not the class the other
+   value has. */
+static int dsend_recv_unsettled(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode: case NK_StringNode: case NK_NilNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_InterpolatedStringNode: case NK_RangeNode: case NK_HashNode:
+    return 0;
+  case NK_LocalVariableReadNode: {
+    const char *nm = nt_str(nt, n, "name");
+    Scope *sc = comp_scope_of(c, n);
+    if (!nm) return 0;
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, nm) && comp_scope_of(c, w) == sc &&
+          dsend_recv_unsettled(c, nt_ref(nt, w, "value"), depth + 1)) return 1;
+    }
+    return 0;
+  }
+  case NK_ArrayNode: {
+    int en = 0; const int *ev = nt_arr(nt, n, "elements", &en);
+    for (int i = 0; i < en; i++) if (dsend_recv_unsettled(c, ev[i], depth + 1)) return 1;
+    return 0;
+  }
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, n) == NK_ParenthesesNode ? nt_ref(nt, n, "body") : n;
+    if (body < 0) return 0;
+    if (nt_kind(nt, body) != NK_StatementsNode) return dsend_recv_unsettled(c, body, depth + 1);
+    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+    return bn > 0 && dsend_recv_unsettled(c, bv[bn - 1], depth + 1);
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int els = nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause");
+    if (els >= 0 && nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
+    return dsend_recv_unsettled(c, nt_ref(nt, n, "statements"), depth + 1) || dsend_recv_unsettled(c, els, depth + 1);
+  }
+  case NK_AndNode: case NK_OrNode:
+    return dsend_recv_unsettled(c, nt_ref(nt, n, "left"), depth + 1) ||
+           dsend_recv_unsettled(c, nt_ref(nt, n, "right"), depth + 1);
+  case NK_CallNode: {
+    /* an element read of an Array the program writes out (`[w, 1][0]`) */
+    const char *nm = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver");
+    if (nm && (sp_streq(nm, "[]") || sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample")) &&
+        r >= 0 && comp_method_index(c, nm) < 0)
+      return dsend_recv_unsettled(c, r, depth + 1);
+    return infer_type(c, n) == TY_UNKNOWN;
+  }
+  default:
+    return infer_type(c, n) == TY_UNKNOWN;
+  }
+}
+
 /* Can the name or an argument of a send (argv[0..argc)) change the variable
    its receiver recv reads: a local one writes, an instance, class or
    global variable one that runs code or writes it? The receiver is the
@@ -5730,6 +5788,16 @@ static int desugar_dynamic_send_inner(Compiler *c) {
           for (int j = 0; j < nk; j++) { dsend_add_name(&own, &nown, &cap, &seen, kn[j]); free(kn[j]); }
           free(kn);
         }
+        /* a receiver whose type is not settled yet may hold an object of
+           the program as well: its classes' methods are arms too, as for a
+           receiver of no known kind */
+        if (dsend_recv_unsettled(c, recv, 0))
+          for (int k = 0; k < c->nclasses; k++) {
+            if (comp_class_is_module(c, &c->classes[k])) continue;
+            char **kn = NULL; int nk = dsend_receiver_names(c, k, 0, &kn);
+            for (int j = 0; j < nk; j++) { dsend_add_name(&own, &nown, &cap, &seen, kn[j]); free(kn[j]); }
+            free(kn);
+          }
         anh_free(&seen);
         if (nown == 0) continue;
       }
