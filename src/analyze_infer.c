@@ -4302,6 +4302,16 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
   return 0;
 }
 
+/* A Dir's entry or a line of ARGF or an IO is a fresh String its loop binds
+   the block parameter `blv` to (emit_line_param_decl). One the
+   --share-strings rule made the handle stays the handle: reset to String
+   here each round, the rule set it back the next and the storage fixpoint
+   never settled. */
+static void an_bind_line_param(Compiler *c, LocalVar *blv) {
+  if (blv && !(blv->type == TY_STRBUF && blv->str_shared && c->share_strings))
+    lv_set_type(blv, TY_STRING);
+}
+
 /* A runtime handle receiver: Random, ARGF, Dir, Socket::Option and Addrinfo, IO, Time (infer_call_inner's rules, in their order) */
 static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* TY_RANDOM instance methods */
@@ -4336,7 +4346,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv && !an_pure_reads) lv_set_type(blv, TY_STRING);
+        if (!an_pure_reads) an_bind_line_param(c, blv);
       }
       { *out = TY_ARGF; return 1; }
     }
@@ -4372,8 +4382,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       if (dblk3 >= 0) {
         const char *dbp3 = block_param_name(c, dblk3, 0);
         Scope *dbs3 = dbp3 ? comp_scope_of(c, dblk3) : NULL;
-        LocalVar *dlv3 = (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL;
-        if (dlv3) lv_set_type(dlv3, TY_STRING);
+        an_bind_line_param(c, (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL);
       }
       { *out = TY_DIR; return 1; }
     }
@@ -4443,13 +4452,8 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        /* a line the --share-strings rule made the handle (a forward that
-           yields it on to a block appending to it) stays the handle: reset
-           to String here each round, the rule set it back the next and the
-           storage fixpoint never settled */
-        int handle = blv && blv->type == TY_STRBUF && blv->str_shared && c->share_strings &&
-                     !is_byte_codepoint_each(name);
-        if (blv && !handle) lv_set_type(blv, (is_byte_codepoint_each(name)) ? TY_INT : TY_STRING);
+        if (blv && is_byte_codepoint_each(name)) lv_set_type(blv, TY_INT);
+        else an_bind_line_param(c, blv);
       }
       { *out = TY_IO; return 1; }
     }
