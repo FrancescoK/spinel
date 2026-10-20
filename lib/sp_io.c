@@ -1364,6 +1364,40 @@ sp_int sp_sock_connect(sp_File *f, const char *host, sp_int port) {SP_GC_ROOT(f)
   }
   return 0;
 }
+/* Socket#bind / #connect(sockaddr): the address already packed (the binary
+   String Socket.sockaddr_in or Addrinfo#to_sockaddr answers), copied out
+   aligned, as sp_sock_connect_nb_sa copies it. Only a Socket takes it: a
+   UDPSocket's pair takes a host and a port, and the other socket classes
+   have neither. */
+static void sp_sock_sa_prepare(sp_File *f, const char *m, const char *sa, sp_int salen,
+                               struct sockaddr_storage *out) {SP_GC_ROOT(f);SP_GC_ROOT_STR(m);SP_GC_ROOT_STR(sa);
+  const char *k = sp_io_kind_name(f);
+  if (strcmp(k, "UDPSocket") == 0)
+    sp_raise_cls("ArgumentError", "wrong number of arguments (given 1, expected 2)");
+  if (strcmp(k, "Socket") != 0)
+    sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of %s", m, k));
+  SP_IO_OPEN(f);
+  if (!sa || salen <= 0 || salen > (sp_int)sizeof(struct sockaddr_storage)) {
+    errno = EINVAL;
+    sp_file_raise_errno(m, "");
+  }
+  memcpy(out, sa, (size_t)salen);
+}
+sp_int sp_sock_bind_sa(sp_File *f, const char *sa, sp_int salen) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sa);
+  struct sockaddr_storage aligned_sa;
+  sp_sock_sa_prepare(f, "bind", sa, salen, &aligned_sa);
+  if (bind(fileno(f->fp), (const struct sockaddr *)&aligned_sa, (socklen_t)salen) != 0)
+    sp_file_raise_errno("bind", "");
+  return 0;
+}
+sp_int sp_sock_connect_sa(sp_File *f, const char *sa, sp_int salen) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sa);
+  extern int sp_net_connect_sa(int fd, const void *sa, int len);
+  struct sockaddr_storage aligned_sa;
+  sp_sock_sa_prepare(f, "connect", sa, salen, &aligned_sa);
+  if (sp_net_connect_sa(fileno(f->fp), &aligned_sa, (int)salen) != 0)
+    sp_file_raise_errno("connect", "");
+  return 0;
+}
 sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
   extern int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int port);
   sp_sock_require(f, "send");

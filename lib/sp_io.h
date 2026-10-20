@@ -200,6 +200,9 @@ sp_File *sp_sock_unix_server(const char *path);
 sp_File *sp_sock_unix_connect(const char *path);
 sp_int sp_sock_bind(sp_File *f, const char *host, sp_int port);
 sp_int sp_sock_connect(sp_File *f, const char *host, sp_int port);
+/* Socket#bind / #connect with a packed sockaddr */
+sp_int sp_sock_bind_sa(sp_File *f, const char *sa, sp_int salen);
+sp_int sp_sock_connect_sa(sp_File *f, const char *sa, sp_int salen);
 sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, sp_int port);
 sp_int sp_sock_shutdown(sp_File *f, sp_int how);
 sp_int sp_sock_const(const char *n);

@@ -1,0 +1,14 @@
+0
+0
+"127.0.0.1"
+true
+0
+"Seongsu Bridge"
+0
+0
+"Jayang-dong"
+true
+Errno::EADDRINUSE
+Errno::ECONNREFUSED
+wrong number of arguments (given 1, expected 2)
+undefined method 'bind' for an instance of TCPSocket
