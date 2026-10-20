@@ -25,8 +25,11 @@ PARTS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-plan-check-parts.XXXXXX")
 { ls test/*.rb benchmark/*.rb packages/*/test/*.rb test/reject/*.rb test/collect/*.rb 2>/dev/null
   [ -f build/optcarrot-single.rb ] && echo build/optcarrot-single.rb; } |
   xargs -P "$JOBS" -I{} sh -c '
-    "$2" -c --no-line-map --plan-check "$1" -o /dev/null 2>&1 | grep "^plan-check:" | sed "s|^|$1: |" \
-      > "$3/$(printf %s "$1" | tr / _)"
+    # the compiler runs outside the pipe, so its exit status is kept: a
+    # program that fails after it reported some diagnostics is no clean one
+    out=$("$2" -c --no-line-map --plan-check "$1" -o /dev/null 2>&1); rc=$?
+    { printf "%s\n" "$out" | grep "^plan-check:" | sed "s|^|$1: |"
+      [ "$rc" -eq 0 ] || echo "$1: plan-check-exit: $rc"; } > "$3/$(printf %s "$1" | tr / _)"
   ' _ {} "$SP" "$PARTS"
 find "$PARTS" -type f -exec cat {} + > "$OUT"
 rm -rf "$PARTS"
@@ -97,6 +100,9 @@ sc=0
 for f in $STRICT_PROGRAMS; do
   if ! grep -q "^$f: plan-check: " "$OUT"; then
     echo "plan-check: strict program $f did not compile or is missing"
+    sc=$((sc + 1))
+  elif grep "^$f: plan-check-exit: " "$OUT"; then
+    echo "plan-check: strict program $f did not compile"
     sc=$((sc + 1))
   elif grep "^$f: plan-check: unrecorded:" "$OUT"; then
     sc=$((sc + 1))
