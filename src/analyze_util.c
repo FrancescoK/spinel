@@ -1017,6 +1017,14 @@ int class_recv_static_ci(Compiler *c, int node) {
   return class_var_static_ci(c, node);
 }
 
+/* The class method `name` the program defines for the class a class-valued
+   receiver names at compile time (class_recv_static_ci), up its ancestors;
+   -1 when there is none or the class is known only at run time. */
+int class_recv_user_cmethod(Compiler *c, int node, const char *name) {
+  int ci = class_recv_static_ci(c, node);
+  return ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
+}
+
 /* The literal symbol behind a symbol-typed expression: a SymbolNode itself,
    or a local variable whose only write (in its scope, plain write) is one.
    Lets inject(:op)-style operator selection see through `s = :+; a.inject(s)`.

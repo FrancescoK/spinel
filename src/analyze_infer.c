@@ -5414,7 +5414,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   }
 
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
-    if (argc == 0 && is_name_reader(name))
+    /* Module#name / to_s / inspect, unless the class answers with a class
+       method of its own (`def self.name = Thread.current[:name]`), whose
+       dispatch below types the call */
+    if (argc == 0 && is_name_reader(name) && class_recv_user_cmethod(c, recv, name) < 0)
       { *out = TY_STRING; return 1; }
     /* Thread.current / Fiber.current through a class value: a boxed handle
        (activesupport's IsolatedExecutionState keeps its scope as the class

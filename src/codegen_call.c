@@ -26857,14 +26857,15 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
       return;
     } }
   /* Module#name answers a frozen String in CRuby; the many arms below spell
-     it as a static name, so the result is wrapped here once */
+     it as a static name, so the result is wrapped here once. A class method
+     the class defines of its own answers as it is. */
   { static int in_name = 0;
     const char *cn = nt_str(c->nt, id, "name");
     int r = nt_ref(c->nt, id, "receiver"), ca = nt_ref(c->nt, id, "arguments");
     Scope *es = comp_scope_of(c, id);
     if (!in_name && cn && sp_streq(cn, "name") && ca < 0 && nt_ref(c->nt, id, "block") < 0 &&
         comp_ntype(c, id) == TY_STRING &&
-        ((r >= 0 && comp_ntype(c, r) == TY_CLASS) ||
+        ((r >= 0 && comp_ntype(c, r) == TY_CLASS && class_recv_user_cmethod(c, r, cn) < 0) ||
          (r < 0 && es && es->is_cmethod && es->class_id >= 0))) {
       in_name = 1;
       buf_puts(b, "sp_str_frozen_name(");
