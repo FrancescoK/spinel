@@ -3258,7 +3258,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
     if (se) emit_srange_end_recv(c, recv, b);
-    else emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
+    else emit_expr(c, nt_ref(c->nt, nt_paren_single(c->nt, recv), "receiver"), b);
     if (se) buf_printf(b, "; const void *_i%d = sp_srange_end_id(_t%d, %d);", t, t, se == 2);
     else buf_printf(b, "; const void *_i%d = sp_srange_extreme_id(_t%d, %d, sp_srange_extreme_h(_t%d, %d));", t, t, sx == 2, t, sx == 2);
     buf_printf(b, " _i%d ? (sp_int)(uintptr_t)_i%d : SP_NIL_OBJECT_ID; })", t, t);
@@ -3279,7 +3279,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   }
   /* --share-strings: a spliced yield whose block answers a holder's
      handle (strbuf_route_yield): that handle's */
-  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, unwrap_parens(c, recv)) == NK_YieldNode &&
+  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_YieldNode &&
       strbuf_yield_tail_held(c)) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, recv, &hb)) {
@@ -3504,7 +3504,7 @@ int strbuf_held_chain(const Compiler *c, int r) {
            bop_share_named(TY_STRING, nm) != BSH_FROZEN &&
            (bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF || (is_receiver_conversion(nm) && argc == 0)) &&
            strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
-  int rr = unwrap_parens((Compiler *)c, nt_ref(nt, r, "receiver"));
+  int rr = nt_paren_single(c->nt, nt_ref(nt, r, "receiver"));
   NodeKind rk = rr >= 0 ? nt_kind(nt, rr) : NK_NONE;
   if (rr < 0 || rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
       repr_static_read_kind(rk)) return 0;
@@ -3585,7 +3585,7 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   /* --share-strings: itself, to_s or to_str of a held chain answers its
      String (strbuf_held_chain; nil.to_s's "" aside, emit_held_handle) */
   if (repr_share_rule(c) && is_receiver_conversion(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
-      nt_ref(nt, v, "block") < 0 && !nt_safe_nav(nt, v) && nt_kind(nt, unwrap_parens((Compiler *)c, r)) == NK_CallNode) {
+      nt_ref(nt, v, "block") < 0 && !nt_safe_nav(nt, v) && nt_kind(nt, nt_paren_single(c->nt, r)) == NK_CallNode) {
     int ct[CPT_MAX];
     return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0 && strbuf_held_chain(c, r);
   }
@@ -5896,7 +5896,7 @@ int str_append_chain(Compiler *c, int recv, int *chain, int *base) {
   const NodeTable *nt = c->nt;
   int nchain = 0; int cur = recv;
   while (nchain < 64) {
-    cur = unwrap_parens(c, cur);
+    cur = nt_paren_single(c->nt, cur);
     const char *cty = nt_type(nt, cur);
     if (!cty || !sp_streq(cty, "CallNode")) break;
     const char *cnm = nt_str(nt, cur, "name");
@@ -5919,7 +5919,7 @@ int str_append_chain(Compiler *c, int recv, int *chain, int *base) {
    fine); the int-backed sp_Range would otherwise silently truncate. */
 int range_float_begin(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  int rn = unwrap_parens(c, recv);
+  int rn = nt_paren_single(c->nt, recv);
   if (rn < 0) return 0;
   const char *rty = nt_type(nt, rn);
   if (!rty || !sp_streq(rty, "RangeNode")) {
@@ -6393,7 +6393,7 @@ static int read_is_held(Compiler *c, int node) {
         comp_ntype(c, av[0]) != TY_INT || array_index_is_own(c))
       return 0;
     if (subtree_is_pure_read(c, av[0])) return 1;
-    recv = unwrap_parens(c, recv);
+    recv = nt_paren_single(c->nt, recv);
     NodeKind rk = nt_kind(nt, recv);
     return (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
             rk == NK_GlobalVariableReadNode || rk == NK_ClassVariableReadNode) &&
@@ -7556,7 +7556,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     return nullable_int_value(c, node);
   case NK_ParenthesesNode: {
     /* `(expr)` is its expression's form */
-    int u = unwrap_parens(c, node);
+    int u = nt_paren_single(c->nt, node);
     return u != node && u >= 0 ? node_is_oint(c, u) : nullable_int_value(c, node);
   }
   case NK_CallOrWriteNode:

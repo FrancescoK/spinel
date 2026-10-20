@@ -1184,7 +1184,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE &&
                      (range_float_begin(c, recv) || range_lit_float_end(c, recv) >= 0)) ||
                     comp_ntype(c, recv) == TY_FLOAT_RANGE)) {
-    int rn9 = unwrap_parens(c, recv);
+    int rn9 = nt_paren_single(c->nt, recv);
     if (rn9 >= 0 && nt_type(nt, rn9) && !sp_streq(nt_type(nt, rn9), "RangeNode"))
       rn9 = local_sole_range_node(c, rn9);
     int rleft = rn9 >= 0 ? nt_ref(nt, rn9, "left") : -1;
@@ -9083,7 +9083,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     view_bind(recv, "_t%d", tr);
   }
   Buf hw; memset(&hw, 0, sizeof hw);
-  if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, unwrap_parens(c, v), &hw);
+  if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, nt_paren_single(c->nt, v), &hw);
   else if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
   wshare |= conversion;

@@ -6096,7 +6096,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     }
     {
       /* a beginless range cannot be enumerated from nil (#3066) */
-      int rn0 = unwrap_parens(c, recv);
+      int rn0 = nt_paren_single(c->nt, recv);
       if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
           nt_ref(nt, rn0, "left") < 0) {
         emit_indent(b, indent);
@@ -6104,7 +6104,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         return 1;
       }
     }
-    int rnode = unwrap_parens(c, recv);
+    int rnode = nt_paren_single(c->nt, recv);
     if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {

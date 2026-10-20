@@ -215,7 +215,7 @@ static int str_route_names_handle(Compiler *c, int v) {
                    bop_share_named(TY_STRING, nt_str(c->nt, w, "name")) == BSH_EMPTY_SELF && strbuf_value_route(c, w);
   return empty_self || named || strbuf_assign_route(c, v) ||
          strbuf_route_clamp(c, v, ops) ||
-         (nt_kind(c->nt, unwrap_parens(c, v)) == NK_YieldNode && strbuf_yield_tail_held(c));
+         (nt_kind(c->nt, nt_paren_single(c->nt, v)) == NK_YieldNode && strbuf_yield_tail_held(c));
 }
 
 /* Node v's identity in the plan's form, as what its producer holds it in:
@@ -462,7 +462,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
     if (strbuf_proc_call_box(c, node) && !arg_ran_first(node, 0) && !emit_boxed_lift(c, node)) {
       /* (a block literal the call splices answers its tail boxed, as
          emit_strbuf_route's proc arm asks it) */
-      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
+      int v = nt_paren_single(c->nt, node), sv = view_push(c, v, TY_POLY);
       if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
       else emit_expr(c, v, b);
       view_pop(c, sv);
@@ -476,7 +476,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
      handle, as emit_strbuf_route reads the call, where the call's bytes
      boxed whole were a const char * in a handle's place */
   case SPK_BLOCK_VALUE:
-    if (nt_kind(c->nt, unwrap_parens(c, node)) == NK_CallNode && nt_ref(c->nt, unwrap_parens(c, node), "block") >= 0 &&
+    if (nt_kind(c->nt, nt_paren_single(c->nt, node)) == NK_CallNode && nt_ref(c->nt, nt_paren_single(c->nt, node), "block") >= 0 &&
         !arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
         share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
       Buf hb; memset(&hb, 0, sizeof hb);
@@ -532,7 +532,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
   case SPK_YIELD:
     if (!strbuf_yield_proc_box(c, node)) return 0;
     {
-      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
+      int v = nt_paren_single(c->nt, node), sv = view_push(c, v, TY_POLY);
       emit_expr(c, v, b);
       view_pop(c, sv);
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
@@ -632,7 +632,7 @@ void emit_str_form_box(Compiler *c, int v, Buf *b) {
   /* (`tap` and `then` with a literal block hand on a handle, which the
      identity face would take for a box: the handle face, boxed here) */
   const NodeTable *nt = c->nt;
-  int u = unwrap_parens(c, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+  int u = nt_paren_single(c->nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
   const char *nm = blk >= 0 ? nt_str(nt, u, "name") : NULL;
   if (nm && nt_kind(nt, blk) == NK_BlockNode && (is_then_alias(nm) || is_tap_name(nm))) {
     emit_str_form(c, v, share_plan_role(c, v), SPX_HANDLE, 0, &sf);
