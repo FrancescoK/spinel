@@ -34,6 +34,10 @@ def bits = (5 << 32) | 7
 seen = Set.new.compare_by_identity
 n = Node.new(packed(:bits))
 seen << n
+# handed to a method, the identity Set is no longer followed to one
+# place, and every Set's calls are checked
+def count_of(set) = set.size
+p count_of(seen)
 p n.flags, n.end_offset
 p n.location.start, n.location.length, seen.include?(n), seen.include?(Node.new(1))
 begin
