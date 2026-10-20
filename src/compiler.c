@@ -314,7 +314,7 @@ void comp_free(Compiler *c) {
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
-  free(c->cls_fact); free(c->cls_pool);
+  free(c->cls_fact); free(c->cls_pool); free(c->cls_kind);
   free(c->send_param_memo);
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);
@@ -4135,6 +4135,25 @@ int comp_class_anonymous(Compiler *c, int ci) {
 
 /* The table that prints a class value for to_s and inspect: a Class.new class
    has a display form of its own, and every other program reads the one name table. */
-const char *comp_class_display_fn(Compiler *c) {
+const char *comp_class_base_display_fn(Compiler *c) {
   return c->has_anonymous_classes ? "sp_class_display" : "sp_class_to_s";
+}
+/* A class method to_s / inspect (nm) of class k's own, taking no arguments
+   and answering a String: what prints the class (sp_class_user_to_s and
+   _inspect); -1 when the class has none. */
+int cls_user_display_mi(Compiler *c, int k, const char *nm) {
+  if (k < 0 || k >= c->nclasses || is_builtin_reopen(c->classes[k].name)) return -1;
+  int mi = comp_cmethod_in_chain(c, k, nm, NULL);
+  if (mi < 0) return -1;
+  const Scope *s = &c->scopes[mi];
+  if (s->nparams > 0 || s->yields || (s->blk_param && s->blk_param[0]) || (TyKind)s->ret != TY_STRING) return -1;
+  return mi;
+}
+int prog_has_cls_user_display(Compiler *c, const char *nm) {
+  for (int k = 0; k < c->nclasses; k++) if (cls_user_display_mi(c, k, nm) >= 0) return 1;
+  return 0;
+}
+/* ... and for to_s, the table behind the program's own class method to_s */
+const char *comp_class_display_fn(Compiler *c) {
+  return prog_has_cls_user_display(c, "to_s") ? "sp_class_to_s_disp" : comp_class_base_display_fn(c);
 }

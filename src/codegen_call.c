@@ -7778,6 +7778,9 @@ static int bi_default_probe(Compiler *c, int id, int recv, const char *name, int
     /* --share-strings: one the dispatch bound with its handle keeps that
        binding (ran_first_handle), the same temp */
     if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
+    /* (a temp that holds the argument's handle: the arm's String reads are
+       that handle's String, its handle reads the handle itself) */
+    if (repr_share_rule(c) && atmp_ty[a] == TY_STRBUF) { ran_first_bind_read(argv[a], atmp[a]); continue; }
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
   int va = view_push_arm(id, g_prbd_skip, 1);
@@ -20461,6 +20464,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(b, "({ const char *_t%d = ", tsrc);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc);
+    /* the item reads raise a nil receiver under chars' or bytes' name, or
+       read it as "": it raises under the iterator's own */
+    if (!recv_never_nil(c, recv)) { nil_recv_check(name, tsrc, b); buf_puts(b, " "); }
     if (is_byte_codepoint_each(name)) {
       const char *fn = sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
       buf_printf(b, "sp_enum_with_src(sp_Enumerator_new_from(sp_box_int_array(%s(_t%d))), "
@@ -20482,7 +20488,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     int tsrc3 = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsrc3);
     emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(", tsrc3);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc3);
+    if (!recv_never_nil(c, recv)) { nil_recv_check("each_line", tsrc3, b); buf_puts(b, " "); }   /* as above */
+    buf_puts(b, "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(");
     if (sep_kw >= 0) { buf_puts(b, "("); emit_cond(c, sep_kw, b); buf_puts(b, " ? sp_str_lines_sep_chomp : sp_str_lines_sep)"); }
     else buf_puts(b, "sp_str_lines_sep");
     buf_printf(b, "(_t%d, ", tsrc3);
@@ -20500,7 +20508,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     int tsrc2 = ++g_tmp, tch = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsrc2);
     emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d); int _t%d = ", tsrc2, tch);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc2);
+    if (!recv_never_nil(c, recv)) { nil_recv_check("each_line", tsrc2, b); buf_puts(b, " "); }   /* as above */
+    buf_printf(b, "int _t%d = ", tch);
     if (is_chomp < 0) emit_cond(c, chomp_v, b);
     else buf_printf(b, "%d", is_chomp);
     buf_printf(b, "; sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(_t%d ? sp_str_lines_chomp(_t%d) : sp_str_lines(_t%d))), "

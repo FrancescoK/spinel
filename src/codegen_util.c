@@ -3228,8 +3228,14 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    bytes: the live buffer, not the whole-buffer copy an ordinary value read
    makes (#3227). Answers 0 when the receiver is not such a slot, so the caller
    falls back to emit_expr. A narrowed box is not a handle slot: its ordinary
-   expression reads the bytes without allocating a handle first. */
-int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
+   expression reads the bytes without allocating a handle first. A slot that
+   can be nil (an ivar no write has set yet, which ivar_nil_recv_guard leaves
+   untested) reads as NULL for it, as the copying read does, and the call
+   answers as for a nil String receiver. */
+int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) {
+  Repr rr = repr_of(c, recv);
+  return strbuf_box_ref_as(c, recv, rr.may_nil && !rr.nil_tested ? "sp_String_cstr_nil(%s)" : "sp_String_cstr(%s)", b);
+}
 /* The object_id of handle `h`, a String that can be nil: the handle is
    used twice, tested for nil and asked its identity, so it is evaluated
    once (SF_EVAL_ONCE); nil answers `nil_id`. Without --share-strings the

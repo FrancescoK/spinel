@@ -261,6 +261,16 @@ static int ysa_find(int id, TyKind kind) {
     if (ysa_tab[i].node == id && ysa_tab[i].kind == kind) return i;
   return -1;
 }
+/* The builtins whose answer at a yield site is typed per site for every
+   receiver kind, not only numeric ones. <=> answers an Integer or nil, which
+   a String or Array site gives where an Integer site gives a number: with
+   the first site's kind alone the yield stored the nil in an Integer slot
+   and raised TypeError at run time (K-031). sort and reverse answer their
+   receiver's own kind for an Array, and a String's reverse is a String: a
+   Hash or String site beside an Array site failed to compile (K-030b). */
+static int yield_site_per_kind_name(const char *name) {
+  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse"));
+}
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
   const NodeTable *nt = c->nt;
   int at = ysa_find(id, kind);
@@ -281,8 +291,13 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
      Only numeric kinds take this path: widening a yield over String or
      Hash sites as well (`yield.inspect`) reaches emitters that do not yet
      box a per-site answer into the poly slot, and fails to compile. */
+  /* A name in yield_site_per_kind_name is answered per site for every kind
+     too (see that function). Other names over non-numeric kinds still take
+     the old path: the emitter does not yet box every per-site answer into a
+     poly slot, so widening them fails to compile. */
   if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "builtin_only", 0) ||
-      !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind))) return 0;
+      !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind) ||
+        yield_site_per_kind_name(nt_str(nt, id, "name")))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
@@ -5412,9 +5427,19 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
     /* Module#name / to_s / inspect, unless the class answers with a class
        method of its own (`def self.name = Thread.current[:name]`), whose
-       dispatch below types the call */
-    if (argc == 0 && is_name_reader(name) && class_recv_user_cmethod(c, recv, name) < 0)
-      { *out = TY_STRING; return 1; }
+       dispatch below types the call. A class known only at run time may be
+       one with such a method or one without: boxed, either answer. */
+    if (argc == 0 && is_name_reader(name) && class_recv_user_cmethod(c, recv, name) < 0) {
+      int ncc = 0, other = 0;
+      const PolyCand *pc = NULL;
+      if (class_recv_static_ci(c, recv) < 0 && class_recv_is_dynamic(c, recv))
+        pc = comp_cmethod_candidates(c, name, &ncc);
+      for (int k = 0; k < ncc; k++) {
+        TyKind kr = (TyKind)c->scopes[pc[k].mi].ret;
+        if (kr != TY_STRING && kr != TY_UNKNOWN) other = 1;
+      }
+      *out = other ? TY_POLY : TY_STRING; return 1;
+    }
     /* Thread.current / Fiber.current through a class value: a boxed handle
        (activesupport's IsolatedExecutionState keeps its scope as the class
        itself); a user class method of that name keeps its dispatch below */

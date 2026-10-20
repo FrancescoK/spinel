@@ -93,6 +93,13 @@ int cplan_initializers(Compiler *c, int id, int *out, int cap);
    receiver and add members, and nothing here promises a set only grows. */
 enum { CPT_UNKNOWN = -1, CPT_MAX = 64 };
 int cplan_targets(Compiler *c, int id, int *out, int cap);
+/* Why cplan_targets answers CPT_UNKNOWN for call id: its members are more
+   than cap (CPT_WHY_CAP), or its receiver is of a type the analysis did not
+   settle (CPT_WHY_RECV_UNTYPED) -- the two ct_resolve gives up on, whose
+   members are still the program's methods of the call's name or a
+   builtin's. CPT_WHY_NONE where it lists the members. */
+enum { CPT_WHY_NONE = 0, CPT_WHY_CAP, CPT_WHY_RECV_UNTYPED };
+int cplan_targets_unknown_why(Compiler *c, int id, int cap);
 void cplan_targets_drop(void);
 /* Can target method mi of call id bind the call's arguments? 0 only when
    their count is known at compile time -- plain positional arguments and a

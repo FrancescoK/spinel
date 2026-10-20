@@ -1,0 +1,57 @@
+Kondae slice(0): "K"
+Kondae slice(0, 4): "Kond"
+Kondae slice(0..3): "Kond"
+Kondae slice("Kon"): "Kon"
+Kondae [0]: "K"
+Kondae ["Kon"]: "Kon"
+Kondae [/K./]: "Ko"
+Kondae match?: true
+Kondae match?(re, 2): true
+Kondae match?(str): true
+Kondae match?(Regexp value): true
+Kondae match?(Regexp value, 2): true
+Kondae between?: true
+Kondae unpack1: "Kon"
+Kondae unpack1(offset:): 111
+Kondae each_char: ["K", "o", "n"]
+Kondae each_byte: [75, 111]
+Kondae each_line: ["Kondae station"]
+Kondae each_line(sep): ["Kondae ", "station"]
+unset slice(0): NoMethodError undefined method 'slice' for nil
+unset slice(0, 4): NoMethodError undefined method 'slice' for nil
+unset slice(0..3): NoMethodError undefined method 'slice' for nil
+unset slice("Kon"): NoMethodError undefined method 'slice' for nil
+unset [0]: NoMethodError undefined method '[]' for nil
+unset ["Kon"]: NoMethodError undefined method '[]' for nil
+unset [/K./]: NoMethodError undefined method '[]' for nil
+unset match?: NoMethodError undefined method 'match?' for nil
+unset match?(re, 2): NoMethodError undefined method 'match?' for nil
+unset match?(str): NoMethodError undefined method 'match?' for nil
+unset match?(Regexp value): NoMethodError undefined method 'match?' for nil
+unset match?(Regexp value, 2): NoMethodError undefined method 'match?' for nil
+unset between?: NoMethodError undefined method 'between?' for nil
+unset unpack1: NoMethodError undefined method 'unpack1' for nil
+unset unpack1(offset:): NoMethodError undefined method 'unpack1' for nil
+unset each_char: NoMethodError undefined method 'each_char' for nil
+unset each_byte: NoMethodError undefined method 'each_byte' for nil
+unset each_line: NoMethodError undefined method 'each_line' for nil
+unset each_line(sep): NoMethodError undefined method 'each_line' for nil
+cleared slice(0): NoMethodError undefined method 'slice' for nil
+cleared slice(0, 4): NoMethodError undefined method 'slice' for nil
+cleared slice(0..3): NoMethodError undefined method 'slice' for nil
+cleared slice("Kon"): NoMethodError undefined method 'slice' for nil
+cleared [0]: NoMethodError undefined method '[]' for nil
+cleared ["Kon"]: NoMethodError undefined method '[]' for nil
+cleared [/K./]: NoMethodError undefined method '[]' for nil
+cleared match?: NoMethodError undefined method 'match?' for nil
+cleared match?(re, 2): NoMethodError undefined method 'match?' for nil
+cleared match?(str): NoMethodError undefined method 'match?' for nil
+cleared match?(Regexp value): NoMethodError undefined method 'match?' for nil
+cleared match?(Regexp value, 2): NoMethodError undefined method 'match?' for nil
+cleared between?: NoMethodError undefined method 'between?' for nil
+cleared unpack1: NoMethodError undefined method 'unpack1' for nil
+cleared unpack1(offset:): NoMethodError undefined method 'unpack1' for nil
+cleared each_char: NoMethodError undefined method 'each_char' for nil
+cleared each_byte: NoMethodError undefined method 'each_byte' for nil
+cleared each_line: NoMethodError undefined method 'each_line' for nil
+cleared each_line(sep): NoMethodError undefined method 'each_line' for nil

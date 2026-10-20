@@ -11416,6 +11416,23 @@ static int desugar_method_block_arg(Compiler *c) {
    a real entry in the includer's chain -- and the comp_method_in_chain test
    at the top of the loop below then declines to rewrite its call. The
    rewrite still serves every body that genuinely does not care. */
+/* The first module, in the ancestor order module m and the modules it
+   includes take (m, then its includes from the last made), that has a
+   module_function named nm; -1 for none. depth only stops an include
+   cycle: no chain of distinct modules is longer than the class count. */
+static int module_function_owner(Compiler *c, int m, const char *nm, int depth) {
+  if (m < 0 || m >= c->nclasses || depth > c->nclasses) return -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *ms = &c->scopes[si];
+    if (ms->class_id == m && ms->is_module_function && ms->name && sp_streq(ms->name, nm)) return m;
+  }
+  const ClassInfo *mi = &c->classes[m];
+  for (int j = mi->nincluded_mods - 1; j >= 0; j--) {
+    int r = module_function_owner(c, mi->included_mods[j], nm, depth + 1);
+    if (r >= 0) return r;
+  }
+  return -1;
+}
 static int desugar_module_function_call(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -11427,23 +11444,21 @@ static int desugar_module_function_call(Compiler *c) {
     if (!nm) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
-    /* the enclosing class's own (or inherited) method wins over the mixin */
-    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
     if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
     /* a local of this name is a variable read, not a call */
     if (scope_local(sc, nm)) continue;
-    int mod = -1;
-    for (int k = sc->class_id; k >= 0 && mod < 0; k = c->classes[k].parent) {
+    /* the module whose module_function it is, included by the class or a
+       superclass directly or through a module it includes (`module B;
+       include A; end`, then `include B`), the first in the ancestor order
+       (a class, then its includes from the last made, then its superclass).
+       A class on the way that has the name itself -- its own method or
+       reader, or a copy an include put in its table -- answers the call. */
+    int mod = -1, own = 0;
+    for (int k = sc->class_id; k >= 0 && mod < 0 && !own; k = c->classes[k].parent) {
       ClassInfo *cl = &c->classes[k];
-      for (int j = 0; j < cl->nincluded_mods && mod < 0; j++) {
-        int mi2 = cl->included_mods[j];
-        if (mi2 < 0 || mi2 >= c->nclasses) continue;
-        for (int si = 1; si < c->nscopes; si++) {
-          Scope *ms = &c->scopes[si];
-          if (ms->class_id != mi2 || !ms->is_module_function) continue;
-          if (ms->name && sp_streq(ms->name, nm)) { mod = mi2; break; }
-        }
-      }
+      if (comp_method_in_class(c, k, nm) >= 0 || comp_is_reader(cl, nm)) { own = 1; break; }
+      for (int j = cl->nincluded_mods - 1; j >= 0 && mod < 0; j--)
+        mod = module_function_owner(c, cl->included_mods[j], nm, 0);
     }
     if (mod < 0) continue;
     int mc = nt_new_node(nt, "ConstantReadNode");
@@ -24195,6 +24210,260 @@ static int an_tail_tap_blind(Compiler *c, int n) {
   int si = comp_class_index(c, "String");
   return si < 0 || comp_method_in_chain(c, si, "tap", NULL) < 0;
 }
+/* ---- a local a method builds its answer up in (#9258) ----
+   `out = +""; ...; out << x; ...; out`: every write of the local is a new
+   String and every read the receiver of an append or the method's answer,
+   so no other name ever holds the String it answers, whatever share class
+   the walk gave it. How a value is used, for the walk below: */
+enum { BL_OTHER, BL_DROP, BL_RET, BL_RECV };
+/* n with its single-expression parentheses taken off */
+static int bl_unparen(const NodeTable *nt, int n) {
+  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, n, "body"), bn = 0;
+    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    if (bn != 1) return -1;
+    n = bb[0];
+  }
+  return n;
+}
+/* Is v a new String each time it runs: an interpolation, `+"lit"` or `+`
+   of one, `"lit" * n`, `"lit".dup`, String.new? */
+static int bl_new_string(const NodeTable *nt, int v) {
+  v = bl_unparen(nt, v);
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_InterpolatedStringNode) return 1;
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  if (sp_streq(nm, "+@")) return rk == NK_StringNode || bl_new_string(nt, r);
+  if (sp_streq(nm, "*") || sp_streq(nm, "dup")) return rk == NK_StringNode || rk == NK_InterpolatedStringNode;
+  if (sp_streq(nm, "new")) return rk == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "String");
+  return 0;
+}
+static int bl_is_append(const NodeTable *nt, int n) {
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  return nm && (sp_streq(nm, "<<") || sp_streq(nm, "concat"));
+}
+/* Is n the local (name, at block depth depth) or an append chain on it? */
+static int bl_alias(const NodeTable *nt, int n, const char *name, int depth) {
+  n = bl_unparen(nt, n);
+  if (n < 0) return 0;
+  if (nt_kind(nt, n) == NK_LocalVariableReadNode)
+    return sp_streq(nt_str(nt, n, "name"), name) && nt_int(nt, n, "depth", 0) == depth;
+  return bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth);
+}
+static int bl_walk(Compiler *c, int n, const char *name, int depth, int use, int ret);
+/* Does the subtree at n read or write a local of the name, at any block
+   depth? (a block's or lambda's parameter list: a default such as
+   `|k = out|` hands the String to another name) */
+static int bl_names_local(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) &&
+      sp_streq(nt_str(nt, n, "name"), name))
+    return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (bl_names_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (bl_names_local(nt, av[j], name)) return 1;
+  }
+  return 0;
+}
+/* each child of n but skip, used as BL_OTHER; ret is the use a `return`'s
+   argument gets: BL_RET where it leaves the method, BL_OTHER inside a
+   lambda or a block that may run as one */
+static int bl_children(Compiler *c, int n, int skip, const char *name, int depth, int ret) {
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r != skip && !bl_walk(c, r, name, depth, BL_OTHER, ret)) return 0;
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!bl_walk(c, av[j], name, depth, BL_OTHER, ret)) return 0;
+  }
+  return 1;
+}
+/* statements: all but the last dropped, the last used as use */
+static int bl_stmts(Compiler *c, int st, const char *name, int depth, int use, int ret) {
+  const NodeTable *nt = c->nt;
+  if (st < 0) return 1;
+  if (nt_kind(nt, st) != NK_StatementsNode) return bl_walk(c, st, name, depth, use, ret);
+  int bn = 0;
+  const int *bb = nt_arr(nt, st, "body", &bn);
+  for (int i = 0; i < bn; i++) if (!bl_walk(c, bb[i], name, depth, i + 1 < bn ? BL_DROP : use, ret)) return 0;
+  return 1;
+}
+/* A call: an append to the local (its value, the same String, only
+   dropped, appended to again or answered), or a call whose literal block's
+   value its iterator drops (an_iter_discards_block). A `return` in that
+   block leaves the method; in another call's block, which may run as a
+   lambda (`lambda`, `define_method`, a block kept and called later), it
+   may answer the block's caller instead. */
+static int bl_call(Compiler *c, int n, const char *name, int depth, int use, int ret) {
+  const NodeTable *nt = c->nt;
+  if (bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth)) {
+    if (use == BL_OTHER) return 0;
+    return bl_walk(c, nt_ref(nt, n, "receiver"), name, depth, BL_RECV, ret) &&
+           bl_children(c, n, nt_ref(nt, n, "receiver"), name, depth, ret);
+  }
+  int bk = nt_ref(nt, n, "block");
+  if (bk < 0 || nt_kind(nt, bk) != NK_BlockNode) return bl_children(c, n, -1, name, depth, ret);
+  int disc = an_iter_discards_block(c, n);
+  if (bl_names_local(nt, nt_ref(nt, bk, "parameters"), name)) return 0;
+  return bl_children(c, n, bk, name, depth, ret) &&
+         bl_stmts(c, nt_ref(nt, bk, "body"), name, depth + 1, disc ? BL_DROP : BL_OTHER, disc ? ret : BL_OTHER);
+}
+static int bl_walk(Compiler *c, int n, const char *name, int depth, int use, int ret) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  int mine = (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+              k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode) &&
+             sp_streq(nt_str(nt, n, "name"), name) && nt_int(nt, n, "depth", 0) == depth;
+  switch (k) {
+  case NK_DefNode: return 1;
+  case NK_LocalVariableReadNode: return !mine || use == BL_RECV || use == BL_RET;
+  case NK_LocalVariableWriteNode:
+    if (mine && (use != BL_DROP || !bl_new_string(nt, nt_ref(nt, n, "value")))) return 0;
+    return bl_walk(c, nt_ref(nt, n, "value"), name, depth, BL_OTHER, ret);
+  case NK_LocalVariableOperatorWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+  case NK_LocalVariableTargetNode:
+    if (mine) return 0;
+    break;
+  case NK_StatementsNode: return bl_stmts(c, n, name, depth, use, ret);
+  case NK_ParenthesesNode: return bl_stmts(c, nt_ref(nt, n, "body"), name, depth, use, ret);
+  case NK_IfNode: case NK_UnlessNode:
+    return bl_walk(c, nt_ref(nt, n, "predicate"), name, depth, BL_OTHER, ret) &&
+           bl_stmts(c, nt_ref(nt, n, "statements"), name, depth, use, ret) &&
+           bl_walk(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), name, depth, use, ret);
+  case NK_ElseNode: return bl_stmts(c, nt_ref(nt, n, "statements"), name, depth, use, ret);
+  case NK_ReturnNode: {
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) if (!bl_walk(c, av[i], name, depth, an == 1 ? ret : BL_OTHER, ret)) return 0;
+    return 1;
+  }
+  case NK_BlockNode: case NK_LambdaNode:
+    /* (a lambda, or a block reached other than as its call's literal
+       block: a `return` in it may answer its caller) */
+    if (bl_names_local(nt, nt_ref(nt, n, "parameters"), name)) return 0;
+    return bl_stmts(c, nt_ref(nt, n, "body"), name, depth + 1, BL_OTHER, BL_OTHER);
+  case NK_CallNode: return bl_call(c, n, name, depth, use, ret);
+  default: break;
+  }
+  return bl_children(c, n, -1, name, depth, ret);
+}
+/* Is tail n of method mi a read of a local the method builds its answer up
+   in (above)? */
+static int an_builder_local_fresh(Compiler *c, int mi, int n) {
+  const NodeTable *nt = c->nt;
+  if (mi <= 0 || n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode || nt_int(nt, n, "depth", 0) != 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode || comp_scope_of(c, n) != m) return 0;
+  const char *name = nt_str(nt, n, "name");
+  for (int j = 0; j < m->nparams; j++) if (m->pnames[j] && sp_streq(m->pnames[j], name)) return 0;
+  return bl_stmts(c, nt_ref(nt, m->def_node, "body"), name, 0, BL_RET, BL_RET);
+}
+/* Does the subtree at n hold a return of its method (not one in a nested
+   method or lambda)? */
+static int an_has_method_return(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_LambdaNode) return 0;
+  if (k == NK_ReturnNode) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (an_has_method_return(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (an_has_method_return(nt, av[j])) return 1;
+  }
+  return 0;
+}
+/* Does instance method nm of class or module k come from the program? */
+static int an_defines_instance_method(Compiler *c, int k, const char *nm) {
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (m->class_id == k && !m->is_cmethod && m->def_node >= 0 && m->name && sp_streq(m->name, nm)) return 1;
+  }
+  return 0;
+}
+/* Does a bare super in instance method nm of class cid reach Object's own
+   nm? Every class of the chain is a plain class under Object (no Struct,
+   no Array or Hash subclass, no superclass the program does not define but
+   Object), none of them nor a module any includes defines nm above cid,
+   no builtin module but Comparable and Enumerable is included, and nothing
+   reopens Object or Kernel, or includes a module at the top level, with
+   its own nm (a method or an attr_reader). */
+static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
+  const NodeTable *nt = c->nt;
+  for (int k = cid; k >= 0; k = c->classes[k].parent) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_struct || ci->ary_root > 0 || ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode) return 0;
+    /* (an attr_reader of the name answers its ivar's String) */
+    if (k != cid && (an_defines_instance_method(c, k, nm) || comp_is_reader(ci, nm))) return 0;
+    for (int i = 0; i < ci->nincluded_mods; i++) {
+      int mk = ci->included_mods[i];
+      if (an_defines_instance_method(c, mk, nm) || (mk >= 0 && comp_is_reader(&c->classes[mk], nm))) return 0;
+    }
+    for (int i = 0; i < ci->nincluded_mod_names; i++)
+      if (!sp_streq(ci->included_mod_names[i], "Comparable") && !sp_streq(ci->included_mod_names[i], "Enumerable")) return 0;
+    if (ci->parent < 0) {
+      int sup = nt_ref(nt, ci->def_node, "superclass");
+      if (sup >= 0 && !(nt_kind(nt, sup) == NK_ConstantReadNode && sp_streq(nt_str(nt, sup, "name"), "Object"))) return 0;
+    }
+  }
+  int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
+  if ((ob >= 0 && (an_defines_instance_method(c, ob, nm) || comp_is_reader(&c->classes[ob], nm))) ||
+      (ke >= 0 && (an_defines_instance_method(c, ke, nm) || comp_is_reader(&c->classes[ke], nm)))) return 0;
+  for (int i = 0; i < c->ntoplevel_includes; i++) {
+    int mk = c->toplevel_includes[i];
+    if (an_defines_instance_method(c, mk, nm) || (mk >= 0 && comp_is_reader(&c->classes[mk], nm))) return 0;
+  }
+  return 1;
+}
+/* See share.h. A method no way out of which answers (its last statement
+   raises, and no return leaves it earlier) answers no String; Object's
+   inspect and to_s answer a new one each call. */
+int an_target_answers_new(Compiler *c, int mi) {
+  if (mi <= 0 || mi >= c->nscopes) return 0;
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) return 0;
+  int body = nt_ref(nt, m->def_node, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode || an_has_method_return(nt, body)) return 0;
+  int last = scope_body_last(c, mi);
+  if (last < 0) return 0;
+  if (isa_node_diverges(c, last)) return 1;
+  NodeKind lk = nt_kind(nt, last);
+  if (lk != NK_ForwardingSuperNode && lk != NK_SuperNode) return 0;
+  if (!m->name || m->is_cmethod || m->class_id < 0) return 0;
+  if (!sp_streq(m->name, "inspect") && !sp_streq(m->name, "to_s")) return 0;
+  return an_super_reaches_object(c, m->class_id, m->name);
+}
+/* The fresh walk's tail call n past the plan's list (#9258): a new String
+   where the builtin arms answer one and every method of the name does, or
+   answers none or Object's own (an_target_answers_new). */
+static int an_tail_name_fresh(Compiler *c, RetHandles *R, int n, TailCount *tc) {
+  if (!share_builtin_fresh(c, n)) return 0;
+  int *mis = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  if (!mis) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int cnt = share_name_targets(c, n, mis, c->nscopes + 1), ok = cnt > 0;
+  for (int i = 0; ok && i < cnt; i++) {
+    if (an_target_answers_new(c, mis[i])) continue;
+    Scope *m = &c->scopes[mis[i]];
+    if (!an_ret_handle(c, R, mis[i]) || (!m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc))) ok = 0;
+  }
+  free(mis);
+  if (ok) tc->reads++;
+  return ok;
+}
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   /* the fresh walk: a receiver-answering String method's tail is its
@@ -24221,6 +24490,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
     tc->fresh++; return 1;
   }
+  /* the fresh walk: a local the method builds its answer up in */
+  if (R->fresh && an_builder_local_fresh(c, tc->mi, n)) { tc->fresh++; return 1; }
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
@@ -24273,6 +24544,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
+  /* past the plan's list: every method of the name (#9258) */
+  if (R->fresh && cnt == CPT_UNKNOWN) return an_tail_name_fresh(c, R, n, tc);
   /* A raising arm contributes no String. A user override still returns. */
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
@@ -43900,11 +44173,18 @@ static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
    Float, as Hash#compare_by_identity's keys are refused for. Every Set shares
    one class, so in a program that calls compare_by_identity anywhere, a
    value that may be of one of those kinds -- or of no kind the analysis
-   knows -- entering a Set or looked up in one is refused. */
+   knows -- entering a Set or looked up in one is refused.
+   A boxed value, or a String, is judged by what the class facts' walk saw
+   reach it (cls_fact_kinds): objects of the program's classes, Symbols,
+   nil, true, false, containers and Procs, and Strings made afresh (an
+   interpolation, a dup, a unary plus), each one object here as in CRuby;
+   a number, a String literal, a builtin's own answer or a value the walk
+   does not follow keeps the refusal. */
 static int sid_kind_ok(Compiler *c, TyKind t) {
   if (t == TY_SYMBOL || t == TY_NIL || t == TY_BOOL || t == TY_PROC || t == TY_CLASS) return 1;
   return ty_is_object(t) || ty_is_array(t) || ty_is_hash(t);
 }
+static int sid_kinds_ok(int k) { return !(k & (CK_UNSAFE | CK_LIT)); }
 /* Is value v statically one whose identity is CRuby's? A boxed local whose
    every write in its scope is such a value counts. */
 static int sid_value_ok(Compiler *c, int v, int depth) {
@@ -43912,7 +44192,9 @@ static int sid_value_ok(Compiler *c, int v, int depth) {
   v = an_unparen(nt, v);
   if (v < 0 || depth > 8) return 0;
   TyKind t = infer_type(c, v);
-  if (t != TY_POLY) return sid_kind_ok(c, t);
+  if (t != TY_POLY && sid_kind_ok(c, t)) return 1;
+  if ((t == TY_POLY || t == TY_STRING || t == TY_STRBUF) && sid_kinds_ok(cls_fact_kinds(c, v))) return 1;
+  if (t != TY_POLY) return 0;
   if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, v, "name");
   Scope *vs = comp_scope_of(c, v);
@@ -43945,11 +44227,26 @@ static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
   if (ty_is_array(t)) {
     TyKind et = ty_array_elem(t);
-    if (et != TY_POLY && et != TY_UNKNOWN) return sid_kind_ok(c, et);
-    if (nt_kind(nt, v) != NK_ArrayNode) return 0;
-    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
-    for (int e = 0; e < en; e++) if (!sid_value_ok(c, el[e], 0)) return 0;
-    return 1;
+    if (et != TY_POLY && et != TY_UNKNOWN && sid_kind_ok(c, et)) return 1;
+    if (nt_kind(nt, v) == NK_ArrayNode) {
+      int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+      for (int e = 0; e < en; e++) if (!sid_value_ok(c, el[e], 0)) return 0;
+      return 1;
+    }
+    /* boxed or String elements: what reaches the containers it holds */
+    return (et == TY_POLY || et == TY_UNKNOWN || et == TY_STRING || et == TY_STRBUF) &&
+           sid_kinds_ok(cls_fact_contents_kinds(c, v));
+  }
+  /* a boxed Array or Set: one with no object of another class of the
+     program's (a Set's members were judged as they entered it) */
+  if (t == TY_POLY) {
+    const ClsSet *s = cls_fact_node(c, v);
+    if (!s) return 0;
+    for (int i = 0; i < s->n; i++) {
+      int k = s->cls[i];
+      if (k < c->nclasses && k != set_cid && !is_descendant(c, k, set_cid)) return 0;
+    }
+    return sid_kinds_ok(cls_fact_kinds(c, v)) && sid_kinds_ok(cls_fact_contents_kinds(c, v));
   }
   return 0;
 }
@@ -44578,6 +44875,7 @@ static void refuse_set_identity_members(Compiler *c) {
       asked = 1;
   }
   if (!asked) return;
+  an_cls_kinds(c);
   /* where the identity Sets live, when every one can be followed there:
      then only the calls on them are checked (sid_sources) */
   SidSources S;

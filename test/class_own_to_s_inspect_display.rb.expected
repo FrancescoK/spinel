@@ -1,0 +1,24 @@
+Store as text
+in Store as text
+Store
+#<Base family>
+#<Child family>
+Child
+[Store, #<Base family>, Plain]
+{#<Child family> => 1}
+Store as text
+Plain
+Store as text
+Store
+Store as text/Store as text/Store
+Base
+#<Base family>
+Base/Base/#<Base family>
+Child
+#<Child family>
+Child/Child/#<Child family>
+Plain
+Plain
+Plain/Plain/Plain
+Store as text Plain
+Store as text

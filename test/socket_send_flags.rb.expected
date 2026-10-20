@@ -1,0 +1,10 @@
+send MSG_OOB: refused
+send MSG_DONTROUTE: 11
+"Jayang-dong"
+boxed send MSG_OOB: refused
+boxed send 0: 7
+"Achasan"
+connected send MSG_OOB: refused
+thread send MSG_OOB: refused
+connected send 0: 6
+"Jamsil"

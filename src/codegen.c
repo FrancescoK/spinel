@@ -16359,6 +16359,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     if (c->has_anonymous_classes)
       buf_puts(b, "  sp_class_display_fn = sp_class_display;\n");
   }
+  if (prog_has_cls_user_display(c, "to_s")) buf_puts(b, "  sp_class_user_to_s_fn = sp_class_user_to_s;\n");
+  if (prog_has_cls_user_display(c, "inspect")) buf_puts(b, "  sp_class_user_inspect_fn = sp_class_user_inspect;\n");
   /* A C stack that ran out becomes a catchable SystemStackError: the fault
      handler in the runtime archive cannot reach this TU's exception stack,
      so hand it the raise (see sp_raise_stack_overflow). */
@@ -19930,7 +19932,17 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        while its name and to_s stay the bare name, so the render arms need a
        second table rather than a suffixed sp_class_to_s (#3947). Emitted
        alongside it, and identical to it when no such class exists. */
-    buf_puts(b, "static const char *sp_class_inspect_name(sp_Class c){switch(c.cls_id){");
+    /* a class's own class method to_s prints it (sp_class_user_to_s, below
+       main's body, installed through the runtime's hook) */
+    if (prog_has_cls_user_display(c, "to_s")) buf_puts(b, "static const char *sp_class_user_to_s(sp_Class c);\n");
+    if (prog_has_cls_user_display(c, "inspect")) buf_puts(b, "static const char *sp_class_user_inspect(sp_Class c);\n");
+    if (prog_has_cls_user_display(c, "to_s"))
+      buf_printf(b, "static const char *sp_class_to_s_disp(sp_Class c){if(sp_class_user_to_s_fn){const char *_u=sp_class_user_to_s_fn(c);if(_u)return _u;}return %s(c);}\n\n",
+                 comp_class_base_display_fn(c));
+    buf_puts(b, "static const char *sp_class_inspect_name(sp_Class c){");
+    if (prog_has_cls_user_display(c, "inspect"))
+      buf_puts(b, "if(sp_class_user_inspect_fn){const char *_u=sp_class_user_inspect_fn(c);if(_u)return _u;}");
+    buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
       if (is_builtin_reopen(c->classes[i].name)) continue;
       if (!c->classes[i].is_struct || c->classes[i].kw_init != 1) continue;
@@ -19938,7 +19950,7 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       if (!qname) qname = c->classes[i].name;
       buf_printf(b, "case %d:return SPL(\"%s(keyword_init: true)\");", i, qname);
     }
-    buf_printf(b, "default:break;} return %s(c); }\n\n", comp_class_display_fn(c));
+    buf_printf(b, "default:break;} return %s(c); }\n\n", comp_class_base_display_fn(c));
     /* #name of an ANONYMOUS class is nil, where #to_s and #inspect are the
        address form sp_class_to_s renders. The static spelling
        (`Struct.new(:a).name`) has always answered nil; this is the same class
@@ -19974,6 +19986,27 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     buf_puts(b, "  for(sp_int i=-100;i>=-179;i--){const char*s=sp_class_to_s((sp_Class){i,NULL});"
                  "if(s&&s[0]&&!strcmp(s,n))return i;}\n");
     buf_puts(b, "  return SP_CLASS_NIL_ID;\n}\n\n");
+  }
+}
+
+/* sp_class_user_to_s / sp_class_user_inspect: a class's own class method
+   to_s or inspect (cls_user_display_mi) for the class printed, NULL for any
+   other, which prints by its name */
+static void emit_cls_user_display_hooks(Compiler *c, Buf *b) {
+  static const char *const nms[] = { "to_s", "inspect" };
+  for (int q = 0; q < 2; q++) {
+    if (!prog_has_cls_user_display(c, nms[q])) continue;
+    buf_printf(b, "static const char *sp_class_user_%s(sp_Class c){switch(c.cls_id){", nms[q]);
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = cls_user_display_mi(c, k, nms[q]);
+      if (mi < 0) continue;
+      buf_printf(b, "case %d:return ", k);
+      emit_method_cname(c, &c->scopes[mi], b);
+      buf_puts(b, "(");
+      emit_cmethod_self_cls_arg(c, mi, k, b);
+      buf_puts(b, ");");
+    }
+    buf_puts(b, "default:return NULL;}}\n");
   }
 }
 
@@ -21274,6 +21307,7 @@ char *codegen_program(const NodeTable *nt) {
        own teardown among them (sp_at_exit_run does the same with hooks) */
     else buf_puts(body, "  _sp_main_rc = 0;\n  sp_fin_run_exit();\n}\n");
     g_c_ret_void = sv_main_cv;
+    emit_cls_user_display_hooks(c, body);
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
     /* an unoptimised build's frames are several times an -O2 one's, so the

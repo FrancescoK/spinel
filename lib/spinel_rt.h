@@ -1863,6 +1863,19 @@ static inline const char *sp_class_val_display(sp_RbVal v) {
   sp_Class _c = {v.v.i, NULL};
   return sp_class_display_fn ? sp_class_display_fn(_c) : sp_class_to_s(_c);
 }
+/* A class method to_s or inspect a class of the program defines answers
+   for it where the class is printed: a program with one installs these,
+   which answer NULL for any other class */
+extern const char *(*sp_class_user_to_s_fn)(sp_Class);
+extern const char *(*sp_class_user_inspect_fn)(sp_Class);
+static inline const char *sp_class_val_user(sp_RbVal v, const char *(*fn)(sp_Class)) {
+  if (fn && v.cls_id != SP_CLASS_BY_NAME) {
+    sp_Class _c = {v.v.i, NULL};
+    const char *u = fn(_c);
+    if (u) return u;
+  }
+  return sp_class_val_display(v);
+}
 /* A program that reopens a builtin class (`class Module ... end`) gives the
    reopening a user class id of its own, while the builtin's values (a class
    value's #class, an Integer) keep the builtin id. The generated unit maps
@@ -7311,6 +7324,7 @@ static inline sp_String *sp_String_uplus(sp_String *h) {
 }
 /* +s: s itself unless it is frozen or chilled, else a plain copy (CRuby) */
 static inline const char *sp_str_uplus(const char *s) {
+  if (SP_UNLIKELY(!s)) sp_nil_recv("+@");
   return sp_str_is_frozen_val(s) || sp_str_is_chilled(s) ? sp_str_dup(s) : s;
 }
 /* +v on a boxed value: the same for a String, whether it is boxed as a

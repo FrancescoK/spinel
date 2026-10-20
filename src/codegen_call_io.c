@@ -537,11 +537,12 @@ static void emit_io_read_overcount(Compiler *c, const char *name, const char *r,
 
 /* send(data, flags[, host, port]) of the socket in C expression r: the
    typed arm's, and a boxed receiver's when its value is a socket
-   (emit_dynamic_send) */
+   (emit_dynamic_send). The flags reach send(2) / sendto(2). */
 void emit_io_socket_send_call(Compiler *c, const char *r, int argc, const int *argv, Buf *b) {
   int tsd = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tsd); emit_str_expr(c, argv[0], b);
   buf_printf(b, "; sp_sock_send(%s, _t%d, (sp_int)sp_str_byte_len(_t%d), ", r, tsd, tsd);
+  emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
   if (argc == 4) { emit_str_expr(c, argv[2], b); buf_puts(b, ", "); emit_int_expr(c, argv[3], b); }
   else buf_puts(b, "NULL, 0");
   buf_puts(b, "); })");
@@ -568,16 +569,51 @@ static int boxed_socket_opt(const char *name, int argc) {
    read_nonblock and write_nonblock take as true or false alone and the
    socket calls as false or anything else. Answers whether the call may
    answer the wait marker rather than raise, as an_nonblock_no_exception
-   types it: the boxed form. */
-static int emit_nonblock_exc(Compiler *c, const NodeTable *nt, const char *name, const int *argv, int argc, Buf *x) {
+   types it: the boxed form.
+   A switch read at run time is an argument CRuby evaluates after the
+   positional operands and before the call converts any of them, and its
+   check comes after theirs. So pre then takes, in that order, the operands'
+   values (argv[0..strlen(conv))), the switch's, each operand's conversion
+   (conv[i]: 'i' an Integer, 's' a String, 'w' write_nonblock's data) and the
+   switch's, and op[i] names the converted operand. With a literal switch
+   or none, or no operand to order it after, pre stays empty and op[i] is
+   "": the call converts in place. */
+static int emit_nonblock_exc(Compiler *c, const NodeTable *nt, const char *name, const int *argv, int argc,
+                             const char *conv, char op[][32], Buf *pre, Buf *x) {
   int kwh = nt_argv_kwh(nt, argv, argc);
   int e = kwh >= 0 ? kwh_lookup(nt, kwh, "exception") : -1;
+  int npos = (int)strlen(conv), held[2], tsw, tx;
+  for (int i = 0; i < npos; i++) op[i][0] = 0;
   if (e < 0 || nt_kind(nt, e) == NK_TrueNode) { buf_puts(x, "1"); return 0; }
   if (nt_kind(nt, e) == NK_FalseNode) { buf_puts(x, "0"); return 1; }
-  buf_puts(x, "sp_nonblock_exc(");
-  emit_boxed(c, e, x);
-  buf_printf(x, ", %d)", is_nonblock_io(name));
+  if (npos == 0) {
+    buf_puts(x, "sp_nonblock_exc(");
+    emit_boxed(c, e, x);
+    buf_printf(x, ", %d)", is_nonblock_io(name));
+    return 1;
+  }
+  for (int i = 0; i < npos; i++) held[i] = hold_operand(c, argv[i], TY_POLY, 1, ++g_tmp, 1, " ", pre);
+  tsw = hold_operand(c, e, TY_POLY, 1, ++g_tmp, 1, " ", pre);
+  for (int i = 0; i < npos; i++) {
+    int t = ++g_tmp;
+    if (conv[i] == 'i') buf_printf(pre, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", t, held[i]);
+    else buf_printf(pre, "const char *_t%d = %s(_t%d); SP_GC_ROOT(_t%d); ", t,
+                    conv[i] == 's' ? "sp_poly_arg_str_chk" : "sp_poly_to_s", held[i], t);
+    snprintf(op[i], 32, "_t%d", t);
+  }
+  tx = ++g_tmp;
+  buf_printf(pre, "sp_bool _t%d = sp_nonblock_exc(_t%d, %d); ", tx, tsw, is_nonblock_io(name));
+  buf_printf(x, "_t%d", tx);
   return 1;
+}
+
+/* An operand of a *_nonblock call: the converted temp emit_nonblock_exc
+   named, or the conversion in place */
+static void emit_nonblock_operand(Compiler *c, const char *op, int node, char conv, Buf *b) {
+  if (op[0]) buf_puts(b, op);
+  else if (conv == 'i') emit_int_expr(c, node, b);
+  else if (conv == 's') emit_str_expr(c, node, b);
+  else emit_to_s_expr(c, node, b);
 }
 
 /* connect_nonblock, setsockopt and getsockopt of the socket in C expression
@@ -588,8 +624,10 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
   if (sp_streq(name, "connect_nonblock")) {
     int kwh9 = nt_argv_kwh(nt, argv, argc);
     int pos9 = kwh9 >= 0 ? argc - 1 : argc;
-    Buf x; memset(&x, 0, sizeof x);
-    int no_exc = (pos9 == 1 || pos9 == 2) && emit_nonblock_exc(c, nt, name, argv, argc, &x);
+    Buf x, pre; memset(&x, 0, sizeof x); memset(&pre, 0, sizeof pre);
+    char op[2][32];
+    int no_exc = (pos9 == 1 || pos9 == 2) &&
+                 emit_nonblock_exc(c, nt, name, argv, argc, pos9 == 1 ? "s" : "si", op, &pre, &x);
     if (sp_streq(name, "connect_nonblock") && pos9 == 1) {
       /* 1-arg form: a packed sockaddr String. Mirror the 2-arg
          shape: `exception: false` swaps the IO::WaitWritable raise
@@ -598,8 +636,8 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
       int ts = ++g_tmp;
       if (no_exc) {
         int tn = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", ts);
-        emit_str_expr(c, argv[0], b);
+        buf_printf(b, "({ %sconst char *_t%d = ", pre.p ? pre.p : "", ts);
+        emit_nonblock_operand(c, op[0], argv[0], 's', b);
         buf_printf(b, "; sp_oint _n%d = sp_sock_connect_nb_sa(%s, _t%d,", tn, r, ts);
         buf_printf(b, " (sp_int)sp_str_byte_len(_t%d), %s);", ts, x.p);
         buf_printf(b, " _n%d.nil", tn);
@@ -613,14 +651,15 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
                       " (sp_int)sp_str_byte_len(_t%d), 1).v; })",   /* exception: true never answers nil */
                       r, ts, ts);
       }
-      free(x.p);
+      free(x.p); free(pre.p);
       return 1;
     }
     if (sp_streq(name, "connect_nonblock") && pos9 == 2) {
       if (no_exc) {
         int tw = ++g_tmp;
-        buf_printf(b, "({ sp_oint _t%d = sp_sock_connect_nb(%s, ", tw, r);
-        emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "({ %ssp_oint _t%d = sp_sock_connect_nb(%s, ", pre.p ? pre.p : "", tw, r);
+        emit_nonblock_operand(c, op[0], argv[0], 's', b); buf_puts(b, ", ");
+        emit_nonblock_operand(c, op[1], argv[1], 'i', b);
         buf_printf(b, ", %s); _t%d.nil"
                       " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d.v); })", x.p, tw, tw);
       }
@@ -628,7 +667,7 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
         buf_printf(b, "sp_sock_connect_nb(%s, ", r); emit_str_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ", 1).v");
       }
-      free(x.p);
+      free(x.p); free(pre.p);
       return 1;
     }
   }
@@ -713,14 +752,15 @@ static void emit_io_socket_call(Compiler *c, const NodeTable *nt, const char *na
     buf_printf(b, "sp_sock_listen(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "recv_nonblock")) {
-    Buf x; memset(&x, 0, sizeof x);
-    if (emit_nonblock_exc(c, nt, name, argv, argc, &x)) {
+    Buf x, pre; memset(&x, 0, sizeof x); memset(&pre, 0, sizeof pre);
+    char op[1][32];
+    if (emit_nonblock_exc(c, nt, name, argv, argc, "i", op, &pre, &x)) {
       /* NULL is nil at EOF (Ruby 3.3 and later) and would-block
          otherwise, which the eof out-parameter tells apart, as for
          read_nonblock */
       int tw = ++g_tmp, te = ++g_tmp;
-      buf_printf(b, "({ sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tw, r);
-      emit_int_expr(c, argv[0], b);
+      buf_printf(b, "({ %ssp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", pre.p ? pre.p : "", te, tw, r);
+      emit_nonblock_operand(c, op[0], argv[0], 'i', b);
       buf_printf(b, ", %s, 1, &_e%d); _t%d ? sp_box_str(_t%d)"
                     " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
                  x.p, te, tw, tw, te);
@@ -729,7 +769,7 @@ static void emit_io_socket_call(Compiler *c, const NodeTable *nt, const char *na
       buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
       buf_puts(b, ", 1, 1, NULL)");
     }
-    free(x.p);
+    free(x.p); free(pre.p);
   }
   else if (sp_streq(name, "local_address") || sp_streq(name, "remote_address"))
     buf_printf(b, "sp_sock_address(%s, %d)", r, sp_streq(name, "remote_address") ? 1 : 0);
@@ -1222,7 +1262,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          IO::EAGAINWaitReadable for the :wait_readable marker */
       else if (sp_streq(name, "accept_nonblock")) {
         Buf x; memset(&x, 0, sizeof x);
-        if (emit_nonblock_exc(c, nt, name, argv, argc, &x)) {
+        if (emit_nonblock_exc(c, nt, name, argv, argc, "", NULL, NULL, &x)) {
           int tw = ++g_tmp;
           buf_printf(b, "sp_File *_t%d = sp_sock_accept_nb(_t%d, %s);"
                         " _t%d ? sp_box_obj(_t%d, SP_BUILTIN_IO)"
@@ -1327,13 +1367,16 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          (write) instead of raising, so those shapes are poly (#4236/#4237). */
       else if ((is_nonblock_io(name)) &&
                argc >= 1) {
-        Buf x9; memset(&x9, 0, sizeof x9);
-        int no_exc9 = emit_nonblock_exc(c, nt, name, argv, argc, &x9);
-        if (sp_streq(name, "read_nonblock")) {
+        Buf x9, pre9; memset(&x9, 0, sizeof x9); memset(&pre9, 0, sizeof pre9);
+        char op9[1][32];
+        int rd9 = sp_streq(name, "read_nonblock");
+        int no_exc9 = emit_nonblock_exc(c, nt, name, argv, argc, rd9 ? "i" : "w", op9, &pre9, &x9);
+        if (pre9.p) buf_puts(b, pre9.p);
+        if (rd9) {
           if (no_exc9) {
             int tw9 = ++g_tmp, te9 = ++g_tmp;
             buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(_t%d, ", te9, tw9, tio2);
-            emit_int_expr(c, argv[0], b);
+            emit_nonblock_operand(c, op9[0], argv[0], 'i', b);
             buf_printf(b, ", %s, 0, &_e%d); _t%d ? sp_box_str(_t%d)"
                           " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
                          x9.p, te9, tw9, tw9, te9);
@@ -1353,14 +1396,14 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           /* the runtime answers an sp_oint: nil where the write would block
              (exception: false), which CRuby answers :wait_writable */
           buf_printf(b, "sp_oint _t%d = %s(_t%d, ", tw9, wfn9, tio2);
-          emit_to_s_expr(c, argv[0], b);
+          emit_nonblock_operand(c, op9[0], argv[0], 'w', b);
           if (no_exc9)
             buf_printf(b, ", %s); _t%d.nil ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d.v); })",
                        x9.p, tw9, tw9);
           else
             buf_printf(b, ", 1); _t%d.v; })", tw9);
         }
-        free(x9.p);
+        free(x9.p); free(pre9.p);
       }
       /* read takes (len, buf): a third argument was dropped and the read
          went ahead, where CRuby raises ArgumentError */
@@ -1699,7 +1742,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       int pos9 = kwh9 >= 0 ? argc - 1 : argc;
       if (sp_streq(name, "accept_nonblock") && pos9 == 0) {
         Buf x; memset(&x, 0, sizeof x);
-        if (emit_nonblock_exc(c, nt, name, argv, argc, &x)) {
+        if (emit_nonblock_exc(c, nt, name, argv, argc, "", NULL, NULL, &x)) {
           int tw = ++g_tmp;
           buf_printf(b, "({ sp_File *_t%d = sp_sock_accept_nb(%s, %s);"
                         " _t%d ? sp_box_obj(_t%d, SP_BUILTIN_IO)"
@@ -1859,9 +1902,11 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
        false` answers nil instead of raising IO::*Wait* / EOFError. */
     if ((is_nonblock_io(name)) && argc >= 1) {
       int kwh8 = nt_argv_kwh(nt, argv, argc);
-      Buf x8; memset(&x8, 0, sizeof x8);
-      int no_exc8 = emit_nonblock_exc(c, nt, name, argv, argc, &x8);
-      if (sp_streq(name, "read_nonblock")) {
+      Buf x8, pre8; memset(&x8, 0, sizeof x8); memset(&pre8, 0, sizeof pre8);
+      char op8[1][32];
+      int rd8 = sp_streq(name, "read_nonblock");
+      int no_exc8 = emit_nonblock_exc(c, nt, name, argv, argc, rd8 ? "i" : "w", op8, &pre8, &x8);
+      if (rd8) {
         /* (len, outbuf): the buffer takes the bytes read, as readpartial's
            does; the argument was read past and the buffer left as it was */
         int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
@@ -1880,10 +1925,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         }
         if (no_exc8) {
           int te = ++g_tmp;
-          buf_puts(b, "({ ");
+          buf_printf(b, "({ %s", pre8.p ? pre8.p : "");
           if (ob >= 0) { buf_puts(b, "sp_str_check_mutable("); emit_expr(c, ob, b); buf_puts(b, "); "); }
           buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
-          emit_int_expr(c, argv[0], b);
+          emit_nonblock_operand(c, op8[0], argv[0], 'i', b);
           buf_printf(b, ", %s, 0, &_e%d); ", x8.p, te);
           if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset.p ? obset.p : "");
           buf_printf(b, "_t%d ? sp_box_str(_t%d)"
@@ -1909,8 +1954,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         const char *wfn = skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
         if (no_exc8) {
           int tw = ++g_tmp;
-          buf_printf(b, "({ sp_oint _t%d = %s(%s, ", tw, wfn, r);
-          emit_to_s_expr(c, argv[0], b);
+          buf_printf(b, "({ %ssp_oint _t%d = %s(%s, ", pre8.p ? pre8.p : "", tw, wfn, r);
+          emit_nonblock_operand(c, op8[0], argv[0], 'w', b);
           buf_printf(b, ", %s); _t%d.nil"
                         " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d.v); })", x8.p, tw, tw);
         }
@@ -1919,7 +1964,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_puts(b, ", 1).v");
         }
       }
-      free(x8.p);
+      free(x8.p); free(pre8.p);
       free(rb.p); return 1;
     }
     if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {

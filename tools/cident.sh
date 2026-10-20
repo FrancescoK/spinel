@@ -19,6 +19,11 @@
 # CIDENT_FLAGS=--int-overflow=promote); the reference cache is kept per
 # flag set.
 #
+# A reference of the same revision and flags built for another corpus is
+# reused: only the programs the change of corpus can reach are compiled
+# again. CIDENT_REF_ONLY=1 builds the reference and stops; CIDENT_KEEP (20)
+# is how many references are kept.
+#
 # Exit status: 0 identical, 1 some file differs, 2 infrastructure error.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -116,8 +121,13 @@ if [ ! -f "$REFDIR/.done" ]; then
   # corpus cannot reach: only a program that is new or changed, or that names
   # a file that is new or changed (require_relative, a compile-time read), is
   # compiled again. Its .expected files are not read by the compiler.
+  # (only this flag set's: the corpus key is hex, and another set's name
+  # goes on with its flags, `<sha>-__int_overflow=promote-<key>`)
+  # The pattern opens with its own parenthesis: bash 3.2, macOS's /bin/bash,
+  # otherwise ends the command substitution at the pattern's closing one.
   PREV=$(ls -dt "$REFBASE"-*/ 2>/dev/null | while read -r d; do
-           d=${d%/}; [ "$d" != "$REFDIR" ] && [ -f "$d/.done" ] && [ -f "$d/.manifest" ] && { echo "$d"; break; }; done)
+           d=${d%/}; case ${d#"$REFBASE"-} in (*[!0-9a-f]*) continue;; esac
+           [ "$d" != "$REFDIR" ] && [ -f "$d/.done" ] && [ -f "$d/.manifest" ] && { echo "$d"; break; }; done)
   ONLY=
   if [ -n "$PREV" ]; then
     ONLY=$(mktemp "${TMPDIR:-/tmp}/spinel-cident-only.XXXXXX")
@@ -171,6 +181,10 @@ if [ ! -f "$REFDIR/.done" ]; then
       system("rm", "-rf", $ARGV[1]); unlink $ARGV[0]' "$d.lock" "$d"
   done
 fi
+
+# CIDENT_REF_ONLY=1: only the reference, cached for the runs to come (built
+# right after a push, for the master the next change is compared with)
+[ -n "${CIDENT_REF_ONLY-}" ] && { echo "cident: reference of $(git rev-parse --short "$SHA") ready"; exit 0; }
 
 NEWDIR=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cident-new.XXXXXX")
 emit "$NEW" "$ROOT" "$NEWDIR"
