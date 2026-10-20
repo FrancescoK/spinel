@@ -24,10 +24,13 @@ end
 $stop = false
 busy = Array.new(12) do |k|
   Thread.new do
+    # At least one round even when the others finish before this thread
+    # first runs, as a slow machine may schedule it
     rounds = 0
-    until $stop
+    loop do
       spin(1000 + k)
       rounds += 1
+      break if $stop
       Thread.pass if rounds % 16 == 0
     end
     rounds > 0
