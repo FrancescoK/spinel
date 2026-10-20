@@ -254,7 +254,8 @@ TyKind an_builtin_answer(Compiler *c, int id) {
    The answer is computed during analysis and recorded per (call, kind);
    codegen (yield_builtin_method_site_type) and any inference asked after
    analysis read the record, so the two agree and codegen re-infers nothing. */
-static struct { int node; TyKind kind, ans; } *ysa_tab;
+static int an_bop_records(Compiler *c, int id);  /* defined with an_bop_find */
+static struct { int node; TyKind kind, ans; const BuiltinOp *row; } *ysa_tab;
 static int ysa_n, ysa_cap;
 static int ysa_find(int id, TyKind kind) {
   for (int i = 0; i < ysa_n; i++)
@@ -277,6 +278,9 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   if (g_scopes_settled) {
     if (at < 0 || ysa_tab[at].ans == TY_UNKNOWN) return 0;
     *out = ysa_tab[at].ans;
+    /* the row the site's answer came from is the call's, as for any call a
+       row answers (the last site's stays, codegen emits the node per site) */
+    if (ysa_tab[at].row && an_bop_records(c, id)) c->bop_inf[id] = ysa_tab[at].row;
     return 1;
   }
   /* The pinned re-inference can ask this chain's per-site question again
@@ -301,10 +305,14 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
+  const BuiltinOp *rkeep = c->bop_inf[id];
+  c->bop_inf[id] = NULL;
   an_face_push(recv, kind);
   TyKind ft = infer_call(c, id);
   an_face_pop();
   busy = 0;
+  const BuiltinOp *srow = c->bop_inf[id];
+  c->bop_inf[id] = srow ? srow : rkeep;
   if (ft == TY_VOID) ft = TY_UNKNOWN;
   if (ft == TY_POLY) {
     int an = nt_ref(nt, id, "arguments"), ac = 0;
@@ -327,6 +335,7 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
     ysa_tab[at].node = id; ysa_tab[at].kind = kind;
   }
   ysa_tab[at].ans = ft;
+  ysa_tab[at].row = srow;
   if (ft == TY_UNKNOWN) return 0;
   *out = ft;
   return 1;
@@ -2529,7 +2538,6 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
       *range_has_float_bound = 1;
   }
 }
-static int an_bop_records(Compiler *c, int id);  /* defined with an_bop_find */
 /* What the chain from the yield up to `node` answers at a site whose block
    answers `bt`, by ty_recv_builtin_result one link at a time. */
 static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) {
@@ -2874,10 +2882,18 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
    BOPR_ARG0, BOPR_ARG1, BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row
    answers as bop_result does. Seeded sums also read the seed's literal kind
    and the integer overflow mode. */
-TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
+TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int id, int argc, const int *argv) {
   AnBopArgs a = { c, argv };
   BopArgKind arg_of = op->result == BOPR_ARRAY_SUM_SEED ? an_bop_seed_type : an_bop_arg_type;
-  return bop_result_args(op, rt, argc, arg_of, &a, g_promote_mode);
+  return bop_result_args(op, rt, argc, arg_of, &a, an_bop_facts(c, op, id));
+}
+
+/* The facts bop_result_args reads beside the operands' kinds: the build
+   mode, and for a blockless combination & co. whether its position keeps
+   the tuples. Inference and --plan-check ask the same. */
+int an_bop_facts(Compiler *c, const BuiltinOp *op, int id) {
+  return (g_promote_mode ? BOPX_PROMOTE : 0) |
+         (op->result == BOPR_ARRAY_TUPLES && an_blockless_tuples_kept(c, id) ? BOPX_KEPT : 0);
 }
 
 /* Does the program give a builtin class or module (String, Comparable,
@@ -6318,7 +6334,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
       { *out = TY_POLY; return 1; }
-    if (op) { *out = an_bop_result(c, op, rt, argc, argv); return 1; }
+    if (op) { *out = an_bop_result(c, op, rt, id, argc, argv); return 1; }
   }
 
   /* define_singleton_method(:m) { } that register_singleton_defs resolved

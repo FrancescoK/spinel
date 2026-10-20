@@ -504,7 +504,9 @@ const struct BuiltinOp *an_bop_find_boxed(Compiler *c, int id, TyKind rt, const 
 const struct BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *name,
                                         int argc, const int *argv, int has_block);
 /* bop_result_args with the call's arguments' kinds (inferred) */
-TyKind an_bop_result(Compiler *c, const struct BuiltinOp *op, TyKind rt, int argc, const int *argv);
+TyKind an_bop_result(Compiler *c, const struct BuiltinOp *op, TyKind rt, int id, int argc, const int *argv);
+/* the facts bop_result_args reads beside the operands' kinds (BOPX_*) */
+int an_bop_facts(Compiler *c, const struct BuiltinOp *op, int id);
 /* method_call_ret(c, mi, id) for a call an arm of infer_call bound to the
    user method mi, recording the binding (via UC_*, the class owner_ci whose
    chain was searched) under --plan-check */

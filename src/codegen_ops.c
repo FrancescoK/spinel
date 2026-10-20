@@ -351,24 +351,25 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs ba = { c, argv };
   BopArgKind arg_of = op->result == BOPR_ARRAY_SUM_SEED ? bop_seed_ntype : bop_arg_ntype;
+  int facts = an_bop_facts(c, op, id);
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
-      bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode) == bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)) return;
+      bop_result_args(inf, rt, argc, arg_of, &ba, facts) == bop_result_args(op, rt, argc, arg_of, &ba, facts)) return;
   /* inference answered from a row that stands for a boxed receiver
      (BOPF_BOXED), and codegen emitted the call typed (the box respecialized,
      a face): the call answers the same whatever the box holds, so the row of
      the kind it was emitted with agrees when it states the same result */
   if (inf && (inf->flags & BOPF_BOXED) && inf->recv != op->recv &&
-      bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode) == bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)) return;
+      bop_result_args(inf, rt, argc, arg_of, &ba, facts) == bop_result_args(op, rt, argc, arg_of, &ba, facts)) return;
   if (inf && inf->recv != op->recv)
     fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
             id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
   else if (inf)
     fprintf(stderr, "plan-check: conflict: node %d %s#%s: codegen row %d..%d -> %s, inference row %s#%s -> %s\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)),
-            ty_name(inf->recv), inf->name, ty_name(bop_result_args(inf, rt, argc, arg_of, &ba, g_promote_mode)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, facts)),
+            ty_name(inf->recv), inf->name, ty_name(bop_result_args(inf, rt, argc, arg_of, &ba, facts)));
   else
     fprintf(stderr, "plan-check: unrecorded: node %d %s#%s: codegen row %d..%d -> %s, inference answered without a row\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, g_promote_mode)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, arg_of, &ba, facts)));
 }
 
 static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *) = {
@@ -478,7 +479,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
 };
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                              const char *rtext, int t0, int stage, Buf *b) {
+                              const char *rtext, int t0, int stage, BopArgKind arg_of, Buf *b) {
   if (recv < 0) return 0;
   /* a Hash or Array receiver of any variant reads its family's rows */
   TyKind lk = bop_family_of(rt);
@@ -487,7 +488,7 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs a = { c, argv };
   const BuiltinOp *op = bop_find_stage(lk, name, argc, nt_ref(c->nt, id, "block") >= 0,
-                                       bop_arg_ntype, &a, stage);
+                                       arg_of, &a, stage);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext, t0 };
   if (!bop_emitters[op->emit](c, &x, b)) return 0;
@@ -497,19 +498,27 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
 
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, bop_arg_ntype, b);
 }
 
 int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
                           int stage, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, bop_arg_ntype, b);
+}
+
+/* The call emitted through the row of its name that guards no argument kind,
+   whatever the arguments are read as: a boxed index that may be a Range is
+   viewed as an Integer to emit the element branch, and the row of an
+   Integer index would state a result the held branch does not take. */
+int emit_builtin_op_unguarded(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, -1, NULL, b);
 }

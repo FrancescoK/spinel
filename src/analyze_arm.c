@@ -95,6 +95,13 @@ static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int 
     int n = i < len ? nodes[i] : bnodes[i - len];
     if (n < c->node_cap) usaved[i] = c->ucall_inf[n];
   }
+  /* ...and so do the rows they were answered from (--plan-check's bop_inf) */
+  const struct BuiltinOp **rsaved = malloc(sizeof *rsaved * (size_t)(len + blen + 1));
+  if (!rsaved) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < len + blen; i++) {
+    int n = i < len ? nodes[i] : bnodes[i - len];
+    rsaved[i] = n < c->node_cap ? c->bop_inf[n] : NULL;
+  }
   if (lv) lv_set_type(lv, kind);
   for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
   if (extra >= 0) infer_type(c, extra);
@@ -106,6 +113,11 @@ static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int 
     int n = i < len ? nodes[i] : bnodes[i - len];
     if (n < c->node_cap) c->ucall_inf[n] = usaved[i];
   }
+  for (int i = 0; i < len + blen; i++) {
+    int n = i < len ? nodes[i] : bnodes[i - len];
+    if (n < c->node_cap) c->bop_inf[n] = rsaved[i];
+  }
+  free(rsaved);
   free(usaved);
   free(saved); free(bsaved); free(bnodes);
   if (c->narm_facts >= c->carm_facts) {

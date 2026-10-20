@@ -2580,7 +2580,10 @@ static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt,
   buf_puts(b, " : ");
   bind = view_bind(argv[0], "sp_poly_arg_int_chk(_t%d)", ti);
   v = view_push(c, argv[0], TY_INT);
-  emit_call_array_arms(c, id, &ab, c->nt, "slice!", recv, 1, argv, rt);
+  /* the row that guards no index kind: the Integer index's row states the
+     element, and this branch takes the element's nil beside it (oint_box) */
+  if (!emit_builtin_op_unguarded(c, id, recv, rt, "slice!", &ab))
+    emit_call_array_arms(c, id, &ab, c->nt, "slice!", recv, 1, argv, rt);
   view_pop(c, v);
   view_unbind(bind);
   view_unbind(rbind);
