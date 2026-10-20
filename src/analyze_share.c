@@ -769,6 +769,161 @@ static const char *sh_lit_name(const NodeTable *nt, int n);
    decides what it reaches: neither makes a method the program defines
    reachable by name. Anything else (a receiver of unknown class, a name no
    argument gives) keeps every method reachable (dyn_all), as before. */
+/* The classes and modules a value can be, as the constants it is written
+   from name them (#9627: `mod.instance_method(name)` with `mod` a parameter
+   a call hands `[Helpers, 1][0]`): the value followed to its sources (a
+   conditional's and a logical operator's arms, a local's writes and a
+   parameter's arguments, an Array literal's elements for a read of one, a
+   constant), each constant naming a class or module added to out. A
+   source that is no class value (an Integer, an instance) answers no
+   method reference and adds none. 1 when a source is not followed (the
+   caller then keeps every method reachable). */
+static int sh_class_sources(Compiler *c, int v, int *out, int *n, int cap, int depth, int inst_ok);
+/* The method references whose reach is being resolved (a stack): one that
+   leads back to itself through a parameter's sources is taken to reach
+   what the other sources give (the least answer that holds) */
+static int g_ref_stack[16], g_ref_top;
+/* Can call cn, a send or a method reference by a computed name, reach
+   method sc? A literal name reaches its own method alone; a computed name
+   on a receiver whose class values the sources name reaches their methods;
+   any other computed one may reach any method. A call on the stack is
+   being resolved and reaches nothing more here. */
+static int sh_dyn_call_may_reach(Compiler *c, int cn, const char *n2, const Scope *sc, int depth) {
+  const NodeTable *nt = c->nt;
+  int ref = sp_streq(n2, "method") || sp_streq(n2, "public_method") || sp_streq(n2, "instance_method") ||
+            sp_streq(n2, "singleton_method") || sp_streq(n2, "define_method");
+  int snd = sp_streq(n2, "send") || sp_streq(n2, "__send__") || sp_streq(n2, "public_send");
+  if (!ref && !snd) return 0;
+  if (nt_int(nt, cn, "dyn_arm", 0)) return 0;   /* (an arm of a lowered send names its method) */
+  for (int i = 0; i < g_ref_top; i++) if (g_ref_stack[i] == cn) return 0;
+  int aa = nt_ref(nt, cn, "arguments"), argc = 0;
+  const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &argc) : NULL;
+  if (argc < 1) return 0;
+  const char *lit = sh_lit_name(nt, av[0]);
+  if (lit) return sp_streq(lit, sc->name);
+  if (snd || sp_streq(n2, "define_method") || g_ref_top >= 16) return 1;
+  int recv = nt_ref(nt, cn, "receiver");
+  if (recv < 0) return 1;
+  int ks[16], nk = 0;
+  g_ref_stack[g_ref_top++] = cn;
+  int gave_up = sh_class_sources(c, recv, ks, &nk, 16, depth + 1, sp_streq(n2, "instance_method"));
+  g_ref_top--;
+  if (gave_up) return 1;
+  int singleton = !sp_streq(n2, "instance_method");
+  for (int q = 0; q < nk; q++) {
+    int k = ks[q];
+    if (!!sc->is_cmethod != !!singleton) continue;
+    if (sc->class_id == k || (sc->class_id >= 0 && (is_descendant(c, k, sc->class_id) || comp_module_includes(c, k, sc->class_id, 0))) ||
+        (!comp_class_is_module(c, &c->classes[k]) && !singleton && sc->class_id < 0))
+      return 1;
+  }
+  return 0;
+}
+static int sh_class_src_param(Compiler *c, Scope *sc, const char *nm, int *out, int *n, int cap, int depth, int inst_ok) {
+  const NodeTable *nt = c->nt;
+  int pj = -1;
+  for (int j = 0; j < sc->nparams; j++) if (sc->pnames[j] && sp_streq(sc->pnames[j], nm)) pj = j;
+  if (pj < 0 || pj == sc->rest_idx || pj == sc->kwrest_idx || !sc->name || sc->def_node < 0) return 1;
+  if (sc->pdefault && sc->pdefault[pj] >= 0 && sh_class_sources(c, sc->pdefault[pj], out, n, cap, depth, inst_ok)) return 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, cn) {
+    const char *n2 = nt_str(nt, cn, "name");
+    if (!n2) continue;
+    /* a call that reaches a method by a name it computes hands it what this
+       scan does not see: one that can reach this one keeps it unfollowed */
+    if (sh_dyn_call_may_reach(c, cn, n2, sc, depth)) return 1;
+    if (!sp_streq(n2, sc->name)) continue;
+    int aa = nt_ref(nt, cn, "arguments"), argc = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &argc) : NULL;
+    for (int a = 0; a < argc; a++) {
+      NodeKind ak = nt_kind(nt, av[a]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 1;
+    }
+    if (pj < argc && sh_class_sources(c, av[pj], out, n, cap, depth, inst_ok)) return 1;
+  }
+  return 0;
+}
+static int sh_class_sources(Compiler *c, int v, int *out, int *n, int cap, int depth, int inst_ok) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  if (depth > 12) return 1;
+  switch (nt_kind(nt, v)) {
+  case NK_ConstantReadNode: case NK_ConstantPathNode: {
+    const char *cn = nt_str(nt, v, "name");
+    int k = cn ? comp_class_index(c, cn) : -1;
+    if (k < 0) return 1;
+    for (int i = 0; i < *n; i++) if (out[i] == k) return 0;
+    if (*n == cap) return 1;
+    out[(*n)++] = k;
+    return 0;
+  }
+  case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode: case NK_NilNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_InterpolatedStringNode:
+    return !inst_ok;
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, v) == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v;
+    if (body < 0) return 0;
+    if (nt_kind(nt, body) != NK_StatementsNode) return sh_class_sources(c, body, out, n, cap, depth + 1, inst_ok);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    return bn > 0 && sh_class_sources(c, bb[bn - 1], out, n, cap, depth + 1, inst_ok);
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int els = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+    if (els >= 0 && nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
+    return sh_class_sources(c, nt_ref(nt, v, "statements"), out, n, cap, depth + 1, inst_ok) ||
+           sh_class_sources(c, els, out, n, cap, depth + 1, inst_ok);
+  }
+  case NK_OrNode: case NK_AndNode:
+    return sh_class_sources(c, nt_ref(nt, v, "left"), out, n, cap, depth + 1, inst_ok) ||
+           sh_class_sources(c, nt_ref(nt, v, "right"), out, n, cap, depth + 1, inst_ok);
+  case NK_ArrayNode: {
+    /* (reached only through an element read: each element is a source) */
+    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      if (nt_kind(nt, ev[i]) == NK_SplatNode) return 1;
+      if (sh_class_sources(c, ev[i], out, n, cap, depth + 1, inst_ok)) return 1;
+    }
+    return 0;
+  }
+  case NK_LocalVariableReadNode: {
+    Scope *sc = comp_scope_of(c, v);
+    const char *nm = nt_str(nt, v, "name");
+    if (!sc || !nm) return 1;
+    int si = (int)(sc - c->scopes);
+    for (int w = comp_lvw_first_sc(c, si, nm); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      NodeKind k = nt_kind(nt, w);
+      if (k == NK_LocalVariableOperatorWriteNode) return 1;
+      if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) &&
+          nt_str(nt, w, "name") && sp_streq(nt_str(nt, w, "name"), nm) && comp_scope_of(c, w) == sc &&
+          sh_class_sources(c, nt_ref(nt, w, "value"), out, n, cap, depth + 1, inst_ok)) return 1;
+    }
+    LocalVar *lv = scope_local(sc, nm);
+    if (lv && lv->is_param) return lv->is_block_param ? 1 : sh_class_src_param(c, sc, nm, out, n, cap, depth + 1, inst_ok);
+    return 0;
+  }
+  case NK_CallNode: {
+    /* an element read of an Array literal (`[Helpers, 1][0]`, first, last) */
+    const char *cn = nt_str(nt, v, "name");
+    int r = nt_ref(nt, v, "receiver");
+    if (cn && r >= 0 && (sp_streq(cn, "[]") || sp_streq(cn, "first") || sp_streq(cn, "last") || sp_streq(cn, "fetch")) &&
+        comp_method_index(c, cn) < 0) {
+      int rr = r;
+      while (nt_kind(nt, rr) == NK_ParenthesesNode) {
+        int bd = nt_ref(nt, rr, "body"), bn = 0;
+        const int *bb = bd >= 0 ? nt_arr(nt, bd, "body", &bn) : NULL;
+        if (bn != 1) return 1;
+        rr = bb[0];
+      }
+      if (nt_kind(nt, rr) == NK_ArrayNode || nt_kind(nt, rr) == NK_LocalVariableReadNode || nt_kind(nt, rr) == NK_ConstantReadNode)
+        return sh_class_sources(c, rr, out, n, cap, depth + 1, inst_ok);
+    }
+    /* an instance is no class value: `Klass.new` answers no instance_method */
+    if (inst_ok && cn && sp_streq(cn, "new") && r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode) return 0;
+    return 1;
+  }
+  default:
+    return 1;
+  }
+}
 static void sh_method_ref_names(ShareFacts *F, Compiler *c, int n, const char *name, int argc, const int *argv,
                                 int lit_blk) {
   const NodeTable *nt = c->nt;
@@ -791,16 +946,34 @@ static void sh_method_ref_names(ShareFacts *F, Compiler *c, int n, const char *n
     if (!instance) singleton = 1;   /* K.method(x) names a class method */
   }
   else if (ty_is_object(c->ntype[recv])) cid = ty_object_class(c->ntype[recv]);
-  if (cid < 0 || cid >= c->nclasses || argc < 1) { F->dyn_all = 1; return; }
-  int module = comp_class_is_module(c, &c->classes[cid]);
-  for (int mi = 0; mi < c->nscopes; mi++) {
-    const Scope *m = &c->scopes[mi];
-    if (m->def_node < 0 || !m->name) continue;
-    if (!!m->is_cmethod != !!singleton) continue;
-    int reached = m->class_id == cid ||
-                  (m->class_id >= 0 && (is_descendant(c, cid, m->class_id) || comp_module_includes(c, cid, m->class_id, 0))) ||
-                  (!module && !singleton && m->class_id < 0);   /* a top-level def: Object's, which a class inherits */
-    if (reached) sh_dyn_name(F, m->name);
+  if (argc < 1) { F->dyn_all = 1; return; }
+  int cids[16], ncid = 0;
+  if (cid >= 0 && cid < c->nclasses) cids[ncid++] = cid;
+  /* a receiver of no known class: the classes and modules its sources
+     name, each a class value (`mod.instance_method(name)`, mod one of
+     them), whose method(x) names a class method; with none of them a class
+     value, the reference raises and reaches nothing */
+  else if (recv >= 0 && g_ref_top < 16 && (g_ref_stack[g_ref_top++] = n, !sh_class_sources(c, recv, cids, &ncid, 16, 0, instance))) {
+    g_ref_top--;
+    if (!instance) singleton = 1;
+  }
+  else {
+    if (g_ref_top > 0 && g_ref_stack[g_ref_top - 1] == n) g_ref_top--;
+    F->dyn_all = 1;
+    return;
+  }
+  for (int q = 0; q < ncid; q++) {
+    int k = cids[q];
+    int module = comp_class_is_module(c, &c->classes[k]);
+    for (int mi = 0; mi < c->nscopes; mi++) {
+      const Scope *m = &c->scopes[mi];
+      if (m->def_node < 0 || !m->name) continue;
+      if (!!m->is_cmethod != !!singleton) continue;
+      int reached = m->class_id == k ||
+                    (m->class_id >= 0 && (is_descendant(c, k, m->class_id) || comp_module_includes(c, k, m->class_id, 0))) ||
+                    (!module && !singleton && m->class_id < 0);   /* a top-level def: Object's, which a class inherits */
+      if (reached) sh_dyn_name(F, m->name);
+    }
   }
 }
 
