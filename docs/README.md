@@ -58,6 +58,9 @@ How the compiler is built and where it is going. Not needed to *use* Spinel.
   the rest of the compiler consumes.
 - **[internals/analyze-ir.md](internals/analyze-ir.md)** -- the analyze ↔ codegen
   contract (the shared in-memory `Compiler` model).
+- **[internals/architecture.md](internals/architecture.md)** -- where a change
+  goes: the layer that owns each decision, its entry points, how the old way
+  looks in a diff, and the verifiers that keep each layer and the C in step.
 - **[internals/gc.md](internals/gc.md)** -- the collector: two heaps, the marker
   byte that identifies a heap string, explicit roots, a full mark with a
   generational sweep, and the limits that follow from having no write barrier.
