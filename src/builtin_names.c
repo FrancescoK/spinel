@@ -419,6 +419,10 @@ int is_proc_constructor(const char *n) {
   return sp_streq(n, "proc") || sp_streq(n, "lambda");
 }
 
+int is_lambda_constructor(const char *n) {
+  return sp_streq(n, "lambda");
+}
+
 int is_lazy_force(const char *n) {
   return sp_streq(n, "to_a") || sp_streq(n, "force");
 }

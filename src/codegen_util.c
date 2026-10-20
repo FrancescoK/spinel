@@ -854,6 +854,7 @@ static int blk_param_call(const Compiler *c, int id) {
   const char *rn = nt_str(c->nt, r, "name");
   return rn && sp_streq(rn, g_block_param_name);
 }
+int ie_forwards_block_tail(Compiler *c, int node);   /* analyze_internal.h */
 /* An empty `[]` literal: splatting it contributes no elements. */
 int is_empty_array_lit(const NodeTable *nt, int id) {
   if (id < 0 || nt_kind(nt, id) != NK_ArrayNode) return 0;
@@ -997,7 +998,7 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (sp_streq(ty, "CallNode") && yield_operator_site_type(c, id, out)) return 1;
   if (sp_streq(ty, "CallNode") && yield_builtin_method_site_type(c, id, out)) return 1;
   if (!sp_streq(ty, "YieldNode") &&
-      !(sp_streq(ty, "CallNode") && blk_param_call(c, id))) return 0;
+      !(sp_streq(ty, "CallNode") && (blk_param_call(c, id) || ie_forwards_block_tail((Compiler *)c, id)))) return 0;
   /* a yield pinned to one face kind (emit_face_arm) is read as that kind:
      answering the block's tail here, poly beside another site's block, kept
      the re-entered call on a boxed receiver, and it re-entered the face

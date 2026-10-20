@@ -11896,7 +11896,8 @@ static int te_value_leaf(const NodeTable *nt, int n) {
   switch (nt_kind(nt, n)) {
     case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
     case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode:
-    case NK_HashNode: case NK_StringNode: case NK_IntegerNode: case NK_FloatNode:
+    case NK_HashNode: case NK_ArrayNode: case NK_StringNode: case NK_InterpolatedStringNode:
+    case NK_IntegerNode: case NK_FloatNode:
     case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
       return 1;
     /* a call answers its value -- `@a.select { |x| yield x }` an Array --
@@ -12109,6 +12110,21 @@ static int desugar_scan_enum_consumer(Compiler *c, int te) {
   return 1;
 }
 
+/* A `return v` written inside a block of the method (`@a.each { |x| return x
+   if yield(x) > 1 }`) leaves the method with a value, which neither the tail
+   nor the statements before it show (te_guard_value reads no block): the
+   block form answers it as much as a value tail does. */
+static int te_block_return_value(Compiler *c, int si) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
+    if (c->nscope[rid] != si || return_in_lambda(c, rid)) continue;
+    int a = nt_ref(nt, rid, "arguments");
+    int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac > 0 && te_tail_is_value(nt, av[0])) return 1;
+  }
+  return 0;
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -12117,6 +12133,15 @@ static int desugar_scan_enum_consumer(Compiler *c, int te) {
    materialized Enumerator. Un-resolved or unsupported receivers are left
    untouched -- a leftover to_enum/enum_for is loudly rejected downstream (no
    silent-wrong). Returns 1 if anything changed. */
+/* The `return` that hands out the guard's `call`, or -1. */
+static int guard_return_of(const NodeTable *nt, int call) {
+  NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
+    int a = nt_ref(nt, rid, "arguments");
+    int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac == 1 && av[0] == call) return rid;
+  }
+  return -1;
+}
 static int desugar_to_enum(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -12183,24 +12208,22 @@ static int desugar_to_enum(Compiler *c) {
          through an Enumerator-typed C signature, a type error; widened, a
          blockless call site reads a boxed Enumerator its consumers dispatch
          on. */
-      int value_form = es && es->body >= 0 && te_tail_is_value(nt, es->body);
+      int value_form = es && es->body >= 0 &&
+                       (te_tail_is_value(nt, es->body) || te_block_return_value(c, (int)(es - c->scopes)));
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
-          es->yields && es->ret != TY_ENUMERATOR && te_pure_block_guard_return(nt, es->body, id)) {
+          es->yields && es->ret != TY_ENUMERATOR && te_pure_block_guard_return(nt, es->body, id) &&
+          !return_before(c, (int)(es - c->scopes), guard_return_of(nt, id))) {
         scope_set_ret(es, TY_ENUMERATOR);
         es->ret_specialized = 1;
         changed = 1;
         /* The pin is the blockless call's value. A call with a block runs
-           the body, and a `self` tail answers the receiver there, as in
-           CRuby; pinned, it answered nil. Only when the guard's is the
-           method's one `return`. */
-        int si = (int)(es - c->scopes), nret = 0;
-        NT_FOREACH_KIND(nt, NK_ReturnNode, rid)
-          if (c->nscope[rid] == si) nret++;
-        int tail = scope_body_last(c, si);
-        if (nret == 1 && tail >= 0 && nt_kind(nt, tail) == NK_SelfNode && es->class_id >= 0 && !es->is_cmethod)
-          scope_set_ret_withblock(es, ty_object(es->class_id));
+           the body and answers what it answers, as in CRuby (a `self` tail
+           the receiver, an iteration's tail its receiver, a `return self`
+           in a block the receiver): method_call_ret reads the values of the
+           body other than the guard's. */
+        scope_set_ret_pin_guard(es, id);
       }
       nt_node_set_str(nt, id, "name", hname);
       int empty = nt_new_node(nt, "ArgumentsNode");
@@ -38025,6 +38048,9 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
     const char *rn = nt_str(nt, b[n - 1], "name");
     if (!rn || !sp_streq(rn, name) || comp_scope_of(c, b[n - 1]) != sc) continue;
     if (answered && wnh_is_answer(c, sc, b[n - 1])) { *answered = 1; continue; }
+    /* a read whose value is dropped (the body of a begin with an `else`, which
+       the else's value replaces) hands nothing on */
+    if (an_value_dropped(nt, comp_parent_map(c), b[n - 1])) continue;
     return 1;
   }
   if (answered && sc->def_node >= 0 && sc->body >= 0 && ty_is_hash(sc->ret)) {
@@ -38272,8 +38298,12 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
         if (!ty_is_hash(want)) want = TY_POLY_POLY_HASH;
         vn = 0;
       }
+      /* a method answering something other than this Hash (`seen || {}`, a
+         conditional beside a `{}` arm: the return is the box that joins
+         them) hands the box the local's Hash as it is, so the local widens
+         alone; one answering another Hash kind keeps both typed */
       int mi = (int)(sc - c->scopes);
-      if (sc->ret != ht || !wnh_widen_ret(c, mi, want)) continue;
+      if (ty_is_hash(sc->ret) ? (sc->ret != ht || !wnh_widen_ret(c, mi, want)) : sc->ret != TY_POLY) continue;
     }
     lv_set_type(lv, want);
     wnh_widen_block_params(c, sc, ln, kn, vn);
@@ -48229,7 +48259,7 @@ static void an_phase_procs(Compiler *c) {
        method was inlined (Scope.ret_noblock); as one emitted function both
        arms are live at run time, so its value is the two joined */
     if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
-    scope_set_ret_withblock(m, TY_UNKNOWN);   /* one function answers both: its own ret */
+    scope_set_ret_pin_guard(m, -1);   /* one function answers both: its own ret */
     /* The return the fixpoint derived stands. This forced TY_INT, which was
        right only by coincidence: the body's own tail already types the method,
        and overwriting it made `walk` answer Integer where it answers nil, and
@@ -48285,7 +48315,7 @@ static void an_phase_procs(Compiler *c) {
       if (!bl || !bl->is_cell || scope_has_yield_node(c, m)) continue;
       m->yields = 0;
       if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
-      scope_set_ret_withblock(m, TY_UNKNOWN);
+      scope_set_ret_pin_guard(m, -1);
       again = 1;
     }
     if (again) mark_proc_captures(c);

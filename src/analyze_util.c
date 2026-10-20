@@ -1845,6 +1845,50 @@ int is_blk_param_call(Compiler *c, int node, int mi) {
   const char *bp = c->scopes[mi].blk_param;
   return rn && bp && bp[0] && sp_streq(rn, bp);
 }
+/* Is the `return` written in a lambda (`-> { return 1 }`, `lambda { return 1 }`)?
+   It leaves the lambda, not the method the lambda is written in. */
+int return_in_lambda(Compiler *c, int rid) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  for (int n = par[rid]; n >= 0; n = par[n]) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_LambdaNode) return 1;
+    if (k == NK_BlockNode && par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode) {
+      const char *cn = nt_str(nt, par[n], "name");
+      if (cn && is_lambda_constructor(cn) && nt_ref(nt, par[n], "receiver") < 0) return 1;
+    }
+  }
+  return 0;
+}
+/* Is there a `return` of scope `si` other than `guard_ret`, written before it
+   (an early `return 0 if @a.nil?` before `return to_enum(:m) unless
+   block_given?`)? The guard then does not stop every blockless call. A
+   statement's nodes come before those of the statements after it. */
+int return_before(Compiler *c, int si, int guard_ret) {
+  NT_FOREACH_KIND(c->nt, NK_ReturnNode, rid)
+    if (rid < guard_ret && c->nscope[rid] == si && !return_in_lambda(c, rid)) return 1;
+  return 0;
+}
+/* Is `node` an instance_eval / instance_exec that hands the method's own
+   block on (`instance_exec(*args, &block)`) as the value the method falls off
+   its end with? The inlined method answers the value that block has at each
+   call site, as a tail `yield` does. */
+int ie_forwards_block_tail(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !is_instance_eval_family(nm)) return 0;
+  int blk = nt_ref(nt, node, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode || !call_forwards_own_block(c, node)) return 0;
+  /* on self, or on a receiver of one known class, whose self the block takes
+     (a boxed receiver is dispatched by class at run time: the block's value
+     there is that of each class's body) */
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(infer_type(c, recv))) return 0;
+  Scope *sc = comp_scope_of(c, node);
+  return sc && node_is_scope_tail(c, (int)(sc - c->scopes), node);
+}
 int g_yvt_mi[MAX_YVT_DEPTH];
 int g_yvt_depth = 0;
 /* set by yield_value_diverges to make yield_value_type unify all call sites
@@ -2750,6 +2794,32 @@ static TyKind method_yield_ret(Compiler *c, int mi, TyKind ret) {
   return ret;
 }
 
+/* The values of a method pinned to its guard's Enumerator (Scope.ret_pin_guard)
+   other than the guard's, joined: what a call with a block answers. 0 when
+   the walk of its values gives up or there are none (the pin stands);
+   otherwise 1, with *out the join, TY_UNKNOWN while a value is not typed yet. */
+static int pinned_block_form_ret(Compiler *c, int mi, TyKind *out) {
+  int lv[16];
+  int n = method_value_leaves_or_nil(c, mi, lv, 16);
+  TyKind acc = TY_UNKNOWN;
+  int any = 0, nil = 0;
+  for (int i = 0; i < n; i++) {
+    if (lv[i] == c->scopes[mi].ret_pin_guard) continue;
+    TyKind t = infer_type(c, lv[i]);
+    any = 1;
+    if (t == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
+    if (t == TY_VOID) t = TY_NIL;
+    nil |= t == TY_NIL;
+    acc = ty_unify(acc, t);
+  }
+  /* a path that answers nil (a bare `return`, an arm left out) adds no value to the walk, but it is one */
+  if (any && n >= 0 && method_value_leaves(c, mi, lv, 16) < 0) { nil = 1; acc = ty_unify(acc, TY_NIL); }
+  /* an Integer or a Float beside a nil is boxed: the nil flag of a call's slot is a mark that settles later */
+  if (nil && (acc == TY_INT || acc == TY_FLOAT)) acc = TY_POLY;
+  *out = acc;
+  return any;
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block
@@ -2785,7 +2855,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     return c->scopes[mi].ret;
   /* A yield-tailed inlined method, or a tail that calls the &block param:
      the block is spliced per call site, so use that site's block body type. */
-  if (is_yield || is_blk_param_call(c, last, mi)) {
+  if (is_yield || is_blk_param_call(c, last, mi) || ie_forwards_block_tail(c, last)) {
     int blk = nt_ref(c->nt, call_id, "block");
     /* `callee(&b)` / `callee(...)` forwards the block active in the enclosing
        method (a `...` forward carries it implicitly, with no block node), so
@@ -2832,11 +2902,13 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     }
   }
   /* a pinned `return enum_for(:m) unless block_given?` method called with
-     a block of its own answers its `self` tail (Scope.ret_withblock) */
-  if (c->scopes[mi].ret_withblock != TY_UNKNOWN) {
+     a block of its own answers what the rest of its body does */
+  if (c->scopes[mi].ret_pin_guard >= 0) {
     int blk = nt_ref(c->nt, call_id, "block");
-    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0))
-      return c->scopes[mi].ret_withblock;
+    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0)) {
+      TyKind t;
+      if (pinned_block_form_ret(c, mi, &t)) return t;
+    }
   }
   /* `return x unless block_given?`: a blockless call site reads the value
      of that return, one with a block the value of the body proper */

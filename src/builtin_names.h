@@ -114,6 +114,7 @@ int is_element_at_alias(const char *n); /* [] at */
 int is_map_bang_alias(const char *n); /* collect! map! */
 int is_each_or_pair(const char *n); /* each each_pair */
 int is_proc_constructor(const char *n); /* lambda proc */
+int is_lambda_constructor(const char *n); /* lambda */
 
 int is_inspect_print(const char *n); /* p pp */
 int is_then_alias(const char *n); /* then yield_self */

@@ -551,7 +551,7 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   *(TyKind *)&s->ret = TY_UNKNOWN;
   comp_ty_edits++;    /* a new scope is a change of the tables */
   scope_set_ret_noblock(s, TY_UNKNOWN);
-  scope_set_ret_withblock(s, TY_UNKNOWN);
+  scope_set_ret_pin_guard(s, -1);
   why_reset(&s->ret_why);
   s->dm_subst_node = -1;
   return s;

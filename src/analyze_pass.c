@@ -6926,9 +6926,12 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
   NodeKind k = nt_kind(nt, v);
   if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode)
     return widen_boxed_array_sources(c, nt_ref(nt, v, "value"), elem, depth + 1);
-  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode) {
+  /* a conditional, a logical operator or a begin: the arrays any of its arms
+     answers (a nil arm adds none) */
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_OrNode ||
+      k == NK_AndNode || k == NK_BeginNode || k == NK_RescueModifierNode || k == NK_ParenthesesNode) {
     int lv[16];
-    int n = value_leaves(c, v, lv, 0, 16), ch = 0;
+    int n = value_leaves_ex(c, v, lv, 0, 16, VL_NIL), ch = 0;
     for (int i = 0; i < n; i++) ch |= widen_boxed_array_sources(c, lv[i], elem, depth + 1);
     return ch;
   }
@@ -13804,6 +13807,13 @@ static int ple_npw = 0;
    proc LITERAL assigned to that local too: `f = ->(a){...}; g([f])` escapes the
    literal even though the container/arg holds a reference, not the literal
    itself (#3175). */
+static void ple_mark_escaped(Compiler *c, int x);
+typedef struct { Compiler *c; int self; } PleMark;
+static int ple_mark_leaf(const VpLeaf *leaf, void *ud) {
+  PleMark *m = ud;
+  if (leaf->kind == VPK_EXPR && leaf->node != m->self) ple_mark_escaped(m->c, leaf->node);
+  return 0;
+}
 static void ple_mark_escaped(Compiler *c, int x) {
   const NodeTable *nt = c->nt;
   int n = ple_ntc;
@@ -13811,6 +13821,16 @@ static void ple_mark_escaped(Compiler *c, int x) {
   ple_escaped[x] = 1;
   const char *xty = nt_type(nt, x);
   if (!xty) return;
+  /* a join (`run(f && lambda { })`, `[f ? pr : nil]`): each value it can be escapes */
+  switch (nt_kind(nt, x)) {
+    case NK_ParenthesesNode: case NK_AndNode: case NK_OrNode: case NK_IfNode: case NK_UnlessNode:
+    case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode: {
+      PleMark m = { c, x };
+      for_each_value_position(nt, x, VP_AND_LEFT | VPS_ALL, ple_mark_leaf, &m);
+      return;
+    }
+    default: break;
+  }
   /* A CONSTANT or an ivar holding the literal escapes just as a local does:
      `A = ->(x){...}; run(A)` hands the lambda to a method that calls it, and
      the literal kept the no-evidence int default -- `x[0]` on an Array
@@ -13838,6 +13858,32 @@ static void ple_mark_escaped(Compiler *c, int x) {
     ple_escaped[ple_pw[i * 4 + 3]] = 1;
   }
 }
+/* The proc literals among the value positions of a value, and how many
+   positions there are */
+typedef struct { Compiler *c; int *lit; int nlit, cap, nleaf; } PleLeaves;
+static int ple_leaf(const VpLeaf *leaf, void *ud) {
+  PleLeaves *p = ud;
+  p->nleaf++;
+  if (leaf->kind != VPK_EXPR ||
+      !(nt_kind(p->c->nt, leaf->node) == NK_LambdaNode || is_proc_create(p->c, leaf->node))) return 0;
+  if (p->nlit == p->cap) {
+    p->cap = p->cap ? p->cap * 2 : 4;
+    int *grown = realloc(p->lit, sizeof(int) * (size_t)p->cap);
+    if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    p->lit = grown;
+  }
+  p->lit[p->nlit++] = leaf->node;
+  return 0;
+}
+/* The proc literals among the value positions of `tail` (the value a method,
+   a lambda or a block answers) escape: the caller has the type-erased proc. */
+static void ple_mark_tail_literals(Compiler *c, int tail) {
+  if (tail < 0 || tail >= ple_ntc) return;
+  PleLeaves pl = { c, NULL, 0, 0, 0 };
+  for_each_value_position(c->nt, tail, VP_AND_LEFT | VPS_ALL, ple_leaf, &pl);
+  for (int q = 0; q < pl.nlit; q++) ple_escaped[pl.lit[q]] = 1;
+  free(pl.lit);
+}
 static void ple_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -13852,29 +13898,37 @@ static void ple_build(Compiler *c) {
     int cap = 0;
     for (int w = 0; w < n; w++) {
       NodeKind wk = nt_kind(nt, w);
-      int kind;
+      int kind;   /* -1: a write nothing finds a literal through by name */
       if (wk == NK_LocalVariableWriteNode) kind = 0;
       else if (wk == NK_ConstantWriteNode || wk == NK_ConstantPathWriteNode) kind = 1;
       else if (wk == NK_InstanceVariableWriteNode) kind = 2;
+      else if (wk == NK_GlobalVariableWriteNode || wk == NK_ClassVariableWriteNode) kind = -1;
       else continue;
       int val = nt_ref(nt, w, "value");
-      if (val < 0 || val >= n || !nt_type(nt, val) ||
-          !(sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val)))
-        continue;
+      if (val < 0 || val >= n || !nt_type(nt, val)) continue;
+      PleLeaves pl = { c, NULL, 0, 0, 0 };
+      for_each_value_position(nt, val, VP_AND_LEFT | VPS_ALL, ple_leaf, &pl);
       Scope *sc = comp_scope_of(c, w);
-      if (!sc && kind != 1) continue;
-      if (ple_npw >= cap) {
-        cap = cap ? cap * 2 : 64;
-        int *np = realloc(ple_pw, sizeof(int) * 4 * (size_t)cap);
-        if (!np) break;
-        ple_pw = np;
+      for (int q = 0; q < pl.nlit; q++) {
+        /* one of several values of a join (`f && lambda { }`, `f ? lambda { } :
+           nil`): the slot is shared with values this scan cannot see, and is
+           called as a poly, as a `||=` fallback's is */
+        if (pl.nleaf > 1) ple_escaped[pl.lit[q]] = 1;
+        if (kind < 0 || (!sc && kind != 1)) continue;
+        if (ple_npw >= cap) {
+          cap = cap ? cap * 2 : 64;
+          int *np = realloc(ple_pw, sizeof(int) * 4 * (size_t)cap);
+          if (!np) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          ple_pw = np;
+        }
+        ple_pw[ple_npw * 4] = kind;
+        ple_pw[ple_npw * 4 + 1] = kind == 0 ? (int)(sc - c->scopes)
+                                : kind == 2 ? (sc ? sc->class_id : -1) : -1;
+        ple_pw[ple_npw * 4 + 2] = w;
+        ple_pw[ple_npw * 4 + 3] = pl.lit[q];
+        ple_npw++;
       }
-      ple_pw[ple_npw * 4] = kind;
-      ple_pw[ple_npw * 4 + 1] = kind == 0 ? (int)(sc - c->scopes)
-                              : kind == 2 ? (sc ? sc->class_id : -1) : -1;
-      ple_pw[ple_npw * 4 + 2] = w;
-      ple_pw[ple_npw * 4 + 3] = val;
-      ple_npw++;
+      free(pl.lit);
     }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -13952,10 +14006,7 @@ static void ple_build(Compiler *c) {
        arrow left the method-call spellings' params defaulting to int, so a
        lambda returned from a method read a String argument as an Integer
        (#4035). The block-tail rule below has always tested both. */
-    if (bn > 0 && bb[bn - 1] >= 0 && bb[bn - 1] < n &&
-        nt_type(nt, bb[bn - 1]) &&
-        (sp_streq(nt_type(nt, bb[bn - 1]), "LambdaNode") || is_proc_create(c, bb[bn - 1])))
-      ple_escaped[bb[bn - 1]] = 1;
+    if (bn > 0) ple_mark_tail_literals(c, bb[bn - 1]);
   }
   /* And a proc literal that is a LAMBDA's tail value: `->(step) { ->(acc) {
      step.call(acc) } }` answers the inner lambda, and the caller has only the
@@ -13970,9 +14021,7 @@ static void ple_build(Compiler *c) {
     if (body < 0 || !nt_type(nt, body) || !sp_streq(nt_type(nt, body), "StatementsNode")) continue;
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     int tail = bn > 0 ? bb[bn - 1] : -1;
-    if (tail >= 0 && tail < n && nt_type(nt, tail) &&
-        (sp_streq(nt_type(nt, tail), "LambdaNode") || is_proc_create(c, tail)))
-      ple_escaped[tail] = 1;
+    ple_mark_tail_literals(c, tail);
   }
   /* A proc literal that is a BLOCK's tail value escapes too: a collecting
      iterator (`(0..2).map { ->(s){ s } }`) boxes it into the result array,
@@ -14001,9 +14050,7 @@ static void ple_build(Compiler *c) {
       if (wn2 <= 0) break;
       tail = wb[wn2 - 1];
     }
-    if (tail >= 0 && tail < n && nt_type(nt, tail) &&
-        (sp_streq(nt_type(nt, tail), "LambdaNode") || is_proc_create(c, tail)))
-      ple_escaped[tail] = 1;
+    ple_mark_tail_literals(c, tail);
   }
 }
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
@@ -15716,6 +15763,23 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
    (`q = pr`, the `__fwdc = $pr` an `&$pr` forward reads) was assigned in
    turn, `depth` such copies deep. Answers whether a parameter type
    changed. */
+static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, int depth);
+/* One value position of what a name is written (`pr = (f; lambda { })`, `pr =
+   f ? lambda { } : nil`): a proc literal there is typed from the call, and a
+   name there is followed. */
+typedef struct { Compiler *c; int recv; const int *argv; int argc, depth, changed; } CsProcArms;
+static int cs_proc_arm(const VpLeaf *leaf, void *ud) {
+  CsProcArms *a = ud;
+  if (leaf->kind != VPK_EXPR) return 0;
+  if (is_proc_create(a->c, leaf->node)) {
+    if (cs_type_params_site(a->c, leaf->node, a->argv, a->argc)) a->changed = 1;
+  }
+  /* a write that copies another name's proc: the literal is that name's */
+  else if (leaf->node != a->recv && infer_type(a->c, leaf->node) == TY_PROC &&
+           cs_type_proc_name(a->c, leaf->node, a->argv, a->argc, a->depth + 1))
+    a->changed = 1;
+  return 0;
+}
 static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -15767,13 +15831,9 @@ static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, i
     if (!wname || !sp_streq(wname, varname)) continue;
     int val = nt_ref(nt, w, "value");
     if (val < 0) continue;
-    if (is_proc_create(c, val)) {
-      if (cs_type_params_site(c, val, argv, argc)) changed = 1;
-    }
-    /* a write that copies another name's proc: the literal is that name's */
-    else if (val != recv && infer_type(c, val) == TY_PROC &&
-             cs_type_proc_name(c, val, argv, argc, depth + 1))
-      changed = 1;
+    CsProcArms a = { c, recv, argv, argc, depth, 0 };
+    for_each_value_position(nt, val, VPS_ALL, cs_proc_arm, &a);
+    changed |= a.changed;
   }
   return changed;
 }
@@ -17186,7 +17246,9 @@ int infer_return_types(Compiler *c) {
       /* only a guard at the method's top level stops every blockless call:
          one under `if x.nil?` lets the call with an x run on to the body,
          and typed as the guard's nil it printed nil for a found index
-         (#5097). A nested guard's return is an ordinary return. */
+         (#5097). A nested guard's return is an ordinary return, and so is
+         one after an early return, which the blockless call can answer
+         instead. */
       Scope *gs = comp_scope_of(c, id);
       int gn = 0; const int *gb = gs && gs->body >= 0 ? nt_arr(nt, gs->body, "body", &gn) : NULL;
       int top = 0;
@@ -17194,7 +17256,8 @@ int infer_return_types(Compiler *c) {
       if (!top) continue;
       int stm = nt_ref(nt, id, "statements");
       int sn = 0; const int *sb = stm >= 0 ? nt_arr(nt, stm, "body", &sn) : NULL;
-      for (int k = 0; k < sn; k++) if (nt_kind(nt, sb[k]) == NK_ReturnNode) noblk[sb[k]] = 1;
+      for (int k = 0; k < sn; k++)
+        if (nt_kind(nt, sb[k]) == NK_ReturnNode && !return_before(c, (int)(gs - c->scopes), sb[k])) noblk[sb[k]] = 1;
     }
     for (int s = 1; s < ns; s++) {
       /* A tail conditional re-derives its blockless value in irt_scope.
