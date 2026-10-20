@@ -1,0 +1,10 @@
+["message", RuntimeError, #<RuntimeError: y>]
+["self", TrueClass, true]
+["given self", TrueClass, true]
+["copy", FalseClass, false]
+["receiver kept", String, "x"]
+["symbol message", String, "sym"]
+["subclass", AppError, #<AppError: n>]
+not an exception: undefined method 'exception' for an instance of Integer
+["nil message", String, "RuntimeError"]
+["string kept", String, "mut!"]

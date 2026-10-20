@@ -331,6 +331,52 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       return 1;
     }
   }
+  /* #exception on a POLY receiver (an exception read out of a container):
+     the receiver itself with no argument or with itself, else a copy of it
+     carrying the argument as its message (sp_exc_exception), the message
+     taken as emit_exc_exception takes it for a typed receiver; NoMethodError
+     for a value that is no exception. Not where a program class defines or
+     reads the name. */
+  if (argc <= 1 && sp_streq(name, "exception") && recv >= 0 &&
+      repr_of(c, recv).as_ty == TY_POLY && nt_ref(nt, id, "block") < 0) {
+    int pu = 0;
+    for (int k = 0; k < c->nclasses && !pu; k++)
+      if (comp_method_in_class(c, k, name) >= 0 ||
+          comp_reader_in_chain(c, k, name, NULL)) pu = 1;
+    if (!pu || g_poly_builtin_arm) {
+      int t = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t);
+      int sm = argc == 1 && comp_ntype(c, argv[0]) == TY_STRING;
+      if (argc == 1 && !sm) {
+        buf_printf(b, "sp_RbVal _t%d = ", ta);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ta);
+      }
+      buf_printf(b, "if (!(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION"
+                    " || sp_is_exc_subclass_cls(_t%d.cls_id)))) sp_raise_poly_nomethod(\"exception\", _t%d); ",
+                 t, t, t, t, t);
+      if (argc == 0) { buf_printf(b, "_t%d; })", t); return 1; }
+      if (!sm) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == _t%d.v.p) ? _t%d : ", ta, ta, t, t);
+      /* a String message as the typed arm takes it: given (an empty one
+         stays empty), and held as the shared handle a variable carries
+         under --share-strings; any other value through its #to_s, nil
+         being no message */
+      Buf mh; memset(&mh, 0, sizeof mh);
+      int hm = sm && exc_msg_handle(c, argv[0], &mh);
+      buf_puts(b, "sp_box_obj(");
+      if (hm) buf_puts(b, "sp_exc_attach_msg(");
+      buf_printf(b, "sp_exc_exception((sp_Exception *)_t%d.v.p, ", t);
+      if (sm) { buf_puts(b, "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given(sp_poly_to_s(_t%d))", ta, ta);
+      buf_puts(b, ")");
+      if (hm) buf_printf(b, ", %s)", mh.p);
+      buf_printf(b, ", _t%d.cls_id); })", t);
+      free(mh.p);
+      return 1;
+    }
+  }
   /* exception accessors on a POLY receiver (an exception rescued into a
      union-typed local): runtime unbox-and-delegate, but only when no user
      class defines the name (which would need the poly method dispatch)
