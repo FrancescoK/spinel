@@ -2033,7 +2033,7 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
 /* ...is the value v of a block's tail one the demand has a handle for? */
 int strbuf_value_handleish(Compiler *c, int v) {
   return strbuf_cond_arm_any(c, v, strbuf_leaf_held, 1) ||
-         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 0));
+         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 1));
 }
 int strbuf_yield_tail_held(Compiler *c) {
   int tail = strbuf_site_tail(c);
