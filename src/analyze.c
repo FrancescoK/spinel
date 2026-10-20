@@ -7552,7 +7552,7 @@ static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
       for (p = (*par)[q]; p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode; p = (*par)[p]) {}
     }
   }
-  return !(p >= 0 && nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == id);
+  return !(p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_paren_single(nt, nt_ref(nt, p, "receiver")) == id);
 }
 static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -7566,7 +7566,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "LocalVariableWriteNode")) continue;
     int val = nt_ref(nt, id, "value");
-    int rn = an_unparen(nt, val);
+    int rn = nt_paren_single(nt, val);
     if (rn < 0 || !nt_type(nt, rn) || !sp_streq(nt_type(nt, rn), "RangeNode")) continue;
     int rlo = nt_ref(nt, rn, "left");
     const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
@@ -7590,7 +7590,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       int lz_recv = nt_ref(nt, recv, "receiver");
       /* `p (2..10).lazy...` parses the source as a ParenthesesNode; look through
          it (and nested parens) to the real range/array. */
-      lz_recv = an_unparen(nt, lz_recv);
+      lz_recv = nt_paren_single(nt, lz_recv);
       const char *lty = lz_recv >= 0 ? nt_type(nt, lz_recv) : NULL;
       int finite = 0;
       if (lty && sp_streq(lty, "ArrayNode")) finite = 1;
@@ -7679,11 +7679,6 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       continue;
     }
-    /* A STRING-bounded range receiver ("a".."e") supports only the
-       range-native methods; any other Enumerable method rides the
-       materialized string array (the int-range redispatch has no char
-       equivalent, #1934). */
-    int rngn = an_unparen(nt, recv);
     /* `m(&lambda_literal)`: attach the lambda's block directly as m's block
        (the :sym.to_proc desugar below produces exactly this shape when the
        proc is passed inline as a block argument). */
@@ -10355,7 +10350,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     if (hit) {
       int rrecv = nt_ref(nt, id, "receiver");
       if (rrecv >= 0 && infer_type(c, rrecv) == TY_RANGE) {
-        int rlit = an_unparen(nt, rrecv);
+        int rlit = nt_paren_single(nt, rrecv);
         int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
                          (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
         if (!open_ended) {
@@ -15033,7 +15028,7 @@ static int is_empty_array_literal(const NodeTable *nt, int id, int cap) {
 static int empty_array_operand(Compiler *c, int id) {
   if (id < 0 || id >= c->node_cap || !node_is_empty_container(c->nt, id) || an_empty_container_kind(c, id) != 1)
     return -1;
-  return an_unparen(c->nt, id);
+  return nt_paren_single(c->nt, id);
 }
 static void mark_empty_array_operands(Compiler *c) {
   if (!c->empty_arr_recv || !c->arr_want) return;
@@ -19822,7 +19817,7 @@ static int store_after_param_rebind(Compiler *c, Scope *m, const char *pn, int s
                               ? nt_arr(nt, m->body, "body", &bn) : NULL;
   int i = 0;
   for (; i < bn; i++) {
-    int w = an_unparen(nt, bb[i]), v = w >= 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode
+    int w = nt_paren_single(nt, bb[i]), v = w >= 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode
                                        ? an_unparen(nt, nt_ref(nt, w, "value")) : -1;
     if (v >= 0 && sp_streq(nt_str(nt, w, "name"), pn) && comp_scope_of(c, w) == m &&
         (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode))
@@ -19987,7 +19982,7 @@ static int scope_answers_read(Compiler *c, int si, int r) {
   }
   int out[32];
   int n = method_value_leaves_or_nil(c, si, out, 32);
-  for (int i = 0; i < n; i++) if (an_unparen(nt, out[i]) == r) return 1;
+  for (int i = 0; i < n; i++) if (nt_paren_single(nt, out[i]) == r) return 1;
   return 0;
 }
 /* Is read r of a local an argument of `p r` (`pp`, `puts`, `print`) whose
@@ -20001,7 +19996,7 @@ static int scope_prints_read(Compiler *c, int si, int r) {
         an_user_defines_method(c, un) || !(comp_value_dropped(c, u) || scope_answers_read(c, si, u))) continue;
     int ua = nt_ref(nt, u, "arguments"), uc = 0;
     const int *uv = ua >= 0 ? nt_arr(nt, ua, "arguments", &uc) : NULL;
-    for (int k = 0; k < uc; k++) if (an_unparen(nt, uv[k]) == r) return 1;
+    for (int k = 0; k < uc; k++) if (nt_paren_single(nt, uv[k]) == r) return 1;
   }
   return 0;
 }
@@ -20037,7 +20032,7 @@ static int hash_local_key_no_string(Compiler *c, const char *vn, Scope *vs, cons
     int p = comp_recv_parent(c, r);
     /* comp_recv_parent indexes calls: `h[:k] ||= v`'s receiver is looked up */
     for (int u = p < 0 ? comp_kind_first(c, NK_IndexOrWriteNode) : -1; u >= 0 && p < 0; u = comp_kind_next(c, u))
-      if (an_unparen(nt, nt_ref(nt, u, "receiver")) == r) p = u;
+      if (nt_paren_single(nt, nt_ref(nt, u, "receiver")) == r) p = u;
     NodeKind pk = p >= 0 ? nt_kind(nt, p) : NK_NONE;
     const char *pn = pk == NK_CallNode ? nt_str(nt, p, "name") : NULL;
     if (pk == NK_IndexOrWriteNode || (pn && is_store_alias(pn))) {
@@ -22190,11 +22185,11 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
   NodeKind pk = nt_kind(nt, p);
   /* (the write's own value is the String again: it is asked where it goes) */
   if (pk == NK_LocalVariableWriteNode)
-    return an_unparen(nt, nt_ref(nt, p, "value")) == e && strh_value_ignored(c, par, p);
+    return nt_paren_single(nt, nt_ref(nt, p, "value")) == e && strh_value_ignored(c, par, p);
   if (pk == NK_EmbeddedStatementsNode ||
       (pk == NK_StatementsNode && par[p] >= 0 && nt_kind(nt, par[p]) == NK_EmbeddedStatementsNode))
     return 1;
-  if (pk == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == e) {
+  if (pk == NK_CallNode && nt_paren_single(nt, nt_ref(nt, p, "receiver")) == e) {
     const char *nm = nt_str(nt, p, "name");
     int ca = nt_ref(nt, p, "arguments"), argc = 0;
     if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
@@ -22304,7 +22299,7 @@ static int strh_use_ok(Compiler *c, const int *par, int n, int depth) {
   NodeKind pk = nt_kind(nt, p);
   if ((pk == NK_LocalVariableWriteNode || pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode ||
        pk == NK_ClassVariableWriteNode || pk == NK_ConstantWriteNode) &&
-      an_unparen(nt, nt_ref(nt, p, "value")) == n)
+      nt_paren_single(nt, nt_ref(nt, p, "value")) == n)
     return strh_value_ignored(c, par, p) || strh_use_ok(c, par, p, depth + 1);
   if (pk == NK_EmbeddedStatementsNode ||
       (pk == NK_StatementsNode && par[p] >= 0 && nt_kind(nt, par[p]) == NK_EmbeddedStatementsNode))
@@ -22555,7 +22550,7 @@ static TyKind strh_static_type(Compiler *c, const ShareHolder *sh) {
 static int strh_static_write(const NodeTable *nt, int p, int n) {
   NodeKind pk = nt_kind(nt, p);
   return (pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode || pk == NK_ClassVariableWriteNode ||
-          pk == NK_ConstantWriteNode) && an_unparen(nt, nt_ref(nt, p, "value")) == n;
+          pk == NK_ConstantWriteNode) && nt_paren_single(nt, nt_ref(nt, p, "value")) == n;
 }
 /* Is Array literal n written into a slot that holds the form already? Then
    the literal is built as the Array of handles, as the slot is, whatever its
@@ -22740,7 +22735,7 @@ static int share_strh_gate(Compiler *c) {
       /* (`p a` answers its argument) */
       if (nt_ref(nt, n, "receiver") < 0 && cnm && is_kernel_print_name(cnm)) continue;
       /* (a receiver's value is asked where the call it is the receiver of goes) */
-      int rcv = par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode && an_unparen(nt, nt_ref(nt, par[n], "receiver")) == n;
+      int rcv = par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode && nt_paren_single(nt, nt_ref(nt, par[n], "receiver")) == n;
       /* (a call typed as the form that is no row of it, a reflective read
          say, has a use no typed row answers) */
       if (ct == TY_POLY_ARRAY || ct == TY_STRH_ARRAY ||
@@ -27924,7 +27919,7 @@ static int boxed_to_s_recv_ok(Compiler *c, const HandleArgTab *hat, int r) {
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
     int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? an_unparen(nt, nt_ref(nt, w, "value")) : -1;
-    int wr = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? an_unparen(nt, nt_ref(nt, wv, "receiver")) : -1;
+    int wr = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? nt_paren_single(nt, nt_ref(nt, wv, "receiver")) : -1;
     if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, wr, "name"), vn)) return 0;
   }
   if (vs->pdefault && vs->pdefault[pj] >= 0 && !boxed_to_s_arg_ok(c, hat, vs->pdefault[pj], 0)) return 0;
@@ -28780,7 +28775,7 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
     const char *un = nt_str(nt, node, "name");
     int ur = nt_ref(nt, node, "receiver");
     /* `(+t) << x` appends to t: unary plus answers the receiver itself unless frozen */
-    int up = an_unparen(nt, ur);
+    int up = nt_paren_single(nt, ur);
     if (up >= 0 && up != ur && nt_kind(nt, up) == NK_CallNode && nt_str(nt, up, "name") &&
         sp_streq(nt_str(nt, up, "name"), "+@") && nt_ref(nt, up, "receiver") >= 0)
       ur = nt_ref(nt, up, "receiver");
@@ -34243,8 +34238,7 @@ static int index_write_in_range(Compiler *c, int call, int ix) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, call, "receiver");
   if (ix < 0) return 1;
-  int u = an_unparen(nt, ix);
-  if (u >= 0) ix = u;
+  ix = nt_paren_single(nt, ix);
   if (nt_kind(nt, ix) == NK_IntegerNode) return nt_int(nt, ix, "value", 1) <= 0;
   if (recv < 0 || nt_kind(nt, ix) != NK_CallNode) return 0;
   if (reads_own_size(c, recv, ix)) return 1;
@@ -34260,7 +34254,7 @@ static int index_write_in_range(Compiler *c, int call, int ix) {
    answers the range node itself, which no proof accepts. */
 static int range_write_start(Compiler *c, int r) {
   const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, r);
+  int u = nt_paren_single(nt, r);
   return u >= 0 && nt_kind(nt, u) == NK_RangeNode ? nt_ref(nt, u, "left") : r;
 }
 
@@ -34329,7 +34323,7 @@ int array_mutation_stores(Compiler *c, int call, int strict, int *from, int *to,
     /* where the write starts: the index, a slice's start (`a[s, n] = v`) or
        a range's first (`a[s..e] = v`). Past the end, CRuby nil-fills up to it
        whatever the value is, and so does the typed splice. */
-    int rng = an == 2 && (nt_kind(nt, an_unparen(nt, av[0])) == NK_RangeNode ||
+    int rng = an == 2 && (nt_kind(nt, nt_paren_single(nt, av[0])) == NK_RangeNode ||
                           infer_type(c, av[0]) == TY_RANGE);
     if (an == 3 || rng) {
       if (!index_write_in_range(c, call, rng ? range_write_start(c, av[0]) : av[0])) return 1;
@@ -34347,7 +34341,7 @@ int array_mutation_stores(Compiler *c, int call, int strict, int *from, int *to,
        The block's values are the caller's to read. */
     int blk = nt_ref(nt, call, "block") >= 0;
     int fa = 1 - blk, fx = an > fa ? av[fa] : -1;
-    int frng = fx >= 0 && (nt_kind(nt, an_unparen(nt, fx)) == NK_RangeNode || infer_type(c, fx) == TY_RANGE);
+    int frng = fx >= 0 && (nt_kind(nt, nt_paren_single(nt, fx)) == NK_RangeNode || infer_type(c, fx) == TY_RANGE);
     if ((frng || an > fa + 1) && !index_write_in_range(c, call, frng ? range_write_start(c, fx) : fx))
       return 1;
     *to = blk ? 0 : 1;
@@ -36815,7 +36809,7 @@ int nullable_int_value(Compiler *c, int v) {
     { const char *bn = nt_str(nt, v, "name"); int br = nt_ref(nt, v, "receiver");
       if (br >= 0 && bn && nt_ref(nt, v, "arguments") < 0 && (sp_streq(bn, "begin") || sp_streq(bn, "end"))) {
         TyKind brt = infer_type(c, br);
-        int lit = an_unparen(nt, br);
+        int lit = nt_paren_single(nt, br);
         int both = lit >= 0 && nt_kind(nt, lit) == NK_RangeNode && nt_ref(nt, lit, "left") >= 0 && nt_ref(nt, lit, "right") >= 0;
         if ((brt == TY_RANGE || brt == TY_FLOAT_RANGE) && !both) return 1;
       }
@@ -38202,7 +38196,7 @@ static int wnh_ret_widenable(Compiler *c, int mi) {
       if (nt_kind(nt, pc) != NK_CallNode) continue;
       int a = nt_ref(nt, pc, "arguments"), an = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      for (int i = 0; i < an && !found; i++) if (an_unparen(nt, av[i]) == call) { found = 1; owner = pc; }
+      for (int i = 0; i < an && !found; i++) if (nt_paren_single(nt, av[i]) == call) { found = 1; owner = pc; }
     }
     if (found && wnh_call_target(c, owner) >= 0) return 0;
     if (!found) return 0;
@@ -38249,7 +38243,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
        is read only by builtins that re-derive the kind; else it stays typed */
     { Scope *ms = comp_scope_of(c, id);
       int mi = ms ? (int)(ms - c->scopes) : -1;
-      if (ms && ms->def_node >= 0 && ms->ret == ht && an_unparen(nt, scope_body_last(c, mi)) == id) {
+      if (ms && ms->def_node >= 0 && ms->ret == ht && nt_paren_single(nt, scope_body_last(c, mi)) == id) {
         if (!wnh_widen_ret(c, mi, want)) { comp_set_ntype(c, id, ht); continue; }
       }
     }
@@ -42884,7 +42878,7 @@ static int hp_hash_walk(Compiler *c, int x) {
 /* `x` answers an Array of a Hash's own pairs */
 static int hp_pairs(Compiler *c, int x, int depth) {
   const NodeTable *nt = c->nt;
-  x = an_unparen(nt, x);
+  x = nt_paren_single(nt, x);
   if (x < 0 || depth > 8 || nt_kind(nt, x) != NK_CallNode) return 0;
   char buf[64]; int r, an;
   const char *nm = hp_call(nt, x, &r, &an, buf, sizeof buf);
@@ -42912,7 +42906,7 @@ static int hp_pairs(Compiler *c, int x, int depth) {
 /* `x` answers one of a Hash's pairs */
 static int hp_pair(Compiler *c, int x) {
   const NodeTable *nt = c->nt;
-  x = an_unparen(nt, x);
+  x = nt_paren_single(nt, x);
   if (x < 0 || nt_kind(nt, x) != NK_CallNode) return 0;
   char buf[64]; int r, an;
   const char *nm = hp_call(nt, x, &r, &an, buf, sizeof buf);
@@ -42929,7 +42923,7 @@ static int hp_pair(Compiler *c, int x) {
 }
 /* `x` reads the value half of a pair: `pair[1]`, `pair.last`, `pair[-1]` */
 static int hp_value_of(const NodeTable *nt, int x, int *pair) {
-  x = an_unparen(nt, x);
+  x = nt_paren_single(nt, x);
   if (x < 0 || nt_kind(nt, x) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, x, "name");
   int r = nt_ref(nt, x, "receiver");
@@ -43007,7 +43001,7 @@ static int hp_hash_may_hold_string(Compiler *c) {
   if (!hp_may_be_string(hv)) return 0;
   if (hv != TY_POLY) return 1;
   /* a boxed-value Hash a local holds: what its literals and `[]=` put in */
-  int h = an_unparen(nt, hp_hash_node);
+  int h = nt_paren_single(nt, hp_hash_node);
   if (nt_kind(nt, h) != NK_LocalVariableReadNode) return 1;
   const char *hn = nt_str(nt, h, "name");
   Scope *hs = comp_scope_of(c, h);
@@ -43078,16 +43072,16 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
       if (mk > 0 || hp_hash_may_hold_string(c)) hp_refuse(c, call, hp_hash_node);
       continue;
     }
-    int rl = an_unparen(nt, r);
+    int rl = nt_paren_single(nt, r);
     const char *pn = rl >= 0 && nt_kind(nt, rl) == NK_LocalVariableReadNode ? nt_str(nt, rl, "name") : NULL;
     int pairp = 0; const char *pairn = NULL;
     if (!pn && hp_value_of(nt, r, &pair)) {
-      int pl = an_unparen(nt, pair);
+      int pl = nt_paren_single(nt, pair);
       if (pl >= 0 && nt_kind(nt, pl) == NK_LocalVariableReadNode) { pairn = nt_str(nt, pl, "name"); pairp = 1; }
     }
     const char *ln = pn ? pn : pairn;
     if (!ln) continue;
-    Scope *ls = comp_scope_of(c, rl >= 0 && pn ? rl : an_unparen(nt, pair));
+    Scope *ls = comp_scope_of(c, rl >= 0 && pn ? rl : nt_paren_single(nt, pair));
     /* a block parameter that binds a pair or its value */
     int hit = 0;
     int may = -1;   /* a binding block's answer; -1 asks the Hash hp_pair found */
@@ -43135,7 +43129,7 @@ static int local_may_be_frozen(Compiler *c, const char *vn, Scope *vs) {
       return 1;
   }
   for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
-    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    int r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
     if (nt_kind(nt, u) == NK_CallNode && nt_str(nt, u, "name") && sp_streq(nt_str(nt, u, "name"), "freeze") &&
         r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && comp_scope_of(c, r) == vs &&
         sp_streq(nt_str(nt, r, "name"), vn))
@@ -43151,7 +43145,7 @@ static void refuse_literal_element_aliases(Compiler *c) {
     if (!wn || v < 0 || nt_kind(nt, v) != NK_CallNode || !container_elem_read_p(nt, v) ||
         nt_ref(nt, v, "block") >= 0 || c->strbuf_box[v] || !strbuf_any_str_mut(c, wn, comp_scope_of(c, w)))
       continue;
-    int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+    int r = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
     int en = 0;
     const int *el = r >= 0 && (nt_kind(nt, r) == NK_ArrayNode || nt_kind(nt, r) == NK_HashNode)
                     ? nt_arr(nt, r, "elements", &en) : NULL;
@@ -43196,7 +43190,7 @@ static int sa_elem_read_of_fresh_local(Compiler *c, int v, int *recv) {
   v = an_unparen(nt, v);
   if (v < 0 || nt_kind(nt, v) != NK_CallNode || !container_elem_read_p(nt, v) || nt_ref(nt, v, "block") >= 0)
     return 0;
-  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  int r = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
   if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || infer_type(c, r) != TY_STR_ARRAY) return 0;
   const char *an = nt_str(nt, r, "name");
   Scope *as = comp_scope_of(c, r);
@@ -43551,9 +43545,9 @@ static int sa_unseen_element(Compiler *c, int u, int k) {
    asked for its values as handles, made them so. */
 static int sa_chain_demanded(Compiler *c, int u) {
   const NodeTable *nt = c->nt;
-  for (int r = an_unparen(nt, nt_ref(nt, u, "receiver")); r >= 0 && nt_kind(nt, r) == NK_CallNode &&
+  for (int r = nt_paren_single(nt, nt_ref(nt, u, "receiver")); r >= 0 && nt_kind(nt, r) == NK_CallNode &&
        nt_str(nt, r, "name") && is_push_unshift(nt_str(nt, r, "name"));
-       r = an_unparen(nt, nt_ref(nt, r, "receiver"))) {
+       r = nt_paren_single(nt, nt_ref(nt, r, "receiver"))) {
     int a = nt_ref(nt, r, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int k = 0; k < an; k++) {
@@ -43580,7 +43574,7 @@ typedef struct { unsigned char *observed; } SaArrayReads;
 static int sa_array_observed(Compiler *c, SaArrayReads *ix, int u) {
   const NodeTable *nt = c->nt;
   int base = u;
-  for (int r; sa_adder_call(nt, r = an_unparen(nt, nt_ref(nt, base, "receiver"))); ) base = r;
+  for (int r; sa_adder_call(nt, r = nt_paren_single(nt, nt_ref(nt, base, "receiver"))); ) base = r;
   SaName arr;
   if (!sa_name(c, nt_ref(nt, base, "receiver"), &arr)) return 1;
   int e0 = sa_site_first(c, &arr, VS_READ), first = comp_vsite_node(c, e0);
@@ -43804,10 +43798,10 @@ static void refuse_set_identity_members(Compiler *c) {
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     int blk = nt_ref(nt, id, "block");
     if (recv < 0) continue;
-    NodeKind rk = nt_kind(nt, an_unparen(nt, recv));
+    NodeKind rk = nt_kind(nt, nt_paren_single(nt, recv));
     int on_class = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
-                   nt_str(nt, an_unparen(nt, recv), "name") &&
-                   sp_streq(nt_str(nt, an_unparen(nt, recv), "name"), "Set");
+                   nt_str(nt, nt_paren_single(nt, recv), "name") &&
+                   sp_streq(nt_str(nt, nt_paren_single(nt, recv), "name"), "Set");
     int ok = 1;
     if (on_class) {
       if (sp_streq(nm, "[]")) for (int a = 0; a < argc && ok; a++) ok = sid_value_ok(c, argv[a], 0);
@@ -43972,7 +43966,7 @@ static void refuse_string_alias_copies(Compiler *c) {
                     : nt_kind(nt, base) == NK_InstanceVariableReadNode ? "InstanceVariable" : NULL;
     if (!via_self || !pfx || !sa_name(c, base, &from) || !sa_handle(c, &from, 1)) continue;
     int hit = 0;
-    for (int cur = u; cur >= 0 && cur != base && !hit; cur = an_unparen(nt, nt_ref(nt, cur, "receiver")))
+    for (int cur = u; cur >= 0 && cur != base && !hit; cur = nt_paren_single(nt, nt_ref(nt, cur, "receiver")))
       hit = rr_writes_var(nt, nt_ref(nt, cur, "arguments"), pfx, from.name) ||
             rr_writes_var(nt, nt_ref(nt, cur, "block"), pfx, from.name);
     static const char tos_msg[] =
@@ -44102,7 +44096,7 @@ static int rd_builtin_string_method(Compiler *c, const char *nm) {
 static int rd_query_on(Compiler *c, int call, const char *wn, int as_condition) {
   const NodeTable *nt = c->nt;
   if (call < 0 || nt_kind(nt, call) != NK_CallNode) return 0;
-  int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
+  int r = nt_paren_single(nt, nt_ref(nt, call, "receiver"));
   const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
   const char *nm = nt_str(nt, call, "name");
   if (!rn || !sp_streq(rn, wn) || !nm || nt_ref(nt, call, "block") >= 0 || sp_str_mutator(nm, SP_MUT_LOCAL) ||
@@ -44123,9 +44117,9 @@ static int rd_only_queried(Compiler *c, int node, const char *wn) {
   if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) && nm && sp_streq(nm, wn)) return 0;
   /* the query itself (its arguments are walked below), or a branch on one */
   int skip = -1;
-  if (k == NK_CallNode && rd_query_on(c, node, wn, 0)) skip = an_unparen(nt, nt_ref(nt, node, "receiver"));
+  if (k == NK_CallNode && rd_query_on(c, node, wn, 0)) skip = nt_paren_single(nt, nt_ref(nt, node, "receiver"));
   else if (k == NK_IfNode || k == NK_UnlessNode) {
-    int pred = an_unparen(nt, nt_ref(nt, node, "predicate"));
+    int pred = nt_paren_single(nt, nt_ref(nt, node, "predicate"));
     if (rd_query_on(c, pred, wn, 1)) {
       int args = nt_ref(nt, pred, "arguments");
       if (!rd_only_queried(c, args, wn)) return 0;
@@ -44165,7 +44159,7 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
       if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_plain_argc(c, v) != 0)
         return 0;
       const char *vn = nt_str(nt, v, "name");
-      int vr = an_unparen(nt, nt_ref(nt, v, "receiver"));
+      int vr = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
       const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_LocalVariableReadNode ? nt_str(nt, vr, "name") : NULL;
       return vn && sp_streq(vn, "dup") && vrn && sp_streq(vrn, wn) && rd_builtin_string_method(c, "dup");
     }
@@ -44493,7 +44487,7 @@ static void refuse_string_read_copies(Compiler *c) {
           /* a block that changes no String in place but by growing or
              clearing one leaves a subject the facts cannot vouch for to a
              run-time length check, as CRuby's own (rt_site) */
-          int grow = 0, clear = 0, rs = an_unparen(nt, r);
+          int grow = 0, clear = 0, rs = nt_paren_single(nt, r);
           const char *subj = nt_kind(nt, rs) == NK_LocalVariableReadNode ? nt_str(nt, rs, "name") : NULL;
           /* (a subject the block rebinds is another String once it does,
              and so is one the scan's own pattern rebinds, which runs
