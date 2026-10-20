@@ -836,7 +836,9 @@ void share_check_report(Compiler *c) {
                SHN_FRESH): a copy is fine because the String is new
                (need-new), its class has one holder (need-one-name), the
                rule does not share its class (need-unshared), or it is
-               ARGV's or ENV's (need-argv-env, both frozen in CRuby);
+               ARGV's or ENV's (need-argv-env, both frozen in CRuby), or
+               a conditional whose every arm is one of these or nil
+               (need-arms: new or frozen, which check=new accepts);
      elems     share_node_fresh_elems: a new Array of new Strings;
      ret-new   scope_ret_fresh, no ret_param: the method answers a new
                String or nil;
@@ -883,6 +885,7 @@ void share_claims_report(Compiler *c) {
     if (fresh || node) sk_claim(f, c, "need-new", "new", n, -1, NULL);
     else if (share_node_one_name(c, n)) sk_claim(f, c, "need-one-name", "one-name", n, -1, NULL);
     else if (!share_node_shares(c, n)) sk_claim(f, c, "need-unshared", "unshared", n, -1, NULL);
+    else if (strbuf_flow_unseen_arms(c, n)) sk_claim(f, c, "need-arms", "new", n, -1, NULL);
     else sk_claim(f, c, "need-argv-env", "frozen", n, -1, NULL);
   }
   for (int n = 0; n < nt->count; n++)
