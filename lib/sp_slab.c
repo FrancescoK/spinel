@@ -428,19 +428,22 @@ static inline void sp_slab_locate(const void *p, sp_slab_loc *l) {
    it; MADV_FREE_REUSABLE takes the pages out of the footprint at once, and
    the chunk is then marked reusable to the kernel again (MADV_FREE_REUSE)
    when it is carved, before any slot of it is written, which is what keeps
-   the footprint's account of it right. The pages read as before or as
+   the footprint's account of it right. A give-back the kernel refuses
+   answers 0: the pages are still resident, so the chunk stays touched (the
+   next release tries again) and is not reusable. A refused MADV_FREE_REUSE
+   leaves nothing to undo: the pages are the process's either way. The pages read as before or as
    zero either way, which the carve does not depend on: each block is
    zeroed as it is handed out. */
 #if defined(__APPLE__) && defined(MADV_FREE_REUSABLE) && defined(MADV_FREE_REUSE)
 #define SP_SLAB_REUSABLE 1
-static void sp_slab_give_back(char *lo, size_t len) { madvise(lo, len, MADV_FREE_REUSABLE); }
+static int sp_slab_give_back(char *lo, size_t len) { return madvise(lo, len, MADV_FREE_REUSABLE) == 0; }
 static void sp_slab_take_back(sp_slab_chunk *ch) {
   madvise(sp_slab_chunk_base(ch), SP_SLAB_CHUNK, MADV_FREE_REUSE);
   ch->reusable = 0;
 }
 #else
 #define SP_SLAB_REUSABLE 0
-static void sp_slab_give_back(char *lo, size_t len) { madvise(lo, len, MADV_DONTNEED); }
+static int sp_slab_give_back(char *lo, size_t len) { return madvise(lo, len, MADV_DONTNEED) == 0; }
 static void sp_slab_take_back(sp_slab_chunk *ch) { ch->reusable = 0; }
 #endif
 
@@ -1476,9 +1479,10 @@ void sp_slab_release_worker(int wid) {
                run_end->next_avail->touched == touched) {
           run_end = run_end->next_avail; hi += SP_SLAB_CHUNK;
         }
+        int released = 0;
         if (touched) {
           double mt0 = sp_gc_ph_on ? sp_slab_now() : 0;
-          sp_slab_give_back(lo, (size_t)(hi - lo));
+          released = sp_slab_give_back(lo, (size_t)(hi - lo));
           if (sp_gc_ph_on) { sp_slab_rel_madv++; sp_slab_rel_madv_t += sp_slab_now() - mt0; }
         }
         sp_slab_chunk *nx = run_end->next_avail;
@@ -1495,8 +1499,8 @@ void sp_slab_release_worker(int wid) {
           if (c2->own_next) c2->own_next->own_prev = c2->own_prev;
           c2->own_next = c2->own_prev = NULL;
           memset(sp_slab_bm_of(c2), 0, sizeof(sp_slab_bm));
-          c2->in_use = 0; c2->on_avail = 1; c2->reusable = (uint8_t)(touched && SP_SLAB_REUSABLE);
-          c2->touched = 0;
+          c2->in_use = 0; c2->on_avail = 1; c2->reusable = (uint8_t)(released && SP_SLAB_REUSABLE);
+          c2->touched = (uint8_t)(touched && !released);
           c2->nslots = 0; c2->hint = 0;
           if (c2 == run_end) break;
         }
