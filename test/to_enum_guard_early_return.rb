@@ -31,3 +31,21 @@ end
 
 b = B.new([1, 2])
 p b.walk { }.equal?(b), b.walk.to_a, B.new(nil).walk.class
+
+# an early return in a loop or a block before the guard is one too
+class D
+  def initialize(a) = @a = a
+
+  def walk
+    for i in [1]
+      return 0 if @a.nil?
+    end
+    [1].each { return 1 if @a.empty? }
+    return to_enum(:walk) unless block_given?
+    @a.each { |x| yield x }
+    self
+  end
+end
+
+d = D.new([1, 2])
+p d.walk { }.equal?(d), d.walk.to_a, D.new(nil).walk, D.new([]).walk

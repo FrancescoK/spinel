@@ -1861,13 +1861,27 @@ int return_in_lambda(Compiler *c, int rid) {
   }
   return 0;
 }
+/* Is node `a` written before node `b`? By the place the parser stamped on
+   them (a line and a column of one file), which the nodes a desugar clones
+   keep: their ids come after those of every statement of the method. Where a
+   node has none, by id. */
+static int written_before(const NodeTable *nt, int a, int b) {
+  long long fa = nt_int(nt, a, "node_file", -1), fb = nt_int(nt, b, "node_file", -1);
+  long long la = nt_int(nt, a, "node_line", 0), lb = nt_int(nt, b, "node_line", 0);
+  if (la > 0 && lb > 0 && fa == fb) {
+    long long ca = nt_int(nt, a, "node_col", 0), cb = nt_int(nt, b, "node_col", 0);
+    if (la != lb) return la < lb;
+    if (ca != cb) return ca < cb;
+  }
+  return a < b;
+}
 /* Is there a `return` of scope `si` other than `guard_ret`, written before it
    (an early `return 0 if @a.nil?` before `return to_enum(:m) unless
-   block_given?`)? The guard then does not stop every blockless call. A
-   statement's nodes come before those of the statements after it. */
+   block_given?`)? The guard then does not stop every blockless call. */
 int return_before(Compiler *c, int si, int guard_ret) {
   NT_FOREACH_KIND(c->nt, NK_ReturnNode, rid)
-    if (rid < guard_ret && c->nscope[rid] == si && !return_in_lambda(c, rid)) return 1;
+    if (rid != guard_ret && c->nscope[rid] == si && written_before(c->nt, rid, guard_ret) &&
+        !return_in_lambda(c, rid)) return 1;
   return 0;
 }
 /* Is `node` an instance_eval / instance_exec that hands the method's own
