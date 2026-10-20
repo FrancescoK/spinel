@@ -6683,6 +6683,11 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
       else all = 0;
     }
     if (all) return SPK_POLY_ARMS;
+    /* ...or one whose other arms answer a new String beside it: the
+       dispatch boxes each arm's own answer, the published handle or a new
+       handle around the fresh String (strbuf_poly_user_boxes), as the
+       String plan has it */
+    if (strbuf_poly_user_boxes((Compiler *)c, u)) return SPK_POLY_ARMS;
   }
   /* An attr reader of a boxed field on a receiver of one class: a field
      whose class the rule shares stores its Strings as the handle
