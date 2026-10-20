@@ -3500,8 +3500,8 @@ void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton) {
     const char *base = nt_str(nt, argv[a], "value");
     if (!base) continue;
     if (singleton) {
-      if (reader) { comp_add_sg_reader(cls, base); comp_add_sg_decl(cls, base, 0); }
-      if (writer) { comp_add_sg_writer(cls, base); comp_add_sg_decl(cls, base, 1); }
+      if (reader) { comp_add_sg_reader(cls, base); comp_add_sg_decl(cls, base, 0, s); }
+      if (writer) { comp_add_sg_writer(cls, base); comp_add_sg_decl(cls, base, 1, s); }
     }
 else {
       char ivname[256];

@@ -3404,7 +3404,9 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
    superclasses': the first class that declares an accessor of the name or
    defines a class method of it answers. A `def self.label` in a superclass
    is behind a subclass's own `class << self; attr_accessor :label`, and
-   one defined below the accessor's class is ahead of it. */
+   one defined below the accessor's class is ahead of it. Within one class
+   the later of the two answers, as the later definition replaces the
+   earlier. */
 int cls_sg_accessor_first(Compiler *c, int k, const char *name, int argc) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base);
@@ -3414,8 +3416,15 @@ int cls_sg_accessor_first(Compiler *c, int k, const char *name, int argc) {
   if (setter ? !comp_sg_writer_reached(c, k, name, base, sizeof base) : !comp_is_sg_reader(&c->classes[k], rn))
     return 0;
   for (int p = k, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
-    if (comp_cmethod_in_class(c, p, name) >= 0) return 0;
-    if (comp_sg_accessor_own(c, p, name) || comp_sg_accessor_own(c, p, rn)) return 1;
+    int pmi = comp_cmethod_in_class(c, p, name);
+    int own = comp_sg_accessor_own(c, p, name) || comp_sg_accessor_own(c, p, rn);
+    if (pmi >= 0 && own) {
+      int dn = comp_sg_accessor_decl_node(c, p, name), dr = comp_sg_accessor_decl_node(c, p, rn);
+      if (dr > dn) dn = dr;
+      return dn > c->scopes[pmi].def_node;
+    }
+    if (pmi >= 0) return 0;
+    if (own) return 1;
     if (p == c->classes[p].parent) break;
   }
   return comp_cmethod_in_chain(c, k, name, NULL) < 0;
@@ -3436,6 +3445,8 @@ void emit_boxed_cls_sg_first_arms(Compiler *c, int id, const char *name, int arg
       buf_puts(b, "(void)");
       emit_sg_accessor(c, id, k, c->classes[k].name, name, argc, argv, b);
       buf_puts(b, "; ");
+      /* the slot the writer reached, through an alias (`other=` for `label=`) */
+      comp_sg_writer_reached(c, k, name, base, sizeof base);
     }
     sg_slot_boxed(c, k, setter ? base : (rn ? rn : name), b);
     buf_puts(b, "; }) : ");
