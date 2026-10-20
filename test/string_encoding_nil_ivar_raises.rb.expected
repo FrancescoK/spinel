@@ -1,0 +1,19 @@
+Seongsu encoding: #<Encoding:UTF-8>
+Seongsu ascii_only?: true
+자양동 encoding: #<Encoding:UTF-8>
+자양동 ascii_only?: false
+GMP encoding: #<Encoding:BINARY (ASCII-8BIT)>
+GMP encoding name: "ASCII-8BIT"
+GMP ascii_only?: true
+Achasan encoding: NoMethodError undefined method 'encoding' for nil
+Achasan encoding name: NoMethodError undefined method 'encoding' for nil
+Achasan ascii_only?: NoMethodError undefined method 'ascii_only?' for nil
+Guui station encoding: #<Encoding:UTF-8>
+Kondae encoding: NoMethodError undefined method 'encoding' for nil
+Kondae ascii_only?: NoMethodError undefined method 'ascii_only?' for nil
+Han River encoding: #<Encoding:UTF-8>
+Han River ascii_only?: true
+ICN encoding: NoMethodError undefined method 'encoding' for nil
+ICN ascii_only?: NoMethodError undefined method 'ascii_only?' for nil
+Children's Grand Park encoding: NoMethodError undefined method 'encoding' for nil
+Children's Grand Park ascii_only?: NoMethodError undefined method 'ascii_only?' for nil

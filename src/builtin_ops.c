@@ -1767,7 +1767,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "clear",           0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2332) */
   { TY_STRING, "[]=",             2,   3, BF_ANY,      TY_STRING,     BOPE_NONE },  /* the assigned string (#2370) */
   { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },  /* clone(freeze: ...) */
-  { TY_STRING, "encoding",        0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "sp_box_encoding(sp_str_is_binary($r) ? sp_encoding_binary() : sp_encoding_utf8())", 0 },  /* an Encoding value */
+  /* encoding and ascii_only? read the binary tag or the bytes through a
+     function that takes NULL for "": a nil receiver raises through
+     sp_nil_recv_named, as bytesize and valid_encoding? raise in their own
+     functions, for the slot nothing tests ahead of the call (an ivar only
+     other writes fill, ivar_nil_recv_guard) */
+  { TY_STRING, "encoding",        0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "sp_box_encoding(sp_str_is_binary(sp_nil_recv_named($r, \"encoding\")) ? sp_encoding_binary() : sp_encoding_utf8())", 0 },  /* an Encoding value */
   { TY_STRING, "upcase",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "downcase",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "capitalize",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
@@ -1882,7 +1887,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "prepend",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { TY_STRING, "insert",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { TY_STRING, "replace",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
-  { TY_STRING, "ascii_only?",     0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_ascii_only($r)", 0 },
+  { TY_STRING, "ascii_only?",     0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_ascii_only(sp_nil_recv_named($r, \"ascii_only?\"))", 0 },  /* as encoding's row */
   { TY_STRING, "ascii_only?",     0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
   { TY_STRING, "valid_encoding?", 0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_valid_encoding($r)", 0 },
   { TY_STRING, "valid_encoding?", 0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
