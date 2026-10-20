@@ -77,7 +77,10 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     const char *arg_nm = nt_str(c->nt, arg, "name");
     if (arg_nm && comp_class_index(c, arg_nm) >= 0 && !comp_const(c, arg_nm)) {
       emit_indent(b, indent);
-      buf_printf(b, "puts(\"%s\");\n", arg_nm);
+      /* (a class method to_s of the class's own prints it) */
+      if (cls_user_display_mi(c, comp_class_index(c, arg_nm), "to_s") >= 0)
+        buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", comp_class_index(c, arg_nm));
+      else buf_printf(b, "puts(\"%s\");\n", arg_nm);
       return;
     }
   }
@@ -265,8 +268,12 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ConstantReadNode") &&
            nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
-    /* `puts SomeClass` -- a bare class constant renders its name */
-    buf_printf(b, "puts(\"%s\");\n", nt_str(c->nt, arg, "name"));
+    /* `puts SomeClass` -- a bare class constant renders its name, or what
+       its own class method to_s answers */
+    int pci = comp_class_index(c, nt_str(c->nt, arg, "name"));
+    if (cls_user_display_mi(c, pci, "to_s") >= 0)
+      buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", pci);
+    else buf_printf(b, "puts(\"%s\");\n", nt_str(c->nt, arg, "name"));
   }
   else if (t == TY_UNKNOWN &&
            nt_type(c->nt, arg) &&

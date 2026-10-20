@@ -42,6 +42,8 @@ void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
 
 const char *(*sp_class_name_fn)(sp_Class);
 const char *(*sp_class_display_fn)(sp_Class);
+const char *(*sp_class_user_to_s_fn)(sp_Class);
+const char *(*sp_class_user_inspect_fn)(sp_Class);
 /* the hooks the generated unit installs for this unit (SP_INSTALL_HOOK) */
 sp_user_binop_fn sp_user_binop_hook_lib;
 sp_obj_eq_fn sp_obj_eq_hook_lib;
@@ -90,7 +92,7 @@ void sp_poly_puts(sp_RbVal v)
     case SP_TAG_NIL: putchar('\n'); break;
     case SP_TAG_SYM: { const char *_ss = sp_sym_to_s((sp_sym)v.v.i); fputs(_ss, stdout); putchar('\n'); break; }
     case SP_TAG_ENCODING: { const char *_es = v.v.s ? v.v.s : sp_str_empty; fputs(_es, stdout); putchar('\n'); break; }
-    case SP_TAG_CLASS: { fputs(sp_class_val_display(v), stdout); putchar('\n'); break; }
+    case SP_TAG_CLASS: { fputs(sp_class_val_user(v, sp_class_user_to_s_fn), stdout); putchar('\n'); break; }
     case SP_TAG_BIGINT: { const char *_bs = sp_bigint_to_s((sp_Bigint *)v.v.p); if (_bs) fputs(_bs, stdout); putchar('\n'); break; }
     case SP_TAG_OBJ: {
       /* MRI's `puts arr` iterates an Array, printing one element per
@@ -177,7 +179,7 @@ const char *sp_poly_to_s(sp_RbVal v)
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL: return sp_str_frozen_empty;
     case SP_TAG_SYM: return sp_sym_to_s_chilled((sp_sym)v.v.i);
-    case SP_TAG_CLASS: return sp_class_val_display(v);
+    case SP_TAG_CLASS: return sp_class_val_user(v, sp_class_user_to_s_fn);
     case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_OBJ:
@@ -459,7 +461,7 @@ const char *sp_poly_inspect(sp_RbVal v)
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
     case SP_TAG_ENCODING: return sp_encoding_inspect_name(v.v.s ? v.v.s : "");
-    case SP_TAG_CLASS: return sp_class_val_display(v);
+    case SP_TAG_CLASS: return sp_class_val_user(v, sp_class_user_inspect_fn);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_OBJ:
  /* Built-in container / value-type tags get their typed inspect

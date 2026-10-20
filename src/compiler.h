@@ -1678,6 +1678,9 @@ static inline int singleton_visible_ci(Compiler *c, int ci) {
 int        comp_class_anonymous(Compiler *c, int ci);
 int        comp_has_sclass_values(Compiler *c);
 const char *comp_class_display_fn(Compiler *c);
+const char *comp_class_base_display_fn(Compiler *c);
+int cls_user_display_mi(Compiler *c, int k, const char *nm);
+int prog_has_cls_user_display(Compiler *c, const char *nm);
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        class_recv_static_ci(Compiler *c, int node); /* constant or local naming one class */
 int        class_recv_user_cmethod(Compiler *c, int node, const char *name); /* its user class method of the name */
