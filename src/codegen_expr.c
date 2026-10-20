@@ -3585,15 +3585,15 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     }
     if (par_nmc && sp_streq(par_nmc, "File") && nm) {
-      /* Emit marker-framed literals (\xff prefix at [-1]) like every other
-         spinel string, so sp_str_byte_len/sp_str_concat can read the length
-         marker without an out-of-bounds [-1] over-read on a bare literal. */
-      if (sp_streq(nm, "SEPARATOR"))      { buf_puts(b, "(&(\"\\xff\" \"/\")[1])"); return 1; }
-      if (sp_streq(nm, "PATH_SEPARATOR")) { buf_puts(b, "(&(\"\\xff\" \":\")[1])"); return 1; }
+      /* Frozen Strings, as CRuby's are: framed as a frozen literal is
+         (emit_str_literal_src), whose header frozen? reads. A bare literal
+         answered false. */
+      if (sp_streq(nm, "SEPARATOR"))      { emit_str_literal_src(b, "/", 1, 1); return 1; }
+      if (sp_streq(nm, "PATH_SEPARATOR")) { emit_str_literal_src(b, ":", 1, 1); return 1; }
       if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "((const char *)0)"); return 1; }  /* nil off Windows (#2781) */
       /* the null device, the name Process.spawn/File.open take to discard a
          stream. Windows is not a target, so it is /dev/null (#4284). */
-      if (sp_streq(nm, "NULL"))           { buf_puts(b, "(&(\"\\xff\" \"/dev/null\")[1])"); return 1; }
+      if (sp_streq(nm, "NULL"))           { emit_str_literal_src(b, "/dev/null", 9, 1); return 1; }
       /* the open(2) flag constants, via the C macros (#2788) */
       if (sp_streq(nm, "RDONLY"))   { buf_puts(b, "((sp_int)O_RDONLY)"); return 1; }
       if (sp_streq(nm, "WRONLY"))   { buf_puts(b, "((sp_int)O_WRONLY)"); return 1; }
