@@ -424,6 +424,8 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   free(na);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", nm);
+  /* the element read learns whose writer it feeds (elem_miss_call) */
+  if (nt_int(nt, val, "masgn_elem", LLONG_MIN) != LLONG_MIN) nt_node_set_int(nt, val, "masgn_recv", recv);
   nt_set_attr_write(nt, call, 1);   /* the store the target stands for */
   nt_node_set_ref(nt, call, "arguments", nargs);
   nt_node_set_ref(nt, call, "block", -1);

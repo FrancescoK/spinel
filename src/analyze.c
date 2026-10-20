@@ -34762,6 +34762,19 @@ static int const_array_index_in_range(Compiler *c, int recv, int idx) {
   return 0;
 }
 
+/* Is position `pos` of a multiple assignment's value, read from the constant
+   Array `value` of a proven length, within it? A negative position counts
+   from the end, past `lefts` targets before it and `rights` after the splat
+   (elem_miss_call's rule): the element is then no miss. */
+int masgn_const_elem_in_range(Compiler *c, int value, long long pos, long long lefts, long long rights) {
+  const NodeTable *nt = c->nt;
+  const char *nm = value >= 0 ? nt_str(nt, value, "name") : NULL;
+  if (!nm || !carr_is_read(nt, value, nm)) return 0;
+  const CArr *ca = const_array(c, nm);
+  if (!ca) return 0;
+  return pos < 0 ? lefts + pos + rights < ca->len : pos < ca->len;
+}
+
 /* Can position `pos` of a multiple assignment's value be nil, where the
    value is a constant Array of a known length, or a conditional or a
    sequence whose value positions are such (1 when any is anything else)?
@@ -34815,7 +34828,15 @@ static int elem_miss_call(Compiler *c, int v) {
      except past the end of a constant Array of a known length, which
      leaves nil in the slot the target stores through */
   if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) {
-    if (argc != 1 || !carr_is_read(nt, recv, nt_str(nt, recv, "name"))) return 0;
+    if (argc != 1) return 0;
+    /* a receiver typed at run time dispatches to the writer of whichever
+       class it holds, and the element may be missing from any Array: the nil
+       is evidence for each such writer's parameter, which would otherwise
+       be a plain Integer that takes 0 */
+    if (!carr_is_read(nt, recv, nt_str(nt, recv, "name"))) {
+      long long tr = nt_int(nt, v, "masgn_recv", -1);
+      return tr >= 0 && infer_type(c, (int)tr) == TY_POLY;
+    }
     /* a target after the splat, counted from the end: the j-th of the rights
        takes the element at max(len - rights + j, lefts + j), nil when that is
        past the end, which is when lefts + j >= len */

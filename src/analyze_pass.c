@@ -2667,6 +2667,42 @@ static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
   return 0;
 }
 
+/* An attribute target `o.x` nested in a `(a, b)` takes the element, boxed:
+   the field an attr_accessor's writer keeps in each class the receiver can
+   be (the receiver's own, or every class with the writer for a boxed one) is
+   unified with it, and the parameter of a `def x=(v)` the program writes is
+   taken the same way. A field or parameter typed for another write alone
+   would take the boxed element through an unchecked cast; the nested target
+   has no call evidence to say otherwise. */
+static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, tgt, "name");
+  int recv = nt_ref(nt, tgt, "receiver");
+  char base[256], ivn[258];
+  if (!nm || recv < 0 || !setter_base_name(nm, base, sizeof base)) return 0;
+  snprintf(ivn, sizeof ivn, "@%s", base);
+  TyKind rt = infer_type(c, recv);
+  int changed = 0, only = ty_is_object(rt) ? ty_object_class(rt) : -1;
+  if (rt != TY_POLY && only < 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (only >= 0 && k != only) continue;
+    int wdc = -1, mdc = -1;
+    int wmi = comp_method_in_chain(c, k, nm, &mdc);
+    if (wmi >= 0) {
+      Scope *ws = &c->scopes[wmi];
+      LocalVar *wp = ws->nparams >= 1 ? scope_local(ws, ws->pnames[0]) : NULL;
+      if (wp) changed |= slot_take(c, wp, elem, -1);
+      continue;
+    }
+    if (!comp_writer_in_chain(c, k, base, &wdc)) continue;
+    int wcls = wdc >= 0 ? wdc : k, iv = comp_ivar_index(&c->classes[wcls], ivn);
+    if (iv < 0 || class_ivar_pinned(&c->classes[wcls], ivn)) continue;
+    TyKind mg = ty_unify(c->classes[wcls].ivar_types[iv], elem);
+    if (mg != c->classes[wcls].ivar_types[iv]) { ivar_set_type(&c->classes[wcls], iv, mg); changed = 1; }
+  }
+  return changed;
+}
+
 static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKind elem) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2748,12 +2784,14 @@ static int masgn_nested_poly(Compiler *c, Scope *ms, int tgt) {
     const int *ts = nt_arr(nt, tgt, sides[s], &n);
     for (int i = 0; i < n; i++) {
       if (nt_kind(nt, ts[i]) == NK_MultiTargetNode) changed |= masgn_nested_poly(c, ms, ts[i]);
+      else if (nt_kind(nt, ts[i]) == NK_CallTargetNode) changed |= masgn_attr_take(c, ts[i], TY_POLY);
       else changed |= masgn_unify_elem(c, ms, &ts[i], 1, TY_POLY);
     }
   }
   int rest = nt_ref(nt, tgt, "rest");
   int inner = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
-  if (inner >= 0) changed |= masgn_unify_elem(c, ms, &inner, 1, TY_POLY_ARRAY);
+  if (inner >= 0 && nt_kind(nt, inner) == NK_CallTargetNode) changed |= masgn_attr_take(c, inner, TY_POLY_ARRAY);
+  else if (inner >= 0) changed |= masgn_unify_elem(c, ms, &inner, 1, TY_POLY_ARRAY);
   return changed;
 }
 
