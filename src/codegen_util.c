@@ -3670,6 +3670,26 @@ static int strbuf_reader_field_boxed(Compiler *c, int n) {
   int iv = comp_ivar_index(ci, ivn);
   return iv >= 0 && ci->ivar_types[iv] == TY_POLY;
 }
+/* --share-strings: is call n `instance_variable_get(:@x)` (a literal name)
+   on a boxed receiver, which an Object or Kernel method's `@x` reads as
+   (its self is any class)? Its read is a box holding the handle where the
+   slot keeps one. */
+int strbuf_poly_ivar_get(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver"), a = nt_ref(nt, n, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  return nm && sp_streq(nm, "instance_variable_get") && recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+         ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode && nt_ref(nt, n, "block") < 0;
+}
+/* ...and is it the receiver of a String mutator, which changes the String
+   the slot keeps in place? */
+int strbuf_poly_ivar_mutated(Compiler *c, int n) {
+  int pc = comp_recv_parent(c, n);
+  const char *pn = pc >= 0 ? nt_str(c->nt, pc, "name") : NULL;
+  return pn && (an_str_mutator_name(pn) || is_encoding_mutator(pn)) && !is_freeze_name(pn);
+}
 int strbuf_call_reads_handle(Compiler *c, int recv) {
   return recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
          ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
@@ -3810,6 +3830,19 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
   /* (not a conversion over a String the rule shares, nor a boxed to_s: its
      String arm reads the bytes, and its route answers the receiver's
      handle, or the box's, emit_strbuf_route) */
+  /* (an Object method's `@x` through its boxed self: the handle the box
+     holds, read as the box) */
+  if (strbuf_poly_ivar_get(c, recv) && strbuf_poly_ivar_mutated(c, recv) && !arg_ran_first(recv, 0)) {
+    if (!b) return 1;
+    Buf rb3; memset(&rb3, 0, sizeof rb3);
+    int sv3 = g_ivg_box_node; g_ivg_box_node = recv;
+    emit_expr(c, recv, &rb3);
+    g_ivg_box_node = sv3;
+    int fit = rb3.p != NULL;
+    if (fit) buf_printf(b, "sp_poly_as_strbuf(%s)", rb3.p);
+    free(rb3.p);
+    return fit;
+  }
   if (strbuf_call_reads_handle(c, recv) &&
       !(repr_share_rule(c) && (repr_string_conversion_operand(c, recv) >= 0 || repr_boxed_to_s_operand(c, recv) >= 0))) {
     if (!b) return 1;

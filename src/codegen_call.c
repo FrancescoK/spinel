@@ -23544,6 +23544,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
               (operand_binds_self_handle(c, operand[i]) || operand_binds_boxed_to_s(c, id, operand[i]) ||
                (operand[i] == recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
                 !arg_ran_first(operand[i], 0) && strbuf_poly_user_base(c, operand[i]) >= 0) ||
+               /* (...and an Object method's `@x` through its boxed self that
+                  the mutator changes: its box's handle, strbuf_poly_ivar_get) */
+               (operand[i] == recv && !arg_ran_first(operand[i], 0) &&
+                strbuf_poly_ivar_get(c, operand[i]) && strbuf_poly_ivar_mutated(c, operand[i])) ||
                (operand[i] != recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
                 nt_kind(c->nt, operand[i]) == NK_CallNode && !arg_ran_first(operand[i], 0) &&
                 share_plan_of(c, operand[i], SPR_BOX, NULL).form == SPF_HANDLE &&

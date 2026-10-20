@@ -3,6 +3,8 @@
    movement, no logic change. */
 
 #include "codegen_internal.h"
+
+int g_ivg_box_node = -1;
 #include "call_plan.h"
 #include "repr.h"
 #include "holder.h"
@@ -17001,7 +17003,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
       emit_class_ivar_arm(c, tv, sym, 'g', bst, 1, b);
-      if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
+      /* (a read taken as the box itself, g_ivg_box_node: strbuf_slot_into's
+         Object-method `@x` a String mutator changes) */
+      if (rp.kind != RK_BOXED && rp.kind != RK_NONE && g_ivg_box_node != id) {
         /* a receiver whose class lacks the slot answers nil: an Integer or
            Float answer takes it as its nil flag */
         char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);

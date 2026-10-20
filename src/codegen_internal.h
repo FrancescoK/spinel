@@ -219,6 +219,9 @@ void emit_published_pickup(Compiler *c, int id, Buf *b);
 int strbuf_pickup_published(Compiler *c, int v);
 int strbuf_self_reader_slot(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
+int strbuf_poly_ivar_get(Compiler *c, int n);
+extern int g_ivg_box_node;   /* an instance_variable_get emitted as its box (codegen_call_recv.c) */
+int strbuf_poly_ivar_mutated(Compiler *c, int n);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 int strbuf_route_reader(Compiler *c, int v);
 int strbuf_route_ivar_get(Compiler *c, int v);
