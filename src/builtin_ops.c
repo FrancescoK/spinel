@@ -502,12 +502,11 @@ static const BuiltinOp bop_rows[] = {
   { TY_COMPLEX, "eql?",        0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "sp_complex_eq($r, $e0)", BOP_K(TY_COMPLEX) },
   { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "((void)($r), 0)" },
-  /* rationalize takes an optional eps argument (ignored -- a Complex with a
-     zero imaginary part rationalizes its real part exactly) (#2556) */
-  { TY_COMPLEX, "rationalize", 0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
-    "({ sp_Complex _t$t = $r; if (_t$t.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t$t.re); })" },
+  /* rationalize takes an optional eps: the real part's #rationalize when the
+     imaginary part is an exact zero (sp_complex_rationalize) (#2556) */
+  { TY_COMPLEX, "rationalize", 0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "sp_complex_rationalize($r, 0, sp_box_nil())" },
   { TY_COMPLEX, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
-    "({ sp_Complex _t$t = $r; (void)($e0); if (_t$t.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t$t.re); })" },
+    "({ sp_Complex _t$t = $r; sp_RbVal _t$u = $b0; sp_complex_rationalize(_t$t, 1, _t$u); })" },
   { TY_COMPLEX, "numerator",   0,   0, BF_ANY, TY_COMPLEX,    BOPE_TEMPLATE, "$r" },
   { TY_COMPLEX, "numerator",   0, 127, BF_ANY, TY_COMPLEX,    BOPE_NONE },
   { TY_COMPLEX, "denominator", 0,   0, BF_ANY, TY_INT,        BOPE_TEMPLATE, "((void)($r), (sp_int)1)" },

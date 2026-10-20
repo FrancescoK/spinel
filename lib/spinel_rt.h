@@ -2538,6 +2538,19 @@ static SP_NOINLINE sp_Rational sp_complex_to_r(sp_Complex c) {
     sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Rational", sp_complex_to_s(c)));
   return sp_float_to_rational(c.re);
 }
+/* Complex#rationalize(eps): the real part's #rationalize, when the imaginary
+   part is an exact zero (a Float 0.0 is not, unlike #to_r); RangeError naming
+   the value otherwise, before eps is read. An Integer part is itself, eps
+   unread, as Integer#rationalize; a Float one the simplest rational within
+   eps.abs (`has_eps`), or the simplest that rounds back to it. */
+static sp_RbVal sp_poly_abs(sp_RbVal v);   /* fwd: eps.abs, as Float#rationalize asks */
+static inline sp_float sp_poly_to_f_with_rational(sp_RbVal v);   /* fwd */
+static SP_NOINLINE sp_Rational sp_complex_rationalize(sp_Complex c, int has_eps, sp_RbVal eps) {
+  if (c.im != 0.0 || (c.fl & SP_CPLX_IM_F))
+    sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Rational", sp_complex_to_s(c)));
+  if (!(c.fl & SP_CPLX_RE_F)) return sp_float_to_rational(c.re);
+  return has_eps ? sp_float_rationalize(c.re, sp_poly_to_f_with_rational(sp_poly_abs(eps))) : sp_float_rationalize0(c.re);
+}
 static SP_INLINE sp_Complex sp_complex_real_chk(sp_Complex c) {
   if (c.im != 0.0) sp_raise_cls("TypeError", "not a real");
   return c;
@@ -5147,6 +5160,8 @@ static sp_int sp_poly_to_i_meth(sp_RbVal v) {
      fit it: say so rather than hand back its low word (#4665). Promoting
      the slot is the wider question of #2024. */
   if (v.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  /* a Complex is its Complex#to_i, as the typed receiver answers */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return sp_complex_to_int(*(sp_Complex *)v.v.p);
   return sp_poly_to_i(v);
 }
 
@@ -13975,6 +13990,8 @@ static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
      poly, and `v&.to_r` is exactly that shape. */
   if (v.tag == SP_TAG_STR) return sp_box_rational(sp_str_to_r(v.v.s ? v.v.s : sp_str_empty));
   if (sp_poly_is_strbuf(v)) return sp_poly_to_r_m(sp_poly_strbuf_deref(v));
+  /* a Complex is its Complex#to_r, as the typed receiver answers */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return sp_box_rational(sp_complex_to_r(*(sp_Complex *)v.v.p));
   sp_raise_nomethod(sp_nomethod_msg("to_r", v));  /* "for true", "for an instance of Array", as CRuby words it */
 }
 /* #rationalize on a boxed value, with `argc` epsilons (0 or 1): nil and an
@@ -13992,6 +14009,9 @@ static sp_RbVal sp_poly_rationalize_m(sp_RbVal v, int argc, sp_RbVal eps) {
     if (!argc) return v;
     return sp_box_rational(sp_float_rationalize(sp_rational_to_f(*(sp_Rational *)v.v.p), sp_poly_to_f(eps)));
   }
+  /* a Complex is its Complex#rationalize, as the typed receiver answers */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
+    return sp_box_rational(sp_complex_rationalize(*(sp_Complex *)v.v.p, argc, eps));
   sp_raise_nomethod(sp_nomethod_msg("rationalize", v));  /* CRuby's wording, as for to_r */
 }
 static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
