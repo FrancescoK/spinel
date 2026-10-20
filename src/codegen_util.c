@@ -3911,6 +3911,47 @@ void unsupported_feature_collect(Compiler *c, int id, const char *msg) {
   else fprintf(stderr, "spinel: %s\n", msg);
 }
 
+/* --defer-refusals: a refusal kept as a check that raises only when the
+   value it is about arrives (an identity Set's member or lookup,
+   sp_idset_check): reported and counted as a deferred refusal, and the
+   build goes on with the statement as written. */
+void refusal_note_deferred(Compiler *c, int id, const char *msg) {
+  refuse_at(c, id);
+  int ln; const char *file = unsup_pos(c, id, &ln);
+  diag_record(file, ln, msg);
+  refuse_observe(msg);
+  if (ln > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
+  else fprintf(stderr, "spinel: %s\n", msg);
+}
+int g_idset_marks = 0;
+/* A value refuse_set_identity_members marked for the check (its
+   "idset_check" is the call's node + 1): rendered as itself, held in a
+   temp the check reads, then answered. The check raises NotImplementedError
+   in the refusal's words, at the call's line, for a value whose identity
+   Spinel does not keep, and passes any other. boxed: the value is wanted
+   boxed (emit_boxed). 0 for any other node, or one already being rendered
+   so. */
+int emit_idset_checked(Compiler *c, int id, Buf *b, int boxed) {
+  static int busy = -1;
+  if (id < 0 || id == busy) return 0;
+  long long call = nt_int(c->nt, id, "idset_check", 0);
+  if (call <= 0) return 0;
+  int save = busy;
+  busy = id;
+  int ln; const char *file = unsup_pos(c, (int)(call - 1), &ln);
+  char dmsg[2600];
+  if (ln > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", file, ln, g_sid_refusal_msg);
+  else snprintf(dmsg, sizeof dmsg, "%s", g_sid_refusal_msg);
+  int t = ++g_tmp;
+  if (boxed) { buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, id, b); }
+  else { buf_printf(b, "({ __auto_type _t%d = ", t); emit_expr(c, id, b); }
+  buf_printf(b, "; sp_idset_check(_t%d, \"", t);
+  emit_c_escaped(b, dmsg);
+  buf_printf(b, "\"); _t%d; })", t);
+  busy = save;
+  return 1;
+}
+
 /* A NoMethodError text that names a Class.new class `ci`: "<head><class>" as a C
    expression, appended to b. The class prints at run time (its constant may be
    assigned only after the program starts), so the text is built where it is
@@ -4089,6 +4130,9 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
      refusal stands at its own statement */
   if (nt_int(c->nt, id, "attr_splat", 0)) diagnose_unsupported_call(c, id);
   if (!defer_refusals()) return;
+  /* an identity Set's call the proof refuses (refuse_set_identity_members),
+     whose values are no single one a check could read where it arrives */
+  if (g_idset_marks && nt_int(c->nt, id, "idset_refuse", 0)) unsupported_feature(c, id, g_sid_refusal_msg);
   refuse_from_plan(c, id, CRF_SEND, "refuse-send");
   refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
   refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");

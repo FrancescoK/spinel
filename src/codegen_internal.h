@@ -1608,6 +1608,11 @@ extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driv
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
 extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
+/* --defer-refusals: an identity Set's value checked where it arrives
+   (refuse_set_identity_members marks it, codegen_util.c renders it) */
+extern int g_idset_marks;
+extern const char *const g_sid_refusal_msg;
+int emit_idset_checked(Compiler *c, int id, Buf *b, int boxed);
 int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
 extern int g_stmt_deferrals;       /* refusals emit_stmt_or_defer turned into a raise in place */

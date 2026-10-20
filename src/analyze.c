@@ -44927,6 +44927,26 @@ static int sid_name_only_member(const NodeTable *nt, const int *parent, int lit)
   }
   return 0;
 }
+const char *const g_sid_refusal_msg =
+    "a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, "
+    "or one of no static kind) enters or is looked up in a Set, in a program that calls "
+    "Set#compare_by_identity: an identity Set would find it otherwise than CRuby's";
+/* Is value v, entering an identity Set or looked up in one at call `call`,
+   one whose identity is CRuby's (1)? Under --defer-refusals a value the
+   proof cannot take is instead checked where it arrives (2): the check
+   (sp_idset_check) raises the refusal for a value of a kind whose identity
+   Spinel does not keep, and passes any other, which sp_poly_equal finds as
+   CRuby's equal? does. The value's C form has to be one the check reads: a
+   box, an Integer, a Float or a String. 0 for a refused value. */
+static int sid_value_or_check(Compiler *c, int call, int v) {
+  if (sid_value_ok(c, v, 0)) return 1;
+  if (!defer_refusals() || v < 0) return 0;
+  TyKind t = infer_type(c, an_unparen(c->nt, v));
+  if (t != TY_POLY && t != TY_INT && t != TY_FLOAT && t != TY_STRING && t != TY_STRBUF) return 0;
+  nt_node_set_int((NodeTable *)c->nt, v, "idset_check", call + 1);
+  g_idset_marks = 1;
+  return 2;
+}
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
@@ -44982,10 +45002,7 @@ static void refuse_set_identity_members(Compiler *c) {
     "merge", "replace", "subtract", "&", "intersection", "|", "union", "+", "-", "difference",
     "^", "disjoint?", "intersect?", "subset?", "superset?", "proper_subset?",
     "proper_superset?", "<=", ">=", "<", ">", NULL };
-  static const char msg[] =
-      "a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, "
-      "or one of no static kind) enters or is looked up in a Set, in a program that calls "
-      "Set#compare_by_identity: an identity Set would find it otherwise than CRuby's";
+  const char *msg = g_sid_refusal_msg;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
@@ -45000,12 +45017,16 @@ static void refuse_set_identity_members(Compiler *c) {
     int on_class = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
                    nt_str(nt, nt_paren_single(nt, recv), "name") &&
                    sp_streq(nt_str(nt, nt_paren_single(nt, recv), "name"), "Set");
-    int ok = 1;
+    int ok = 1, checked = 0;
     /* (followed, a Set made elsewhere is a plain one: only those the
        identity Sets start from bring members in) */
     if (follow && (on_class ? !sid_alloc_is_source(c, &S, id) : !sid_is_alias(c, &S, recv))) continue;
     if (on_class) {
-      if (sp_streq(nm, "[]")) for (int a = 0; a < argc && ok; a++) ok = sid_value_ok(c, argv[a], 0);
+      if (sp_streq(nm, "[]"))
+        for (int a = 0; a < argc && ok; a++) {
+          int r = sid_value_or_check(c, id, argv[a]);
+          ok = r != 0; checked |= r == 2;
+        }
       else if (sp_streq(nm, "new")) ok = (argc == 0 || sid_collection_ok(c, argv[0], set_cid)) && sid_block_ok(c, blk, 0);
       else continue;
     }
@@ -45020,12 +45041,24 @@ static void refuse_set_identity_members(Compiler *c) {
       int is_elem = 0, is_coll = 0;
       for (int k = 0; elem_names[k] && !is_elem; k++) is_elem = sp_streq(nm, elem_names[k]);
       for (int k = 0; coll_names[k] && !is_coll; k++) is_coll = sp_streq(nm, coll_names[k]);
-      if (is_elem && argc == 1) ok = sid_value_ok(c, argv[0], 0);
+      if (is_elem && argc == 1) {
+        int r = sid_value_or_check(c, id, argv[0]);
+        ok = r != 0; checked = r == 2;
+      }
       else if (is_coll) for (int a = 0; a < argc && ok; a++) ok = sid_collection_ok(c, argv[a], set_cid);
       else if ((sp_streq(nm, "map!") || sp_streq(nm, "collect!")) && rt != TY_POLY) ok = sid_block_ok(c, blk, 1);
       else continue;
     }
-    if (!ok) unsupported_feature(c, id, msg);
+    /* --defer-refusals: a value checked where it arrives is a deferred
+       refusal of its own (reported and counted, the call emitted as
+       written); any other refusal stands at the call, which raises it when
+       it runs (refuse_prepass_at_emit) */
+    if (ok && checked) refusal_note_deferred(c, id, msg);
+    else if (!ok && defer_refusals()) {
+      nt_node_set_int((NodeTable *)nt, id, "idset_refuse", 1);
+      g_idset_marks = 1;
+    }
+    else if (!ok) unsupported_feature(c, id, msg);
   }
   free(S.parent);
 }
