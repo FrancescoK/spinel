@@ -2582,7 +2582,9 @@ static const BuiltinOp bop_rows[] = {
      own arms, where the Ranges' rows of the same names are. An Array keeps
      its frozen flag in the struct, a Hash in its GC header. */
   { BOP_ANY_ARRAY, "freeze",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; if (_t$t) _t$t->frozen = 1; _t$t; })", 0, 0, BOPF_SELF, 1 },
-  { BOP_ANY_ARRAY, "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r)->frozen != 0)", 0, 0, 0, 1 },
+  /* (nil answers frozen? too, true: a typed slot that holds nil is NULL,
+     and no nil guard comes ahead of a method nil has) */
+  { BOP_ANY_ARRAY, "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "({ __typeof__($r) _t$t = ($r); !_t$t || _t$t->frozen != 0; })", 0, 0, 0, 1 },
   { BOP_ANY_HASH,  "freeze",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_gc_freeze($r)", 0, 0, BOPF_SELF, 1 },
   { BOP_ANY_HASH,  "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_gc_is_frozen($r)", 0, 0, 0, 1 },
   { BOP_ANY_HASH,  "to_h",                  0,   0, BF_NONE,     BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT, 1 },  /* identity */
