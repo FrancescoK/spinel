@@ -27427,7 +27427,7 @@ static int mark_reader_identity_operands(Compiler *c) {
         comp_sn_retype(c, opnd, TY_STRING);
         c->strbuf_handle_demand[opnd] = 1;
         /* Boxing a parenthesized operand reads its inner value directly. */
-        int inner = unwrap_parens(c, opnd);
+        int inner = nt_paren_single(c->nt, opnd);
         if (inner != opnd) {
           comp_set_strbuf_box(c, inner, 0);
           comp_sn_retype(c, inner, TY_STRING);
@@ -45062,7 +45062,7 @@ static void desugar_tap_value_write(Compiler *c) {
         nt_ref(nt, v, "arguments") >= 0 || nt_safe_nav(nt, v)) continue;
     int blk = nt_ref(nt, v, "block"), r = nt_ref(nt, v, "receiver");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || r < 0) continue;
-    NodeKind rk = nt_kind(nt, unwrap_parens(c, r));
+    NodeKind rk = nt_kind(nt, nt_paren_single(c->nt, r));
     if (rk == NK_LocalVariableReadNode || rk == NK_SelfNode || rk == NK_NilNode ||
         rk == NK_LocalVariableWriteNode || tvw_names_local(nt, blk, x, 0) || tvw_names_local(nt, r, x, 0)) continue;
     long long line = nt_int(nt, r, "node_line", 0), file = nt_int(nt, r, "node_file", 0);
@@ -45180,7 +45180,7 @@ static void an_phase_desugar_register(Compiler *c) {
       if (nt_kind(ntm, id) != NK_BlockArgumentNode) continue;
       int ex = nt_ref(ntm, id, "expression");
       if (ex < 0) continue;
-      int un = unwrap_parens(c, ex);
+      int un = nt_paren_single(c->nt, ex);
       if (un >= 0 && un != ex) nt_node_set_ref(ntm, id, "expression", un);
     }
   }
@@ -45208,7 +45208,7 @@ static void an_phase_desugar_register(Compiler *c) {
         if (paren_fields[f].k != k) continue;
         int rc = nt_ref(ntm, id, paren_fields[f].field);
         if (rc < 0) break;
-        int un = unwrap_parens(c, rc);
+        int un = nt_paren_single(c->nt, rc);
         if (un >= 0 && un != rc) nt_node_set_ref(ntm, id, paren_fields[f].field, un);
         break;
       }

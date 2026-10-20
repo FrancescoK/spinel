@@ -14561,19 +14561,19 @@ void mark_match_ranges(Compiler *c) {
       int args = nt_ref(nt, w, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an >= 1 && is_seq_index_call(mn)) {
-        int ix = unwrap_parens(c, av[0]);
+        int ix = nt_paren_single(c->nt, av[0]);
         if (nt_kind(nt, ix) == NK_RangeNode) nt_node_set_int(nt, ix, "index_of", w + 1);
       }
       /* `(x..).size`: an endless Integer Range's size is Infinity, which the
          Integer representation answers and a boxed one cannot */
       if (an == 0 && is_size_or_count(mn)) {
-        int rr = unwrap_parens(c, nt_ref(nt, w, "receiver"));
+        int rr = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
         if (rr >= 0 && nt_kind(nt, rr) == NK_RangeNode) nt_node_set_int(nt, rr, "size_recv", 1);
       }
       if (an != 1) continue;
       if (!(sp_streq(mn, "===") || sp_streq(mn, "include?") || sp_streq(mn, "member?") ||
-            (sp_streq(mn, "cover?") && nt_kind(nt, unwrap_parens(c, av[0])) != NK_RangeNode))) continue;
-      rcv = unwrap_parens(c, nt_ref(nt, w, "receiver"));
+            (sp_streq(mn, "cover?") && nt_kind(nt, nt_paren_single(c->nt, av[0])) != NK_RangeNode))) continue;
+      rcv = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
       conds = &rcv; n = 1;
     }
     for (int i = 0; i < n; i++)
@@ -14584,14 +14584,14 @@ void mark_match_ranges(Compiler *c) {
      literals are few; each is checked against the index calls once. */
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    int v = unwrap_parens(c, nt_ref(nt, w, "value"));
+    int v = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
     const char *nm = nt_str(nt, w, "name");
     if (v < 0 || !nm || nt_kind(nt, v) != NK_RangeNode || nt_int(nt, v, "index_of", 0)) continue;
     for (int u = 0; u < nt->count; u++) {
       if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") && is_seq_index_call(nt_str(nt, u, "name"))) continue;
       int args = nt_ref(nt, u, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      int ix = an >= 1 ? unwrap_parens(c, av[0]) : -1;
+      int ix = an >= 1 ? nt_paren_single(c->nt, av[0]) : -1;
       if (ix >= 0 && nt_kind(nt, ix) == NK_LocalVariableReadNode && c->nscope[ix] == c->nscope[w] &&
           sp_streq(nt_str(nt, ix, "name"), nm)) {
         nt_node_set_int(nt, v, "index_of", u + 1);

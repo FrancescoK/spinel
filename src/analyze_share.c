@@ -6338,7 +6338,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
     while (cur >= 0 && nt_kind(c->nt, cur) == NK_CallNode && nt_str(c->nt, cur, "name") &&
            is_append_concat(nt_str(c->nt, cur, "name")) && call_plain_argc((Compiler *)c, cur) == 1 &&
            nt_ref(c->nt, cur, "block") < 0 && cplan_targets((Compiler *)c, cur, tg, CPT_MAX) == 0)
-      cur = unwrap_parens((Compiler *)c, nt_ref(c->nt, cur, "receiver"));
+      cur = nt_paren_single(c->nt, nt_ref(c->nt, cur, "receiver"));
     if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && share_node_carries_handle(c, cur)) return SPK_BOX;
   }
   /* a bang method on a handle local: a write hands over the local's handle

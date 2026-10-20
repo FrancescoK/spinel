@@ -7949,7 +7949,7 @@ int an_push_widens_fresh(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!nm || recv < 0 || !is_push_alias(nm) || nt_ref(nt, id, "block") >= 0) return 0;
-  if (nt_kind(nt, unwrap_parens(c, recv)) != NK_CallNode) return 0;
+  if (nt_kind(nt, nt_paren_single(c->nt, recv)) != NK_CallNode) return 0;
   TyKind rt = infer_type(c, recv);
   if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
   /* a program's own Array#push (or <<) answers what it answers */
