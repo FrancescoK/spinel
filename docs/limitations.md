@@ -1711,9 +1711,16 @@ each Bignum and non-flonum Float), a Rational, a Complex, a Range, or a
 boxed value of no static kind -- added to a Set, looked up in one, or handed
 to one as a collection (`Set.new`, `Set[]`, `merge`, `|`, `to_set`, a
 `map!` block's answers, ...) is refused at compile time, naming the call, as
-`Hash#compare_by_identity` refuses such keys. Every Set shares one class,
-and a Set can be made to compare by identity after it was filled, so the
-check covers the program's other Sets too.
+`Hash#compare_by_identity` refuses such keys. A Set can be made to compare
+by identity after it was filled, so the check covers every call on the
+place the identity Set lives in: an instance variable or a local assigned
+only Sets made there (`@seen = Set.new.compare_by_identity`, `@seen ||=
+...`), read only as a Set's receiver, directly or through a method that
+answers it (`def seen = @seen ||= ...`). Where an identity Set cannot be
+followed so -- it is handed on, its variable is assigned another Set, it is
+a parameter, a call answering it is kept, or a reflective read names its
+variable -- every Set shares one class, and the check covers the program's
+other Sets too.
 
 #### `String#equal?` and literal identity
 

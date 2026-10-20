@@ -43792,6 +43792,273 @@ static int sid_block_ok(Compiler *c, int blk, int own) {
       if (sp_streq(block_param_name(c, blk, k), nt_str(nt, v, "name"))) return 1;
   return sid_value_ok(c, v, 0);
 }
+/* ---- where the identity Sets live ----
+   A compare_by_identity is followed to the Set it makes an identity one
+   when that Set lives in a place the program reads it from only as a
+   Set method's receiver: an instance variable (`@seen = Set.new
+   .compare_by_identity`, `@seen ||= ...`), or a local of one scope,
+   assigned only Sets made there, and read through the readers that
+   answer it (`def seen = @seen ||= ...`). The identity check then looks
+   at the calls on those reads alone. Anything else -- a Set handed on, a
+   variable assigned another Set, a reader's answer kept, a call answering
+   the Set or a new identity one (`|`, `dup`) used as a value -- returns
+   to the whole program's check, which refuses more, never less. */
+#define SID_CAP 64
+typedef struct {
+  const char *ivars[SID_CAP]; int nivars;
+  const char *locals[SID_CAP]; const Scope *lscopes[SID_CAP]; int nlocals;
+  const char *readers[SID_CAP]; int nreaders;
+  int *parent;
+} SidSources;
+static int sid_name_in(const char *const *names, int n, const char *nm) {
+  for (int i = 0; i < n; i++) if (sp_streq(names[i], nm)) return 1;
+  return 0;
+}
+static int sid_add_name(const char **names, int *n, const char *nm) {
+  if (!nm) return 0;
+  if (sid_name_in(names, *n, nm)) return 1;
+  if (*n >= SID_CAP) return 0;
+  names[(*n)++] = nm;
+  return 1;
+}
+/* Is v a Set the expression makes: `Set.new(...)`, `Set[...]`, or one of
+   them made an identity Set on the spot? */
+static int sid_fresh_set(const NodeTable *nt, int v) {
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  if (nm && sp_streq(nm, "compare_by_identity") && nt_ref(nt, v, "arguments") < 0) return sid_fresh_set(nt, r);
+  if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "[]"))) return 0;
+  return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") &&
+         sp_streq(nt_str(nt, r, "name"), "Set");
+}
+/* The method whose value node n is (the last statement of its body), or -1 */
+static int sid_tail_def(const NodeTable *nt, const int *parent, int n) {
+  for (int d = 0; n >= 0 && d < 16; d++) {
+    int p = parent[n];
+    if (p < 0) return -1;
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_DefNode) return nt_ref(nt, p, "body") == n ? p : -1;
+    if (pk == NK_ParenthesesNode) { n = p; continue; }
+    if (pk != NK_StatementsNode) return -1;
+    int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
+    if (bn == 0 || bb[bn - 1] != n) return -1;
+    n = p;
+  }
+  return -1;
+}
+/* Is a Set's call named nm one that answers the Set or another Set that
+   may compare by identity? */
+static int sid_answers_set(const char *nm) {
+  static const char *const names[] = {
+    "add", "<<", "add?", "delete", "delete?", "merge", "subtract", "replace", "|", "union", "+", "-",
+    "difference", "^", "dup", "clone", "compare_by_identity", "map!", "collect!", "select!", "filter!",
+    "reject!", "keep_if", "delete_if", "freeze", "to_set", "reset", "flatten", "flatten!", "itself",
+    "tap", "then", "yield_self", NULL };
+  for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
+  return 0;
+}
+/* Does a call named nm hand its receiver on to a block or as a value
+   no Set call is: a block parameter (`tap`, `then`), the block's self
+   (`instance_eval`), a computed call or a Method? */
+static int sid_hands_on_self(const char *nm) {
+  static const char *const names[] = {
+    "tap", "then", "yield_self", "instance_eval", "instance_exec", "send", "__send__", "public_send",
+    "method", "public_method", "singleton_method", "define_singleton_method", "extend", "to_enum",
+    "enum_for", NULL };
+  for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
+  return 0;
+}
+/* A use of alias node a: as a Set call's receiver whose answer is not
+   one of the Set's (or is dropped), or as the value of a method, which
+   is then a reader whose calls are aliases too. 0 for any other use. */
+static int sid_alias_use_ok(Compiler *c, SidSources *S, int a) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; d < 16; d++) {
+    int p = S->parent[a];
+    while (p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode) { a = p; p = S->parent[a]; }
+    if (p < 0) return 0;
+    if (nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == an_unparen(nt, a)) {
+      const char *nm = nt_str(nt, p, "name");
+      if (!nm || sid_hands_on_self(nm)) return 0;
+      if (!sid_answers_set(nm) || comp_value_dropped(c, p)) return 1;
+      /* the call answers the Set or a copy that may compare by identity
+         (`@seen.add(n)`): its value is an alias in turn */
+      a = p;
+      continue;
+    }
+    int def = sid_tail_def(nt, S->parent, a);
+    if (def < 0) return comp_value_dropped(c, a);
+    const char *dn = nt_str(nt, def, "name");
+    if (!dn) return 0;
+    if (sp_streq(dn, "initialize")) return 1;
+    return sid_add_name(S->readers, &S->nreaders, dn);
+  }
+  return 0;
+}
+static int sid_maybe_set(Compiler *c, int v, int set_cid) {
+  TyKind t = infer_type(c, v);
+  return (ty_is_object(t) && (ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid))) ||
+         (t == TY_POLY && !cls_fact_excludes(c, v, set_cid));
+}
+/* Is node v a read of a place S holds an identity Set in? */
+static int sid_is_alias(Compiler *c, SidSources *S, int v) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm) return 0;
+  if (k == NK_InstanceVariableReadNode) return sid_name_in(S->ivars, S->nivars, nm);
+  if (k == NK_LocalVariableReadNode) {
+    const Scope *s = comp_scope_of(c, v);
+    for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], nm)) return 1;
+    return 0;
+  }
+  if (k != NK_CallNode) return 0;
+  /* a reader's call, a block it ignores or not (`seen { }`) */
+  if (sid_name_in(S->readers, S->nreaders, nm)) return 1;
+  /* a call on an alias that answers the Set or a copy that compares the
+     same way (`@seen.add(n)`, `@seen | other`, `@seen.dup`) */
+  int r = nt_ref(nt, v, "receiver");
+  return r >= 0 && sid_answers_set(nm) && sid_is_alias(c, S, r);
+}
+/* Is Set allocation a (`Set.new(...)`, `Set[...]`) one an identity Set
+   starts from: the receiver of a compare_by_identity, or a value written
+   to a place S holds one in? */
+static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
+  const NodeTable *nt = c->nt;
+  int n = a, p = S->parent[n];
+  while (p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode) { n = p; p = S->parent[n]; }
+  if (p < 0) return 0;
+  NodeKind pk = nt_kind(nt, p);
+  const char *pn = nt_str(nt, p, "name");
+  if (pk == NK_CallNode && pn && sp_streq(pn, "compare_by_identity") && an_unparen(nt, nt_ref(nt, p, "receiver")) == a)
+    return 1;
+  if ((pk == NK_InstanceVariableWriteNode || pk == NK_InstanceVariableOrWriteNode) && pn)
+    return sid_name_in(S->ivars, S->nivars, pn);
+  if (pk == NK_LocalVariableWriteNode && pn) {
+    const Scope *s = comp_scope_of(c, p);
+    for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], pn)) return 1;
+  }
+  return 0;
+}
+/* Follow the compare_by_identity calls (asked) to their places. 0 when
+   one of them, or a read of a place, cannot be followed. */
+static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id == set_cid) continue;
+    /* (a computed name's arm, as refuse_set_identity_members skips it) */
+    if (!spelled && (nt_int(nt, id, "dyn_arm", 0) || (s && s->name && strncmp(s->name, "__bam_", 6) == 0))) continue;
+    int r = an_unparen(nt, nt_ref(nt, id, "receiver"));
+    if (r < 0) {
+      if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) return 0;
+      continue;
+    }
+    if (!sid_maybe_set(c, r, set_cid)) continue;
+    NodeKind rk = nt_kind(nt, r);
+    int w = id;
+    while (S->parent[w] >= 0 && nt_kind(nt, S->parent[w]) == NK_ParenthesesNode) w = S->parent[w];
+    int p = S->parent[w];
+    NodeKind pk = p >= 0 ? nt_kind(nt, p) : NK_NONE;
+    const char *place = NULL; int local = 0;
+    if (rk == NK_InstanceVariableReadNode) place = nt_str(nt, r, "name");
+    else if (rk == NK_LocalVariableReadNode) { place = nt_str(nt, r, "name"); local = 1; }
+    else if (sid_fresh_set(nt, r) && (pk == NK_InstanceVariableWriteNode || pk == NK_InstanceVariableOrWriteNode) &&
+             an_unparen(nt, nt_ref(nt, p, "value")) == an_unparen(nt, w)) place = nt_str(nt, p, "name");
+    else if (sid_fresh_set(nt, r) && pk == NK_LocalVariableWriteNode &&
+             an_unparen(nt, nt_ref(nt, p, "value")) == an_unparen(nt, w)) { place = nt_str(nt, p, "name"); local = 1; }
+    else return 0;
+    if (!place) return 0;
+    if (local) {
+      /* a parameter holds the caller's Set, which other names see */
+      LocalVar *lv = s ? scope_local(s, place) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param) return 0;
+      int known = 0;
+      for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], place)) known = 1;
+      if (!known) {
+        if (S->nlocals >= SID_CAP) return 0;
+        S->locals[S->nlocals] = place; S->lscopes[S->nlocals++] = s;
+      }
+    }
+    else if (!sid_add_name(S->ivars, &S->nivars, place)) return 0;
+    /* the value of the call itself, where it is no place's write: kept,
+       it is an alias of its own */
+    if (rk == NK_InstanceVariableReadNode || rk == NK_LocalVariableReadNode)
+      if (!comp_value_dropped(c, w) && !sid_alias_use_ok(c, S, r)) return 0;
+  }
+  /* a reflective read or write reaches an instance variable by a name:
+     one of the places', or one no literal names */
+  if (S->nivars > 0) {
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || (!sp_streq(nm, "instance_variable_get") && !sp_streq(nm, "instance_variable_set"))) continue;
+      int ar = nt_ref(nt, id, "arguments"), argc = 0;
+      const int *argv = ar >= 0 ? nt_arr(nt, ar, "arguments", &argc) : NULL;
+      int a0 = argc > 0 ? an_unparen(nt, argv[0]) : -1;
+      NodeKind ak = a0 >= 0 ? nt_kind(nt, a0) : NK_NONE;
+      const char *iv = ak == NK_SymbolNode ? nt_str(nt, a0, "value") : ak == NK_StringNode ? nt_str(nt, a0, "content") : NULL;
+      if (!iv || sid_name_in(S->ivars, S->nivars, iv)) return 0;
+    }
+  }
+  /* every write of a place holds a Set made there (or no Set) */
+  for (int k = 0; k < 3; k++) {
+    NodeKind wk = k == 0 ? NK_InstanceVariableWriteNode : k == 1 ? NK_InstanceVariableOrWriteNode : NK_LocalVariableWriteNode;
+    NT_FOREACH_KIND(nt, wk, w) {
+      const char *nm = nt_str(nt, w, "name");
+      int hit = 0;
+      if (k < 2) hit = nm && sid_name_in(S->ivars, S->nivars, nm);
+      else for (int i = 0; nm && i < S->nlocals; i++) hit |= S->lscopes[i] == comp_scope_of(c, w) && sp_streq(S->locals[i], nm);
+      if (!hit) continue;
+      int v = nt_ref(nt, w, "value");
+      if (!sid_fresh_set(nt, v) && sid_maybe_set(c, v, set_cid)) return 0;
+      /* the write's own value is the Set too */
+      if (!sid_alias_use_ok(c, S, w)) return 0;
+    }
+  }
+  NodeKind other[] = { NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableAndWriteNode,
+                       NK_LocalVariableOperatorWriteNode, NK_LocalVariableAndWriteNode,
+                       NK_LocalVariableOrWriteNode, NK_LocalVariableTargetNode, NK_InstanceVariableTargetNode };
+  for (int k = 0; k < (int)(sizeof other / sizeof other[0]); k++)
+    NT_FOREACH_KIND(nt, other[k], w) {
+      const char *nm = nt_str(nt, w, "name");
+      if (!nm) continue;
+      if (sid_name_in(S->ivars, S->nivars, nm)) return 0;
+      for (int i = 0; i < S->nlocals; i++) if (sp_streq(S->locals[i], nm) && S->lscopes[i] == comp_scope_of(c, w)) return 0;
+    }
+  /* a read of a place's local from another scope (a define_method's body
+     captures it) is not followed */
+  for (int k = 0; k < 2 && S->nlocals > 0; k++)
+    NT_FOREACH_KIND(nt, k ? NK_LocalVariableWriteNode : NK_LocalVariableReadNode, a) {
+      const char *nm = nt_str(nt, a, "name");
+      if (!nm || nt_int(nt, a, "depth", 0) <= 0) continue;
+      const Scope *as = comp_scope_of(c, a);
+      for (int i = 0; i < S->nlocals; i++)
+        if (sp_streq(S->locals[i], nm) && S->lscopes[i] != as) return 0;
+    }
+  /* every read is used as a Set, and so is every call of a reader; a
+     reader found on the way adds its calls, so this runs to a fixpoint */
+  int before = -1;
+  for (int round = 0; before != S->nreaders && round < 8; round++) {
+    before = S->nreaders;
+    for (int k = 0; k < 3; k++) {
+      NodeKind rk = k == 0 ? NK_InstanceVariableReadNode : k == 1 ? NK_LocalVariableReadNode : NK_CallNode;
+      NT_FOREACH_KIND(nt, rk, a) {
+        /* (a read of the place's name that is no Set is another place's) */
+        if (!sid_is_alias(c, S, a) || !sid_maybe_set(c, a, set_cid)) continue;
+        if (!sid_alias_use_ok(c, S, a)) return 0;
+      }
+    }
+  }
+  /* (a reader chain longer than the rounds is not followed) */
+  return before == S->nreaders;
+}
+
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
@@ -43828,6 +44095,13 @@ static void refuse_set_identity_members(Compiler *c) {
       asked = 1;
   }
   if (!asked) return;
+  /* where the identity Sets live, when every one can be followed there:
+     then only the calls on them are checked (sid_sources) */
+  SidSources S;
+  memset(&S, 0, sizeof S);
+  S.parent = an_parent_map(nt);
+  if (!S.parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int follow = sid_sources(c, &S, set_cid, spelled);
   static const char *const elem_names[] = {
     "add", "<<", "add?", "delete", "delete?", "include?", "member?", "===", NULL };
   static const char *const coll_names[] = {
@@ -43853,6 +44127,9 @@ static void refuse_set_identity_members(Compiler *c) {
                    nt_str(nt, an_unparen(nt, recv), "name") &&
                    sp_streq(nt_str(nt, an_unparen(nt, recv), "name"), "Set");
     int ok = 1;
+    /* (followed, a Set made elsewhere is a plain one: only those the
+       identity Sets start from bring members in) */
+    if (follow && (on_class ? !sid_alloc_is_source(c, &S, id) : !sid_is_alias(c, &S, recv))) continue;
     if (on_class) {
       if (sp_streq(nm, "[]")) for (int a = 0; a < argc && ok; a++) ok = sid_value_ok(c, argv[a], 0);
       else if (sp_streq(nm, "new")) ok = (argc == 0 || sid_collection_ok(c, argv[0], set_cid)) && sid_block_ok(c, blk, 0);
@@ -43876,6 +44153,7 @@ static void refuse_set_identity_members(Compiler *c) {
     }
     if (!ok) unsupported_feature(c, id, msg);
   }
+  free(S.parent);
 }
 
 static void refuse_string_alias_copies(Compiler *c) {
