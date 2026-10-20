@@ -1,0 +1,26 @@
+Kondae match?(/re/, pos): pos -> true
+Kondae match?(re, pos): pattern pos -> true
+Kondae match?(re, $tries += 1): pattern -> true
+tries: 1
+Kondae match?("dae"): dae -> true
+Kondae match?("["): [ -> RegexpError
+Kondae each_line(sep):   -> ["Kondae ", "station"]
+Kondae each_line(chomp:): chomp -> ["Kondae station"]
+Kondae slice(range): from to -> "Kondae"
+Kondae slice(i): at -> "o"
+Kondae slice(i, n): at len -> "Konda"
+Kondae unpack1(fmt): a3 -> "Kon"
+Kondae unpack1(offset:): offset -> 111
+Jayang match?(/re/, pos): pos -> NoMethodError undefined method 'match?' for nil
+Jayang match?(re, pos): pattern pos -> NoMethodError undefined method 'match?' for nil
+Jayang match?(re, $tries += 1): pattern -> NoMethodError undefined method 'match?' for nil
+tries: 2
+Jayang match?("dae"): dae -> NoMethodError undefined method 'match?' for nil
+Jayang match?("["): [ -> NoMethodError undefined method 'match?' for nil
+Jayang each_line(sep):   -> NoMethodError undefined method 'each_line' for nil
+Jayang each_line(chomp:): chomp -> NoMethodError undefined method 'each_line' for nil
+Jayang slice(range): from to -> NoMethodError undefined method 'slice' for nil
+Jayang slice(i): at -> NoMethodError undefined method 'slice' for nil
+Jayang slice(i, n): at len -> NoMethodError undefined method 'slice' for nil
+Jayang unpack1(fmt): a3 -> NoMethodError undefined method 'unpack1' for nil
+Jayang unpack1(offset:): offset -> NoMethodError undefined method 'unpack1' for nil
