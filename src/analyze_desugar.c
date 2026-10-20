@@ -435,6 +435,55 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   if (k == NK_IndexTargetNode) nt_node_set_int(nt, tgt, "aset_ev", call + 1);
   return 1;
 }
+/* Does the target nest, in a `(a, b)` at any depth, an index or attribute
+   target? */
+static int masgn_ev_nests_store(const NodeTable *nt, int mt) {
+  static const char *const SIDES[] = { "lefts", "rights" };
+  for (size_t sd = 0; sd < 2; sd++) {
+    int n = 0;
+    const int *ts = nt_arr(nt, mt, SIDES[sd], &n);
+    for (int i = 0; i < n; i++) {
+      NodeKind k = nt_kind(nt, ts[i]);
+      if (k == NK_IndexTargetNode || k == NK_CallTargetNode ||
+          (k == NK_MultiTargetNode && masgn_ev_nests_store(nt, ts[i]))) return 1;
+    }
+  }
+  int rest = nt_ref(nt, mt, "rest");
+  int rx = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
+  return rx >= 0 && (nt_kind(nt, rx) == NK_IndexTargetNode || nt_kind(nt, rx) == NK_CallTargetNode);
+}
+/* The evidence of the index and attribute targets nested in the `(a, b)` that
+   takes element `pos` of a boxed run-time Array: each is stored a read of
+   that element (a boxed value, whose elements are boxed too), so a slot the
+   nested target writes is typed for what the elements can be. `lefts` and
+   `rights` are the outer targets' counts, for a position from the end. */
+static int masgn_ev_nested(Compiler *c, int id, int mt, int value, long long pos, int lefts, int rights) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  static const char *const SIDES[] = { "lefts", "rights", "rest" };
+  for (int sd = 0; sd < 3; sd++) {
+    int n = 1;
+    if (sd < 2) nt_arr(nt, mt, SIDES[sd], &n);
+    for (int i = 0; i < n; i++) {
+      /* (the arrays are reread: every new node may move the table) */
+      int t;
+      if (sd < 2) t = nt_arr(nt, mt, SIDES[sd], &n)[i];
+      else {
+        int rest = nt_ref(nt, mt, "rest");
+        t = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
+        if (t < 0) break;
+      }
+      NodeKind k = nt_kind(nt, t);
+      if (k == NK_MultiTargetNode) changed |= masgn_ev_nested(c, id, t, value, pos, lefts, rights);
+      else if (k == NK_IndexTargetNode || k == NK_CallTargetNode) {
+        int ev = masgn_ev_value(nt, value, 0, 0, NULL, 0, pos);
+        if (ev >= 0 && pos < 0) { nt_node_set_int(nt, ev, "masgn_left", lefts); nt_node_set_int(nt, ev, "masgn_right", rights); }
+        changed |= masgn_ev_store(c, id, t, ev);
+      }
+    }
+  }
+  return changed;
+}
 int desugar_masgn_store_evidence(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -446,9 +495,11 @@ int desugar_masgn_store_evidence(Compiler *c) {
     int rn = 0; const int *rs = nt_arr(nt, id, "rights", &rn);
     int want = 0;
     for (int j = 0; j < ln; j++)
-      want |= nt_kind(nt, ls[j]) == NK_IndexTargetNode || nt_kind(nt, ls[j]) == NK_CallTargetNode;
+      want |= nt_kind(nt, ls[j]) == NK_IndexTargetNode || nt_kind(nt, ls[j]) == NK_CallTargetNode ||
+              (nt_kind(nt, ls[j]) == NK_MultiTargetNode && masgn_ev_nests_store(nt, ls[j]));
     for (int j = 0; j < rn; j++)
-      want |= nt_kind(nt, rs[j]) == NK_IndexTargetNode || nt_kind(nt, rs[j]) == NK_CallTargetNode;
+      want |= nt_kind(nt, rs[j]) == NK_IndexTargetNode || nt_kind(nt, rs[j]) == NK_CallTargetNode ||
+              (nt_kind(nt, rs[j]) == NK_MultiTargetNode && masgn_ev_nests_store(nt, rs[j]));
     int rest = nt_ref(nt, id, "rest");
     int rtgt = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
     if (rtgt >= 0 && nt_kind(nt, rtgt) != NK_IndexTargetNode && nt_kind(nt, rtgt) != NK_CallTargetNode) rtgt = -1;
@@ -457,8 +508,9 @@ int desugar_masgn_store_evidence(Compiler *c) {
     int value = nt_ref(nt, id, "value");
     if (value < 0) continue;
     int tuple = masgn_tuple_rhs(nt, value), en = 0, scalar = 0;
+    TyKind st = TY_UNKNOWN;
     if (!tuple) {
-      TyKind st = infer_type(c, value);
+      st = infer_type(c, value);
       if (st == TY_UNKNOWN) continue;
       if (ty_is_object(st)) { nt_node_set_int(nt, id, "masgn_ev", 1); continue; }
       scalar = st != TY_POLY && !ty_is_array(st);
@@ -471,6 +523,9 @@ int desugar_masgn_store_evidence(Compiler *c) {
       const int *els = tuple ? nt_arr(nt, value, "elements", &en) : NULL;
       int tgt = ls[j];
       NodeKind tk = nt_kind(nt, tgt);
+      /* a nested target of a boxed run-time Array takes a boxed element */
+      if (tk == NK_MultiTargetNode && !tuple && (st == TY_POLY_ARRAY || st == TY_POLY))
+        changed |= masgn_ev_nested(c, id, tgt, value, j, ln, rn);
       if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
       changed |= masgn_ev_store(c, id, tgt, masgn_ev_value(nt, value, tuple, en, els, scalar, j));
     }
@@ -479,6 +534,8 @@ int desugar_masgn_store_evidence(Compiler *c) {
       const int *els = tuple ? nt_arr(nt, value, "elements", &en) : NULL;
       int tgt = rs[j];
       NodeKind tk = nt_kind(nt, tgt);
+      if (tk == NK_MultiTargetNode && !tuple && (st == TY_POLY_ARRAY || st == TY_POLY))
+        changed |= masgn_ev_nested(c, id, tgt, value, j - rn, ln, rn);
       if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
       /* a right target takes the element counted from the end, never one a
          left target already took */
