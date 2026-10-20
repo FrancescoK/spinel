@@ -1,4 +1,5 @@
 require "zlib"
+require "tmpdir"
 
 # A boxed receiver's print, whose arms are a GzipWriter's, an IO's and the
 # builtin default's, given a String the dispatch holds as its shared handle:
@@ -14,7 +15,7 @@ end
 s = +"hello"
 notes = [s]
 s << "!"
-path = "/tmp/spinel_poly_print_handle_arg.gz"
+path = File.join(Dir.tmpdir, "spinel_poly_print_handle_arg_#{Process.pid}.gz")
 outs = [$stdout, Zlib::GzipWriter.new(File.open(path, "wb")), Object.new]
 t = +"line\n"
 u = t
