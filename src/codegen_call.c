@@ -24310,6 +24310,9 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) return 0;
   if (nt_safe_nav(nt, id)) return 0;
+  /* (one the plan tests, once its arguments have run: an Array no
+     initialize sets first, cplan_nil, which reads as tested inside) */
+  if (cplan_nil(c, id) == CN_RAISE || repr_of(c, recv).nil_tested) return 0;
   const char *nm = nt_str(nt, id, "name");
   /* (a method nil answers itself, CRuby's nil.public_methods: `__id__`
      and `equal?` on a nil slot are nil's) */
@@ -24371,8 +24374,9 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
 int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
   TyKind rt = repr_of(c, recv).as_ty;
   const char *nm = nt_str(c->nt, id, "name");
+  /* (nor one the plan's head has tested, cplan_nil_ivar_tested) */
   if (nt_kind(c->nt, nt_paren_single(c->nt, recv)) != NK_InstanceVariableReadNode || !ty_is_array(rt) ||
-      !nm || is_nil_method(nm)) {
+      !nm || is_nil_method(nm) || repr_of(c, recv).nil_tested) {
     buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
     return 0;
   }
@@ -24549,8 +24553,12 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
        rule, where poly_target_call keeps such a receiver) */
     if (!rebound && repr_share_rule(c)) rebound = nil_target_read_rebound(c, r, a);
   }
+  /* (nor an ivar's, when no argument runs code: nothing can write the slot
+     between the test and the call, which reads it again, and an element
+     read in a hot loop pays for no temp or root) */
+  int ivar_slot = rk == NK_InstanceVariableReadNode && (a < 0 || !subtree_has_side_effect(c, a));
   if ((rk != NK_LocalVariableReadNode || rebound) && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
-      !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) {
+      !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode)) && !ivar_slot) {
     node[n] = r; ty[n] = repr_of(c, r).as_ty; n++;
   }
   for (int i = 0; i < an; i++)
@@ -24809,6 +24817,11 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
     buf_printf(b, "%s;%s", nr, rb.p ? " }" : "");
   }
+  /* an ivar tested in its slot raises through sp_nil_recv, which does not
+     return: the C compiler drops the NULL test of the runtime call after it
+     (an element read's), which reads the slot again */
+  else if (!rtext[0] && nt_kind(nt, r) == NK_InstanceVariableReadNode)
+    buf_printf(b, "sp_nil_recv(\"%s\");%s", enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   else
     buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
                enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
