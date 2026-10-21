@@ -11,7 +11,8 @@
 #include "share.h"
 #include "codegen_call_arms.h"
 
-static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
+static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, const CallPlan *plan, Buf *b) {
+  int own = plan->mi;
   /* NilClass#to_s answers its one frozen empty String before a nullable
      exception's own renderer. The call plan already proves the written nil
      arm and its builtin target. */
@@ -23,14 +24,15 @@ static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, int 
     buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? ", t, t);
     int mark = view_bind(recv, "_t%d", t);
     int tested = view_push_repr(c, recv, VR_NIL_TESTED, 1);
-    emit_exc_own_render_raw(c, id, recv, xcm, own, b);
+    emit_exc_own_render_raw(c, id, recv, xcm, plan, b);
     view_pop(c, tested); view_unbind(mark);
     buf_puts(b, " : sp_str_frozen_empty; })");
     return;
   }
-  int defc = xcm;
-  (void)comp_method_in_chain(c, xcm, c->scopes[own].name, &defc);
+  int defc = plan->owner_ci;
+  int cv = plan->delegate ? view_push_conversion(c, id, plan) : -1;
   if (g_plan_check) ucall_observe(c, id, own, defc, 0);
+  if (cv >= 0) view_pop(c, cv);
   if (expr_is_held_ref(c, recv)) {
     buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[defc].c_name,
                mc(c->scopes[own].name), c->classes[defc].c_name);
@@ -47,9 +49,10 @@ static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, int 
   }
 }
 
-static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
+static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, const CallPlan *plan, Buf *b) {
+  int own = plan->mi;
   Buf call = {0};
-  emit_exc_own_render_raw(c, id, recv, xcm, own, &call);
+  emit_exc_own_render_raw(c, id, recv, xcm, plan, &call);
   Repr r = repr_of(c, id);
   emit_coerce_text(c, id, (TyKind)c->scopes[own].ret, r.kind == RK_BOXED ? TY_POLY : r.as_ty,
                    CO_HOLD, call.p, "an exception renderer result", b);
@@ -280,32 +283,10 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       int xcm = ty_object_class(comp_ntype(c, recv));
       /* only for the name the class itself defines: #message keeps the helper,
          whose result type the call site is typed for */
-      int own = sp_streq(name, "message") ? -1 : comp_method_in_chain(c, xcm, name, NULL);
-      /* #message is #to_s unless the class overrides #message itself: an
-         override answering something other than a String cannot ride the
-         const char * helper, so call it directly (#3868) */
-      if (own < 0 && sp_streq(name, "message")) {
-        int mi8 = comp_method_in_chain(c, xcm, "message", NULL);
-        if (mi8 < 0) mi8 = comp_method_in_chain(c, xcm, "to_s", NULL);
-        if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
-            (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
-          own = mi8;
-      }
-      /* a subclass overriding a String #to_s is picked at run time by the
-         cls_name-keyed dispatcher below */
-      if (own >= 0 && sp_streq(name, "to_s") && (TyKind)c->scopes[own].ret == TY_STRING) {
-        int sub_str = 0, sub_other = 0;
-        for (int k = 0; k < c->nclasses; k++) {
-          if (k == xcm || !is_descendant(c, k, xcm)) continue;
-          int ko = comp_method_in_class(c, k, "to_s");
-          if (ko < 0) continue;
-          if ((TyKind)c->scopes[ko].ret == TY_STRING) sub_str = 1;
-          else sub_other = 1;
-        }
-        if (sub_str && !sub_other) own = -1;
-      }
+      CallPlan render = cplan_exception_render(c, id, xcm);
+      int own = render.mi;
       if (own >= 0) {
-        emit_exc_own_render(c, id, recv, xcm, own, b);
+        emit_exc_own_render(c, id, recv, xcm, &render, b);
         return 1;
       }
       const char *fn = exc_has_user_msg_override(c)

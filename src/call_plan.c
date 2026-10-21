@@ -483,6 +483,48 @@ int cplan_plain_ctx(void) {
          inline_splice_depth() == 0;
 }
 
+CallPlan cplan_conversion(Compiler *c, int ci, const char *name) {
+  CallPlan p;
+  int mi = comp_method_in_chain(c, ci, name, NULL);
+  cplan_set(&p, mi, ci, UC_INST, cplan_dispatch_form(c, ci, name, mi >= 0));
+  p.chain = 1;
+  p.delegate = name;
+  return p;
+}
+
+CallPlan cplan_exception_render(Compiler *c, int id, int xcm) {
+  const char *name = nt_str(c->nt, id, "name");
+  int own = is_message_name(name) ? -1 : comp_method_in_chain(c, xcm, name, NULL);
+  /* #message is #to_s unless the class overrides #message itself: an
+     override answering something other than a String cannot ride the
+     const char * helper, so call it directly (#3868) */
+  if (own < 0 && is_message_name(name)) {
+    int mi8 = comp_method_in_chain(c, xcm, "message", NULL);
+    if (mi8 < 0) mi8 = comp_method_in_chain(c, xcm, "to_s", NULL);
+    if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
+        (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
+      own = mi8;
+  }
+  /* a subclass overriding a String #to_s is picked at run time by the
+     cls_name-keyed dispatcher below */
+  if (own >= 0 && is_to_s_name(name) && (TyKind)c->scopes[own].ret == TY_STRING) {
+    int sub_str = 0, sub_other = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k == xcm || !is_descendant(c, k, xcm)) continue;
+      int ko = comp_method_in_class(c, k, "to_s");
+      if (ko < 0) continue;
+      if ((TyKind)c->scopes[ko].ret == TY_STRING) sub_str = 1;
+      else sub_other = 1;
+    }
+    if (sub_str && !sub_other) own = -1;
+  }
+  CallPlan p;
+  cplan_set(&p, own, own >= 0 ? c->scopes[own].class_id : -1, UC_INST, own >= 0 ? CP_DIRECT : CP_NONE);
+  p.chain = 1;
+  p.delegate = own >= 0 && is_message_name(name) && is_to_s_name(c->scopes[own].name) ? "to_s" : NULL;
+  return p;
+}
+
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   static CallPlan ctx;
   if (self_ci < 0) return cplan_user(c, id);

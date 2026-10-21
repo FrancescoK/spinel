@@ -16357,7 +16357,7 @@ int splice_to_ary_mi(Compiler *c, TyKind rhs_ty) {
 
 /* Bind the splice RHS object to `_tq<ta>` (rooted -- the to_ary dispatch and
    the splice pushes can allocate) and write its to_ary call text into out. */
-TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty,
+TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty,
                               int mi, int ta, Buf *b, Buf *out) {
   int cid = ty_object_class(rhs_ty);
   char selfptr[24];
@@ -16365,7 +16365,10 @@ TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty,
   buf_printf(b, "sp_%s *_tq%d = ", c->classes[cid].c_name, ta);
   emit_expr(c, rhs_node, b);
   buf_printf(b, "; SP_GC_ROOT(_tq%d); ", ta);
+  CallPlan conversion = cplan_conversion(c, cid, "to_ary");
+  int cv = view_push_conversion(c, id, &conversion);
   emit_dispatch(c, cid, "to_ary", selfptr, -1, -1, out);
+  view_pop(c, cv);
   return (TyKind)c->scopes[mi].ret;
 }
 
@@ -16399,7 +16402,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     if (tam >= 0) {
       /* object RHS with to_ary: splice the coercion, yield the object */
       Buf call; memset(&call, 0, sizeof call);
-      TyKind cty = emit_splice_to_ary_src(c, rhs_node, rhs_ty, tam, ta, b, &call);
+      TyKind cty = emit_splice_to_ary_src(c, id, rhs_node, rhs_ty, tam, ta, b, &call);
       buf_printf(b, "sp_RbVal _t%d = ", ts);
       emit_boxed_text(c, cty, call.p ? call.p : "", b);
       buf_puts(b, "; ");
@@ -16487,7 +16490,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     /* object RHS whose to_ary returns this element kind: splice the coerced
        array; the OBJECT is the yielded value (CRuby rb_ary_to_ary) */
     Buf call; memset(&call, 0, sizeof call);
-    emit_splice_to_ary_src(c, rhs_node, rhs_ty, tam, ta, b, &call);
+    emit_splice_to_ary_src(c, id, rhs_node, rhs_ty, tam, ta, b, &call);
     buf_printf(b, "sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d); ",
                k, ts, call.p ? call.p : "", ts);
     free(call.p);
