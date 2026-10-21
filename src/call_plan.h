@@ -70,6 +70,7 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
    the analysis, before the memo is codegen's to fill (the nil facts,
    analyze_nil.c): it answers from the types as they stand. The answer

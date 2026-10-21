@@ -88,6 +88,23 @@ static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
   if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_SWITCH : CP_DIRECT);
 }
 
+/* A super's parent-chain target, past inherited copies of the same
+   extended definition. Used by resolution and its completeness assertion. */
+static int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name) {
+  int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, name, NULL)
+                                       : comp_method_in_chain(c, par, name, NULL);
+  /* An extended module's method is one entry in the class's ancestry, and
+     `super` inside it goes past the module. Copied into each class that
+     inherits the extend, the parent's copy is that same definition, not a
+     superclass method: skip such copies (Thor's ClassMethods#method_added
+     called on a Thor subclass reaches Module#method_added). */
+  while (s->is_cmethod && mi >= 0 && c->scopes[mi].def_node == s->def_node && s->def_node >= 0) {
+    int up = c->classes[c->scopes[mi].class_id].parent;
+    mi = up >= 0 ? comp_cmethod_in_chain(c, up, name, NULL) : -1;
+  }
+  return mi;
+}
+
 static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   Scope *s = comp_scope_of(c, id);
   if (!s || s->class_id < 0 || !s->name) return;
@@ -101,11 +118,11 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   int par = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, par, s->name, s->is_cmethod);
   if (!uname) return;
-  int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, uname, NULL)
-                                       : comp_method_in_chain(c, par, uname, NULL);
+  int mi = cplan_super_chain_mi(c, s, par, uname);
   if (mi >= 0) cplan_set(p, mi, par, UC_SUPER, CP_DIRECT);
   else if (s->is_cmethod &&
-           builtin_super_cmethod_known(c->classes[s->class_id].name, uname)) {
+           builtin_super_cmethod_known(c->classes[s->class_id].name, uname) &&
+           (par < 0 || comp_cmethod_in_chain(c, par, uname, NULL) < 0)) {
     cplan_set(p, -1, s->class_id, UC_SUPER, CP_REFUSE);
     p->rkind = CR_FEATURE; p->rfrom = CRF_LIMIT;
     p->msg = "super to an inherited builtin singleton method is not supported; see docs/limitations.md";
@@ -443,6 +460,20 @@ void cplan_served(const char *site) {
 void cplan_served_report(void) {
   for (int i = 0; i < g_cp_nsites; i++)
     fprintf(stderr, "plan-check: cplan-served: %s %d\n", g_cp_site[i], g_cp_site_n[i]);
+}
+
+/* A plan-only reader must not lose a user target. This assertion belongs
+   with resolution, and never supplies an emission target on a miss. */
+void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site) {
+  if (!g_plan_check || mi >= 0 || ci < 0 || !name || nt_int(c->nt, id, "builtin_only", 0)) return;
+  int own = cmeth ? comp_cmethod_in_chain(c, ci, name, NULL) : comp_method_in_chain(c, ci, name, NULL);
+  NodeKind k = nt_kind(c->nt, id);
+  if (cmeth && (k == NK_SuperNode || k == NK_ForwardingSuperNode)) {
+    Scope *sc = comp_scope_of(c, id);
+    if (sc && !comp_super_shadow(c, sc)) own = cplan_super_chain_mi(c, sc, ci, name);
+  }
+  if (own >= 0)
+    fprintf(stderr, "plan-check: cplan-missing: %s node %d %s: chain %d\n", site, id, name, own);
 }
 
 /* the node is read as itself: nothing re-types or re-scopes it */
