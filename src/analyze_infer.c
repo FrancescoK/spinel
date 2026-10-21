@@ -2788,7 +2788,8 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
-  if (!g_plan_check || an_builtin_only || an_pure_reads || id < 0 || id >= c->node_cap) return;
+  if (!g_plan_check || an_builtin_only || an_pure_reads || id == an_pinned_node ||
+      id < 0 || id >= c->node_cap) return;
   c->ucall_inf[id].mi = mi;
   c->ucall_inf[id].owner_ci = (short)owner_ci;
   c->ucall_inf[id].via = (unsigned char)via;
@@ -8094,9 +8095,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
      clears nor makes the call's records (the builtin-op one is the call's
-     for a desugar-built call, an_bop_records) */
+     for a desugar-built call, an_bop_records). A pinned emission trial is
+     likewise hypothetical: its target must not replace the call's. */
   if (an_bop_records(c, id)) c->bop_inf[id] = NULL;
-  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap)
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+      id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
 
   return TY_UNKNOWN;

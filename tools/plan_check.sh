@@ -108,6 +108,16 @@ for f in $STRICT_PROGRAMS; do
     sc=$((sc + 1))
   fi
 done
+# Emission trials must preserve the inferred user target of the real call.
+STRICT_UCALL_PROGRAMS="test/call_plan_pinned_target.rb"
+for f in $STRICT_UCALL_PROGRAMS; do
+  if ! grep -q "^$f: plan-check: " "$OUT" ||
+     grep -q "^$f: plan-check-exit:" "$OUT" ||
+     grep "^$f: plan-check: ucall-unrecorded:" "$OUT"; then
+    echo "plan-check: strict user program $f failed"
+    sc=$((sc + 1))
+  fi
+done
 echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
 [ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
