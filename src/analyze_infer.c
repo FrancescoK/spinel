@@ -2862,13 +2862,13 @@ static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
 }
 
 /* A block's break widens the answer without changing the call's target.
-   Other boxed-result shortcuts retain their planned targets the same way. */
-static TyKind an_planned_poly_ret(Compiler *c, int id) {
+   Other fixed-result shortcuts retain their planned targets the same way. */
+static TyKind an_planned_call_ret(Compiler *c, int id, TyKind ret) {
   if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
   }
-  return TY_POLY;
+  return ret;
 }
 
 static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
@@ -6385,7 +6385,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_poly_ret(c, id); return 1; }
+        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_call_ret(c, id, TY_POLY); return 1; }
         if (oc_mi >= 0 && !cplan_reopen_runs_builtin(c, id, oc_mi)) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
       }
     }
@@ -8636,7 +8636,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && argc == 0 && (is_copy_alias(name)) &&
       infer_type(c, recv) == TY_POLY) {
     if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) comp_set_poly_builtin_ty(c, id, TY_POLY);
-    return an_planned_poly_ret(c, id);
+    return an_planned_call_ret(c, id, TY_POLY);
   }
 
   /* `!`, `!=` and `==` are ordinary methods a class may override, so the
@@ -8665,7 +8665,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_planned_poly_ret(c, id);
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_planned_call_ret(c, id, TY_POLY);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (g_plan_check) an_user_union_record(c, id, recv, rt);
@@ -8717,7 +8717,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return an_planned_poly_ret(c, id);
+    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return an_planned_call_ret(c, id, TY_POLY);
     /* a kind no reopening serves gets the builtin's answer: boxed when the
        two answer different types */
     if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
@@ -9129,8 +9129,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Kernel#puts / #print return nil; typed so the value form composes. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_text_print(name)) &&
-      nt_ref(nt, id, "block") < 0)
-    return TY_NIL;
+      nt_ref(nt, id, "block") < 0) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    return p->mi >= 0 ? an_user_call(c, id, p->mi, p->via, p->owner_ci) : TY_NIL;
+  }
   /* a warn's messages rendered as one String, for $stderr's own write
      (desugar_std_stream_bare_warn) */
   if (recv < 0 && sp_streq(name, "warn") && nt_int(nt, id, "warn_text", 0)) return TY_STRING;
