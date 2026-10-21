@@ -6344,7 +6344,8 @@ const char *iv_c(const char *name) {
    them come from one backward pass, kept until the scope count changes. */
 int g_scopes_settled = 0;
 static const Compiler *g_shadow_c;
-static int g_shadow_n = -1;
+static int g_shadow_n = -1, g_shadow_raw;
+static unsigned g_shadow_gen;
 static unsigned char *g_shadow_tab;
 typedef struct { const char *name; int class_id, is_cm, used, any, d1, multi; } ShadowKey;
 static unsigned shadow_hash(const char *nm, int cls, int cm) {
@@ -6353,7 +6354,9 @@ static unsigned shadow_hash(const char *nm, int cls, int cm) {
   return h ^ ((unsigned)cls * 2654435761u) ^ (unsigned)cm;
 }
 static int scope_is_shadowed_scan(Compiler *c, int s);
-static void shadow_tab_build(Compiler *c) {
+/* raw: by the class and the kind the scope has now, which is what the
+   scan compares before the scopes settle; else by the scope's own class */
+static void shadow_tab_build(Compiler *c, int raw) {
   int n = c->nscopes;
   free(g_shadow_tab);
   g_shadow_tab = (unsigned char *)calloc((size_t)(n > 0 ? n : 1), 1);
@@ -6366,8 +6369,9 @@ static void shadow_tab_build(Compiler *c) {
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
-    int own_cm, own = comp_scope_own_class(c, k, &own_cm);
-    int cls = own < 0 ? -1 : own, cm = own_cm ? 1 : 0;
+    int cls, cm;
+    if (raw) { cls = sc->class_id < 0 ? -1 : sc->class_id; cm = sc->is_cmethod; }
+    else { int own_cm, own = comp_scope_own_class(c, k, &own_cm); cls = own < 0 ? -1 : own; cm = own_cm ? 1 : 0; }
     size_t i = shadow_hash(sc->name, cls, cm) & (cap - 1);
     while (tab[i].used && !(tab[i].class_id == cls && tab[i].is_cm == cm && sp_streq(tab[i].name, sc->name)))
       i = (i + 1) & (cap - 1);
@@ -6383,12 +6387,21 @@ static void shadow_tab_build(Compiler *c) {
     }
   }
   free(tab);
-  g_shadow_c = c; g_shadow_n = n;
+  g_shadow_c = c; g_shadow_n = n; g_shadow_raw = raw; g_shadow_gen = comp_scope_index_gen();
 }
 int scope_is_shadowed(Compiler *c, int s) {
   if (c->scopes[s].c_name) return 0;
-  if (!g_scopes_settled) return scope_is_shadowed_scan(c, s);
-  if (g_shadow_c != c || g_shadow_n != c->nscopes) shadow_tab_build(c);
+  /* Before the scopes settle, the scan's answer holds while the scope
+     index is frozen (the inference fixpoint among others): a scope is then
+     only appended, and the indexed ones keep their names and classes
+     (sm_build), so one pass answers for all of them until the count or the
+     index's epoch moves. Each ask scanned every later scope, and the call
+     planner asks per arm of every dispatch it weighs, every round. */
+  int raw = !g_scopes_settled;
+  if (raw && !comp_scope_index_is_frozen()) return scope_is_shadowed_scan(c, s);
+  if (g_shadow_c != c || g_shadow_n != c->nscopes || g_shadow_raw != raw ||
+      (raw && g_shadow_gen != comp_scope_index_gen()))
+    shadow_tab_build(c, raw);
   return g_shadow_tab[s];
 }
 static int scope_is_shadowed_scan(Compiler *c, int s) {
