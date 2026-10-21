@@ -195,12 +195,13 @@ static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p,
 static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cmeth, CallPlan *p) {
   int nd = 0;
   const int *ds = comp_descendants(c, cid, &nd);
+  int reader = !cmeth && comp_reader_in_chain(c, cid, name, NULL);
   for (int i = 0; i < nd; i++) {
-    int mi = cmeth ? comp_cmethod_in_class(c, ds[i], name)
+    int mi = reader ? comp_method_in_chain(c, ds[i], name, NULL) : cmeth ? comp_cmethod_in_class(c, ds[i], name)
                    : comp_method_in_class(c, ds[i], name);
     if (mi < 0) continue;
     cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
-              cmeth ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+              cmeth || reader ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
     return;
   }
 }
@@ -364,7 +365,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int nd = 0;
       const int *ds = comp_descendants(c, cid, &nd);
       for (int i = 0; i < nd; i++) {
-        int kmi = ds[i] != cid ? comp_method_in_class(c, ds[i], name) : -1;
+        int kmi = -1;
+        if (ds[i] != cid) comp_resolve_member(c, ds[i], name, 0, NULL, &kmi);
         if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_SWITCH); return; }
       }
     }

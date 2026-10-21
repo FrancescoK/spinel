@@ -5965,6 +5965,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
               TyKind kr = (TyKind)c->scopes[kmi].ret;
               if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
             }
+            if (g_plan_check && nt_ref(nt, id, "block") >= 0) {
+              const CallPlan *p = cplan_user_fresh(c, id);
+              if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+            }
             { *out = rt2; return 1; }
           }
         }
