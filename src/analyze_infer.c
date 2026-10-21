@@ -8632,7 +8632,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && argc == 0 && (is_copy_alias(name)) &&
       infer_type(c, recv) == TY_POLY) {
     if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) comp_set_poly_builtin_ty(c, id, TY_POLY);
-    return TY_POLY;
+    return an_planned_poly_ret(c, id);
   }
 
   /* `!`, `!=` and `==` are ordinary methods a class may override, so the
