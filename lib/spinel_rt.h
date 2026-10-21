@@ -416,6 +416,7 @@ const char *sp_sprintf(const char *fmt, ...);
    unlike Integer.sqrt which quotes "isqrt". */
 static inline sp_float sp_math_sqrt(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - sqrt");return x==0.0?0.0:sqrt(x);}  /* normalize sqrt(-0.0) to +0.0 like CRuby */
 static inline sp_float sp_math_log(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log");return log(x);}
+static inline sp_float sp_math_log1p(sp_float x){if(x<-1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log1p");return log1p(x);}
 static inline sp_float sp_math_log2(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log2");return log2(x);}
 static inline sp_float sp_math_log10(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log10");return log10(x);}
 static inline sp_float sp_math_acos(sp_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - acos");return acos(x);}
