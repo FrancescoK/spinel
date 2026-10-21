@@ -13168,7 +13168,11 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
-  if (ts && ts->ret_handle && strbuf_builtin_tail(c, node)) {
+  /* (not a call that answers nil's own value for a nil receiver, `x.to_s`
+     through a reader: emit_nil_answer_call's arm, which the handle read
+     here would skip) */
+  if (ts && ts->ret_handle && strbuf_builtin_tail(c, node) &&
+      !(g_one_string && cplan_nil(c, node) == CN_ANSWER)) {
     str_read_handle_open(b, 1);
     emit_strbuf_handle_of(c, node, b);
     str_read_handle_close(b);
