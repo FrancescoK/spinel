@@ -8617,7 +8617,8 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      for (int j = 0; j < an; j++) {
+      /* prepend A, B has A first in the ancestor chain: install B first. */
+      for (int j = an - 1; j >= 0; j--) {
         int mod_id = mixin_arg_class(c, args[j]);
         NodeKind pk = nt_kind(nt, args[j]);
         if ((pk == NK_ConstantReadNode || pk == NK_ConstantPathNode) && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))

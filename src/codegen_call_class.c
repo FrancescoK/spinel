@@ -135,9 +135,12 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
       if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
           comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
         emit_responds_name(c, k, c->scopes[s].name, &pb, &vb);
-    for (int m = 0; m < c->n_native_methods; m++)
-      if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
-        emit_responds_name(c, k, c->native_methods[m].name, &pb, &vb);
+    /* Native methods are inherited too. The receiver's visibility and
+       undef declarations still decide which list receives each name. */
+    for (int p = k; p >= 0; p = c->classes[p].parent)
+      for (int m = 0; m < c->n_native_methods; m++)
+        if (c->native_methods[m].class_id == p && !c->native_methods[m].kind)
+          emit_responds_name(c, k, c->native_methods[m].name, &pb, &vb);
     for (int p = k; p >= 0; p = c->classes[p].parent) {
       ClassInfo *cl = &c->classes[p];
       for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], &pb, &vb);
@@ -495,12 +498,14 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           int first = 1;
           for (int k = 0; k < c->nclasses; k++) {
             if (comp_is_undeffed_in_chain(c, k, qm)) continue;
+            int nk = comp_native_binding_class(c, k, qm);
+            int native = nk >= 0 && comp_native_method_find(c, nk, qm, 0, 0) >= 0;
+            int native_private = native && comp_method_vis_in_chain(c, k, qm) != SP_VIS_PUBLIC;
             int has = (comp_method_in_chain(c, k, qm, NULL) >= 0 &&
                        !method_hidden_from_reflection(c, k, qm)) ||
                       comp_reader_in_chain(c, k, qm, NULL) ||
                       (is_wr && comp_writer_in_chain(c, k, wbase, NULL)) ||
-                      (c->classes[k].is_native_class &&
-                       comp_native_method_find(c, k, qm, 0, 0) >= 0) ||
+                      native ||
                       /* the names the class carries without a method entry
                          answer as they do on the typed receiver */
                       class_implicit_responds(c, k, qm);
@@ -517,6 +522,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
               for (int q = 0; q < xn; q++)
                 buf_printf(b, "%ssp_exc_cls_matches(((sp_Exception *)_t%d.v.p)->cls_name, \"%s\")",
                            q ? " || " : "", tv, c->classes[xr[q]].name);
+              buf_puts(b, "))");
+            }
+            else if (native_private) {
+              buf_printf(b, "%s(_k%d == %d && (", first ? "" : " || ", tv, k);
+              if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
               buf_puts(b, "))");
             }
             else {
