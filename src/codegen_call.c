@@ -11519,7 +11519,7 @@ int attr_writer_named(Compiler *c, int cls, const char *name) {
 int boxed_stat_pred(const char *name) {
   static const char *const spred[] = { "pipe?", "", "readable?", "writable?",
                                        "executable?", "blockdev?", "chardev?",
-                                       "size?", NULL };
+                                       "size?", "executable_real?", NULL };
   static const char *const tpred[] = { "file?", "directory?", "symlink?",
                                        "owned?", "grpowned?", "setuid?",
                                        "setgid?", "sticky?", "socket?", NULL };
@@ -11547,7 +11547,7 @@ void emit_stat_handle_only(int th, const char *name, Buf *b) {
 /* File::Stat's numeric fields, which the TY_IO arms answer for the handle a
    stat is carried in; a field's index is its slot in sp_stat_field. */
 const char *const boxed_stat_sfield[] = { "uid", "gid", "nlink", "dev", "ino",
-                                                 "blksize", "blocks", "rdev", NULL };
+                                                 "blksize", "blocks", "rdev", "dev_major", "dev_minor", NULL };
 /* mode or one of those fields */
 int boxed_stat_name(const char *name) {
   if (sp_streq(name, "mode")) return 1;

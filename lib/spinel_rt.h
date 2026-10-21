@@ -2146,7 +2146,8 @@ static sp_bool sp_io_in_lists(const char *m, const char *const *both,
 }
 static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   static const char *const statm[] = { "blksize", "blockdev?", "blocks", "chardev?",
-    "dev", "directory?", "executable?", "file?", "gid", "grpowned?", "ino", "mode",
+    "dev", "dev_major", "dev_minor", "directory?", "executable?", "executable_real?",
+    "file?", "gid", "grpowned?", "ino", "mode",
     "nlink", "owned?", "pipe?", "rdev", "readable?", "setgid?", "setuid?", "size",
     "size?", "socket?", "sticky?", "symlink?", "uid", "writable?", "zero?", NULL };
   static const char *const statm_t[] = { "atime", "birthtime", "ctime", "ftype",
@@ -4928,6 +4929,12 @@ sp_int sp_stat_pred(sp_File *f, sp_int kind);
 static sp_bool sp_poly_io_is_stat(sp_RbVal v) {
   sp_File *f = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO ? (sp_File *)v.v.p : NULL;
   return f && f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0);
+}
+/* New Stat-only accessors must not leak through the shared TY_IO handle type. */
+static SP_INLINE sp_File *sp_stat_extended_recv(sp_File *f, const char *name) {
+  sp_RbVal v = sp_box_obj(f, SP_BUILTIN_IO);
+  if (!sp_poly_io_is_stat(v)) sp_raise_poly_nomethod(name, v);
+  return f;
 }
 static sp_bool sp_poly_io_owns(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p && ((sp_File *)v.v.p)->is_file;

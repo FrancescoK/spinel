@@ -588,6 +588,9 @@ still works.
   pulls is still listed. A splatted argument is refused at compile time
   (with a block it fails to build).
 
+- **`File::Stat#rdev_major` and `#rdev_minor`** -- refused at compile time
+  ("unsupported call") on a typed File::Stat; a boxed one raises NoMethodError.
+
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
   including `delete`, `clear`, and `[]=` on a Hash read from a mixed container,
   matching CRuby.
