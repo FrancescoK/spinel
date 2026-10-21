@@ -2832,11 +2832,26 @@ static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
 
 /* A block's break widens the answer without changing the call's target. */
 static TyKind an_break_call_ret(Compiler *c, int id) {
-  if (g_plan_check) {
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
   }
   return TY_POLY;
+}
+
+static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
+  /* --plan-check: a boxed receiver's call is dispatched over every user
+     class's method of the name; the first candidate stands for that union
+     (an arm below that binds one method records it instead).
+     The call plan also includes class methods, on boxed or Class values.
+     Constants bind in their own rules below; only a Class value needs
+     this union record. */
+  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+      recv >= 0 && (rt == TY_POLY || (rt == TY_CLASS &&
+      nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
+  }
 }
 
 /* Does the row this pass finds for call `id` count as the call's own? Not
@@ -3932,7 +3947,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin (`class String; def ...`) keeps its builtin
            representation: `String.new` is a String, not a user object (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
@@ -3985,7 +4003,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin keeps its builtin representation (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
       }
@@ -5301,7 +5322,8 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
   if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
     /* The comparison is Boolean even when the plan routes it through a
        user method returning the ordering value. Keep that target too. */
-    if (g_plan_check && ty_is_object(rt)) {
+    if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+        ty_is_object(rt)) {
       const CallPlan *p = cplan_user_fresh(c, id);
       if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
     }
@@ -8555,14 +8577,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-  /* --plan-check: a boxed receiver's call is dispatched over every user
-     class's method of the name; the first candidate stands for that union
-     (an arm below that binds one method records it instead).
-     The call plan also includes class methods, on boxed or Class values. */
-  if (g_plan_check && recv >= 0 && (rt == TY_POLY || rt == TY_CLASS) && !an_builtin_only) {
-    const CallPlan *p = cplan_user_fresh(c, id);
-    if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
-  }
+  if (g_plan_check) an_user_union_record(c, id, recv, rt);
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
      (respond_to_user_defined: an instantiated class with respond_to? in its
