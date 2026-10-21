@@ -16876,7 +16876,7 @@ static void an_sbn_build(Compiler *c) {
   free(last);
   an_sbn_stamp_n = c->nscopes; an_sbn_stamp_gen = comp_scope_index_gen();
 }
-static int an_scopes_named_first(Compiler *c, const char *nm) {
+int an_scopes_named_first(Compiler *c, const char *nm) {
   if (!nm) return -1;
   if (comp_scope_index_is_frozen()) {
     if (an_sbn_stamp_n != c->nscopes || an_sbn_stamp_gen != comp_scope_index_gen()) an_sbn_build(c);
@@ -16887,7 +16887,7 @@ static int an_scopes_named_first(Compiler *c, const char *nm) {
     if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return i;
   return -1;
 }
-static int an_scopes_named_next(Compiler *c, const char *nm, int s) {
+int an_scopes_named_next(Compiler *c, const char *nm, int s) {
   if (!nm || s < 1) return -1;
   if (comp_scope_index_is_frozen()) {
     if (an_sbn_stamp_n != c->nscopes || an_sbn_stamp_gen != comp_scope_index_gen()) an_sbn_build(c);

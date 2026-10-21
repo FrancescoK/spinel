@@ -11222,9 +11222,12 @@ static int block_reach(Compiler *c, int si, const BlockSig *s, TyKind *pos,
       continue;
     }
     int found = 0;
-    for (int u = 1; byname && u < c->nscopes; u++) {
+    /* (every scope of the name, in order, from the by-name table: the
+       scan of every scope per forwarded call was 118k name compares on a
+       Rails program late in its fixpoint) */
+    for (int u = byname ? an_scopes_named_first(c, fn) : -1; u >= 1; u = an_scopes_named_next(c, fn, u)) {
       Scope *us = &c->scopes[u];
-      if (us->is_cmethod || !us->name || !sp_streq(us->name, fn)) continue;
+      if (us->is_cmethod) continue;
       int y = forwarding_yield_target(c, u, 0);
       if (y < 0) continue;
       found = 1;
