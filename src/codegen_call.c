@@ -1273,11 +1273,6 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
   refuse_from_plan(c, id, CRF_IO_REOPEN, "refuse-io-reopen");
   for (int i = 0; i < n; i++) {
     if (plain && io_reopen_call_vis(c, ks[i], name, 1, caller) != SP_VIS_PUBLIC) all_public = 0;
-    Scope *km = &c->scopes[comp_method_in_chain(c, ks[i], name, NULL)];
-    if (km->yields || (km->blk_param && km->blk_param[0])) {
-      if (g_plan_check && !g_unsup_probe) fprintf(stderr, "plan-check: cplan-fallback: refuse-io-reopen node %d\n", id);
-      unsupported(c, id, "call");
-    }
   }
   if (n == 1 && all_public && sp_streq(c->classes[ks[0]].name, "IO")) {
     int mi = comp_method_in_chain(c, ks[0], name, NULL);
