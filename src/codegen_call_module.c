@@ -755,6 +755,27 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
+    /* Blockless foreach retains its arguments for a lazy generator run. */
+    if (sp_streq(name, "foreach") && nt_ref(nt, id, "block") < 0) {
+      /* a splat's length is only known when it runs: refused, not guessed */
+      if (nt_argv_has_splat(nt, argv, argc)) {
+        unsupported_feature(c, id, "Dir.foreach with a splatted argument and no block");
+        buf_puts(b, "NULL");
+        return 1;
+      }
+      int ev = -1;
+      if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
+        int en = 0; (void)nt_arr(nt, argv[1], "elements", &en);
+        if (en == 1) ev = kwh_lookup(nt, argv[1], "encoding");
+      }
+      if (argc == 1 || (argc == 2 && ev >= 0)) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_dir_foreach_enum(_t%d, ", tp, tp);
+        if (ev >= 0) emit_boxed(c, ev, b); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, ", sp_poly_arg_path); })"); return 1;
+      }
+    }
     if ((is_directory_entries(name)) && argc == 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }

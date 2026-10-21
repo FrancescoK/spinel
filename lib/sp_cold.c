@@ -3648,6 +3648,59 @@ sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVa
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = SPL("each");
   return e;
 }
+/* Blockless Dir.foreach: each run reads its own entries, so #to_a and
+   #rewind do not borrow another run's cursor. Path coercion, opening and
+   reading are deferred until the first pull. */
+typedef struct {
+  sp_RbVal path, encoding;
+  const char *(*get_path)(sp_RbVal);
+} sp_DirForeachCap;
+static void sp_dir_foreach_scan(void *p) {
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)p;
+  sp_mark_rbval(cap->path); sp_mark_rbval(cap->encoding);
+}
+static void sp_dir_foreach_gen(sp_Fiber *f) {
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)f->user_data;
+  SP_GC_ROOT(cap);
+  const char *path = cap->get_path(cap->path);
+  SP_GC_ROOT_STR(path);
+  if (!path) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  int binary = 0;
+  if (cap->encoding.tag != SP_TAG_NIL) {
+    sp_RbVal enc = sp_encoding_find(cap->encoding);
+    binary = enc.tag == SP_TAG_ENCODING && enc.v.s && strcmp(enc.v.s, "ASCII-8BIT") == 0;
+  }
+  /* The entries are read and the directory closed on the first pull, so a
+     run the consumer stops early (first, take, a break) holds no descriptor. */
+  sp_Dir *dir = sp_Dir_new(path);
+  SP_GC_ROOT(dir);
+  sp_PolyArray *names = sp_PolyArray_new();
+  SP_GC_ROOT(names);
+  const char *name = NULL;
+  SP_GC_ROOT_STR(name);
+  while ((name = sp_Dir_read(dir)) != NULL) {
+    if (binary) sp_str_as_binary(name);
+    sp_PolyArray_push(names, sp_box_str(name));
+  }
+  sp_Dir_close(dir);
+  for (sp_int i = 0; i < names->len; i++) sp_Fiber_yield(names->data[i]);
+  f->yielded_value = sp_box_nil();
+}
+const char *sp_poly_inspect(sp_RbVal v);   /* lib/sp_poly_cold.c */
+const char *sp_poly_to_s(sp_RbVal v);      /* lib/sp_poly_cold.c */
+sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
+                                  const char *(*get_path)(sp_RbVal)) {
+  SP_GC_ROOT_RBVAL(path); SP_GC_ROOT_RBVAL(encoding);
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)sp_gc_alloc(sizeof *cap, NULL, sp_dir_foreach_scan);
+  SP_GC_ROOT(cap);
+  cap->path = path; cap->encoding = encoding; cap->get_path = get_path;
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_dir_foreach_gen, cap, sp_box_nil()); SP_GC_ROOT(e);
+  /* inspects as CRuby's: Dir:foreach("path") or Dir:foreach("path", encoding: NAME) */
+  const char *lbl = sp_str_concat(SPL("foreach("), sp_poly_inspect(path)); SP_GC_ROOT_STR(lbl);
+  if (encoding.tag != SP_TAG_NIL) lbl = sp_str_concat(sp_str_concat(lbl, SPL(", encoding: ")), sp_poly_to_s(encoding));
+  lbl = sp_str_concat(lbl, SPL(")"));
+  return sp_enum_with_src(e, sp_box_class_name(SPL("Dir")), lbl);
+}
 /* Blockless Kernel#loop: an infinite Enumerator that yields nil forever (#3236).
    The generator is internal; only sp_loop_enum is exposed (spinel_rt.h). */
 static void sp_loop_gen(sp_Fiber *f) {
