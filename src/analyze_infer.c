@@ -8210,6 +8210,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
       id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
 
+  if (!an_builtin_only && is_ivar_reflection_name(nt_str(c->nt, id, "name"))) {
+    CallPlan p = cplan_send_arm(c, id);
+    if (p.mi >= 0 && p.dispatch == CP_DIRECT)
+      return an_user_call(c, id, p.mi, p.via, p.owner_ci);
+  }
   return TY_UNKNOWN;
 }
 

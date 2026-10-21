@@ -140,7 +140,7 @@ for f in $STRICT_PROGRAMS; do
   fi
 done
 # Emission trials must preserve the inferred user target of the real call.
-STRICT_UCALL_PROGRAMS="test/call_plan_literal_send.rb test/call_plan_conversion.rb test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb test/call_plan_reader_target.rb test/call_plan_break_target.rb
+STRICT_UCALL_PROGRAMS="test/call_plan_reflection_override.rb test/call_plan_literal_send.rb test/call_plan_conversion.rb test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb test/call_plan_reader_target.rb test/call_plan_break_target.rb
  test/call_plan_delegated_protocol.rb test/call_plan_builtin_object.rb test/call_plan_poly_operator_override.rb
  test/poly_dispatch_builtin_enum_arm.rb
  test/devirt_call_return_box.rb test/obj_class_cmethod_subclass_self.rb"
