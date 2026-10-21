@@ -18,8 +18,9 @@
 # receiver typed per copy, compared with its own copy's row) fail too, as
 # does a user call respecialized against its copy's method: all three were
 # brought to 0 over the corpus (#9821, #9830), and a new one is fixed in its
-# row, not counted. -v lists every kind; the user-call and poly-arm counts
-# that are not 0 yet are reported.
+# row, not counted. A poly dispatch's missing and extra arms (#9866) fail
+# the same way. -v lists every kind; the counts that are not 0 yet
+# (ucall-unrecorded) are reported, and join the failing set when they are.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -93,6 +94,11 @@ psum=$(grep ': plan-check: poly-arms: ' "$OUT" | sed 's/.*poly-arms: //' |
 grep ': plan-check: poly-conflict:' "$OUT" | head -20
 echo "plan-check: poly arms: $psum"
 ppc=$(grep -c ': plan-check: poly-conflict:' "$OUT")
+# the arms the plan has and the switch lacks (poly-missing), and the reverse
+# (poly-extra): both 0 over the corpus since #9866, so either fails
+ppm=$(grep -c ': plan-check: poly-missing:' "$OUT")
+ppe=$(grep -c ': plan-check: poly-extra:' "$OUT")
+grep -E ': plan-check: poly-(missing|extra):' "$OUT" | head -20
 # refusals: the ones codegen reports against the plan's (CP_REFUSE); the
 # ones only codegen decides are counted by what is left (codegen_util.c)
 rfsum=$(grep ': plan-check: refuse: ' "$OUT" | sed 's/.*refuse: //' | tr -d '(),' |
@@ -139,4 +145,4 @@ for f in $STRICT_UCALL_PROGRAMS; do
 done
 echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$ppm" -eq 0 ] && [ "$ppe" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
