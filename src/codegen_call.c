@@ -18507,33 +18507,61 @@ void emit_math_arg(Compiler *c, int node, Buf *out) {
    `unless` or ternary) and emit_obj_class_when (the typed class arm of a
    `when` or `in`) read it too, so a module the class includes matches
    there as well. */
-int class_includes_module_named(Compiler *c, int cid, const char *mod_name) {
+/* The names each class's bodies include by a literal `include`, by class:
+   one pass over the node table, kept until the table or the class table
+   moves. Each ask read every node of the program for each class on the
+   chain, and class_mixes_in asks per included module on the way: on a
+   Rails program late in its fixpoint (2.3M nodes) the scan was 9% of a
+   sampled window, under class_is_comparable. */
+static const NodeTable *inc_nt; static unsigned inc_ver; static int inc_count, inc_ncls = -1;
+static int *inc_head, *inc_next, inc_n, inc_cap; static const char **inc_name;
+static void inc_index_build(Compiler *c) {
   const NodeTable *nt = c->nt;
-  for (int cur = cid; cur >= 0; cur = c->classes[cur].parent) {
-    for (int id = 0; id < nt->count; id++) {
-      const char *ty = nt_type(nt, id);
-      if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      if (!cn || comp_class_index(c, cn) != cur) continue;
-      int body = nt_ref(nt, id, "body");
-      int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      for (int k = 0; k < bn; k++) {
-        const char *sty = nt_type(nt, stmts[k]);
-        if (!sty || !sp_streq(sty, "CallNode")) continue;
-        const char *nm = nt_str(nt, stmts[k], "name");
-        if (!nm || !sp_streq(nm, "include") || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
-        int an = 0; const int *aa;
-        int anode = nt_ref(nt, stmts[k], "arguments");
-        aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-        for (int j = 0; j < an; j++) {
-          const char *anm = nt_type(nt, aa[j]) && (sp_streq(nt_type(nt, aa[j]), "ConstantReadNode") ||
-                                                   sp_streq(nt_type(nt, aa[j]), "ConstantPathNode"))
-                            ? nt_str(nt, aa[j], "name") : NULL;
-          if (anm && sp_streq(anm, mod_name)) return 1;
+  free(inc_head); free(inc_next); free(inc_name);
+  inc_head = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  inc_next = NULL; inc_name = NULL; inc_n = 0; inc_cap = 0;
+  if (!inc_head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < c->nclasses; k++) inc_head[k] = -1;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    int cls = cn ? comp_class_index(c, cn) : -1;
+    if (cls < 0 || cls >= c->nclasses) continue;
+    int body = nt_ref(nt, id, "body");
+    int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      const char *sty = nt_type(nt, stmts[k]);
+      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      const char *nm = nt_str(nt, stmts[k], "name");
+      if (!nm || !sp_streq(nm, "include") || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
+      int an = 0; const int *aa;
+      int anode = nt_ref(nt, stmts[k], "arguments");
+      aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      for (int j = 0; j < an; j++) {
+        const char *anm = nt_type(nt, aa[j]) && (sp_streq(nt_type(nt, aa[j]), "ConstantReadNode") ||
+                                                 sp_streq(nt_type(nt, aa[j]), "ConstantPathNode"))
+                          ? nt_str(nt, aa[j], "name") : NULL;
+        if (!anm) continue;
+        if (inc_n == inc_cap) {
+          inc_cap = inc_cap ? inc_cap * 2 : 256;
+          inc_next = realloc(inc_next, sizeof(int) * (size_t)inc_cap);
+          inc_name = realloc(inc_name, sizeof(char *) * (size_t)inc_cap);
+          if (!inc_next || !inc_name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         }
+        inc_name[inc_n] = anm; inc_next[inc_n] = inc_head[cls]; inc_head[cls] = inc_n; inc_n++;
       }
     }
+  }
+  inc_nt = nt; inc_ver = nt->version; inc_count = nt->count; inc_ncls = c->nclasses;
+}
+int class_includes_module_named(Compiler *c, int cid, const char *mod_name) {
+  const NodeTable *nt = c->nt;
+  if (inc_nt != nt || inc_ver != nt->version || inc_count != nt->count || inc_ncls != c->nclasses) inc_index_build(c);
+  for (int cur = cid; cur >= 0 && cur < c->nclasses; cur = c->classes[cur].parent) {
+    for (int e = inc_head[cur]; e >= 0; e = inc_next[e])
+      if (sp_streq(inc_name[e], mod_name)) return 1;
     if (c->classes[cur].parent == cur) break;
   }
   return 0;
