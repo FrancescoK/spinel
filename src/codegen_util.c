@@ -6809,6 +6809,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   case TY_REGEX: self_cls = "Regexp"; break;
   case TY_MATCHDATA: self_cls = "MatchData"; break;
   case TY_PROC: self_cls = "Proc"; break;
+  case TY_METHOD: self_cls = "Method"; break;
   case TY_RANDOM: self_cls = "Random"; break;
   case TY_IO: self_cls = "IO"; break;
   case TY_OPENSTRUCT: self_cls = "OpenStruct"; break;
