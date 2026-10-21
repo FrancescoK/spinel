@@ -1,0 +1,27 @@
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "NaN"]
+[FloatDomainError, "-Infinity"]
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "NaN"]
+[FloatDomainError, "-Infinity"]
+3
+0
+2
+[Math::DomainError, "Numerical argument is out of domain - \"isqrt\""]
+0
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "NaN"]
+[FloatDomainError, "-Infinity"]
+5
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "NaN"]
+[FloatDomainError, "-Infinity"]
+4
+[TypeError, "no implicit conversion of String into Integer"]
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "NaN"]
+3
+argument
+[FloatDomainError, "NaN"]
+5
+[ArgumentError, "wrong number of arguments (given 2, expected 1)"]

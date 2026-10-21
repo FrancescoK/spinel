@@ -1159,7 +1159,11 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       return 1;
     }
     if (repr_of(c, argv[0]).kind == RK_BOXED) {
-      buf_puts(b, "sp_int_sqrt_arg("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_poly_isqrt("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    if (repr_of(c, argv[0]).as_ty == TY_FLOAT && !nt_argv_has_splat(nt, argv, argc)) {
+      buf_puts(b, "sp_float_isqrt("); emit_scalar_operand(c, argv[0], "0.0", b); buf_puts(b, ")");
       return 1;
     }
     buf_puts(b, "sp_int_sqrt("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
