@@ -23013,6 +23013,43 @@ static void emit_store_index(Compiler *c, int ix, int v, int tk, char *redo, siz
   }
 }
 
+/* A `&.` String mutator statement over a variable or a constant
+   (`s&.slice!(1)`, `@s&.<<(x)`): the variable is tested where it lives, and the statement
+   arms run for a String only. They change the variable, or the handle every
+   alias reads (a shim reruns the arm on a shadow and writes it back). The
+   value form's guard reads the receiver into a temp and binds the call to
+   it, so the arm changed the temp and the variable kept its text. Nothing
+   runs between the test and the arm's read of the variable, and the `if`
+   skips the arguments for a nil, as CRuby does. Answers -1 for another
+   receiver, or when the arms decline. */
+static int str_mutate_sn_var_guard(Compiler *c, int id, int recv, Buf *b, int indent) {
+  NodeKind k = nt_kind(c->nt, nt_paren_single(c->nt, recv));
+  if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) return -1;
+  Buf ab; memset(&ab, 0, sizeof ab);
+  Buf apre; memset(&apre, 0, sizeof apre);
+  /* what the arms put ahead of their statement runs inside the guard */
+  Buf *sv_pre = g_pre;
+  g_pre = &apre;
+  int sv = g_sn_skip; g_sn_skip = id;
+  int r = emit_array_mutate_stmt(c, id, &ab, indent + 1);
+  g_sn_skip = sv;
+  g_pre = sv_pre;
+  if (r) {
+    /* (a handle's slot is tested as the handle, with no read of its bytes) */
+    Buf tb; memset(&tb, 0, sizeof tb);
+    if (!strbuf_slot_text(c, recv, &tb)) emit_expr(c, recv, &tb);
+    emit_indent(b, indent);
+    buf_printf(b, "if ((%s) != NULL) {\n", tb.p ? tb.p : "NULL");
+    free(tb.p);
+    buf_puts(b, apre.p ? apre.p : "");
+    buf_puts(b, ab.p ? ab.p : "");
+    emit_indent(b, indent);
+    buf_puts(b, "}\n");
+  }
+  free(ab.p); free(apre.p);
+  return r ? 1 : -1;
+}
+
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -23032,6 +23069,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     return 1;
   }
   TyKind rt = comp_ntype(c, recv);
+  /* a `&.` String mutator's guard, unless the receiver is a shim's shadow
+     (sb_shadowed_reader): the shim took the receiver and tested it, and the
+     guard read the shadow ahead of the statement, before the shim declared it */
+  int sn_str = nt_safe_nav(nt, id) && (rt == TY_STRING || rt == TY_STRBUF) && sn_guard_pending(c, id) &&
+               !sb_shadowed_reader(recv);
+  if (sn_str) { int rv = str_mutate_sn_var_guard(c, id, recv, b, indent); if (rv >= 0) return rv; }
   /* a safe navigation on an Array or a Hash that can be nil, or a push on a
      boxed value, takes the value form, which tests the receiver before it
      runs the arguments and skips both on a nil: the statement arms below
@@ -23039,8 +23082,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
      nil one */
   if (nt_safe_nav(nt, id) &&
       ((rt == TY_POLY && is_push_alias(name)) ||
-       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil) ||
-       ((rt == TY_STRING || rt == TY_STRBUF) && sn_guard_pending(c, id)))) {
+       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil) || sn_str)) {
     TyKind st = repr_of(c, id).as_ty;
     emit_indent(b, indent);
     buf_puts(b, "(void)(");
