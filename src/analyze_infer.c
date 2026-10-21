@@ -5176,8 +5176,8 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
       }
       { *out = TY_UNKNOWN; return 1; }
     }
-    /* array * int -> same array type (repeat); array * string -> join string */
-    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) { *out = rt; return 1; }
+    /* Array repetition accepts Integer and Float counts; String joins. */
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && (a0 == TY_INT || a0 == TY_FLOAT)) { *out = rt; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && ty_is_object(a0)) {
       int smi = comp_method_in_chain(c, ty_object_class(a0), "to_str", NULL);
