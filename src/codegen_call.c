@@ -1687,12 +1687,12 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
     if (!scope_has_callable_symbol(c, kmi) && kpf < 0) continue;
     if (kpf >= 0) kmi = kpf;
     Scope *ks = &c->scopes[kmi];
-    /* a rest candidate has an arm when its rest is the boxed array a splat
-       starts as: the surplus arguments are packed into it (FFI::Struct.layout
-       read as `klass.layout`). Any other rest candidate falls to the default
-       raise. */
+    /* a rest candidate has an arm as an instance one does: the arm's
+       layout (emit_poly_arm_args) packs the surplus arguments into the rest
+       and the keywords into a **rest beside it. Only the boxed-array rest
+       with no keywords used to be packed, so `def self.split(...)` fell to
+       the default raise (#9878). */
     if (ks->yields) continue;
-    if (ks->rest_idx >= 0 && !rest_packable_arm(c, ks)) continue;
     /* the count and the keywords as the instance arms judge them: a
        candidate the call gets wrong raises CRuby's ArgumentError, where it
        used to be left out and the call answered NoMethodError */
