@@ -1224,6 +1224,10 @@ static int builtin_name_in(const char *name, const char *const *names) {
 int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
 
+int is_enumerable_module_name(const char *n) {
+  return n && sp_streq(n, "Enumerable");
+}
+
 int is_comparable_module_name(const char *n) {
   return n && sp_streq(n, "Comparable");
 }

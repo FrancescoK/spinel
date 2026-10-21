@@ -17568,11 +17568,11 @@ int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
 int class_is_comparable(Compiler *c, int cid) {
   if (cid < 0 || cid >= c->nclasses) return 0;
   for (int cur = cid; cur >= 0; cur = c->classes[cur].parent) {
-    if (c->classes[cur].includes_comparable) return 1;
+    if (comp_comparable_reaches(c, cur)) return 1;
     if (c->classes[cur].parent == cur) break;
   }
   int oc = comp_class_index(c, "Object");
-  return oc >= 0 && c->classes[oc].includes_comparable;
+  return oc >= 0 && comp_comparable_reaches(c, oc);
 }
 /* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
    one, 0 otherwise. */

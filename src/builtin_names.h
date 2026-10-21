@@ -312,6 +312,7 @@ int builtin_module_owns(const char *cls, const char *name); /* included ahead of
 int is_include_name(const char *n);
 int is_prepend_name(const char *n);
 int is_comparable_module_name(const char *n);
+int is_enumerable_module_name(const char *n);
 int is_comparable_builtin_name(const char *n);
 typedef enum { BDC_BUILTIN, BDC_IDENTITY, BDC_EQUAL } BuiltinDefaultCmp;
 BuiltinDefaultCmp builtin_default_cmp(int family);

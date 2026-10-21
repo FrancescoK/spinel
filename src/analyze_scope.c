@@ -7049,7 +7049,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
   if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
       is_comparable_builtin_name(nt_str(nt, sc, "name")))
-    c->classes[ci].includes_comparable = 1;
+    c->classes[ci].cmp_inc_at = 1;
   int n = 0;
   const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
@@ -7063,8 +7063,9 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     /* `include A, B` includes B first, so A ends up in front (as extend) */
     for (int j = an - 1; j >= 0; j--) {
+      NodeKind ak = nt_kind(nt, args[j]);
       const char *aty = nt_type(nt, args[j]);
-      const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
+      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       /* `M = ::M` beside the include: a constant that merely ALIASES the
          module names it just as well, and the collision qualifier rewrites
@@ -7078,13 +7079,17 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         const char *al = resolve_class_alias(c, mname);
         if (al) mod_id = comp_class_index(c, al);
       }
-      if (is_comparable_module_name(mname) ||
-          (mod_id >= 0 && c->classes[mod_id].includes_comparable))
-        c->classes[ci].includes_comparable = 1;
-      if (!is_include_name(nm)) continue;
+      if (is_prepend_name(nm)) {
+        if (is_comparable_module_name(mname) || comp_comparable_reaches(c, mod_id))
+          c->classes[ci].cmp_prepended = 1;
+        if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
+        continue;
+      }
+      if (is_comparable_module_name(mname) && !c->classes[ci].cmp_inc_at)
+        c->classes[ci].cmp_inc_at = c->classes[ci].nincluded_mods + 1;
       /* where Enumerable sits among the includes (a later include goes in
          front): after the program's modules included so far */
-      if (mname && !c->classes[ci].enum_inc_at && sp_streq(mname, "Enumerable"))
+      if (!c->classes[ci].enum_inc_at && is_enumerable_module_name(mname))
         c->classes[ci].enum_inc_at = c->classes[ci].nincluded_mods + 1;
       if (mod_id < 0) {
         /* A module with no class of its own -- a builtin named through its
@@ -8631,9 +8636,6 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       /* prepend A, B has A first in the ancestor chain: install B first. */
       for (int j = an - 1; j >= 0; j--) {
         int mod_id = mixin_arg_class(c, args[j]);
-        NodeKind pk = nt_kind(nt, args[j]);
-        if ((pk == NK_ConstantReadNode || pk == NK_ConstantPathNode) && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))
-          c->classes[ci].enum_prepended = 1;
         if (mod_id < 0) continue;
         /* its readers answer in front of the class's own, as its methods do */
         for (int r = 0; r < c->classes[mod_id].nreaders; r++) {

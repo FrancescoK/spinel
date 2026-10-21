@@ -15510,6 +15510,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (mi < 0) {
       if (!bcase && class_is_comparable(c, k)) {
         int eq = class_default_cmp(c, k) == BDC_EQUAL &&
+                 !comp_comparable_answers_first(c, k, "==") &&
                  comp_method_in_chain(c, k, "==", NULL) >= 0;
         buf_printf(b, "    case %d: *comparable = %s(a, b); return 0;\n",
                    k, eq ? "sp_poly_rb_equal" : "sp_poly_equal");
