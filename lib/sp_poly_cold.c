@@ -629,6 +629,7 @@ sp_RbVal sp_poly_clear(sp_RbVal v)
      the box untouched. */
   if (v.tag == SP_TAG_STR) { sp_str_check_mutable(v.v.s); return sp_box_str(sp_str_from_bytes("", 0)); }
   sp_poly_coll_chk(v, "clear");
+  sp_poly_hash_check_mutable(v);
   if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:      ((sp_IntArray *)v.v.p)->len = 0; break;
