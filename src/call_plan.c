@@ -1580,29 +1580,56 @@ int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
 }
 
 /* The arms emit_poly_user_arms0 writes, class by class, in its order. */
+/* The arm class k takes in a zero-argument poly dispatch, decided class by
+   class as the dispatch did before the plan (cplan_poly) took it over:
+   --plan-check's assertion, and the arms of a dispatch the plan cannot
+   serve. 0 for none. */
+/* The emitter now reads these arms alone. */
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
   int cap = 0;
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
   int nks = cpoly_arm_classes(c, id, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
+    /* A never-instantiated class can't be this poly value's runtime class,
+       so drop its arm (method or reader); the referenced symbol then DCEs
+       as an unreferenced static (#1608). A primitive reopen's instances
+       exist without any constructor, so it keeps its arm (#4219). */
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
+    /* native (C-backed) class arm: dispatch a declared no-arg method to its
+       C symbol on the cast receiver, coercing the result into the slot. */
     if (comp_native_binding_class(c, k, name) >= 0) {
       int nmi = comp_native_method_find(c, k, name, 0, 0);
+      /* only a binding that takes no argument: the lookup falls back to
+         any arity, and StringScanner#peek(len) beside two user `peek`s
+         got an arm calling it with none, which C refused (#5359). A
+         receiver of that class then lands in the default arm. */
       if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
         TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
         cpoly_add(p, &cap, PA_NATIVE, k, -1, mret, mret == TY_NIL ? PC_VOID : cpoly_conv(ret, mret));
       }
+      /* one that needs arguments is CRuby's ArgumentError for this call */
       else if (nmi >= 0 && c->native_methods[nmi].nargs > 0 && c->classes[k].instantiated)
         cpoly_add(p, &cap, PA_ARITY, k, -1, TY_UNKNOWN, PC_VOID);
       continue;
     }
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, name, &defcls);
+    /* an exception class with no method of its own for the name takes
+       the builtin reopening's (`class Exception; def brief`) */
     if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
       int xd = exc_arm_definer(c, k, name);
       if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
     }
+    /* A Struct's synthesized each or each_pair, called with no block on a
+       boxed receiver: the typed receiver answers an Enumerator over the
+       members (its blockless each is redirected through __enum_to_a, its
+       each_pair through to_h), and the synthesized method, which yields,
+       raised LocalJumpError when this arm called it with no block. The
+       each Enumerator is built over the member array the generated
+       per-class dispatch answers, the each_pair one over the member hash
+       the to_h hook answers, so it yields [name, value] pairs. Not for a
+       Data class, which has neither name in CRuby. */
     if (mi >= 0 && c->classes[k].is_struct && !c->classes[k].is_data && g_gen_obj_struct_values &&
         ret == TY_POLY && nt_ref(c->nt, id, "block") < 0 &&
         nt_str(c->nt, c->scopes[mi].def_node, "synth") &&
@@ -1610,6 +1637,13 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       cpoly_add(p, &cap, PA_SYNTH_ENUM, k, mi, TY_ENUMERATOR, PC_SAME);
       continue;
     }
+    /* Skip a method with no standalone definition to call: DCE-pruned (its
+       params stayed TY_UNKNOWN so it was marked unreachable) or inlined at
+       call sites because it yields. Emitting a `case` arm that calls the
+       absent `sp_Class_method` symbol dangles at link (issue #1583). The
+       class can never be the receiver of this poly value anyway. */
+    /* A yielding candidate has a proc form emitted for exactly this
+       dispatch (#3399); it is as callable as any other symbol here. */
     { char zexp[600]; int rdc0 = -1;
       if (poly_arm_refuses_none(c, mi, zexp, sizeof zexp) && !comp_reader_in_chain(c, k, name, &rdc0)) {
         cpoly_add(p, &cap, PA_ARITY, k, mi, TY_UNKNOWN, PC_VOID);
@@ -1621,6 +1655,9 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
         comp_resolve_member(c, k, name, 0, NULL, NULL) != SP_MEMBER_ATTR &&
         (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
         !(c->classes[defcls].name && sp_streq(c->classes[defcls].name, "Class"))) {
+      /* A proc form is a separately inferred clone, so its own return type
+         is the one to read -- not the original's, which an inlined-only
+         method never needed (#3399). */
       int pfi = scope_proc_form_of(c, mi);
       Scope *ms = &c->scopes[pfi >= 0 ? pfi : mi];
       TyKind cret = ms->ret;
@@ -2141,6 +2178,10 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
 /* How a zero-argument dispatch holds and keys its receiver, and the type
    its arms answer into (an OpenStruct member read makes an untyped call
    poly), as emit_poly_method_dispatch decides them. */
+/* The receiver form a poly dispatch takes: the plan's (form) when the
+   plan answers the dispatch's result type (served), else the dispatch's
+   own reading (oform); --plan-check holds the two against each other. */
+/* The alternate reading described above is retired; emission reads these flags. */
 static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, PolySpecials0 *out) {
   PolySpecials0 ps;
   poly_specials0(c, id, name, &ps);
@@ -2148,6 +2189,16 @@ static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, Pol
   if (ps.ostruct && (p->ret == TY_UNKNOWN || p->ret == TY_VOID || p->ret == TY_NIL)) p->ret = TY_POLY;
   int root = ps.ncall_arm > 0 || ps.lengthlike || ps.empty || ps.pred || ps.class_named ||
              ps.class_reflect || ps.ostruct || ps.io_rewind || ps.poly_to_a || ps.poly_to_h;
+  /* A String mutated in place and then stored is boxed as its
+     shared-mutable handle, which no String arm below reads: the chain
+     built for a name a user class shares answered it with the switch's
+     NoMethodError (#5048). A reading method sees the handle's live
+     string, so it is read through the deref; a mutator, and a question
+     about the object itself rather than its value, keep the handle. */
+  /* Only a name String answers (the face table's String rows, and the
+     length-like and empty? arms above them) builds a String arm, so only
+     those dispatches pay the deref: the hottest one, an attr reader
+     shared by an AST's node classes, never sees a String. */
   unsigned sface = ty_poly_face_owners(name, 0, nt_ref(c->nt, id, "block") >= 0, 1, 1);
   int deref = (ps.lengthlike || ps.empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
               !sp_str_mutator(name, SP_MUT_LOCAL);
