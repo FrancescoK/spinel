@@ -1078,18 +1078,21 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
 static unsigned cmc_shape = 0;
 void comp_class_shape_changed(void) { cmc_shape++; }
 static char **cmc_name; static unsigned char *cmc_cm; static int **cmc_ans;
+static int **cmc_resp; static int *cmc_nresp;   /* per slot: the responders (comp_name_responders), -1 unbuilt */
 static int cmc_cap = 0, cmc_n = 0;
+static unsigned cmc_epoch;   /* bumped when a slot's index can move: a clear, a growth */
 static const Compiler *cmc_c; static unsigned cmc_gen, cmc_shape_at;
 static int cmc_nscopes = -1, cmc_nclasses = -1;
 static void cmc_clear(void) {
-  for (int i = 0; i < cmc_cap; i++) if (cmc_name && cmc_name[i]) { free(cmc_name[i]); free(cmc_ans[i]); }
-  free(cmc_name); free(cmc_cm); free(cmc_ans);
-  cmc_name = NULL; cmc_cm = NULL; cmc_ans = NULL; cmc_cap = cmc_n = 0;
+  for (int i = 0; i < cmc_cap; i++) if (cmc_name && cmc_name[i]) { free(cmc_name[i]); free(cmc_ans[i]); free(cmc_resp[i]); }
+  free(cmc_name); free(cmc_cm); free(cmc_ans); free(cmc_resp); free(cmc_nresp);
+  cmc_name = NULL; cmc_cm = NULL; cmc_ans = NULL; cmc_resp = NULL; cmc_nresp = NULL; cmc_cap = cmc_n = 0;
+  cmc_epoch++;
 }
-/* The answers for (name, is_cm), two ints per class (-2 while unasked), or
-   NULL when the memo cannot be trusted now. */
-static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
-  if (!sm_frozen || mv_n || !name || c->nclasses <= 0) return NULL;
+/* The slot of (name, is_cm), made when missing, or -1 when the memo cannot
+   be trusted now. */
+static int cmc_slot_idx(Compiler *c, const char *name, int is_cm) {
+  if (!sm_frozen || mv_n || !name || c->nclasses <= 0) return -1;
   if (cmc_c != c || cmc_gen != sm_gen || cmc_shape_at != cmc_shape ||
       cmc_nscopes != c->nscopes || cmc_nclasses != c->nclasses) {
     cmc_clear();
@@ -1098,30 +1101,53 @@ static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
   }
   if (cmc_n * 2 >= cmc_cap) {
     int ocap = cmc_cap; char **on = cmc_name; unsigned char *ocm = cmc_cm; int **oa = cmc_ans;
+    int **orp = cmc_resp; int *onr = cmc_nresp;
     cmc_cap = ocap ? ocap * 2 : 256;
     cmc_name = calloc((size_t)cmc_cap, sizeof(char *));
     cmc_cm = calloc((size_t)cmc_cap, 1);
     cmc_ans = calloc((size_t)cmc_cap, sizeof(int *));
-    if (!cmc_name || !cmc_cm || !cmc_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    cmc_resp = calloc((size_t)cmc_cap, sizeof(int *));
+    cmc_nresp = malloc(sizeof(int) * (size_t)cmc_cap);
+    if (!cmc_name || !cmc_cm || !cmc_ans || !cmc_resp || !cmc_nresp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < cmc_cap; i++) cmc_nresp[i] = -1;
     for (int i = 0; i < ocap; i++) {
       if (!on[i]) continue;
       unsigned j = (sp_strhash(on[i]) ^ ocm[i]) & (unsigned)(cmc_cap - 1);
       while (cmc_name[j]) j = (j + 1) & (unsigned)(cmc_cap - 1);
-      cmc_name[j] = on[i]; cmc_cm[j] = ocm[i]; cmc_ans[j] = oa[i];
+      cmc_name[j] = on[i]; cmc_cm[j] = ocm[i]; cmc_ans[j] = oa[i]; cmc_resp[j] = orp[i]; cmc_nresp[j] = onr[i];
     }
-    free(on); free(ocm); free(oa);
+    free(on); free(ocm); free(oa); free(orp); free(onr);
+    cmc_epoch++;
   }
+  /* The last ask's slot: a pass asking every class about one name asks
+     it once per class (1,299 times on a Rails program), each a hash and
+     a probe of the table, and the name is the same string each time. The
+     slot's own name is compared too, so a string reused at the address
+     answers from the table. */
+  static const char *last_name; static int last_cm, last_j; static unsigned last_epoch;
+  if (last_name == name && last_cm == is_cm && last_epoch == cmc_epoch && cmc_name[last_j] && sp_streq(cmc_name[last_j], name))
+    return last_j;
   unsigned j = (sp_strhash(name) ^ (unsigned)is_cm) & (unsigned)(cmc_cap - 1);
   while (cmc_name[j]) {
-    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) return cmc_ans[j];
+    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) {
+      last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
+      return (int)j;
+    }
     j = (j + 1) & (unsigned)(cmc_cap - 1);
   }
   int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
   cmc_name[j] = strdup(name);
   if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
-  cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_n++;
-  return a;
+  cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_resp[j] = NULL; cmc_nresp[j] = -1; cmc_n++;
+  last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
+  return (int)j;
+}
+/* The answers for (name, is_cm), two ints per class (-2 while unasked), or
+   NULL when the memo cannot be trusted now. */
+static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
+  int j = cmc_slot_idx(c, name, is_cm);
+  return j < 0 ? NULL : cmc_ans[j];
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg);
 static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_class, int is_cm) {
@@ -1157,6 +1183,27 @@ int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_
 
 int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   return chain_lookup(c, class_id, name, def_class, 0);
+}
+
+/* See compiler.h. Built on the first ask from the memo's slot, which the
+   walk fills for every class, and kept with it: the slot is the name's, so
+   the walk below cannot move it. */
+const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n) {
+  int j = cmc_slot_idx(c, name, is_cm);
+  if (j < 0) { *n = -1; return NULL; }
+  if (cmc_nresp[j] < 0) {
+    int cap = 8, cnt = 0, *r = malloc(sizeof(int) * 2 * (size_t)cap);
+    if (!r) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = chain_lookup(c, k, name, NULL, is_cm);
+      if (mi < 0) continue;
+      if (cnt == cap) { cap *= 2; r = realloc(r, sizeof(int) * 2 * (size_t)cap); if (!r) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+      r[2 * cnt] = k; r[2 * cnt + 1] = mi; cnt++;
+    }
+    cmc_resp[j] = r; cmc_nresp[j] = cnt;
+  }
+  *n = cmc_nresp[j];
+  return cmc_resp[j];
 }
 
 int comp_ary_root(Compiler *c, int cid) {

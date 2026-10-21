@@ -2270,16 +2270,20 @@ int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want) {
   for (int k = 0; k < c->nclasses; k++) {
     /* a native class answers by its declared bindings, as the dispatch
        arms do (#4504); a Ruby-side def on it has no arm to disagree with */
-    if (c->classes[k].is_native_class) {
-      int nmi = comp_native_method_find(c, k, name, 0, 0);
-      if (nmi >= 0) {
-        TyKind r = sp_streq(c->native_methods[nmi].ret, "self")
-                     ? ty_object(k) : native_spec_to_ty(c->native_methods[nmi].ret);
-        if (r != want && r != TY_UNKNOWN) return 1;
-      }
-      continue;
+    if (!c->classes[k].is_native_class) continue;
+    int nmi = comp_native_method_find(c, k, name, 0, 0);
+    if (nmi >= 0) {
+      TyKind r = sp_streq(c->native_methods[nmi].ret, "self")
+                   ? ty_object(k) : native_spec_to_ty(c->native_methods[nmi].ret);
+      if (r != want && r != TY_UNKNOWN) return 1;
     }
-    int mi = comp_method_in_chain(c, k, name, NULL);
+  }
+  /* the program's classes: those whose chain answers the name */
+  int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+  for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+    if (rp) k = rp[2 * i];
+    if (c->classes[k].is_native_class) continue;
+    int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
     if (mi < 0 || mi >= c->nscopes) continue;
     TyKind r = (TyKind)c->scopes[mi].ret;
     if (r != want && r != TY_UNKNOWN) return 1;
@@ -3040,9 +3044,13 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        (ruby-vips' Image#> builds an image) makes the boxed call's answer
        that value, not the builtin comparison's bool */
     if (is_cmp_op(name)) {
-      for (int k = 0; k < c->nclasses; k++) {
+      /* (the classes whose chain answers the name, or every class while
+         the chain memo cannot be trusted) */
+      int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+      for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+        if (rp) k = rp[2 * i];
         if (c->classes[k].is_native_class) continue;
-        int mi = comp_method_in_chain(c, k, name, NULL);
+        int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
         if (mi < 0 || mi >= c->nscopes) continue;
         TyKind ur = (TyKind)c->scopes[mi].ret;
         if (ty_is_object(ur) || ur == TY_POLY) { *out = TY_POLY; return 1; }
@@ -3054,9 +3062,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        Only a boxed receiver may be that class: a Float or Integer one with
        a boxed argument is the builtin ==, whose bool codegen emits. */
     if (rt == TY_POLY && sp_streq(name, "==") && argc == 1) {
-      for (int k = 0; k < c->nclasses; k++) {
+      int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+      for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+        if (rp) k = rp[2 * i];
         if (c->classes[k].is_native_class) continue;
-        int mi = comp_method_in_chain(c, k, name, NULL);
+        int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
         if (mi < 0 || mi >= c->nscopes) continue;
         TyKind ur = (TyKind)c->scopes[mi].ret;
         if (ur != TY_BOOL && ur != TY_UNKNOWN && ur != TY_VOID &&
