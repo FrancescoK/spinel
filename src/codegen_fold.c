@@ -9132,7 +9132,7 @@ static void emit_arg_temp(Compiler *c, int v) {
      compiler naming the type, and read where it is used, SP_STR_B: a handle
      so held stays alive and keeps its identity, where a copy of its bytes
      lost both; one_face below) */
-  int one_face = g_one_string && at == TY_STRING && !to && hb.p;
+  int one_face = g_one_string && at == TY_STRING && !to && hb.p && !srange && !wshare && !conversion;
   if (one_face) buf_printf(g_pre, "__auto_type _t%d = (%s);", t, hb.p);
   else {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");

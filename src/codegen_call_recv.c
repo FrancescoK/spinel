@@ -4610,8 +4610,21 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       /* (the chain's bytes are the handle's buffer, read before the
          write-back hands the answer to that handle: no copy) */
       if (inpl && g_share_check) share_check_declare_reads(b, recv_at, nt_paren_single(c->nt, recv));
-      if (ttc)
+      /* (one representation: an in-place write makes the receiver the answer,
+         read through its bytes face; the new bytes were a String of their own) */
+      Buf onev; memset(&onev, 0, sizeof onev);
+      if (g_one_string && inpl) {
+        int base1 = str_bang_chain_var(c, recv);
+        Buf sref1; memset(&sref1, 0, sizeof sref1);
+        if (base1 >= 0 && strbuf_slot_text(c, base1, &sref1)) buf_printf(&onev, "sp_String_cstr(%s)", sref1.p);
+        free(sref1.p);
+      }
+      if (ttc && onev.p)
+        buf_printf(b, "_t%d ? NULL : %s; })", ttc, onev.p);
+      else if (ttc)
         buf_printf(b, "_t%d ? NULL : _t%d; })", ttc, tn2);
+      else if (sb_nil_nc && onev.p)
+        buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : %s; })", to, tn2, sm, onev.p);
       else if (sb_nil_nc)
         buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, sm, tn2);
       else
