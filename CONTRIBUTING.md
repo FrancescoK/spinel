@@ -175,10 +175,14 @@ and coercions; not every handwritten argument or element store uses it.
   special-casing one call site.
 - **Mutable Strings (#6765, #9258).** A String is shared by reference, as
   in CRuby: it is the one mode, with no option for the copying behaviour,
-  and `--share-strings` is accepted and ignored. The direction (#8328): a
-  String reaches its consumer as the object, and bytes or a copy are used
-  only where the analysis proves the difference cannot be observed. What is
-  still wrong under the one mode is tracked in #9258.
+  and `--share-strings` is accepted and ignored. The direction (#9258): the
+  handle becomes the one representation of every String slot, with bytes
+  only as a transient read face inside an expression, and the share
+  analysis, the String plan and the route refusals go away as correctness
+  mechanisms. Until that lands, pull requests that add or widen a String
+  route (`strbuf_*`, `emit_strbuf_*`, `share_plan_*`, the `sh_*` walks) are
+  paused; reports of wrong answers on String identity, with a reduction,
+  are welcome on #9258.
 
 ## Stacked pull requests
 

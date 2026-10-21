@@ -34,6 +34,11 @@ Three rules follow from it:
 | membership in a family of names                                                | the name predicates                                | `builtin_names.c:is_call_alias`, `is_then_alias`, ...                                                                                           | the same inline `sp_streq` chain in inference and in codegen                                                                         |
 | when a pass runs, and what inference reads                                     | the phase driver and the counted setters           | `analyze.c:analyze_program`; `comp_set_ntype`, `lv_set_type`, `ivar_set_type`                                                                   | a loop appended to `analyze_program`; a direct write to a table `infer_type` reads                                                   |
 
+The String plan's row, and `--share-check` below, are being replaced
+(#9258): every String slot is becoming the handle, and until that lands
+a fix does not go into the String routes. A wrong answer on String
+identity is reported on #9258 instead.
+
 `comp_ntype` stays the answer to a semantic question (is this a String,
 which class is the receiver); it cannot alone decide how a value is laid
 out, which is `repr_of`'s answer.
