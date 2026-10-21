@@ -12612,22 +12612,31 @@ static void oa_note_empty(Compiler *c, int S, int node) {
   }
   g_oa_empt_slot[g_oa_empt_n] = S; g_oa_empt_node[g_oa_empt_n] = node; g_oa_empt_n++;
 }
-/* The class evidence of a boxed local's plain `=` writes. A boxed value is
-   neutral evidence (oa_obj_class_of), but a local is boxed because its writes
+/* The class evidence of a boxed local's writes. A boxed value is neutral
+   evidence (oa_obj_class_of), but a local is boxed because its writes
    disagree: `t = buf.last` and `t = Text.new` both reach `buf << t`, and the
    Text is an element of another class that the pointer array would hold
-   under the wrong struct. Its writes are the evidence it has. A write of
-   another kind (an op-assign, a multiple-assignment target) stays neutral. */
+   under the wrong struct. Its writes are the evidence it has: a plain `=`,
+   `||=` or `&&=` gives its value's class. A value that comes in another way
+   (a parameter's or a block parameter's, a multiple-assignment or rescue
+   target, an op-assign) is not seen here, so the local is no evidence of
+   one class (-2): taken as its writes alone, `t = A.new if t.nil?; a << t`
+   narrowed `a` to A while t could hold the B a caller passed. */
 static int oa_local_write_evidence(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   int s = c->nscope[node];
   const char *nm = nt_str(nt, node, "name");
-  if (!nm) return -1;
+  if (!nm || s < 0 || s >= c->nscopes) return -2;
+  LocalVar *lv = scope_local(&c->scopes[s], nm);
+  if (!lv || lv->is_param || lv->is_block_param) return -2;
   int cls = -1;
   for (int w = comp_lvw_first_sc(c, s, nm); w >= 0 && cls != -2; w = comp_lvw_next_sc(c, w)) {
     const char *wn = nt_str(nt, w, "name");
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || c->nscope[w] != s || !wn || !sp_streq(wn, nm)) continue;
-    cls = oa_cls_join(cls, oa_obj_class_of(c, nt_ref(nt, w, "value")));
+    if (c->nscope[w] != s || !wn || !sp_streq(wn, nm)) continue;
+    NodeKind wk = nt_kind(nt, w);
+    if (wk == NK_LocalVariableWriteNode || wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode)
+      cls = oa_cls_join(cls, oa_obj_class_of(c, nt_ref(nt, w, "value")));
+    else cls = -2;
   }
   return cls;
 }
