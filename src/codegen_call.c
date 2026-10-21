@@ -14848,6 +14848,10 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         else if (sp_streq(k, "Ptr"))
           buf_printf(g_pre, "sp_PtrArray_push(_t%d, (void *)(%s));\n", tr, vb.p ? vb.p : "0");
+        /* (one representation: the tail may be the handle; a String Array
+           takes the bytes) */
+        else if (g_one_string && sp_streq(k, "Str") && !tail_o && !nil_store_sfx(c, k, bb[bn - 1])[0])
+          buf_printf(g_pre, "sp_StrArray_push(_t%d, SP_STR_B(%s));\n", tr, vb.p ? vb.p : "NULL");
         else { buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, tail_o ? "_nilable" : nil_store_sfx(c, k, bb[bn - 1]), tr, vb.p ? vb.p : ""); }
         free(vb.p);
       }

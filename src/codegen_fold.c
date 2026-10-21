@@ -1623,6 +1623,11 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, din);
     int keep_nil = !splat && bp_slot_oint(c, block, BP0(c, block), rk);
     if (splat) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
+    /* (one representation: the parameter may hold the handle, a String
+       Array takes the bytes, SP_STR_B) */
+    else if (g_one_string && rk && sp_streq(rk, "Str") && !keep_nil)
+      buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_StrArray_push(_t%d, SP_STR_B(lv_%s)); }\n",
+                 tdup, tseen, tkey, tres, p0);
     else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push%s(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk,
                     keep_nil ? "_o" : "", tres, p0);
     if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
@@ -4678,6 +4683,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     else if (is_map) {
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
       if (sp_streq(rk, "Poly") && !vpoly) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tvb, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+      else if (g_one_string && sp_streq(rk, "Str")) buf_printf(g_pre, "SP_STR_B(%s)", tvb);
       else buf_puts(g_pre, tvb);
       buf_puts(g_pre, ");\n");
     }

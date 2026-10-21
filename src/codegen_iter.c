@@ -4878,12 +4878,12 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   if (is_take) {
     buf_printf(g_pre, "if (!(%s)) break;\n", cb.p ? cb.p : "0");
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, g_one_string && sp_streq(k, "Str") ? "sp_%sArray_push(_t%d, SP_STR_B(%s));\n" : "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
   }
   else {
     buf_printf(g_pre, "if (_t%d && (%s)) continue;\n", tdrop, cb.p ? cb.p : "0");
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = 0;\n", tdrop);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, g_one_string && sp_streq(k, "Str") ? "sp_%sArray_push(_t%d, SP_STR_B(%s));\n" : "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
   }
   free(cb.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
