@@ -2405,12 +2405,15 @@ static int cplan_nil_arg_converts(Compiler *c, int id) {
 
 /* An ivar read the plan tests, where the release build's policy leaves
    the others to their arms: an Array in one that no class's initialize
-   sets first (NFW_IVAR). The Array arms read a NULL receiver as an empty
-   Array or read through it (`@stops[1]` answered nil, `@stops.first(2)`
-   crashed) where CRuby raises NoMethodError, and it is tested as a local's
-   is. */
-static int cplan_nil_ivar_tested(Compiler *c, int r, TyKind rt) {
-  return (ty_is_array(rt) || ty_is_obj_array(rt) || rt == TY_STRH_ARRAY) && nil_fact_why(c, r) == NFW_IVAR;
+   sets first (NFW_IVAR), or a String there that call `nm` changes. The
+   Array arms read a NULL receiver as an empty Array or read through it
+   (`@stops[1]` answered nil, `@stops.first(2)` crashed), and a String
+   mutator's frozen check read it as a frozen String (FrozenError, "can't
+   modify frozen String: nil"), where CRuby raises NoMethodError; it is
+   tested as a local's is. */
+static int cplan_nil_ivar_tested(Compiler *c, int r, TyKind rt, const char *nm) {
+  return (ty_is_array(rt) || ty_is_obj_array(rt) || rt == TY_STRH_ARRAY || (rt == TY_STRING && an_str_mutator_name(nm))) &&
+         nil_fact_why(c, r) == NFW_IVAR;
 }
 
 int cplan_nil(Compiler *c, int id) {
@@ -2443,7 +2446,7 @@ int cplan_nil(Compiler *c, int id) {
   int conv = rt == TY_STRING && !an_str_mutator_name(nm) && cplan_nil_arg_converts(c, id);
   /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
-  int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt);
+  int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt, nm);
   if ((rk == NK_InstanceVariableReadNode && !conv && !ivar_tested) || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
      back: a slot that holds the pointer, or a shared String's handle; one
