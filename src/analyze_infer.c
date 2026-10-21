@@ -2846,9 +2846,11 @@ static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
      The call plan also includes class methods, on boxed or Class values.
      Constants bind in their own rules below; only a Class value needs
      this union record. */
-  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node &&
-      recv >= 0 && (rt == TY_POLY || (rt == TY_CLASS &&
-      nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
+  /* Concrete protocols likewise keep the target behind their Boolean answer. */
+  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node && recv >= 0 &&
+      (rt == TY_POLY || (ty_is_object(rt) &&
+       builtin_operator_delegate(nt_str(c->nt, id, "name"))) || (rt == TY_CLASS &&
+       nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
   }

@@ -15975,7 +15975,9 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       /* no direct == : use <=> == 0 when the class supports Comparable */
-      if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
+      /* A synthesized != follows == before Comparable's fallback. */
+      const CallPlan ep = *cplan_user(c, id);
+      if (ep.mi >= 0 && !ep.chain && !is_equality_name(c->scopes[ep.mi].name)) {
         /* a `<=>` statically returning a non-{Integer,Float,nil} value is a
            protocol violation, caught at compile time (#2961) */
         if (user_cmp_invalid_ret(c, ecid) != TY_UNKNOWN)

@@ -256,11 +256,12 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     /* the operators an object answers through another of its methods:
        `!=` through `==`, the comparisons through `<=>` */
-    const char *via_op = sp_streq(name, "!=") ? "==" :
-                         (sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
-                          sp_streq(name, ">=") || sp_streq(name, "between?") ||
-                          sp_streq(name, "clamp")) ? "<=>" : NULL;
+    const char *via_op = builtin_operator_delegate(name);
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    if (dmi < 0 && via_op) {
+      via_op = builtin_operator_delegate(via_op);
+      dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    }
     if (dmi >= 0) {
       cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
       return;
