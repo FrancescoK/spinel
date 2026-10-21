@@ -1193,6 +1193,9 @@ const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
 const char *sp_exc_detailed_highlight(volatile sp_Exception *ve, const char *msg) {
   sp_Exception *e = (sp_Exception *)ve; SP_GC_ROOT(e); SP_GC_ROOT_STR(msg);
   const char *cn = sp_exc_cls_display(e && e->cls_name ? e->cls_name : "RuntimeError");
+  /* rooted: an unnamed class prints as a String the display builds, and
+     the copies below allocate before it is read */
+  SP_GC_ROOT_STR(cn);
   size_t lm = sp_str_byte_len(msg);
   if (!lm) return sp_exc_cat(3, SPL("\033[1;4m"),
       !strcmp(cn, "RuntimeError") ? SPL("unhandled exception") : cn, SPL("\033[m"));
