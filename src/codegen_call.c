@@ -15440,6 +15440,32 @@ static int emit_eq_on_nil_slot(Compiler *c, int id, int recv, int arg, int ecid,
   free(selfb.p);
   return 1;
 }
+/* A synthesized inequality negates Ruby truthiness. Re-enter the ordinary
+   condition emitter under the protocol's name and return view, so its
+   argument layout and callback handling remain those of the user call. */
+static void delegated_cond_probe(Compiler *c, int id, void *ctx, Buf *b) {
+  (void)ctx; emit_cond(c, id, b);
+}
+static int emit_delegated_inequality(Compiler *c, int id, Buf *b) {
+  const CallPlan p = *cplan_user(c, id);
+  if (p.mi < 0 || p.chain || p.via != UC_INST || !p.delegate || !is_equality_name(p.delegate)) return 0;
+  TyKind er = dispatch_ret_over(c, p.owner_ci, p.delegate, 0,
+                               p.mi, c->scopes[p.mi].ret, -1);
+  if (er == TY_BOOL) return 0;
+  int mark = view_push(c, id, er);
+  char *name = nt_node_swap_str((NodeTable *)c->nt, id, "name", p.delegate);
+  Buf cond = {0}; char *pre = NULL;
+  int ok = poly_arm_probe(c, id, delegated_cond_probe, NULL, &cond, &pre);
+  nt_node_restore_str((NodeTable *)c->nt, id, "name", name);
+  view_pop(c, mark);
+  if (!ok) { free(cond.p); unsupported(c, id, "delegated equality condition"); }
+  if (pre) buf_printf(b, "({ %s ", pre);
+  buf_printf(b, "(!(%s))", cond.p);
+  if (pre) buf_puts(b, "; })");
+  free(cond.p); free(pre);
+  return 1;
+}
+
 static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -15842,6 +15868,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       c->args_in_call = recv;
       return 1;
     }
+    if (!eq && recv >= 0 && ty_is_object(rt) && emit_delegated_inequality(c, id, b)) return 1;
     /* a poly operand compares dynamically (covers string-vs-poly etc.) --
        EXCEPT when the typed object receiver's class defines #==: that method
        must dispatch (sp_poly_eq would compare object identity), e.g. the
@@ -15977,7 +16004,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       /* no direct == : use <=> == 0 when the class supports Comparable */
       /* A synthesized != follows == before Comparable's fallback. */
       const CallPlan ep = *cplan_user(c, id);
-      if (ep.mi >= 0 && !ep.chain && !is_equality_name(c->scopes[ep.mi].name)) {
+      if (ep.mi >= 0 && ep.delegate && !is_equality_name(ep.delegate)) {
         /* a `<=>` statically returning a non-{Integer,Float,nil} value is a
            protocol violation, caught at compile time (#2961) */
         if (user_cmp_invalid_ret(c, ecid) != TY_UNKNOWN)

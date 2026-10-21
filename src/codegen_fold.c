@@ -12782,7 +12782,7 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
          that method is the plan's */
       dpc = *cplan_user(c, g_nd_call_id);
       if (!dpc.chain && dpc.via == UC_INST && dpc.owner_ci == cid && dpc.mi >= 0 &&
-          c->scopes[dpc.mi].name && sp_streq(c->scopes[dpc.mi].name, name)) {
+          dpc.delegate && sp_streq(dpc.delegate, name)) {
         served = 1;
         mi = dpc.mi;
         defcls = c->scopes[mi].class_id;

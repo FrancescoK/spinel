@@ -8123,6 +8123,22 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   return bind_args_params(c, call_id, mi, argv, argc);
 }
 
+/* A newly observed protocol edge must not narrow an unknown operand:
+   boxed callbacks can reach the same method without a typed call node. */
+static int bind_delegated_params(Compiler *c, int id, int mi) {
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(c->nt, id, "arguments"), argc = 0, changed = 0;
+  const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < m->nparams; i++) {
+    LocalVar *lv = scope_local(m, m->pnames[i]);
+    if (!lv || lv->type != TY_UNKNOWN || lv->rbs_seeded) continue;
+    if (i != m->rest_idx && call_param_arg(c, m, argv, argc, i) < 0) continue;
+    changed |= lv_widen(lv, i == m->rest_idx ? TY_POLY_ARRAY : TY_POLY);
+  }
+  return changed | bind_call_params(c, id, mi);
+}
+
 /* Propagate param types from each prep-chain source scope (the transplanted
    module method) to the shadow scope it calls via super. The shadow scope has
    no AST call site, so bind_call_params never runs for it: each super in the
@@ -10115,8 +10131,12 @@ static int infer_param_types_ex(Compiler *c, int settle) {
       int mi3 = comp_method_in_chain(c, cid3, name, NULL);
       /* Comparable: `a < b` etc. on an object with `<=>` but no direct `<`
          bind the argument to `<=>` param instead. */
-      if (mi3 < 0 && is_cmp_op(name))
-        mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
+      /* Equality protocols bind the same delegated target from the plan. */
+      const char *bound_name = name;
+      if (mi3 < 0 && (is_cmp_op(name) || is_eq_op(name))) {
+        const CallPlan *p = cplan_user_fresh(c, id);
+        if (p->delegate) { mi3 = p->mi; bound_name = p->delegate; }
+      }
       /* a method the program adds to Object, which the class's chain stops
          short of: the call reaches it (codegen's Object fallback), so its
          arguments type it (#5779) */
@@ -10124,14 +10144,16 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         int oci3 = comp_class_index(c, "Object");
         if (oci3 >= 0 && oci3 != cid3) mi3 = comp_method_in_class(c, oci3, name);
       }
-      changed |= bind_call_params(c, id, mi3);
+      changed |= bound_name != name && is_eq_op(name) ? bind_delegated_params(c, id, mi3)
+                                                     : bind_call_params(c, id, mi3);
       /* Also propagate to descendant overrides: codegen will emit a cls_id
          switch that calls each override, so each must have the right param
          types. */
       int nd3 = 0; const int *ds3 = comp_descendants(c, cid3, &nd3);
       for (int di = 0; di < nd3; di++) {
-        int dmi3 = comp_method_in_class(c, ds3[di], name);
-        if (dmi3 >= 0) changed |= bind_call_params(c, id, dmi3);
+        int dmi3 = comp_method_in_class(c, ds3[di], bound_name);
+        if (dmi3 >= 0) changed |= bound_name != name ? bind_delegated_params(c, id, dmi3)
+                                                   : bind_call_params(c, id, dmi3);
       }
     }
     else if (rt == TY_POLY) {

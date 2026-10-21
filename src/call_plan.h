@@ -66,6 +66,7 @@ typedef struct {
   unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
   const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
   unsigned char rfrom;     /* CP_REFUSE: CplanRefuseFrom */
+  const char *delegate;     /* the protocol method name, before alias resolution */
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);

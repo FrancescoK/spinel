@@ -31,6 +31,7 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->send_fallback = -1;
+  p->delegate = NULL;
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
@@ -264,6 +265,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     if (dmi >= 0) {
       cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
+      p->delegate = via_op;
       return;
     }
     /* a reader a subclass overrides with a method: the switch reaches the
@@ -382,7 +384,7 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->mi < 0) return 0;
   if (p->mi == mi) return 1;
   if (p->dispatch < CP_SWITCH) return 0;
-  const char *name = nt_str(c->nt, id, "name");
+  const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
   if (p->by_name) {
     int ncc = 0;
@@ -699,7 +701,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   int n = 0;
   out[n++] = plan.mi;
   if (plan.dispatch < CP_SWITCH) return n;
-  const char *name = c->scopes[plan.mi].name;
+  const char *name = plan.delegate ? plan.delegate : c->scopes[plan.mi].name;
   if (!name) return n;
   if (g_ct_nidx < 0) ct_index_build(c);
   int lo = 0, hi = g_ct_nidx;
@@ -718,7 +720,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   /* --share-strings: the methods named by the call, each class's own
      (comp_poly_candidates follows an alias, `alias get text`, whose method
      has another name than the call's and the first target's) */
-  const char *cn = nt_str(c->nt, id, "name");
+  const char *cn = plan.delegate ? plan.delegate : nt_str(c->nt, id, "name");
   /* (not for a text conversion, #to_s or #inspect: the boxed to_s route
      asks each class the receiver can hold for its own method, and adding
      every class's here widened the facts of the bundled library's calls,
