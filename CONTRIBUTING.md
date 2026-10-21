@@ -168,6 +168,11 @@ and coercions; not every handwritten argument or element store uses it.
   is worse (#8328).
 - **One place per decision (#7100, #8328).** The analysis and
   representation layer decides once, and the emitters read that decision.
+  [docs/internals/architecture.md](docs/internals/architecture.md) lists the
+  layers, the question each one answers and its entry points. Three rules:
+  put a fact in the layer that owns it; convert old-style code on the lines
+  you touch; when the right layer lacks the fact, add it there rather than
+  special-casing one call site.
 - **Mutable Strings (#6765, #9258).** A String is shared by reference, as
   in CRuby: it is the one mode, with no option for the copying behaviour,
   and `--share-strings` is accepted and ignored. The direction (#8328): a
