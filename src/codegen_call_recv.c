@@ -1352,6 +1352,25 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* The declaration of find's block parameter `bp` (renamed; `bp0` as
+   written) from element _t<ti> of typed Array _t<trecv>. Under the one
+   String representation the parameter's slot can be the handle (a block
+   that keeps the String it is handed), and the element is taken in the
+   slot's face, as map! takes it. */
+static void emit_find_elem_decl(Compiler *c, int block, const char *bp0, const char *bp, const char *k,
+                                TyKind et, int trecv, int ti) {
+  Scope *ms = comp_scope_of(c, block);
+  LocalVar *mlv = ms && bp0 ? scope_local(ms, bp0) : NULL;
+  emit_indent(g_pre, g_indent + 1);
+  if (g_one_string && sp_streq(k, "Str") && mlv && mlv->type == TY_STRBUF) {
+    emit_ctype(c, TY_STRBUF, g_pre);
+    buf_printf(g_pre, " lv_%s = SP_STR_TO(lv_%s, sp_StrArray_get(_t%d, _t%d));\n", bp, bp, trecv, ti);
+    return;
+  }
+  emit_ctype(c, et, g_pre);
+  buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
+}
+
 static void emit_find_loop_head(Compiler *c, int id, const char *k, int ti, int trecv) {
   emit_indent(g_pre, g_indent);
   if (nt_int(c->nt, id, "rfind", 0))
@@ -1807,7 +1826,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
       emit_find_loop_head(c, id, k, ti, trecv);
-      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+      if (bp) emit_find_elem_decl(c, block, block_param_name(c, block, 0), bp, k, et, trecv, ti);
       for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
       int sv = g_indent; g_indent++;
       Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
@@ -1855,13 +1874,17 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
          hoisted to the call site, the enclosing function has no top-level
          declaration for the block local. Shadows the method-scope slot in
          the ordinary in-body case, which is harmless. */
-      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+      if (bp) emit_find_elem_decl(c, block, block_param_name(c, block, 0), bp, k, et, trecv, ti);
       Buf cb; memset(&cb, 0, sizeof cb);
       { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
         int sv = g_indent; g_indent++;
         emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
       emit_indent(g_pre, g_indent + 1);
       if (bp && oint_kind(et)) buf_printf(g_pre, "if (%s) { _t%d = %s(lv_%s); break; }\n", cb.p ? cb.p : "0", tres, oint_of(et), bp);
+      /* (one representation: the parameter may hold the handle; the answer
+         slot is the element's own type) */
+      else if (bp && g_one_string && et == TY_STRING)
+        buf_printf(g_pre, "if (%s) { _t%d = SP_STR_B(lv_%s); break; }\n", cb.p ? cb.p : "0", tres, bp);
       else if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
       else if (oint_kind(et)) buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_oget(_t%d, _t%d); break; }\n",
                       cb.p ? cb.p : "0", tres, k, trecv, ti);

@@ -4403,7 +4403,10 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   if (multi) {
     lv = rsc ? scope_local(rsc, vo) : NULL; li = rsc ? scope_local(rsc, io) : NULL;
     sv = lv ? lv->type : TY_UNKNOWN; si = li ? li->type : TY_UNKNOWN;
-    if (lv) lv_set_type(lv, elem_t); if (li) lv_set_type(li, TY_INT);
+    /* (one representation: the element's slot is the handle it is declared
+       as below, and the body reads it as one) */
+    TyKind ve = bp_slot_oint(c, block, vo, k) ? elem_t : one_elem_decl_type(k, elem_t);
+    if (lv) { one_elem_bind_slot(lv, ve); lv_set_type(lv, ve); } if (li) lv_set_type(li, TY_INT);
   }
   else {
     lp = rsc ? scope_local(rsc, pairo) : NULL; sp = lp ? lp->type : TY_UNKNOWN;
@@ -4582,7 +4585,10 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   Scope *bsc = block >= 0 ? comp_scope_of(c, block) : NULL;
   LocalVar *lv = NULL, *li = NULL; TyKind sv = TY_UNKNOWN, si = TY_UNKNOWN;
   if (block >= 0) {
-    lv = scope_local(bsc, vo); sv = lv ? lv->type : TY_UNKNOWN; if (lv) lv_set_type(lv, elem_t);
+    /* (one representation: the element's slot is the handle it is declared
+       as below, and the body reads it as one) */
+    TyKind ve = bp_slot_oint(c, block, vo, k) ? elem_t : one_elem_decl_type(k, elem_t);
+    lv = scope_local(bsc, vo); sv = lv ? lv->type : TY_UNKNOWN; if (lv) { one_elem_bind_slot(lv, ve); lv_set_type(lv, ve); }
     li = scope_local(bsc, io); si = li ? li->type : TY_UNKNOWN; if (li) lv_set_type(li, TY_INT);
     int body = nt_ref(nt, block, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
