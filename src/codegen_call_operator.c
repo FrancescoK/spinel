@@ -647,11 +647,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int tr = ++g_tmp, ta = ++g_tmp;
       int boxed = repr_of(c, id).kind == RK_BOXED;
       if (boxed) buf_puts(b, "sp_box_oint("); else oint_open(c, id, TY_INT, b);
-      buf_printf(b, "({ const char *_t%d = ", tr); emit_coerce(c, recv, TY_STRING, CO_HOLD, "a comparison operand", b);
-      buf_puts(b, "; ");
-      if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
-      buf_printf(b, "const char *_t%d = ", ta);
+      /* (one representation: an operand of either face is held as it is and compared through its bytes) */
+      buf_printf(b, g_one_string ? "({ __auto_type _t%d = (" : "({ const char *_t%d = ", tr); emit_coerce(c, recv, TY_STRING, CO_HOLD, "a comparison operand", b);
+      buf_puts(b, g_one_string ? "); " : "; ");
+      if (operand_may_allocate(c, argv[0])) buf_printf(b, g_one_string ? "SP_GC_ROOT(_t%d); " : "SP_GC_ROOT_STR(_t%d); ", tr);
+      buf_printf(b, g_one_string ? "__auto_type _t%d = (" : "const char *_t%d = ", ta);
       emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a comparison operand", b);
+      if (g_one_string)
+        buf_printf(b, "); !_t%d || !_t%d ? ((const void *)_t%d == (const void *)_t%d ? sp_oint_of(0) : sp_oint_nil())"
+                      " : sp_oint_of((sp_int)sp_str_cmp_bytes(SP_STR_B(_t%d), SP_STR_B(_t%d))); })", tr, ta, tr, ta, tr, ta);
+      else
       buf_printf(b, "; !_t%d || !_t%d ? (_t%d == _t%d ? sp_oint_of(0) : sp_oint_nil())"
                     " : sp_oint_of((sp_int)sp_str_cmp_bytes(_t%d, _t%d)); })", tr, ta, tr, ta, tr, ta);
       if (boxed) buf_puts(b, ")"); else oint_close(c, id, b);

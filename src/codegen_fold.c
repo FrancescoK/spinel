@@ -3544,9 +3544,10 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
      nil as "" */
   else if (str_op) {
     int te = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = sp_%sArray_get(_t%d, _t%d); if (!_t%d) sp_nil_recv(\"+\");"
+    /* (one representation: the element of a String Array is read through its face) */
+    buf_printf(b, "({ const char *_t%d = %ssp_%sArray_get(_t%d, _t%d)%s; if (!_t%d) sp_nil_recv(\"+\");"
                   " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\");"
-                  " sp_str_concat(_t%d, _t%d); })", te, k, ta, ti, tacc, te, tacc, te);
+                  " sp_str_concat(_t%d, _t%d); })", te, g_one_string ? "SP_STR_B(" : "", k, ta, ti, g_one_string ? ")" : "", tacc, te, tacc, te);
   }
   else /* int_bitop or float direct-op */
     buf_printf(b, "_t%d %s sp_%sArray_get(_t%d, _t%d)", tacc, op, k, ta, ti);
@@ -5236,6 +5237,8 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   if (!want_poly && bn > 0) {
     TyKind dt = dest_ty != TY_UNKNOWN ? dest_ty : repr_of(c, bb[bn - 1]).as_ty;
     if (ty_is_array(dt) || ty_is_hash(dt)) g_ie_next_ty = dt;
+    /* (one representation: a `next` into a handle slot adopts its value) */
+    else if (g_one_string && dt == TY_STRBUF) g_ie_next_ty = dt;
     /* an Integer or Float slot: a `next v` stores its plain value, or its
        oint where the caller declared the slot as one (dest_oint) */
     else if (dt == TY_INT || dt == TY_FLOAT) { g_ie_next_ty = dt; g_ie_next_oint = dest_oint; }
@@ -5275,6 +5278,13 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
       const char *apf = (g_ie_next_ty == TY_POLY_ARRAY && tr.elem != TY_POLY) ? array_to_poly_fn(tt) : NULL;
       if (want_poly && tr.kind != RK_BOXED) emit_boxed(c, tail, &vb);
       /* a `then` read as the shared handle (emit_tap_then_expr): the tail's */
+      else if (dest_ty == TY_STRBUF && repr_share_rule(c) && g_one_string) {
+        /* (one representation: the value of either face as the handle; a
+           conditional of handle reads answers their bytes faces) */
+        buf_puts(&vb, "sp_String_new_fresh(");
+        emit_strbuf_handle_of(c, tail, &vb);
+        buf_puts(&vb, ")");
+      }
       else if (dest_ty == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, tail, &vb);
       else if (apf) { buf_printf(&vb, "%s(", apf); emit_expr(c, tail, &vb); buf_puts(&vb, ")"); }
       else if (dest_oint && oint_kind(g_ie_next_ty)) emit_oint_expr(c, tail, g_ie_next_ty, &vb);
@@ -5881,6 +5891,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &ov);
       else emit_expr(c, bb2[bn2 - 1], &ov);
       emit_indent(g_pre, g_indent);
+      /* (one representation: a String value of either face into the bytes slot, as its view) */
+      if (g_one_string && !res_poly2 && res_r2.elem == TY_STRING) buf_printf(g_pre, "_t%d = SP_STR_B(%s);\n", tv3, ov.p ? ov.p : "NULL");
+      else
       buf_printf(g_pre, "_t%d = %s;\n", tv3, ov.p ? ov.p : "");
       free(ov.p);
       g_indent--;
@@ -6095,6 +6108,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     int vo = !res_poly && bv_value_may_be_nil(c, block, elem);
     if (res_poly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
     else if (vo) buf_printf(g_pre, "%s _t%d = %s;\n", oint_ctype(elem), tv, oint_nil(elem));
+    /* (one representation: a String value of either face is collected as
+       the handle, which the String Array holds) */
+    else if (g_one_string && elem == TY_STRING) { buf_printf(g_pre, "sp_String *_t%d = NULL;\n", tv); g_bv_dest_ty = TY_STRBUF; }
     else { emit_ctype(c, elem, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value_from_compiler(c, elem)); }
     if (vo) g_bv_dest_oint = 1;
     emit_block_value_into(c, block, tvbuf, res_poly, innerIndent);
@@ -9110,19 +9126,20 @@ static void emit_arg_temp(Compiler *c, int v) {
     emit_str_expr(c, v, &hb);
     view_pop(c, mark);
   }
-  else if (g_one_string && at == TY_STRING) {
-    /* (one representation: bytes held ahead of the call are a copy when
-       they are a live payload's, SP_STR_BC) */
-    buf_puts(&hb, "SP_STR_BC(");
-    emit_expr(c, v, &hb);
-    buf_puts(&hb, ")");
-  }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
+  /* (one representation: a String of either face is held as it is, the C
+     compiler naming the type, and read where it is used, SP_STR_B: a handle
+     so held stays alive and keeps its identity, where a copy of its bytes
+     lost both; one_face below) */
+  int one_face = g_one_string && at == TY_STRING && !to && hb.p;
+  if (one_face) buf_printf(g_pre, "__auto_type _t%d = (%s);", t, hb.p);
+  else {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));
   else emit_ctype(c, at, g_pre);
   buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : to ? oint_nil(at) : default_value_from_compiler(c, at));
+  }
   if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
   else if (comp_ty_value_obj(c, at)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, t, g_pre); }
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
@@ -9131,6 +9148,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   buf_puts(g_pre, "\n");
   free(hb.p);
   ran_first_bind_o(v, t, th, to);
+  if (one_face) snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", t);
 }
 
 /* See codegen_internal.h. */
@@ -9232,12 +9250,15 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
   }
   /* boxed from the head's temp, which roots what the box wraps */
   int wrap = !root || (boxed && head_held_box(c, node));
+  /* (one representation: a String of either face is held as it is, the
+     C compiler naming the type, and read where it is used (SP_STR_B); a
+     handle so held stays alive and keeps its identity, where a copy of its
+     bytes lost both) */
+  if (g_one_string && !boxed && ty == TY_STRING && vb.p) buf_printf(b, "__auto_type _t%d = (%s);", t, vb.p);
+  else {
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
-  /* (one representation: bytes held across the other operands are a copy
-     when they are a live payload's, SP_STR_BC) */
-  if (g_one_string && !boxed && ty == TY_STRING && vb.p) buf_printf(b, " _t%d = SP_STR_BC(%s);", t, vb.p);
-  else
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
+  }
   if (!wrap && (boxed || ty == TY_POLY)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
   else if (!wrap && comp_ty_value_obj(c, ty)) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty, t, b); }
   else if (!wrap && needs_root(ty)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);

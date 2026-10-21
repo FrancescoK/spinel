@@ -576,6 +576,8 @@ int strh_handle_call(Compiler *c, int v);
 int one_str_elem_call(Compiler *c, int v, TyKind rt);
 /* one representation: a block parameter bound to a typed String Array's element is the handle (codegen_fold.c) */
 TyKind one_elem_decl_type(const char *k, TyKind et);
+extern int g_one_elem_raw;   /* the element read emit_expr renders as the handle itself (strh_elem_handle_text) */
+extern int g_one_arm_bytes_node;   /* the dispatch whose arms answer into a bytes slot (emit_strbuf_pickup) */
 void one_elem_bind_slot(LocalVar *lv, TyKind bt);
 /* An operation on a String Array of handles (codegen_call_array.c) */
 int emit_strh_call(Compiler *c, int id, Buf *b);

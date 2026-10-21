@@ -274,6 +274,13 @@ int ty_is_hash(TyKind t) {
   return 0;
 }
 TyKind ty_hash_of(TyKind key, TyKind val) {
+  /* Under the one-String mode a String handle keys and fills the same Hash
+     kinds as the bytes: the typed containers hold the handle
+     (string-one-repr-design.md). */
+  if (g_one_string) {
+    if (key == TY_STRBUF) key = TY_STRING;
+    if (val == TY_STRBUF) val = TY_STRING;
+  }
   for (unsigned i = 0; i < sizeof hash_tbl / sizeof hash_tbl[0]; i++)
     if (hash_tbl[i].key == key && hash_tbl[i].val == val) return hash_tbl[i].kind;
   return TY_UNKNOWN;
@@ -321,6 +328,8 @@ TyKind ty_array_of(TyKind elem) {
     case TY_INT:    return TY_INT_ARRAY;
     case TY_FLOAT:  return TY_FLOAT_ARRAY;
     case TY_STRING: return TY_STR_ARRAY;
+    /* under the one-String mode the String Array holds the handle */
+    case TY_STRBUF: return g_one_string ? TY_STR_ARRAY : TY_POLY_ARRAY;
     /* An element type that is not yet known is not the same as an element
        type that is anything: while the fixpoint runs, keep the array at
        bottom so the slots it flows into wait for the real element type

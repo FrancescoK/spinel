@@ -4622,6 +4622,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      stored as one (a call marked to hand out the handle), answers its
      block's value as one */
   int hres = is_then && repr_share_rule(c) && (repr_of(c, id).demand || repr_of(c, id).as_ty == TY_STRBUF);
+  /* (one representation: a String value of either face is collected as the handle) */
+  if (is_then && g_one_string && repr_of(c, id).as_ty == TY_STRING) hres = 1;
   if (is_then) {
     rett = hres ? TY_STRBUF : repr_of(c, id).as_ty;
     /* A body that always `break`s completes normally nowhere, so it publishes

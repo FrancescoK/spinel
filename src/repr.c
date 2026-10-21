@@ -838,6 +838,11 @@ int repr_store_nil_fits(Compiler *c, int node, TyKind slot, int how) {
 
 int repr_store_fits(Compiler *c, TyKind from, TyKind to) {
   if (from == to || to == TY_UNKNOWN || to == TY_VOID || from == TY_UNKNOWN) return 1;
+  /* Under the one-String mode a String slot of either face takes the
+     handle: a typed container's element is the handle (sp_strelem), and a
+     bytes slot reads it through SP_STR_B, which the C compiler holds the
+     emitter to (string-one-repr-design.md). */
+  if (g_one_string && from == TY_STRBUF && to == TY_STRING) return 1;
   int fc = repr_store_class(c, from), tc = repr_store_class(c, to);
   if (from == TY_NIL) return 0;   /* see store_nil_fits */
   if (fc == SC_NONE) return 0;
@@ -1296,7 +1301,7 @@ static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
       int i = h->name ? comp_cvar_index(&c->classes[k], h->name) : -1;
       TyKind ct = i >= 0 ? c->classes[k].cvar_types[i] : TY_UNKNOWN;
       if (!ty_is_array(ct) && !ty_is_hash(ct)) continue;
-      if (ct == TY_STR_ARRAY || ct == TY_STR_STR_HASH || ct == TY_INT_STR_HASH) return 0;
+      if (repr_typed_str_container(ct)) return 0;
       any = 1;
     }
     return any;
@@ -1305,8 +1310,11 @@ static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
   return repr_typed_str_container(t) ? 0 : 1;
 }
 
-/* repr.h: a container type whose C form holds its Strings as `const char *` */
+/* repr.h: a container type whose C form holds its Strings as `const char *`.
+   Under the one-String mode there is none: the typed containers hold the
+   handle (sp_strelem, string-one-repr-design.md). */
 int repr_typed_str_container(TyKind t) {
+  if (g_one_string) return 0;
   return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH;
 }
 

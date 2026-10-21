@@ -4649,7 +4649,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
   /* --share-strings: a String Array the rule settled in its poly form
      keeps it (share_default_apply) */
   if (lv->strh_form && lv->type == TY_STR_ARRAY && !g_one_string) lv_set_type(lv, TY_STRH_ARRAY);
-  if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv_set_type(lv, TY_POLY_ARRAY);
+  if (lv->elems_shared && lv->type == TY_STR_ARRAY && !g_one_string) lv_set_type(lv, TY_POLY_ARRAY);
 }
 
 int infer_write_types(Compiler *c) {

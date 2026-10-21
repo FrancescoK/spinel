@@ -2047,6 +2047,22 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     g_rat_box_node = save;
     return;
   }
+  /* One representation: an expression's default face is bytes, and an
+     element read of a typed String container answers the handle
+     (one_str_elem_call), so it is read through SP_STR_B here. An emitter
+     that wants the handle itself asks through strh_elem_handle_text, which
+     names the node in g_one_elem_raw. A sink handed the bytes of a live
+     payload finds its handle again through the payload's owner link
+     (sp_strface_owner), so neither face loses the String's identity. */
+  if (g_one_string && id != g_one_elem_raw && one_str_elem_call(c, id, TY_UNKNOWN)) {
+    int save = g_one_elem_raw;
+    g_one_elem_raw = id;
+    buf_puts(b, "SP_STR_B(");
+    emit_expr(c, id, b);
+    buf_puts(b, ")");
+    g_one_elem_raw = save;
+    return;
+  }
   if (g_repr_check) repr_check_ask(c, id);
   int sk_open = g_share_check ? share_check_mark(c, id, 'x', b) : 0;
   int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
@@ -4525,12 +4541,14 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       buf_puts(b, pa.p ? pa.p : "");
       /* a diverging (raise/fail) arm is emitted as a statement; the result
          temp keeps its default (never read, since the arm never returns) */
+      /* (one representation: a String arm of either face lands in the bytes result as its view) */
+      const char *fo = g_one_string && res == TY_STRING && !res_o ? "SP_STR_B(" : "", *fc = fo[0] ? ")" : "";
       if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
-      else buf_printf(b, " _t%d = %s;\n", tr, ta.p ? ta.p : "0");
+      else buf_printf(b, " _t%d = %s%s%s;\n", tr, fo, ta.p ? ta.p : "0", fc);
       buf_puts(b, "}\nelse {\n");
       buf_puts(b, pe.p ? pe.p : "");
       if (else_raise) buf_printf(b, " %s;\n", te.p ? te.p : "0");
-      else buf_printf(b, " _t%d = %s;\n", tr, te.p ? te.p : "0");
+      else buf_printf(b, " _t%d = %s%s%s;\n", tr, fo, te.p ? te.p : "0", fc);
       buf_printf(b, "} _t%d; })", tr);
     }
     free(ta.p); free(te.p); free(pa.p); free(pe.p);
@@ -5797,7 +5815,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (irr.elem == TY_STRING) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; sp_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
-      buf_printf(b, "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, g_one_string ? "; const char *_t%d = SP_STR_B(sp_StrArray_get(_t%d, _t%d));" : "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%s_t%d) { ", is_or2 ? "!" : "", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
       buf_printf(b, "; sp_StrArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);

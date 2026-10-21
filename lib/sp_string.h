@@ -250,13 +250,28 @@ static inline sp_String*sp_String_new_shared(const char*s){
   if (literal) return sp_String_literal_handle(literal, s);
 #endif
   int64_t len=(int64_t)sp_str_byte_len(s);
+#ifdef SP_ONE_STRING
+  /* one representation: every String a slot takes becomes a handle, so the
+     payload is laid out inside the object when it fits (no malloc, no
+     finalizer); its first growth moves it out (sp_fd_grow_inline) */
+  sp_String*r=sp_String_new_inline_len(s,len);
+#else
   sp_String*r=sp_String_new_len(s,len);
+#endif
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
   if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
 #ifdef SP_ONE_STRING
+/* The handle whose String bytes b are (SP_SEF): the bytes of a live payload
+   (marker 0xfd) are the handle the payload's owner link names (sp_fd_own),
+   so a store of a String read through its bytes face keeps its identity;
+   any other bytes get a handle as sp_String_new_shared gives one. */
+static inline sp_String*sp_String_adopt(const char*b){
+  if(b&&((const unsigned char*)b)[-1]==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(b))->next;if(o)return o;}
+  return sp_String_new_shared(b);
+}
 /* The handle a Hash key stands for (SP_SEK): a frozen handle's payload, which
    sp_hash_key_str keeps as the key, answers that handle through the owner
    link; any other key (a frozen copy, a static) a new frozen handle over it. */

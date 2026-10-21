@@ -157,7 +157,8 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
       buf_printf(b, "{ const char *_fs = sp_float_opt_to_s(sp_FloatArray_oget(_t%d, _t%d)); sp_puts_line(_fs); } }\n",
                  ta, ti);
     else /* str */
-      buf_printf(b, "{ const char *_ps = sp_StrArray_get(_t%d, _t%d); sp_puts_str_line(_ps); } }\n", ta, ti);
+      buf_printf(b, "{ const char *_ps = %ssp_StrArray_get(_t%d, _t%d)%s; sp_puts_str_line(_ps); } }\n",
+                 g_one_string ? "SP_STR_B(" : "", ta, ti, g_one_string ? ")" : "");
     free(ab.p);
   }
   else if (t == TY_EXCEPTION) {
@@ -1412,6 +1413,17 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   int held = repr_share_rule(c) ? ran_first_handle(v) : -1;
   if (held < 0 && repr_share_rule(c)) held = ran_first_handle(nt_paren_single(c->nt, v));
   if (held >= 0) { buf_printf(b, "_t%d", held); return; }
+  /* (one representation: a node an emitter has bound to a temp of either
+     face ran there; emitting it again would run its statements twice. The
+     handle is the temp's: itself, or the owner of the view it holds.) */
+  if (g_one_string) {
+    int vp = nt_paren_single(c->nt, v);
+    for (int i = g_n_argov - 1; i >= 0; i--)
+      if (g_argov_node[i] == v || g_argov_node[i] == vp) {
+        buf_printf(b, "sp_String_new_fresh(%s)", g_argov_text[i]);
+        return;
+      }
+  }
   if (v >= 0 && nt_kind(c->nt, v) == NK_NilNode) { buf_puts(b, "(sp_String *)NULL"); return; }
   /* --share-strings: a call without a bang that answers its receiver is
      that receiver's handle; its demand-marked read would wrap a copy. */
@@ -2895,6 +2907,11 @@ void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
     buf_puts(b, " : ");
     str_box_bytes(b, vt);
     buf_puts(b, "; })");
+  }
+  else if (g_one_string && v == g_one_arm_bytes_node) {
+    /* (one representation: a dispatch arm's answer goes into a bytes slot,
+       the published handle as its view; the dispatch adopts it once) */
+    buf_printf(b, "_sp_ret_strbuf ? SP_STR_B((sp_String *)_sp_ret_strbuf) : _v%d; })", t);
   }
   else {
     buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
@@ -13704,6 +13721,9 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     if (g_ret_oint && oint_kind(g_ret_type)) buf_puts(b, oint_ctype(g_ret_type));
     else emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
+    /* (one representation: a String return is bytes, read through SP_STR_B) */
+    int one_ret_b = g_one_string && g_ret_type == TY_STRING;
+    if (one_ret_b) buf_puts(b, "SP_STR_B(");
     if (g_ret_oint && oint_kind(g_ret_type)) emit_oint_expr(c, a[0], g_ret_type, b);
     else if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
@@ -13714,6 +13734,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_obj_upcast_prefix(c, g_ret_type, r0, b);
       emit_tail_value(c, a[0], b);
     }
+    if (one_ret_b) buf_puts(b, ")");
     buf_puts(b, "; ");
     emit_frame_unwind(b, 0, NULL);
     buf_printf(b, "return _t%d; }\n", tr);
@@ -13758,6 +13779,11 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
     buf_puts(b, "return ");
+    /* (one representation: a String return is bytes; a value of either face
+       is read through SP_STR_B, a handle's view keeping it alive through
+       the caller's root as a fresh String's bytes do) */
+    int one_ret_b = g_one_string && g_ret_type == TY_STRING;
+    if (one_ret_b) buf_puts(b, "SP_STR_B(");
     TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
@@ -13771,6 +13797,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_obj_upcast_prefix(c, g_ret_type, r0, b);
       emit_tail_value(c, a[0], b);   /* coerces an unresolved TY_UNKNOWN token */
     }
+    if (one_ret_b) buf_puts(b, ")");
     buf_puts(b, ";\n");
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
@@ -20428,7 +20455,13 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
         TyKind at9 = g_ie_next_ty == TY_POLY_ARRAY ? comp_ntype(c, nv[0]) : TY_UNKNOWN;
         const char *apf9 = at9 != TY_POLY_ARRAY ? array_to_poly_fn(at9) : NULL;
         /* a next that leaves a block read as the handle (emit_strbuf_route) */
-        if (repr_share_rule(c) && c->strbuf_handle_demand[id]) emit_strbuf_handle_of(c, nv[0], b);
+        if (g_one_string && g_ie_next_ty == TY_STRBUF) {
+          /* (one representation: the slot is the handle; a value of either face is adopted) */
+          buf_puts(b, "sp_String_new_fresh(");
+          emit_expr(c, nv[0], b);
+          buf_puts(b, ")");
+        }
+        else if (repr_share_rule(c) && c->strbuf_handle_demand[id]) emit_strbuf_handle_of(c, nv[0], b);
         else if (g_ie_res_poly) emit_boxed(c, nv[0], b);
         else if (g_ie_next_oint && oint_kind(g_ie_next_ty)) emit_oint_expr(c, nv[0], g_ie_next_ty, b);
         else if (g_ie_next_ty == TY_INT || g_ie_next_ty == TY_FLOAT) {
@@ -21413,7 +21446,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        the layouts match by construction, but C needs the cast spelled (#3418). */
     if (!g_result_var) emit_obj_upcast_prefix(c, g_ret_type, vty, b);
     else if (g_result_ty != TY_UNKNOWN) emit_obj_upcast_prefix(c, g_result_ty, vty, b);
+    /* (one representation: a String tail of either face lands in a bytes
+       slot as its view, which the slot's root keeps alive) */
+    int one_tail_b = g_one_string && !want_poly && tail_slot_ty == TY_STRING;
+    if (one_tail_b) buf_puts(b, "SP_STR_B(");
     emit_tail_value(c, id, b);
+    if (one_tail_b) buf_puts(b, ")");
   }
   buf_puts(b, ";\n");
 }
@@ -22401,7 +22439,21 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
       cur = crecv;
     }
     Buf srefC; memset(&srefC, 0, sizeof srefC);
-    if (nchain > 0 && strbuf_slot_text(c, cur, &srefC)) {
+    int slotC = nchain > 0 && strbuf_slot_text(c, cur, &srefC);
+    /* (one representation: an element read of any typed String container,
+       a call's answer's included, is the handle, held once for the chain) */
+    int one_elem_hold = 0;
+    if (nchain > 0 && !slotC && g_one_string && one_str_elem_call(c, cur, TY_UNKNOWN)) {
+      int th = ++g_tmp;
+      Buf hb; memset(&hb, 0, sizeof hb);
+      strh_elem_handle_text(c, cur, &hb);
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+      free(hb.p);
+      buf_printf(&srefC, "_t%d", th);
+      one_elem_hold = 1;
+    }
+    if (slotC || one_elem_hold) {
       /* the receiver's text is read again by a second link, by an Integer's
          or a boxed value's codepoint conversion, and by each part of an
          interpolation of several (emit_str_append_arg, emit_interp_append) */
@@ -22412,7 +22464,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         if (nt_kind(nt, chain[j]) == NK_InterpolatedStringNode) nt_arr(nt, chain[j], "parts", &np);
         many = at == TY_INT || at == TY_POLY || np > 1;
       }
-      int held = strbuf_recv_hold(c, cur, name, nchain, chain, many, &srefC, b, indent);
+      int held = one_elem_hold ? 1 : strbuf_recv_hold(c, cur, name, nchain, chain, many, &srefC, b, indent);
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
@@ -23398,8 +23450,9 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
          to be spent here -- pushed raw it went in as a struct pointer that the
          C compiler only warned about, and the element read back as garbage
          (#3400). The copy is the same one every other plain-String slot takes:
-         only a str_shared slot aliases. */
-      else if (vt == TY_STRBUF && et == TY_STRING) {
+         only a str_shared slot aliases. (Under the one-String mode the
+         element is the handle: the value goes in as it is, emit_coerce.) */
+      else if (vt == TY_STRBUF && et == TY_STRING && !g_one_string) {
         buf_puts(b, "sp_str_concat(sp_String_cstr(");
         emit_expr(c, argv[a], b);
         buf_puts(b, "), (&(\"\\xff\")[1]))");

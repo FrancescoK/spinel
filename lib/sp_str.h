@@ -137,6 +137,17 @@ const char *sp_str_crypt(const char *s, const char *salt);
 const char*sp_str_lstrip(const char*s);
 const char*sp_str_rstrip(const char*s);
 const char*sp_str_dup(const char*s);
+/* A builtin's answer that is its own String operand, unchanged (a tr with
+   nothing to translate, a sub with no match): CRuby answers a new String.
+   Under the one-String mode the operand's bytes may be a handle's own
+   payload (marker 0xfd), which a sink would take as that handle, so the
+   answer is a copy of it; any other bytes are the fresh String they were. */
+#ifdef SP_ONE_STRING
+static inline const char*sp_str_one_answer(const char*s){return s&&((const unsigned char*)s)[-1]==0xfd?sp_str_dup(s):s;}
+#define SP_ONE_ANSWER(s) sp_str_one_answer(s)
+#else
+#define SP_ONE_ANSWER(s) (s)
+#endif
 const char *sp_plain_char(unsigned char c);
 const char *sp_bin_char(unsigned char c);
 const char*sp_str_b(const char*s);

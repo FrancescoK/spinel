@@ -663,7 +663,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", tf, fb.p ? fb.p : "", tf);
       free(fb.p);
       emit_pre_format_args(c, av, ac, ta);
-      buf_printf(b, "sp_str_format_polyarr(_t%d, _t%d)", tf, ta);
+      buf_printf(b, g_one_string ? "sp_str_format_polyarr(SP_STR_B(_t%d), _t%d)" : "sp_str_format_polyarr(_t%d, _t%d)", tf, ta);
       return 1;
     }
     if (sp_streq(name, "rand")) {
@@ -1694,8 +1694,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           if (fhandle) buf_printf(b, "; SP_GC_ROOT(_t%d)", td);
         }
         /* the name is checked after the default evaluates, as CRuby does */
-        buf_printf(b, "; const char *_t%d = getenv(%s_t%d%s); ", tk, env_str_checked(c, argv[0]) ? "sp_env_chk(" : "",
-                   tky, env_str_checked(c, argv[0]) ? ", 0)" : "");
+        buf_printf(b, "; const char *_t%d = getenv(%s%s_t%d%s%s); ", tk, env_str_checked(c, argv[0]) ? "sp_env_chk(" : "",
+                   g_one_string ? "SP_STR_B(" : "", tky, g_one_string ? ")" : "", env_str_checked(c, argv[0]) ? ", 0)" : "");
         emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
         buf_printf(b, " _t%d = _t%d ? ", tv, tk);
         if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_env_str(_t%d)) : ", tk);

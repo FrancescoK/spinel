@@ -22105,6 +22105,32 @@ static inline const char *sp_strface_bc_bytes(const char *s) {
   return s;
 }
 static inline sp_RbVal sp_strface_box_h(sp_String *h) { return h ? sp_box_obj(h, SP_BUILTIN_STRBUF) : sp_box_nil(); }
+/* Bytes handed to a sink that keeps a handle: the bytes of a live payload
+   (marker 0xfd) belong to the handle the payload's owner link names
+   (sp_fd_own), and that handle is what the sink keeps, so a String read
+   through its bytes face keeps its identity; any other bytes (a builtin's
+   fresh answer, a literal) get a handle as before. */
+static inline sp_String *sp_strface_owner(const char *s) {
+  if (s && ((const unsigned char *)s)[-1] == 0xfd) return (sp_String *)(void *)((sp_str_hdr *)sp_fd_base(s))->next;
+  return NULL;
+}
+static inline sp_String *sp_strface_h_shared(const char *s) { sp_String *o = sp_strface_owner(s); return o ? o : sp_String_new_shared(s); }
+static inline sp_String *sp_strface_h_fresh(const char *s) { sp_String *o = sp_strface_owner(s); return o ? o : sp_String_new_fresh(s); }
+/* ...and a String the program boxes is boxed as a handle (SP_BUILTIN_STRBUF),
+   whatever its face: a poly slot is a String slot too, so a change through
+   the box (a bang on a boxed receiver, sp_poly_str_become) is a change of
+   the one String. nil stays nil. */
+static inline sp_RbVal sp_strface_box_b(const char *s) {
+  if (!s) return sp_box_nil();
+  sp_String *o = sp_strface_owner(s);
+  return sp_box_obj(o ? o : sp_String_new_shared(s), SP_BUILTIN_STRBUF);
+}
+static inline sp_RbVal sp_strface_box_bn(const char *s) {
+  if (!s) return sp_box_nil();
+  sp_String *o = sp_strface_owner(s);
+  return sp_box_obj(o ? o : sp_String_new_fresh(s), SP_BUILTIN_STRBUF);
+}
+static inline sp_RbVal sp_strface_box_bnil(const char *s) { return sp_strface_box_b(s); }
 /* (each spells its operand once, in a statement expression: the operand may
    be a statement expression of its own with labels in it, and it is as long
    as an emitter made it) */
@@ -22116,12 +22142,28 @@ static inline sp_RbVal sp_strface_zero_box(int z) { (void)z; return sp_box_nil()
 #define SP_STR_B(x) SP_ONE_FACE(x, sp_strface_b_of, sp_strface_b_self, sp_strface_zero_b)
 /* the same for an operand held across a block the program runs (sp_strbuf_read_own) */
 #define SP_STR_BC(x) SP_ONE_FACE(x, sp_strface_b_copy, sp_strface_bc_bytes, sp_strface_zero_b)
-#define sp_String_new_shared(x) SP_ONE_FACE(x, sp_strface_h_self, sp_String_new_shared, sp_strface_zero_h)
-#define sp_String_new_fresh(x) SP_ONE_FACE(x, sp_strface_h_self, sp_String_new_fresh, sp_strface_zero_h)
-#define sp_box_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_str, sp_strface_zero_box)
-#define sp_box_str_new(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_str_new, sp_strface_zero_box)
-#define sp_box_nullable_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_nullable_str, sp_strface_zero_box)
+#define sp_String_new_shared(x) SP_ONE_FACE(x, sp_strface_h_self, sp_strface_h_shared, sp_strface_zero_h)
+#define sp_String_new_fresh(x) SP_ONE_FACE(x, sp_strface_h_self, sp_strface_h_fresh, sp_strface_zero_h)
+#define sp_box_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_strface_box_b, sp_strface_zero_box)
+#define sp_box_str_new(x) SP_ONE_FACE(x, sp_strface_box_h, sp_strface_box_bn, sp_strface_zero_box)
+#define sp_box_nullable_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_strface_box_bnil, sp_strface_zero_box)
+#undef SP_AS_STRING_HANDLE
+#define SP_AS_STRING_HANDLE(x) sp_String_new_shared(x)
 #define sp_StrArray_push(a, v) sp_StrArray_push((a), sp_String_new_fresh(v))
+/* ...and the other stores and needles that take an element (sp_strelem) */
+#define sp_StrArray_set(a, i, v) sp_StrArray_set((a), (i), sp_String_new_fresh(v))
+#define sp_StrArray_insert(a, i, v) sp_StrArray_insert((a), (i), sp_String_new_fresh(v))
+#define sp_StrArray_delete(a, v) sp_StrArray_delete((a), sp_String_new_fresh(v))
+#define sp_StrArray_index(a, v) sp_StrArray_index((a), sp_String_new_fresh(v))
+#define sp_StrArray_rindex(a, v) sp_StrArray_rindex((a), sp_String_new_fresh(v))
+#define sp_StrArray_index_poly(a, v) sp_StrArray_index_poly((a), sp_String_new_fresh(v))
+#define sp_StrArray_rindex_poly(a, v) sp_StrArray_rindex_poly((a), sp_String_new_fresh(v))
+#define sp_StrStrHash_set(h, k, v) sp_StrStrHash_set((h), SP_STR_B(k), sp_String_new_fresh(v))
+#define sp_IntStrHash_set(h, k, v) sp_IntStrHash_set((h), (k), sp_String_new_fresh(v))
+#define sp_StrStrHash_has_value(h, v) sp_StrStrHash_has_value((h), sp_String_new_fresh(v))
+#define sp_IntStrHash_has_value(h, v) sp_IntStrHash_has_value((h), sp_String_new_fresh(v))
+#define sp_StrStrHash_new_with_default(d) sp_StrStrHash_new_with_default(sp_String_new_fresh(d))
+#define sp_IntStrHash_new_with_default(d) sp_IntStrHash_new_with_default(sp_String_new_fresh(d))
 #define sp_StrArray_include(a, v) ({ __auto_type _sp_iv = (v); _Generic(_sp_iv, sp_String *: sp_StrArray_include, default: sp_StrArray_include_s)((a), _sp_iv); })
 #endif
 

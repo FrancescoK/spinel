@@ -231,6 +231,9 @@ int array_new_copies(TyKind t);
 /* Set while the type fixpoint iterates; defined in analyze.c. Declared here
    because ty_array_of consults it -- see the TY_UNKNOWN case. */
 extern int g_infer_optimistic;
+/* --string-repr=handle (defined in analyze.c, declared in analyze.h too):
+   ty_array_of and ty_hash_of take a String handle as a String. */
+extern int g_one_string;
 /* Set while infer_write_types is re-deriving local types. That pass resets
    every non-param local to UNKNOWN at the top of each round and re-derives in
    node order, so a read reached BEFORE its own write answers UNKNOWN -- and

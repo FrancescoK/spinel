@@ -382,10 +382,14 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
    nil). The handle's own text is the caller's: str_box_handle boxes text
    already written, str_box_handle_tmp a temp, and str_box_open /
    str_box_close wrap text the caller emits between them. */
+/* (one representation: the text may be of either face, a handle or a view
+   of one; sp_box_nullable_str / sp_box_str box the handle either way) */
 void str_box_open(Buf *b, int nullable) {
+  if (g_one_string) { buf_puts(b, nullable ? "sp_box_nullable_str(" : "sp_box_str("); return; }
   buf_puts(b, nullable ? "sp_box_nullable_obj(" : "sp_box_obj(");
 }
 void str_box_close(Buf *b) {
+  if (g_one_string) { buf_puts(b, ")"); return; }
   buf_puts(b, ", SP_BUILTIN_STRBUF)");
 }
 void str_box_handle(Buf *b, const char *h) {

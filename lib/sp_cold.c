@@ -4634,10 +4634,18 @@ sp_StrRange sp_srange_live(sp_StrRange r) {
 static sp_StrRange sp_srange_held(sp_StrRange r) {
   sp_String *hf = (sp_String *)r.hf, *hl = (sp_String *)r.hl;
   SP_GC_ROOT(hf); SP_GC_ROOT(hl);
+#ifdef SP_ONE_STRING
+  /* one representation: the endpoint's bytes are the handle's own (a sink
+     finds the handle through them), as CRuby's #min answers the begin
+     object itself */
+  if (hf) r.first = sp_String_cstr(hf);
+  if (hl) r.last = sp_String_cstr(hl);
+#else
   if (hf) r.first = sp_str_from_bytes(sp_String_cstr(hf), (size_t)sp_String_length(hf));
   const char *f = r.first;
   SP_GC_ROOT_STR(f);
   if (hl) r.last = sp_str_from_bytes(sp_String_cstr(hl), (size_t)sp_String_length(hl));
+#endif
   return r;
 }
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {

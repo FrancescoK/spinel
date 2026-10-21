@@ -3251,6 +3251,9 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    answers as for a nil String receiver. */
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) {
   Repr rr = repr_of(c, recv);
+  /* (one representation: the slot's text may be bound to a temp of either
+     face; SP_STR_B reads both and keeps NULL) */
+  if (g_one_string) return strbuf_box_ref_as(c, recv, "SP_STR_B(%s)", b);
   return strbuf_box_ref_as(c, recv, rr.may_nil && !rr.nil_tested ? "sp_String_cstr_nil(%s)" : "sp_String_cstr(%s)", b);
 }
 /* The object_id of handle `h`, a String that can be nil: the handle is
@@ -3752,8 +3755,15 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   const char *nm = nt_str(nt, v, "name");
-  /* (one representation: the typed container's own read answers the handle) */
-  if (one_str_elem_call(c, v, TY_UNKNOWN)) { emit_expr(c, v, b); return; }
+  /* (one representation: the typed container's own read answers the handle;
+     emit_expr reads it as bytes unless the node is named here) */
+  if (one_str_elem_call(c, v, TY_UNKNOWN)) {
+    int save = g_one_elem_raw;
+    g_one_elem_raw = v;
+    emit_expr(c, v, b);
+    g_one_elem_raw = save;
+    return;
+  }
   const char *nilm = strh_elem_nil_raise(c, v);
   if (nilm) buf_puts(b, "sp_StrhArray_nn(");
   if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
@@ -3778,6 +3788,8 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
    Array (sp_StrArray holds handles under the mode), or a read of a String
    Hash's value, which the runtime answers as the handle the container
    keeps? The handle element emitters then render v as the call it is. */
+int g_one_elem_raw = -1;
+int g_one_arm_bytes_node = -1;
 int one_str_elem_call(Compiler *c, int v, TyKind rt) {
   const NodeTable *nt = c->nt;
   if (!g_one_string || v < 0) return 0;
@@ -3830,6 +3842,20 @@ int strh_elem_slot(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
+  /* One representation: an element read of any typed String container
+     (one_str_elem_call) is a slot of the container when reading it again
+     runs no code: the container is a variable, or a call without arguments
+     on one (an attr_reader), and the index a literal or a local. */
+  if (g_one_string && one_str_elem_call(c, v, TY_UNKNOWN)) {
+    int r = recv;
+    if (r >= 0 && nt_kind(nt, r) == NK_CallNode && nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 &&
+        nt_ref(nt, r, "receiver") >= 0)
+      r = nt_ref(nt, r, "receiver");
+    if (r < 0 || !strh_var_read(nt, r)) return 0;
+    if (argc == 0) return 1;
+    NodeKind ik = nt_kind(nt, argv[0]);
+    return argc == 1 && (ik == NK_IntegerNode || ik == NK_LocalVariableReadNode || ik == NK_StringNode || ik == NK_SymbolNode);
+  }
   if (recv < 0 || !strh_var_read(nt, recv)) return 0;
   TyKind rt = comp_recv_type(c, recv);
   if (g_one_string && rt == TY_STR_ARRAY) rt = TY_STRH_ARRAY;   /* (one representation: its elements are handles) */
@@ -4786,6 +4812,16 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
         buf_printf(b, "({ (void)%s; %s; })", tx, default_value_from_compiler(c, slot));
       else buf_puts(b, tx);
       free(t.p);
+      RCC(CF_FIT);
+      return;
+    }
+    /* (one representation: a handle fits a bytes slot as its view, which
+       keeps the handle alive through the slot's root) */
+    if (g_one_string && slot == TY_STRING &&
+        (comp_ntype(c, node) == TY_STRBUF || repr_of(c, node).as_ty == TY_STRBUF || repr_call_returns_handle(c, node))) {
+      buf_puts(b, "SP_STR_B(");
+      emit_expr(c, node, b);
+      buf_puts(b, ")");
       RCC(CF_FIT);
       return;
     }
@@ -6035,9 +6071,15 @@ static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", t);
     emit_expr(c, key, b);
+    /* (one representation: the key is read as the handle's view; the Hash
+       copies a key it keeps, sp_hash_key_str) */
+    if (g_one_string) buf_printf(b, "; _t%d ? sp_String_cstr(_t%d) : NULL; })", t, t);
+    else
     buf_printf(b, "; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })", t, t);
     return;
   }
+  /* (one representation: a String key of either face, as bytes) */
+  if (g_one_string && kt == TY_STRING) { buf_puts(b, "SP_STR_B("); emit_expr(c, key, b); buf_puts(b, ")"); return; }
   emit_expr(c, key, b);
 }
 /* 1 when `kwh` is a keyword list made only of `**` spreads (`m(**a, **b)`).

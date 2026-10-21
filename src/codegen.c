@@ -1888,6 +1888,14 @@ void emit_str_cmp_conv(Compiler *c, int node, int tmp, Buf *b) {
 void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
                            int *tr, int *to, int *ts, Buf *b) {
   *tr = ++g_tmp; *to = ++g_tmp; *ts = ++g_tmp;
+  /* (one representation: the receiver's text may be of either face; it is
+     held as it is and compared through its bytes) */
+  if (g_one_string) {
+    int th = ++g_tmp;
+    buf_printf(b, "({ __auto_type _t%d = (%s); SP_GC_ROOT(_t%d); const char *_t%d = SP_STR_B(_t%d); sp_RbVal _t%d = ",
+               th, rtxt, th, *tr, th, *to);
+  }
+  else
   buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_RbVal _t%d = ",
              *tr, rtxt, *tr, *to);
   emit_boxed(c, operand, b);

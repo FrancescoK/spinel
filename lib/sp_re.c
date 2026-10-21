@@ -995,7 +995,7 @@ else {
     }
   }
   if (out_len == in_len) {
-    return src;
+    return SP_ONE_ANSWER(src);
   }
   char *buf = sp_str_alloc(out_len);
   size_t j = 0;

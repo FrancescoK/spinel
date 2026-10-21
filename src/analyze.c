@@ -21894,7 +21894,8 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
       int i = comp_cvar_index(ci, grn);
       if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && ci->cvar_types[i] != TY_STRH_ARRAY && !ty_is_hash(ci->cvar_types[i]))) continue;
       any = 1;
-      if ((ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !(ci->cvar_elems_shared[i] & ELEMS_POLY)) {
+      if (!g_one_string &&   /* (the one-String mode: the typed container holds the handle) */
+          (ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !(ci->cvar_elems_shared[i] & ELEMS_POLY)) {
         cvar_set_type(ci, i, TY_POLY_ARRAY);
         ci->cvar_elems_shared[i] |= ELEMS_POLY;
         changed = 1;
@@ -21905,7 +21906,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
   else {
     LocalVar *gv = kind == SHK_GVAR ? comp_gvar(c, grn) : comp_const(c, grn);
     if (!gv || (!ty_is_array(gv->type) && gv->type != TY_STRH_ARRAY && !ty_is_hash(gv->type))) return 0;
-    if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
+    if (!g_one_string && (gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
         (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
       lv_set_type(gv, TY_POLY_ARRAY);
       gv->elems_shared = 1;
@@ -22943,8 +22944,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
         /* a typed String Array settles in its poly form, whose boxes hold
            the handle; a String written in is boxed as one. A parameter
-           an --rbs seed types Array[String] takes it too. */
-        if ((lv->type == TY_STR_ARRAY || lv->type == TY_POLY_ARRAY) && repr_str_elems_share(c, h) &&
+           an --rbs seed types Array[String] takes it too. (Under the
+           one-String mode the typed container holds the handle itself and
+           keeps its kind: string-one-repr-design.md.) */
+        if (!g_one_string && (lv->type == TY_STR_ARRAY || lv->type == TY_POLY_ARRAY) && repr_str_elems_share(c, h) &&
             (!lv->rbs_seeded || lv->rbs_type == TY_STR_ARRAY) && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
           lv_set_type(lv, TY_POLY_ARRAY);
           lv->elems_shared = 1;
@@ -22952,7 +22955,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         }
         /* and so does a Hash an --rbs seed types Hash[String, String]:
            its values are boxes of the handles */
-        if (lv->type == TY_STR_STR_HASH && lv->rbs_seeded && lv->rbs_type == TY_STR_STR_HASH &&
+        if (!g_one_string && lv->type == TY_STR_STR_HASH && lv->rbs_seeded && lv->rbs_type == TY_STR_STR_HASH &&
             repr_str_elems_share(c, h)) {
           lv_set_type(lv, TY_STR_POLY_HASH);
           changed = 1;
@@ -23012,8 +23015,8 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         }
         /* An externally written String Array uses that same form even
            when the source walk cannot reach a direct ivar write. */
-        if (it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
-        if (it == TY_STR_STR_HASH && class_ivar_pinned(ci, sh->name))
+        if (!g_one_string && it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
+        if (!g_one_string && it == TY_STR_STR_HASH && class_ivar_pinned(ci, sh->name))
           changed |= share_box_ivar_family(c, sh->cid, sh->name, 1);
         continue;
       }
@@ -23071,7 +23074,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
        shared: the return settles in its poly form, the boxes holding the
        handles, as a seeded local does above; the seed keeps its Ruby type
        (Scope.ret_elems_shared, #9626) */
-    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) && c->scopes[sh->scope].ret_rbs_seeded &&
+    else if (!g_one_string && sh->kind == SHK_RET && repr_str_elems_share(c, h) && c->scopes[sh->scope].ret_rbs_seeded &&
              (c->scopes[sh->scope].ret == TY_STR_ARRAY ||
               (c->scopes[sh->scope].ret == TY_POLY_ARRAY && c->scopes[sh->scope].ret_elems_shared))) {
       Scope *m = &c->scopes[sh->scope];

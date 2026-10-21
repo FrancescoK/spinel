@@ -3055,11 +3055,16 @@ static void emit_str_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) 
   }
   if (operand_may_allocate(c, recv) && operand_may_allocate(c, arg)) {
     int t = ++g_tmp;
+    /* (one representation: the receiver is held by its face and read as bytes) */
+    if (g_one_string) buf_printf(b, eq ? "({ __auto_type _t%d = (" : "(!({ __auto_type _t%d = (", t);
+    else
     buf_printf(b, eq ? "({ const char *_t%d = " : "(!({ const char *_t%d = ", t);
     emit_expr(c, recv, b);
+    if (g_one_string) buf_printf(b, "); SP_GC_ROOT(_t%d); sp_str_eq(SP_STR_B(_t%d), SP_STR_B(", t, t);
+    else
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_eq(_t%d, ", t, t);
     emit_expr(c, arg, b);
-    buf_puts(b, "); })");
+    buf_puts(b, g_one_string ? ")); })" : "); })");
     if (!eq) buf_puts(b, ")");
     return;
   }
@@ -6243,7 +6248,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        call is typed a String (or in the dispatch's default arm), and not
        where a reopened Object or Kernel has an asctime, which answers for
        every receiver the table does not */
-    else if ((sp_streq(name, "asctime") || sp_streq(name, "ctime")) && (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm) &&
+    else if ((sp_streq(name, "asctime") || sp_streq(name, "ctime")) &&
+             (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm || (g_one_string && repr_of(c, id).as_ty == TY_STRBUF)) &&
              !(comp_class_index(c, "Object") >= 0 &&
                comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
              !(comp_class_index(c, "Kernel") >= 0 &&
@@ -9623,6 +9629,13 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     int is_stat_time = sp_streq(name, "mtime") || sp_streq(name, "atime");
     if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h || is_stat_time) {
       TyKind ret = repr_of(c, id).as_ty;
+      /* (one representation: a String answer of either face is collected in
+         a bytes slot, the arms answering bytes (a user arm's published
+         handle as its view, emit_strbuf_pickup), and adopted once at the
+         end: a handle keeps its identity, fresh bytes get one; the consumers
+         of a handle-typed call take the handle) */
+      int one_ret_h = g_one_string && ret == TY_STRBUF;
+      if (one_ret_h) { ret = TY_STRING; g_one_arm_bytes_node = id; }
       /* an OpenStruct member is a boxed value; but when analyze typed the
          call concretely (a user method OR reader/alias resolves the name --
          e.g. alias required? -> attr_reader :required, which
@@ -9719,8 +9732,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         g_pd_ret_ctype = tr_o ? oint_ctype(ret) : NULL;
         int hoisted0 = pd_hoist(c, id, name, b, pd_from, tr, is_scalar_ret(ret) ? ret : TY_INT, pid0, pty0, blk_tmp0 >= 0 ? 2 : 1);
         g_pd_ret_ctype = NULL;
-        if (hoisted0) buf_printf(b, " _t%d; })", tr);
-        else buf_printf(b, " } _t%d; })", tr); }
+        if (hoisted0) buf_printf(b, one_ret_h ? " sp_String_new_fresh(_t%d); })" : " _t%d; })", tr);
+        else buf_printf(b, one_ret_h ? " } sp_String_new_fresh(_t%d); })" : " } _t%d; })", tr); }
+      if (one_ret_h) g_one_arm_bytes_node = -1;
       return 1;
     }
   }
@@ -9790,6 +9804,13 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       is_strpart = ps.strpart; is_strsplit = ps.strsplit; is_pred = ps.pred; is_strftime = ps.strftime;
       is_cover = ps.cover; is_gcdlcm = ps.gcdlcm; is_pfirstn = ps.pfirstn;
       TyKind ret = repr_of(c, id).as_ty;
+      /* (one representation: a String answer of either face is collected in
+         a bytes slot, the arms answering bytes (a user arm's published
+         handle as its view, emit_strbuf_pickup), and adopted once at the
+         end: a handle keeps its identity, fresh bytes get one; the consumers
+         of a handle-typed call take the handle) */
+      int one_ret_h = g_one_string && ret == TY_STRBUF;
+      if (one_ret_h) { ret = TY_STRING; g_one_arm_bytes_node = id; }
       int tv = ++g_tmp, tr = ++g_tmp;
       /* `x = v` through a writer: the value is v as written, so the arms call
          the writer for effect and the argument's temp is the result (the
@@ -10178,7 +10199,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         emit_boxed_text(c, atmp_ty[0], sref, b);
         buf_puts(b, "; })");
       }
+      else if (one_ret_h && (pd_done || !is_setter_val)) buf_printf(b, " sp_String_new_fresh(_t%d); })", tr);
       else buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
+      if (one_ret_h) g_one_arm_bytes_node = -1;
       free(atmp);
       free(atmp_ty);
       free(htmp);
@@ -16727,7 +16750,9 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
     if (rt == TY_STRING && sp_streq(name, "*")) {
       buf_puts(b, "sp_str_repeat(");
-      emit_expr(c, recv, b); buf_puts(b, ", ");
+      /* (one representation: the receiver of either face, as bytes) */
+      if (g_one_string) emit_str_expr(c, recv, b); else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b);   /* "ab" * nil is CRuby's TypeError, not "" */
       buf_puts(b, ")");
       return 1;
@@ -23738,6 +23763,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       }
       if (operand_binds_handle(c, node[i], harg)) ran_first_bind(node[i], tmp[i], tmp[i]);
       else if (oo[i]) view_bind_o(node[i], "_t%d", tmp[i]);
+      /* (one representation: the temp is of either face; its reads are bytes) */
+      else if (g_one_string && ty[i] == TY_STRING) view_bind(node[i], "SP_STR_B(_t%d)", tmp[i]);
       else view_bind(node[i], "_t%d", tmp[i]);
       if (repr_share_rule(c) && ty[i] == TY_STRBUF) {
         held[nh++] = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
@@ -23828,24 +23855,24 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       else if (used[i]) {
         free(opb[i].p);
         memset(&opb[i], 0, sizeof opb[i]);
-        /* (one representation: this copy is one, a snapshot the call's other
-           operands cannot change: g_one_held makes the read face copy) */
-        int held1 = g_one_held;
-        if (g_one_string) g_one_held = 1;
+        /* (one representation: the handle itself is held, and read where it
+           is used, SP_STR_B: it stays alive and keeps its identity) */
+        if (g_one_string && sref.p) buf_puts(&opb[i], sref.p);
+        else
         emit_strbuf_node_read(c, node[i], sref.p ? sref.p : "", &opb[i]);
-        g_one_held = held1;
       }
       free(sref.p);
       if (!(used[i] & 1)) { free(opb[i].p); continue; }
     }
     if (opp[i].p) buf_puts(b, opp[i].p);
     free(opp[i].p);
+    /* (one representation: a String of either face is held as it is, the C
+       compiler naming the type, and read where it is used, SP_STR_B) */
+    if (g_one_string && !oo[i] && ty[i] == TY_STRING && opb[i].p) buf_printf(b, "__auto_type _t%d = (%s); ", tmp[i], opb[i].p);
+    else {
     if (oo[i]) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
-    /* (one representation: bytes held across the other operands are a copy
-       when they are a live payload's, SP_STR_BC) */
-    if (g_one_string && !oo[i] && ty[i] == TY_STRING && opb[i].p) buf_printf(b, " _t%d = SP_STR_BC(%s); ", tmp[i], opb[i].p);
-    else
     buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : oo[i] ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
+    }
     /* a by-value object carries its Strings in the temp itself */
     if (comp_ty_value_obj(c, ty[i])) {
       if (ty_gc_holds_refs(c, ty[i])) { emit_gc_root_tmp_refs(c, ty[i], tmp[i], b); buf_puts(b, " "); }
@@ -24118,10 +24145,12 @@ const char *emit_str_format_held(Compiler *c, int recv, int arg, int fck, Buf *b
   int r = unwrap_parens(c, recv);
   if (r < 0 || format_ran_first(recv, r) || format_is_held(c, r) || str_format_left_alone(c, recv, arg)) return NULL;
   int t = fck >= 0 ? fck : ++g_tmp;
-  buf_printf(b, "({ const char *_t%d = ", t);
+  /* (one representation: the receiver is held by its face and read as bytes) */
+  buf_printf(b, g_one_string ? "({ __auto_type _t%d = (" : "({ const char *_t%d = ", t);
   emit_expr(c, recv, b);
+  if (g_one_string) buf_puts(b, ")");
   if (fck >= 0) buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\")", t);
-  buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_str_format_polyarr(_t%d", t, t);
+  buf_printf(b, g_one_string ? "; SP_GC_ROOT(_t%d); sp_str_format_polyarr(SP_STR_B(_t%d)" : "; SP_GC_ROOT_STR(_t%d); sp_str_format_polyarr(_t%d", t, t);
   return "); })";
 }
 /* String#% whose operand has no type yet: `[]` and a bare `Array.new`. Only

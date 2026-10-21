@@ -324,7 +324,7 @@ typedef struct{sp_strelem*data;sp_int len;sp_int cap;sp_int frozen;sp_strelem in
    that expands SP_SEF or SP_SEK includes it (sp_str.h does under the mode) */
 #define SP_SEB(e) ((e) ? (e)->data : (const char *)NULL)
 #define SP_SEBN(e) ((e)->data)
-#define SP_SEF(b) sp_String_new_shared(b)
+#define SP_SEF(b) sp_String_adopt(b)
 #define SP_SEM(e) do { if (e) sp_gc_mark((void *)(e)); } while (0)
 #define SP_SER(e) SP_GC_ROOT(e)
 #define SP_SEBOX(e) ((e) ? sp_box_obj((void *)(e), SP_BUILTIN_STRBUF) : sp_box_nil())
