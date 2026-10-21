@@ -23023,6 +23023,10 @@ static void emit_store_index(Compiler *c, int ix, int v, int tk, char *redo, siz
    skips the arguments for a nil, as CRuby does. Answers -1 for another
    receiver, or when the arms decline. */
 static int str_mutate_sn_var_guard(Compiler *c, int id, int recv, Buf *b, int indent) {
+  /* a mutator the program defines (a reopened String's `<<`), or one the
+     plan cannot list, is a call: the value form dispatches it, where the
+     arms below would run the builtin */
+  { int tg[CPT_MAX]; if (cplan_targets(c, id, tg, CPT_MAX) != 0) return -1; }
   NodeKind k = nt_kind(c->nt, nt_paren_single(c->nt, recv));
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) return -1;
   Buf ab; memset(&ab, 0, sizeof ab);
