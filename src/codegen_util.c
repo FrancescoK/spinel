@@ -688,7 +688,7 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
    it does, on the read inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
-  id = unwrap_parens(c, id);
+  id = nt_paren_single(c->nt, id);
   if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (repr_self_shared(c, id)) return 1;
@@ -2462,7 +2462,7 @@ static int ivs_never_nil(Compiler *c, int v) {
    above proves never is. nil.dup is nil, so a dup is proven only with its
    receiver. */
 int stored_value_may_be_nil(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (!node_may_be_null_nil(c, v)) return 0;
   if (nt_kind(c->nt, v) == NK_ParenthesesNode || !ivs_never_nil(c, v)) return 1;
   if (nt_kind(c->nt, v) == NK_CallNode && sp_streq(nt_str(c->nt, v, "name"), "dup"))
@@ -4560,7 +4560,7 @@ TyKind store_value_kind(Compiler *c, int node) {
   TyKind t = yield_site_type(c, node);
   /* a parenthesized value, `case ({})`, is rendered as its one statement */
   if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ParenthesesNode) {
-    int in = unwrap_parens(c, node);
+    int in = nt_paren_single(c->nt, node);
     if (in != node) return store_value_kind(c, in);
   }
   NodeKind k = nt_kind(c->nt, node);
@@ -5000,7 +5000,7 @@ static int plain_local(Compiler *c, LocalVar *lv, const char *name, int depth) {
 static int plain_expr(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
-  n = unwrap_parens(c, n);
+  n = nt_paren_single(c->nt, n);
   if (n < 0 || comp_ntype(c, n) != TY_INT) return 0;
   switch (nt_kind(nt, n)) {
   case NK_IntegerNode: return 1;
@@ -5160,7 +5160,7 @@ void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b)
    may_nil, so a copy of it (`[0] * 8192`) has nothing to hand on. */
 int typed_array_lit_flag_free(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (node >= 0) node = unwrap_parens(c, node);
+  if (node >= 0) node = nt_paren_single(c->nt, node);
   if (node < 0 || nt_kind(nt, node) != NK_ArrayNode) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   for (int k = 0; els && k < en; k++) {
@@ -5876,7 +5876,7 @@ void emit_opw_okey_read(const char *t, Buf *b) {
 void emit_str_array_handles(Compiler *c, int v, Buf *b) {
   /* a String Range's minmax: its min and max as they answer them, the
      endpoints themselves (sp_srange_extreme_h), not copies */
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   if (repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_minmax_pair(nt_str(c->nt, u, "name")) &&
       nt_ref(c->nt, u, "arguments") < 0 && nt_ref(c->nt, u, "block") < 0 && nt_ref(c->nt, u, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(c->nt, u, "receiver")) == TY_STR_RANGE && cplan_user(c, u)->dispatch == CP_NONE &&
@@ -6010,6 +6010,8 @@ int kwh_only_spreads(const NodeTable *nt, int kwh) {
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) return 0;
   return 1;
 }
+/* Remains only for the String-route callers being replaced (#9258).
+   New code uses nt_paren_single for syntax or vp_one for the value. */
 int unwrap_parens(Compiler *c, int id) {
   return nt_paren_single(c->nt, id);
 }
@@ -6486,7 +6488,7 @@ static int else_is_held(Compiler *c, int els, TyKind t) {
 }
 static int read_is_held(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   TyKind t = comp_ntype(c, node);
@@ -6544,7 +6546,7 @@ static int read_is_held(Compiler *c, int node) {
    sits in a rooted temp. Any other source is boxed by
    sp_typed_to_poly_unheld. */
 int typed_array_src_held(Compiler *c, int node) {
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 0;
   return read_is_held(c, node) || nt_kind(c->nt, node) == NK_ArrayNode;
 }

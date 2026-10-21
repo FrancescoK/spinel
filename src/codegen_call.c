@@ -2636,7 +2636,7 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   /* a write (through parentheses) whose slot holds the --share-strings
      handle hands over that handle (emit_strbuf_write_handle), as a handle
      variable's read does */
-  if (repr_write_share(c, unwrap_parens(c, a))) return TY_STRBUF;
+  if (repr_write_share(c, nt_paren_single(c->nt, a))) return TY_STRBUF;
   Repr r = repr_of(c, a);
   /* A static slot's read face is a String, but its box carries the handle. */
   if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
@@ -2644,7 +2644,7 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   if (r.as_ty == TY_STRING && strbuf_value_carries(c, a)) return TY_STRBUF;
   /* and so does a bang on a handle or a box, which answers that handle or
      nil (strbuf_arg_bang), as it hands it to a method's parameter */
-  if (r.as_ty == TY_STRING && strbuf_arg_bang(c, unwrap_parens(c, a))) return TY_STRBUF;
+  if (r.as_ty == TY_STRING && strbuf_arg_bang(c, nt_paren_single(c->nt, a))) return TY_STRBUF;
   /* a fresh String lifted into the handle for a boxed parameter it reaches */
   if (repr_share_rule(c) && r.as_ty == TY_STRING && c->poly_strbuf_lift[a]) return TY_STRBUF;
   TyKind t = r.as_ty;
@@ -8869,7 +8869,7 @@ static int poly_inert(Compiler *c, int node);
    Symbol, String or Integer, read or written, that runs nothing itself? */
 static int poly_key_inert(Compiler *c, int key) {
   if (key < 0 || !poly_inert(c, key)) return 0;
-  TyKind kt = comp_ntype(c, unwrap_parens(c, key));
+  TyKind kt = comp_ntype(c, nt_paren_single(c->nt, key));
   return kt == TY_SYMBOL || kt == TY_STRING || kt == TY_INT;
 }
 
@@ -8880,7 +8880,7 @@ static int poly_key_inert(Compiler *c, int key) {
    hash key #hash, a `*` #to_a, a `**` #to_hash, a Range's ends #<=>. */
 static int poly_inert(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 1;
   int n = 0; const int *els;
   switch (nt_kind(nt, node)) {
@@ -8939,7 +8939,7 @@ static int poly_last_live(Compiler *c, const int *args, int n) {
    a shared-mutable String's read makes) may have built a value only the
    temp holds. */
 static int poly_arg_held(Compiler *c, int node, TyKind held) {
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 0;
   /* A literal's bytes are static, but a demanded fresh handle is not. */
   if (held == TY_STRBUF && repr_of(c, node).strbuf_src == RS_FRESH) return 0;
@@ -10778,7 +10778,7 @@ static int recv_new_string(Compiler *c, int n, int depth) {
     "chomp", "chop", "chr", "succ", "next", "center", "ljust", "rjust", "tr", "tr_s", "delete", "squeeze",
     "sub", "gsub", "delete_prefix", "delete_suffix", "dup", "inspect", "dump", NULL };
   const NodeTable *nt = c->nt;
-  n = unwrap_parens(c, n);
+  n = nt_paren_single(c->nt, n);
   if (n < 0 || comp_ntype(c, n) != TY_STRING) return 0;
   if (nt_kind(nt, n) == NK_InterpolatedStringNode) return interp_makes_new(nt, n);
   if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
@@ -10884,7 +10884,7 @@ int reopen_self_defaults(Compiler *c, int mi) {
   int uses_self = fiber_body_uses_self(c, m->body), bn = 0;
   int pure = !uses_self && subtree_is_pure_read(c, m->body) && arg_runs_nothing(c, m->body);
   const int *bv = nt_arr(c->nt, m->body, "body", &bn);
-  int v = bn == 1 ? unwrap_parens(c, bv[0]) : -1;
+  int v = bn == 1 ? nt_paren_single(c->nt, bv[0]) : -1;
   const char *nm = nt_kind(c->nt, v) == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
   int r = nm ? nt_ref(c->nt, v, "receiver") : -1;
   TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
@@ -10900,7 +10900,7 @@ int reopen_self_defaults(Compiler *c, int mi) {
     int d = m->pdefault[i];
     if (d < 0 || !ctor_default_reads_self(c, m, d, 0)) continue;
     TyKind t = comp_ntype(c, d);
-    int read = nt_kind(c->nt, unwrap_parens(c, d)) == NK_SelfNode;
+    int read = nt_kind(c->nt, nt_paren_single(c->nt, d)) == NK_SelfNode;
     if (!read && (ty_is_numeric(t) || t == TY_BOOL || t == TY_SYMBOL) &&
         nt_kind(c->nt, d) == NK_CallNode &&
         nt_ref(c->nt, d, "receiver") < 0 && call_plain_argc(c, d) == 0 &&
@@ -18539,7 +18539,7 @@ int json_to_json_is_builtin(Compiler *c, int recv) {
    parentheses or not), or NULL. Its type carries no element type, so it does
    not read as an Array or Hash type. */
 static const char *empty_container_class(Compiler *c, int node) {
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (!node_is_empty_container(c->nt, node)) return NULL;
   NodeKind k = nt_kind(c->nt, node);
   if (k == NK_ArrayNode) return "Array";
@@ -21306,7 +21306,7 @@ static int call_rescued_as_missing(const NodeTable *nt, int id) {
 static int unresolved_name_chain(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   for (int depth = 0; depth < 64; depth++) {
-    node = unwrap_parens(c, node);
+    node = nt_paren_single(c->nt, node);
     if (node < 0 || nt_kind(nt, node) != NK_CallNode || !repr_of(c, node).untyped) return 0;
     int r = nt_ref(nt, node, "receiver");
     if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
@@ -22909,7 +22909,7 @@ static int plain_calls_own(Compiler *c, int a) {
 /* See codegen_internal.h. */
 int subtree_is_plain_value(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  id = unwrap_parens(c, id);
+  id = nt_paren_single(c->nt, id);
   if (id < 0) return 1;
   if (subtree_is_pure_read(c, id)) return !plain_calls_own(c, id);
   switch (nt_kind(nt, id)) {
@@ -22990,7 +22990,7 @@ int prog_has_hash_default_block(Compiler *c) {
    held by its owner. */
 int operand_is_held_read(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  id = unwrap_parens(c, id);
+  id = nt_paren_single(c->nt, id);
   if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
   if (subtree_is_pure_read(c, id)) return 1;
   const char *nm = nt_str(nt, id, "name");
@@ -23254,7 +23254,7 @@ static int operand_hoists_effect(Compiler *c, int node) {
 /* See codegen_internal.h. */
 int operand_allocates_beside(Compiler *c, int v) {
   if (subtree_may_allocate(c->nt, v)) return !subtree_is_pure_read(c, v);
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   if (u >= 0 && repr_of(c, u).read_raw && decide_node(c->nt, u, "strbuf-raw", NULL)) return 0;
   return operand_may_allocate(c, v);
 }
@@ -23634,8 +23634,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        taken last, so it can only follow an operand that is bound */
     /* (one whose value is a shared handle keeps its place: the arms read
        the handle through the node) */
-    if (!bindable && (route_op || !operand_binds_as_value(k) || repr_of(c, unwrap_parens(c, operand[i])).as_ty == TY_STRBUF ||
-                      repr_of(c, unwrap_parens(c, operand[i])).handle)) {
+    if (!bindable && (route_op || !operand_binds_as_value(k) || repr_of(c, nt_paren_single(c->nt, operand[i])).as_ty == TY_STRBUF ||
+                      repr_of(c, nt_paren_single(c->nt, operand[i])).handle)) {
       if (unb < 0) unb = i;
       unb_lit = 1;
       obs[i] = 2;
@@ -24028,7 +24028,7 @@ static int format_method_is_own(Compiler *c, const char *cls, const char *nm) {
    a Hash with a default block may run it. */
 static int format_is_slot_read(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  int recv = unwrap_parens(c, nt_ref(nt, v, "receiver")), alloc = 0;
+  int recv = nt_paren_single(c->nt, nt_ref(nt, v, "receiver")), alloc = 0;
   if (recv < 0 || nt_ref(nt, v, "block") >= 0 || comp_ntype(c, v) != TY_STRING ||
       !(expr_is_held_ref(c, recv) || nt_kind(nt, recv) == NK_GlobalVariableReadNode))
     return 0;
@@ -24068,7 +24068,7 @@ static int format_arm_unheld(const VpLeaf *leaf, void *ud) {
    judged first, so a choice that cannot allocate is held whatever its arms;
    then every value position of a choice. */
 static int format_is_held(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0) return 0;
   if (format_value_held(c, v)) return 1;
   return !for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_ALL, format_arm_unheld, c);
@@ -24157,7 +24157,7 @@ static int format_is_own_made(Compiler *c, int v) {
    the builtin's (format_arg_calls_own, the cheaper question, asked first). */
 static int format_arg_is_inert(Compiler *c, int a, int depth) {
   const NodeTable *nt = c->nt;
-  a = unwrap_parens(c, a);
+  a = nt_paren_single(c->nt, a);
   if (a < 0 || depth > 8) return 0;
   const char *ty = nt_type(nt, a);
   if (!ty) return 0;
@@ -24171,13 +24171,13 @@ static int format_arg_is_inert(Compiler *c, int a, int depth) {
 }
 /* See codegen_call_arms.h. */
 int str_format_left_alone(Compiler *c, int recv, int arg) {
-  int r = unwrap_parens(c, recv);
+  int r = nt_paren_single(c->nt, recv);
   return r >= 0 && !format_ran_first(recv, r) && !format_is_held(c, r) && !format_is_own_made(c, r) &&
          !format_arg_is_inert(c, arg, 0);
 }
 /* See codegen_call_arms.h. */
 const char *emit_str_format_held(Compiler *c, int recv, int arg, int fck, Buf *b) {
-  int r = unwrap_parens(c, recv);
+  int r = nt_paren_single(c->nt, recv);
   if (r < 0 || format_ran_first(recv, r) || format_is_held(c, r) || str_format_left_alone(c, recv, arg)) return NULL;
   int t = fck >= 0 ? fck : ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", t);
@@ -24465,7 +24465,7 @@ static int nil_target_bindable(NodeKind k, int boxed) {
 /* Does an argument of the call (its `arguments` node a) reassign the
    variable read v reads (read_rebound_by)? */
 static int nil_target_read_rebound(Compiler *c, int v, int a) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   NodeKind k = nt_kind(c->nt, v);
   if (a < 0 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode &&
                 k != NK_GlobalVariableReadNode && k != NK_ClassVariableReadNode))

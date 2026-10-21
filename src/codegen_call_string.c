@@ -1399,7 +1399,7 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
   if (recv < 0 || argc < 1 || nt_ref(nt, id, "block") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt != TY_STRING && rt != TY_STRBUF) return 0;
-  int first = unwrap_parens(c, recv);
+  int first = nt_paren_single(c->nt, recv);
   Repr rp = repr_of(c, first);
   if (rp.handle && rp.kind == RK_STRBUF) return 0;
   int links[64], nlinks = 0, cur = recv, calls = 0;
@@ -1470,7 +1470,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
   if (repr_share_rule(c) && argc == 0 && is_string_append_or_prepend(name) &&
       bop_answers_self(TY_STRING, name, argc, 0) == BOPF_SELF) {
     Buf ref; memset(&ref, 0, sizeof ref);
-    if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), &ref)) {
+    if (strbuf_recv_handle(c, id, nt_paren_single(c->nt, recv), &ref)) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
                     "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref.p, t, t);
@@ -1486,7 +1486,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
        below would emit an invalid assignment (#2020). prepend replaces the
        buffer with args-then-contents, keeping the handle stable (#3227). */
     { Buf sref0; memset(&sref0, 0, sizeof sref0);
-      int sr = unwrap_parens(c, recv);
+      int sr = nt_paren_single(c->nt, recv);
       const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
       Repr rp = repr_of(c, sr);
       int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;

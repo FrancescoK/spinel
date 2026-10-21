@@ -1934,7 +1934,7 @@ void emit_str_expr_sep(Compiler *c, int node, Buf *b) {
    Parentheses around the call (`push((table(x)))`) are peeled. */
 int call_answers_no_value(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   if (!nm) return 0;
@@ -2499,7 +2499,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      Array becomes (emit_str_array_handles); boxed as its bytes, a change
      through an element went to a copy (#9258) */
   if (repr_share_rule(c) && node >= 0 && comp_ntype(c, node) == TY_STR_ARRAY && !arg_ran_first(node, 0)) {
-    int u = unwrap_parens(c, node);
+    int u = nt_paren_single(c->nt, node);
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && share_node_fresh_elems(c, u)) {
       buf_puts(b, "sp_box_nullable_obj((void *)");
       emit_str_array_handles(c, node, b);
@@ -2983,7 +2983,7 @@ int operand_may_change_string(Compiler *c, int n) {
 /* --share-strings: is v (parentheses aside) a call, not run yet, whose
    every target publishes the handle of a String the rule shares? */
 int call_publishes_shared_handle(Compiler *c, int v) {
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !arg_ran_first(v, 0) &&
          !arg_ran_first(u, 0) && repr_of(c, u).strbuf_src == RS_NONE && repr_call_returns_handle(c, u) &&
          share_node_shares(c, u);

@@ -107,7 +107,7 @@ static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, i
   /* (a call publishing the handle of a String the rule shares, a read of a
      slot that is the handle, a boxed receiver's call whose arms answer one:
      any value the String plan can hand over as the handle) */
-  int u = unwrap_parens(c, expr);
+  int u = nt_paren_single(c->nt, expr);
   int holds = call_publishes_shared_handle(c, expr);
   if (!holds && u >= 0 && repr_share_rule(c) && comp_ntype(c, u) == TY_STRING && !arg_ran_first(u, 0))
     holds = share_node_shares(c, u) && share_plan_with_need(c, u, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE &&
@@ -227,7 +227,7 @@ static const char *interp_reader_var(Compiler *c, int call, char *buf, size_t ca
    the String the part named). */
 static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int expr, int *base) {
   const NodeTable *nt = c->nt;
-  int u = unwrap_parens(c, expr);
+  int u = nt_paren_single(c->nt, expr);
   if (!repr_share_rule(c) || u < 0) return 0;
   int kind = 1, b = u, nil_converted = 0;
   /* a String method that answers its receiver, or nil (`s << "a"`,
@@ -236,7 +236,7 @@ static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int
      String read after the last part */
   while (b >= 0 && nt_kind(nt, b) == NK_CallNode) {
     const char *nm = nt_str(nt, b, "name");
-    int r = unwrap_parens(c, nt_ref(nt, b, "receiver")), argc = call_plain_argc(c, b);
+    int r = nt_paren_single(c->nt, nt_ref(nt, b, "receiver")), argc = call_plain_argc(c, b);
     if (!nm || r < 0 || comp_ntype(c, r) != TY_STRING || cplan_user(c, b)->mi >= 0) break;
     int self = (bop_answers_self(TY_STRING, nm, argc, nt_ref(nt, b, "block") >= 0) & (BOPF_SELF | BOPF_SELF_OR_NIL)) ||
                (argc == 0 && is_string_self_answer(nm));
@@ -1049,8 +1049,8 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
      ? v.dup : String.new`, whose narrowed dup is a String): the handle's
      bytes. Put in as it stands, an sp_String * shared one C conditional
      with a const char *, and the slot read the handle as bytes. */
-  if (res == TY_STRING && repr_of(c, nd).as_ty == TY_STRBUF && nt_kind(nt, unwrap_parens(c, nd)) == NK_CallNode &&
-      strbuf_call_picks_up(c, unwrap_parens(c, nd))) {
+  if (res == TY_STRING && repr_of(c, nd).as_ty == TY_STRBUF && nt_kind(nt, nt_paren_single(c->nt, nd)) == NK_CallNode &&
+      strbuf_call_picks_up(c, nt_paren_single(c->nt, nd))) {
     str_read_handle_open(b, 0);
     emit_expr(c, nd, b);
     str_read_handle_close(b);
@@ -3991,7 +3991,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
    the rule shares: a variable's that holds it, or a call's whose every
    target publishes it? */
 static int lit_elem_carries_handle(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0) return 0;
   if (nt_kind(c->nt, v) == NK_CallNode) return repr_call_returns_handle(c, v) && share_node_shares(c, v);
   return strbuf_var_handle(c, v, NULL);
@@ -4606,7 +4606,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
    the rule hands on as a handle, so an enclosing chain holds it boxed by
    that handle, as emit_boxed_cond_arms boxes it? */
 static int logic_left_carries(Compiler *c, int left) {
-  int u = unwrap_parens(c, left);
+  int u = nt_paren_single(c->nt, left);
   NodeKind k = u >= 0 ? nt_kind(c->nt, u) : NK_NONE;
   if (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) return strbuf_value_carries(c, u);
   return (k == NK_IfNode || k == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, u);
@@ -4709,11 +4709,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        not from its bytes. */
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
-                   (lt == TY_STRING && (face_str_bang_call(c, unwrap_parens(c, left)) ||
-                                        strbuf_var_handle(c, unwrap_parens(c, left), NULL) ||
-                                        (repr_of(c, unwrap_parens(c, left)).poly_lift &&
+                   (lt == TY_STRING && (face_str_bang_call(c, nt_paren_single(c->nt, left)) ||
+                                        strbuf_var_handle(c, nt_paren_single(c->nt, left), NULL) ||
+                                        (repr_of(c, nt_paren_single(c->nt, left)).poly_lift &&
                                          (repr_call_returns_handle(c, left) || logic_left_carries(c, left) ||
-                                          share_plan_box_handle(c, unwrap_parens(c, left)))))));
+                                          share_plan_box_handle(c, nt_paren_single(c->nt, left)))))));
     if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */

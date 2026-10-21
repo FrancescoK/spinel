@@ -9297,7 +9297,7 @@ static int stmts_diverge(Compiler *c, int st) {
   if (st < 0) return 0;
   int n = 0; const int *b = nt_arr(nt, st, "body", &n);
   if (n <= 0 || !b) return 0;
-  int last = unwrap_parens(c, b[n - 1]);
+  int last = nt_paren_single(c->nt, b[n - 1]);
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
   return nm && is_diverging_call(nm) && !an_bare_call_class_owned(c, last) &&

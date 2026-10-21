@@ -1628,7 +1628,7 @@ static int strbuf_route_inject(Compiler *c, int v) {
    else -1. */
 int kernel_string_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
   if (!nm || !is_string_class_name(nm) || nt_ref(nt, v, "receiver") >= 0 || nt_ref(nt, v, "block") >= 0 ||
       call_plain_argc(c, v) != 1 || comp_method_index(c, nm) >= 0 || bare_call_class_owned(c, v)) return -1;
@@ -13654,7 +13654,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
          `return <expr>` must still evaluate its argument for side effects
          before jumping to the exit -- matching the void non-inline path below. */
       for (int k = 0; k < n; k++) {
-        int vn = unwrap_parens(c, a[k]);
+        int vn = nt_paren_single(c->nt, a[k]);
         if (!node_is_pure_literal(c->nt, vn)) { buf_puts(b, "(void)("); emit_expr(c, vn, b); buf_puts(b, "); "); }
       }
     }
@@ -13745,7 +13745,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
   if (ret_has_frames && valueless) {
-    int vn = unwrap_parens(c, a[0]);
+    int vn = nt_paren_single(c->nt, a[0]);
     if (!node_is_pure_literal(c->nt, vn)) { buf_puts(b, "(void)("); emit_expr(c, vn, b); buf_puts(b, "); "); }
     n = 0;
   }
@@ -13763,7 +13763,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     /* void function: a `return <expr>` (typically `return nil`) discards its
        value. Evaluate a non-literal expr for side effects, then a bare return,
        so the generated C doesn't `return <value>` from a void function. */
-    int vn = unwrap_parens(c, a[0]);
+    int vn = nt_paren_single(c->nt, a[0]);
     if (!node_is_pure_literal(c->nt, vn)) { buf_puts(b, "(void)("); emit_expr(c, vn, b); buf_puts(b, "); "); }
     buf_puts(b, "return;\n");
   }
@@ -14951,7 +14951,7 @@ void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
    (#4111). Returns 1 when it emitted the literal. */
 int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);   /* `([])` is as empty as `[]` (repr_empty_lit_as asks the same) */
+  v = nt_paren_single(c->nt, v);   /* `([])` is as empty as `[]` (repr_empty_lit_as asks the same) */
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
   int n = 0;
@@ -20810,7 +20810,7 @@ int stmts_diverge(Compiler *c, int stmts) {
   if (stmts < 0) return 0;
   int n = 0; const int *bb = nt_arr(nt, stmts, "body", &n);
   if (!bb || n == 0) return 0;
-  int last = unwrap_parens(c, bb[n - 1]);
+  int last = nt_paren_single(c->nt, bb[n - 1]);
   const char *lt = nt_type(nt, last);
   if (!lt) return 0;
   if (sp_streq(lt, "ReturnNode")) return 1;
@@ -21364,9 +21364,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* (--share-strings: a chain over a call, `id(s) << x << y`, reads no
        base again: the value path below publishes the handle the chain
        answers, its base run once) */
-    int _scb = unwrap_parens(c, str_append_chain_base(c, id));
+    int _scb = nt_paren_single(c->nt, str_append_chain_base(c, id));
     NodeKind _scbk = _scb >= 0 ? nt_kind(nt, _scb) : NK_NONE;
-    int _scall = repr_share_rule(c) && _scb >= 0 && _scb != unwrap_parens(c, id) && _scbk != NK_LocalVariableReadNode &&
+    int _scall = repr_share_rule(c) && _scb >= 0 && _scb != nt_paren_single(c->nt, id) && _scbk != NK_LocalVariableReadNode &&
                  _scbk != NK_InstanceVariableReadNode && !repr_static_read_kind(_scbk);
     if (_srecv >= 0 && _snm && (sp_streq(_snm, "<<") || _sself) &&
         !_scall && comp_ntype(c, _srecv) == TY_STRING &&
@@ -24438,13 +24438,13 @@ static int strbuf_reopen_pf_tails_carry(Compiler *c, int v) {
    changes it, and it reads no publication. */
 static int scope_ret_frozen_lit(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
-  int last = unwrap_parens(c, scope_body_last(c, mi));
+  int last = nt_paren_single(c->nt, scope_body_last(c, mi));
   if (last < 0 || nt_kind(nt, last) != NK_StringNode) return 0;
   for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
     if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != &c->scopes[mi]) continue;
     int ra = nt_ref(nt, u, "arguments"), rn = 0;
     const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-    if (rn != 1 || nt_kind(nt, unwrap_parens(c, rv[0])) != NK_StringNode) return 0;
+    if (rn != 1 || nt_kind(nt, nt_paren_single(c->nt, rv[0])) != NK_StringNode) return 0;
   }
   return 1;
 }
