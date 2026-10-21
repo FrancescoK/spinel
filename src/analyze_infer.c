@@ -11504,6 +11504,11 @@ int an_rat_value(Compiler *c, int n) {
   int key = -1;
   if (k == NK_LocalVariableReadNode) {
     if (!h.lv || h.lv->is_param) return 0;
+    /* the slot is the read's own scope's (holder_of_node resolves it
+       there); asking every scope which holds the slot was 17k range
+       tests per numeric call site, every round */
+    Scope *own = comp_scope_of(c, n);
+    if (own && h.lv >= own->locals && h.lv < own->locals + own->nlocals) key = (int)(own - c->scopes);
     for (int si = 0; si < c->nscopes && key < 0; si++)
       if (h.lv >= c->scopes[si].locals && h.lv < c->scopes[si].locals + c->scopes[si].nlocals) key = si;
   }
