@@ -8591,10 +8591,12 @@ static int emit_poly_builtin_default_generic(Compiler *c, int id, int recv, cons
 }
 
 /* An argument of a poly dispatch into its temp `_tN`, declared as `ty`
-   (boxed when `boxed`), where the arguments run. An argument that builds
-   (an Array or Hash literal) or runs statements ahead of its value writes
-   them to the prelude, which runs ahead of the whole dispatch: ahead of the
-   receiver and of every argument written before it. An argument with an
+   (boxed when `boxed`: 2 for an `equal?` operand, as the box its identity
+   is held in, emit_identity_operand_box), where the arguments run. An
+   argument that builds (an Array or Hash literal) or runs statements ahead
+   of its value writes them to the prelude, which runs ahead of the whole
+   dispatch: ahead of the receiver and of every argument written before
+   it. An argument with an
    effect of its own, once something has run (`ran`), holds its prelude and
    writes it here, in its place; any other's is not observable where it runs.
    One the nil arm's head ran is its temp already (head_held_read): nothing
@@ -8615,6 +8617,17 @@ static void emit_poly_route_arg(Compiler *c, int node, TyKind ty, int th, int tn
   emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = sp_strbuf_read_pub(_t%d); ", tn, th);
   free(pre.p); free(val.p);
+}
+/* The box an `equal?` operand of a boxed receiver is held in
+   (poly_identity_operand, operand_binds_identity_box): an exception's
+   message asked its identity (exc_message_identity_operand) is the box its
+   identity is (emit_exc_message_idbox), as the identity face renders it
+   where no class defines equal? (emit_str_equal), where its bytes boxed
+   were a copy the receiver's box of the message's String never equals;
+   any other is the box that keeps its handle (emit_boxed). */
+static void emit_identity_operand_box(Compiler *c, int v, Buf *b) {
+  if (exc_message_identity_operand(c, v)) emit_exc_message_idbox(c, v, b);
+  else emit_boxed(c, v, b);
 }
 static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int tn, int ran, Buf *b) {
   Buf pre; memset(&pre, 0, sizeof pre);
@@ -8638,6 +8651,7 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
   Repr nr = repr_of(c, node);
   if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && nr.strbuf_src == RS_HANDLE && !repr_handle_apart(c, node, nr))
     emit_strbuf_handle_of(c, node, &val);
+  else if (boxed == 2) emit_identity_operand_box(c, node, &val);
   else if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
   if (as_handle) buf_puts(&val, ")");
   g_pre = sv_pre;
@@ -9910,10 +9924,11 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. So is an `equal?` operand that keeps a handle's
            identity only boxed (poly_identity_operand). */
-        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || poly_identity_operand(c, name, pos_argc, argv[a], at) ||
+        int ident = poly_identity_operand(c, name, pos_argc, argv[a], at);
+        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || ident ||
             (is_setter_val && a == 0 && oint_kind(at) && node_has_oint_form(c, argv[a]))) {
           atmp_ty[a] = TY_POLY;
-          atmp[a] = emit_poly_arg_temp(c, argv[a], TY_POLY, 1, atmp[a], ran, b);
+          atmp[a] = emit_poly_arg_temp(c, argv[a], TY_POLY, ident ? 2 : 1, atmp[a], ran, b);
         }
         else {
           atmp_ty[a] = at;
@@ -23201,18 +23216,19 @@ static void render_operand(Compiler *c, int node, int fresh, int handle, int oin
 }
 /* render_operand for an operand emit_operands_in_order binds as a box
    (`box`): 1 for a String bang on a boxed receiver, rendered as its box
-   while the call is emitted (operand_binds_face_box), 2 for an `equal?`
-   operand, rendered as the box that keeps its handle, or a dispatch that
-   boxes each arm's answer (emit_boxed, operand_binds_identity_box,
-   operand_binds_user_box). */
+   while the call is emitted (operand_binds_face_box), 2 for an argument of
+   a dispatch that boxes each arm's answer (emit_boxed,
+   operand_binds_user_box), 3 for an `equal?` operand, rendered as the box
+   its identity is held in (operand_binds_identity_box,
+   emit_identity_operand_box). */
 static void render_bound_operand(Compiler *c, int node, int fresh, int handle, int oint, int box,
                                  Buf *out, Buf *pre) {
-  if (box == 2) {
+  if (box >= 2) {
     memset(out, 0, sizeof *out);
     memset(pre, 0, sizeof *pre);
     Buf *sv = g_pre;
     g_pre = pre;
-    emit_boxed(c, node, out);
+    if (box == 3) emit_identity_operand_box(c, node, out); else emit_boxed(c, node, out);
     g_pre = sv;
     return;
   }
@@ -23648,7 +23664,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
                 share_plan_of(c, operand[i], SPR_BOX, NULL).kind == SPK_POLY_ARMS));
     int bfb = bsh || operand[i] == harg ? 0
             : operand_binds_face_box(c, operand[i]) ? 1
-            : operand_binds_identity_box(c, id, operand[i]) || operand_binds_user_box(c, operand[i]) ? 2 : 0;
+            : operand_binds_identity_box(c, id, operand[i]) ? 3
+            : operand_binds_user_box(c, operand[i]) ? 2 : 0;
     TyKind t = operand[i] == harg || bsh ? TY_STRBUF : bfb ? TY_POLY : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;

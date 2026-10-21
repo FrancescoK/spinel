@@ -19,3 +19,12 @@ begin
 rescue => e
   p chk(e.message, t), chk(e.message, e.message), chk(t, t.dup)
 end
+
+# a receiver of no known type that holds the message, or another String, or
+# a value of another class, compared with the message read again
+n = ARGV.size
+x = StandardError.new(+"bm#{n}")
+z = n == 0 ? x.message : 3
+p z.equal?(x.message), z.equal?(x.to_s)
+w = n == 0 ? (+"other") : 3
+p w.equal?(x.message)
