@@ -390,25 +390,25 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT(r);
   if (ms < 0) {
     /* new Strings, as CRuby's: not the receiver, nor one shared "" */
-    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
-    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
-    sp_StrArray_push(r, sp_str_dup(str));
+    sp_StrArray_push(r, SP_SEF(sp_str_dup(sp_str_empty)));
+    sp_StrArray_push(r, SP_SEF(sp_str_dup(sp_str_empty)));
+    sp_StrArray_push(r, SP_SEF(sp_str_dup(str)));
     return r;
   }
   char *before = sp_str_alloc_raw(ms + 1);
   memcpy(before, str, ms); before[ms] = 0;
   sp_str_set_len(before, (size_t)ms);
-  sp_StrArray_push(r, before);
+  sp_StrArray_push(r, SP_SEF(before));
   int mlen = (int)(me - ms);
   char *mid = sp_str_alloc_raw(mlen + 1);
   memcpy(mid, str + ms, mlen); mid[mlen] = 0;
   sp_str_set_len(mid, (size_t)mlen);
-  sp_StrArray_push(r, mid);
+  sp_StrArray_push(r, SP_SEF(mid));
   int alen = (int)(slen - me);
   char *after = sp_str_alloc_raw(alen + 1);
   memcpy(after, str + me, alen); after[alen] = 0;
   sp_str_set_len(after, (size_t)alen);
-  sp_StrArray_push(r, after);
+  sp_StrArray_push(r, SP_SEF(after));
   return r;
 }
 sp_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str) {
@@ -779,7 +779,7 @@ sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
     int len = caps[1] - caps[0];
     char *m = sp_str_alloc_raw(len+1); memcpy(m, str+caps[0], len); m[len] = 0;
     sp_str_set_len(m, (size_t)len);
-    sp_StrArray_push(arr, m);
+    sp_StrArray_push(arr, SP_SEF(m));
     pos = caps[1]; if (caps[0] == caps[1]) pos++;
   }
   if (sp_re_track_last) sp_re_set_last_match(pat, str, lastcaps, lastn);
@@ -801,7 +801,7 @@ static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, in
   char *m = sp_str_alloc_raw(len + 1);
   memcpy(m, str + from, len); m[len] = 0;
   sp_str_set_len(m, (size_t)len);
-  sp_StrArray_push(arr, sp_str_bin_like(str, m));
+  sp_StrArray_push(arr, SP_SEF(sp_str_bin_like(str, m)));
 }
 
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit) {SP_GC_ROOT_STR(str);if(!str)sp_nil_recv("split");
@@ -862,7 +862,7 @@ sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int 
 
   /* Default limit strips trailing empty fields. */
   if (limit == 0) {
-    while (arr->len > 0 && arr->data[arr->len - 1][0] == '\0') arr->len--;
+    while (arr->len > 0 && SP_SEB(arr->data[arr->len - 1])[0] == '\0') arr->len--;
   }
   return arr;
 }
@@ -1298,9 +1298,10 @@ sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat) {
        whose length sp_str_dup and the comparison take from the byte before
        it -- the allocator's, past the start of the block. */
     nm = sp_str_dup_external(nm);
+    sp_strelem el = SP_SEF(nm);
     /* a name reused across alternatives is one name, however many groups
        carry it (#3682) */
-    if (!sp_StrArray_include(a, nm)) sp_StrArray_push(a, nm);
+    if (!sp_StrArray_include(a, el)) sp_StrArray_push(a, el);
   }
   return a;
 }
@@ -1319,7 +1320,8 @@ sp_StrArray *sp_MatchData_names(sp_MatchData *m) {SP_GC_ROOT(m);
     const char *nm = re_named_name(m->pat, i, NULL);
     if (!nm) continue;
     nm = sp_str_dup_external(nm);   /* as in sp_Regexp_names */
-    if (!sp_StrArray_include(a, nm)) sp_StrArray_push(a, nm);
+    sp_strelem el = SP_SEF(nm);
+    if (!sp_StrArray_include(a, el)) sp_StrArray_push(a, el);
   }
   return a;
 }

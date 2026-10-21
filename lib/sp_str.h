@@ -13,6 +13,9 @@
  * sp_sprintf / sp_raise_cls are provided by the generated TU and resolved
  * at the final link (same as lib/sp_core.c). */
 #include "sp_array.h"   /* sp_StrArray, sp_IntArray + sp_alloc.h / sp_gc.h / sp_types.h */
+#ifdef SP_ONE_STRING
+#include "sp_string.h"   /* sp_String_new_shared, behind SP_SEF (sp_str_split_push) */
+#endif
 
 const char *sp_sprintf(const char *fmt, ...) SP_PRINTF_FORMAT(1, 2);  /* defined in the generated TU */
 
@@ -62,7 +65,7 @@ static inline void sp_str_split_push(sp_StrArray*a,const char*p,size_t n){
   /* record the real length: alloc_raw leaves it unset, so a piece holding an
      embedded NUL would answer strlen and read short */
   sp_str_set_len(r,n);
-  sp_StrArray_push(a,r);
+  sp_StrArray_push(a,SP_SEF(r));
 }
 
 const char *sp_bytestr(const char *hay, size_t hn, const char *need, size_t nn);   /* byte-wise substring search; lib/sp_str.c, also used by lib/sp_str_cold.c */

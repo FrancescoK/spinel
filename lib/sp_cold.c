@@ -687,7 +687,7 @@ static int sp_glob_has_meta(const char *comp) {
 static void sp_glob_push(sp_StrArray *a, const char *path) {
   char *copy = sp_str_alloc(strlen(path));
   strcpy(copy, path);
-  sp_StrArray_push(a, copy);
+  sp_StrArray_push(a, SP_SEF(copy));
 }
 
 static int sp_glob_is_dir(const char *path) {
@@ -891,7 +891,7 @@ static void sp_dir_glob_one(const char *pattern, const char *base, sp_StrArray *
     SP_GC_ROOT(tmp);
     sp_glob_walk(start, absolute ? SP_GLOB_ROOT : "", comps, ncomp, 0, tmp);
     for (sp_int i = 0; i < tmp->len; i++) {
-      const char *e = tmp->data[i];
+      const char *e = SP_SEB(tmp->data[i]);
       /* lstat, for the reason the recursive walk uses it: a symlink to a
          directory is not one of the directories this form answers. */
       struct stat lst;
@@ -990,7 +990,7 @@ sp_StrArray *sp_dir_glob_base(const char *pattern, const char *base) {
   { sp_int w = 0;
     for (sp_int r = 0; r < a->len; r++) {
       if (w > 0 && a->data[r] && a->data[w - 1] &&
-          sp_str_cmp_bytes(a->data[w - 1], a->data[r]) == 0) continue;
+          sp_str_cmp_bytes(SP_SEB(a->data[w - 1]), SP_SEB(a->data[r])) == 0) continue;
       a->data[w++] = a->data[r];
     }
     a->len = w; }
@@ -1045,7 +1045,7 @@ sp_StrArray *sp_file_readlines(const char *path) {SP_GC_ROOT_STR(path);
     char *_r = sp_str_alloc_raw(_l + 1);
     memcpy(_r, _buf, _l); _r[_l] = '\0';
     sp_str_set_len(_r, _l);
-    sp_StrArray_push(a, _r);
+    sp_StrArray_push(a, SP_SEF(_r));
   }
   free(_buf);
   fclose(_fp);
@@ -1068,7 +1068,7 @@ sp_StrArray *sp_file_readlines_chomp(const char *path) {SP_GC_ROOT_STR(path);
     char *_r = sp_str_alloc_raw(_l + 1);
     memcpy(_r, _buf, _l); _r[_l] = '\0';
     sp_str_set_len(_r, _l);
-    sp_StrArray_push(a, _r);
+    sp_StrArray_push(a, SP_SEF(_r));
   }
   free(_buf);
   fclose(_fp);
@@ -1443,7 +1443,7 @@ SP_NORETURN static void sp_typed_replace_elem_error(sp_RbVal v, const char *kind
 
 /* the contents of a shared String buffer as a String of their own, embedded
    NULs and a binary encoding included */
-static const char *sp_strbuf_copy(sp_String *b) {
+static SP_UNUSED const char *sp_strbuf_copy(sp_String *b) {
   size_t n = (size_t)b->len;
   char *c = sp_str_alloc(n);
   memcpy(c, b->data, n);
@@ -1493,9 +1493,15 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
       sp_StrArray *st = sp_StrArray_new(); SP_GC_ROOT(st);
       for (sp_int i = 0; i < els->len; i++) {
         sp_RbVal e = els->data[i];
+#ifdef SP_ONE_STRING
+        if (e.tag == SP_TAG_STR) sp_StrArray_push(st, SP_SEF(e.v.s));
+        else if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF)
+          sp_StrArray_push(st, (sp_strelem)e.v.p);   /* the handle itself: one String */
+#else
         if (e.tag == SP_TAG_STR) sp_StrArray_push(st, e.v.s);
         else if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF)
           sp_StrArray_push(st, sp_strbuf_copy((sp_String *)e.v.p));
+#endif
         else if (e.tag == SP_TAG_NIL) sp_StrArray_push(st, NULL);
         else sp_typed_replace_elem_error(e, "String");
       }
@@ -1555,7 +1561,7 @@ sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src) {SP_GC_ROOT_RBVAL(recv);SP
     switch (src.cls_id) {
       case SP_BUILTIN_INT_ARRAY: { sp_IntArray *s = (sp_IntArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, sp_IntArray_box_elem(s, i)); break; }
       case SP_BUILTIN_FLT_ARRAY: { sp_FloatArray *s = (sp_FloatArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, sp_FloatArray_box_elem(s, i)); break; }
-      case SP_BUILTIN_STR_ARRAY: { sp_StrArray *s = (sp_StrArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, sp_box_str(s->data[i])); break; }
+      case SP_BUILTIN_STR_ARRAY: { sp_StrArray *s = (sp_StrArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, SP_SEBOX(s->data[i])); break; }
       case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *s = (sp_PolyArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, s->data[i]); break; }
       case SP_BUILTIN_PTR_ARRAY: { sp_PtrArray *s = (sp_PtrArray *)src.v.p; for (sp_int i = 0; i < s->len; i++) sp_PolyArray_push(d, sp_PtrArray_elem_box(s, s->data[i])); break; }
       default: break;
@@ -1816,7 +1822,7 @@ sp_StrArray *sp_dir_entries_impl(const char *path, int children) {
         (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
     char *copy = sp_str_alloc(strlen(name));
     strcpy(copy, name);
-    sp_StrArray_push(a, copy);
+    sp_StrArray_push(a, SP_SEF(copy));
   }
   closedir(d);
   sp_StrArray_sort_bang(a);
@@ -1909,7 +1915,7 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
       SP_GC_ROOT(col);
       for (sp_int r = 0; r < nrows; r++) {
         sp_RbVal rv = rows->data[r];
-        const char *val = sp_str_empty;
+        sp_strelem val = SP_SEF(sp_str_empty);
         if (rv.tag == SP_TAG_OBJ && rv.cls_id == SP_BUILTIN_STR_ARRAY) {
           sp_StrArray *row = (sp_StrArray *)rv.v.p;
           if (c < row->len && row->data[c]) val = row->data[c];
@@ -1937,7 +1943,7 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
         else if (rv.cls_id == SP_BUILTIN_FLT_ARRAY)
           val = sp_box_ofloat(sp_FloatArray_oget((sp_FloatArray *)rv.v.p, c));
         else if (rv.cls_id == SP_BUILTIN_STR_ARRAY)
-          val = sp_box_str(sp_StrArray_get((sp_StrArray *)rv.v.p, c));
+          val = SP_SEBOX(sp_StrArray_get((sp_StrArray *)rv.v.p, c));
         else if (rv.tag == SP_TAG_OBJ && rv.cls_id == SP_BUILTIN_PTR_ARRAY)
           val = sp_PtrArray_get_box((sp_PtrArray *)rv.v.p, c);
         sp_PolyArray_push(col, val);
@@ -2218,8 +2224,8 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
       free(name);
       name = strdup(bn);
     }
-    if (lines && lines[i] > 0) sp_StrArray_push(a, sp_sprintf("%s:%d:in `%s'", file, lines[i], name));
-    else sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
+    if (lines && lines[i] > 0) sp_StrArray_push(a, SP_SEF(sp_sprintf("%s:%d:in `%s'", file, lines[i], name)));
+    else sp_StrArray_push(a, SP_SEF(sp_sprintf("%s:in `%s'", file, name)));
     free(name);
   }
   if (lfiles) for (int i = 0; i < n; i++) free(lfiles[i]);
@@ -2418,7 +2424,7 @@ sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, sp_bool chomp) {
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
   const char *l;
-  while ((l = sp_File_gets_sep(f, sep, 0, chomp)) != NULL) sp_StrArray_push(a, l);
+  while ((l = sp_File_gets_sep(f, sep, 0, chomp)) != NULL) sp_StrArray_push(a, SP_SEF(l));
   return a;
 }
 sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, sp_bool chomp) {SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(sep);
@@ -3120,8 +3126,8 @@ sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags) {
 sp_StrArray *sp_file_split(const char *path) {SP_GC_ROOT_STR(path);
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
-  sp_StrArray_push(a, sp_file_dirname(path));
-  sp_StrArray_push(a, sp_file_basename(path));
+  sp_StrArray_push(a, SP_SEF(sp_file_dirname(path)));
+  sp_StrArray_push(a, SP_SEF(sp_file_basename(path)));
   return a;
 }
 sp_bool sp_file_zero(const char *path) {
@@ -3219,7 +3225,7 @@ sp_StrArray *sp_Dir_entries_h(sp_Dir *d, sp_int children) {SP_GC_ROOT(d);
   struct dirent *e;
   while ((e = readdir(d->dp)) != NULL) {
     if (children && (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)) continue;
-    sp_StrArray_push(a, sp_sprintf("%s", e->d_name));
+    sp_StrArray_push(a, SP_SEF(sp_sprintf("%s", e->d_name)));
   }
   rewinddir(d->dp);
   return a;
@@ -3295,7 +3301,11 @@ sp_StrArray *sp_dir_entries_enc(const char *path, int children, sp_RbVal enc) {S
   }
   sp_StrArray *a = sp_dir_entries_impl(path, children);
   if (binary)
+#ifdef SP_ONE_STRING
+    for (sp_int i = 0; i < a->len; i++) if (a->data[i]) { a->data[i]->binary = 1; sp_fd_publish(a->data[i]); }
+#else
     for (sp_int i = 0; i < a->len; i++) sp_str_as_binary(a->data[i]);
+#endif
   return a;
 }
 
@@ -4086,7 +4096,7 @@ sp_StrStrHash *sp_env_to_h(void) {
     size_t kl = (size_t)(eq - *e);
     char *k = sp_str_alloc_raw(kl + 1);
     memcpy(k, *e, kl); k[kl] = 0;
-    sp_StrStrHash_set(h, k, v);
+    sp_StrStrHash_set(h, k, SP_SEF(v));
   }
   return h;
 }
@@ -4112,7 +4122,7 @@ sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
   if (h) {
     SP_GC_ROOT(h);
     for (sp_int i = 0; i < h->len; i++) {
-      const char *v = sp_StrStrHash_get(h, h->order[i]);
+      const char *v = SP_SEB(sp_StrStrHash_get(h, h->order[i]));
       sp_env_chk(h->order[i], 0);
       if (v) setenv(h->order[i], sp_env_chk(v, 1), 1); else unsetenv(h->order[i]);
     }
@@ -4444,7 +4454,7 @@ sp_RbVal sp_main_self(void) {
 sp_StrArray *sp_get_ARGV(void) {
   if (!sp_argv_array_cache) {
     sp_argv_array_cache = sp_StrArray_new();
-    for (sp_int i = 0; i < sp_argv.len; i++) sp_StrArray_push(sp_argv_array_cache, sp_argv.data[i]);
+    for (sp_int i = 0; i < sp_argv.len; i++) sp_StrArray_push(sp_argv_array_cache, SP_SEF(sp_argv.data[i]));
   }
   return sp_argv_array_cache;
 }
@@ -4483,7 +4493,11 @@ int sp_argf_ensure(void) {
     sp_argf_obj.started = 1; sp_argf_obj.cur = stdin; sp_argf_obj.fname = &("\xff" "-")[1];
     return 1;
   }
-  const char *fn = sp_StrArray_shift(av);
+  sp_strelem fne = sp_StrArray_shift(av);
+#ifdef SP_ONE_STRING
+  SP_GC_ROOT(fne);   /* off the Array now: its bytes live as long as the handle */
+#endif
+  const char *fn = SP_SEB(fne);
   sp_argf_obj.started = 1;
   if (!fn) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
   sp_argf_obj.fname = fn;   /* marked with the ARGV globals */
@@ -4520,7 +4534,7 @@ const char *sp_argf_read(void) {
 sp_StrArray *sp_argf_readlines(void) {
   sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
   const char *line;
-  while ((line = sp_argf_gets())) sp_StrArray_push(a, line);
+  while ((line = sp_argf_gets())) sp_StrArray_push(a, SP_SEF(line));
   return a;
 }
 /* CRuby opens the next file to name it, so ARGV loses it here too */
@@ -4643,7 +4657,7 @@ sp_StrArray *sp_srange_to_a(sp_StrRange r) {
 typedef struct { sp_StrArray *a; sp_int n; } sp_srange_take_st;
 static int sp_srange_take_push(const char *m, void *arg) {
   sp_srange_take_st *st = (sp_srange_take_st *)arg;
-  sp_StrArray_push(st->a, m);
+  sp_StrArray_push(st->a, SP_SEF(m));
   return st->a->len >= st->n;
 }
 sp_StrArray *sp_srange_first_n(sp_RbVal box, sp_int n, int take) {
@@ -4664,7 +4678,7 @@ sp_StrArray *sp_srange_first_n(sp_RbVal box, sp_int n, int take) {
     sp_str_upto_each(cur, last, r.excl, sp_srange_take_push, &st);
     return a;
   }
-  for (; a->len < n; cur = sp_str_succ(cur)) sp_StrArray_push(a, sp_str_from_bytes(cur, sp_str_byte_len(cur)));
+  for (; a->len < n; cur = sp_str_succ(cur)) sp_StrArray_push(a, SP_SEF(sp_str_from_bytes(cur, sp_str_byte_len(cur))));
   return a;
 }
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
@@ -4708,7 +4722,7 @@ static const char *sp_srange_walk_extreme(sp_StrRange r, int greatest) {
   sp_StrArray *a = sp_srange_to_a(r); SP_GC_ROOT(a);
   const char *best = NULL; SP_GC_ROOT_STR(best);
   for (sp_int i = 0; i < sp_StrArray_length(a); i++) {
-    const char *s = sp_StrArray_get(a, i);
+    const char *s = SP_SEB(sp_StrArray_get(a, i));
     if (!best || (greatest ? strcmp(s, best) > 0 : strcmp(s, best) < 0)) best = s;
   }
   return best;
@@ -5098,7 +5112,7 @@ sp_PolyArray *sp_str_lines_poly(const char *s) {SP_GC_ROOT_STR(s);
   if (ls) {
     sp_int len = sp_StrArray_length(ls);
     for (sp_int i = 0; i < len; i++) {
-      sp_PolyArray_push(a, sp_box_str(sp_StrArray_get(ls, i)));
+      sp_PolyArray_push(a, SP_SEBOX(sp_StrArray_get(ls, i)));
     }
   }
   return a;
@@ -5126,7 +5140,7 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
   if (!found) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t before = (size_t)(found - str);
   if (sp_re_track_last) sp_re_set_lit_match(str, (sp_int)before, (sp_int)(before + plen));
-  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : &("\xff" "")[1];
+  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? SP_SEB(sp_StrStrHash_get(h, pat)) : &("\xff" "")[1];
   size_t rlen = sp_str_byte_len(rep);
   size_t rest = slen - before - plen;
   size_t total = before + rlen + rest;
@@ -5145,7 +5159,7 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
 const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {SP_GC_ROOT_STR(pat);SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   if (!str || !pat) return str;
   size_t slen = sp_str_byte_len(str), plen = sp_str_byte_len(pat);
-  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : &("\xff" "")[1];
+  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? SP_SEB(sp_StrStrHash_get(h, pat)) : &("\xff" "")[1];
   if (!rep) rep = &("\xff" "")[1];
   SP_GC_ROOT_STR(rep);
   size_t rlen = sp_str_byte_len(rep), n = 0;
@@ -5185,13 +5199,13 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
 const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {SP_GC_ROOT(a);SP_GC_ROOT_STR(init);
   size_t n = init ? sp_str_byte_len(init) : 0;
   if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) {
-    size_t len = sp_str_byte_len(a->data[i]);
+    size_t len = sp_str_byte_len(SP_SEB(a->data[i]));
     if (len > SIZE_MAX - n) sp_oom_die();
     n += len;
   }
   char *r = sp_str_alloc(n); size_t o = 0;
   if (init) { o = sp_str_byte_len(init); memcpy(r, init, o); }
-  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = sp_str_byte_len(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
+  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = sp_str_byte_len(SP_SEBN(a->data[i])); memcpy(r + o, SP_SEBN(a->data[i]), l); o += l; }
   r[o] = 0; sp_str_set_len(r, o); return r;
 }
 sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {SP_GC_ROOT(a);
@@ -5205,7 +5219,7 @@ sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {SP_GC_ROOT(a);
    malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
    isn't GC-rooted across the return.) sp_float_to_s's result is copied
    immediately, before the next call can reuse its buffer. */
-sp_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
+sp_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++)if(!sp_str_eq(SP_SEB(a->data[i]),SP_SEB(b->data[i])))return FALSE;return TRUE;}
 
 /* ---- Complex ops / class-frozen bitmap -- relocated from spinel_rt.h. ---- */
 
@@ -5831,7 +5845,7 @@ static const char *re_gsub_hash(mrb_regexp_pattern *pat, const char *str, sp_Str
        of any keys is read with its #[] on the match as a String, so a default
        proc runs and may store it. */
     const char *rep = ph ? sp_PolyPolyHash_repl(ph, sp_str_from_bytes(key, (size_t)mlen))
-                         : sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key);
+                         : SP_SEB(sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key));
     if (!rep) rep = &("\xff" "")[1];
     size_t rlen = sp_str_byte_len(rep);
     if (olen + before + rlen >= cap) GSH_GROW(((olen + before + rlen) * 2) + 64);
@@ -5888,7 +5902,7 @@ static const char *re_sub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrS
   /* a missing key answers the hash's DEFAULT, which is what Hash.new("?")
      exists for; hard-coding "" dropped it (#3824) */
   const char *rep = ph ? sp_PolyPolyHash_repl(ph, sp_str_from_bytes(key, (size_t)mlen))
-                  : h ? sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key) : &("\xff" "")[1];
+                  : h ? SP_SEB(sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key)) : &("\xff" "")[1];
   if (!rep) rep = &("\xff" "")[1];
   /* a value's to_s is a new String, held across the allocations below */
   SP_GC_ROOT_STR(rep);

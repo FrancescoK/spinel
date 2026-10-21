@@ -21,7 +21,7 @@ int sp_str_ascii_only(const char *s);
    bytes are still its name -- +@ copies it then, as it copies a frozen one,
    and a mutated one is an ordinary String, as CRuby's is. A GC allocation is
    zeroed, so every other handle starts at 0 with no store. */
-typedef struct { char *data; int64_t len; int64_t cap; unsigned binary; unsigned chilled; } sp_String;
+typedef struct sp_String_s sp_String;   /* the struct is in sp_types.h, beside sp_strelem */
 /* sp_fd_publish reads `binary` and `chilled` as one word */
 _Static_assert(offsetof(sp_String, chilled) == offsetof(sp_String, binary) + 4 && sizeof(unsigned) == 4,
                "sp_String.binary and .chilled are adjacent 32-bit fields");
@@ -245,6 +245,16 @@ static inline sp_String*sp_String_new_shared(const char*s){
   if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
+#ifdef SP_ONE_STRING
+/* The handle a Hash key stands for (SP_SEK): a frozen handle's payload, which
+   sp_hash_key_str keeps as the key, answers that handle through the owner
+   link; any other key (a frozen copy, a static) a new frozen handle over it. */
+static inline sp_String*sp_String_key_handle(const char*k){
+  if(!k)return NULL;
+  if(((const unsigned char*)k)[-1]==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(k))->next;if(o)return o;}
+  return sp_String_new_shared(k);
+}
+#endif
 /* An expression of either String face as the shared handle: a handle is
    itself, a plain String is wrapped in a fresh one. The emitter writes it where
    a typed handle parameter is filled from an expression whose own emitter

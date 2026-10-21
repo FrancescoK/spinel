@@ -1017,7 +1017,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
        a A Z B b H h, "" for M, and the TypeError m and u raise */
     if (pk_is_str_spec(spec)) {
       int have = idx < arr->len;
-      pk_str_spec(spec, count, sp_box_str(have ? sp_StrArray_get(arr, idx) : NULL), have, &buf, &len, &cap);
+      pk_str_spec(spec, count, SP_SEBOX(have ? sp_StrArray_get(arr, idx) : NULL), have, &buf, &len, &cap);
       idx++;
       continue;
     }
@@ -1029,7 +1029,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
       int64_t n = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < n; k++) {
         if (idx >= arr->len) pk_too_few(buf);
-        pk_int_directive('J', (int64_t)(intptr_t)sp_StrArray_get(arr, idx), 0, &buf, &len, &cap);
+        pk_int_directive('J', (int64_t)(intptr_t)SP_SEB(sp_StrArray_get(arr, idx)), 0, &buf, &len, &cap);
         idx++;
       }
       continue;
@@ -1037,7 +1037,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
     if (idx >= arr->len) pk_too_few(buf);
     idx++;
     if (spec == 'P') {
-      pk_int_directive('J', (int64_t)(intptr_t)sp_StrArray_get(arr, idx - 1), 0, &buf, &len, &cap);
+      pk_int_directive('J', (int64_t)(intptr_t)SP_SEB(sp_StrArray_get(arr, idx - 1)), 0, &buf, &len, &cap);
     }
     else if (strchr("cCsSlLqQnNvVjJiIfdeEgGUw", spec)) {
       /* a numeric directive cannot take a String element: CRuby's TypeError
