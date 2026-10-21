@@ -1383,6 +1383,14 @@ static TyKind push_elem_ty(Compiler *c, int node) {
   return t;
 }
 
+/* Is a pushed value of kind `t` evidence for the arrays the slot is written?
+   A kind decided at run time widens them to the general Array as any other
+   does; an analysis-only respond_to? probe (`o.push(o)`) stores nothing, and
+   its dummy argument is no evidence. */
+static int push_widens_arrays(const NodeTable *nt, int call, TyKind t) {
+  return t != TY_UNKNOWN && !(t == TY_POLY && nt_int(nt, call, "rt_probe", 0));
+}
+
 /* ---- "this poly slot can hold a builtin container" ----
    TY_POLY is a top type with no member list, so a call on a poly receiver
    cannot tell a union that really includes an Array/Hash from a user object
@@ -2948,6 +2956,22 @@ static int share_str_value_leaves(Compiler *c, int n) {
   if (lv != small) free(lv);
   return found;
 }
+/* A boxed ivar (its writes join an Array with a nil or another kind) holds
+   its arrays the way a boxed local does: a value of another kind pushed
+   widens the arrays it is written (`@a = c ? [1, 2] : nil`). */
+static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int cls, const char *inm, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    Scope *ws = comp_scope_of(c, wi);
+    if (!wnm || !sp_streq(wnm, inm) || nt_kind(nt, wi) != NK_InstanceVariableWriteNode ||
+        !ws || (ws->class_id >= 0 ? ws->class_id : cls) != cls) continue;
+    changed |= widen_boxed_array_sources(c, nt_ref(nt, wi, "value"), elem, 0);
+  }
+  return changed;
+}
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -3387,8 +3411,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          parameter does: a store of another kind promotes a copy into this
          one slot, and wherever else the array is held keeps it typed. Its
          arrays widen where they are built instead. A value whose kind is
-         decided at run time is exempt, as it is for a typed parameter
-         (#4481): the boxed store checks it, and raises for a foreign one. */
+         decided at run time widens them to the general Array too: a store
+         the typed array took checked at run time raised for a foreign one,
+         where CRuby appends it. */
       if (lv && (!lv->is_param || lv->is_block_param) && lv->type == TY_POLY && (is_push || (is_idx_write && (is_splice || kt == TY_INT))) &&
           !concat_scalar && (!is_splice || is_fill || splice_arr)) {
         /* each pushed value is its own evidence (`z.push(1, [2])`): their
@@ -3396,10 +3421,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         if (elem_argv && elem_an - elem_from > 1) {
           for (int ai = elem_from; ai < elem_an; ai++) {
             TyKind et = push_elem_ty(c, elem_argv[ai]);
-            if (et != TY_UNKNOWN && et != TY_POLY) changed |= widen_boxed_array_sources(c, recv, et, 0);
+            if (push_widens_arrays(nt, id, et)) changed |= widen_boxed_array_sources(c, recv, et, 0);
           }
         }
-        else if (vt != TY_UNKNOWN && vt != TY_POLY)
+        else if (push_widens_arrays(nt, id, (TyKind)vt))
           changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
       }
       /* A proc or lambda literal's boxed parameter written as a Hash
@@ -3678,6 +3703,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       slot = ivar_evidence_slot(c, &ivw_ix, ivar_cls_id, inm, is_push, &ivt);
       if (!slot) continue;
       vt = ivt;
+      if (*slot == TY_POLY && is_push && push_widens_arrays(nt, id, (TyKind)vt) && !concat_scalar)
+        changed |= widen_boxed_ivar_array_sources(c, &ivw_ix, ivar_cls_id, inm, (TyKind)vt);
       watch_nm = inm;
       watch_cls = ivar_cls_id;
     }
@@ -3962,6 +3989,52 @@ static int masgn_poly_local(Compiler *c, Scope *ms, int tgt, TyKind t, int value
   if (mg == lv->type) return 0;
   lv_set_type(lv, mg);
   return lv->rbs_seeded;
+}
+
+/* One write of a proc-typed local and the answer of the proc it writes; the
+   sort groups a local's writes and keeps them in program order (the join is
+   not associative: String, StrBuf, nil) */
+typedef struct { LocalVar *lv; int pr; int seq; } ProcRetWrite;
+static int proc_ret_write_cmp(const void *a, const void *b) {
+  const ProcRetWrite *x = (const ProcRetWrite *)a, *y = (const ProcRetWrite *)b;
+  if (x->lv != y->lv) return x->lv < y->lv ? -1 : 1;
+  return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+/* The answer of a proc-typed local: the join of the answers of the procs it is
+   written. A local written procs that answer different kinds answers their
+   join; the last write's alone was read at the first call's type. What counts
+   as a change is the value the pass leaves against the one it found. Comparing
+   write by write reported both writes of `sh = ->(x) { x }; sh = ->(a, b, c) {
+   a + b + c }` as changes every round, and the fixpoint ran to its cap (#4962). */
+int join_local_proc_rets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = 0, cap = 0, changed = 0;
+  ProcRetWrite *ws = NULL;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    if (!lv || lv->type != TY_PROC) continue;
+    int vnode = nt_ref(nt, id, "value");
+    TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
+    if (pr == TY_UNKNOWN) continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 16;
+      ws = (ProcRetWrite *)realloc(ws, sizeof(ProcRetWrite) * (size_t)cap);
+      if (!ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    ws[n].lv = lv; ws[n].pr = (int)pr; ws[n].seq = n; n++;
+  }
+  if (n > 1) qsort(ws, (size_t)n, sizeof(ProcRetWrite), proc_ret_write_cmp);
+  for (int i = 0; i < n; ) {
+    int j = i, joined = ws[i].pr;
+    while (++j < n && ws[j].lv == ws[i].lv) joined = (int)ty_unify((TyKind)joined, (TyKind)ws[j].pr);
+    if (ws[i].lv->proc_ret != joined) { lv_set_proc_ret(ws[i].lv, joined); changed = 1; }
+    i = j;
+  }
+  free(ws);
+  return changed;
 }
 
 /* infer_write_types's pass over multiple assignments: each target takes its
@@ -4883,38 +4956,9 @@ int infer_write_types(Compiler *c) {
      inside the proc body. Running after the first pass ensures those locals
      have their correct types (e.g. `x = 10` -> TY_INT) before proc_node_ret
      evaluates the body's return type.
-     A local written with two procs of different return types takes the
-     last write's, as before; what counts as a change is the value the pass
-     leaves against the one it found. Comparing write by write reported both
-     writes of `sh = ->(x) { x }; sh = ->(a, b, c) { a + b + c }` as changes
-     every round, and the fixpoint ran to its cap (#4962). */
-  {
-    int npr = 0, cappr = 0;
-    LocalVar **pr_lv = NULL; int *pr_old = NULL;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm) continue;
-      LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-      if (!lv || lv->type != TY_PROC) continue;
-      int vnode = nt_ref(nt, id, "value");
-      TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
-      if (pr == TY_UNKNOWN || (TyKind)lv->proc_ret == pr) continue;
-      int seen = 0;
-      for (int k = 0; k < npr && !seen; k++) if (pr_lv[k] == lv) seen = 1;
-      if (!seen) {
-        if (npr == cappr) {
-          cappr = cappr ? cappr * 2 : 8;
-          pr_lv = (LocalVar **)realloc(pr_lv, sizeof(LocalVar *) * (size_t)cappr);
-          pr_old = (int *)realloc(pr_old, sizeof(int) * (size_t)cappr);
-          if (!pr_lv || !pr_old) { fprintf(stderr, "oom\n"); exit(1); }
-        }
-        pr_lv[npr] = lv; pr_old[npr] = lv->proc_ret; npr++;
-      }
-      lv_set_proc_ret(lv, (int)pr);
-    }
-    for (int k = 0; k < npr; k++) if (pr_lv[k]->proc_ret != pr_old[k]) changed = 1;
-    free(pr_lv); free(pr_old);
-  }
+     A local written with two procs of different return types takes their
+     join (join_local_proc_rets). */
+  changed |= join_local_proc_rets(c);
 
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)
@@ -14122,7 +14166,15 @@ static void ple_build(Compiler *c) {
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
   if (ple_nt != nt || ple_ntc != nt->count) ple_build(c);
-  return ple_escaped && lit >= 0 && lit < nt->count && ple_escaped[lit];
+  if (!ple_escaped || lit < 0 || lit >= nt->count) return 0;
+  if (ple_escaped[lit]) return 1;
+  /* one write of a local that holds more than procs (`x = nil; x = ->(s) { }`)
+     shares the slot with the others: the local's type is the join of its writes */
+  VpUp up;
+  if (vp_climb(nt, comp_parent_map(c), lit, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+      nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) return 0;
+  LocalVar *lv = scope_local(comp_scope_of(c, up.parent), nt_str(nt, up.parent, "name"));
+  return lv && lv->type != TY_PROC && lv->type != TY_UNKNOWN;
 }
 
 /* Type a proc literal's required params from one `.call` site, unless the

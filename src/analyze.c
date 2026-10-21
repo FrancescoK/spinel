@@ -38676,7 +38676,10 @@ static int wnh_last_stmt(Compiler *c, int id) {
   const int *par = comp_parent_map(c);
   int st = id >= 0 && id < nt->count ? par[id] : -1;
   /* not a statement: its value is used */
-  return st < 0 || nt_kind(nt, st) != NK_StatementsNode || vp_is_value_edge(nt, st, id, VPS_NONE);
+  if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 1;
+  if (!vp_is_value_edge(nt, st, id, VPS_NONE)) return 0;
+  /* the last statement of the program's own body is run for its effect */
+  return st != c->scopes[0].body;
 }
 /* Is node n method mi's answer: its body's last statement, or the last
    statement of an `if` / `unless` / `else` arm in that place, or of a `case`
@@ -38708,25 +38711,107 @@ static int wnh_answering_read(const VpLeaf *leaf, void *ud) {
   const char *rn = nt_str(nt, leaf->node, "name");
   return rn && sp_streq(rn, r->name) && comp_scope_of(r->c, leaf->node) == r->sc;
 }
-/* `answered`, when given, lets a read that is sc's own answer (the method's
-   last value, wnh_is_answer; a `return` still escapes) pass, and reports
-   that one did: the caller then widens the method's return with the local */
-static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered) {
+/* Is the variable the write `w` stores into a box (a local or an ivar of the
+   poly kind)? */
+static int wnh_boxed_target(Compiler *c, int w) {
+  const NodeTable *nt = c->nt;
+  const char *wn = nt_str(nt, w, "name");
+  Scope *ws = comp_scope_of(c, w);
+  if (!wn || !ws) return 0;
+  if (nt_kind(nt, w) == NK_LocalVariableWriteNode) {
+    LocalVar *lv = scope_local(ws, wn);
+    return lv && lv->type == TY_POLY;
+  }
+  if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) {
+    int cid = ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], wn) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_POLY;
+  }
+  return 0;
+}
+/* Is the write `w` of the value `v` a copy of local `name` into a local of the
+   same scope typed as the Hash is (`h = seen`), which hands nothing on whole
+   itself? The widening then retypes the copy with it (wnh_widen_copies). */
+static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered, int copies);
+static int wnh_copy_target(Compiler *c, int w, const char *name, Scope *sc) {
+  const NodeTable *nt = c->nt;
+  int v = an_unparen(nt, nt_ref(nt, w, "value"));
+  const char *wn = nt_str(nt, w, "name");
+  if (nt_kind(nt, w) != NK_LocalVariableWriteNode || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode ||
+      comp_scope_of(c, w) != sc || !wn || !sp_streq(nt_str(nt, v, "name"), name)) return 0;
+  LocalVar *y = scope_local(sc, wn);
+  if (!y || y->type != c->ntype[v] || !ty_is_hash(y->type)) return 0;
+  /* the copy's own reads, a copy of it not allowed to chain */
+  return !wnh_local_escapes_ex(c, sc, wn, NULL, 0);
+}
+/* The locals the late widening asks about, sorted by (scope, name), so that a
+   walk of the program answers for all of them at once: asked for each local in
+   turn, a method called from many methods cost a walk per call. */
+typedef struct { Scope *sc; const char *name; int escapes, target, go; } WnhSlot;
+typedef struct { WnhSlot *v; int n, cap; } WnhSlots;
+static int wnh_slot_cmp(const void *a, const void *b) {
+  const WnhSlot *x = a, *y = b;
+  if (x->sc != y->sc) return x->sc < y->sc ? -1 : 1;
+  return strcmp(x->name, y->name);
+}
+static WnhSlot *wnh_slot_find(const WnhSlots *s, const Scope *sc, const char *name) {
+  if (!s->n || !name || !sc) return NULL;
+  WnhSlot key = { (Scope *)sc, name, 0, 0, 0 };
+  return bsearch(&key, s->v, (size_t)s->n, sizeof(WnhSlot), wnh_slot_cmp);
+}
+static void wnh_slots_add(WnhSlots *s, Scope *sc, const char *name) {
+  if (s->n == s->cap) {
+    s->cap = s->cap ? s->cap * 2 : 16;
+    s->v = (WnhSlot *)realloc(s->v, sizeof(WnhSlot) * (size_t)s->cap);
+    if (!s->v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  s->v[s->n++] = (WnhSlot){ sc, name, 0, 0, 0 };
+}
+/* sorts the slots and drops the repeats */
+static void wnh_slots_seal(WnhSlots *s) {
+  if (s->n > 1) qsort(s->v, (size_t)s->n, sizeof(WnhSlot), wnh_slot_cmp);
+  int k = 0;
+  for (int i = 0; i < s->n; i++)
+    if (k == 0 || wnh_slot_cmp(&s->v[k - 1], &s->v[i])) s->v[k++] = s->v[i];
+  s->n = k;
+}
+/* A leaf of the value written by `w` that reads a slot hands the Hash on
+   whole, unless the write is a copy the widening retypes with it */
+typedef struct { Compiler *c; WnhSlots *slots; int w, copies; } WnhScan;
+static int wnh_scan_write_leaf(const VpLeaf *leaf, void *ud) {
+  WnhScan *r = ud;
+  const NodeTable *nt = r->c->nt;
+  if (leaf->kind != VPK_EXPR || nt_kind(nt, leaf->node) != NK_LocalVariableReadNode) return 0;
+  Scope *rs = comp_scope_of(r->c, leaf->node);
+  const char *rn = nt_str(nt, leaf->node, "name");
+  WnhSlot *sl = wnh_slot_find(r->slots, rs, rn);
+  if (!sl || sl->escapes) return 0;
+  if (r->copies && wnh_copy_target(r->c, r->w, rn, rs)) return 0;
+  sl->escapes = 1;
+  return 0;
+}
+/* Marks each of the slots a read of which hands the hash on whole. `answered`,
+   when given (a scan of one slot), lets a read that is its scope's own answer
+   (the method's last value, wnh_is_answer; a `return` still escapes) pass, and
+   reports that one did: the caller then widens the method's return with the
+   local */
+static void wnh_escape_scan(Compiler *c, WnhSlots *slots, int *answered, int copies) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int n = 0; const int *b = nt_arr(nt, st, "body", &n);
     if (n <= 0 || nt_kind(nt, b[n - 1]) != NK_LocalVariableReadNode) continue;
-    const char *rn = nt_str(nt, b[n - 1], "name");
-    if (!rn || !sp_streq(rn, name) || comp_scope_of(c, b[n - 1]) != sc) continue;
-    if (answered && wnh_is_answer(c, sc, b[n - 1])) { *answered = 1; continue; }
+    Scope *rs = comp_scope_of(c, b[n - 1]);
+    WnhSlot *sl = wnh_slot_find(slots, rs, nt_str(nt, b[n - 1], "name"));
+    if (!sl || sl->escapes) continue;
+    if (answered && wnh_is_answer(c, rs, b[n - 1])) { *answered = 1; continue; }
     /* a read whose value is dropped (the body of a begin with an `else`, which
        the else's value replaces) hands nothing on */
     if (an_value_dropped(nt, comp_parent_map(c), b[n - 1])) continue;
-    return 1;
-  }
-  if (answered && sc->def_node >= 0 && sc->body >= 0 && ty_is_hash(sc->ret)) {
-    WnhReads r = { c, sc, name };
-    if (for_each_value_position(nt, sc->body, VPS_ALL, wnh_answering_read, &r)) *answered = 1;
+    /* or one a box takes: `keep = (seen) || {}` with `keep` a box */
+    VpUp up;
+    if (vp_climb(nt, comp_parent_map(c), b[n - 1], VP_AND_LEFT | VPS_ALL, &up) == VPU_ENDED && up.parent >= 0 &&
+        wnh_boxed_target(c, up.parent)) continue;
+    sl->escapes = 1;
   }
   static const NodeKind wk[] = { NK_ReturnNode, NK_LocalVariableWriteNode, NK_InstanceVariableWriteNode,
                                  NK_GlobalVariableWriteNode, NK_ClassVariableWriteNode, NK_CallNode };
@@ -38745,33 +38830,48 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
         av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
       }
       else { int v = nt_ref(nt, w, "value"); an = 0;
-        if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode) {
-          const char *rn = nt_str(nt, v, "name");
-          if (rn && sp_streq(rn, name) && comp_scope_of(c, v) == sc) return 1;
+        /* a write of the Hash itself or of a join with it (`keep = (seen) || {}`)
+           keeps it typed, unless the variable is a box, which takes the
+           widened Hash as the read now types it */
+        if (v >= 0 && !wnh_boxed_target(c, w)) {
+          WnhScan r = { c, slots, w, copies };
+          for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, wnh_scan_write_leaf, &r);
         }
       }
       for (int k = 0; k < an; k++)
         if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode) {
-          const char *rn = nt_str(nt, av[k], "name");
-          if (rn && sp_streq(rn, name) && comp_scope_of(c, av[k]) == sc) return 1;
+          WnhSlot *sl = wnh_slot_find(slots, comp_scope_of(c, av[k]), nt_str(nt, av[k], "name"));
+          if (sl) sl->escapes = 1;
         }
     }
   }
-  return 0;
+}
+/* Does a read of local `name` in scope sc hand the hash on whole? */
+static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered, int copies) {
+  WnhSlots one = { NULL, 0, 0 };
+  wnh_slots_add(&one, sc, name);
+  wnh_escape_scan(c, &one, answered, copies);
+  int esc = one.v[0].escapes;
+  free(one.v);
+  if (!esc && answered && sc->def_node >= 0 && sc->body >= 0 && ty_is_hash(sc->ret)) {
+    WnhReads r = { c, sc, name };
+    if (for_each_value_position(c->nt, sc->body, VPS_ALL, wnh_answering_read, &r)) *answered = 1;
+  }
+  return esc;
 }
 static int wnh_local_escapes(Compiler *c, Scope *sc, const char *name) {
-  return wnh_local_escapes_ex(c, sc, name, NULL);
+  return wnh_local_escapes_ex(c, sc, name, NULL, 1);
 }
 /* The block parameters of a key/value iteration over a local the widening
    retyped (`g.each { |k, v| }`) were bound from the typed kind: a key or
    value that can be nil is now boxed, so is the parameter */
-static void wnh_widen_block_params(Compiler *c, Scope *sc, const char *ln, int kn, int vn) {
+static void wnh_widen_block_params_of(Compiler *c, const WnhSlots *slots, int kn, int vn) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, call) {
     int r = nt_ref(nt, call, "receiver"), blk = nt_ref(nt, call, "block");
     if (r < 0 || blk < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || nt_kind(nt, blk) != NK_BlockNode) continue;
     const char *rn = nt_str(nt, r, "name"), *nm = nt_str(nt, call, "name");
-    if (!rn || !nm || !sp_streq(rn, ln) || comp_scope_of(c, r) != sc) continue;
+    if (!rn || !nm || !wnh_slot_find(slots, comp_scope_of(c, r), rn)) continue;
     int pk = -1, pv = -1;
     if (sp_streq(nm, "each_key")) pk = 0;
     else if (sp_streq(nm, "each_value")) pv = 0;
@@ -38794,6 +38894,12 @@ static void wnh_widen_block_params(Compiler *c, Scope *sc, const char *ln, int k
     if (bs && bs->body >= 0) wnh_note(bs->body);
   }
 }
+static void wnh_widen_block_params(Compiler *c, Scope *sc, const char *ln, int kn, int vn) {
+  WnhSlots one = { NULL, 0, 0 };
+  wnh_slots_add(&one, sc, ln);
+  wnh_widen_block_params_of(c, &one, kn, vn);
+  free(one.v);
+}
 /* The method a call resolves to statically, or -1 (a boxed receiver: -2) */
 static int wnh_call_target(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
@@ -38809,13 +38915,83 @@ static int wnh_call_target(Compiler *c, int call) {
   if (rt == TY_POLY || rt == TY_UNKNOWN) return -2;
   return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), cn, NULL) : -1;
 }
+/* A value of a local the widening retypes is a call of method `mi` or an empty
+   Hash literal (`h = first_seen(a) || {}`): the literal is built at the kind
+   the local takes. Answers nonzero for a leaf that is neither. */
+typedef struct { Compiler *c; int mi; TyKind want; } WnhSlotLeaf;
+static int wnh_slot_leaf_other(const VpLeaf *leaf, void *ud) {
+  WnhSlotLeaf *s = ud;
+  const NodeTable *nt = s->c->nt;
+  if (leaf->kind != VPK_EXPR) return 1;
+  if (nt_kind(nt, leaf->node) == NK_HashNode) { int en = 0; nt_arr(nt, leaf->node, "elements", &en); return en != 0; }
+  return nt_kind(nt, leaf->node) != NK_CallNode || wnh_call_target(s->c, leaf->node) != s->mi;
+}
+static int wnh_slot_retype_leaf(const VpLeaf *leaf, void *ud) {
+  WnhSlotLeaf *s = ud;
+  if (leaf->kind == VPK_EXPR && nt_kind(s->c->nt, leaf->node) == NK_HashNode) {
+    comp_set_ntype(s->c, leaf->node, s->want);
+    if (s->c->hash_want && leaf->node < s->c->node_cap) comp_set_hash_want(s->c, leaf->node, s->want);
+  }
+  return 0;
+}
+/* The slot (a local of a scope) a call is a value of (`h = first_seen(a)`,
+   or `h = first_seen(a) || {}`), or NULL when it is no local write's value or
+   the slot is not among the facts. */
+static WnhSlot *wnh_call_write_slot(Compiler *c, int call, const WnhSlots *facts) {
+  const NodeTable *nt = c->nt;
+  VpUp up;
+  if (vp_climb(nt, comp_parent_map(c), call, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+      nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) return NULL;
+  return wnh_slot_find(facts, comp_scope_of(c, up.parent), nt_str(nt, up.parent, "name"));
+}
+/* The facts of the locals the calls of method `mi` are written to, in one walk
+   of the program for all of them: those a read of which hands the Hash on
+   whole, and those a multiple assignment or a rescue writes */
+static void wnh_call_slots_scan(Compiler *c, int mi, WnhSlots *facts) {
+  const NodeTable *nt = c->nt;
+  const char *nm = c->scopes[mi].name;
+  if (!nm) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *cn = nt_str(nt, call, "name");
+    if (!cn || !sp_streq(cn, nm) || wnh_call_target(c, call) != mi) continue;
+    VpUp up;
+    if (vp_climb(nt, comp_parent_map(c), call, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+        nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) continue;
+    const char *ln = nt_str(nt, up.parent, "name");
+    if (ln) wnh_slots_add(facts, comp_scope_of(c, up.parent), ln);
+  }
+  wnh_slots_seal(facts);
+  if (!facts->n) return;
+  wnh_escape_scan(c, facts, NULL, 1);
+  NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t) {   /* a multiple assignment's or rescue's target */
+    WnhSlot *sl = wnh_slot_find(facts, comp_scope_of(c, t), nt_str(nt, t, "name"));
+    if (sl) sl->target = 1;
+  }
+}
+/* The local a call of method `mi` is a value of (`h = first_seen(a)`, or
+   `h = first_seen(a) || {}`), when that local holds only calls of `mi` and
+   empty literals and hands nothing on whole: it is retyped with the method's
+   return. */
+static WnhSlot *wnh_call_slot(Compiler *c, int mi, int call, const WnhSlots *facts) {
+  const NodeTable *nt = c->nt;
+  WnhSlot *sl = wnh_call_write_slot(c, call, facts);
+  if (!sl || sl->escapes || sl->target) return NULL;
+  WnhSlotLeaf lf = { c, mi, TY_UNKNOWN };
+  for (int o = an_local_writes_named_first(c, sl->name); o >= 0; o = an_local_writes_named_next(o)) {
+    const char *on = nt_str(nt, o, "name");
+    if (!on || !sp_streq(on, sl->name) || comp_scope_of(c, o) != sl->sc) continue;
+    int ov = nt_kind(nt, o) == NK_LocalVariableWriteNode ? nt_ref(nt, o, "value") : -1;
+    if (ov < 0 || for_each_value_position(nt, ov, VP_AND_LEFT | VPS_ALL, wnh_slot_leaf_other, &lf)) return NULL;
+  }
+  return sl;
+}
 /* Can method mi's return widen with the literal it answers? Every call of
    it must resolve to it, and its value be read only where the reader
    re-derives the kind: a builtin's receiver or argument (`f(v) == h`,
    `p f(v)`), or dropped. One that lands in a slot (a variable, a return, a
    program method's argument, a literal's element) keeps the typed kind and
    its store refuses, as before. */
-static int wnh_ret_widenable(Compiler *c, int mi) {
+static int wnh_ret_widenable(Compiler *c, int mi, const WnhSlots *facts) {
   const NodeTable *nt = c->nt;
   const char *nm = c->scopes[mi].name;
   if (!nm) return 0;
@@ -38826,6 +39002,7 @@ static int wnh_ret_widenable(Compiler *c, int mi) {
     if (t == -2) return 0;
     if (t != mi) continue;
     if (comp_value_dropped(c, call)) continue;
+    if (wnh_call_slot(c, mi, call, facts)) continue;
     int rp = comp_recv_parent(c, call);
     if (rp >= 0) { if (wnh_call_target(c, rp) >= 0) return 0; continue; }
     /* an argument of a builtin call */
@@ -38845,14 +39022,60 @@ static int wnh_ret_widenable(Compiler *c, int mi) {
    wnh_ret_widenable allows; 1 when done */
 static int wnh_widen_ret(Compiler *c, int mi, TyKind want) {
   const NodeTable *nt = c->nt;
-  if (!wnh_ret_widenable(c, mi)) return 0;
+  WnhSlots facts = { NULL, 0, 0 };
+  wnh_call_slots_scan(c, mi, &facts);
+  if (!wnh_ret_widenable(c, mi, &facts)) { free(facts.v); return 0; }
   scope_set_ret(&c->scopes[mi], want);
+  WnhSlots go = { NULL, 0, 0 };
   NT_FOREACH_KIND(nt, NK_CallNode, call) {
     if (wnh_call_target(c, call) != mi) continue;
     comp_set_ntype(c, call, want);
     Scope *cs = comp_scope_of(c, call); if (cs && cs->body >= 0) wnh_note(cs->body);
+    /* the local the call is written to is the Hash the caller holds */
+    WnhSlot *sl = wnh_call_slot(c, mi, call, &facts);
+    LocalVar *lv = sl ? scope_local(sl->sc, sl->name) : NULL;
+    if (!lv || lv->type == want) continue;
+    lv_set_type(lv, want);
+    sl->go = 1;
   }
+  for (int i = 0; i < facts.n; i++)
+    if (facts.v[i].go) wnh_slots_add(&go, facts.v[i].sc, facts.v[i].name);
+  if (go.n) {
+    wnh_widen_block_params_of(c, &go, ty_hash_key(want) == TY_POLY, ty_hash_val(want) == TY_POLY);
+    WnhSlotLeaf sl = { c, mi, want };
+    for (int i = 0; i < go.n; i++) {
+      const char *ln = go.v[i].name;
+      for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o)) {
+        if (comp_scope_of(c, o) != go.v[i].sc || !sp_streq(nt_str(nt, o, "name"), ln)) continue;
+        comp_set_ntype(c, o, want);
+        int ov = nt_ref(nt, o, "value");   /* the join and its empty literals are the Hash the local is */
+        if (ov >= 0) { comp_set_ntype(c, ov, want); for_each_value_position(nt, ov, VP_AND_LEFT | VPS_ALL, wnh_slot_retype_leaf, &sl); }
+      }
+    }
+    NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, rr)
+      if (wnh_slot_find(&go, comp_scope_of(c, rr), nt_str(nt, rr, "name"))) comp_set_ntype(c, rr, want);
+  }
+  free(go.v);
+  free(facts.v);
   return 1;
+}
+/* The locals of `sc` written a copy of local `name` (`h = seen`) and typed as
+   the Hash was (`ht`) are retyped with it. */
+static void wnh_widen_copies(Compiler *c, Scope *sc, const char *name, TyKind ht, TyKind want, int kn, int vn) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !wnh_copy_target(c, w, name, sc)) continue;
+    LocalVar *y = scope_local(sc, wn);
+    if (!y || y->type != ht) continue;
+    lv_set_type(y, want);
+    wnh_widen_block_params(c, sc, wn, kn, vn);
+    comp_set_ntype(c, w, want);
+    NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, rr) {
+      const char *rn = nt_str(nt, rr, "name");
+      if (rn && sp_streq(rn, wn) && comp_scope_of(c, rr) == sc) comp_set_ntype(c, rr, want);
+    }
+  }
 }
 static void widen_nullable_keyed_hash_literals(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -38941,7 +39164,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     LocalVar *lv = ln && sc ? scope_local(sc, ln) : NULL;
     if (!lv || lv->type != ht || lv->is_param || lv->rbs_seeded) continue;
     int answered = 0;
-    if (wnh_local_escapes_ex(c, sc, ln, &answered)) continue;
+    if (wnh_local_escapes_ex(c, sc, ln, &answered, 1)) continue;
     /* every write must be one the widening can rebuild */
     int ok = 1;
     for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
@@ -38978,6 +39201,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     }
     lv_set_type(lv, want);
     wnh_widen_block_params(c, sc, ln, kn, vn);
+    wnh_widen_copies(c, sc, ln, ht, want, kn, vn);
     for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
@@ -50562,17 +50786,7 @@ static void an_phase_proc_returns(Compiler *c) {
         if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { scope_set_ret_proc_ret(sc, (int)pr); changed = 1; }
       }
       /* (2) proc-typed locals: proc_ret from the assigned proc / factory call. */
-      for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
-        const char *nm = nt_str(nt, id, "name");
-        if (!nm) continue;
-        LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-        if (!lv || lv->type != TY_PROC) continue;
-        int vnode = nt_ref(nt, id, "value");
-        TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
-        if (pr != TY_UNKNOWN && (TyKind)lv->proc_ret != pr) { lv_set_proc_ret(lv, (int)pr); changed = 1; }
-      }
+      changed |= join_local_proc_rets(c);
       /* (3) a typed-array-returning method whose elements widened now yields a
          poly array in its body (e.g. `[a/b, a%b]` with poly a,b builds a
          PolyArray), so its return type must follow to TY_POLY_ARRAY. */
