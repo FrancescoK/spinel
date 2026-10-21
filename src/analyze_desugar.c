@@ -10946,6 +10946,35 @@ static int cdef_stmts(NodeTable *nt, int st) {
   nt_node_set_arr(nt, b, "body", &st, 1);
   return b;
 }
+/* `__method__` in an arm answers the name it was written with, not the
+   arm's `m#__condN`. Nested defs keep their own, and so do define_method
+   blocks. */
+static void cdef_method_name(NodeTable *nt, int id, const char *base) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  const char *nm = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  if (nm && (sp_streq(nm, "define_method") || sp_streq(nm, "define_singleton_method"))) return;
+  if (nm && sp_streq(nm, "__method__") && nt_ref(nt, id, "receiver") < 0 &&
+      nt_ref(nt, id, "arguments") < 0 && nt_ref(nt, id, "block") < 0) {
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    nt_node_reset(nt, id, "SymbolNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    nt_node_set_str(nt, id, "value", base);
+    return;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) cdef_method_name(nt, nt_ref_at(nt, id, i), base);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) cdef_method_name(nt, ids[j], base);
+  }
+}
+
 /* A method one def defines under a condition only the run time decides is
    there or not as the condition went, but its name answers from the start
    (the dispatching def the choice is lowered to): a question about it by
@@ -11120,8 +11149,11 @@ int desugar_conditional_defs(Compiler *c) {
     int chain = nt_new_node(nt, "ElseNode");
     nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, raise));
     for (int k = ng - 1; k >= 0; k--) {
+      /* register_module_functions finds the arms by this name */
       snprintf(nm, sizeof nm, "%s#__cond%d", base, serial + k + 1);
       nt_set_str(nt, g[k].def, "name", nm);
+      cdef_method_name(nt, nt_ref(nt, g[k].def, "parameters"), base);
+      cdef_method_name(nt, nt_ref(nt, g[k].def, "body"), base);
       int wk = fwd_new_node_like(nt, g[k].def, "GlobalVariableWriteNode");
       nt_node_set_str(nt, wk, "name", sel);
       nt_node_set_ref(nt, wk, "value", nt_new_int(nt, k + 1));
