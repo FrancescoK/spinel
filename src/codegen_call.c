@@ -9628,6 +9628,14 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   int rt_boxed = repr_of(c, recv).kind == RK_BOXED;
+  /* A boxed relational comparison with no planned class arm uses its builtin path
+     directly, before dispatch allocates roots or temporary numbers.
+     A delegated target or target view still supplies a user arm under
+     another name. */
+  if (rt_boxed && argc == 1 && is_cmp_op(name) && !cplan_user_fresh(c, id)->delegate &&
+      sp_streq(name, view_call_name(c, id)) &&
+      cplan_poly_arms(c, id)->n == 0)
+    return 0;
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
