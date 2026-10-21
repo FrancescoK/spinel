@@ -1655,9 +1655,21 @@ int emit_op_array_pred0(Compiler *c, const BopCtx *x, Buf *b) {
   }
   if (is_quantifier(name) &&
       argc == 0 && nt_ref(nt, id, "block") < 0) {
-    /* scalar-element arrays never hold nil/false: predicate is length-based.
+    /* scalar-element arrays never hold false: predicate is length-based.
        One that can hold nil counts its truthy (non-nil) elements
        instead. */
+    if (rt == TY_STR_ARRAY) {
+      /* any String Array can hold nil (sp_StrArray_truthy_count); count
+         only as far as the answer needs: any?/none? stop at the first
+         String, one? at the second */
+      int ta = ++g_tmp;
+      buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_expr(c, recv, b);
+      if (sp_streq(name, "all?"))       buf_printf(b, "; sp_StrArray_truthy_count(_t%d, sp_StrArray_length(_t%d)) == sp_StrArray_length(_t%d); })", ta, ta, ta);
+      else if (sp_streq(name, "any?"))  buf_printf(b, "; sp_StrArray_truthy_count(_t%d, 1) > 0; })", ta);
+      else if (sp_streq(name, "none?")) buf_printf(b, "; sp_StrArray_truthy_count(_t%d, 1) == 0; })", ta);
+      else                              buf_printf(b, "; sp_StrArray_truthy_count(_t%d, 2) == 1; })", ta);
+      return 1;
+    }
     if (elem_nil_sentinel(c, recv, rt)) {
       /* sp_*Array_truthy_count: the length unless the array has a nil bitmap */
       int ta = ++g_tmp, tn = ++g_tmp;

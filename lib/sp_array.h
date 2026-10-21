@@ -651,6 +651,11 @@ sp_FloatArray *sp_FloatArray_nil_sum_ck(sp_FloatArray *a, int float_seed);
    no longer matters: a stored nil always has its bit.) */
 #define sp_IntArray_truthy_count(a, marked) ({ sp_IntArray *_tc_a = (a); (void)(marked); !_tc_a ? (sp_int)0 : _tc_a->len - sp_IntArray_nil_count(_tc_a); })
 #define sp_FloatArray_truthy_count(a, marked) ({ sp_FloatArray *_tc_a = (a); (void)(marked); !_tc_a ? (sp_int)0 : _tc_a->len - sp_FloatArray_nil_count(_tc_a); })
+/* The same for a String Array, whose nil is a NULL slot (a nil mapped or
+   stored in, or the gap a write past the end fills, #3836): the non-nil
+   elements, counted only up to `limit`, where the predicate's answer is
+   known. */
+static inline sp_int sp_StrArray_truthy_count(sp_StrArray*a,sp_int limit){sp_int n=0;if(!a)return 0;for(sp_int i=0;i<a->len&&n<limit;i++)if(a->data[i])n++;return n;}
 /* The receiver of min, max, minmax, sort (cmp) or a blockless sum, checked
    for a nil element: one pointer test, and the scan (the _ck above) only
    where a nil was ever stored. */
