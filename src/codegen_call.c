@@ -3538,6 +3538,14 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
       endless = lazy_endpoint_is_infinite(c, hi);
     }
     else {
+      int one;
+      switch (vp_one(nt, lazy_src, VPS_NONE | VP_PARENS_ONLY, &one)) {
+      case VP1_NODE:
+        if (nt_kind(nt, one) == NK_RangeNode) endless = lazy_endpoint_is_infinite(c, nt_ref(nt, one, "right"));
+        break;
+      case VP1_NIL: break;
+      case VP1_MANY: break;
+      }
       trange = ++g_tmp; Buf sb = expr_buf(c, lazy_src);
       emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trange, sb.p ? sb.p : "(sp_Range){0}"); free(sb.p);
     }

@@ -4864,7 +4864,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       ok = 0; break;
     }
     /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
-    lazy_src = an_unparen(nt, lazy_src);
+    switch (vp_one(nt, lazy_src, VPS_NONE | VP_PARENS_ONLY, &lazy_src)) {
+    case VP1_NODE: break;
+    case VP1_NIL: lazy_src = -1; break;
+    case VP1_MANY: lazy_src = -1; break;
+    }
     if (ok && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
       int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
