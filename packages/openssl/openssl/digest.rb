@@ -7,9 +7,10 @@
 #
 # The class-method forms (`OpenSSL::Digest::SHA256.hexdigest(data)`) and the
 # object (`OpenSSL::Digest.new("SHA256")`, `OpenSSL::Digest::SHA256.new`)
-# with update / << / digest / hexdigest / reset / digest_length / name. The
-# object buffers what it is given and hashes it whole when asked, over the
-# same one-shot functions: the runtime's hashes have no streaming state.
+# with update / << / digest / hexdigest / reset / digest_length / name, and
+# `.file(path)` / `#file(path)`. The object buffers what it is given and
+# hashes it whole when asked, over the same one-shot functions: the
+# runtime's hashes have no streaming state.
 module OpenSSL
   # CRuby's base for everything in this namespace; SSLError and DigestError
   # both descend from it, so `rescue OpenSSL::OpenSSLError` catches either.
@@ -88,16 +89,22 @@ module OpenSSL
 
     def hexdigest(data = nil) = digest(data).unpack1("H*")
 
+    def file(name)
+      update(File.binread(name.respond_to?(:to_path) ? name.to_path : name))
+    end
+
     class SHA256 < Digest
       def initialize(data = nil) = super("SHA256", data)
       def self.hexdigest(data) = Crypto.sha256_hex(data)
       def self.digest(data)    = Crypto.sha256_bin(data)
+      def self.file(name)      = new.file(name)
     end
 
     class SHA1 < Digest
       def initialize(data = nil) = super("SHA1", data)
       def self.hexdigest(data) = Crypto.sha1_hex(data)
       def self.digest(data)    = Crypto.sha1_bin(data)
+      def self.file(name)      = new.file(name)
     end
 
     # A legacy hash, carried because Active Storage's direct upload checks a
@@ -106,6 +113,7 @@ module OpenSSL
       def initialize(data = nil) = super("MD5", data)
       def self.hexdigest(data) = Crypto.md5_hex(data)
       def self.digest(data)    = Crypto.md5_bin(data)
+      def self.file(name)      = new.file(name)
     end
   end
 

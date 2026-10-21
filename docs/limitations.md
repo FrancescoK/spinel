@@ -128,7 +128,8 @@ what it gets against its `cert_store`, which is empty unless one is given
 answers the context, where CRuby's answers the params.
 `OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
 object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
-`hexdigest`, `digest_length`), `OpenSSL::HMAC` (the algorithm by name or as
+`hexdigest`, `digest_length`, and `file` from a path, a File or a
+Tempfile), `OpenSSL::HMAC` (the algorithm by name or as
 a Digest), `OpenSSL::KDF.hkdf` /
 `pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
 own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
