@@ -174,7 +174,12 @@ typedef struct{sp_float first;sp_float last;sp_int excl;unsigned char omitted;un
    Symbols' names; Symbol#succ is String#succ on the name, so the walk and
    the comparisons are the String Range's, and the readers that answer an
    end or a member make the Symbol of it (sp_srange_box_end). */
+#ifdef SP_ONE_STRING
+/* (one representation: the endpoints' handles typed, which the face macros read as the handle) */
+typedef struct{const char *first;const char *last;unsigned char excl;unsigned char unfrozen;unsigned char sym;struct sp_String_s *hf;struct sp_String_s *hl;}sp_StrRange;
+#else
 typedef struct{const char *first;const char *last;unsigned char excl;unsigned char unfrozen;unsigned char sym;void *hf;void *hl;}sp_StrRange;
+#endif
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

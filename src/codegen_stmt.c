@@ -13741,6 +13741,8 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, " _t%d = ", tr);
     /* (one representation: a String return is bytes, read through SP_STR_B) */
     int one_ret_b = g_one_string && g_ret_type == TY_STRING;
+    int one_unpub = one_ret_b && one_tail_fresh(c, a[0]);
+    if (one_unpub) buf_puts(b, "sp_strface_unpub(");
     if (one_ret_b) buf_puts(b, "SP_STR_B(");
     if (g_ret_oint && oint_kind(g_ret_type)) emit_oint_expr(c, a[0], g_ret_type, b);
     else if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
@@ -13753,6 +13755,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_tail_value(c, a[0], b);
     }
     if (one_ret_b) buf_puts(b, ")");
+    if (one_unpub) buf_puts(b, ")");
     buf_puts(b, "; ");
     emit_frame_unwind(b, 0, NULL);
     buf_printf(b, "return _t%d; }\n", tr);
@@ -13801,6 +13804,8 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
        is read through SP_STR_B, a handle's view keeping it alive through
        the caller's root as a fresh String's bytes do) */
     int one_ret_b = g_one_string && g_ret_type == TY_STRING;
+    int one_unpub = one_ret_b && one_tail_fresh(c, a[0]);
+    if (one_unpub) buf_puts(b, "sp_strface_unpub(");
     if (one_ret_b) buf_puts(b, "SP_STR_B(");
     TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
@@ -13816,6 +13821,7 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_tail_value(c, a[0], b);   /* coerces an unresolved TY_UNKNOWN token */
     }
     if (one_ret_b) buf_puts(b, ")");
+    if (one_unpub) buf_puts(b, ")");
     buf_puts(b, ";\n");
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
@@ -21492,9 +21498,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* (one representation: a String tail of either face lands in a bytes
        slot as its view, which the slot's root keeps alive) */
     int one_tail_b = g_one_string && !want_poly && tail_slot_ty == TY_STRING;
+    int one_unpub = one_tail_b && !g_result_var && one_tail_fresh(c, id);
+    if (one_unpub) buf_puts(b, "sp_strface_unpub(");
     if (one_tail_b) buf_puts(b, "SP_STR_B(");
     emit_tail_value(c, id, b);
     if (one_tail_b) buf_puts(b, ")");
+    if (one_unpub) buf_puts(b, ")");
   }
   buf_puts(b, ";\n");
 }

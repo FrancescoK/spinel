@@ -3040,7 +3040,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     emit_expr(c,node,b);
     buf_puts(b, "; _sp_ret_strbuf ? ");
     str_box_open(b, 0);
-    buf_puts(b, "_sp_ret_strbuf");
+    buf_puts(b, g_one_string ? "(sp_String *)_sp_ret_strbuf" : "_sp_ret_strbuf");   /* (one representation: the handle, typed) */
     str_box_close(b);
     buf_printf(b, " : _cext_string%d ? sp_box_str(_cext_string%d) : sp_box_nil(); })", temp, temp);
     if(g_repr_check)repr_channel_boxed(c,node,frame);
@@ -20047,7 +20047,7 @@ static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode
   if (mode == 2) {
     buf_puts(b, "return _sp_ret_strbuf ? ");
     str_box_open(b, 0);
-    buf_puts(b, "_sp_ret_strbuf");
+    buf_puts(b, g_one_string ? "(sp_String *)_sp_ret_strbuf" : "_sp_ret_strbuf");   /* (one representation: the handle, typed) */
     str_box_close(b);
     buf_puts(b, " : _v ? ");
     str_box_bytes(b, "_v");

@@ -22131,10 +22131,11 @@ static inline const char *sp_strface_b_box(sp_RbVal v) {
 }
 static inline sp_String *sp_strface_h_box(sp_RbVal v) { return sp_poly_nil_p(v) ? NULL : sp_poly_as_strbuf(v); }
 static inline sp_RbVal sp_strface_box_self(sp_RbVal v) { return v; }
-/* (an untyped pointer in the generated code is a handle: the published
-   _sp_ret_strbuf, a box's v.p; it converts to the handle parameter) */
+/* (an untyped pointer is bytes: a conditional with a bare NULL arm, `c ?
+   s : NULL` or a raise arm's `(raise, NULL)`, is a void *; the emitters
+   that hand the published handle on cast it, (sp_String *)_sp_ret_strbuf) */
 #define SP_ONE_FACE(x, hf, bf, zf, rf) ({ __auto_type _sp_fv = (x); \
-  _Generic(_sp_fv, sp_String *: hf, void *: hf, sp_RbVal: rf, int: zf, long: zf, long long: zf, default: bf)(_sp_fv); })
+  _Generic(_sp_fv, sp_String *: hf, sp_RbVal: rf, int: zf, long: zf, long long: zf, default: bf)(_sp_fv); })
 #define SP_STR_B(x) SP_ONE_FACE(x, sp_strface_b_of, sp_strface_b_self, sp_strface_zero_b, sp_strface_b_box)
 /* the same for an operand held across a block the program runs (sp_strbuf_read_own) */
 #define SP_STR_BC(x) SP_ONE_FACE(x, sp_strface_b_copy, sp_strface_bc_bytes, sp_strface_zero_b, sp_strface_b_box)
@@ -22148,6 +22149,10 @@ static inline sp_RbVal sp_strface_box_self(sp_RbVal v) { return v; }
 /* ...and a String of either face as the face slot `dst` has, where the
    emitter of `dst = v` knows neither (a block parameter a typed walk binds) */
 #define SP_STR_TO(dst, v) _Generic((dst), sp_String *: SP_STR_HDL(v), default: SP_STR_B(v))
+/* A String method's answer that is a new String: the channel a read of a
+   handle inside it published is cleared after the answer is made, so a
+   caller's pickup does not take that handle for it (one_tail_fresh) */
+static inline const char *sp_strface_unpub(const char *s) { _sp_ret_strbuf = NULL; return s; }
 /* A mutator whose receiver is no variable (`String(a[0]) << "!"`): when
    the receiver's bytes are a live payload's view the String is the
    payload's owner, which takes the new bytes, and the answer is its view

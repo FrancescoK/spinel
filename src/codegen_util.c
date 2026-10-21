@@ -3816,6 +3816,25 @@ void one_face_mark(int t, int node) {
   g_one_face_node[t] = node + 1;
 }
 int one_face_is(int t, int node) { return t >= 0 && t < g_one_face_cap && g_one_face_node[t] == node + 1; }
+/* One representation: does a String method's answer `n` make a new String
+   (a literal, an interpolation, a builtin call's answer), whose bytes no
+   handle names? Its return clears the published channel (sp_strface_unpub):
+   a read of a handle inside it (`x.dup`'s receiver) published that handle,
+   and a caller's pickup took it for the answer. A read, self, a user
+   method's answer and a branch keep the channel: a held read is a copy,
+   and the channel is how the caller finds the handle. */
+int one_tail_fresh(Compiler *c, int n) {
+  if (!g_one_string || n < 0) return 0;
+  n = nt_paren_single(c->nt, n);
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(c->nt, n);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_CallNode) {
+    const CallPlan *pl = cplan_user(c, n);
+    return pl->mi < 0 && pl->dispatch == CP_NONE;
+  }
+  return 0;
+}
 /* One representation: a write `dst = v` into a String slot, where the
    emitter writes v in the type's face (bytes) and the slot is the handle
    (every String holder is, repr_str_class_shares): v goes in through

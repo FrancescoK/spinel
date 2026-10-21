@@ -602,6 +602,7 @@ extern int g_one_elem_raw;   /* the element read emit_expr renders as the handle
 extern int g_one_arm_bytes_node;   /* the dispatch whose arms answer into a bytes slot (emit_strbuf_pickup) */
 void one_face_mark(int t, int node);   /* temp t holds node's String by face (__auto_type): its bound reads are SP_STR_B */
 int one_face_is(int t, int node);
+int one_tail_fresh(Compiler *c, int n);   /* a String answer that is a new String: its return clears the published channel */
 int one_str_to_open(Buf *b, TyKind st, const char *fmt, ...);   /* SP_STR_TO(dst, around a String slot write under the mode; close with ")" */
 void one_elem_bind_slot(LocalVar *lv, TyKind bt);
 /* An operation on a String Array of handles (codegen_call_array.c) */

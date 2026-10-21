@@ -1095,6 +1095,10 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
       const char *nv = nil_value(res);
       if (!nv) nv = default_value_from_compiler(c, res);
       if (!nv) nv = "0";
+      /* (one representation: a String arm's nil is typed bytes; an untyped
+         NULL made the conditional a void *, which the face macros read as
+         the handle) */
+      if (g_one_string && res == TY_STRING) nv = "((const char *)0)";
       /* a bare `nil` arm emits nothing at all; only a call needs sequencing */
       if (ab.p && ab.p[0]) buf_printf(b, "(%s, %s)", ab.p, nv);
       else buf_puts(b, nv);
