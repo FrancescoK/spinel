@@ -507,6 +507,7 @@ static pm_node_t *sp_made_call(pm_node_t *recv, pm_constant_id_t name, pm_node_t
   c->receiver = recv;
   c->name = name;
   if (vcall) c->base.flags |= PM_CALL_NODE_FLAGS_VARIABLE_CALL;
+  if (!recv || PM_NODE_TYPE(recv) == PM_SELF_NODE) c->base.flags |= PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY;
   if (arg) {
     c->arguments = sp_made(PM_ARGUMENTS_NODE, sizeof *c->arguments, at);
     sp_append(&c->arguments->arguments, arg);
@@ -924,16 +925,29 @@ static void flatten_parameter(int id, pm_node_t *node) {
    `recv.name=(v)` and `recv[i] = v`, which `recv.send(:name=, v)` is not
    (nt_attr_write); and a bare identifier (no receiver/parens/args), a
    variable-or-method read whose unresolved form is CRuby's NameError, not
-   NoMethodError (vcall). */
+   NoMethodError (vcall). Private calls use Prism's receiverless or literal
+   self permission (nt_ignore_visibility). */
 static void emit_call_flags(int id, const pm_node_t *node) {
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) emit_int(id, "safe_nav", 1);
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE)) emit_int(id, "attr_write", 1);
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) emit_int(id, "vcall", 1);
 }
+static int flatten_begin(const pm_node_t *node) {
+  int id = node_counter++;
+  switch (PM_NODE_TYPE(node)) {
+  case PM_CALL_NODE: case PM_CALL_TARGET_NODE: case PM_INDEX_TARGET_NODE:
+  case PM_INDEX_OPERATOR_WRITE_NODE: case PM_INDEX_AND_WRITE_NODE: case PM_INDEX_OR_WRITE_NODE:
+  case PM_CALL_OPERATOR_WRITE_NODE: case PM_CALL_AND_WRITE_NODE: case PM_CALL_OR_WRITE_NODE:
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY)) emit_int(id, "ignore_visibility", 1);
+    break;
+  default: break;
+  }
+  return id;
+}
 static int flatten_node(pm_node_t *node) {
   if (!node) return -1;
 
-  int id = node_counter++;
+  int id = flatten_begin(node);
   pm_node_type_t t = PM_NODE_TYPE(node);
   const uint8_t *owner = g_owner;
   /* a node spliced from builtins/ is stamped with the builtin node it counts

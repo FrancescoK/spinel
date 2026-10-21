@@ -455,6 +455,16 @@ static inline int nt_vcall(const NodeTable *nt, int id) {
 static inline void nt_set_vcall(NodeTable *nt, int id, int on) {
   if (on || nt_vcall(nt, id)) nt_node_set_int(nt, id, "vcall", on ? 1 : 0);
 }
+/* PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY: a receiverless call or a literal
+   `self` receiver may call a private method. Parenthesized self does not.
+   Desugars preserve this permission when spelling the same call differently,
+   set it for a synthesized self call, and clear it for a different receiver. */
+static inline int nt_ignore_visibility(const NodeTable *nt, int id) {
+  return nt_int(nt, id, "ignore_visibility", 0) != 0;
+}
+static inline void nt_set_ignore_visibility(NodeTable *nt, int id, int on) {
+  if (on || nt_ignore_visibility(nt, id)) nt_node_set_int(nt, id, "ignore_visibility", on ? 1 : 0);
+}
 /* PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE: the call is written as an assignment,
    `recv.name = v`, `recv.name=(v)` or `recv[i] = v`, so its value is the
    argument whatever the writer returns. The parser exports it as the
