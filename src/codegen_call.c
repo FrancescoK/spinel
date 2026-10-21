@@ -7478,6 +7478,22 @@ static char *poly_arm_take_pre(size_t mark) {
   return t;
 }
 
+/* Is argument v held boxed by the poly dispatch for its nil alone, an
+   Integer or a Float that can be nil (emit_poly_method_dispatch)? A builtin
+   arm that re-enters the call reads it as that oint (bind_poly_arg_temp),
+   and converts it where the method does. */
+static int poly_arg_held_oint(Compiler *c, int v, TyKind held) {
+  return held == TY_POLY && oint_kind(repr_of(c, v).as_ty) && node_has_oint_form(c, v);
+}
+/* Bind argument v of a re-entered builtin arm to the dispatch's temp _t<tn>
+   (held as `held`): the temp as it is, or one held boxed for its nil as the
+   oint it holds. */
+static int bind_poly_arg_temp(Compiler *c, int v, TyKind held, int tn) {
+  if (poly_arg_held_oint(c, v, held))
+    return view_bind_o(v, "%s(_t%d)", oint_unbox(repr_of(c, v).as_ty), tn);
+  return view_bind(v, "_t%d", tn);
+}
+
 /* A genuine String reaching the poly method dispatch because a user class
    happens to own the name. The switch below has an arm per user class and
    none for a String, so the call raised NoMethodError for a method String has
@@ -7515,9 +7531,11 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
      with emit_ctype of its node's own type, so the substitution is
      type-correct wherever the emission reads it -- except for the boxed
      fallback a nil/void/unresolved argument takes, whose temp is an sp_RbVal
-     the node's type does not describe. Decline those. */
+     the node's type does not describe. Decline those; one held boxed for
+     its nil alone is read as its oint (bind_poly_arg_temp). */
   for (int a = 0; a < argc; a++)
-    if (subtree_has_side_effect(c, argv[a]) && repr_of(c, argv[a]).as_ty != atmp_ty[a])
+    if (subtree_has_side_effect(c, argv[a]) && repr_of(c, argv[a]).as_ty != atmp_ty[a] &&
+        !poly_arg_held_oint(c, argv[a], atmp_ty[a]))
       return 0;
   /* The emitters read the node's own type to pick their shape, and this node
      was widened to poly to hold both answers. Restore the builtin-only type
@@ -7547,7 +7565,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   int nov = 0;
   for (int a = 0; a < argc; a++) {
     if (!subtree_has_side_effect(c, argv[a])) continue;
-    int as = view_bind(argv[a], "_t%d", atmp[a]); nov++;
+    int as = bind_poly_arg_temp(c, argv[a], atmp_ty[a], atmp[a]); nov++;
   }
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
@@ -7855,7 +7873,7 @@ static int bi_default_probe(Compiler *c, int id, int recv, const char *name, int
     /* (a temp that holds the argument's handle: the arm's String reads are
        that handle's String, its handle reads the handle itself) */
     if (repr_share_rule(c) && atmp_ty[a] == TY_STRBUF) { ran_first_bind_read(argv[a], atmp[a]); continue; }
-    int as = view_bind(argv[a], "_t%d", atmp[a]);
+    int as = bind_poly_arg_temp(c, argv[a], atmp_ty[a], atmp[a]);
   }
   int va = view_push_arm(id, g_prbd_skip, 1);
   int vw = view_push(c, id, bt);
@@ -7940,8 +7958,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     /* a line reader handed a splat walks the keywords beside it again
        (`**kw` would run twice), so they count as the splat does */
     int rereads = is_splat || (splat_ok && is_line_read(name) && nt_kind(nt, argv[a]) == NK_KeywordHashNode);
+    /* (one held boxed for its nil alone is read as its oint:
+       bind_poly_arg_temp) */
     if (subtree_has_side_effect(c, argv[a]) &&
-        (rereads || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
+        (rereads || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h &&
+                     !poly_arg_held_oint(c, argv[a], atmp_ty[a]))))
       return 0;
   }
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap && !g_bi_count_arm && !nil_fwd)
@@ -9923,10 +9944,12 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. So is an `equal?` operand that keeps a handle's
-           identity only boxed (poly_identity_operand). */
+           identity only boxed (poly_identity_operand), and an Integer or a
+           Float that can be nil: the arm converts it, a TypeError for nil,
+           once the dispatch has found the receiver takes the method. */
         int ident = poly_identity_operand(c, name, pos_argc, argv[a], at);
         if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || ident ||
-            (is_setter_val && a == 0 && oint_kind(at) && node_has_oint_form(c, argv[a]))) {
+            (oint_kind(at) && node_has_oint_form(c, argv[a]))) {
           atmp_ty[a] = TY_POLY;
           atmp[a] = emit_poly_arg_temp(c, argv[a], TY_POLY, ident ? 2 : 1, atmp[a], ran, b);
         }
@@ -24749,9 +24772,10 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
        where its stored type is the handle */
     /* a boxed index's key that can be nil is held with its nil
        (poly_int_key_boxed), and so is an argument that can be nil ahead of
-       the test: the method converts it, a TypeError for nil, where CRuby
-       has found nil has no such method first */
-    int ko = oint_kind(ty[i]) && (poly_index_key_oint(c, id, node[i]) || (test && node[i] != r && node_is_oint(c, node[i])));
+       the test, or of a boxed receiver's dispatch: the method converts it,
+       a TypeError for nil, where CRuby has found the receiver has no such
+       method first */
+    int ko = oint_kind(ty[i]) && (poly_index_key_oint(c, id, node[i]) || ((test || boxed) && node[i] != r && node_is_oint(c, node[i])));
     render_operand(c, node[i], 0, 0, ko, &ob, &op);
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
@@ -27261,11 +27285,14 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
       TyKind at = repr_of(c, argv[i]).as_ty;
       if (!subtree_has_side_effect(c, argv[i]) || at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) continue;
       int ta = ++g_tmp;
-      emit_ctype(c, at, b);
+      /* (one that can be nil with its nil: converted, a TypeError for nil,
+         only once the check has found #at) */
+      int ko = oint_kind(at) && node_has_oint_form(c, argv[i]);
+      if (ko) buf_puts(b, oint_ctype(at)); else emit_ctype(c, at, b);
       buf_printf(b, " _t%d = ", ta);
-      emit_expr(c, argv[i], b);
+      if (ko) emit_oint_expr(c, argv[i], at, b); else emit_expr(c, argv[i], b);
       buf_puts(b, "; ");
-      view_bind(argv[i], "_t%d", ta);
+      if (ko) view_bind_o(argv[i], "_t%d", ta); else view_bind(argv[i], "_t%d", ta);
     }
     buf_printf(b, "sp_poly_ary_chk(_t%d, \"at\", 0); ", t);
     view_bind(recv, "_t%d", t);

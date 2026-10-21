@@ -1,0 +1,80 @@
+["Jayang" 2 first: 2 -> ["Jayang", "Guui"]
+["Jayang" 2 first, read:  -> ["Jayang", "Guui"]
+["Jayang" 2 take: 2 -> ["Jayang", "Guui"]
+["Jayang" 2 take, read:  -> ["Jayang", "Guui"]
+["Jayang" 2 drop: 2 -> ["Kondae", "Achasan"]
+["Jayang" 2 drop, read:  -> ["Kondae", "Achasan"]
+["Jayang" 2 at: 2 -> "Kondae"
+["Jayang" 2 at, read:  -> "Kondae"
+["Jayang" 2 fetch: 2 -> "Kondae"
+["Jayang" 2 fetch, read:  -> "Kondae"
+["Jayang" 2 values_at: 2 -> ["Kondae"]
+["Jayang" 2 values_at, read:  -> ["Kondae"]
+["Jayang" 2 include?: 2 -> false
+["Jayang" 2 include?, read:  -> false
+["Jayang" 2 count: 2 -> 0
+["Jayang" 2 count, read:  -> 0
+["Jayang" nil first: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil first, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil take: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil take, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil drop: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil drop, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil at: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil at, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil fetch: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil fetch, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil values_at: nil -> TypeError no implicit conversion from nil to integer
+["Jayang" nil values_at, read:  -> TypeError no implicit conversion from nil to integer
+["Jayang" nil include?: nil -> false
+["Jayang" nil include?, read:  -> false
+["Jayang" nil count: nil -> 0
+["Jayang" nil count, read:  -> 0
+nil 2 first: 2 -> NoMethodError undefined method 'first' for nil
+nil 2 first, read:  -> NoMethodError undefined method 'first' for nil
+nil 2 take: 2 -> NoMethodError undefined method 'take' for nil
+nil 2 take, read:  -> NoMethodError undefined method 'take' for nil
+nil 2 drop: 2 -> NoMethodError undefined method 'drop' for nil
+nil 2 drop, read:  -> NoMethodError undefined method 'drop' for nil
+nil 2 at: 2 -> NoMethodError undefined method 'at' for nil
+nil 2 at, read:  -> NoMethodError undefined method 'at' for nil
+nil 2 fetch: 2 -> NoMethodError undefined method 'fetch' for nil
+nil 2 fetch, read:  -> NoMethodError undefined method 'fetch' for nil
+nil 2 values_at: 2 -> NoMethodError undefined method 'values_at' for nil
+nil 2 values_at, read:  -> NoMethodError undefined method 'values_at' for nil
+nil 2 include?: 2 -> NoMethodError undefined method 'include?' for nil
+nil 2 include?, read:  -> NoMethodError undefined method 'include?' for nil
+nil 2 count: 2 -> NoMethodError undefined method 'count' for nil
+nil 2 count, read:  -> NoMethodError undefined method 'count' for nil
+nil nil first: nil -> NoMethodError undefined method 'first' for nil
+nil nil first, read:  -> NoMethodError undefined method 'first' for nil
+nil nil take: nil -> NoMethodError undefined method 'take' for nil
+nil nil take, read:  -> NoMethodError undefined method 'take' for nil
+nil nil drop: nil -> NoMethodError undefined method 'drop' for nil
+nil nil drop, read:  -> NoMethodError undefined method 'drop' for nil
+nil nil at: nil -> NoMethodError undefined method 'at' for nil
+nil nil at, read:  -> NoMethodError undefined method 'at' for nil
+nil nil fetch: nil -> NoMethodError undefined method 'fetch' for nil
+nil nil fetch, read:  -> NoMethodError undefined method 'fetch' for nil
+nil nil values_at: nil -> NoMethodError undefined method 'values_at' for nil
+nil nil values_at, read:  -> NoMethodError undefined method 'values_at' for nil
+nil nil include?: nil -> NoMethodError undefined method 'include?' for nil
+nil nil include?, read:  -> NoMethodError undefined method 'include?' for nil
+nil nil count: nil -> NoMethodError undefined method 'count' for nil
+nil nil count, read:  -> NoMethodError undefined method 'count' for nil
+1400 nil first: nil -> NoMethodError undefined method 'first' for an instance of Integer
+1400 nil first, read:  -> NoMethodError undefined method 'first' for an instance of Integer
+1400 nil take: nil -> NoMethodError undefined method 'take' for an instance of Integer
+1400 nil take, read:  -> NoMethodError undefined method 'take' for an instance of Integer
+1400 nil drop: nil -> NoMethodError undefined method 'drop' for an instance of Integer
+1400 nil drop, read:  -> NoMethodError undefined method 'drop' for an instance of Integer
+1400 nil at: nil -> NoMethodError undefined method 'at' for an instance of Integer
+1400 nil at, read:  -> NoMethodError undefined method 'at' for an instance of Integer
+1400 nil fetch: nil -> NoMethodError undefined method 'fetch' for an instance of Integer
+1400 nil fetch, read:  -> NoMethodError undefined method 'fetch' for an instance of Integer
+1400 nil values_at: nil -> NoMethodError undefined method 'values_at' for an instance of Integer
+1400 nil values_at, read:  -> NoMethodError undefined method 'values_at' for an instance of Integer
+1400 nil include?: nil -> NoMethodError undefined method 'include?' for an instance of Integer
+1400 nil include?, read:  -> NoMethodError undefined method 'include?' for an instance of Integer
+1400 nil count: nil -> NoMethodError undefined method 'count' for an instance of Integer
+1400 nil count, read:  -> NoMethodError undefined method 'count' for an instance of Integer

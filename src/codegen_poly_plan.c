@@ -4143,7 +4143,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                     " _t%d = %s_ui%d > 0%s; break; }",
                  tv, name, tv, tv, ab5.p ? ab5.p : "sp_box_nil()", tr, ibo, tv, ibc);
       free(ab5.p); }
+    /* an Integer or a Float that can be nil is held boxed (the dispatch's
+       argument temps): the arms take it as promote's boxed argument */
     TyKind at = comp_ntype(c, argv[0]);
+    if (oint_kind(at) && atmp_ty[0] == TY_POLY) at = TY_POLY;
     switch (at) {
     case TY_INT:
       buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
