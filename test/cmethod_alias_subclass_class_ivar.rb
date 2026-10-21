@@ -97,3 +97,32 @@ end
 p from_tinted
 p pick(Tinted)
 p pick(Shaded)
+
+# A send with a literal name on a parameter holding the class runs that
+# method on the class held, by the method's own name or by an alias. These
+# classes are reached by no other call of the method on a value.
+class Ledger
+  class << self
+    attr_accessor :rows
+
+    def row(key)
+      rows[key]
+    end
+    alias row_at row
+  end
+end
+
+class Daily < Ledger
+  self.rows = { a: 5 }
+end
+
+class Weekly < Ledger
+  self.rows = { a: 6 }
+end
+
+def by_send(k)
+  [k.send(:row_at, :a), k.public_send(:row, :a), k.__send__(:row_at, :a)]
+end
+
+p by_send(Daily)
+p by_send(Weekly)

@@ -8048,25 +8048,6 @@ static int cm_call_names(Compiler *c, const char *nm, int mi, const int *from, i
   return 0;
 }
 
-/* Is the class method mi called anywhere, on one of the classes `from`, with
-   a receiver that is neither a constant nor self, one that may hold a Class
-   value known only at run time? */
-static int name_called_on_dynamic_recv(Compiler *c, int mi, const int *from, int nfrom, int node_count,
-                                       const SgAliasNames *an) {
-  const NodeTable *nt = c->nt;
-  for (int id = 0; id < node_count; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an)) continue;
-    int r = nt_ref(nt, id, "receiver");
-    if (r < 0) continue;
-    NodeKind rk = nt_kind(nt, r);
-    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
-    return 1;
-  }
-  return 0;
-}
-
 /* The class method a call runs on its receiver: its own name, or for a
    `K.method(:m)` the m the Method binds, which runs on K when called as
    `K.m` does (`Sub.method(:make).call` constructs a Sub). A `K.send(:m)`
@@ -8078,6 +8059,26 @@ static const char *cls_call_name(Compiler *c, int id) {
                      sp_streq(nm, "public_send"));
   const char *sym = named ? method_sym_arg(c, id) : NULL;
   return sym ? sym : nm;
+}
+
+/* Is the class method mi called anywhere, on one of the classes `from`, with
+   a receiver that is neither a constant nor self, one that may hold a Class
+   value known only at run time? By its name, an alias's, or a send's (or
+   method's) literal name: `k.send(:m)` runs m on k's class too. */
+static int name_called_on_dynamic_recv(Compiler *c, int mi, const int *from, int nfrom, int node_count,
+                                       const SgAliasNames *an) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < node_count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = cls_call_name(c, id);
+    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an)) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) continue;
+    NodeKind rk = nt_kind(nt, r);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
+    return 1;
+  }
+  return 0;
 }
 
 /* `Subclass.create` where `create` is an inherited class method whose body
