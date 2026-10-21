@@ -1186,8 +1186,10 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
 }
 
 /* See compiler.h. Built on the first ask from the memo's slot, which the
-   walk fills for every class, and kept with it: the slot is the name's, so
-   the walk below cannot move it. */
+   walk fills for every class, and kept with it. The walk can move the slot:
+   a chain lookup inserts names (this one, an alias it resolves), and an
+   insertion grows and rehashes the table, so the slot is found again before
+   the list is stored, or the list would land under another name. */
 const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n) {
   int j = cmc_slot_idx(c, name, is_cm);
   if (j < 0) { *n = -1; return NULL; }
@@ -1200,7 +1202,10 @@ const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n
       if (cnt == cap) { cap *= 2; r = realloc(r, sizeof(int) * 2 * (size_t)cap); if (!r) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
       r[2 * cnt] = k; r[2 * cnt + 1] = mi; cnt++;
     }
-    cmc_resp[j] = r; cmc_nresp[j] = cnt;
+    j = cmc_slot_idx(c, name, is_cm);
+    if (j < 0) { free(r); *n = -1; return NULL; }
+    if (cmc_nresp[j] < 0) { cmc_resp[j] = r; cmc_nresp[j] = cnt; }
+    else free(r);
   }
   *n = cmc_nresp[j];
   return cmc_resp[j];
