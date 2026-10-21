@@ -394,7 +394,10 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   if (rt == TY_IO) {
     int eci = io_reopen_class(c, name);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0) { cplan_set(p, emi, eci, UC_REOPEN, CP_DIRECT); return; }
+    if (emi >= 0) {
+      cplan_set(p, emi, eci, UC_REOPEN, io_reopen_ret_mixed(c, name) ? CP_SWITCH : CP_DIRECT);
+      return;
+    }
   }
   const char *rc = cplan_reopen_class(rt);
   if (rc) {
@@ -510,6 +513,12 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
     return 0;
   }
   if (p->via == UC_REOPEN) {
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
+      int ks[16], nk = io_reopen_defs(c, name, 0, ks, 16);
+      for (int i = 0; i < nk; i++)
+        if (comp_method_in_chain(c, ks[i], name, NULL) == mi) return 1;
+    }
     int xr[8], xn = exc_reopen_definers(c, name, xr, 8);
     for (int i = 0; i < xn; i++)
       if (comp_method_in_chain(c, xr[i], name, NULL) == mi) return 1;

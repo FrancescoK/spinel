@@ -2861,8 +2861,9 @@ static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
   return (TyKind)c->scopes[mi].ret;
 }
 
-/* A block's break widens the answer without changing the call's target. */
-static TyKind an_break_call_ret(Compiler *c, int id) {
+/* A block's break widens the answer without changing the call's target.
+   Other boxed-result shortcuts retain their planned targets the same way. */
+static TyKind an_planned_poly_ret(Compiler *c, int id) {
   if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
@@ -6380,7 +6381,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = TY_POLY; return 1; }
+        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_poly_ret(c, id); return 1; }
         if (oc_mi >= 0 && !cplan_reopen_runs_builtin(c, id, oc_mi)) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
       }
     }
@@ -8660,7 +8661,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_planned_poly_ret(c, id);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (g_plan_check) an_user_union_record(c, id, recv, rt);
@@ -8712,7 +8713,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
+    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return an_planned_poly_ret(c, id);
     /* a kind no reopening serves gets the builtin's answer: boxed when the
        two answer different types */
     if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
