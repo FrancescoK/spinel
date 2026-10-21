@@ -2823,6 +2823,13 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   return method_call_ret(c, pf >= 0 ? pf : mi, id);
 }
 
+/* A concrete truth operator keeps its declared return (which may be
+   non-Boolean), and records the method that supplied it. */
+static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
+  an_user_call_record(c, id, mi, UC_INST, ci);
+  return (TyKind)c->scopes[mi].ret;
+}
+
 /* Does the row this pass finds for call `id` count as the call's own? Not
    under the builtin-only re-derivation, whose answer is not the call's (a
    user method owns the name there). Except for the call that re-derivation
@@ -8510,7 +8517,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     TyKind nrt = infer_type(c, recv);
     if (ty_is_object(nrt)) {
       int nmi = comp_method_in_chain(c, ty_object_class(nrt), name, NULL);
-      if (nmi >= 0) return (TyKind)c->scopes[nmi].ret;
+      if (nmi >= 0) return an_user_operator_ret(c, id, nmi, ty_object_class(nrt));
     }
   }
 
