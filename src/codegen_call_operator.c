@@ -1573,8 +1573,9 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          later <</concat/upcase! mutates it); -str returns a FROZEN string
          (#2331). The copy is sp_str_dup, not sp_str_dup_external: the latter
          sizes it with strlen, which truncated an embedded NUL (#3473). */
-      if (name[0] == '+') { buf_puts(b, "sp_str_uplus("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else { buf_puts(b, "sp_str_uminus_val("); emit_expr(c, recv, b); buf_puts(b, ")"); }  /* frozen recv: identity (#2369) */
+      /* (one representation: the receiver read as its bytes, whatever its face) */
+      if (name[0] == '+') { buf_puts(b, "sp_str_uplus("); emit_expr_face(c, recv, TY_STRING, b); buf_puts(b, ")"); }
+      else { buf_puts(b, "sp_str_uminus_val("); emit_expr_face(c, recv, TY_STRING, b); buf_puts(b, ")"); }  /* frozen recv: identity (#2369) */
     }
     /* nil, true, false, a Symbol, a container, a Range and a Time have no
        sign: NoMethodError, as CRuby raises. The C `+x`/`-x` of such a slot

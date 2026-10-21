@@ -134,6 +134,8 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       LocalVar *ugv = urn ? comp_gvar(c, urn) : NULL;
       if (ugv) {
         if (ugv->type == TY_STRING) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, gv_%s)", rre, urn);
+        /* (one representation: a String global held as the handle) */
+        else if (g_one_string && ugv->type == TY_STRBUF) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, SP_STR_B(gv_%s))", rre, urn);
         else buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, sp_poly_to_s(gv_%s))", rre, urn);
       }
       else {
