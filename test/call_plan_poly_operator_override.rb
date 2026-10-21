@@ -41,3 +41,9 @@ class OrderChild < OrderOwn; end
 [OrderDefault.new, OrderOwn.new, OrderChild.new].each do |x|
   p(x < x); p(x <= x); p(x > x); p(x >= x)
 end
+
+# A value-returning protocol remains on its existing builtin dispatch.
+class Clamper
+  def clamp(other) = true
+end
+[1, Clamper.new].each { |x| p x.clamp(1..2) }
