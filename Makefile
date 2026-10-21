@@ -3898,6 +3898,12 @@ RESULT_CACHE_FP = $(if $(filter 0,$(GATE_CACHE)),off,$(eval RESULT_CACHE_FP := $
 # sentinel test that kept each frame from inlining (the test checks the
 # reachability walk, not the C). Like the >= 2000-line rule it drops the
 # PCH, which was built at the default level.
+# TEST_PLAN_CHECK=--plan-check (the gate's corpus leg sets it): the compile
+# that writes each test's C also reports the call decisions --plan-check
+# compares, into <test>.plan beside the result. The flag adds report lines
+# only (the C is the same with and without it, so the result cache still
+# matches), and tools/plan_check.sh --from-results reads the reports instead
+# of compiling the corpus a second time.
 define RUN_ONE_TEST
 @mkdir -p $(TEST_RESULT_DIR)
 @# Raise the descriptor soft limit toward the hard one, best effort. A test
@@ -3918,9 +3924,12 @@ args=""; \
 if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 stdinf=/dev/null; \
 if [ -f "$<.stdin" ]; then stdinf="$<.stdin"; fi; \
-rm -f "$@.diff" "$@.cached"; \
+rm -f "$@.diff" "$@.cached" "$@.plan"; \
 ckey=""; hit=0; own=0; \
-$(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
+{ $(SPINEL) "$<" $(SP_OV_FLAG) $(TEST_PLAN_CHECK) -c --no-line-map -o "$$cfile" 2>"$$tmpdir/sperr"; sprc=$$?; \
+  if [ -n "$(TEST_PLAN_CHECK)" ]; then { grep "^plan-check:" "$$tmpdir/sperr" | sed "s|^|$<: |"; \
+    [ "$$sprc" -eq 0 ] || echo "$<: plan-check-exit: $$sprc"; } > "$@.plan"; fi; \
+  [ "$$sprc" -eq 0 ]; } && \
 { pchuse="$(PCH_USE_PLAIN)"; pchf="$(PCH_PLAIN)"; \
   if head -2 "$$cfile" | grep -q SP_TU_NO_POLY_RENDER; then pchuse="$(PCH_USE_NOPOLY)"; pchf="$(PCH_NOPOLY)"; fi; \
   [ -f "$$pchf" ] || pchuse=""; \
@@ -5100,7 +5109,8 @@ gate-pch:
 gate-test: gate-pch
 
 gate-test:
-	+@$(MAKE) --no-print-directory test OPT=-O1
+	+@$(MAKE) --no-print-directory test OPT=-O1 TEST_PLAN_CHECK=--plan-check
+	@tools/plan_check.sh --from-results $(TEST_RESULT_DIR)
 
 # The property gates `check` runs. They were in the fast pre-commit target and
 # NOT in the pre-push one, so the full gate was not a superset of the quick one
