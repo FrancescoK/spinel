@@ -764,6 +764,12 @@ int anh_has(const ANameHash *st, const char *nm);
 int anh_find(const ANameHash *st, const char *nm);   /* insertion index, or -1 */
 void anh_add(ANameHash *st, const char *nm);
 void anh_free(ANameHash *st);
+/* The scopes of a name, ascending: the first, and the next after s (-1 at
+   the end); from a table while the scope index is frozen, else a scan
+   (analyze.c). A pass walking every scope for a name's methods per call
+   asks these instead. */
+int an_scopes_named_first(Compiler *c, const char *nm);
+int an_scopes_named_next(Compiler *c, const char *nm, int s);
 int a_nested_block(const char *ty);
 int a_is_local_node(const char *ty);
 int a_is_write_node(const char *ty);
