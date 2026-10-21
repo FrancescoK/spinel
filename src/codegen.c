@@ -1313,11 +1313,11 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      (emit_int_expr_nilable, strict == 0) keep their looseness, and a Range
      endpoint is a nilable slot for exactly this reason: `s[ix..]` with a nil
      ix is a beginless Range in CRuby, not an error. */
-  if (strict == 1 && comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (strict == 1 && repr_opt_kind(c, node) == TY_INT) {
     emit_oint_unwrap_ck(c, node, TY_INT, NULL, b);
     return;
   }
-  if (strict && comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (strict && repr_opt_kind(c, node) == TY_INT) {
     buf_printf(b, "%s(", strict == 3 ? "sp_oint_arg_offt" : strict == 2 ? "sp_oint_arg_of" : "sp_oint_arg");
     emit_oint_expr(c, node, TY_INT, b);
     buf_puts(b, ")");
@@ -1461,7 +1461,7 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
     buf_puts(b, "((void)("); emit_expr(c, node, b); buf_printf(b, "), (sp_int)(%s))", none);
     return;
   }
-  if (comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (repr_opt_kind(c, node) == TY_INT) {
     int tn = ++g_tmp;
     buf_printf(b, "({ sp_oint _t%d = ", tn);
     emit_oint_expr(c, node, TY_INT, b);

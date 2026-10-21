@@ -11679,9 +11679,10 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     for (int i = 0; i < pos_argc; i++) {
       int v = argv[i], strict = -1;
       for (int q = 0; q < sn; q++) if (L->arg[sj[q]] == i) strict = sj[q];
-      TyKind vt = comp_ntype(c, v);
+      Repr r = repr_of(c, v);
+      TyKind vt = r.as_ty;
       /* a boxed argument is held as the parameter's oint: unboxed, its nil kept */
-      if (strict >= 0 && !oint_kind(vt)) { LocalVar *pl = scope_local(m, m->pnames[strict]); vt = pl ? pl->type : TY_INT; }
+      if (strict >= 0 && r.kind != RK_OPT) { LocalVar *pl = scope_local(m, m->pnames[strict]); vt = pl ? pl->type : TY_INT; }
       int t = ++g_tmp; held[i] = t;
       Buf vb; memset(&vb, 0, sizeof vb);
       Buf *sv = g_pre; g_pre = pre;
@@ -11691,7 +11692,7 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
       if (strict >= 0) buf_printf(pre, "%s _t%d = %s;\n", oint_ctype(vt), t, vb.p ? vb.p : oint_nil(vt));
       else {
         buf_printf(pre, "__typeof__(%s) _t%d = %s;", vb.p ? vb.p : "0", t, vb.p ? vb.p : "0");
-        if (vt == TY_POLY) buf_printf(pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+        if (r.kind == RK_BOXED) buf_printf(pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
         else if (vt == TY_STRING) buf_printf(pre, " SP_GC_ROOT_STR(_t%d);", t);
         else if (comp_ty_value_obj(c, vt)) { buf_puts(pre, " "); emit_gc_root_tmp_refs(c, vt, t, pre); }
         else if (needs_root(vt)) buf_printf(pre, " SP_GC_ROOT(_t%d);", t);
@@ -11706,7 +11707,8 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     const char *what = NULL;
     int kd = param_strict(c, mi, sj[q], &what, NULL);
     LocalVar *pl = scope_local(m, m->pnames[sj[q]]);
-    TyKind vt = oint_kind(comp_ntype(c, v)) ? comp_ntype(c, v) : (pl ? pl->type : TY_INT);
+    Repr r = repr_of(c, v);
+    TyKind vt = oint_kind(r.as_ty) ? r.as_ty : (pl ? pl->type : TY_INT);
     const char *fn = kd == 1 ? (vt == TY_FLOAT ? "sp_ofloat_val" : "sp_oint_val")
                              : (vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in");
     if (held[i] >= 0) {

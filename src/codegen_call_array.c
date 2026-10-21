@@ -341,7 +341,7 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
   if (at != TY_NIL && at != TY_BOOL && !conv_to_ary_impossible(at)) return 0;
   /* a nullable Integer or Float slot (a parameter one call site passes nil)
      names nil or its class by what it holds */
-  int nil_rt = oint_kind(at) && node_has_oint_form(c, argv[0]);
+  int nil_rt = repr_opt_kind(c, argv[0]) != TY_UNKNOWN;
   /* and a String slot's nil is NULL */
   int str_rt = at == TY_STRING;
   int tb = ++g_tmp;
