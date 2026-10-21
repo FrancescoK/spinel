@@ -6151,6 +6151,15 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
 
 /* A method the program defines on the receiver (a class method, a Struct's member, a reopened builtin's method) and instance-variable reflection (infer_call_inner's rules, in their order) */
 static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int bonly, TyKind *out) {
+  /* The plan keeps an operator override's value alongside the builtin's
+     Boolean answer, independently for every receiver arm. */
+  TyKind protocol_ret = bonly || an_builtin_only ? TY_UNKNOWN : cplan_poly_operator_ret(c, id);
+  if (protocol_ret != TY_UNKNOWN) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    *out = protocol_ret; return 1;
+  }
+
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
      method_call_ret, not the raw scope ret: a tail-yield class method carries
      THIS call site's block value (the instance/implicit-self arms already

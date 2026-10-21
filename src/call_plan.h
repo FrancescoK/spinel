@@ -107,6 +107,7 @@ void cplan_targets_drop(void);
    trailing keyword hash, no splat or `...` -- and mi's parameters refuse
    them (poly_arm_count, whose keyword plan judges the hash): that target
    can only raise ArgumentError, and answers nothing. */
+TyKind cplan_poly_operator_ret(Compiler *c, int id);
 int cplan_target_binds(Compiler *c, int id, int mi);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */

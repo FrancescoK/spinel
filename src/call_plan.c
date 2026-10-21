@@ -742,6 +742,23 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   return n;
 }
 
+/* A poly protocol keeps each class's own operator arm ahead of the
+   builtin delegation. Those arms may answer values other than Boolean. */
+TyKind cplan_poly_operator_ret(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || !builtin_operator_delegate(name)) return TY_UNKNOWN;
+  int recv = nt_ref(c->nt, id, "receiver"), argc = 0;
+  call_args(c->nt, id, &argc);
+  if (argc != 1 || recv < 0 || comp_ntype(c, recv) != TY_POLY) return TY_UNKNOWN;
+  const CallPlan *p = cplan_user_fresh(c, id);
+  if (p->via != UC_POLY || p->mi < 0) return TY_UNKNOWN;
+  int targets[CPT_MAX], n = cplan_targets(c, id, targets, CPT_MAX);
+  if (n < 0) return TY_POLY;
+  for (int i = 0; i < n; i++)
+    if (c->scopes[targets[i]].ret != TY_BOOL) return TY_POLY;
+  return TY_BOOL;
+}
+
 int cplan_target_binds(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
   if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
