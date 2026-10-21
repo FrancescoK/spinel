@@ -2403,6 +2403,16 @@ static int cplan_nil_arg_converts(Compiler *c, int id) {
   return 0;
 }
 
+/* An ivar read the plan tests, where the release build's policy leaves
+   the others to their arms: an Array in one that no class's initialize
+   sets first (NFW_IVAR). The Array arms read a NULL receiver as an empty
+   Array or read through it (`@stops[1]` answered nil, `@stops.first(2)`
+   crashed) where CRuby raises NoMethodError, and it is tested as a local's
+   is. */
+static int cplan_nil_ivar_tested(Compiler *c, int r, TyKind rt) {
+  return (ty_is_array(rt) || ty_is_obj_array(rt) || rt == TY_STRH_ARRAY) && nil_fact_why(c, r) == NFW_IVAR;
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
@@ -2431,8 +2441,10 @@ int cplan_nil(Compiler *c, int id) {
      first where CRuby raises NoMethodError, having run the arguments. (A
      mutator writes back into the slot the head would hold.) */
   int conv = rt == TY_STRING && !an_str_mutator_name(nm) && cplan_nil_arg_converts(c, id);
+  /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
-  if ((rk == NK_InstanceVariableReadNode && !conv) || rk == NK_ClassVariableReadNode) return CN_NONE;
+  int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt);
+  if ((rk == NK_InstanceVariableReadNode && !conv && !ivar_tested) || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
      back: a slot that holds the pointer, or a shared String's handle; one
      held another way (a box a read unboxes) is left as it is */
@@ -2453,9 +2465,10 @@ int cplan_nil(Compiler *c, int id) {
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
      a hot loop over a receiver that is never nil would pay for, unless the
-     call converts an argument (conv, as above) */
+     call converts an argument or reads an ivar the plan tests (conv and
+     ivar_tested, as above) */
   int why = nil_fact_why(c, r);
-  if (!cplan_nil_written(why) && !conv) return CN_NONE;
+  if (!cplan_nil_written(why) && !conv && !ivar_tested) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;
