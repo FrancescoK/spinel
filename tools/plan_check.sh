@@ -3,7 +3,13 @@
 # codegen emitted through a builtin-op row that inference did not answer
 # with (#7100).
 #
-#   tools/plan_check.sh [-v]
+#   tools/plan_check.sh [--from-results DIR] [-v]
+#
+# --from-results DIR: the gate's corpus leg compiled its programs with
+# --plan-check already and left each one's report in DIR/<test>.plan
+# (Makefile, TEST_PLAN_CHECK); those reports are read, and only the
+# programs none of them covers (benchmarks, test/reject, test/collect, a
+# test the corpus skips on this host) are compiled here.
 #
 # A "conflict" (inference answered the call from a different row of the
 # same receiver kind) fails: the two halves of the compiler decided the
@@ -17,6 +23,8 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
+FROM=""
+if [ "${1-}" = "--from-results" ]; then FROM=${2-}; shift 2 || exit 2; fi
 SP=$ROOT/bin/spinel
 [ -x "$SP" ] || { echo "plan-check: build bin/spinel first" >&2; exit 2; }
 JOBS=${PLAN_CHECK_JOBS:-$(nproc)}
@@ -25,8 +33,12 @@ PARTS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-plan-check-parts.XXXXXX")
 # one file per program: the parallel jobs' lines must not interleave. The
 # refused programs (test/reject, test/collect) are compiled too, for the
 # refusal shadow (refuse-*)
+# with --from-results, the reports the corpus leg wrote, and the programs
+# they name left out of the list
+if [ -n "$FROM" ]; then find "$FROM" -name "*.plan" -type f -exec cat {} + > "$PARTS/_results"; fi
 { ls test/*.rb benchmark/*.rb packages/*/test/*.rb test/reject/*.rb test/collect/*.rb 2>/dev/null
   [ -f build/optcarrot-single.rb ] && echo build/optcarrot-single.rb; } |
+  if [ -s "$PARTS/_results" ]; then awk -F": " 'NR == FNR { done[$1] = 1; next } !($0 in done)' "$PARTS/_results" -; else cat; fi |
   xargs -P "$JOBS" -I{} sh -c '
     # the compiler runs outside the pipe, so its exit status is kept: a
     # program that fails after it reported some diagnostics is no clean one
