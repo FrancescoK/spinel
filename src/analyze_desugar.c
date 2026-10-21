@@ -2162,20 +2162,23 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
      module, by its own (last) name -- the flat namespace the literal rule
      resolves in. A constant or class whose leaf collided carries a qualified
      key (`Mod__NAME`); a runtime name is the leaf as written, which the
-     literal rule finds under the receiver's qualified key. */
+     literal rule finds under the receiver's qualified key. A path header
+     (`class Mod::B`) and a path write (`Mod::X = v`) give their leaf too. */
   char **cand = NULL; int ncand = 0, candcap = 0;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     const char *v = NULL;
-    if (k == NK_ConstantWriteNode) {
-      v = nt_str(nt, id, "qc_orig_name");
-      if (!v) v = nt_str(nt, id, "name");
+    if (k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode) {
+      int w = k == NK_ConstantWriteNode ? id : nt_ref(nt, id, "target");
+      v = w >= 0 ? nt_str(nt, w, "qc_orig_name") : NULL;
+      if (!v && w >= 0) v = nt_str(nt, w, "name");
     }
     else if (k == NK_ClassNode || k == NK_ModuleNode) {
       int cp = nt_ref(nt, id, "constant_path");
       const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;
+      if (!rn) rn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
       const char *rl = rn ? strrchr(rn, ':') : NULL;
-      v = rn ? (rl ? rl + 1 : rn) : cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+      v = rl ? rl + 1 : rn;
     }
     if (!v || !*v) continue;
     int dup = 0;
@@ -18442,6 +18445,21 @@ int desugar_self_const_get(Compiler *c) {
  * built from the constants its bodies assign and the classes and modules
  * they define, and the call is renamed to it. A name outside the table
  * raises NameError (const_get) / answers false (const_defined?). */
+/* Append CN to the table's names unless it is there already. */
+static void cg_add_name(const char *cn, char ***names, int *nn, int *cap) {
+  for (int q = 0; q < *nn; q++) if (sp_streq((*names)[q], cn)) return;
+  if (*nn == *cap) { *cap = *cap ? *cap * 2 : 32; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
+  if (!*names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  (*names)[(*nn)++] = strdup(cn);
+}
+/* The leaf a path (`A::B`) names under module MN, or NULL when PATH is no
+   path or its parent names another module. */
+static const char *cg_path_leaf_under(const NodeTable *nt, int path, const char *mn) {
+  if (path < 0 || nt_kind(nt, path) != NK_ConstantPathNode) return NULL;
+  int par = nt_ref(nt, path, "parent");
+  const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+  return pn && sp_streq(pn, mn) ? nt_str(nt, path, "name") : NULL;
+}
 static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***names, int *nn, int *cap) {
   for (int m = 0; m < n0; m++) {
     NodeKind mk = nt_kind(nt, m);
@@ -18457,15 +18475,27 @@ static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***name
       if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode) cn = nt_str(nt, st[k], "name");
       else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
         int ccp = nt_ref(nt, st[k], "constant_path");
-        cn = ccp >= 0 ? nt_str(nt, ccp, "name") : NULL;
+        /* a path header (`class Other::B`) defines a constant of the module
+           its path names, which the pass below gives to that module */
+        cn = ccp >= 0 && nt_kind(nt, ccp) != NK_ConstantPathNode ? nt_str(nt, ccp, "name") : NULL;
       }
-      if (!cn) continue;
-      int dup = 0;
-      for (int q = 0; q < *nn; q++) if (sp_streq((*names)[q], cn)) dup = 1;
-      if (dup) continue;
-      if (*nn == *cap) { *cap = *cap ? *cap * 2 : 32; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
-      (*names)[(*nn)++] = strdup(cn);
+      if (cn) cg_add_name(cn, names, nn, cap);
     }
+  }
+  /* ... and those written through a path from outside its body: a `class
+     M::B` / `module M::B` anywhere, and a top-level `M::X = v` */
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    const char *cn = NULL;
+    if (mk == NK_ModuleNode || mk == NK_ClassNode) cn = cg_path_leaf_under(nt, nt_ref(nt, m, "constant_path"), mn);
+    if (cn) cg_add_name(cn, names, nn, cap);
+  }
+  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
+  int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+  for (int k = 0; k < sn; k++) {
+    const char *cn = nt_kind(nt, ts[k]) == NK_ConstantPathWriteNode
+                   ? cg_path_leaf_under(nt, nt_ref(nt, ts[k], "target"), mn) : NULL;
+    if (cn) cg_add_name(cn, names, nn, cap);
   }
 }
 

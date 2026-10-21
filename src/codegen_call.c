@@ -2190,13 +2190,50 @@ int builtin_object_method_known(const char *m) {
 }
 
 
+/* Append constant key NM, listed as SH, to out/shown unless a name shown
+   the same way is there already. */
+static int add_listed_const(const char **out, const char **shown, int n, const char *nm, const char *sh) {
+  if (!sh) sh = nm;
+  for (int q = 0; q < n; q++) if (sp_streq(shown[q], sh)) return n;
+  out[n] = nm; shown[n] = sh;
+  return n + 1;
+}
+
+/* The key and the shown name of the class or module a `class`/`module`
+   statement STMT names: the leaf of its header, and for a qualified class
+   the leaf of the Ruby path it keeps beside the key. */
+static void class_stmt_const_names(const NodeTable *nt, int stmt, const char **nm, const char **sh) {
+  int ncp = nt_ref(nt, stmt, "constant_path");
+  const char *full = ncp >= 0 ? nt_str(nt, ncp, "name") : NULL;
+  *nm = *sh = NULL;
+  if (!full) return;
+  const char *last = strrchr(full, ':');
+  *nm = last ? last + 1 : full;   /* the leaf name, not the path */
+  const char *rn = nt_str(nt, ncp, "qc_ruby_name");
+  const char *rl = rn ? strrchr(rn, ':') : NULL;
+  if (rn) *sh = rl ? rl + 1 : rn;
+}
+
+/* The class a `class A::B` / `module A::B` statement opens, or -1 when STMT
+   is no such statement. Its header names the module it belongs to
+   (enclosing_class), whatever body the statement is written in. */
+static int path_header_class(Compiler *c, int stmt) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, stmt);
+  if (k != NK_ClassNode && k != NK_ModuleNode) return -1;
+  int cp = nt_ref(nt, stmt, "constant_path");
+  if (cp < 0 || nt_kind(nt, cp) != NK_ConstantPathNode) return -1;
+  const char *full = nt_str(nt, cp, "name");
+  return full ? comp_class_index(c, full) : -1;
+}
+
 /* The constant names a class/module defines in its OWN body, in declaration
    order, appended to `out` (deduplicated). Scans every ClassNode/ModuleNode
    that opens `ci`, so reopenings contribute too. #2674 `shown` gets the
    name Ruby lists for each: a constant or class whose leaf collided carries
    a qualified key (`Mod__NAME`), and the listing shows the leaf it was
    written with. */
-static int class_own_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
+static int class_body_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count && n < max; id++) {
     const char *ty = nt_type(nt, id);
@@ -2215,27 +2252,51 @@ static int class_own_constants(Compiler *c, int ci, const char **out, const char
       }
       /* A nested class or module IS a constant of the enclosing one, and the
          only kind this collected was the value-assigning form -- so a module
-         holding both reported the value and not the nested module (#4040). */
+         holding both reported the value and not the nested module (#4040).
+         A path header (`class Other::B`, `class ::B`) names a constant of
+         the module its path names, not of this one: the path pass lists
+         it there. */
       else if (sty && (sp_streq(sty, "ClassNode") || sp_streq(sty, "ModuleNode"))) {
         int ncp = nt_ref(nt, stmts[k], "constant_path");
-        const char *full = ncp >= 0 ? nt_str(nt, ncp, "name") : NULL;
-        if (full) {
-          const char *last = strrchr(full, ':');
-          nm = last ? last + 1 : full;   /* the leaf name, not the path */
-          /* a qualified class keeps its Ruby path beside the key */
-          const char *rn = nt_str(nt, ncp, "qc_ruby_name");
-          const char *rl = rn ? strrchr(rn, ':') : NULL;
-          if (rn) sh = rl ? rl + 1 : rn;
-        }
+        if (ncp >= 0 && nt_kind(nt, ncp) == NK_ConstantPathNode) continue;
+        class_stmt_const_names(nt, stmts[k], &nm, &sh);
       }
-      if (!nm) continue;
-      if (!sh) sh = nm;
-      int dup = 0;
-      for (int q = 0; q < n; q++) if (sp_streq(shown[q], sh)) { dup = 1; break; }
-      if (!dup) { out[n] = nm; shown[n++] = sh; }
+      if (nm) n = add_listed_const(out, shown, n, nm, sh);
     }
   }
   return n;
+}
+
+/* The constants of `ci` written through a path from outside its body:
+   `class Mod::B` / `module Mod::B` anywhere, and a top-level `Mod::X = v`
+   (qc_owner names the module its path resolved to). */
+static int class_path_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind hk[] = { NK_ClassNode, NK_ModuleNode };
+  for (int i = 0; i < 2; i++)
+    NT_FOREACH_KIND(nt, hk[i], id) {
+      int k = path_header_class(c, id);
+      if (n >= max || k < 0 || c->classes[k].enclosing_class != ci) continue;
+      const char *nm, *sh;
+      class_stmt_const_names(nt, id, &nm, &sh);
+      if (nm) n = add_listed_const(out, shown, n, nm, sh);
+    }
+  const char *rn = class_ruby_name(c, ci);
+  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
+  int sn = 0; const int *st = rn && top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+  for (int k = 0; k < sn && n < max; k++) {
+    if (nt_kind(nt, st[k]) != NK_ConstantPathWriteNode) continue;
+    int t = nt_ref(nt, st[k], "target");
+    const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
+    const char *nm = own && sp_streq(own, rn) ? nt_str(nt, t, "name") : NULL;
+    if (nm) n = add_listed_const(out, shown, n, nm, nt_str(nt, t, "qc_orig_name"));
+  }
+  return n;
+}
+
+static int class_own_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
+  n = class_body_constants(c, ci, out, shown, max, n);
+  return n < max ? class_path_constants(c, ci, out, shown, max, n) : n;
 }
 
 /* The user-class indices `ci` names in its body via `include` / `prepend`
