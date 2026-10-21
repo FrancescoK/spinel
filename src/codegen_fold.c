@@ -3875,7 +3875,11 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   TyKind rpt0 = rlv0 ? rlv0->type : TY_UNKNOWN;
   TyKind rpt1 = rlv1 ? rlv1->type : TY_UNKNOWN;
   if (rlv0) lv_set_type(rlv0, acc_ty);
-  if (rlv1) lv_set_type(rlv1, et);
+  /* (one representation: the element parameter's slot is the handle the
+     String Array keeps, declared so below; the body reads it as one) */
+  TyKind et1 = !range && !nested && !p1_multi && !(rlv1 && oint_kind(et) && slot_is_oint(rlv1))
+               ? one_elem_decl_type(k, et) : et;
+  if (rlv1) { one_elem_bind_slot(rlv1, et1); lv_set_type(rlv1, et1); }
   for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh ntype cache */
   if (range) {
     int ts = ++g_tmp, te = ++g_tmp;

@@ -455,6 +455,9 @@ void str_new_handle_open_of(Compiler *c, int v, Buf *b) {
    already written, a temp or a C string. A return pickup boxes the bytes it
    took where no handle was published. */
 void str_box_bytes(Buf *b, const char *e) {
+  /* (one representation: the text may be the handle whatever the plan
+     read it as, so it is boxed through its face) */
+  if (g_one_string) { buf_printf(b, "SP_STR_BOX(%s)", e); return; }
   buf_printf(b, "%s(%s)", ty_box_fn(TY_STRING), e);
 }
 
@@ -490,6 +493,9 @@ void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b) {
     sf.needs = SF_EVAL_ONCE | SF_ROOT_UNTIL_USE | SF_ALLOCATES;
     buf_puts(&sf.expr, "sp_box_str_new(");
   }
+  /* (one representation: the leaf's text may be the handle, boxed through
+     its face) */
+  else if (g_one_string) buf_puts(&sf.expr, "SP_STR_BOX(");
   else buf_printf(&sf.expr, "%s(", ty_box_fn(TY_STRING));
   emit_expr(c, v, &sf.expr);
   buf_puts(&sf.expr, ")");

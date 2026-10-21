@@ -3109,7 +3109,7 @@ static void emit_str_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) 
   else if (str_eq_lit_operand(c, recv, &ls, &ln)) other = arg;
   if (other >= 0) {
     buf_puts(b, eq ? "sp_str_eq_lit(" : "(!sp_str_eq_lit(");
-    emit_expr(c, other, b);
+    emit_expr_face(c, other, TY_STRING, b);   /* (one representation: read as bytes) */
     buf_puts(b, ", \""); emit_c_escaped_n(b, ls, ln); buf_printf(b, "\", %zu)", ln);
     if (!eq) buf_puts(b, ")");
     return;
