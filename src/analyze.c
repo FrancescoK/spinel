@@ -46280,6 +46280,7 @@ static void share_struct_aset_handles(Compiler *c) {
     const int *ks = how == 1 ? &one : poly_recv_classes(c, u, &nk);
     for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
       int k = ks ? ks[i] : i, lo, hi;
+      if (how == 2 && cls_fact_excludes(c, nt_ref(nt, u, "receiver"), k)) continue;
       if (!struct_aset_members(c, u, k, &lo, &hi)) continue;
       for (int m = lo; m < hi; m++) {
         ClassInfo *ci = &c->classes[k];
