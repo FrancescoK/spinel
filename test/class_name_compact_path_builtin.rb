@@ -63,3 +63,21 @@ class Right::Box::Item; end
 class Right::Box::Only; end
 p Right::Box::Only, Left::Box::Item.name
 p Left::Box.constants.sort, Right::Box.constants.sort
+
+# a `__` the program writes in a leaf is part of the name
+module Comparable::Ext__Group
+  class Leaf; end
+end
+p Comparable::Ext__Group, Comparable::Ext__Group::Leaf.name
+module Right
+  module Box__Alt
+    class Leaf; end
+  end
+end
+module Left
+  module Box__Alt; end
+end
+module Right::Box__Alt::Deep
+  class Leaf; end
+end
+p Right::Box__Alt::Leaf, Right::Box__Alt::Deep::Leaf

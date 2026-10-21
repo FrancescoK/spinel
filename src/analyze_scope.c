@@ -1509,11 +1509,12 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
          resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
       const char *qrn = cp >= 0 ? nt_str(c->nt, cp, "qc_ruby_name") : NULL;
       if (qrn) c->classes[child_class].ruby_name_cache = strdup(qrn);
-      /* `class A::B` names B in A wherever it is written: A encloses it, as
-         `module A; class B` does, and its name is A::B (#8369) */
+      /* `class A::B`: A encloses B wherever it is written. The leaf is the
+         header's as written: a `__` in it is the program's own, not the
+         nesting mark cls_leaf strips */
       int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
       if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
-        header_parent_encloses(c, par, child_class, cls_leaf, qrn != NULL);
+        header_parent_encloses(c, par, child_class, cname, qrn != NULL);
       /* `class ::B` names B at the top level wherever it is written: no
          module encloses it, and its name is B */
       else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)

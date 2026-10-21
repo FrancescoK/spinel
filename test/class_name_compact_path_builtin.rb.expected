@@ -19,3 +19,7 @@ Right::Box::Only
 "Left::Box::Item"
 [:Item]
 [:Item, :Only]
+Comparable::Ext__Group
+"Comparable::Ext__Group::Leaf"
+Right::Box__Alt::Leaf
+Right::Box__Alt::Deep::Leaf
