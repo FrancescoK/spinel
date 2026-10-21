@@ -8,9 +8,8 @@
 # The class-method forms (`OpenSSL::Digest::SHA256.hexdigest(data)`) and the
 # object (`OpenSSL::Digest.new("SHA256")`, `OpenSSL::Digest::SHA256.new`)
 # with update / << / digest / hexdigest / reset / digest_length / name, and
-# `.file(path)` / `#file(path)`. The object buffers what it is given and
-# hashes it whole when asked, over the same one-shot functions: the
-# runtime's hashes have no streaming state.
+# `.file(path)` / `#file(path)`. The object keeps the hash state between
+# updates (a binary String of about a hundred bytes), not what it is given.
 module OpenSSL
   # CRuby's base for everything in this namespace; SSLError and DigestError
   # both descend from it, so `rescue OpenSSL::OpenSSLError` catches either.
@@ -25,6 +24,12 @@ module OpenSSL
     native_func :sha1_bin,        [:string],          :cbinstr, "sp_crypto_sha1_bin"
     native_func :md5_hex,         [:string],          :cstring, "sp_crypto_md5_hex"
     native_func :md5_bin,         [:string],          :cbinstr, "sp_crypto_md5_bin"
+    native_func :sha256_update,   [:string, :string], :cbinstr, "sp_crypto_sha256_update"
+    native_func :sha256_final,    [:string],          :cbinstr, "sp_crypto_sha256_final"
+    native_func :sha1_update,     [:string, :string], :cbinstr, "sp_crypto_sha1_update"
+    native_func :sha1_final,      [:string],          :cbinstr, "sp_crypto_sha1_final"
+    native_func :md5_update,      [:string, :string], :cbinstr, "sp_crypto_md5_update"
+    native_func :md5_final,       [:string],          :cbinstr, "sp_crypto_md5_final"
     native_func :hmac_sha256_hex, [:string, :string], :cstring, "sp_crypto_hmac_sha256_hex"
     native_func :hmac_sha1_hex,   [:string, :string], :cstring, "sp_crypto_hmac_sha1_hex"
     native_func :hmac_sha256_bin, [:string, :string], :cbinstr, "sp_crypto_hmac_sha256_bin"
@@ -60,11 +65,29 @@ module OpenSSL
       end
     end
 
+    # The hash state after `data`, and the raw digest of a state, under the
+    # algorithm #initialize keeps in @name. An empty state is a fresh hash.
+    def self.step(name, state, data)
+      case name
+      when "SHA256" then Crypto.sha256_update(state, data)
+      when "SHA1"   then Crypto.sha1_update(state, data)
+      else Crypto.md5_update(state, data)
+      end
+    end
+
+    def self.finish(name, state)
+      case name
+      when "SHA256" then Crypto.sha256_final(state)
+      when "SHA1"   then Crypto.sha1_final(state)
+      else Crypto.md5_final(state)
+      end
+    end
+
     def initialize(name, data = nil)
       @name = name.to_s.upcase
       Digest.length_of(@name)
-      @buf = String.new(encoding: Encoding::BINARY)
-      @buf << data if data
+      @state = String.new(encoding: Encoding::BINARY)
+      update(data) if data
     end
 
     def name = @name
@@ -72,25 +95,31 @@ module OpenSSL
     def block_length = 64
 
     def update(data)
-      @buf << data
+      @state = Digest.step(@name, @state, data)
       self
     end
     alias << update
 
     def reset
-      @buf = String.new(encoding: Encoding::BINARY)
+      @state = String.new(encoding: Encoding::BINARY)
       self
     end
 
     def digest(data = nil)
       return Digest.raw(@name, data) if data
-      Digest.raw(@name, @buf)
+      Digest.finish(@name, @state)
     end
 
     def hexdigest(data = nil) = digest(data).unpack1("H*")
 
+    # The file is read 16 KiB at a time, so its size does not count.
     def file(name)
-      update(File.binread(name.respond_to?(:to_path) ? name.to_path : name))
+      File.open(name.respond_to?(:to_path) ? name.to_path : name, "rb") do |f|
+        while (chunk = f.read(16_384))
+          update(chunk)
+        end
+      end
+      self
     end
 
     class SHA256 < Digest
