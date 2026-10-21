@@ -313,9 +313,10 @@ INSTANCE_RECEIVERS.each do |cls, thunk|
   # Object's universal surface is carried by the "Object" rows; the per-class
   # rows keep only what the class itself (or its non-Object ancestry) defines,
   # so the table stays deduplicated and the guard falls back explicitly.
+  # Probe subclasses still inherit their family's own methods: the owner,
+  # rather than the probe class's direct definitions, decides that boundary.
   unless cls == "Object"
-    universal = Object.new.public_methods
-    meths -= universal.map(&:to_s) - recv.class.instance_methods(false).map(&:to_s)
+    meths.reject! { |m| Object.ancestors.include?(recv.method(m).owner) }
   end
   meths.each do |m|
     s = full_spec_of(thunk, m)
