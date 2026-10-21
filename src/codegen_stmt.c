@@ -15279,6 +15279,13 @@ static void masgn_target_parts(const NodeTable *nt, int t, int *recv, int *key) 
   }
   else if (sp_streq(ty, "CallTargetNode")) *recv = nt_ref(nt, t, "receiver");
 }
+/* The second key of an index target that has two (`a[i, n]`), else -1. */
+static int masgn_target_key2(const NodeTable *nt, int t) {
+  if (!sp_streq(nt_type(nt, t), "IndexTargetNode")) return -1;
+  int args = nt_ref(nt, t, "arguments"), n = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  return n == 2 ? av[1] : -1;
+}
 /* Whether evaluating a part or a value can allocate, and so collect. A builtin
    operator over scalars is a CallNode to subtree_may_allocate, but `a[i % n]`
    builds nothing; what has no effect and answers a scalar is arithmetic. */
@@ -15327,32 +15334,9 @@ static int masgn_reads_state(const NodeTable *nt, int id) {
   }
   return 0;
 }
-/* Does the subtree write a local variable that `part` reads? */
-static int masgn_writes_local_read(const NodeTable *nt, int id, int part) {
-  if (id < 0) return 0;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_DefNode) return 0;
-  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
-       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode) &&
-      nt_str(nt, id, "name") && masgn_reads(nt, part, "LocalVariableReadNode", nt_str(nt, id, "name")))
-    return 1;
-  int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++)
-    if (masgn_writes_local_read(nt, nt_ref_at(nt, id, i), part)) return 1;
-  int na = nt_num_arrs(nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0;
-    const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int j = 0; j < n; j++)
-      if (masgn_writes_local_read(nt, ids[j], part)) return 1;
-  }
-  return 0;
-}
 int masgn_value_changes(Compiler *c, int mw, int part) {
   int value = part >= 0 ? nt_ref(c->nt, mw, "value") : -1;
-  if (value < 0) return 0;
-  return (masgn_reads_state(c->nt, part) && subtree_has_side_effect(c, value)) ||
-         masgn_writes_local_read(c->nt, value, part);
+  return value >= 0 && read_rebound_by(c, part, value);
 }
 /* Whether the target, or one nested in it, writes a variable the subtree
    reads. */
@@ -15741,11 +15725,17 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
 /* The temps the targets' hoisted receivers and indexes live in, by target
    node (masgn_hoist_targets fills them; -1 where a target keeps its parts in
    place). One statement's, on the stack of emit_multi_write_stmt. */
-typedef struct { int n; int *tgt, *recv, *key; } MasgnTmps;
+typedef struct { int n; int *tgt, *recv, *key, *key2; } MasgnTmps;
 static void masgn_target_tmps(const MasgnTmps *mt, int tgt, int *recv_tmp, int *key_tmp) {
   *recv_tmp = *key_tmp = -1;
   for (int i = 0; mt && i < mt->n; i++)
     if (mt->tgt[i] == tgt) { *recv_tmp = mt->recv[i]; *key_tmp = mt->key[i]; return; }
+}
+/* ...the temp of a two-key target's second key, -1 where it is read in place. */
+static int masgn_target_key2_tmp(const MasgnTmps *mt, int tgt) {
+  for (int i = 0; mt && i < mt->n; i++)
+    if (mt->tgt[i] == tgt) return mt->key2[i];
+  return -1;
 }
 /* A store through a receiver that may be nil raises the NoMethodError
    CRuby does (`w[0], w[1] = a, b` over nil: "undefined method '[]=' for
@@ -15760,6 +15750,76 @@ static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *na
   buf_puts(b, "if (SP_UNLIKELY(!(");
   emit_node_or_tmp(c, recv, recv_tmp, b);
   buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
+}
+/* Does a receiver typed as class `cid` store through a writer a descendant
+   answers differently? Typed so, it can hold an instance of the descendant
+   (`self` in an inherited method), and the single setter dispatches on the
+   instance's class then. A descendant's own `def x=` does; so does its
+   attr_writer where the typed class's writer is a method. */
+static int masgn_writer_overridden(Compiler *c, int cid, const char *nm) {
+  if (c->classes[cid].is_native_class || c->classes[cid].c_struct) return 0;
+  if (cplan_overridden(c, cid, nm, 0)) return 1;
+  char base[256];
+  if (!setter_base_name(nm, base, sizeof base) || comp_method_in_chain(c, cid, nm, NULL) < 0) return 0;
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++)
+    if (ds[i] != cid && comp_is_writer(&c->classes[ds[i]], base)) return 1;
+  return 0;
+}
+/* An index target with two keys (`a[i, n], x = ...`) stores as `a[i, n] = v`
+   does. An Array receiver splices through emit_array_splice, which takes its
+   receiver, keys and value as nodes: they are bound to the temps the statement
+   holds (masgn_hoist_targets), so they are read in source order, and the value
+   is bound to the target node. A boxed receiver goes through sp_poly_splice. A
+   Hash raises the ArgumentError its two-key `[]=` raises, after the value, as
+   the single store does. A user `[]=` takes one key here (masgn_index_writer),
+   so it, and any other receiver, is refused. */
+static int masgn_store_slice(Compiler *c, int id, const MasgnTmps *mt, int tgt, int recv, const int *argv,
+                             const char *val, TyKind vt, int recv_tmp, int key_tmp, int indent, Buf *b) {
+  int key2_tmp = masgn_target_key2_tmp(mt, tgt);
+  TyKind rt = comp_ntype(c, recv);
+  if (ty_is_hash(rt)) {
+    emit_indent(b, indent);
+    emit_arity_raise(b, "3", 2, 2, NULL);
+    buf_puts(b, ";\n");
+    return 1;
+  }
+  int poly = rt == TY_POLY || rt == TY_UNKNOWN;
+  if (!poly && !(ty_is_array(rt) && (rt == TY_POLY_ARRAY || array_kind(rt)))) {
+    unsupported(c, id, "multiple assignment index target"); return 1;
+  }
+  /* an element with no value of its own, or held with its nil, is spliced boxed */
+  int boxed = poly || !val || vt == TY_NIL || vt == TY_VOID || vt == TY_UNKNOWN || masgn_oint_temp(val) >= 0;
+  Buf vb; memset(&vb, 0, sizeof vb);
+  if (boxed) masgn_conv(c, id, TY_POLY, vt, val, &vb);
+  if (poly) {
+    emit_indent(b, indent);
+    buf_puts(b, "sp_poly_splice(sp_poly_slice_chk(");
+    if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, recv, b);
+    buf_puts(b, "), ");
+    if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp); else emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", ");
+    if (key2_tmp >= 0) buf_printf(b, "_t%d", key2_tmp); else emit_int_expr(c, argv[1], b);
+    buf_printf(b, ", %s);\n", vb.p ? vb.p : "sp_box_nil()");
+    free(vb.p);
+    return 1;
+  }
+  masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
+  int base = view_bind(tgt, "%s", boxed ? (vb.p ? vb.p : "sp_box_nil()") : val);
+  int vv = view_push(c, tgt, boxed ? TY_POLY : vt), kv = -1, k2v = -1;
+  if (recv_tmp >= 0) view_bind(recv, "_t%d", recv_tmp);
+  if (key_tmp >= 0) { view_bind(argv[0], "_t%d", key_tmp); kv = view_push(c, argv[0], TY_INT); }
+  if (key2_tmp >= 0) { view_bind(argv[1], "_t%d", key2_tmp); k2v = view_push(c, argv[1], TY_INT); }
+  emit_indent(b, indent);
+  emit_array_splice(c, id, recv, rt, argv[0], argv[1], -1, tgt, b);
+  buf_puts(b, ";\n");
+  if (k2v >= 0) view_pop(c, k2v);
+  if (kv >= 0) view_pop(c, kv);
+  view_pop(c, vv);
+  view_unbind(base);
+  free(vb.p);
+  return 1;
 }
 static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const char *val, TyKind vt,
                        int recv_tmp, int key_tmp, int indent, Buf *b) {
@@ -15830,7 +15890,8 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     int recv = nt_ref(nt, tgt, "receiver");
     int args = nt_ref(nt, tgt, "arguments"), argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-    if (recv < 0 || argc != 1) { unsupported(c, id, "multiple assignment index target"); return 1; }
+    if (recv < 0 || argc < 1 || argc > 2) { unsupported(c, id, "multiple assignment index target"); return 1; }
+    if (argc == 2) return masgn_store_slice(c, id, mt, tgt, recv, argv, val, vt, recv_tmp, key_tmp, indent, b);
     TyKind rt = comp_ntype(c, recv);
     if (ty_is_array(rt)) {
       const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
@@ -15908,18 +15969,26 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     size_t snl = nm ? strlen(nm) : 0;
     if (!name_is_plain_setter(nm) || crecv < 0) { unsupported(c, id, "multiple assignment call target"); return 1; }
     TyKind crt = comp_ntype(c, crecv);
-    /* a boxed receiver dispatches on its class, as the single setter does */
-    if (crt == TY_POLY) {
+    /* a boxed receiver dispatches on its class, as the single setter does;
+       so does one typed as a class a descendant overrides the writer of */
+    int vdisp = ty_is_object(crt) && masgn_writer_overridden(c, ty_object_class(crt), nm);
+    if (crt == TY_POLY || vdisp) {
       char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
       TyKind at = val && vt != TY_NIL && vt != TY_VOID && vt != TY_UNKNOWN ? vt : TY_POLY;
       /* an element held with its nil beside it (masgn_elem_temp) is
          dispatched boxed as that oint, so a writer sees the nil */
       int oel = masgn_oint_temp(val) >= 0 && oint_kind(vt);
       if (oel) at = TY_POLY;
-      int tv = ++g_tmp, tval = ++g_tmp;
+      int tv = ++g_tmp, tval = ++g_tmp, tp = vdisp ? ++g_tmp : -1;
+      if (vdisp) masgn_recv_guard(c, crecv, recv_tmp, nm, indent, b);
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", tv);
-      if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
+      if (vdisp) {
+        buf_printf(b, "({ sp_%s *_t%d = ", c->classes[ty_object_class(crt)].c_name, tp);
+        emit_node_or_tmp(c, crecv, recv_tmp, b);
+        buf_printf(b, "; sp_box_obj((void *)_t%d, _t%d->cls_id); })", tp, tp);
+      }
+      else if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
       buf_puts(b, "; ");
       emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
       if (oel) masgn_conv(c, id, TY_POLY, vt, val, b);
@@ -16591,7 +16660,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       else {
         char gx[80], ix[32]; snprintf(ix, sizeof ix, "%dLL", i);
         if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx,
-                             masgn_const_elem_in_range(c, value, i, ln, rn)))
+                             masgn_const_elem_in_range(c, value, i)))
           snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
         if (!masgn_store(c, id, mt, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
@@ -16740,7 +16809,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         char rgx[160], rix[32];
         snprintf(rix, sizeof rix, "_t%d", tix);
         if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx,
-                             masgn_const_elem_in_range(c, value, j - rn, ln, rn)))
+                             masgn_const_elem_in_range(c, value, j - rn)))
           snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
         if (!masgn_store(c, id, mt, rights[j], rgx, elem, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
@@ -17126,8 +17195,9 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
   for (int i = 0; i < mt->n; i++) {
     int r, k;
     masgn_target_parts(nt, flat[i], &r, &k);
-    mt->recv[i] = mt->key[i] = -1;
-    if (!masgn_part_plain(c, id, r, flat, i) || !masgn_part_plain(c, id, k, flat, i)) hoist = 1;
+    mt->recv[i] = mt->key[i] = mt->key2[i] = -1;
+    if (!masgn_part_plain(c, id, r, flat, i) || !masgn_part_plain(c, id, k, flat, i) ||
+        !masgn_part_plain(c, id, masgn_target_key2(nt, flat[i]), flat, i)) hoist = 1;
   }
   if (!hoist) return;
   Buf *hb = g_pre;
@@ -17142,6 +17212,8 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
     /* a Struct's `[]=` (masgn_struct_store) takes the key as it is */
     if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
+    int k2 = index ? masgn_target_key2(nt, flat[i]) : -1;
+    if (k2 >= 0) obj_ix = 0;   /* a user `[]=` takes one key here */
     if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
     /* an attribute's receiver is an object or a boxed value, whose store
        dispatches on its class */
@@ -17149,6 +17221,11 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     mt->recv[i] = masgn_hoist_part(c, r, poly_r || rt == TY_POLY ? TY_POLY : rt, hb);
     if (obj_ix) mt->key[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
     else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
+    /* a Hash raises for two keys, so its second key is only evaluated */
+    if (k2 >= 0 && !obj_ix) {
+      TyKind k2t = repr_of(c, k2).as_ty;
+      mt->key2[i] = masgn_hoist_part(c, k2, poly_r || ty_is_array(rt) ? TY_INT : k2t == TY_NIL || k2t == TY_VOID || k2t == TY_UNKNOWN ? TY_POLY : k2t, hb);
+    }
   }
 }
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
@@ -17239,7 +17316,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
      (masgn_hoist_targets) */
   int nf = masgn_flat_targets(nt, id, NULL, 0);
   MasgnTmps mts = { nf, nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL, nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL,
-                    nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL };
+                    nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL, nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL };
   const MasgnTmps *mt = &mts;
   masgn_flat_targets(nt, id, mts.tgt, 0);
   masgn_hoist_targets(c, id, &mts);
@@ -17606,11 +17683,13 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         { unsupported(c, id, "multiple assignment call target non-object"); continue; }
       char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
       int rc2 = ty_object_class(rt2);
-      if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
+      int wr2 = comp_writer_in_chain(c, rc2, base2, NULL);
+      if (!wr2 || masgn_writer_overridden(c, rc2, setnm)) {
         /* a writer defined with `def x=`, or bound with `native_method :x=`,
-           runs as a call */
+           runs as a call, and so does an attr writer a descendant defines
+           its own `x=` for */
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        if (comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
+        if (!wr2 && comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
           unsupported(c, id, "multiple assignment call target no writer");
         else masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
@@ -17681,9 +17760,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int idx_args = nt_ref(nt, lefts[i], "arguments");
       int idx_argc = 0;
       const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
-      if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
+      if (recv_id < 0 || idx_argc < 1 || idx_argc > 2) { unsupported(c, id, "multiple assignment index target"); continue; }
       TyKind recv_t = comp_ntype(c, recv_id);
-      if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0)) {
+      /* two keys (`a[i, n], x = ...`) store a slice, which masgn_store takes */
+      if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0) || idx_argc == 2) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
         masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;

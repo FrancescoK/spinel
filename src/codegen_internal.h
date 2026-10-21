@@ -206,7 +206,7 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 int masgn_face_elem(Compiler *c, int mw, int el);
 /* the leaf targets of multiple write (or nested target) node, in Ruby's order, a nested (a, b) where it stands: fills out (when given) and answers the count */
 int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n);
-/* does the right side of multiple write mw change what `part` (a target's receiver or key) reads: user code beside an ivar, gvar or cvar read, or a write of a local it reads? */
+/* does the right side of multiple write mw rebind what `part` (a target's receiver or key) reads (read_rebound_by): a write of a local, a call of a proc that assigns it, user code beside an ivar, gvar or cvar read? */
 int masgn_value_changes(Compiler *c, int mw, int part);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);

@@ -13575,6 +13575,16 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   }
   return val;
 }
+/* The receiver of a two-key `[]=` through a boxed value (a multiple
+   assignment's `a[i, n], x = ...`): the checks of the single store, and the
+   ArgumentError a Hash's `[]=` raises with two keys, ahead of sp_poly_splice,
+   which leaves a Hash or a Symbol as it is. Answers the receiver. */
+static SP_INLINE sp_RbVal sp_poly_slice_chk(sp_RbVal v) {
+  sp_poly_coll_chk(v, "[]=");
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) sp_raise_arity(3, 2, 2, NULL);
+  return v;
+}
 /* poly_val[int_idx] = val: runtime dispatch for poly recv `[]=` with int index. */
 static sp_RbVal sp_poly_arr_set(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");

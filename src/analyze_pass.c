@@ -2677,11 +2677,14 @@ static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
 
 /* An attribute target `o.x` nested in a `(a, b)` takes the element, boxed:
    the field an attr_accessor's writer keeps in each class the receiver can
-   be (the receiver's own, or every class with the writer for a boxed one) is
-   unified with it, and the parameter of a `def x=(v)` the program writes is
-   taken the same way. A field or parameter typed for another write alone
-   would take the boxed element through an unchecked cast; the nested target
-   has no call evidence to say otherwise. */
+   be (the receiver's own and its descendants', or every class with the writer
+   for a boxed one) is unified with it, and the parameter of a `def x=(v)` the
+   program writes is taken the same way. A receiver typed for a class can hold
+   an instance of a descendant (`self` in an inherited method), and the store
+   dispatches on the instance's class, so a descendant's override takes the
+   element too. A field or parameter typed for another write alone would take
+   the boxed element through an unchecked cast; the nested target has no call
+   evidence to say otherwise. */
 static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, tgt, "name");
@@ -2693,7 +2696,7 @@ static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   int changed = 0, only = ty_is_object(rt) ? ty_object_class(rt) : -1;
   if (rt != TY_POLY && only < 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (only >= 0 && k != only) continue;
+    if (only >= 0 && k != only && !is_descendant(c, k, only)) continue;
     int wdc = -1, mdc = -1;
     int wmi = comp_method_in_chain(c, k, nm, &mdc);
     if (wmi >= 0) {
