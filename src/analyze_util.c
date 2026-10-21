@@ -2708,6 +2708,29 @@ int an_user_defines_method(Compiler *c, const char *name) {
   }
   if (!ans) ans = comp_method_index(c, name) >= 0;
   if (again >= 0) { udm_ans[again] = (signed char)ans; return ans; }
+  /* a full memo grows, and its buckets with it (as an_user_defines_or_reads'
+     does): past 4,096 names it stopped recording, and every later name
+     walked every class again at each ask */
+  if (udm_cap && udm_n == udm_cap) {
+    int ncap = udm_cap * 2;
+    char **nn = realloc(udm_names, sizeof(char *) * (size_t)ncap);
+    signed char *na = realloc(udm_ans, (size_t)ncap);
+    int *nx = realloc(udm_next, sizeof(int) * (size_t)ncap);
+    int *nh = realloc(udm_head, sizeof(int) * (size_t)ncap);
+    if (nn) udm_names = nn;
+    if (na) udm_ans = na;
+    if (nx) udm_next = nx;
+    if (nh) udm_head = nh;
+    if (nn && na && nx && nh) {
+      udm_cap = ncap;
+      for (int i = 0; i < udm_cap; i++) udm_head[i] = -1;
+      for (int i = 0; i < udm_n; i++) {
+        unsigned h = sp_strhash(udm_names[i]) & (unsigned)(udm_cap - 1);
+        udm_next[i] = udm_head[h]; udm_head[h] = i;
+      }
+      b = sp_strhash(name) & (unsigned)(udm_cap - 1);
+    }
+  }
   if (udm_cap && udm_n < udm_cap) {
     udm_names[udm_n] = strdup(name);
     if (udm_names[udm_n]) {
