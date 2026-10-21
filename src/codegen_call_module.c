@@ -172,6 +172,20 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_size_q("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "pipe?") && argc == 1) {
+      /* an IO value is tested by its descriptor, as CRuby's rb_stat does once
+         #to_io has given it one (an object with #to_io is not converted here) */
+      TyKind pt = comp_ntype(c, argv[0]);
+      if (pt == TY_IO) {
+        buf_puts(b, "sp_file_pipe_io("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+      }
+      if (pt == TY_POLY || yield_site_type(c, argv[0]) == TY_POLY) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                      " ? sp_file_pipe_io((sp_File *)_t%d.v.p) : sp_file_pipe(sp_poly_arg_path(_t%d)); })",
+                   tv, tv, tv, tv, tv);
+        return 1;
+      }
       buf_puts(b, "sp_file_pipe("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "identical?") && argc == 2) {

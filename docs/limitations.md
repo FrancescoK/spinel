@@ -577,6 +577,11 @@ still works.
   preserving its returned String's identity. Use a literal block. Literal blocks,
   symbol-to-proc forms that desugar to one, and user-owned methods still compile.
 
+- **`File.pipe?` with an object that defines `#to_io`** -- an IO or File value,
+  typed or boxed, is tested by its descriptor, but an object answering `#to_io`
+  is not converted: typed, it is refused at compile time; boxed, it raises
+  TypeError. The other FileTest predicates take no IO operand at all.
+
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
   including `delete`, `clear`, and `[]=` on a Hash read from a mixed container,
   matching CRuby.
