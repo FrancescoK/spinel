@@ -15452,8 +15452,39 @@ void emit_super(Compiler *c, int id, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* The class at the root of the program's superclass chain. */
+static int class_chain_root(Compiler *c, int cid) {
+  while (cid >= 0 && c->classes[cid].parent >= 0) cid = c->classes[cid].parent;
+  return cid;
+}
+
+/* A reopened builtin at the root supplies its own comparator, rather than
+   its superclass's. Other callers of class_builtin_parent still ask for
+   the superclass above that root, independently of comparison lookup. */
+static BuiltinDefaultCmp class_default_cmp(Compiler *c, int cid) {
+  int root = class_chain_root(c, cid);
+  int family = root >= 0 && is_builtin_reopen(c->classes[root].name)
+    ? builtin_class_id(c->classes[root].name) : class_builtin_parent(c, root);
+  return builtin_default_cmp(family);
+}
+
+/* Only classes that include Comparable need a runtime fact: the missing
+   callback already answers false for every other program object. */
+static void emit_obj_comparable_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static sp_bool sp_obj_comparable_dispatch(int cls_id) {\n  switch (cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].instantiated && !is_builtin_reopen(c->classes[k].name) &&
+        class_default_cmp(c, k) != BDC_BUILTIN &&
+        class_is_comparable(c, k))
+      buf_printf(b, "    case %d: return TRUE;\n", k);
+  }
+  buf_puts(b, "    default: return FALSE;\n  }\n}\n");
+}
+
 /* Generate sp_obj_cmp_dispatch: a cls_id switch calling each instantiated
-   Comparable class's user `<=>`, reporting a nil result as not-comparable.
+   class's user `<=>`, reporting a nil result as not-comparable.
+   Comparable classes without a user `<=>` use their builtin family's default:
+   identity, or Object's identity-or-program-`==` comparison.
    Installed as sp_obj_cmp_hook so the runtime comparator (no-block
    sort/min/max/clamp) can order user objects. Only object- and poly-typed
    operands are handled; an exotic operand type omits its arm and falls through
@@ -15472,10 +15503,19 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       else if (sp_streq(c->classes[k].name, "Range")) { bcase = "SP_BUILTIN_RANGE"; bself = "*(sp_Range *)a.v.p"; }
       else continue;
     }
-    else if (!c->classes[k].instantiated) continue;
+    else if (!c->classes[k].instantiated ||
+             class_default_cmp(c, k) == BDC_BUILTIN) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "<=>", &defcls);
-    if (mi < 0) continue;
+    if (mi < 0) {
+      if (!bcase && class_is_comparable(c, k)) {
+        int eq = class_default_cmp(c, k) == BDC_EQUAL &&
+                 comp_method_in_chain(c, k, "==", NULL) >= 0;
+        buf_printf(b, "    case %d: *comparable = %s(a, b); return 0;\n",
+                   k, eq ? "sp_poly_rb_equal" : "sp_poly_equal");
+      }
+      continue;
+    }
     if (bcase && defcls != k) continue;
     Scope *m = &c->scopes[mi];
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
@@ -16315,6 +16355,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
   }
   if (g_has_user_cmp)
     buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable);\n");
+  if (c->gen_comparable)
+    buf_puts(b, "static sp_bool sp_obj_comparable_dispatch(int cls_id);\n");
   if (g_has_user_binop)
     buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled);\n");
   if (program_has_user_eql(c))
@@ -16427,6 +16469,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
   buf_puts(b, "  sp_stack_guard_init();\n");
   if (g_has_user_cmp)
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
+  if (c->gen_comparable)
+    buf_puts(b, "  sp_obj_comparable_hook = sp_obj_comparable_dispatch;\n");
   if (g_has_user_binop)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_user_binop_hook, sp_user_binop_dispatch);\n");
   if (program_has_user_eql(c))
@@ -17538,8 +17582,7 @@ const char *class_builtin_superclass_name(Compiler *c, int i) {
 /* The builtin class above the whole user chain of `cid`: walk the user
    superclasses to the root and answer that root's builtin superclass. */
 int class_builtin_parent(Compiler *c, int cid) {
-  int k = cid;
-  while (k >= 0 && c->classes[k].parent >= 0) k = c->classes[k].parent;
+  int k = class_chain_root(c, cid);
   return k >= 0 ? class_builtin_superclass(c, k) : -116;
 }
 
@@ -20478,6 +20521,25 @@ static void emit_ext_at_exit_arming(Buf *body) {
   buf_puts(&g_procs, "static void _sp_ext_at_exit(void) { sp_at_exit_run(0); }\n");
   buf_puts(body, "  atexit(_sp_ext_at_exit);\n");
 }
+static void prepare_obj_cmp_dispatch(Compiler *c) {
+  /* An instantiated class that can reach a `<=>` (its own or an ancestor's)
+     needs the cmp-hook so the runtime comparator can order its instances
+     (no-block sort/min/max/clamp and the checked object comparisons). The
+     chain walk matters: a subclass may inherit `<=>` from a base class that
+     is itself never instantiated. */
+  g_has_user_cmp = 0;
+  c->gen_comparable = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    /* a reopened Time or Range is instantiated by the runtime itself */
+    const char *kn = c->classes[k].name;
+    int breopen = kn && is_builtin_reopen(kn) && is_range_or_time_class(kn);
+    if (!c->classes[k].instantiated && !breopen) continue;
+    if (!breopen && class_default_cmp(c, k) == BDC_BUILTIN) continue;
+    if (!breopen && class_is_comparable(c, k)) c->gen_comparable = 1;
+    if (comp_method_in_chain(c, k, "<=>", NULL) >= 0 || c->gen_comparable) g_has_user_cmp = 1;
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -20981,19 +21043,7 @@ char *codegen_program(const NodeTable *nt) {
     }
     free(mk.p);
   }
-  /* An instantiated class that can reach a `<=>` (its own or an ancestor's)
-     needs the cmp-hook so the runtime comparator can order its instances
-     (no-block sort/min/max/clamp and the checked object comparisons). The
-     chain walk matters: a subclass may inherit `<=>` from a base class that
-     is itself never instantiated. */
-  g_has_user_cmp = 0;
-  for (int k = 0; k < c->nclasses; k++) {
-    /* a reopened Time or Range is instantiated by the runtime itself */
-    const char *kn = c->classes[k].name;
-    int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
-    if (!c->classes[k].instantiated && !breopen) continue;
-    if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
-  }
+  prepare_obj_cmp_dispatch(c);
   g_has_user_binop = 0;
   {
     static const char *const uops[] = {
@@ -21008,7 +21058,7 @@ char *codegen_program(const NodeTable *nt) {
       /* a reopened Time or Range is instantiated by the runtime itself, and
          its operators reach boxed values through the table too */
       const char *kn = c->classes[k].name;
-      int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
+      int breopen = kn && is_builtin_reopen(kn) && is_range_or_time_class(kn);
       if (!c->classes[k].instantiated && !breopen) continue;
       for (int u = 0; uops[u]; u++)
         if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
@@ -21159,6 +21209,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
+  if (c->gen_comparable) emit_obj_comparable_dispatch(c, body);
   if (g_has_user_binop) emit_user_binop_dispatch(c, body);
   if (program_has_user_eql(c)) emit_user_eql_dispatch(c, body);
   if (g_has_user_aset) emit_user_aset_dispatch(c, body);

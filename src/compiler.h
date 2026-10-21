@@ -1306,6 +1306,7 @@ typedef struct {
      and installs the conversion bridge (sp_obj_conv_sw) only then, so a
      program that never converts an object carries no extra dispatch. */
   int uses_kconv;
+  int gen_comparable; /* program needs the boxed Comparable membership callback */
   /* the program has a `**` operand and defines #to_hash: the bridge carries
      the #to_hash row a boxed operand converts through (sp_kw_splat_conv). */
   int uses_kw_to_hash;

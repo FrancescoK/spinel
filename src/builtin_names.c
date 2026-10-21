@@ -1234,6 +1234,16 @@ int is_comparable_builtin_name(const char *n) {
          sp_streq(n, "Complex") || sp_streq(n, "Time") || sp_streq(n, "Symbol");
 }
 
+/* Numeric's default <=> tests identity, ignoring even a program ==.
+   Object's default can call a program == ahead of Comparable; builtin ==
+   below Comparable is shadowed by its recursive, false equality answer.
+   String and Time instances use their builtin representation and comparator. */
+BuiltinDefaultCmp builtin_default_cmp(int family) {
+  if (family == -102 || family == -107) return BDC_BUILTIN;
+  if (family == -113) return BDC_IDENTITY;
+  return BDC_EQUAL;
+}
+
 /* The modules a builtin class includes ahead of Object, with their own
    public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
    Comparable, String and Symbol Comparable, Array, Hash and Range
