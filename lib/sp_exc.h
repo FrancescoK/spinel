@@ -108,6 +108,7 @@ const char *sp_exc_msg_plain(const char *m);   /* a frozen counted message as fr
 const char *sp_exc_cat(int n, ...);   /* parts joined by byte length, NULs kept */
 const char *sp_exc_full_text(volatile sp_Exception *e, const char *msg);       /* "Class: msg" */
 const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /* "msg (Class)" */
+const char *sp_exc_detailed_highlight(volatile sp_Exception *e, const char *msg);
 /* m is a Spinel String here (the generated code gives only those), so its header's
    length is safe to read; a NUL inside it travels as a counted message (#7556). */
 static inline const char *sp_exc_msg_given(const char *m) {
