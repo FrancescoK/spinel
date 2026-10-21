@@ -206,6 +206,21 @@ static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cm
   }
 }
 
+/* The finite singleton-accessor union, using the resolver's precedence. */
+int cplan_accessor_classes(Compiler *c, int id, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_int(nt, id, "builtin_only", 0)) return 0;
+  int ci = comp_sg_reader_const(c, recv);
+  if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 0;
+  int n = comp_sg_reader_candidates(c, recv, out, cap);
+  if (n >= 2)
+    for (int i = 0; i < n; i++)
+      if (comp_cmethod_in_chain(c, out[i], name, NULL) >= 0) return n;
+  return 0;
+}
+
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -217,6 +232,17 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int fold_ci = comp_sg_reader_const(c, recv);
     int fmi = fold_ci >= 0 ? comp_cmethod_in_chain(c, fold_ci, name, NULL) : -1;
     if (fmi >= 0) { cplan_set(p, fmi, fold_ci, UC_CMETH, CP_DIRECT); return; }
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++) {
+        int mi = comp_cmethod_in_chain(c, cand[i], name, NULL);
+        if (mi >= 0) {
+          cplan_set(p, mi, cand[i], UC_CMETH, CP_SWITCH);
+          return;
+        }
+      }
+    }
   }
   /* a retargeted `x.send(:m)` reaching a top-level def the receiver does
      not own itself */
@@ -430,6 +456,15 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->dispatch < CP_SWITCH) return 0;
   const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
+  if (p->via == UC_CMETH) {
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++)
+        if (comp_cmethod_in_chain(c, cand[i], name, NULL) == mi) return 1;
+      return 0;
+    }
+  }
   if (p->by_name) {
     int ncc = 0;
     const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);

@@ -2380,7 +2380,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* Stage-2: the accessor holds one of several constants (stored as a boxed
        Class). Dispatch the class method via a cls_id cascade over the slot. */
     int cand[32];
-    int ncand = comp_sg_reader_candidates(c, recv, cand, 32);
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
     if (ncand >= 2) {
       int valid = 0;
       for (int k = 0; k < ncand; k++) if (comp_cmethod_in_chain(c, cand[k], name, NULL) >= 0) valid++;
