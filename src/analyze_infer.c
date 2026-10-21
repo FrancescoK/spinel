@@ -5755,7 +5755,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
+  if (recv >= 0 && argc == 0 && is_class_query(name)) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0 && rt != TY_POLY) { *out = an_user_call(c, id, p->mi, p->via, p->owner_ci); return 1; }
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
     /* empty container literal receivers coerce like everywhere else */
     if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
       const char *rty0 = nt_type(nt, recv);
