@@ -1119,28 +1119,34 @@ static int cmc_slot_idx(Compiler *c, const char *name, int is_cm) {
     free(on); free(ocm); free(oa); free(orp); free(onr);
     cmc_epoch++;
   }
-  /* The last ask's slot: a pass asking every class about one name asks
+  /* The last asks' slots: a pass asking every class about one name asks
      it once per class (1,299 times on a Rails program), each a hash and
      a probe of the table, and the name is the same string each time. The
      slot's own name is compared too, so a string reused at the address
-     answers from the table. */
-  static const char *last_name; static int last_cm, last_j; static unsigned last_epoch;
-  if (last_name == name && last_cm == is_cm && last_epoch == cmc_epoch && cmc_name[last_j] && sp_streq(cmc_name[last_j], name))
-    return last_j;
+     answers from the table. Four of them: the passes that ask every
+     class ask two or three keys per class (the instance method, the
+     class method, a reader, a writer's name), and one entry missed every
+     time between them. */
+  enum { CMC_LAST = 4 };
+  static struct { const char *name; int cm, j; unsigned epoch; } last[CMC_LAST];
+  static int last_at;
+  for (int i = 0; i < CMC_LAST; i++)
+    if (last[i].name == name && last[i].cm == is_cm && last[i].epoch == cmc_epoch && cmc_name[last[i].j] && sp_streq(cmc_name[last[i].j], name))
+      return last[i].j;
   unsigned j = (sp_strhash(name) ^ (unsigned)is_cm) & (unsigned)(cmc_cap - 1);
   while (cmc_name[j]) {
-    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) {
-      last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
-      return (int)j;
-    }
+    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) break;
     j = (j + 1) & (unsigned)(cmc_cap - 1);
   }
-  int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
-  cmc_name[j] = strdup(name);
-  if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
-  cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_resp[j] = NULL; cmc_nresp[j] = -1; cmc_n++;
-  last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
+  if (!cmc_name[j]) {
+    int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
+    cmc_name[j] = strdup(name);
+    if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
+    cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_resp[j] = NULL; cmc_nresp[j] = -1; cmc_n++;
+  }
+  last[last_at].name = name; last[last_at].cm = is_cm; last[last_at].j = (int)j; last[last_at].epoch = cmc_epoch;
+  last_at = (last_at + 1) % CMC_LAST;
   return (int)j;
 }
 /* The answers for (name, is_cm), two ints per class (-2 while unasked), or
