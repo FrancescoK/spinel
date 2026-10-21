@@ -15024,7 +15024,8 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
     case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_min(sp_enum_to_a_boxed(v));
       /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
-               return ue ? sp_PolyArray_min(ue) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
+               /* User Enumerable extrema name new element, then accumulator. */
+               return ue ? sp_PolyArray_minmax_lit(ue, 0) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
   }
 }
 static sp_RbVal sp_poly_max(sp_RbVal v) {
@@ -15044,7 +15045,8 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
     case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_max(sp_enum_to_a_boxed(v));
       /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
-               return ue ? sp_PolyArray_max(ue) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
+               /* User Enumerable extrema name new element, then accumulator. */
+               return ue ? sp_PolyArray_minmax_lit(ue, 1) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
   }
 }
 /* Hash#first / #last answer a [key, value] pair; sp_poly_arr_get indexes the
