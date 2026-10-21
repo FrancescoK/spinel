@@ -5289,7 +5289,15 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     { *out = TY_UNKNOWN; return 1; }
   }
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
-  if (recv >= 0 && argc == 1 && is_cmp_op(name)) { *out = TY_BOOL; return 1; }
+  if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
+    /* The comparison is Boolean even when the plan routes it through a
+       user method returning the ordering value. Keep that target too. */
+    if (g_plan_check && ty_is_object(rt)) {
+      const CallPlan *p = cplan_user_fresh(c, id);
+      if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    }
+    *out = TY_BOOL; return 1;
+  }
   if (argc == 1 && is_eq_op(name)) { *out = TY_BOOL; return 1; }
 
   /* integer bitwise operators */
