@@ -7045,14 +7045,18 @@ else {
 
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
+  int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
+  NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
+  if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
+      is_comparable_builtin_name(nt_str(nt, sc, "name")))
+    c->classes[ci].includes_comparable = 1;
   int n = 0;
   const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    if (!sty || !sp_streq(sty, "CallNode")) continue;
+    if (nt_kind(nt, s) != NK_CallNode) continue;
     const char *nm = nt_str(nt, s, "name");
-    if (!nm || !sp_streq(nm, "include")) continue;
+    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm))) continue;
     if (nt_ref(nt, s, "receiver") >= 0) continue;
     int anode = nt_ref(nt, s, "arguments");
     int an = 0;
@@ -7074,6 +7078,10 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         const char *al = resolve_class_alias(c, mname);
         if (al) mod_id = comp_class_index(c, al);
       }
+      if (is_comparable_module_name(mname) ||
+          (mod_id >= 0 && c->classes[mod_id].includes_comparable))
+        c->classes[ci].includes_comparable = 1;
+      if (!is_include_name(nm)) continue;
       /* where Enumerable sits among the includes (a later include goes in
          front): after the program's modules included so far */
       if (mname && !c->classes[ci].enum_inc_at && sp_streq(mname, "Enumerable"))
@@ -7136,29 +7144,35 @@ void process_include_body(Compiler *c, int ci, int body_node) {
    (including reopenings) and transplant M's instance methods into the
    class so they are reachable via comp_method_in_chain. */
 /* The class indices a body's `include` statements name (the ones that resolve
-   to a class of the program), for the ordering below. */
-static int body_included_mods(Compiler *c, int body_node, int *out, int cap) {
+   to a class of the program), for the ordering below. Prepends also wait
+   for their modules so Comparable membership sees every reopening.
+   Read readiness directly: a bounded list missed later include arguments. */
+static int body_mixin_dependencies_ready(Compiler *c, int ci, int body_node, const int *remaining) {
   const NodeTable *nt = c->nt;
-  int n = 0, cnt = 0;
+  int n = 0;
   const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
-  for (int k = 0; k < n && cnt < cap; k++) {
+  for (int k = 0; k < n; k++) {
     int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    if (!sty || !sp_streq(sty, "CallNode")) continue;
+    if (nt_kind(nt, s) != NK_CallNode) continue;
     const char *nm = nt_str(nt, s, "name");
-    if (!nm || !sp_streq(nm, "include") || nt_ref(nt, s, "receiver") >= 0) continue;
+    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm)) ||
+        nt_ref(nt, s, "receiver") >= 0) continue;
     int anode = nt_ref(nt, s, "arguments");
     int an = 0;
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    for (int j = 0; j < an && cnt < cap; j++) {
-      const char *aty = nt_type(nt, args[j]);
-      const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode")))
+    for (int j = 0; j < an; j++) {
+      NodeKind ak = nt_kind(nt, args[j]);
+      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode)
                           ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
-      if (mod_id >= 0) out[cnt++] = mod_id;
+      if (mod_id < 0 && mname) {
+        const char *al = resolve_class_alias(c, mname);
+        if (al) mod_id = comp_class_index(c, al);
+      }
+      if (mod_id >= 0 && mod_id != ci && remaining[mod_id] > 0) return 0;
     }
   }
-  return cnt;
+  return 1;
 }
 
 void register_includes(Compiler *c) {
@@ -7186,10 +7200,7 @@ void register_includes(Compiler *c) {
       /* this class's earlier bodies first (the definition before a reopening) */
       for (int b2 = 0; b2 < b && ready; b2++)
         if (!done[b2] && bci[b2] == bci[b]) ready = 0;
-      int mods[64];
-      int nm = ready ? body_included_mods(c, bnode[b], mods, 64) : 0;
-      for (int m = 0; m < nm && ready; m++)
-        if (mods[m] != bci[b] && remaining[mods[m]] > 0) ready = 0;
+      if (ready) ready = body_mixin_dependencies_ready(c, bci[b], bnode[b], remaining);
       if (!ready) continue;
       process_include_body(c, bci[b], bnode[b]);
       done[b] = 1; remaining[bci[b]]--; left--; progress = 1;

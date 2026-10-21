@@ -1221,6 +1221,19 @@ static int builtin_name_in(const char *name, const char *const *names) {
   return 0;
 }
 
+int is_include_name(const char *n) { return sp_streq(n, "include"); }
+int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
+
+int is_comparable_module_name(const char *n) {
+  return n && sp_streq(n, "Comparable");
+}
+
+int is_comparable_builtin_name(const char *n) {
+  return sp_streq(n, "String") || sp_streq(n, "Numeric") ||
+         is_numeric_class_name(n) || sp_streq(n, "Rational") ||
+         sp_streq(n, "Complex") || sp_streq(n, "Time") || sp_streq(n, "Symbol");
+}
+
 /* The modules a builtin class includes ahead of Object, with their own
    public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
    Comparable, String and Symbol Comparable, Array, Hash and Range
@@ -1229,7 +1242,7 @@ static int builtin_name_in(const char *name, const char *const *names) {
    Float, String and Symbol. */
 int builtin_comparable_owns(const char *cls, const char *m) {
   static const char *const cmp[] = { "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
-  return (is_numeric_class_name(cls) || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) &&
+  return is_comparable_builtin_name(cls) &&
          builtin_name_in(m, cmp);
 }
 

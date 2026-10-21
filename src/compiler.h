@@ -843,6 +843,7 @@ typedef struct {
      before it (a later include goes in front in Ruby's lookup). Set where
      the includes are processed (process_include_body). */
   int enum_inc_at;
+  int includes_comparable; /* registered includes/prepends, including module copies */
   int enum_prepended;   /* its bodies `prepend Enumerable`: in front of the class itself */
   /* The attr_reader / attr_accessor names this class's own bodies declare,
      as against readers[], which also holds those a module it includes and a
