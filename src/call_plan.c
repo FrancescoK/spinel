@@ -262,6 +262,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     /* outside a class method, self reaches a program's own Object method */
     Scope *self = comp_scope_of(c, id);
     if (!(self && self->is_cmethod)) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && self && self->class_id >= 0)
+      cplan_descendant_call(c, self->class_id, name, self->is_cmethod, p);
     return;
   }
   const char *rty = nt_type(nt, recv);

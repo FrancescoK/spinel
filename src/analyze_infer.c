@@ -5998,6 +5998,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
           int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
                                      : comp_method_in_class(c, k, name);
           if (dmi < 0) continue;
+          if (!found) an_user_call_record(c, id, dmi, self->is_cmethod ? UC_CMETH : UC_INST, self->class_id);
           r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
           found = 1;
         }
