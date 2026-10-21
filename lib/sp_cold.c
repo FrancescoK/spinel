@@ -2565,6 +2565,16 @@ sp_bool sp_file_pipe(const char *path) {
   struct stat st;
   return stat(path ? path : "", &st) == 0 && S_ISFIFO(st.st_mode);
 }
+/* An IO operand is tested by its descriptor even if its path has gone. */
+static int sp_stat_handle_p(sp_File *f);
+sp_bool sp_file_pipe_io(sp_File *io) {SP_GC_ROOT(io);
+  if (!io) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  if (sp_stat_handle_p(io))
+    sp_raise_cls("TypeError", "no implicit conversion of File::Stat into String");
+  SP_IO_OPEN(io);
+  struct stat st;
+  return fstat(fileno(io->fp), &st) == 0 && S_ISFIFO(st.st_mode);
+}
 sp_bool sp_file_identical(const char *a, const char *b) {
   struct stat sa, sb;
   if (stat(a ? a : "", &sa) != 0 || stat(b ? b : "", &sb) != 0) return 0;
