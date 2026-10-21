@@ -39,9 +39,18 @@ The String plan's row, and `--share-check` below, are being replaced
 a fix does not go into the String routes. A wrong answer on String
 identity is reported on #9258 instead.
 
-`comp_ntype` stays the answer to a semantic question (is this a String,
-which class is the receiver); it cannot alone decide how a value is laid
-out, which is `repr_of`'s answer.
+Codegen reads decisions, not types. A `comp_ntype` read in an emitter
+answers one of two questions, and both have a layer:
+
+- how the value is laid out (boxed, nullable, a handle): `repr_of`;
+- what to do with it (this receiver is an Array, so the Array emitter;
+  this call reaches that method; this arm is that class): the call plan
+  and the builtin-op rows, which hand the emitter the kind, the row and
+  the target to switch on.
+
+Reads of the second kind are many today and go as the plan and the rows
+take over each emitter. A read stays only where the type is itself the
+data, such as a class name in a diagnostic.
 
 ## Views
 
@@ -80,8 +89,11 @@ view cannot yet carry gets a new kind of view.
 A change that does any of these is asking a question one of the layers
 already answers, or should:
 
-- a new `comp_ntype` read in codegen that decides layout (a semantic-type
-  question is fine; say which it is);
+- a new `comp_ntype` read in codegen, whether it decides layout or which
+  emitter, builtin or target runs (a read whose type is the data, such as
+  a diagnostic, is fine; say so);
+- a call-plan or row change that records a decision for `--plan-check`
+  while the emitter beside it still decides on its own;
 - an inline `sp_streq(name, "...")` where a row or a predicate fits;
 - a decision in a renderer that the String plan should make;
 - a special case keyed on one method name;
