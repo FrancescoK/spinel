@@ -3652,8 +3652,11 @@ static void *sp_sysmon_main(void *arg) {
        code is timed while a thread is runnable, and past the quantum main is
        asked to give the runnable threads their slices at its next safepoint
        (sp_safepoint_preempt). Main pumping (in a join, a sleep) runs them
-       already, and a thread it runs is timed above. */
-    if (g_worker_cap == 0 && g_workers_started) {
+       already, and a thread it runs is timed above. (Asked of the cap
+       alone, set before this thread was created: g_workers_started goes up
+       only once the start has returned, and a monitor that ran first read
+       it as 0.) */
+    if (g_worker_cap == 0) {
       int rq0, ru0; counts_approx(&rq0, &ru0);
       if (rq0 > 0 && !SP_ATOMIC_LOAD(&g_wslot[0].cur, __ATOMIC_ACQUIRE) &&
           SP_TH_STATE(&g_main_thread) == SP_TH_RUNNING) {
@@ -3747,8 +3750,11 @@ static void *sp_sysmon_main(void *arg) {
          stores g_nearest and then reads the flag (sp_sysmon_nudge) */
       if (nearest_get() != 0.0) started = 1;
       /* (at SPINEL_WORKERS=1 a thread main makes runnable wakes no one: the
-         monitor looks again a quantum later, to time main beside it) */
-      if (!started && g_worker_cap == 0 && g_workers_started) {
+         monitor looks again a quantum later, to time main beside it. Its
+         first round comes here at once, before the start that created it
+         may have set g_workers_started: an untimed wait then left main
+         spinning on a flag no thread ran to set) */
+      if (!started && g_worker_cap == 0) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         double dt = SP_PREEMPT_QUANTUM;
