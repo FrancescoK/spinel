@@ -8561,7 +8561,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      The call plan also includes class methods, on boxed or Class values. */
   if (g_plan_check && recv >= 0 && (rt == TY_POLY || rt == TY_CLASS) && !an_builtin_only) {
     const CallPlan *p = cplan_user_fresh(c, id);
-    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
   }
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
