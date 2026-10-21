@@ -2246,7 +2246,8 @@ int comp_native_method_find(Compiler *c, int class_id, const char *name, int arg
    answers it first. -1 for an arm of the program's methods. */
 int comp_native_binding_class(Compiler *c, int k, const char *name) {
   if (k < 0 || k >= c->nclasses) return -1;
-  if (c->classes[k].is_native_class) return k;
+  if (c->classes[k].is_native_class)
+    return comp_method_in_chain(c, k, name, NULL) >= 0 ? -1 : k;
   int r = comp_native_answer_class(c, k, name);
   return r >= 0 && comp_native_method_find(c, r, name, 0, 0) >= 0 ? r : -1;
 }
@@ -2267,14 +2268,10 @@ int comp_native_answer_class(Compiler *c, int cid, const char *name) {
 }
 
 /* Whether class `k` contributes a poly-dispatch arm for instance calls of
-   `name`. A native class contributes only through its declared BINDINGS
-   (#4504): a Ruby-side def on it (IO::Buffer#values, StringIO#each_line) is
-   reachable through a typed receiver alone and gets no arm in the cls_id
-   switch -- so a candidate counter that tallied those stood the builtin
-   arms down for every poly receiver, and merely loading IO::Buffer turned
-   `h.values` on a poly Hash into NoMethodError. Every "does any user class
-   define this name" loop that feeds the poly dispatch asks through here so
-   the analyzer, the emitters, and the switch count the same arms. */
+   `name`. Native bindings and Ruby-side definitions use the same owner
+   decision as arm emission: an explicit Ruby override must also receive
+   the native class's boxed objects. Every candidate counter asks here so
+   inference, builtin gates and emitted switches count the same arms. */
 int comp_poly_arm_defines(Compiler *c, int k, const char *name) {
   int nk = comp_native_binding_class(c, k, name);
   if (nk >= 0)

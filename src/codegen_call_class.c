@@ -135,9 +135,12 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
       if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
           comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
         emit_responds_name(c, k, c->scopes[s].name, &pb, &vb);
-    for (int m = 0; m < c->n_native_methods; m++)
-      if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
-        emit_responds_name(c, k, c->native_methods[m].name, &pb, &vb);
+    /* Native methods are inherited too. The receiver's visibility and
+       undef declarations still decide which list receives each name. */
+    for (int p = k; p >= 0; p = c->classes[p].parent)
+      for (int m = 0; m < c->n_native_methods; m++)
+        if (c->native_methods[m].class_id == p && !c->native_methods[m].kind)
+          emit_responds_name(c, k, c->native_methods[m].name, &pb, &vb);
     for (int p = k; p >= 0; p = c->classes[p].parent) {
       ClassInfo *cl = &c->classes[p];
       for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], &pb, &vb);
@@ -417,6 +420,19 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_bool(%d)" : "%d", ans);
         if (run) buf_puts(b, "; })");
         return 1;
+      }
+      /* A boxed native object (or its subclass) answers a literal name
+         through the same inherited binding/visibility table as a runtime
+         name. The probe asks a zero-argument call, not method existence. */
+      if (ans < 0 && recv >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN) &&
+          respond_to_runtime_reaches(c, rt)) {
+        int native = 0;
+        for (int k = 0; k < c->nclasses && !native; k++)
+          native = c->classes[k].is_native_class && comp_native_method_find(c, k, qm, 0, 0) >= 0;
+        if (native) {
+          emit_respond_to_runtime_name(c, id, b, recv, argc, argv);
+          return 1;
+        }
       }
       /* a user object's include_all known only at run time, or one of
          Object's private methods (exit, puts) to a literal one where some

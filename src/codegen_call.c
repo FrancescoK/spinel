@@ -29783,8 +29783,11 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
               (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
   /* an Array (Hash) subclass instance answers Array's (Hash's) names (#7449) */
   if (!found && comp_ty_ary_root(c, ty_object(cid)) >= 0 && comp_arysub_builtin_name(c, cid, qm)) return 2;
-  /* a subclass of a native class answers the class's bindings (#9269) */
-  if (!found && c->classes[cid].nsub_root > 0 && comp_native_method_find(c, cid, qm, 0, 0) >= 0) return 2;
+  /* Both a native class and its subclasses answer the public bindings.
+     A source visibility declaration applies just as it does to a def. */
+  int nk = comp_native_binding_class(c, cid, qm);
+  if (!found && nk >= 0 && comp_native_method_find(c, nk, qm, 0, 0) >= 0)
+    return comp_method_vis_in_chain(c, cid, qm) == SP_VIS_PUBLIC ? 2 : 1;
   /* the names the class answers without a method-table entry: an
      Enumerable includer's, a Comparable's, a Struct's or a Data's
      core names (#2663) */
