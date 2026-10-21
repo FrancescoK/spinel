@@ -17601,12 +17601,15 @@ static void inh_add_name(ANameHash *h, const char *q) {
    A::A::Foo. A constant that holds a class or module (`Alias = A`) stands for
    it there, so `class Alias::Foo` is A::Foo. A path from the top (`::Foo`,
    `Object::Foo`) is taken as written; a segment found nowhere goes under the
-   innermost scope. */
-typedef struct { ANameHash known, alias, anc; char **target; int ntarget; } InhNames;
+   innermost scope. `*lexical` (when given) is set when the first segment is
+   found in a scope around the header, not at the top level: there no
+   ancestor can supply another one. */
+typedef struct { ANameHash known, alias, anc, inner; char **target; int ntarget; } InhNames;
 static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
-                             int id, int path, int ref, char *q, size_t cap) {
+                             int id, int path, int ref, char *q, size_t cap, int *lexical) {
   char w[512], head[1024];
   int rooted = 0;
+  if (lexical) *lexical = 0;
   if (!cbs_path_text(nt, path, w, sizeof w, &rooted)) snprintf(w, sizeof w, "?");
   const char *p = w;
   if (!strncmp(p, "Object::", 8)) { p += 8; rooted = 1; }
@@ -17623,7 +17626,7 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
       snprintf(head, sizeof head, "%s::%s", qn[t], first);
       if (anh_has(&r->known, head)) found = qn[t];
     }
-    if (found) in = found;
+    if (found) { in = found; if (lexical) *lexical = 1; }
     else if (anh_has(&r->known, first)) in = "";
     snprintf(head, sizeof head, "%s%s%s", in, *in ? "::" : "", first);
     int a = anh_find(&r->alias, head);
@@ -17636,19 +17639,58 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
    Ruby looks there after the lexical scopes, which inh_resolve_path does
    not follow, and inh_qindex_build marks such a class unsure. Those are
    the ancestors any body of that class gave it before (`r->anc`) as well
-   as this one; a path from the top (`::Foo`) does not look there. */
+   as this one; a path from the top (`::Foo`) does not look there, nor does
+   a name a scope around the header holds (`class Group < Shapes::Base;
+   class Segment < Shapes::Line` inside `module Shapes`). An ancestor can
+   only hold a name some header or constant defines inside a class or
+   module (`r->inner`, by leaf), so a name found at the top level that none
+   defines there is the top level's. */
 static char *inh_resolve_super(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
                                int id, int sc) {
   NodeKind sk = nt_kind(nt, sc);
   if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return NULL;
   char w[512], sq[1024];
-  int rooted = 0;
-  cbs_path_text(nt, sc, w, sizeof w, &rooted);
+  int rooted = 0, lexical = 0;
+  if (!cbs_path_text(nt, sc, w, sizeof w, &rooted)) return NULL;
   int s = inh_scope_of(nt, parent, id);
-  if (!rooted && (inh_scope_has_ancestors(nt, s) || (s >= 0 && qn[s] && anh_has(&r->anc, qn[s]))))
-    return NULL;
-  inh_resolve_path(r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
+  inh_resolve_path(r, qn, nt, parent, id, sc, 1, sq, sizeof sq, &lexical);
+  if (!rooted && !lexical && (inh_scope_has_ancestors(nt, s) || (s >= 0 && qn[s] && anh_has(&r->anc, qn[s])))) {
+    const char *p = !strncmp(w, "Object::", 8) ? w + 8 : w, *sep = strstr(p, "::");
+    char first[512];
+    snprintf(first, sizeof first, "%.*s", sep ? (int)(sep - p) : (int)strlen(p), p);
+    if (!anh_has(&r->known, first) || anh_has(&r->inner, first)) return NULL;
+  }
   return strdup(sq);
+}
+/* The leaf of each constant a header or a write may define inside a class
+   or module, rather than at the top level, anywhere in the program. */
+static void inh_inner_names(ANameHash *h, const NodeTable *nt, const int *parent, int n0) {
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *nm = NULL;
+    int inner = 0;
+    if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int path = nt_ref(nt, id, "constant_path");
+      nm = path >= 0 ? nt_str(nt, path, "name") : NULL;
+      inner = (path >= 0 && nt_kind(nt, path) == NK_ConstantPathNode && nt_ref(nt, path, "parent") >= 0) ||
+              inh_scope_of(nt, parent, id) >= 0;
+    }
+    else if (k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+             k == NK_ConstantOperatorWriteNode || k == NK_ConstantTargetNode) {
+      nm = nt_str(nt, id, "name");
+      inner = inh_scope_of(nt, parent, id) >= 0;
+    }
+    else if (k == NK_ConstantPathTargetNode || k == NK_ConstantPathNode) {
+      /* a path written to: `A::X = ...`, `A::X ||= ...`, `A::X, b = ...` */
+      int pk = parent[id] >= 0 ? (int)nt_kind(nt, parent[id]) : -1;
+      if (k == NK_ConstantPathTargetNode || pk == NK_ConstantPathWriteNode || pk == NK_ConstantPathOrWriteNode ||
+          pk == NK_ConstantPathAndWriteNode || pk == NK_ConstantPathOperatorWriteNode) {
+        nm = nt_str(nt, id, "name");
+        inner = 1;
+      }
+    }
+    if (nm && inner && !anh_has(h, nm)) anh_add(h, nm);
+  }
 }
 static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper) {
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
@@ -17659,6 +17701,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   if (!qs) { free(qn); return NULL; }
   *qsuper = qs;
   InhNames r; memset(&r, 0, sizeof r);
+  inh_inner_names(&r.inner, nt, parent, n0);
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     char q[1024];
@@ -17668,7 +17711,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
       const char *nm = nt_str(nt, id, "name");
       if (!nm || (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode)) continue;
       char target[1024];
-      inh_resolve_path(&r, qn, nt, parent, id, v, 1, target, sizeof target);
+      inh_resolve_path(&r, qn, nt, parent, id, v, 1, target, sizeof target, NULL);
       if (!anh_has(&r.known, target)) continue;   /* not a class or module */
       int s = inh_scope_of(nt, parent, id);
       snprintf(q, sizeof q, "%s%s%s", s >= 0 && qn[s] ? qn[s] : "", s >= 0 && qn[s] ? "::" : "", nm);
@@ -17685,7 +17728,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int sc = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
     if (sc >= 0) qs[id] = inh_resolve_super(&r, qn, nt, parent, id, sc);
-    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q);
+    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q, NULL);
     qn[id] = strdup(q);
     if (!qn[id]) break;
     inh_add_name(&r.known, q);
@@ -17700,7 +17743,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   for (int k = 0; k < r.anc.n; k++) free((char *)r.anc.key[k]);
   for (int k = 0; k < r.ntarget; k++) free(r.target[k]);
   free(r.target);
-  anh_free(&r.known); anh_free(&r.alias); anh_free(&r.anc);
+  anh_free(&r.known); anh_free(&r.alias); anh_free(&r.anc); anh_free(&r.inner);
   return qn;
 }
 
