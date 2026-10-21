@@ -162,7 +162,18 @@ static inline sp_String*sp_String_new_inline_len(const char*s,int64_t len){
 }
 /* Shared append core: `tl` is the operand byte length (strlen for the
    bare-literal-safe entry, sp_str_byte_len for the binary one). */
+#ifdef SP_ONE_STRING
+/* the operand may be a view of this very payload (`s << s`, `s.replace(s)`):
+   its offset survives the move a growth makes, its pointer does not */
+static inline void sp_fd_append_len(sp_String*s,const char*t,int64_t tl){
+  int64_t off=(uintptr_t)t>=(uintptr_t)s->data&&(uintptr_t)t<=(uintptr_t)(s->data+s->len)?(int64_t)(t-s->data):-1;
+  if(!sp_fd_grow(s,s->len+tl))return;
+  if(off>=0)t=s->data+off;
+  memmove(s->data+s->len,t,(size_t)tl);s->len+=tl;s->data[s->len]=0;sp_fd_publish(s);
+}
+#else
 static inline void sp_fd_append_len(sp_String*s,const char*t,int64_t tl){if(!sp_fd_grow(s,s->len+tl))return;memcpy(s->data+s->len,t,tl);s->len+=tl;s->data[s->len]=0;sp_fd_publish(s);}
+#endif
 static inline void sp_String_append(sp_String*s,const char*t){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)strlen(t));}
 /* Binary-safe append: sizes the operand with the header length so an embedded
    NUL is preserved (Ruby String#<< / concat on a marked spinel string). */

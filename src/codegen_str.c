@@ -405,17 +405,22 @@ void str_box_handle_tmp(Buf *b, int tmp) {
    deep-return channel (sp_strbuf_read_pub), for a consumer whose value a
    caller picks the handle up from. str_read_handle reads text already
    written, str_read_handle_tmp a temp. */
+/* (one representation: a read held across a block is a copy, g_one_held) */
+static const char *str_read_face(int pub) {
+  if (g_one_string && g_one_held) return pub ? "sp_strbuf_read_pub_own" : "sp_strbuf_read_own";
+  return pub ? "sp_strbuf_read_pub" : "sp_strbuf_read";
+}
 void str_read_handle(Buf *b, const char *h, int pub) {
-  buf_printf(b, "%s(%s)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", h ? h : "NULL");
+  buf_printf(b, "%s(%s)", str_read_face(pub), h ? h : "NULL");
 }
 void str_read_handle_tmp(Buf *b, int tmp, int pub) {
-  buf_printf(b, "%s(_t%d)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", tmp);
+  buf_printf(b, "%s(_t%d)", str_read_face(pub), tmp);
 }
 /* ...and around the handle's text the caller emits between the open and the
    close, as the box of a handle and a new handle are written around theirs
    (a return tail reads the handle that an emitter renders in place). */
 void str_read_handle_open(Buf *b, int pub) {
-  buf_puts(b, pub ? "sp_strbuf_read_pub(" : "sp_strbuf_read(");
+  buf_printf(b, "%s(", str_read_face(pub));
 }
 void str_read_handle_close(Buf *b) {
   buf_puts(b, ")");

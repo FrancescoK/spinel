@@ -799,6 +799,7 @@ int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int dep
   return 0;
 }
 int  g_tmp = 0;
+int  g_one_held = 0;
 /* A rename-table slot keeps its Buf when the table is cut back below it,
    and the next entry there rewrites it (buf_setf), so a name of any length
    fits and no site that cuts g_nren back has anything to free. */
@@ -3751,6 +3752,8 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   const char *nm = nt_str(nt, v, "name");
+  /* (one representation: the typed container's own read answers the handle) */
+  if (one_str_elem_call(c, v, TY_UNKNOWN)) { emit_expr(c, v, b); return; }
   const char *nilm = strh_elem_nil_raise(c, v);
   if (nilm) buf_puts(b, "sp_StrhArray_nn(");
   if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
@@ -3771,10 +3774,46 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
 }
 /* Is v an element read, pop or shift of a String Array of handles, which
    answers the String's handle (strh_elem_handle_text)? */
+/* One representation: is v an element read, pop or shift of a typed String
+   Array (sp_StrArray holds handles under the mode), or a read of a String
+   Hash's value, which the runtime answers as the handle the container
+   keeps? The handle element emitters then render v as the call it is. */
+int one_str_elem_call(Compiler *c, int v, TyKind rt) {
+  const NodeTable *nt = c->nt;
+  if (!g_one_string || v < 0) return 0;
+  /* (a parenthesized sequence is its last statement) */
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body"), n = 0;
+    const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    v = n >= 1 ? st[n - 1] : -1;
+  }
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int recv0 = nt_ref(nt, v, "receiver");
+  if (rt == TY_UNKNOWN && recv0 >= 0) rt = comp_ntype(c, recv0);
+  if (rt == TY_STR_ARRAY) {
+    int op = strh_call_op_in(c, v, TY_STRH_ARRAY, 0);
+    if (op == STRH_ELEM || op == STRH_TAKE) return 1;
+  }
+  else if (rt != TY_STR_STR_HASH && rt != TY_INT_STR_HASH) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int ca = nt_ref(nt, v, "arguments"), argc = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
+  if (!nm || nt_ref(nt, v, "block") >= 0 || nt_argv_has(nt, av, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
+  if (rt == TY_STR_ARRAY) {
+    /* the other reads and removals of one element the runtime answers as
+       the element (sp_StrArray_min, _max, _sample, _delete_at, _delete) */
+    if (argc == 0) return sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "sample");
+    if (argc == 1 && (sp_streq(nm, "delete_at") || sp_streq(nm, "at") || sp_streq(nm, "fetch")))
+      return comp_ntype(c, av[0]) == TY_INT;
+    return argc == 1 && sp_streq(nm, "delete") && comp_ntype(c, av[0]) == TY_STRING;
+  }
+  return argc == 1 && (sp_streq(nm, "[]") || sp_streq(nm, "fetch") || sp_streq(nm, "delete"));
+}
 int strh_handle_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
+  if (one_str_elem_call(c, v, TY_UNKNOWN)) return 1;
   /* (comp_ntype, not comp_recv_type: that one only turns a String buffer
      into a String or an empty literal into a Poly container, never into a
      String Array of handles, and for a buffer it asks repr_of of the
@@ -3791,8 +3830,10 @@ int strh_elem_slot(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
-  if (recv < 0 || !strh_var_read(nt, recv) ||
-      strh_call_op(c, v, comp_recv_type(c, recv)) != STRH_ELEM) return 0;
+  if (recv < 0 || !strh_var_read(nt, recv)) return 0;
+  TyKind rt = comp_recv_type(c, recv);
+  if (g_one_string && rt == TY_STR_ARRAY) rt = TY_STRH_ARRAY;   /* (one representation: its elements are handles) */
+  if (strh_call_op(c, v, rt) != STRH_ELEM) return 0;
   return argc == 0 || nt_kind(nt, argv[0]) == NK_IntegerNode || nt_kind(nt, argv[0]) == NK_LocalVariableReadNode;
 }
 static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {

@@ -622,6 +622,9 @@ void sp_StrArray_uniq_bang(sp_StrArray *a);
 sp_StrArray *sp_StrArray_uniq(sp_StrArray *a);
 const char *sp_StrArray_join(sp_StrArray *a, const char *sep);
 sp_bool sp_StrArray_include(sp_StrArray *a, sp_strelem v);
+#ifdef SP_ONE_STRING
+sp_bool sp_StrArray_include_s(sp_StrArray *a, const char *v);
+#endif
 sp_StrArray *sp_StrArray_intersect(sp_StrArray *a, sp_StrArray *b);
 sp_bool sp_StrArray_intersect_p(sp_StrArray *a, sp_StrArray *b);
 sp_StrArray *sp_StrArray_union(sp_StrArray *a, sp_StrArray *b);

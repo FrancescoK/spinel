@@ -2922,7 +2922,7 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
   /* --share-strings: a String's handle pushed into a String Array
      keeps its Strings as handles, where the container class can take
      that form (share_strh_gate marks it otherwise) */
-  if (nt2 == TY_POLY_ARRAY && c->share_strings && is_push && vt == TY_STRBUF &&
+  if (nt2 == TY_POLY_ARRAY && c->share_strings && !g_one_string && is_push && vt == TY_STRBUF &&
       (*nslot == TY_STR_ARRAY || *nslot == TY_STRH_ARRAY) && strh_named_open(c, recv))
     nt2 = TY_STRH_ARRAY;
   if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
@@ -3572,7 +3572,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         /* --share-strings: a String Array parameter a String's handle is
            pushed into holds its Strings as handles, as a local's does,
            where its container class can take that form */
-        if (c->share_strings && is_push && !lv->strh_no && lv->type == TY_STR_ARRAY && vt == TY_STRBUF) {
+        if (c->share_strings && !g_one_string && is_push && !lv->strh_no && lv->type == TY_STR_ARRAY && vt == TY_STRBUF) {
           lv_set_type(lv, TY_STRH_ARRAY); changed = 1;
           continue;
         }
@@ -3894,7 +3894,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         (slot_lv ? !slot_lv->strh_no : strh_ivar_open(c, watch_cls, watch_nm)) &&
         (vt == TY_STRBUF || vt == TY_STRING) &&
         (before == TY_UNKNOWN || before == TY_STR_ARRAY || before == TY_STRH_ARRAY))
-      ty_ref_set(slot, TY_STRH_ARRAY);
+      if (!g_one_string) ty_ref_set(slot, TY_STRH_ARRAY);   /* (one representation: the typed Array holds the handles) */
     /* An ivar hash the write does not fit widens to the poly-keyed variant,
        with the literals the ivar is assigned, as a write through its getter
        does: other sites (a getter's `c[1] = 2`) settled the key, and the fold
@@ -4648,7 +4648,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
       (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv_set_type(lv, TY_STRBUF);
   /* --share-strings: a String Array the rule settled in its poly form
      keeps it (share_default_apply) */
-  if (lv->strh_form && lv->type == TY_STR_ARRAY) lv_set_type(lv, TY_STRH_ARRAY);
+  if (lv->strh_form && lv->type == TY_STR_ARRAY && !g_one_string) lv_set_type(lv, TY_STRH_ARRAY);
   if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv_set_type(lv, TY_POLY_ARRAY);
 }
 

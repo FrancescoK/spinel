@@ -103,6 +103,11 @@ static inline const char *isa_const_qualname(const NodeTable *nt, int arg, char 
 extern Buf *g_pre;
 extern int  g_indent;
 extern int  g_tmp;
+/* one representation: the String operands now being rendered are held across
+   a block the program runs (emit_call sets it for a call with a block,
+   emit_stmt_inner clears it for the statements inside), so a handle's read
+   face is a copy (SP_STR_BC, sp_strbuf_read_own), not the live bytes */
+extern int  g_one_held;
 
 /* Inlining a yielding method: method-local names are renamed (to avoid
    clashing with the call site's locals), and yield emits the active
@@ -568,6 +573,10 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b);
 void strh_emit_recv(Compiler *c, int id, int recv, Buf *b);   /* the receiver of an operation on the Array of handles, nil-checked */
 int strh_elem_slot(Compiler *c, int v);
 int strh_handle_call(Compiler *c, int v);
+int one_str_elem_call(Compiler *c, int v, TyKind rt);
+/* one representation: a block parameter bound to a typed String Array's element is the handle (codegen_fold.c) */
+TyKind one_elem_decl_type(const char *k, TyKind et);
+void one_elem_bind_slot(LocalVar *lv, TyKind bt);
 /* An operation on a String Array of handles (codegen_call_array.c) */
 int emit_strh_call(Compiler *c, int id, Buf *b);
 /* When set, the arms of a boxed `new` (emit_call_new_arms) are only the

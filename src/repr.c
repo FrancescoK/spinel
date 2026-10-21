@@ -1201,6 +1201,9 @@ int repr_static_share(const Compiler *c, int node) {
 }
 
 int repr_str_class_shares(unsigned flags, int holders) {
+  /* one representation (--string-repr=handle): every String holder is the
+     handle; the share facts then decide nothing about layout */
+  if (g_one_string) return 1;
   if (flags & SHF_IDENTITY) return 1;
   if (!(flags & SHF_MUT)) return 0;
   return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT | SHF_MULTI)) != 0;
@@ -1446,6 +1449,8 @@ static int repr_flow_checked(Compiler *c, int v) {
    naming the route, rather than compiled handing on a copy. A flow kind
    or a route codegen does not know is refused too. */
 static void repr_flow_refuse(Compiler *c, int u, int kind) {
+  /* one representation: every route hands the handle on as it is */
+  if (g_one_string) return;
   char rn[160];
   repr_flow_route_name(c, u, rn, sizeof rn);
   char msg[512];

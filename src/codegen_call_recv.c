@@ -1864,7 +1864,9 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       Scope *ms = comp_scope_of(c, block);
       LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
       TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
-      if (mlv) { lv_set_type(mlv, et); for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
+      /* (one representation: a String element is the handle, and so is the parameter's slot) */
+      TyKind bt = one_elem_decl_type(k, et);
+      if (mlv) { one_elem_bind_slot(mlv, bt); lv_set_type(mlv, bt); for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
       int trecv = ++g_tmp, ti = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -1883,7 +1885,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
         buf_printf(g_pre, "%s lv_%s = sp_%sArray_oget(_t%d, _t%d);\n", oint_ctype(et), bp, k, trecv, ti);
       }
       else if (bp) {
-        emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
+        emit_indent(g_pre, g_indent + 1); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
       }
       IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
@@ -1895,6 +1897,13 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
         Buf sv2; memset(&sv2, 0, sizeof sv2);
         /* the _nilable store takes the block value with its nil */
         if (msfx[0]) emit_oint_expr(c, bb[bn - 1], et, &sv2);
+        else if (bt == TY_STRBUF) {
+          /* (one representation: the element stored is the handle the block
+             answers, its own parameter's for a bang, a new one over bytes) */
+          Repr lr = repr_of(c, bb[bn - 1]);
+          if (lr.strbuf_src != RS_NONE && lr.strbuf_src != RS_FRESH) emit_strbuf_handle_of(c, bb[bn - 1], &sv2);
+          else buf_printf(&sv2, "sp_String_new_fresh(%s)", vb.p ? vb.p : "NULL");
+        }
         else emit_typed_sink_text(c, bb[bn - 1], et, vb.p ? vb.p : "0", &sv2);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, %s);\n", k, msfx, trecv, ti, sv2.p ? sv2.p : "0");
@@ -8456,7 +8465,7 @@ static int str_partition_shared(Compiler *c, int id, Buf *b, const char *name, i
   tr = hold_operand(c, recv, TY_STRING, 0, tr, 1, " ", b);
   if (at == TY_STRING) ts = hold_operand(c, argv[0], TY_POLY, 1, ts, 1, " ", b);
   buf_printf(b, "sp_StrArray *_t%d = ", tp);
-  if (at == TY_STRING) buf_printf(b, "sp_str_%s(_t%d, sp_poly_arg_str_or_null(_t%d))", name, tr, ts);
+  if (at == TY_STRING) buf_printf(b, "sp_str_%s(%s_t%d%s, sp_poly_arg_str_or_null(_t%d))", name, g_one_string ? "SP_STR_B(" : "", tr, g_one_string ? ")" : "", ts);   /* (one representation: a held handle) */
   else {
     char r[24]; snprintf(r, sizeof r, "_t%d", tr);
     str_arms_case_search(c, b, c->nt, name, recv, argc, argv, r);
@@ -8465,8 +8474,8 @@ static int str_partition_shared(Compiler *c, int id, Buf *b, const char *name, i
                 "for (int i = 0; i < 3; i++) sp_PolyArray_push(_t%d, sp_box_obj(sp_String_new_shared(sp_StrArray_get(_t%d, i)), SP_BUILTIN_STRBUF)); ",
              tp, to, to, to, tp);
   if (at == TY_STRING)
-    buf_printf(b, "if (sp_str_byte_len(sp_poly_arg_str_or_null(_t%d)) == 0 || sp_str_byte_len(sp_StrArray_get(_t%d, 1)) > 0) "
-                  "sp_PolyArray_set(_t%d, 1, _t%d); ", ts, tp, to, ts);
+    buf_printf(b, "if (sp_str_byte_len(sp_poly_arg_str_or_null(_t%d)) == 0 || sp_str_byte_len(%ssp_StrArray_get(_t%d, 1)%s) > 0) "
+                  "sp_PolyArray_set(_t%d, 1, _t%d); ", ts, g_one_string ? "SP_STR_B(" : "", tp, g_one_string ? ")" : "", to, ts);   /* (one representation: the element is a handle) */
   buf_printf(b, "_t%d; })", to);
   return 1;
 }
@@ -8629,7 +8638,7 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
     /* [before, match, after] from the first regex match, else [s, "", ""];
        a Regexp in a value is read after the receiver */
     int tr = ++g_tmp, ts = ++g_tmp, tp = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); mrb_regexp_pattern *_t%d = ", ts, r, ts, tp);
+    buf_printf(b, "({ const char *_t%d = %s%s%s; SP_GC_ROOT(_t%d); mrb_regexp_pattern *_t%d = ", ts, g_one_string ? "SP_STR_B(" : "", r, g_one_string ? ")" : "", ts, tp);   /* (one representation: a held handle) */
     if (re_lit_index(c, argv[0]) >= 0) buf_printf(b, "sp_re_pat_%d", re_lit_index(c, argv[0]));
     else emit_expr(c, argv[0], b);
     /* rooted: both arms allocate (the match pieces, the unmatched copies)

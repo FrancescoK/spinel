@@ -1736,7 +1736,14 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      token that says the expression cannot return. */
   if (strncmp(past_open_parens(txt), "sp_raise_", 9) == 0)
     buf_printf(b, "((void)(%s), (const char *)NULL)", txt);
-  else emit_coerce_text(c, node, store_value_kind(c, node), TY_STRING, CO_HOLD, txt, "a String operand", b);
+  else {
+    /* one representation: the operand may be the handle (an element read,
+       a slot) where this wants bytes; SP_STR_B resolves the face on the
+       expression's C type (spinel_rt.h) */
+    if (g_one_string) buf_puts(b, g_one_held ? "SP_STR_BC(" : "SP_STR_B(");
+    emit_coerce_text(c, node, store_value_kind(c, node), TY_STRING, CO_HOLD, txt, "a String operand", b);
+    if (g_one_string) buf_puts(b, ")");
+  }
   free(tmp.p);
 }
 
@@ -20308,6 +20315,10 @@ extern const Compiler *g_tmc_c;
 
 static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
   if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n#define SP_SHARE_BOX_HANDLES 1\n");
+  /* the one-representation String: the runtime's headers lay the typed
+     containers out over the handle, so the define comes before them (the
+     marker the driver reads to pick the archive is beside the thread one) */
+  if (g_one_string) buf_puts(b, "#define SP_ONE_STRING 1\n");
   /* sp_feature_required, not the require gate: without SPINEL_REQUIRE_GATE,
      respond_to?'s io/console answer must still follow the program's require,
      as CRuby's does. */
@@ -20579,7 +20590,7 @@ char *codegen_program(const NodeTable *nt) {
      the byte-identical single-threaded archive. Emitted only when the program
      references Thread/Mutex/Queue/... -- so it must follow the feature scan. */
   if (g_uses_threads) buf_puts(&b, "/* SPINEL_USES_THREADS */\n");
-  if (g_one_string) buf_puts(&b, "#define SP_ONE_STRING 1\n/* SPINEL_ONE_STRING */\n");
+  if (g_one_string) buf_puts(&b, "/* SPINEL_ONE_STRING */\n");
   /* Ask the C compiler for a brake the frame estimate cannot provide: on a
      program that runs user code on a fiber stack, any frame past that stack is
      a guard-page crash waiting for the right input, so it is worth a warning

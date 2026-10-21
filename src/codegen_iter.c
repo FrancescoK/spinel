@@ -8,6 +8,11 @@
 #include "value_pos.h"
 #include <errno.h>
 
+/* One representation: a block parameter bound to a typed String Array's
+   element (the split, scan and upto forms) holds the handle the Array keeps,
+   so a change through it shows in the Array; its slot is the handle's. */
+static TyKind one_elem_bind_type(TyKind et) { return g_one_string && et == TY_STRING ? TY_STRBUF : et; }
+
 /* Is `s` the C text of an integer literal (`589LL`, `-8LL`, `(-8LL)`)? Its
    value in *v. */
 static int c_int_literal_text(const char *s, long long *v) {
@@ -6048,14 +6053,18 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     int spIndent = indent + 1;
     if (use_shadow_sp) {
       int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
-      lv_set_type(clv0, et);
-      arm_body_infer(c, ARM_SITE_SPLIT, block, et, sb_bb, sb_bn);
+      /* (one representation: the element is the handle, and so is the
+         parameter that holds it, its body inferred over that slot) */
+      TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;
+      if (bt == TY_STRBUF) clv0->str_shared = 1;
+      lv_set_type(clv0, bt);
+      arm_body_infer(c, ARM_SITE_SPLIT, block, bt, sb_bb, sb_bn);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
-      emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_indent(b, spIndent); buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, spIndent);
       spIndent--;
       emit_indent(b, spIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0);
+      lv_set_type(clv0, csaved0); clv0->str_shared = ss0;
     }
     else {
       if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
@@ -6109,14 +6118,16 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     int bodyIndent = indent + 1;
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
-      lv_set_type(clv0, et);
-      arm_body_infer(c, ARM_SITE_SCAN, block, et, scb_bb, scb_bn);
+      TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;   /* (one representation: see the split form) */
+      if (bt == TY_STRBUF) clv0->str_shared = 1;
+      lv_set_type(clv0, bt);
+      arm_body_infer(c, ARM_SITE_SCAN, block, bt, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
-      emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_indent(b, bodyIndent); buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0);
+      lv_set_type(clv0, csaved0); clv0->str_shared = ss0;
     }
     else {
       if (p0) {
@@ -6200,12 +6211,14 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
         if (use_shadow) {
           int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
-          lv_set_type(slv, TY_STRING);
-          arm_body_infer(c, ARM_SITE_STR_UPTO, block, TY_STRING, sbb, sbn);
+          TyKind bt = one_elem_bind_type(TY_STRING); int ss0 = slv->str_shared;   /* (one representation: see the split form) */
+          if (bt == TY_STRBUF) slv->str_shared = 1;
+          lv_set_type(slv, bt);
+          arm_body_infer(c, ARM_SITE_STR_UPTO, block, bt, sbb, sbn);
           emit_indent(b, indent + 1);
-          buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
-          lv_set_type(slv, saved);
+          lv_set_type(slv, saved); slv->str_shared = ss0;
         }
         else {
           emit_indent(b, indent + 1);
@@ -7542,7 +7555,8 @@ void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t
                 " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : _t%d) {\n",
              ti, tk, ti, ta, ti, ta, ti, tk, tk, tx, ta, tx, tn);
   emit_indent(b, indent + 1);
-  buf_printf(b, "const char *_t%d = _t%d ? sp_StrArray_get(_t%d, _t%d) : _t%d;\n", tc, ta, ta, ti, tx);
+  /* (one representation: the typed Array's element is a handle, read as its bytes here) */
+  buf_printf(b, "const char *_t%d = _t%d ? %ssp_StrArray_get(_t%d, _t%d)%s : _t%d;\n", tc, ta, g_one_string ? "SP_STR_B(" : "", ta, ti, g_one_string ? ")" : "", tx);
   emit_indent(b, indent + 1);
   buf_printf(b, "if (!_t%d) _t%d = sp_str_succ_n(_t%d, _t%d);\n", ta, tn, tx, tk);
   snprintf(elem, elemcap, "_t%d", tc);

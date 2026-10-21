@@ -10255,7 +10255,7 @@ static TyKind infer_array_literal(Compiler *c, int id) {
        String Array of handles (#8328 step 5) when a local holds it, where its
        container class can take that form (share_strh_gate refuses it
        otherwise, for good) */
-    if (strh_all && (strh_has || share_strh_literal_slot(c, id)) && !share_strh_node_no(c, id) && strh_literal_held(c, id))
+    if (strh_all && !g_one_string && (strh_has || share_strh_literal_slot(c, id)) && !share_strh_node_no(c, id) && strh_literal_held(c, id))
       return TY_STRH_ARRAY;
     if (c->arr_want && id < c->node_cap && ty_is_obj_array(c->arr_want[id]) &&
         e == ty_array_elem(c->arr_want[id]))

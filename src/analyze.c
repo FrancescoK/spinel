@@ -22712,6 +22712,8 @@ static int strh_empty_arg(Compiler *c, const int *par, int n) {
 static int share_strh_gate(Compiler *c) {
   const NodeTable *nt = c->nt;
   int nc = share_class_count(c), nh = share_holder_count(c), changed = 0, any = 0;
+  /* (one representation: a typed String Array holds the handles itself) */
+  if (g_one_string) return 0;
   if (!c->share_strings || nc <= 0) return 0;
   unsigned char *st = calloc((size_t)nc, 1);
   if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -45871,7 +45873,17 @@ static void refuse_string_read_copies(Compiler *c) {
             q.rt_site = u;
             q.rt_grow = grow || clear;
           }
-          int ok = trusted || q.rt_site >= 0;
+          /* (one representation: the matches are the Array's handles; a
+             subject the facts cannot vouch for takes the run-time length
+             check instead of the refusal) */
+          int ok_one = 0;
+          if (g_one_string && !trusted && q.rt_site < 0) {
+            /* (a block that rebinds the subject's variable changes no String:
+               no check; any other takes the length check) */
+            if (subj) { q.rt_site = u; q.rt_grow = 1; }
+            ok_one = 1;
+          }
+          int ok = trusted || q.rt_site >= 0 || ok_one;
           if (!trusted) nm.n = 0;
           /* each local whose String the subject can be is a route's sole */
           for (int i = 0; ok && i < (nm.n > 0 ? nm.n : 1); i++) {

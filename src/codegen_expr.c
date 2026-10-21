@@ -431,6 +431,11 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (late_call) EMIT_IV();
         else { buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")"); }
       }
+      else if (g_one_string && t == TY_STRBUF) {
+        /* (one representation: a part whose value is a handle, a write's in
+           value position; read through its face) */
+        buf_puts(&conv, "sp_str_or_empty(SP_STR_B("); EMIT_IV(); buf_puts(&conv, "))");
+      }
       else if (t == TY_FLOAT) {
         /* and a nullable Float holding nil writes nothing too */
         buf_puts(&conv, oint_part ? "sp_float_opt_to_s(" : "sp_float_opt_to_s(sp_ofloat_of(");
@@ -648,6 +653,25 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       else if (wkind == WK_NIL) {
         buf_printf(&decls, "(void)(%s); ", conv.p ? conv.p : "0");
         tv2 = -1;
+      }
+      else if (g_one_string && t == TY_STRING && !vexpr[0] && repr_of(c, expr).strbuf_src == RS_HANDLE &&
+               (nt_kind(nt, expr) == NK_LocalVariableReadNode || nt_kind(nt, expr) == NK_InstanceVariableReadNode) &&
+               /* (not a define_method loop variable the literal stands in for) */
+               !(g_dm_subst_name && nt_kind(nt, expr) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, expr, "name"), g_dm_subst_name))) {
+        /* one representation: the part is held as its handle where it is
+           evaluated and read when the parts are joined, as CRuby collects
+           the parts' objects first (a later part that rebinds the variable
+           leaves this part's String; one that changes it in place shows) */
+        int th = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb);
+        /* (a local through emit_local_ref: a captured or renamed one is not
+           its bare lv_ name) */
+        if (nt_kind(nt, expr) == NK_LocalVariableReadNode) emit_local_ref(c, expr, nt_str(nt, expr, "name"), &hb);
+        else emit_strbuf_handle_of(c, expr, &hb);
+        buf_printf(&decls, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, hb.p ? hb.p : "NULL", th);
+        buf_printf(&late, "const char *_t%d = sp_str_or_empty(SP_STR_B(_t%d)); SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
+                   tv2, th, tv2, tv2, tv2);
+        free(hb.p);
       }
       else {
         int defer = 0;
@@ -2850,7 +2874,7 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
     if (g_repr_check) repr_channel_note(c, id, RCH_BYTES);
   }
   else {
-    buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+    str_read_handle(b, sref, 1);   /* (one representation: a copy when held, g_one_held) */
     if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
   }
 }
@@ -4717,6 +4741,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
+    /* one representation: a String left that is a handle (a slot's read, an
+       element) is held as the handle, so the chain's value keeps its identity
+       (`v = h[k] || "d"` answers the Hash's own String); the right arm is
+       made a handle too (a literal's is its site's) */
+    int lhandle = g_one_string && lt == TY_STRING && repr_of(c, left).strbuf_src == RS_HANDLE;
     /* An unresolved left emits a poly fallback. One that diverges -- a bare
        name nothing defines raises NameError -- makes the whole chain diverge:
        keep the raise and answer the result's own placeholder, so the slot
@@ -4739,6 +4768,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     int ro = cond_res_oint(c, id, res);
     buf_puts(b, "({ ");
     if (lo) buf_puts(b, oint_ctype(lt));
+    else if (lhandle) buf_puts(b, "sp_String *");
     else emit_ctype(c, (lt == TY_UNKNOWN || lt_falsy_const) ? res : lt, b);
     buf_printf(b, " _t%d = ", t);
     if (lt_falsy_const) {
@@ -4762,6 +4792,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     else if (lt == TY_UNKNOWN) emit_unresolved_coerced_text(c, left, res, ltxt, b);
     else if (lo) emit_oint_expr(c, left, lt, b);
     else if (lt_hbox) emit_boxed(c, left, b);
+    else if (lhandle) emit_strbuf_handle_of(c, left, b);
     else emit_unresolved_coerced(c, left, lt, b);
     free(lunk.p);
     buf_puts(b, "; ");
@@ -4836,6 +4867,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     EMIT_ARM(0, &larm);
     { Buf *sv_pre2 = g_pre; g_pre = &rpre; EMIT_ARM(1, &rarm); g_pre = sv_pre2; }
     #undef EMIT_ARM
+    if (lhandle && res == TY_STRING && rarm.p) {
+      Buf hr; memset(&hr, 0, sizeof hr);
+      buf_printf(&hr, "sp_String_new_fresh(%s)", rarm.p);
+      free(rarm.p); rarm = hr;
+    }
     int rhoists = rpre.p && rpre.p[0];
     if (!rhoists) {
       buf_printf(b, "%s ? %s : %s; })", tcond.p ? tcond.p : "1",

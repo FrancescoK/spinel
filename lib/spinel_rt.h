@@ -3091,6 +3091,18 @@ static inline const char *sp_strbuf_read_pub(sp_String *h) {
   if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
   return h ? sp_String_cstr(h) : NULL;
 }
+/* ...except a read held across a block the program runs (the receiver or
+   an argument of a call with a block, gsub!'s shadow): the block may change
+   the String in place and move its payload, so the C builtin iterates over
+   its own copy, as it did when every read was one */
+static inline const char *sp_strbuf_read_own(sp_String *h) {
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
+  return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
+}
+static inline const char *sp_strbuf_read_pub_own(sp_String *h) {
+  _sp_ret_strbuf = (void *)h;
+  return sp_strbuf_read_own(h);
+}
 #else
 static inline const char *sp_strbuf_read(sp_String *h) {
   if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
@@ -22068,6 +22080,49 @@ static const char *sp_sym_to_s(sp_sym id) { (void)id; return sp_str_empty; }
 static const char *sp_class_to_s(sp_Class c) { return c.name ? c.name : sp_str_empty; }
 static sp_sym sp_sym_intern(const char *s) { (void)s; return (sp_sym)0; }
 static sp_sym sp_sym_intern_n(const char *s, size_t n) { (void)s; (void)n; return (sp_sym)0; }
+#endif
+
+#ifdef SP_ONE_STRING
+/* One representation (string-one-repr-design.md): under the mode a String
+   slot is the handle and a builtin's answer is bytes, and an emitter does
+   not always know which face an expression has (an element read answers
+   the handle, a fresh String bytes). The C compiler does: these resolve the
+   face on the expression's type, so the generated C names one conversion
+   and gets the right one. A handle asked for as a handle is itself, which
+   keeps its identity; bytes asked for as a handle get a new one (a frozen
+   literal its own site's). The runtime's own files do not see these (they
+   spell the element macros of sp_types.h); the generated TU does. */
+static inline sp_String *sp_strface_h_self(sp_String *h) { return h; }
+static inline const char *sp_strface_b_self(const char *s) { return s; }
+static inline const char *sp_strface_b_of(sp_String *h) { return h ? h->data : NULL; }
+static inline const char *sp_strface_b_copy(sp_String *h) { return sp_strbuf_read_own(h); }
+/* ...and bytes held that are a live payload's (a view a bound read answered,
+   marker 0xfd, of a handle that is not frozen) are copied too: the handle
+   can change under the hold (`s.concat(s, s)` reads s after the first
+   append grew it) */
+static inline const char *sp_strface_bc_bytes(const char *s) {
+  if (s && ((const unsigned char *)s)[-1] == 0xfd && !sp_str_is_frozen_val(s)) return sp_str_concat(s, (&("\xff")[1]));
+  return s;
+}
+static inline sp_RbVal sp_strface_box_h(sp_String *h) { return h ? sp_box_obj(h, SP_BUILTIN_STRBUF) : sp_box_nil(); }
+/* (each spells its operand once, in a statement expression: the operand may
+   be a statement expression of its own with labels in it, and it is as long
+   as an emitter made it) */
+/* (a bare 0 an emitter writes for nil is an int to _Generic: the zf arm) */
+static inline const char *sp_strface_zero_b(int z) { (void)z; return NULL; }
+static inline sp_String *sp_strface_zero_h(int z) { (void)z; return NULL; }
+static inline sp_RbVal sp_strface_zero_box(int z) { (void)z; return sp_box_nil(); }
+#define SP_ONE_FACE(x, hf, bf, zf) ({ __auto_type _sp_fv = (x); _Generic(_sp_fv, sp_String *: hf, int: zf, long: zf, long long: zf, default: bf)(_sp_fv); })
+#define SP_STR_B(x) SP_ONE_FACE(x, sp_strface_b_of, sp_strface_b_self, sp_strface_zero_b)
+/* the same for an operand held across a block the program runs (sp_strbuf_read_own) */
+#define SP_STR_BC(x) SP_ONE_FACE(x, sp_strface_b_copy, sp_strface_bc_bytes, sp_strface_zero_b)
+#define sp_String_new_shared(x) SP_ONE_FACE(x, sp_strface_h_self, sp_String_new_shared, sp_strface_zero_h)
+#define sp_String_new_fresh(x) SP_ONE_FACE(x, sp_strface_h_self, sp_String_new_fresh, sp_strface_zero_h)
+#define sp_box_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_str, sp_strface_zero_box)
+#define sp_box_str_new(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_str_new, sp_strface_zero_box)
+#define sp_box_nullable_str(x) SP_ONE_FACE(x, sp_strface_box_h, sp_box_nullable_str, sp_strface_zero_box)
+#define sp_StrArray_push(a, v) sp_StrArray_push((a), sp_String_new_fresh(v))
+#define sp_StrArray_include(a, v) ({ __auto_type _sp_iv = (v); _Generic(_sp_iv, sp_String *: sp_StrArray_include, default: sp_StrArray_include_s)((a), _sp_iv); })
 #endif
 
 #endif /* SP_RUNTIME_H */

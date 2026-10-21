@@ -3242,7 +3242,9 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   /* Byte-taking builtin arms read the held handle; boxed arms keep it. */
   char strarg[64];
   snprintf(strarg, sizeof strarg, argc > 0 && atmp_ty[0] == TY_STRBUF
-           ? "sp_strbuf_read_pub(_t%d)" : "_t%d", argc > 0 ? atmp[0] : 0);
+           ? "sp_strbuf_read_pub(_t%d)"
+           : g_one_string && argc > 0 && atmp_ty[0] == TY_STRING ? "SP_STR_B(_t%d)" : "_t%d",   /* (one representation: a handle held) */
+           argc > 0 ? atmp[0] : 0);
   int is_cover = ps->cover, is_ctryconv = ps->ctryconv, is_gcdlcm = ps->gcdlcm, is_ppack = ps->ppack;
   int is_include = ps->include, is_strdel = ps->strdel, is_strpart = ps->strpart;
   int is_strsetop_n = ps->strsetop_n, is_pstore = ps->pstore, is_strencode = ps->strencode;
@@ -3685,7 +3687,9 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   const char *idxref = T->idxref;
   char strarg[64];
   snprintf(strarg, sizeof strarg, argc > 0 && atmp_ty[0] == TY_STRBUF
-           ? "sp_strbuf_read_pub(_t%d)" : "_t%d", argc > 0 ? atmp[0] : 0);
+           ? "sp_strbuf_read_pub(_t%d)"
+           : g_one_string && argc > 0 && atmp_ty[0] == TY_STRING ? "SP_STR_B(_t%d)" : "_t%d",   /* (one representation: a handle held) */
+           argc > 0 ? atmp[0] : 0);
   int is_index = ps->index, is_unshift = ps->unshift, is_push = ps->push, is_ppack = ps->ppack;
   int is_pjoin = ps->pjoin, is_include = ps->include, is_arr_index = ps->arr_index;
   int is_intersect = ps->intersect, is_strftime = ps->strftime, is_pred = ps->pred;

@@ -1730,7 +1730,7 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
         if (at0 == TY_STRBUF && pt == TY_STRING) continue;
         /* emit_poly_shared_arg binds String bytes to a handle parameter.
            Otherwise the unresolved Class path already binds this pair. */
-        if (at0 == TY_STRING && pt == TY_STRBUF && poly_cmethod_collision(c, id, name)) continue;
+        if (at0 == TY_STRING && pt == TY_STRBUF && (g_one_string || poly_cmethod_collision(c, id, name))) continue;   /* (one representation: every String parameter is the handle) */
         if (pt != TY_POLY && pt != TY_UNKNOWN && at0 != TY_POLY && at0 != TY_UNKNOWN &&
             pt != at0) incompat8 = 1;
       }
@@ -23828,7 +23828,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       else if (used[i]) {
         free(opb[i].p);
         memset(&opb[i], 0, sizeof opb[i]);
+        /* (one representation: this copy is one, a snapshot the call's other
+           operands cannot change: g_one_held makes the read face copy) */
+        int held1 = g_one_held;
+        if (g_one_string) g_one_held = 1;
         emit_strbuf_node_read(c, node[i], sref.p ? sref.p : "", &opb[i]);
+        g_one_held = held1;
       }
       free(sref.p);
       if (!(used[i] & 1)) { free(opb[i].p); continue; }
@@ -23836,6 +23841,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (opp[i].p) buf_puts(b, opp[i].p);
     free(opp[i].p);
     if (oo[i]) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
+    /* (one representation: bytes held across the other operands are a copy
+       when they are a live payload's, SP_STR_BC) */
+    if (g_one_string && !oo[i] && ty[i] == TY_STRING && opb[i].p) buf_printf(b, " _t%d = SP_STR_BC(%s); ", tmp[i], opb[i].p);
+    else
     buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : oo[i] ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
     /* a by-value object carries its Strings in the temp itself */
     if (comp_ty_value_obj(c, ty[i])) {
@@ -26819,7 +26828,16 @@ int emit_env_args_before(Compiler *c, int id) {
   return saved;
 }
 
+static void emit_call_inner(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  /* one representation: the operands of a call with a block are held
+     across the block (g_one_held) */
+  int held = g_one_held;
+  if (g_one_string && nt_ref(c->nt, id, "block") >= 0) g_one_held = 1;
+  emit_call_inner(c, id, b);
+  g_one_held = held;
+}
+static void emit_call_inner(Compiler *c, int id, Buf *b) {
   if (emit_call_on_held_self_answer(c, id, b)) return;
   refuse_prepass_at_emit(c, id);
   if (g_plan_check) ucall_emitted(id);

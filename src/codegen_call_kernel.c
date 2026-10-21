@@ -1192,16 +1192,26 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            the same only-this-invocation matching). Rooted for the body's
            duration -- the body can allocate. */
         emit_indent(g_pre, g_indent);
+        if (g_one_string) {
+          /* (one representation: the tag is a handle, which the block
+             parameter holds and a throw hands on as one, so the catch
+             registers the handle itself, matched by identity as a handle) */
+          buf_printf(g_pre, "sp_String *_ctagh%d = sp_String_new_shared(sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq)); SP_GC_ROOT(_ctagh%d);\n", t, t);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "const char *_ctag%d = (const char *)(void *)_ctagh%d; (void)_ctag%d;\n", t, t, t);
+        }
+        else {
         buf_printf(g_pre, "const char *_ctag%d = sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq);\n", t);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_STR(_ctag%d);\n", t);
+        }
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_catch_tag[sp_catch_top] = _ctag%d;\n", t);
         /* matched by identity, as the block parameter holding this very tag
            is: a copy of it (`tag.dup`) is another object */
-        tag_kind = 2;
+        tag_kind = g_one_string ? 3 : 2;
         const char *bp0 = block_param_name(c, blk, 0);
         if (bp0) {
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "lv_%s = _ctag%d;\n", rename_local(bp0), t);
+          buf_printf(g_pre, g_one_string ? "lv_%s = _ctagh%d;\n" : "lv_%s = _ctag%d;\n", rename_local(bp0), t);
         }
       }
       if (tag_kind >= 0) {

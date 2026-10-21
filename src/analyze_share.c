@@ -6998,6 +6998,11 @@ int share_node_dead(const Compiler *c, int n) {
 
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   if (!c->share_strings) return 0;
+  /* one representation: every route hands the handle on as it is (see
+     share_routes_check), so none is refused, before or after the seal; a
+     route's run-time mark (a scan's length check) is set as for one the
+     facts vouch for */
+  if (g_one_string) { sh_route_rt_mark(c, q); return 1; }
   if (share_node_dead(c, q->site) || share_node_dead(c, q->to)) return 1;
   if (repr_sealed()) {
     if (!sh_route_ok(c, q)) return 0;
@@ -7023,6 +7028,10 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
 }
 
 void share_routes_check(Compiler *c) {
+  /* one representation: every slot is the handle and a route hands it on
+     as it is (sp_String_new_shared of a handle is that handle), so no
+     route copies; the deferred routes are not refused */
+  if (g_one_string) return;
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
     /* (a method the program never names runs nothing) */

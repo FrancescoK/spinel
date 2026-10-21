@@ -1204,7 +1204,8 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     if (p0 && clv_ech) {
       tsv_ech = ++g_tmp;
       Buf sv_ech; memset(&sv_ech, 0, sizeof sv_ech); emit_ctype(c, clv_ech->type, &sv_ech);
-      buf_printf(b, "%s _t%d = lv_%s; ", sv_ech.p ? sv_ech.p : "sp_RbVal", tsv_ech, p0); free(sv_ech.p);
+      /* (one representation: the slot's own type, whichever face it holds) */
+      buf_printf(b, "%s _t%d = lv_%s; ", g_one_string ? "__auto_type" : sv_ech.p ? sv_ech.p : "sp_RbVal", tsv_ech, p0); free(sv_ech.p);
     }
     if (is_line) {
       int tl = ++g_tmp;
@@ -1245,7 +1246,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
         else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
-        else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);
+        else buf_printf(b, g_one_string ? "lv_%s = SP_STR_B(sp_StrArray_get(_t%d, _t%d)); " : "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);   /* (one representation: the line is a handle, the parameter's slot bytes) */
       }
     }
     /* codepoints yields each character's codepoint, not each byte: the String

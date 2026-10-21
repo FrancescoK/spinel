@@ -469,7 +469,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_STRING) {
     /* a nullable string (NULL) prints "nil" */
     int tv = ++g_tmp;
-    buf_printf(b, "{ const char *_t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ const char *_t%d = ", tv);
+    if (g_one_string) emit_str_expr(c, arg, b); else emit_expr(c, arg, b);   /* (one representation: the element read's bytes) */
     buf_printf(b, "; sp_puts_line(_t%d ? sp_str_inspect(_t%d) : \"nil\"); }\n", tv, tv);
   }
   else if (t == TY_BOOL) {
@@ -4444,7 +4445,12 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
                     tH, tH, nt_str(c->nt, id, "name"));
     buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = ", tH, pre.p ? pre.p : "", tH);
-    str_read_handle_tmp(b, tH, 0);
+    { int held = g_one_held;
+      /* (one representation: with a block, the shadow is a copy the block
+         cannot move, as every read was) */
+      if (nt_ref(c->nt, id, "block") >= 0) g_one_held = 1;
+      str_read_handle_tmp(b, tH, 0);
+      g_one_held = held; }
     buf_printf(b, "; SP_GC_ROOT(lv__sh%d);", tH);
     /* a block that changes the String through another name while gsub! or
        sub! runs over it is CRuby's RuntimeError, where the shadow's write
@@ -19783,8 +19789,13 @@ static void emit_lambda_body_break(Compiler *c, int id, Buf *b, int indent) {
 }
 
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
+  /* a statement's own operands are not held by the call around it (the
+     statements of a block's body): see g_one_held */
+  int held = g_one_held;
+  g_one_held = 0;
   emit_stmt_node(c, id, b, indent);
   emit_ivar_write_marks(c, id, b, indent);
+  g_one_held = held;
 }
 static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -20823,6 +20834,10 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        handle (a spliced block's under the demand) holds its arms' values as
        handles: the temp is the handle, each arm stores its own */
     else if (repr_share_rule(c) && g_result_var && g_result_ty == TY_STRBUF && (rt == TY_STRING || rt == TY_STRBUF))
+      rt = TY_STRBUF;
+    /* (one representation: a method that answers the handle takes the
+       begin's String result as one, each arm storing its own) */
+    else if (g_one_string && !g_result_var && g_ret_type == TY_STRBUF && rt == TY_STRING)
       rt = TY_STRBUF;
     if (is_scalar_ret(rt)) {
       int t = ++g_tmp;
@@ -22320,6 +22335,8 @@ void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *
   /* Every argument runs before the frozen check, as in CRuby. A boxed
      argument may be this very String, whose sp_poly_to_s is the live buffer
      the first append grows: it is staged as a copy. */
+  int held0 = g_one_held;
+  if (g_one_string && argc > 1) g_one_held = 1;   /* (one representation: a handle argument is read as a copy, as every one was) */
   for (int a = 0; a < argc; a++) {
     int boxed = repr_of(c, argv[a]).kind == RK_BOXED;
     buf_printf(b, " const char *_t%d = %s", base + a, boxed ? "sp_str_concat(" : "");
@@ -22339,6 +22356,7 @@ void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *
     if (a < last_alloc && (boxed || (!literal && !held)))
       buf_printf(b, " SP_GC_ROOT_STR(_t%d);", base + a);
   }
+  g_one_held = held0;
   free(rt.p);
   buf_printf(b, " if (sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data);\n", sref, sref);
   for (int a = 0; a < argc; a++) {
