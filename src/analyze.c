@@ -32613,7 +32613,47 @@ static int spread_param_appended(Compiler *c, int mi, int pj) {
    on it that mutates an Array (`s << w`, `s.clear`, `s.replace(t)`), or
    handed to a call that may? Its layout is then the run time's, not the
    literal's, and what it holds is whatever was stored into it. */
+/* an_local_array_changed's answers by (scope, name), kept while the node
+   table and the scopes hold still: the answer reads only the calls'
+   names and arguments. The spread pass asked it per splat site, every
+   round, and each ask walked every call of the scope; on a Rails program
+   late in its fixpoint that walk was 17% of a sampled window. */
+typedef struct { int sidx; const char *name; signed char ans; } LacEntry;
+static LacEntry *lac_tab; static int lac_cap, lac_n;
+static const NodeTable *lac_nt; static unsigned lac_ver, lac_gen; static int lac_count, lac_nscopes = -1;
+static LacEntry *lac_slot(int sidx, const char *name) {
+  unsigned h = (sp_strhash(name) ^ ((unsigned)sidx * 2654435761u)) & (unsigned)(lac_cap - 1);
+  while (lac_tab[h].name && !(lac_tab[h].sidx == sidx && sp_streq(lac_tab[h].name, name))) h = (h + 1) & (unsigned)(lac_cap - 1);
+  return &lac_tab[h];
+}
+static LacEntry *lac_find(Compiler *c, int sidx, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (lac_nt != nt || lac_ver != nt->version || lac_count != nt->count || lac_gen != comp_scope_index_gen() || lac_nscopes != c->nscopes) {
+    free(lac_tab); lac_cap = 1024; lac_n = 0;
+    lac_tab = calloc((size_t)lac_cap, sizeof *lac_tab);
+    if (!lac_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    lac_nt = nt; lac_ver = nt->version; lac_count = nt->count; lac_gen = comp_scope_index_gen(); lac_nscopes = c->nscopes;
+  }
+  if (lac_n * 2 >= lac_cap) {
+    LacEntry *old = lac_tab; int ocap = lac_cap;
+    lac_cap *= 2;
+    lac_tab = calloc((size_t)lac_cap, sizeof *lac_tab);
+    if (!lac_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) if (old[i].name) *lac_slot(old[i].sidx, old[i].name) = old[i];
+    free(old);
+  }
+  return lac_slot(sidx, name);
+}
+static int an_local_array_changed_scan(Compiler *c, const char *xn, Scope *xs);
 static int an_local_array_changed(Compiler *c, const char *xn, Scope *xs) {
+  if (!xn || !xs) return 1;
+  LacEntry *e = lac_find(c, (int)(xs - c->scopes), xn);
+  if (e->name) return e->ans;
+  int ans = an_local_array_changed_scan(c, xn, xs);
+  e->sidx = (int)(xs - c->scopes); e->name = xn; e->ans = (signed char)ans; lac_n++;
+  return ans;
+}
+static int an_local_array_changed_scan(Compiler *c, const char *xn, Scope *xs) {
   static const char *const MUT[] = { "<<", "push", "append", "concat", "insert", "unshift", "prepend",
     "replace", "clear", "[]=", "pop", "shift", "delete", "delete_at", "delete_if", "keep_if", "fill",
     "slice!", NULL };
