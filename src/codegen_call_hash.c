@@ -388,15 +388,31 @@ int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b) {
     if (kt == TY_STRING) buf_puts(b, "_hk = sp_poly_strbuf_deref(_hk); _hk.tag == SP_TAG_STR ? _hk.v.s : (const char *)0; })");
     else buf_puts(b, "_hk.tag == SP_TAG_SYM ? (sp_sym)_hk.v.i : (sp_sym)-1; })");
   }
-  else {
-    buf_printf(b, "; %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[0], kt, b);
+  /* ...and on an Integer-keyed table, a key that may be nil or another
+     class goes through the _okey ops (hash_okey_form), where it misses as
+     CRuby's lookup does: converted, a nil key raised TypeError where
+     CRuby's KeyError names it */
+  else if (hash_okey_form(c, argv[0], kt) && repr_of(c, argv[0]).kind == RK_BOXED) {
+    tb = ++g_tmp;
+    buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_oint _t%d = ", tb, tk);
+    char tbn[32]; snprintf(tbn, sizeof tbn, "_t%d", tb);
+    emit_opw_okey_read(tbn, b);
   }
-  buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_%s(_t%d, _t%d) : (",
-             hn, th, tk, hn, vo ? "vget" : "get", th, tk);
+  else {
+    buf_printf(b, "; %s _t%d = ", hash_key_ctype(c, argv[0], kt), tk); emit_hash_key_o(c, argv[0], kt, b);
+  }
+  const char *ks = hash_okey_sfx(c, argv[0], kt);
+  if (vo && ks[0])
+    buf_printf(b, "; sp_%sHash_has_key_okey(_t%d, _t%d) ? sp_%sHash_vget(_t%d, _t%d.v) : (", hn, th, tk, hn, th, tk);
+  else
+    buf_printf(b, "; sp_%sHash_has_key%s(_t%d, _t%d) ? sp_%sHash_%s%s(_t%d, _t%d) : (",
+               hn, ks, th, tk, hn, vo ? "vget" : "get", vo ? "" : ks, th, tk);
   buf_puts(b, "sp_exc_stage_recv(");
   emit_boxed_text(c, rt, htmp, b);
   buf_puts(b, "), sp_raise_key_not_found(");
   if (tb >= 0) buf_printf(b, "_t%d", tb);
+  else if (ks[0]) buf_printf(b, "%s(_t%d)", oint_box(kt), tk);
   else emit_boxed_text(c, kt, keytmp, b);
   buf_printf(b, "), %s); })", miss_v);
   return 1;

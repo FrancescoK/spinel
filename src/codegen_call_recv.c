@@ -6528,8 +6528,10 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         if (argc == 1) {
           Buf rb; int ch = hold_recv_open(c, recv, 0, c_type_name(rt), "SP_GC_ROOT", b, &rb);
           if (vt == TY_INT) oint_open(c, id, TY_INT, b);
-          buf_printf(b, "sp_%sHash_%s(%s, ", hn, getter, rb.p); free(rb.p);
-          emit_hash_key(c, argv[0], kt, b); buf_puts(b, ")");
+          /* (a key that may be nil or another class takes the _okey op,
+             where it misses: converted, nil raised TypeError) */
+          buf_printf(b, "sp_%sHash_%s%s(%s, ", hn, getter, hash_okey_sfx(c, argv[0], kt), rb.p); free(rb.p);
+          emit_hash_key_o(c, argv[0], kt, b); buf_puts(b, ")");
           if (vt == TY_INT) oint_close(c, id, b);
           if (ch) buf_puts(b, "; })");
         }

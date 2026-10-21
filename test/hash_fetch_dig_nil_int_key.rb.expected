@@ -1,0 +1,13 @@
+20
+"one"
+nil
+10
+nil
+"one"
+:d
+"z"
+["key not found: nil", nil, {1 => 10, 2 => 20}]
+["key not found: nil", nil]
+20
+"key not found: \"a\""
+"key not found: nil"
