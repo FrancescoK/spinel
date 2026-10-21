@@ -573,7 +573,11 @@ still works.
   symbol-to-proc forms that desugar to one, and user-owned methods still compile.
 
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
-  matching CRuby. String literals ARE frozen by default here
+  including `delete`, `clear`, and `[]=` on a Hash read from a mixed container,
+  matching CRuby.
+  Hash mutators check frozen state before lookup or writes, even on an empty
+  Hash or when a key is absent.
+  String literals ARE frozen by default here
   (`frozen_string_literal: true` semantics, with no opt-out) -- see
   "String literals are frozen by default" below for what that changes and
   where mutable strings come from.
@@ -1022,6 +1026,11 @@ carry shared String values even when inference otherwise gives the return a
 String-keyed, String-valued type. The promotion preserves the Hash and stored
 String identities through callers and ivars. RBS-pinned returns and methods
 with nonempty or alternate Hash producers keep their existing inferred types.
+
+The shared String check for a boxed `[]=` store excludes Struct classes
+that the receiver's class facts rule out. A Hash or Array store is not
+refused because of a Struct that these facts exclude. The check still
+refuses a possible Struct member that cannot hold the shared String handle.
 
 A boxed call may also compose an exact String builtin
 row with same-named user-method returns when the settled dispatch plan accounts
@@ -1492,6 +1501,15 @@ precision as well) carry the NUL and its tail, as do `IO#write`,
 prints `\u0000`. `test/embedded_nul_method_partition.rb` pins which
 method is which, and `test/format_interp_binary.rb` the formatting.
 
+Float directives (`%f`, `%e`, `%E`, `%g`, `%G`, `%a`, `%A`) in `format`,
+`sprintf`, `printf` and `String#%` convert a user object through a `to_f`
+the program defines with `def` (in the class, a module it includes, or on
+the object itself) or `define_method`. The method must return a Float; a
+missing method or another return type raises `TypeError`, and an exception
+raised by the method propagates. A `to_f` made by `alias`, `alias_method`
+or `attr_reader` is called only when the program also defines a `to_f`
+with `def` or calls `Float()`; one answered by `method_missing` is not.
+
 #### Modules named after a builtin class
 
 `module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a
@@ -1736,11 +1754,14 @@ answers it (`def seen = @seen ||= ...`, also as the last value of an `if`
 or a `begin` in it), or as the dropped value of a block of the `each`
 family (one whose methods of the program's own drop it too, of those its
 receiver can reach: an Array's or a Hash's `each` reaches no method of a
-class of the program's but a reopened builtin's). Where an identity Set cannot be
-followed so -- it is handed on, its variable is assigned another Set, it is
-a parameter, a call answering it is kept, or a reflective read names its
-variable -- every Set shares one class, and the check covers the program's
-other Sets too. A `send` or `public_send` of a computed name counts as a
+class of the program's but a reopened builtin's). An `instance_variable_get`
+that names the variable, or a name the program computes, is such a read too
+(`names.map { |v| instance_variable_get(v).inspect }`). Where an identity
+Set cannot be followed so -- it is handed on, its variable is assigned
+another Set, it is a parameter, a call answering it is kept, or an
+`instance_variable_set` of a value that may be a Set may name its variable
+-- every Set shares one class, and the check covers the program's other
+Sets too. A `send` or `public_send` of a computed name counts as a
 `compare_by_identity` call only in a program that spells that name; a name
 listed only in a constant that is read as `K.include?(name)`
 (`K = %i[clear compare_by_identity].to_set.freeze`) does not count, since no

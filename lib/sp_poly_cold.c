@@ -629,6 +629,7 @@ sp_RbVal sp_poly_clear(sp_RbVal v)
      the box untouched. */
   if (v.tag == SP_TAG_STR) { sp_str_check_mutable(v.v.s); return sp_box_str(sp_str_from_bytes("", 0)); }
   sp_poly_coll_chk(v, "clear");
+  sp_poly_hash_check_mutable(v);
   if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:      ((sp_IntArray *)v.v.p)->len = 0; break;
@@ -1540,6 +1541,11 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       /* a String converts the way Float() does; anything else is not a number
          and CRuby refuses rather than formatting a zero (#4010) */
       else if (v.tag == SP_TAG_STR) dv = (double)sp_str_to_f_strict(v.v.s ? v.v.s : sp_str_empty);
+      /* a user object converts through its #to_f, which may allocate */
+      else if (sp_poly_is_user_obj(v)) {
+        SP_GC_ROOT(a); SP_GC_ROOT_STR(fmt);
+        dv = sp_poly_Float_ex(v, 1).v;
+      }
       else { free(buf); sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", sp_convert_src_name(v))); }
       /* Ruby prints non-finite floats as Inf/-Inf/NaN (C printf lowercases) */
       if (!isfinite(dv)) wn = snprintf(tmp, sizeof(tmp), "%s", isnan(dv) ? "NaN" : dv > 0 ? "Inf" : "-Inf");

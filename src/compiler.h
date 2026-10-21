@@ -1739,6 +1739,8 @@ const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int 
 void       const_get_leaves_begin(Compiler *c);  /* index the class leaves while the class table holds still */
 void       const_get_leaves_end(void);
 int        const_defined_known(Compiler *c, const char *rnm, const char *cgn);
+int        const_defined_from(Compiler *c, const char *rnm, const char *cgn);   /* ... and seen from R: R, its ancestors, their modules, or top level (#9876) */
+int        const_seen_by_class(Compiler *c, int k, const char *cgn);
 int        qc_const_qualified(const char *qn);
 int        qc_leaf_qualified(const char *leaf);
 const char *time_strict_parser_call(Compiler *c, int id);
@@ -1802,6 +1804,15 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* The classes whose chain answers (name, is_cm) -- comp_method_in_chain's
+   or comp_cmethod_in_chain's -- ascending, two ints per class (the class,
+   the scope its chain finds), *n their count. NULL with *n -1 while the
+   chain memo cannot be trusted (the index unfrozen, a scope moved): the
+   caller then asks class by class. A pass asking whether any class's
+   method of a name answers so-and-so walked every class and hashed the
+   name for each; at every boxed comparison site, every round, that was a
+   third of a Rails program's re-narrow round (1,299 classes). */
+const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n);
 /* does class_id's chain define the method call id names, and does the call reach it? A call
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */

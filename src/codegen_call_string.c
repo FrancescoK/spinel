@@ -8,6 +8,7 @@
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "value_pos.h"
 #include "codegen_call_arms.h"
 
 /* a Regexp literal's match / match? / ===, the match family on a String, gsub, and String#% */
@@ -1400,7 +1401,7 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
   if (recv < 0 || argc < 1 || nt_ref(nt, id, "block") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt != TY_STRING && rt != TY_STRBUF) return 0;
-  int first = unwrap_parens(c, recv);
+  int first = nt_paren_single(c->nt, recv);
   Repr rp = repr_of(c, first);
   if (rp.handle && rp.kind == RK_STRBUF) return 0;
   int links[64], nlinks = 0, cur = recv, calls = 0;
@@ -1471,7 +1472,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
   if (repr_share_rule(c) && argc == 0 && is_string_append_or_prepend(name) &&
       bop_answers_self(TY_STRING, name, argc, 0) == BOPF_SELF) {
     Buf ref; memset(&ref, 0, sizeof ref);
-    if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), &ref)) {
+    if (strbuf_recv_handle(c, id, nt_paren_single(c->nt, recv), &ref)) {
       int t = ++g_tmp;
       buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (sp_String_is_frozen(_t%d)) "
                     "sp_raise_frozen_str(sp_String_cstr(_t%d)); " : "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
@@ -1488,7 +1489,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
        below would emit an invalid assignment (#2020). prepend replaces the
        buffer with args-then-contents, keeping the handle stable (#3227). */
     { Buf sref0; memset(&sref0, 0, sizeof sref0);
-      int sr = unwrap_parens(c, recv);
+      int sr = nt_paren_single(c->nt, recv);
       const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
       Repr rp = repr_of(c, sr);
       int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;
@@ -1637,7 +1638,11 @@ static int emit_string_slice_poly(Compiler *c, int id, int arg, Buf *b) {
    variable's String. */
 static int str_self_chain_root(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  switch (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return -1;
+  case VP1_MANY: return -1;
+  }
   while (n >= 0 && nt_kind(nt, n) == NK_CallNode) {
     int r = nt_ref(nt, n, "receiver");
     const char *nm = nt_str(nt, n, "name");
@@ -1645,7 +1650,11 @@ static int str_self_chain_root(Compiler *c, int n) {
     if (!nm || (rt != TY_STRING && rt != TY_STRBUF) || comp_builtin_kind_reopen_mi(c, TY_STRING, nm) >= 0 ||
         !(bop_answers_self(TY_STRING, nm, call_plain_argc(c, n), nt_ref(nt, n, "block") >= 0) & BOPF_SELF))
       return -1;
-    n = an_unparen(nt, r);
+    switch (vp_one(nt, r, VPS_NONE | VP_PARENS_ONLY, &n)) {
+    case VP1_NODE: break;
+    case VP1_NIL: return -1;
+    case VP1_MANY: return -1;
+    }
     if (str_mut_var_recv(c, n) || sb_shadowed_reader(n)) return n;
   }
   return -1;
@@ -1658,7 +1667,11 @@ static int str_self_chain_root(Compiler *c, int n) {
    nobody. */
 int str_fresh_value(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  switch (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 0;
+  case VP1_MANY: return 0;
+  }
   if (nt_kind(nt, n) == NK_InterpolatedStringNode) return 1;
   if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0 || comp_ntype(c, n) != TY_STRING) return 0;
   int r = nt_ref(nt, n, "receiver");
@@ -1666,7 +1679,13 @@ int str_fresh_value(Compiler *c, int n) {
   if (r < 0 || !nm || comp_ntype(c, r) != TY_STRING || comp_builtin_kind_reopen_mi(c, TY_STRING, nm) >= 0)
     return 0;
   int self = bop_answers_self(TY_STRING, nm, call_plain_argc(c, n), 0);
-  if (self & BOPF_SELF_CLASS) return nt_kind(nt, nt_paren_single(nt, r)) == NK_StringNode;
+  if (self & BOPF_SELF_CLASS) {
+    switch (vp_one(nt, r, VPS_NONE | VP_PARENS_ONLY, &r)) {
+    case VP1_NODE: return nt_kind(nt, r) == NK_StringNode;
+    case VP1_NIL: return 0;
+    case VP1_MANY: return 0;
+    }
+  }
   return (self == 0 || self == BOPF_COPY_CLASS) && !str_self_call(nt, n) && bop_share(TY_STRING, nm) == BSH_PURE;
 }
 

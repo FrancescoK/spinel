@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "repr.h"
 #include "holder.h"
+#include "value_pos.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
 
@@ -688,7 +689,7 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
    it does, on the read inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
-  id = unwrap_parens(c, id);
+  id = nt_paren_single(c->nt, id);
   if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (repr_self_shared(c, id)) return 1;
@@ -1023,6 +1024,17 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
 
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (g_block_id < 0 || id < 0) return 0;
+  /* A parenthesized yield answers its value at this inline site too. The
+     cached union can still be nil when another copy yields another kind. */
+  if (nt_kind(c->nt, id) == NK_ParenthesesNode) {
+    int one;
+    switch (vp_one(c->nt, id, VPS_NONE | VP_PARENS_ONLY, &one)) {
+    case VP1_NODE:
+      return nt_kind(c->nt, one) == NK_YieldNode && sp_yield_site_type(c, one, out);
+    case VP1_NIL: return 0;
+    case VP1_MANY: return 0;
+    }
+  }
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
   if (sp_streq(ty, "CallNode") && yield_operator_site_type(c, id, out)) return 1;
@@ -2463,7 +2475,7 @@ static int ivs_never_nil(Compiler *c, int v) {
    above proves never is. nil.dup is nil, so a dup is proven only with its
    receiver. */
 int stored_value_may_be_nil(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (!node_may_be_null_nil(c, v)) return 0;
   if (nt_kind(c->nt, v) == NK_ParenthesesNode || !ivs_never_nil(c, v)) return 1;
   if (nt_kind(c->nt, v) == NK_CallNode && sp_streq(nt_str(c->nt, v, "name"), "dup"))
@@ -4694,7 +4706,7 @@ TyKind store_value_kind(Compiler *c, int node) {
   TyKind t = yield_site_type(c, node);
   /* a parenthesized value, `case ({})`, is rendered as its one statement */
   if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ParenthesesNode) {
-    int in = unwrap_parens(c, node);
+    int in = nt_paren_single(c->nt, node);
     if (in != node) return store_value_kind(c, in);
   }
   NodeKind k = nt_kind(c->nt, node);
@@ -4895,6 +4907,21 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
       buf_puts(b, "SP_STR_B(");
       emit_expr(c, node, b);
       buf_puts(b, ")");
+      RCC(CF_FIT);
+      return;
+    }
+    /* a call whose receiver raises (`raise("...").first`) is untyped too, and
+       its text is the raise with a boxed nil behind it: into a slot of
+       another kind it answers that slot's zero, as a bare raise does (#9879) */
+    if (nt_kind(c->nt, node) == NK_CallNode && slot != TY_POLY && slot != TY_UNKNOWN &&
+        (comp_ntype(c, node) == TY_UNKNOWN || comp_ntype(c, node) == TY_POLY)) {
+      Buf t; memset(&t, 0, sizeof t);
+      emit_expr(c, node, &t);
+      const char *tx = t.p ? t.p : "";
+      if (strncmp(tx, "((void)(", 8) == 0 && text_diverges(tx))
+        buf_printf(b, "({ (void)%s; %s; })", tx, default_value_from_compiler(c, slot));
+      else buf_puts(b, tx);
+      free(t.p);
       RCC(CF_FIT);
       return;
     }
@@ -5150,7 +5177,7 @@ static int plain_local(Compiler *c, LocalVar *lv, const char *name, int depth) {
 static int plain_expr(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
-  n = unwrap_parens(c, n);
+  n = nt_paren_single(c->nt, n);
   if (n < 0 || comp_ntype(c, n) != TY_INT) return 0;
   switch (nt_kind(nt, n)) {
   case NK_IntegerNode: return 1;
@@ -5310,7 +5337,7 @@ void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b)
    may_nil, so a copy of it (`[0] * 8192`) has nothing to hand on. */
 int typed_array_lit_flag_free(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (node >= 0) node = unwrap_parens(c, node);
+  if (node >= 0) node = nt_paren_single(c->nt, node);
   if (node < 0 || nt_kind(nt, node) != NK_ArrayNode) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   for (int k = 0; els && k < en; k++) {
@@ -6026,7 +6053,7 @@ void emit_opw_okey_read(const char *t, Buf *b) {
 void emit_str_array_handles(Compiler *c, int v, Buf *b) {
   /* a String Range's minmax: its min and max as they answer them, the
      endpoints themselves (sp_srange_extreme_h), not copies */
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   if (repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_minmax_pair(nt_str(c->nt, u, "name")) &&
       nt_ref(c->nt, u, "arguments") < 0 && nt_ref(c->nt, u, "block") < 0 && nt_ref(c->nt, u, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(c->nt, u, "receiver")) == TY_STR_RANGE && cplan_user(c, u)->dispatch == CP_NONE &&
@@ -6166,6 +6193,8 @@ int kwh_only_spreads(const NodeTable *nt, int kwh) {
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) return 0;
   return 1;
 }
+/* Remains only for the String-route callers being replaced (#9258).
+   New code uses nt_paren_single for syntax or vp_one for the value. */
 int unwrap_parens(Compiler *c, int id) {
   return nt_paren_single(c->nt, id);
 }
@@ -6500,7 +6529,8 @@ const char *iv_c(const char *name) {
    them come from one backward pass, kept until the scope count changes. */
 int g_scopes_settled = 0;
 static const Compiler *g_shadow_c;
-static int g_shadow_n = -1;
+static int g_shadow_n = -1, g_shadow_raw;
+static unsigned g_shadow_gen;
 static unsigned char *g_shadow_tab;
 typedef struct { const char *name; int class_id, is_cm, used, any, d1, multi; } ShadowKey;
 static unsigned shadow_hash(const char *nm, int cls, int cm) {
@@ -6509,7 +6539,9 @@ static unsigned shadow_hash(const char *nm, int cls, int cm) {
   return h ^ ((unsigned)cls * 2654435761u) ^ (unsigned)cm;
 }
 static int scope_is_shadowed_scan(Compiler *c, int s);
-static void shadow_tab_build(Compiler *c) {
+/* raw: by the class and the kind the scope has now, which is what the
+   scan compares before the scopes settle; else by the scope's own class */
+static void shadow_tab_build(Compiler *c, int raw) {
   int n = c->nscopes;
   free(g_shadow_tab);
   g_shadow_tab = (unsigned char *)calloc((size_t)(n > 0 ? n : 1), 1);
@@ -6522,8 +6554,9 @@ static void shadow_tab_build(Compiler *c) {
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
-    int own_cm, own = comp_scope_own_class(c, k, &own_cm);
-    int cls = own < 0 ? -1 : own, cm = own_cm ? 1 : 0;
+    int cls, cm;
+    if (raw) { cls = sc->class_id < 0 ? -1 : sc->class_id; cm = sc->is_cmethod; }
+    else { int own_cm, own = comp_scope_own_class(c, k, &own_cm); cls = own < 0 ? -1 : own; cm = own_cm ? 1 : 0; }
     size_t i = shadow_hash(sc->name, cls, cm) & (cap - 1);
     while (tab[i].used && !(tab[i].class_id == cls && tab[i].is_cm == cm && sp_streq(tab[i].name, sc->name)))
       i = (i + 1) & (cap - 1);
@@ -6539,12 +6572,21 @@ static void shadow_tab_build(Compiler *c) {
     }
   }
   free(tab);
-  g_shadow_c = c; g_shadow_n = n;
+  g_shadow_c = c; g_shadow_n = n; g_shadow_raw = raw; g_shadow_gen = comp_scope_index_gen();
 }
 int scope_is_shadowed(Compiler *c, int s) {
   if (c->scopes[s].c_name) return 0;
-  if (!g_scopes_settled) return scope_is_shadowed_scan(c, s);
-  if (g_shadow_c != c || g_shadow_n != c->nscopes) shadow_tab_build(c);
+  /* Before the scopes settle, the scan's answer holds while the scope
+     index is frozen (the inference fixpoint among others): a scope is then
+     only appended, and the indexed ones keep their names and classes
+     (sm_build), so one pass answers for all of them until the count or the
+     index's epoch moves. Each ask scanned every later scope, and the call
+     planner asks per arm of every dispatch it weighs, every round. */
+  int raw = !g_scopes_settled;
+  if (raw && !comp_scope_index_is_frozen()) return scope_is_shadowed_scan(c, s);
+  if (g_shadow_c != c || g_shadow_n != c->nscopes || g_shadow_raw != raw ||
+      (raw && g_shadow_gen != comp_scope_index_gen()))
+    shadow_tab_build(c, raw);
   return g_shadow_tab[s];
 }
 static int scope_is_shadowed_scan(Compiler *c, int s) {
@@ -6629,7 +6671,7 @@ static int else_is_held(Compiler *c, int els, TyKind t) {
 }
 static int read_is_held(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   TyKind t = comp_ntype(c, node);
@@ -6687,7 +6729,7 @@ static int read_is_held(Compiler *c, int node) {
    sits in a rooted temp. Any other source is boxed by
    sp_typed_to_poly_unheld. */
 int typed_array_src_held(Compiler *c, int node) {
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0) return 0;
   return read_is_held(c, node) || nt_kind(c->nt, node) == NK_ArrayNode;
 }
@@ -6937,6 +6979,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   case TY_REGEX: self_cls = "Regexp"; break;
   case TY_MATCHDATA: self_cls = "MatchData"; break;
   case TY_PROC: self_cls = "Proc"; break;
+  case TY_METHOD: self_cls = "Method"; break;
   case TY_RANDOM: self_cls = "Random"; break;
   case TY_IO: self_cls = "IO"; break;
   case TY_OPENSTRUCT: self_cls = "OpenStruct"; break;
@@ -7874,7 +7917,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int sr = nt_ref(nt, node, "receiver");
       if (repr_share_rule(c) && sr >= 0 && repr_of(c, sr).as_ty == TY_STRBUF && repr_of(c, sr).kind != RK_BOXED) return 1;
     }
-    const char *nm = nt_str(nt, node, "name");
+    const char *nm = view_call_name(c, node);
     if (!nm) return 0;
     /* a File::Stat field and File.size?: the runtime answers the oint */
     if (file_stat_nil_call(c, node)) return 1;

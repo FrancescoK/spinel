@@ -3857,9 +3857,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      ary_root): a name its chain does not define, and the builtin_only call
      a super is rewritten into (arysub_super_into), is the builtin's method
      on the embedded value, which is the instance itself */
-  if (ty_is_object(rt) && comp_ary_root(c, ty_object_class(rt)) >= 0) {
-    int ecid = ty_object_class(rt);
-    fam = comp_ary_is_str(c, ecid) ? TY_STRING : comp_ary_is_hash(c, ecid) ? BOP_ANY_HASH : BOP_ANY_ARRAY;
+  /* (a String subclass only: an Array or Hash subclass's store keeps its
+     value in the embedded container, which the share plan does not settle
+     as it settles an Array's or a Hash's, so its value was stored as a copy
+     (`b[:k] = s` on a Hash subclass, #9258); there the call stays unknown,
+     which keeps the String the value is) */
+  if (ty_is_object(rt) && comp_ary_root(c, ty_object_class(rt)) >= 0 && comp_ary_is_str(c, ty_object_class(rt))) {
+    fam = TY_STRING;
   }
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An

@@ -1689,8 +1689,8 @@ int text_diverges(const char *txt) {
     if (*p == '{') { p++; while (*p == ' ') p++; p = past_open_parens(p); continue; }
     break;
   }
-  return strncmp(p, "sp_raise_", 9) == 0 || strncmp(p, "sp_abort_raise(", 15) == 0 ||
-         strncmp(p, "sp_exit_raise(", 14) == 0;
+  return strncmp(p, "sp_raise_", 9) == 0 || strncmp(p, "sp_raise(", 9) == 0 ||   /* Kernel#raise with a message */
+         strncmp(p, "sp_abort_raise(", 15) == 0 || strncmp(p, "sp_exit_raise(", 14) == 0;
 }
 
 static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
@@ -1951,7 +1951,7 @@ void emit_str_expr_sep(Compiler *c, int node, Buf *b) {
    Parentheses around the call (`push((table(x)))`) are peeled. */
 int call_answers_no_value(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  node = unwrap_parens(c, node);
+  node = nt_paren_single(c->nt, node);
   if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   if (!nm) return 0;
@@ -2516,7 +2516,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      Array becomes (emit_str_array_handles); boxed as its bytes, a change
      through an element went to a copy (#9258) */
   if (repr_share_rule(c) && node >= 0 && comp_ntype(c, node) == TY_STR_ARRAY && !arg_ran_first(node, 0)) {
-    int u = unwrap_parens(c, node);
+    int u = nt_paren_single(c->nt, node);
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && share_node_fresh_elems(c, u)) {
       buf_puts(b, "sp_box_nullable_obj((void *)");
       emit_str_array_handles(c, node, b);
@@ -3000,7 +3000,7 @@ int operand_may_change_string(Compiler *c, int n) {
 /* --share-strings: is v (parentheses aside) a call, not run yet, whose
    every target publishes the handle of a String the rule shares? */
 int call_publishes_shared_handle(Compiler *c, int v) {
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !arg_ran_first(v, 0) &&
          !arg_ran_first(u, 0) && repr_of(c, u).strbuf_src == RS_NONE && repr_call_returns_handle(c, u) &&
          share_node_shares(c, u);
@@ -4311,8 +4311,37 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
   return g_fi_nm_head[sp_strhash(nm) & (unsigned)(g_fi_nm_nb - 1)];
 }
 
+/* The classes' `alias new old` lines, flat, by the new name: a call of that
+   name reaches the old method's scope, which the name chain above does not
+   hold under it. Built with the same lifetime as that chain. */
+static const char **g_fi_al_nm;
+static int *g_fi_al_cls, g_fi_nal, g_fi_al_nclasses = -1;
+static const ClassInfo *g_fi_al_classes;
+
+static void fi_alias_index(Compiler *c) {
+  if (g_fi_al_nclasses == c->nclasses && g_fi_al_classes == c->classes) return;
+  free(g_fi_al_nm); free(g_fi_al_cls);
+  int tot = 0;
+  for (int k = 0; k < c->nclasses; k++) tot += c->classes[k].naliases;
+  g_fi_al_nm = (const char **)malloc(sizeof(char *) * (size_t)(tot ? tot : 1));
+  g_fi_al_cls = (int *)malloc(sizeof(int) * (size_t)(tot ? tot : 1));
+  g_fi_nal = 0;
+  for (int k = 0; g_fi_al_nm && g_fi_al_cls && k < c->nclasses; k++)
+    for (int a = 0; a < c->classes[k].naliases; a++) {
+      if (!c->classes[k].alias_new[a]) continue;
+      g_fi_al_nm[g_fi_nal] = c->classes[k].alias_new[a];
+      g_fi_al_cls[g_fi_nal++] = k;
+    }
+  g_fi_al_nclasses = c->nclasses;
+  g_fi_al_classes = c->classes;
+}
+
 /* Every user method a call could reach: by the receiver's class when it names
-   one, by the bare name when the receiver is boxed or absent. */
+   one, by the bare name when the receiver is boxed or absent. A name that is
+   an alias reaches the method it names too: Set's `alias < proper_subset?`
+   is the arm a boxed `size < other.size` inside proper_subset? calls (under
+   promote), and forcing that method inline asked gcc to inline it into
+   itself. */
 static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, callnode, "name");
@@ -4333,6 +4362,15 @@ static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max
     if (cid >= 0 && m->class_id != cid &&
         comp_method_in_chain(c, cid, nm, NULL) != si) continue;
     out[(*n)++] = si;
+  }
+  fi_alias_index(c);
+  for (int a = 0; a < g_fi_nal && *n < max; a++) {
+    if (!sp_streq(g_fi_al_nm[a], nm)) continue;
+    int si = comp_method_in_chain(c, cid >= 0 ? cid : g_fi_al_cls[a], nm, NULL);
+    if (si < 0) continue;
+    int dup = 0;
+    for (int q = 0; q < *n && !dup; q++) dup = out[q] == si;
+    if (!dup) out[(*n)++] = si;
   }
 }
 
@@ -10831,10 +10869,13 @@ const char *class_ruby_name(Compiler *c, int ci) {
      it here directly -- the class is leaf-keyed and has no enclosing-class
      chain to rebuild the path from (see register_ffi_decls) */
   if (c->classes[ci].ruby_name_cache) return c->classes[ci].ruby_name_cache;
-  /* collect ancestry: max 16 levels deep */
+  /* collect ancestry: max 16 levels deep. An encloser that carries its
+     name (a class under a builtin, `module Comparable::Ext`, or one whose
+     leaf collided) gives the whole path above it. */
   int chain[16]; int depth = 0;
   for (int k = ci; k >= 0 && depth < 16; ) {
     chain[depth++] = k;
+    if (k != ci && c->classes[k].ruby_name_cache) break;
     k = c->classes[k].enclosing_class;
   }
   if (depth == 1) return c->classes[ci].name; /* top-level: no qualification needed */
@@ -10850,7 +10891,8 @@ const char *class_ruby_name(Compiler *c, int ci) {
   buf[0] = '\0';
   for (int i = depth - 1; i >= 0; i--) {
     const char *seg = c->classes[chain[i]].name;
-    if (!seg) continue;
+    if (i == depth - 1 && i > 0 && c->classes[chain[i]].ruby_name_cache) seg = c->classes[chain[i]].ruby_name_cache;
+    else if (!seg) continue;
     /* A name qualify_colliding_classes rewrote carries its enclosing path
        already (`Brainfuck__Array`): the Ruby-visible name is the leaf, since
        the enclosers are being prepended here. */
@@ -12261,8 +12303,8 @@ static int obj_deconstruct_keys_method(Compiler *c, int ci, int *defc) {
 /* The class-side names a Class read out of a boxed slot answers, each a
    switch over the program's classes, since the typed constant's answer is
    compiled from the class table: `subclasses` lists the classes whose parent
-   the class is, `allocate` builds a bare instance of a class that is not an
-   exception (and the empty value of String, Array, Hash and Object, as the
+   the class is, `allocate` builds a bare instance with that class's storage
+   (and the empty value of String, Array, Hash and Object, as the
    typed constant does), and a Struct class answers `members` and
    `keyword_init?`. A user class value is boxed by id, or by name once it
    has passed through a name-carrying box; sp_cls_answers_id reads both,
@@ -12302,13 +12344,26 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, " return a;\n");
   }
   buf_puts(b, "    default: break;\n  }\n"
+              "  if (v.tag == SP_TAG_CLASS) {\n"
+              "    const char *n = sp_class_val_name(v);\n"
+              "    if (!strcmp(n, \"Integer\")) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (ci->parent >= 0 || is_builtin_reopen(ci->name) || ci->is_singleton_of) continue;
+    int sn = nt_ref(c->nt, ci->def_node, "superclass");
+    const char *pn = sn >= 0 ? nt_str(c->nt, sn, "name") : NULL;
+    if (!pn || !sp_streq(pn, "Integer")) continue;
+    buf_printf(b, "      sp_PolyArray_push(a, sp_box_class(((sp_Class){%d, SPL(\"%s\")})));\n",
+               i, class_ruby_name(c, i));
+  }
+  buf_puts(b, "      return a;\n    }\n  }\n"
               "  sp_raise_nomethod(sp_nomethod_msg(\"subclasses\", v));\n  return a;\n}\n");
   buf_puts(b, "static sp_RbVal sp_cls_allocate(sp_RbVal v) {\n"
               "  switch (sp_cls_answers_id(v)) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (is_builtin_reopen(ci->name) || ci->is_native_class || !ci->instantiated ||
-        comp_class_is_module(c, ci) || class_is_exc_subclass(c, i)) continue;
+        comp_class_is_module(c, ci)) continue;
     Buf ax; memset(&ax, 0, sizeof ax);
     emit_obj_alloc_expr(c, i, &ax);
     buf_printf(b, "    case %d: return ", i);
@@ -12323,6 +12378,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
               "    if (strcmp(n, \"Array\") == 0) return sp_box_poly_array(sp_PolyArray_new());\n"
               "    if (strcmp(n, \"Hash\") == 0) return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);\n"
               "    if (strcmp(n, \"Object\") == 0) return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);\n"
+              "    if (!strcmp(n, \"Integer\")) sp_raise_cls(\"TypeError\", SPL(\"allocator undefined for Integer\"));\n"
               "  }\n"
               "  sp_raise_nomethod(sp_nomethod_msg(\"allocate\", v));\n  return sp_box_nil();\n}\n");
   buf_puts(b, "static sp_PolyArray *sp_cls_members(sp_RbVal v) {\n"
@@ -15507,7 +15563,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "    case %s: {\n", bcase);
     }
     else {
-      snprintf(callee, sizeof callee, "sp_%s_%s", dcn, mc("<=>"));
+      snprintf(callee, sizeof callee, "sp_%s_%s", dcn, mc(m->name ? m->name : "<=>"));
       snprintf(selfarg, sizeof selfarg, "%s(sp_%s *)a.v.p", self_vt ? "*" : "", dcn);
       buf_printf(b, "    case %d: {\n", cid);
     }
@@ -15822,8 +15878,9 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
     /* Comparable's `==` is derived from `<=>`: a class that defines the
        compare but not the equality still answers `a == b` as `(a <=> b) == 0`.
        Without an arm the boxed path fell through to identity and said false
-       for two equal values (#3501). */
-    if (derive_eq && !bcase && comp_method_in_chain(c, k, "==", NULL) < 0) {
+       for two equal values (#3501). Only with the module included: a class
+       defining `<=>` alone compares by identity (class_is_comparable). */
+    if (derive_eq && !bcase && comp_method_in_chain(c, k, "==", NULL) < 0 && class_is_comparable(c, k)) {
       int cmp_defcls = -1;
       int cmp_mi = comp_method_in_chain(c, k, "<=>", &cmp_defcls);
       if (cmp_mi >= 0) {
@@ -16248,7 +16305,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "    case %d: { %s%sreturn sp_%s_%s(%s(sp_%s *)a.v.p%s); }\n",
                  comp_class_index(c, ci->name),
                  builds ? "SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); " : "", pre.p ? pre.p : "",
-                 dcn, mc("=="), slf, dcn, args.p);
+                 dcn, mc(m->name ? m->name : "=="), slf, dcn, args.p);
     else
       buf_printf(b, "    case %d: { %s return FALSE; }\n", comp_class_index(c, ci->name), raise);
     free(pre.p); free(args.p);
@@ -17803,7 +17860,8 @@ static void scan_prologue_features(Compiler *c) {
     const char *nnm = nt_str(c->nt, nid, "name");
     /* and #subclasses on a Class value no constant names */
     if (nrv >= 0 && comp_ntype(c, nrv) == TY_CLASS && nnm && sp_streq(nnm, "subclasses") &&
-        nt_kind(c->nt, nrv) != NK_ConstantReadNode) { g_gen_cls_answers = 1; break; }
+        (nt_kind(c->nt, nrv) != NK_ConstantReadNode ||
+         comp_class_index(c, nt_str(c->nt, nrv, "name")) < 0)) { g_gen_cls_answers = 1; break; }
     if (nrv < 0 || (repr_of(c, nrv).kind != RK_BOXED && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     if (nnm && (sp_streq(nnm, "subclasses") || sp_streq(nnm, "allocate") ||
                 sp_streq(nnm, "members") || sp_streq(nnm, "keyword_init?")))

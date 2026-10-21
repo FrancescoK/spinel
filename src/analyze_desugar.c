@@ -2162,20 +2162,23 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
      module, by its own (last) name -- the flat namespace the literal rule
      resolves in. A constant or class whose leaf collided carries a qualified
      key (`Mod__NAME`); a runtime name is the leaf as written, which the
-     literal rule finds under the receiver's qualified key. */
+     literal rule finds under the receiver's qualified key. A path header
+     (`class Mod::B`) and a path write (`Mod::X = v`) give their leaf too. */
   char **cand = NULL; int ncand = 0, candcap = 0;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     const char *v = NULL;
-    if (k == NK_ConstantWriteNode) {
-      v = nt_str(nt, id, "qc_orig_name");
-      if (!v) v = nt_str(nt, id, "name");
+    if (k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode) {
+      int w = k == NK_ConstantWriteNode ? id : nt_ref(nt, id, "target");
+      v = w >= 0 ? nt_str(nt, w, "qc_orig_name") : NULL;
+      if (!v && w >= 0) v = nt_str(nt, w, "name");
     }
     else if (k == NK_ClassNode || k == NK_ModuleNode) {
       int cp = nt_ref(nt, id, "constant_path");
       const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;
+      if (!rn) rn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
       const char *rl = rn ? strrchr(rn, ':') : NULL;
-      v = rn ? (rl ? rl + 1 : rn) : cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+      v = rl ? rl + 1 : rn;
     }
     if (!v || !*v) continue;
     int dup = 0;
@@ -4600,6 +4603,23 @@ static int engine_absent(NodeTable *nt, int e, int in) {
       const char *lib = x;
       x = nt_str(nt, below, "name");
       if (below == nt_ref(nt, e, "value") && engine_source_lib_defines(nt, lib, x, in)) return 0;
+    }
+    /* `unless defined?(::A::B)` around B's only declaration (a reload
+       guard: discourse's Discourse::VERSION) is absent there, whatever A
+       is: the root alone was asked, and the path folded true off the
+       declaration the guard skips (#9884) */
+    int val = nt_ref(nt, e, "value");
+    const char *leaf = nt_kind(nt, val) == NK_ConstantPathNode ? nt_str(nt, val, "name") : NULL;
+    if (leaf && !comp_is_wellknown_const(leaf) && !is_builtin_class_name(leaf) &&
+        !is_builtin_module_name(leaf) && !is_builtin_exception_name(leaf)) {
+      int inside = 0, outside = 0;
+      for (int id = 0; id < nt->count && !outside; id++) {
+        const char *w = engine_written(nt, id);
+        if (!w || !sp_streq(w, leaf)) continue;
+        if (subtree_has(nt, in, id)) inside = 1;
+        else if (!engine_exclusive_arms(nt, in, id)) outside = 1;
+      }
+      if (inside && !outside) return 1;
     }
   }
   else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
@@ -11929,8 +11949,10 @@ static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int n
      else raise ArgumentError, "wrong number of arguments (given N, expected 0..1)"
      end
    (the `block_given?` arm only when the block is the method's own). A
-   receiver read twice must read the same thing: a local, an ivar, self or
-   a constant. A builtin taking any number of arguments keeps its splat. */
+   receiver read in each arm must read the same thing: a local, an ivar, self
+   or a constant reads as it stands, and any other (a reader,
+   `def first(*args) = items.first(*args)`) is held in a temporary first, so
+   it runs once. A builtin taking any number of arguments keeps its splat. */
 #define SPL_MAX_ARITY 4
 static int spl_pure_recv(const NodeTable *nt, int r) {
   NodeKind k = nt_kind(nt, r);
@@ -12001,7 +12023,7 @@ int desugar_builtin_splat_forward(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
-    if (!nm || recv < 0 || args < 0 || !spl_pure_recv(nt, recv)) continue;
+    if (!nm || recv < 0 || args < 0) continue;
     int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
     if (an != 1 || nt_kind(nt, av[0]) != NK_SplatNode) continue;
     int sv = nt_ref(nt, av[0], "expression");
@@ -12029,6 +12051,17 @@ int desugar_builtin_splat_forward(Compiler *c) {
     int lo = 0, hi = 0; const char *lo_exp = NULL, *hi_exp = NULL;
     if (!builtin_class_arity_spec(cls, nm, &lo, &hi, &lo_exp, &hi_exp) || hi > SPL_MAX_ARITY || !hi_exp) continue;
     int base = nt->count;
+    /* the receiver held once, where reading it again could answer another */
+    int hold = -1;
+    if (!spl_pure_recv(nt, recv)) {
+      char tn[64];
+      snprintf(tn, sizeof tn, "_spsf%s", comp_node_tag(c, id));
+      int encl = c->nscope[id];
+      if (encl < 0 || encl >= c->nscopes) continue;
+      scope_local_intern(&c->scopes[encl], tn);
+      hold = hwi_lwrite(nt, tn, recv);
+      recv = hwi_lread(nt, tn);
+    }
     /* the arms, innermost last: CRuby's ArgumentError for any other size */
     int tail = -1;
     for (int e = 0; e < 2; e++) {
@@ -12070,7 +12103,8 @@ int desugar_builtin_splat_forward(Compiler *c) {
     }
     long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
     int body = nt_new_node(nt, "StatementsNode");
-    nt_node_set_arr(nt, body, "body", &tail, 1);
+    int stmts[2] = { hold, tail };
+    nt_node_set_arr(nt, body, "body", hold >= 0 ? stmts : &tail, hold >= 0 ? 2 : 1);
     nt_node_reset(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", body);
     nt_node_set_int(nt, id, "node_line", line);
@@ -15302,40 +15336,112 @@ static int rod_body_defs(const NodeTable *nt, int body, const char *meth) {
   }
   return 0;
 }
-/* Does a class or module named `nm`, or one up its chain (a superclass, a
-   module it includes), define the instance method `meth`? */
-static int rod_chain_defines(const NodeTable *nt, const char *nm, const char *meth, int depth) {
-  if (!nm || depth > 32) return 0;
-  for (int pass = 0; pass < 2; pass++)
-    NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
-      const char *mn = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
-      if (!mn || !sp_streq(mn, nm)) continue;
-      int body = nt_ref(nt, m, "body");
-      if (rod_body_defs(nt, body, meth)) return 1;
-      if (!pass && rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, m, "superclass")), meth, depth + 1)) return 1;
-      int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
-      for (int k = 0; k < n; k++) {
-        const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
-        if (!cn || !sp_streq(cn, "include")) continue;
-        int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
-        for (int a = 0; a < ac; a++)
-          if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, depth + 1)) return 1;
-      }
+/* The class and module headers, to follow a chain upward: by the qualified
+   name each defines and the qualified superclass it names
+   (inh_qualified_names), and by leaf name. A walk enters each header once,
+   so a chain whose leaves repeat (`module M; class Base < Top::Base`) ends:
+   followed by leaf, Base led to every Base again, and the walk branched
+   that many ways at each step. */
+typedef struct {
+  char **qn, **qs;                    /* by node */
+  ANameHash byq, byleaf;              /* the names, then each one's headers */
+  int *qhead, *lhead, *qnext, *lnext;
+  int *seen, gen;                     /* by node: the walk that entered it */
+} RodIndex;
+static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper);
+static int rod_index_build(RodIndex *x, const NodeTable *nt, int n0) {
+  memset(x, 0, sizeof *x);
+  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < n0; i++) parent[i] = -1;
+  for (int p = 0; p < n0; p++) {
+    int nr = nt_num_refs(nt, p);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+    int na = nt_num_arrs(nt, p);
+    for (int i = 0; i < na; i++) {
+      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
     }
+  }
+  x->qn = inh_qualified_names(nt, parent, n0, &x->qs);
+  free(parent);
+  if (!x->qn || !x->qs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  size_t sz = sizeof(int) * (size_t)(n0 > 0 ? n0 : 1);
+  x->qnext = malloc(sz); x->lnext = malloc(sz); x->seen = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(int));
+  if (!x->qnext || !x->lnext || !x->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int m = 0; m < n0; m++) {
+    NodeKind k = nt_kind(nt, m);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *leaf = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
+    if (x->qn[m] && anh_find(&x->byq, x->qn[m]) < 0) anh_add(&x->byq, x->qn[m]);
+    if (leaf && anh_find(&x->byleaf, leaf) < 0) anh_add(&x->byleaf, leaf);
+  }
+  x->qhead = malloc(sizeof(int) * (size_t)(x->byq.n + 1));
+  x->lhead = malloc(sizeof(int) * (size_t)(x->byleaf.n + 1));
+  if (!x->qhead || !x->lhead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int e = 0; e < x->byq.n; e++) x->qhead[e] = -1;
+  for (int e = 0; e < x->byleaf.n; e++) x->lhead[e] = -1;
+  for (int m = n0 - 1; m >= 0; m--) {   /* each list in program order */
+    NodeKind k = nt_kind(nt, m);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *leaf = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
+    int e = x->qn[m] ? anh_find(&x->byq, x->qn[m]) : -1;
+    if (e >= 0) { x->qnext[m] = x->qhead[e]; x->qhead[e] = m; }
+    e = leaf ? anh_find(&x->byleaf, leaf) : -1;
+    if (e >= 0) { x->lnext[m] = x->lhead[e]; x->lhead[e] = m; }
+  }
+  return 1;
+}
+static void rod_index_free(RodIndex *x, int n0) {
+  for (int m = 0; m < n0; m++) { if (x->qn) free(x->qn[m]); if (x->qs) free(x->qs[m]); }
+  free(x->qn); free(x->qs);
+  anh_free(&x->byq); anh_free(&x->byleaf);
+  free(x->qhead); free(x->lhead); free(x->qnext); free(x->lnext); free(x->seen);
+}
+static int rod_above_defines(RodIndex *x, const NodeTable *nt, int m, const char *meth);
+/* Does a header of the class or module named `q` (qualified; NULL when the
+   name could not be resolved) or `leaf`, or one up its chain, define the
+   instance method `meth`? A qualified name no header defines (a class
+   reached through an ancestor's namespace, say) is taken by its leaf: by
+   leaf the walk can only find more, and a reader turned into its def
+   answers as the reader would. */
+static int rod_named_defines(RodIndex *x, const NodeTable *nt, const char *q, const char *leaf, const char *meth) {
+  int e = q ? anh_find(&x->byq, q) : -1;
+  int qual = e >= 0;
+  if (!qual) e = leaf ? anh_find(&x->byleaf, leaf) : -1;
+  for (int m = e < 0 ? -1 : qual ? x->qhead[e] : x->lhead[e]; m >= 0; m = qual ? x->qnext[m] : x->lnext[m]) {
+    if (x->seen[m] == x->gen) continue;
+    x->seen[m] = x->gen;
+    if (rod_body_defs(nt, nt_ref(nt, m, "body"), meth) || rod_above_defines(x, nt, m, meth)) return 1;
+  }
   return 0;
 }
-/* Does class `cls` take `meth` from above its own body: its superclass's
+/* Does header `m` take `meth` from above its own body: its superclass's
    chain or a module its body includes? */
-static int rod_inherits(const NodeTable *nt, int cls, const char *meth) {
-  if (rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, cls, "superclass")), meth, 0)) return 1;
-  int body = nt_ref(nt, cls, "body");
+static int rod_above_defines(RodIndex *x, const NodeTable *nt, int m, const char *meth) {
+  int sc = nt_kind(nt, m) == NK_ClassNode ? nt_ref(nt, m, "superclass") : -1;
+  if (sc >= 0 && rod_named_defines(x, nt, x->qs[m], rod_leaf(nt, sc), meth)) return 1;
+  int body = nt_ref(nt, m, "body");
   int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
     if (!cn || !sp_streq(cn, "include")) continue;
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
-    for (int a = 0; a < ac; a++) if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, 0)) return 1;
+    for (int a = 0; a < ac; a++) if (rod_named_defines(x, nt, NULL, rod_leaf(nt, av[a]), meth)) return 1;
   }
+  return 0;
+}
+/* Does class `cls` take `meth` from above: the superclass or an included
+   module of any header of its name? `class Child < Base; end` then
+   `class Child; attr_reader :value; end` stands over Base's value, and a
+   module a later reopening includes is an ancestor too. */
+static int rod_inherits(RodIndex *x, const NodeTable *nt, int cls, const char *meth) {
+  x->gen++;
+  int e = x->qn[cls] ? anh_find(&x->byq, x->qn[cls]) : -1;
+  if (e < 0) { x->seen[cls] = x->gen; return rod_above_defines(x, nt, cls, meth); }
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m]) x->seen[m] = x->gen;
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m])
+    if (rod_above_defines(x, nt, m, meth)) return 1;
   return 0;
 }
 /* `def meth = @meth` like node `like` */
@@ -15359,6 +15465,7 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
   /* the names some class or module body defines: a reader of any other name
      has nothing to stand over, and is passed without walking the chain */
   ANameHash defs = {0};
+  RodIndex rx; int built = 0;   /* built at the first reader that needs a walk */
   for (int pass = 0; pass < 2; pass++)
     NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
       int bd = nt_ref(nt, m, "body");
@@ -15382,7 +15489,9 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
       nb[nbn++] = s;
       for (int a = 0; a < ac; a++) {
         const char *meth = sym_or_str_literal(nt, av[a]);
-        if (!meth || !anh_has(&defs, meth) || rod_body_defs(nt, body, meth) || !rod_inherits(nt, cls, meth)) continue;
+        if (!meth || !anh_has(&defs, meth) || rod_body_defs(nt, body, meth)) continue;
+        if (!built) built = rod_index_build(&rx, nt, n0);
+        if (!rod_inherits(&rx, nt, cls, meth)) continue;
         char mb[256]; snprintf(mb, sizeof mb, "%s", meth);
         int d = rod_reader_def(nt, s, mb);
         if (d < 0) continue;
@@ -15397,6 +15506,7 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
     if (any) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
     free(nb);
   }
+  if (built) rod_index_free(&rx, n0);
   anh_free(&defs);
   if (changed) comp_grow_node_arrays(c);
   return changed;
@@ -17601,12 +17711,15 @@ static void inh_add_name(ANameHash *h, const char *q) {
    A::A::Foo. A constant that holds a class or module (`Alias = A`) stands for
    it there, so `class Alias::Foo` is A::Foo. A path from the top (`::Foo`,
    `Object::Foo`) is taken as written; a segment found nowhere goes under the
-   innermost scope. */
-typedef struct { ANameHash known, alias, anc; char **target; int ntarget; } InhNames;
+   innermost scope. `*lexical` (when given) is set when the first segment is
+   found in a scope around the header, not at the top level: there no
+   ancestor can supply another one. */
+typedef struct { ANameHash known, alias, anc, inner; char **target; int ntarget; } InhNames;
 static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
-                             int id, int path, int ref, char *q, size_t cap) {
+                             int id, int path, int ref, char *q, size_t cap, int *lexical) {
   char w[512], head[1024];
   int rooted = 0;
+  if (lexical) *lexical = 0;
   if (!cbs_path_text(nt, path, w, sizeof w, &rooted)) snprintf(w, sizeof w, "?");
   const char *p = w;
   if (!strncmp(p, "Object::", 8)) { p += 8; rooted = 1; }
@@ -17623,7 +17736,7 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
       snprintf(head, sizeof head, "%s::%s", qn[t], first);
       if (anh_has(&r->known, head)) found = qn[t];
     }
-    if (found) in = found;
+    if (found) { in = found; if (lexical) *lexical = 1; }
     else if (anh_has(&r->known, first)) in = "";
     snprintf(head, sizeof head, "%s%s%s", in, *in ? "::" : "", first);
     int a = anh_find(&r->alias, head);
@@ -17636,19 +17749,58 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
    Ruby looks there after the lexical scopes, which inh_resolve_path does
    not follow, and inh_qindex_build marks such a class unsure. Those are
    the ancestors any body of that class gave it before (`r->anc`) as well
-   as this one; a path from the top (`::Foo`) does not look there. */
+   as this one; a path from the top (`::Foo`) does not look there, nor does
+   a name a scope around the header holds (`class Group < Shapes::Base;
+   class Segment < Shapes::Line` inside `module Shapes`). An ancestor can
+   only hold a name some header or constant defines inside a class or
+   module (`r->inner`, by leaf), so a name found at the top level that none
+   defines there is the top level's. */
 static char *inh_resolve_super(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
                                int id, int sc) {
   NodeKind sk = nt_kind(nt, sc);
   if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return NULL;
   char w[512], sq[1024];
-  int rooted = 0;
-  cbs_path_text(nt, sc, w, sizeof w, &rooted);
+  int rooted = 0, lexical = 0;
+  if (!cbs_path_text(nt, sc, w, sizeof w, &rooted)) return NULL;
   int s = inh_scope_of(nt, parent, id);
-  if (!rooted && (inh_scope_has_ancestors(nt, s) || (s >= 0 && qn[s] && anh_has(&r->anc, qn[s]))))
-    return NULL;
-  inh_resolve_path(r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
+  inh_resolve_path(r, qn, nt, parent, id, sc, 1, sq, sizeof sq, &lexical);
+  if (!rooted && !lexical && (inh_scope_has_ancestors(nt, s) || (s >= 0 && qn[s] && anh_has(&r->anc, qn[s])))) {
+    const char *p = !strncmp(w, "Object::", 8) ? w + 8 : w, *sep = strstr(p, "::");
+    char first[512];
+    snprintf(first, sizeof first, "%.*s", sep ? (int)(sep - p) : (int)strlen(p), p);
+    if (!anh_has(&r->known, first) || anh_has(&r->inner, first)) return NULL;
+  }
   return strdup(sq);
+}
+/* The leaf of each constant a header or a write may define inside a class
+   or module, rather than at the top level, anywhere in the program. */
+static void inh_inner_names(ANameHash *h, const NodeTable *nt, const int *parent, int n0) {
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *nm = NULL;
+    int inner = 0;
+    if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int path = nt_ref(nt, id, "constant_path");
+      nm = path >= 0 ? nt_str(nt, path, "name") : NULL;
+      inner = (path >= 0 && nt_kind(nt, path) == NK_ConstantPathNode && nt_ref(nt, path, "parent") >= 0) ||
+              inh_scope_of(nt, parent, id) >= 0;
+    }
+    else if (k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+             k == NK_ConstantOperatorWriteNode || k == NK_ConstantTargetNode) {
+      nm = nt_str(nt, id, "name");
+      inner = inh_scope_of(nt, parent, id) >= 0;
+    }
+    else if (k == NK_ConstantPathTargetNode || k == NK_ConstantPathNode) {
+      /* a path written to: `A::X = ...`, `A::X ||= ...`, `A::X, b = ...` */
+      int pk = parent[id] >= 0 ? (int)nt_kind(nt, parent[id]) : -1;
+      if (k == NK_ConstantPathTargetNode || pk == NK_ConstantPathWriteNode || pk == NK_ConstantPathOrWriteNode ||
+          pk == NK_ConstantPathAndWriteNode || pk == NK_ConstantPathOperatorWriteNode) {
+        nm = nt_str(nt, id, "name");
+        inner = 1;
+      }
+    }
+    if (nm && inner && !anh_has(h, nm)) anh_add(h, nm);
+  }
 }
 static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper) {
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
@@ -17659,6 +17811,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   if (!qs) { free(qn); return NULL; }
   *qsuper = qs;
   InhNames r; memset(&r, 0, sizeof r);
+  inh_inner_names(&r.inner, nt, parent, n0);
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     char q[1024];
@@ -17668,7 +17821,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
       const char *nm = nt_str(nt, id, "name");
       if (!nm || (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode)) continue;
       char target[1024];
-      inh_resolve_path(&r, qn, nt, parent, id, v, 1, target, sizeof target);
+      inh_resolve_path(&r, qn, nt, parent, id, v, 1, target, sizeof target, NULL);
       if (!anh_has(&r.known, target)) continue;   /* not a class or module */
       int s = inh_scope_of(nt, parent, id);
       snprintf(q, sizeof q, "%s%s%s", s >= 0 && qn[s] ? qn[s] : "", s >= 0 && qn[s] ? "::" : "", nm);
@@ -17685,7 +17838,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int sc = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
     if (sc >= 0) qs[id] = inh_resolve_super(&r, qn, nt, parent, id, sc);
-    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q);
+    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q, NULL);
     qn[id] = strdup(q);
     if (!qn[id]) break;
     inh_add_name(&r.known, q);
@@ -17700,7 +17853,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   for (int k = 0; k < r.anc.n; k++) free((char *)r.anc.key[k]);
   for (int k = 0; k < r.ntarget; k++) free(r.target[k]);
   free(r.target);
-  anh_free(&r.known); anh_free(&r.alias); anh_free(&r.anc);
+  anh_free(&r.known); anh_free(&r.alias); anh_free(&r.anc); anh_free(&r.inner);
   return qn;
 }
 
@@ -18442,6 +18595,21 @@ int desugar_self_const_get(Compiler *c) {
  * built from the constants its bodies assign and the classes and modules
  * they define, and the call is renamed to it. A name outside the table
  * raises NameError (const_get) / answers false (const_defined?). */
+/* Append CN to the table's names unless it is there already. */
+static void cg_add_name(const char *cn, char ***names, int *nn, int *cap) {
+  for (int q = 0; q < *nn; q++) if (sp_streq((*names)[q], cn)) return;
+  if (*nn == *cap) { *cap = *cap ? *cap * 2 : 32; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
+  if (!*names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  (*names)[(*nn)++] = strdup(cn);
+}
+/* The leaf a path (`A::B`) names under module MN, or NULL when PATH is no
+   path or its parent names another module. */
+static const char *cg_path_leaf_under(const NodeTable *nt, int path, const char *mn) {
+  if (path < 0 || nt_kind(nt, path) != NK_ConstantPathNode) return NULL;
+  int par = nt_ref(nt, path, "parent");
+  const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+  return pn && sp_streq(pn, mn) ? nt_str(nt, path, "name") : NULL;
+}
 static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***names, int *nn, int *cap) {
   for (int m = 0; m < n0; m++) {
     NodeKind mk = nt_kind(nt, m);
@@ -18457,15 +18625,27 @@ static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***name
       if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode) cn = nt_str(nt, st[k], "name");
       else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
         int ccp = nt_ref(nt, st[k], "constant_path");
-        cn = ccp >= 0 ? nt_str(nt, ccp, "name") : NULL;
+        /* a path header (`class Other::B`) defines a constant of the module
+           its path names, which the pass below gives to that module */
+        cn = ccp >= 0 && nt_kind(nt, ccp) != NK_ConstantPathNode ? nt_str(nt, ccp, "name") : NULL;
       }
-      if (!cn) continue;
-      int dup = 0;
-      for (int q = 0; q < *nn; q++) if (sp_streq((*names)[q], cn)) dup = 1;
-      if (dup) continue;
-      if (*nn == *cap) { *cap = *cap ? *cap * 2 : 32; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
-      (*names)[(*nn)++] = strdup(cn);
+      if (cn) cg_add_name(cn, names, nn, cap);
     }
+  }
+  /* ... and those written through a path from outside its body: a `class
+     M::B` / `module M::B` anywhere, and a top-level `M::X = v` */
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    const char *cn = NULL;
+    if (mk == NK_ModuleNode || mk == NK_ClassNode) cn = cg_path_leaf_under(nt, nt_ref(nt, m, "constant_path"), mn);
+    if (cn) cg_add_name(cn, names, nn, cap);
+  }
+  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
+  int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+  for (int k = 0; k < sn; k++) {
+    const char *cn = nt_kind(nt, ts[k]) == NK_ConstantPathWriteNode
+                   ? cg_path_leaf_under(nt, nt_ref(nt, ts[k], "target"), mn) : NULL;
+    if (cn) cg_add_name(cn, names, nn, cap);
   }
 }
 

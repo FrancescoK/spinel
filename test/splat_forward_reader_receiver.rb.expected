@@ -1,0 +1,22 @@
+40
+[30, 40]
+10
+[10, 20, 30]
+[10, 20]
+20
+[20, 30]
+40
+1
+0
+"q"
+4
+7
+[10, 30]
+10 20 30 40 
+40
+[30, 40]
+2
+10
+[10, 20]
+"wrong number of arguments (given 2, expected 0..1)"
+"wrong number of arguments (given 0, expected 1)"

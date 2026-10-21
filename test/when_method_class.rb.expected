@@ -1,0 +1,5 @@
+1
+[:method, :proc, :other]
+[true, true, true, false]
+[true, false, false]
+[:m, :p, :o]

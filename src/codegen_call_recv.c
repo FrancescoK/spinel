@@ -285,7 +285,8 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
 }
 
 /* 1 when the node is a user object whose class compares -- defines ==, ===
-   or <=> (a Comparable includer) -- so a typed container's lookup would have
+   or <=> with Comparable included (class_is_comparable) -- so a typed
+   container's lookup would have
    to call it, and the typed slot has no room for the object. The arms refuse
    these at compile time, naming the case, rather than hand the C compiler the
    pointer. */
@@ -295,7 +296,7 @@ static int value_obj_compares(Compiler *c, int node) {
   int cid = ty_object_class(t);
   return cid >= 0 && (comp_method_in_chain(c, cid, "==", NULL) >= 0 ||
                       comp_method_in_chain(c, cid, "===", NULL) >= 0 ||
-                      comp_method_in_chain(c, cid, "<=>", NULL) >= 0);
+                      (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)));
 }
 
 /* 1 when a value of the node's static kind can never be == to an element
@@ -334,12 +335,13 @@ static int value_kind_misses(Compiler *c, int node, TyKind ek) {
   if (ek == TY_STRING && (t == TY_STRING || t == TY_STRBUF)) return 0;
   if (!num && ek != TY_STRING) return 0;
   if (ty_is_object(t)) {
-    /* a class defining <=> is a Comparable includer, whose == the module
-       supplies (the same reading as respond_to?'s) */
+    /* a Comparable includer with <=> has the == the module supplies (the
+       same reading as respond_to?'s); one without the module compares by
+       identity */
     int cid = ty_object_class(t);
     return cid >= 0 && comp_method_in_chain(c, cid, "==", NULL) < 0 &&
            comp_method_in_chain(c, cid, "===", NULL) < 0 &&
-           comp_method_in_chain(c, cid, "<=>", NULL) < 0;
+           (comp_method_in_chain(c, cid, "<=>", NULL) < 0 || !class_is_comparable(c, cid));
   }
   if (ek == TY_INT && t == TY_BIGINT) return 1;  /* no sp_int equals a Bignum */
   return t == TY_NIL || t == TY_BOOL || t == TY_INT || t == TY_BIGINT || t == TY_FLOAT ||
@@ -3476,8 +3478,11 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
      strings, int-array tuples lexicographically). */
   if ((is_minmax_query(name)) && argc == 0 &&
       rt == TY_POLY_ARRAY && nt_ref(nt, id, "block") < 0) {
-    /* a literal's in CRuby's VM order (sp_PolyArray_minmax_lit) */
-    if (array_literal_plain(c, recv)) {
+    /* Enumerable's materialized members compare in the same order as a
+       literal, including the operands named when comparison fails. */
+    int enum_members = nt_kind(nt, recv) == NK_CallNode &&
+        sp_streq(nt_str(nt, recv, "name"), "__enum_to_a");
+    if (array_literal_plain(c, recv) || enum_members) {
       buf_puts(b, "sp_PolyArray_minmax_lit("); emit_expr(c, recv, b);
       buf_printf(b, ", %d)", sp_streq(name, "max"));
       { *out = 1; return 1; }
@@ -11835,7 +11840,7 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
 
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
+  const char *name = view_call_name(c, id);
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
@@ -12066,7 +12071,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      receiver's class only when both bounds are statically that class (the
      inference arm matches); otherwise it stays boxed. */
   if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 2 &&
-      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0 &&
+      class_is_comparable(c, ty_object_class(rt))) {
     TyKind clo = comp_ntype(c, argv[0]), chi = comp_ntype(c, argv[1]);
     int same_cls = (clo == rt || clo == TY_NIL) && (chi == rt || chi == TY_NIL);
     /* a by-value receiver class unboxes by dereferencing the heap copy the
@@ -12082,7 +12088,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      range: unfold to the two-argument object clamp (an sp_Range cannot carry
      the endpoints' class, so the range helper would compare raw pointers). */
   if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 1 &&
-      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0 &&
+      class_is_comparable(c, ty_object_class(rt))) {
     int rn2 = nt_paren_single(c->nt, argv[0]);
     if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
       int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
@@ -12127,7 +12134,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      itself, so the value stays boxed (inference: TY_POLY). */
   if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_RANGE &&
-      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0 &&
+      class_is_comparable(c, ty_object_class(rt))) {
     buf_puts(b, "sp_obj_clamp_range(");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_expr(c, argv[0], b);

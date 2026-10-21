@@ -1,0 +1,26 @@
+[1, 2, 1, 2]
+[]
+[]
+[]
+[]
+[1.5, :x, nil]
+[ArgumentError, "negative argument"]
+[RangeError, "float NaN out of range of integer"]
+[RangeError, "float Inf out of range of integer"]
+[RangeError, "float -Inf out of range of integer"]
+[RangeError, "float 1e+30 out of range of integer"]
+[RangeError, "float -1e+30 out of range of integer"]
+[1.5, 2.5, 1.5, 2.5]
+["a", "b"]
+[1, :x, nil, 1, :x, nil]
+[1, 2, 1, 2]
+[1, 2, 1, 2]
+receiver
+count
+[1, 2, 1, 2]
+to_int
+[1, 2, 1, 2]
+[1, 2, 1, 2]
+"a|b"
+[TypeError, "no implicit conversion from nil to integer"]
+[NoMethodError, "undefined method '*' for nil"]

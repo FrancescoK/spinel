@@ -289,6 +289,8 @@ int ie_forwards_block_tail(Compiler *c, int node);
 int return_in_lambda(Compiler *c, int rid);
 /* 1 if scope `si` returns, other than at `guard_ret`, before it. */
 int return_before(Compiler *c, int si, int guard_ret);
+/* A proc-typed local's proc_ret: the join of the answers of the procs it is written. 1 on a change. */
+int join_local_proc_rets(Compiler *c);
 /* Scan a subtree for BreakNode values and return their unified type.
    Stops at DefNode/BlockNode boundaries (inner blocks have their own break scope). */
 TyKind scan_break_type(Compiler *c, int id, int depth);
@@ -481,6 +483,7 @@ int ty_runs_no_code(TyKind t);  /* codegen_call.c: a builtin reading such a valu
 int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);  /* codegen_call.c */
 int subtree_reads_match_globals(Compiler *c, int root);  /* codegen_call_recv.c: $~, $1.. read there */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
+int class_is_comparable(Compiler *c, int cid);                   /* codegen_call.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
    reads as a plain String). Shared with the receiver-face helpers. */
 TyKind ivar_value_ty(ClassInfo *ci, int iv);
@@ -762,6 +765,12 @@ int anh_has(const ANameHash *st, const char *nm);
 int anh_find(const ANameHash *st, const char *nm);   /* insertion index, or -1 */
 void anh_add(ANameHash *st, const char *nm);
 void anh_free(ANameHash *st);
+/* The scopes of a name, ascending: the first, and the next after s (-1 at
+   the end); from a table while the scope index is frozen, else a scan
+   (analyze.c). A pass walking every scope for a name's methods per call
+   asks these instead. */
+int an_scopes_named_first(Compiler *c, const char *nm);
+int an_scopes_named_next(Compiler *c, const char *nm, int s);
 int a_nested_block(const char *ty);
 int a_is_local_node(const char *ty);
 int a_is_write_node(const char *ty);

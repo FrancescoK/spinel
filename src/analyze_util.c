@@ -1732,6 +1732,35 @@ int const_defined_known(Compiler *c, const char *rnm, const char *cgn) {
   if (comp_const(c, cgn) || comp_class_index(c, cgn) >= 0 || comp_is_wellknown_const(cgn)) return 1;
   return rnm && const_get_class_index(c, rnm, cgn) >= 0;
 }
+/* Does class or module K see constant CGN as `K.const_defined?(CGN)` looks:
+   K, its ancestors and the modules they include. (A top-level constant,
+   Object's, every class sees: the caller asks that first.) */
+int const_seen_by_class(Compiler *c, int k, const char *cgn) {
+  static int depth = 0;
+  if (depth > 8) return 0;
+  for (int n = 0; k >= 0 && k < c->nclasses && n < 64; k = c->classes[k].parent, n++) {
+    if (c->classes[k].name && const_owned_by_class(c, c->classes[k].name, cgn)) return 1;
+    for (int i = 0; i < c->classes[k].nincluded_mods; i++) {
+      depth++;
+      int seen = const_seen_by_class(c, c->classes[k].included_mods[i], cgn);
+      depth--;
+      if (seen) return 1;
+    }
+  }
+  return 0;
+}
+/* `R.const_defined?(:N)` with R's name: N known to the program and seen
+   from R. The table is flat, keyed by the leaf, so a constant another class
+   holds answered for every receiver (#9876). A receiver the class table
+   lacks (a builtin module), a qualified N and a top-level N keep the
+   answer the flat table gives. */
+int const_defined_from(Compiler *c, const char *rnm, const char *cgn) {
+  if (!const_defined_known(c, rnm, cgn)) return 0;
+  if (!rnm || !cgn || strstr(cgn, "::") || const_name_resolves_top_level(c, cgn)) return 1;
+  int rk = comp_class_index(c, rnm);
+  if (rk < 0) return 1;
+  return const_seen_by_class(c, rk, cgn);
+}
 /* `R.const_get(:N)` with N both a class and a value constant of the program
    (constants live in one flat namespace, keyed by the leaf): the value when
    R or a superclass holds it first, else the class. */
@@ -2708,6 +2737,29 @@ int an_user_defines_method(Compiler *c, const char *name) {
   }
   if (!ans) ans = comp_method_index(c, name) >= 0;
   if (again >= 0) { udm_ans[again] = (signed char)ans; return ans; }
+  /* a full memo grows, and its buckets with it (as an_user_defines_or_reads'
+     does): past 4,096 names it stopped recording, and every later name
+     walked every class again at each ask */
+  if (udm_cap && udm_n == udm_cap) {
+    int ncap = udm_cap * 2;
+    char **nn = realloc(udm_names, sizeof(char *) * (size_t)ncap);
+    signed char *na = realloc(udm_ans, (size_t)ncap);
+    int *nx = realloc(udm_next, sizeof(int) * (size_t)ncap);
+    int *nh = realloc(udm_head, sizeof(int) * (size_t)ncap);
+    if (nn) udm_names = nn;
+    if (na) udm_ans = na;
+    if (nx) udm_next = nx;
+    if (nh) udm_head = nh;
+    if (nn && na && nx && nh) {
+      udm_cap = ncap;
+      for (int i = 0; i < udm_cap; i++) udm_head[i] = -1;
+      for (int i = 0; i < udm_n; i++) {
+        unsigned h = sp_strhash(udm_names[i]) & (unsigned)(udm_cap - 1);
+        udm_next[i] = udm_head[h]; udm_head[h] = i;
+      }
+      b = sp_strhash(name) & (unsigned)(udm_cap - 1);
+    }
+  }
   if (udm_cap && udm_n < udm_cap) {
     udm_names[udm_n] = strdup(name);
     if (udm_names[udm_n]) {

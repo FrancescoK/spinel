@@ -1,0 +1,21 @@
+[ArgumentError, "invalid argument - 3.5..1.5"]
+[ArgumentError, "invalid argument - 3.5...1.5"]
+[ArgumentError, "invalid argument - 3.5..1"]
+[ArgumentError, "invalid argument - 3..1.5"]
+[ArgumentError, "invalid argument - 3...1.5"]
+[ArgumentError, "invalid argument - 2.5...2.5"]
+[ArgumentError, "invalid argument - 2...2.0"]
+2.5
+[ArgumentError, "invalid argument - 3.5..1.5"]
+[ArgumentError, "invalid argument - 2.5...2.5"]
+[ArgumentError, "invalid argument - 3.5..1.5"]
+true
+[ArgumentError, "invalid argument - 3.5..1.5"]
+[ArgumentError, "invalid argument - 2.5...2.5"]
+2.5
+[Float, true]
+[Float, true]
+[Float, true]
+[Float, true]
+[Float, true]
+[Float, true]

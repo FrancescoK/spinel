@@ -419,6 +419,7 @@ const char *sp_sprintf(const char *fmt, ...);
    unlike Integer.sqrt which quotes "isqrt". */
 static inline sp_float sp_math_sqrt(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - sqrt");return x==0.0?0.0:sqrt(x);}  /* normalize sqrt(-0.0) to +0.0 like CRuby */
 static inline sp_float sp_math_log(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log");return log(x);}
+static inline sp_float sp_math_log1p(sp_float x){if(x<-1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log1p");return log1p(x);}
 static inline sp_float sp_math_log2(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log2");return log2(x);}
 static inline sp_float sp_math_log10(sp_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log10");return log10(x);}
 static inline sp_float sp_math_acos(sp_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - acos");return acos(x);}
@@ -4548,6 +4549,19 @@ static SP_UNUSED sp_RbVal sp_rand_frange_v(sp_Random *g, sp_FloatRange r, int ke
   if (r.first > r.last || (r.excl && r.first == r.last)) return sp_rand_empty(sp_frange_inspect(r), kernel);
   return sp_box_float(sp_Random_rand_float_range(g, r.first, r.last));
 }
+/* Typed Random Float draws keep the range metadata for empty-range errors.
+   Leave non-finite endpoint validation and the draw to the existing helper. */
+static SP_UNUSED sp_float sp_random_rand_frange(sp_Random *g, sp_FloatRange r) {
+  if (isfinite(r.first) && isfinite(r.last) && (r.first > r.last || (r.excl && r.first == r.last)))
+    sp_rand_empty(sp_frange_inspect(r), 0);
+  return sp_Random_rand_float_range(g, r.first, r.last);
+}
+static SP_UNUSED sp_float sp_random_rand_fend(sp_Random *g, sp_Range r) {
+  sp_float lo = (sp_float)r.first, hi = sp_range_end_num(r);
+  if (isfinite(hi) && (lo > hi || (sp_range_excl_end(r) && lo == hi)))
+    sp_rand_empty(sp_range_inspect(r), 0);
+  return sp_Random_rand_float_range(g, lo, hi);
+}
 /* the argument boxed: whatever CRuby's rand takes (an Integer or Float
    bound, a Range of either, nil) answers as it does there, and anything else
    is the conversion TypeError */
@@ -5307,6 +5321,11 @@ static SP_NOINLINE SP_COLD void sp_raise_frozen_obj(sp_RbVal v, const char *what
 static SP_NOINLINE SP_COLD void sp_raise_frozen_hash_at(void *h, int cls_id) {
   sp_raise_frozen_obj(sp_box_obj(h, cls_id), (&("\xff" "can't modify frozen Hash")[1]));
 }
+/* Builtin boxed Hash mutators check before lookup, layout checks or writes. */
+static SP_INLINE void sp_poly_hash_check_mutable(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id) && sp_gc_is_frozen(v.v.p))
+    sp_raise_frozen_hash_at(v.v.p, v.cls_id);
+}
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
@@ -5801,6 +5820,17 @@ static SP_UNUSED sp_int sp_int_sqrt_arg(sp_RbVal v) {
   if (!sp_bigint_fits_int(r))
     sp_raise_cls("NotImplementedError", "Integer.sqrt of this Bignum answers a Bignum, which this Integer-typed call cannot hold");
   return (sp_int)sp_bigint_to_int(r);
+}
+/* Integer.sqrt converts its argument through #to_int, and a non-finite
+   Float has no integer value: CRuby's Float#to_int raises FloatDomainError
+   for it, on a native or a boxed Float alike. */
+static inline sp_int sp_float_isqrt(sp_float f) {
+  sp_poly_flo_domain_ck(f);
+  return sp_int_sqrt(sp_float_arg_i(f));
+}
+static SP_UNUSED sp_int sp_poly_isqrt(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) sp_poly_flo_domain_ck(v.v.f);
+  return sp_int_sqrt_arg(v);
 }
 static sp_RbVal sp_poly_int_gcd(sp_RbVal v, sp_RbVal o) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("gcd", v);
@@ -10199,7 +10229,7 @@ static void sp_StrPolyHash_delete_bytes(sp_StrPolyHash*h,const char*k){ sp_gc_wb
 sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b);
 static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(a,b->order[i],sp_StrPolyHash_get(b,b->order[i]));}
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h);
-static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
+static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("replace");if(h==o)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
 void sp_StrPolyHash_clear(sp_StrPolyHash*h);
 static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
@@ -10522,7 +10552,7 @@ static sp_PolyArray *sp_Object_ivars(sp_Object *o){
   for(sp_int i=0;o&&o->ivars&&i<o->ivars->len;i++) sp_PolyArray_push(a,sp_box_sym(o->ivars->order[i]));
   return a;
 }
-static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
+static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace");if(h==o)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
 void sp_SymPolyHash_clear(sp_SymPolyHash*h);
 static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
@@ -12613,6 +12643,7 @@ static sp_RbVal sp_fmt_hash_fetch(sp_RbVal h, sp_sym k, const char *nm) {
    matched nothing and raised NoMethodError naming its own class. The receiver
    answers for itself here instead. */
 static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
+  sp_poly_hash_check_mutable(recv);
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
     if (recv.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
       key = sp_poly_strbuf_deref(key);
@@ -12701,6 +12732,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
 static sp_RbVal sp_poly_delete_key_bytes(sp_RbVal recv, sp_RbVal key) {
   if (recv.tag != SP_TAG_OBJ || recv.cls_id != SP_BUILTIN_STR_POLY_HASH)
     return sp_poly_delete_key(recv, key);
+  sp_poly_hash_check_mutable(recv);
   key = sp_poly_strbuf_deref(key);
   if (!sp_poly_has_key(recv, key)) return sp_box_nil();
   sp_RbVal was = sp_poly_index_poly(recv, key);
@@ -13550,6 +13582,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val);   /* f
 static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  sp_IntArray_oset((sp_IntArray*)v.v.p, idx,
                                                  sp_poly_elem_i(val)); break;
@@ -13582,6 +13615,7 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   /* An Array indexed by a String is a TypeError, not a write to be dropped:
      the static path raises it, and a boxed receiver reaching the same call
      used to absorb the assignment instead (#3925). */
@@ -13612,6 +13646,7 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
+  sp_poly_hash_check_mutable(v);
   if (sp_poly_is_array_kind(v.cls_id))
     sp_raise_cls("TypeError", SPL("no implicit conversion of Symbol into Integer"));
   switch (v.cls_id) {
@@ -13628,6 +13663,16 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
     default: break;
   }
   return val;
+}
+/* The receiver of a two-key `[]=` through a boxed value (a multiple
+   assignment's `a[i, n], x = ...`): the checks of the single store, and the
+   ArgumentError a Hash's `[]=` raises with two keys, ahead of sp_poly_splice,
+   which leaves a Hash or a Symbol as it is. Answers the receiver. */
+static SP_INLINE sp_RbVal sp_poly_slice_chk(sp_RbVal v) {
+  sp_poly_coll_chk(v, "[]=");
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) sp_raise_arity(3, 2, 2, NULL);
+  return v;
 }
 /* poly_val[int_idx] = val: runtime dispatch for poly recv `[]=` with int index. */
 static sp_RbVal sp_poly_arr_set(sp_RbVal v, sp_int idx, sp_RbVal val) {
@@ -13831,6 +13876,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
     sp_user_aset_hook(v, key, val, &h);
     if (h) return val;
   }
+  sp_poly_hash_check_mutable(v);
   /* Every array arm below wants an integer index. A Float converts through
      #to_int, and anything else is the TypeError the static path raises rather
      than a write to drop on the floor (#3926). */
@@ -15055,7 +15101,8 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
     case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_min(sp_enum_to_a_boxed(v));
       /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
-               return ue ? sp_PolyArray_min(ue) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
+               /* User Enumerable extrema name new element, then accumulator. */
+               return ue ? sp_PolyArray_minmax_lit(ue, 0) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
   }
 }
 static sp_RbVal sp_poly_max(sp_RbVal v) {
@@ -15075,7 +15122,8 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
     case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_max(sp_enum_to_a_boxed(v));
       /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
-               return ue ? sp_PolyArray_max(ue) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
+               /* User Enumerable extrema name new element, then accumulator. */
+               return ue ? sp_PolyArray_minmax_lit(ue, 1) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
   }
 }
 /* Hash#first / #last answer a [key, value] pair; sp_poly_arr_get indexes the

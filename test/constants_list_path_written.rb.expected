@@ -1,0 +1,13 @@
+[:Base, :Box, :Helpers, :LIMIT, :PATTERN, :Step1, :Step2, :Step3]
+[:Lid]
+[:Deep]
+[:Inner]
+[:Step1, :Step2, :Step3]
+[Outer::Inner::Step1, Outer::Inner::Step2, Outer::Inner::Step3]
+[true, true, true]
+3
+Outer::Inner::Helpers
+true
+[:Base, :Box, :Helpers, :LIMIT, :PATTERN, :Step1, :Step2, :Step3]
+Outer::Inner::Step1
+3

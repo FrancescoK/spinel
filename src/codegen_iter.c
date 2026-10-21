@@ -3588,8 +3588,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
            (want_ty != TY_POLY || g_promote_mode) && want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL &&
-           nt_kind(nt, unwrap_parens(c, bd3[bn3 - 1])) == NK_CallNode &&
-           comp_ntype(c, unwrap_parens(c, bd3[bn3 - 1])) == TY_UNKNOWN) {
+           nt_kind(nt, nt_paren_single(c->nt, bd3[bn3 - 1])) == NK_CallNode &&
+           comp_ntype(c, nt_paren_single(c->nt, bd3[bn3 - 1])) == TY_UNKNOWN) {
     /* An untyped call tail (a method no class answers) lowers to the gate's
        NoMethodError raise, an sp_RbVal; spliced bare, it became the value of
        a statement expression read into the yield's typed slot, and the C did
@@ -3699,7 +3699,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
         else if (want_ty != TY_VOID) buf_printf(b, "%s; ", default_value_from_compiler(c, want_ty));
       }
       else if (bd4 && bn4 > 0 && (want_poly || (want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL)) &&
-               block_tail_lacks_value(c, unwrap_parens(c, bd4[bn4 - 1]), want_poly))
+               block_tail_lacks_value(c, nt_paren_single(c->nt, bd4[bn4 - 1]), want_poly))
         buf_printf(b, "%s; ", want_poly ? "sp_box_nil()" : default_value_from_compiler(c, want_ty));
     }
   }

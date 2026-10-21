@@ -1159,7 +1159,11 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       return 1;
     }
     if (repr_of(c, argv[0]).kind == RK_BOXED) {
-      buf_puts(b, "sp_int_sqrt_arg("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_poly_isqrt("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    if (repr_of(c, argv[0]).as_ty == TY_FLOAT && !nt_argv_has_splat(nt, argv, argc)) {
+      buf_puts(b, "sp_float_isqrt("); emit_scalar_operand(c, argv[0], "0.0", b); buf_puts(b, ")");
       return 1;
     }
     buf_puts(b, "sp_int_sqrt("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
@@ -1265,7 +1269,7 @@ else {
     /* expm1/log1p keep their precision near zero, where exp(x)-1 and log(1+x)
        cancel away most of the significant digits */
     else if (sp_streq(name, "expm1")) cfn = "expm1";
-    else if (sp_streq(name, "log1p")) cfn = "log1p";
+    else if (sp_streq(name, "log1p")) cfn = "sp_math_log1p";
     else if (sp_streq(name, "erf"))   cfn = "erf";
     else if (sp_streq(name, "erfc"))  cfn = "erfc";
     else if (sp_streq(name, "gamma")) cfn = "sp_math_gamma";
@@ -2253,8 +2257,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* Random#rand(1.0..2.0) -> a Float in [first, last), exact endpoints. */
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, argv[0], b);
-        buf_puts(b, "; sp_Random_rand_float_range("); emit_expr(c, recv, b);
-        buf_printf(b, ", _t%d.first, _t%d.last); })", tr, tr);
+        buf_puts(b, "; sp_random_rand_frange("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d); })", tr);
       }
       else if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
@@ -2272,9 +2276,9 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (is_float) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
-          buf_puts(b, "; sp_Random_rand_float_range(");
+          buf_puts(b, "; sp_random_rand_fend(");
           emit_expr(c, recv, b);
-          buf_printf(b, ", (sp_float)_t%d.first, sp_range_end_num(_t%d)); })", tr, tr);
+          buf_printf(b, ", _t%d); })", tr);
         }
         else {
           buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");

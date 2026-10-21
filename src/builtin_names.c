@@ -220,6 +220,15 @@ int is_int_step(const char *n) {
   return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto");
 }
 
+/* The builtin protocol's next method when the receiver has no override. */
+const char *builtin_operator_delegate(const char *name) {
+  if (sp_streq(name, "!=") || sp_streq(name, "===")) return "==";
+  if (sp_streq(name, "==") || sp_streq(name, "<") || sp_streq(name, "<=") ||
+      sp_streq(name, ">") || sp_streq(name, ">=") || sp_streq(name, "between?") ||
+      sp_streq(name, "clamp")) return "<=>";
+  return NULL;
+}
+
 int is_equality_name(const char *n) {
   return sp_streq(n, "equal?") || sp_streq(n, "eql?") || sp_streq(n, "==");
 }

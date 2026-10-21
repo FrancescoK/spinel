@@ -260,7 +260,7 @@ static unsigned       g_stw_epoch = 0;  /* bumped each collection; scopes g_npar
 static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
 static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
 static int            g_workers_started = 0;  /* helper pool + monitor spawned lazily on the first Thread */
-static int            g_worker_cap = 0;       /* max helper workers = min(cores, SPINEL_WORKERS) */
+static int            g_worker_cap = 0;       /* max helper workers: cores, or SPINEL_WORKERS - 1 (main is one of the N) */
 static int            g_helpers_spawned = 0;  /* helpers created so far; ids 1..g_helpers_spawned */
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
@@ -675,7 +675,12 @@ static void sched_kick_worker(int wid) {   /* PRE: sched lock held */
   if (wid < 0 || wid >= SP_MAX_WORKERS) return;
 #ifdef SP_EV_BACKEND
   if (g_wslot[wid].evfd > 0) {
-    if (wid != sp_worker_id) sp_ev_kick(wid);   /* ourselves: we loop and re-pick */
+    /* ourselves: we loop and re-pick. Told by the OS thread, not by
+       sp_worker_id: the monitor, which wakes threads whose timers are due,
+       keeps the 0 it started with and read itself as main, so a wake for
+       main from a timer never reached it (#9840, where main is the only
+       worker) */
+    if (!pthread_equal(g_wslot[wid].tid, pthread_self())) sp_ev_kick(wid);
     return;
   }
 #endif
@@ -984,6 +989,7 @@ static inline void wl_unlock(sp_wlock *l) { (void)l; }
 
 #ifdef SP_THREADS
 static void sp_safepoint_preempt(void);   /* defined after the scheduler state below */
+static void sp_sched_pass(void);   /* main's Thread.pass sweep, which the preemption at SPINEL_WORKERS=1 runs */
 #endif
 
 /* Safepoint poll body: codegen emits `if (sp_safepoint_flag) sp_safepoint();` at
@@ -3017,6 +3023,19 @@ static void sp_safepoint_preempt(void) {
   if (sp_cext_lock_depth()) return;
 #endif
   sp_thread *self = g_current;
+  /* SPINEL_WORKERS=1 (#9840): main is the only worker, and the monitor
+     asks it, past a slice of its own code with a thread runnable, to give
+     each runnable thread one slice, as Thread.pass from main does */
+  if (self == &g_main_thread && g_worker_cap == 0 && SP_ATOMIC_LOAD(&self->preempt_request, __ATOMIC_ACQUIRE)) {
+    SP_ATOMIC_STORE(&self->preempt_request, 0, __ATOMIC_RELEASE);
+    g_npreempt--;
+    sp_recompute_safepoint_flag();
+    sp_sched_pass();
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* a #raise one of them aimed at main */
+    SCHED_LOCK();
+    return;
+  }
   if (!self || self == &g_main_thread || !SP_ATOMIC_LOAD(&self->preempt_request, __ATOMIC_ACQUIRE)) return;
   SP_ATOMIC_STORE(&self->preempt_request, 0, __ATOMIC_RELEASE);
   g_npreempt--;
@@ -3574,6 +3593,7 @@ static void *sp_sysmon_main(void *arg) {
   pthread_sigmask(SIG_BLOCK, &blk, NULL);
   g_cnt_me = &g_cnt[SP_CNT_MON];   /* the threads its timers make runnable */
   double last_busy = 0.0;   /* when a worker was last seen running a thread */
+  double main_since = 0.0;  /* SPINEL_WORKERS=1: since when main's own code has run beside a runnable thread */
   SCHED_LOCK();
   for (;;) {
     if (g_shutdown) break;
@@ -3627,6 +3647,33 @@ static void *sp_sysmon_main(void *arg) {
       busy = 1; last_busy = now;
       if (!SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE) && (now - wslot_since(i)) >= SP_PREEMPT_QUANTUM)
         sched_preempt(i, r);
+    }
+    /* SPINEL_WORKERS=1 (#9840): no helper runs a green thread, so main's own
+       code is timed while a thread is runnable, and past the quantum main is
+       asked to give the runnable threads their slices at its next safepoint
+       (sp_safepoint_preempt). Main pumping (in a join, a sleep) runs them
+       already, and a thread it runs is timed above. (Asked of the cap
+       alone, set before this thread was created: g_workers_started goes up
+       only once the start has returned, and a monitor that ran first read
+       it as 0.) */
+    if (g_worker_cap == 0) {
+      int rq0, ru0; counts_approx(&rq0, &ru0);
+      if (rq0 > 0 && !SP_ATOMIC_LOAD(&g_wslot[0].cur, __ATOMIC_ACQUIRE) &&
+          SP_TH_STATE(&g_main_thread) == SP_TH_RUNNING) {
+        busy = 1; last_busy = now;
+        if (main_since == 0.0) main_since = now;
+        else if (now - main_since >= SP_PREEMPT_QUANTUM &&
+                 !SP_ATOMIC_LOAD(&g_main_thread.preempt_request, __ATOMIC_ACQUIRE)) {
+          SP_ATOMIC_STORE(&g_main_thread.preempt_request, 1, __ATOMIC_SEQ_CST);
+          g_npreempt++;
+          sp_recompute_safepoint_flag();
+#ifndef __APPLE__
+          pthread_kill(g_wslot[0].tid, g_preempt_sig);   /* see sched_preempt */
+#endif
+          main_since = 0.0;
+        }
+      }
+      else main_since = 0.0;
     }
     /* Rebuilding the poll set walks the I/O waiters and grows with the
        population. The event backend holds descriptors in the kernel, so skip
@@ -3702,7 +3749,21 @@ static void *sp_sysmon_main(void *arg) {
       /* the same for a deadline added since the heap was read: a parker
          stores g_nearest and then reads the flag (sp_sysmon_nudge) */
       if (nearest_get() != 0.0) started = 1;
-      if (!started) pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
+      /* (at SPINEL_WORKERS=1 a thread main makes runnable wakes no one: the
+         monitor looks again a quantum later, to time main beside it. Its
+         first round comes here at once, before the start that created it
+         may have set g_workers_started: an untimed wait then left main
+         spinning on a flag no thread ran to set) */
+      if (!started && g_worker_cap == 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        double dt = SP_PREEMPT_QUANTUM;
+        ts.tv_sec += (time_t)dt;
+        ts.tv_nsec += (long)((dt - (double)(time_t)dt) * 1e9);
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        pthread_cond_timedwait(&g_sysmon_cv, &g_sched_lock, &ts);
+      }
+      else if (!started) pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
       SP_ATOMIC_STORE(&g_sysmon_idle, 0, __ATOMIC_SEQ_CST);
       last_busy = sp_monotonic_now();   /* woken for work: tick for a while */
     }
@@ -4465,6 +4526,12 @@ static int sp_sched_start_workers(void) {
      themselves are spawned on demand (sp_sched_maybe_grow), not here -- main
      stays worker 0 and starts as the only participant (sp_active_workers 1). */
   g_worker_cap = sp_worker_count();
+  /* SPINEL_WORKERS=N counts every OS worker that runs Ruby code, main among
+     them, as docs/thread.md says (#9840): N-1 helpers, and none at N=1,
+     where main runs every green thread and the monitor asks it for their
+     slices (sp_safepoint_preempt). The autodetect, with the variable unset,
+     stays one helper per core beside main. */
+  { const char *e = getenv("SPINEL_WORKERS"); if (e && *e) g_worker_cap--; }
   /* main is worker 0 and the last slot belongs to the sweeper threads */
   if (g_worker_cap > SP_MAX_WORKERS - 2) g_worker_cap = SP_MAX_WORKERS - 2;
   /* Install the preemption signal handler before any worker can be targeted.

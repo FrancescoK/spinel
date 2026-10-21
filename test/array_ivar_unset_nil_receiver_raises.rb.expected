@@ -1,0 +1,46 @@
+Line [1]: 1 -> "Guui"
+Line [1, 2]: 1 2 -> ["Guui", "Kondae"]
+Line first(2): 2 -> ["Jayang", "Guui"]
+Line last(2): 2 -> ["Guui", "Kondae"]
+Line take(2): 2 -> ["Jayang", "Guui"]
+Line drop(1): 1 -> ["Guui", "Kondae"]
+Line fetch(1): 1 -> "Guui"
+Line dig(0): 0 -> "Jayang"
+Line values_at(2): 2 -> ["Kondae"]
+Line index: Guui -> 1
+Line join: - -> "Jayang-Guui-Kondae"
+Line reverse:  -> ["Kondae", "Guui", "Jayang"]
+Line rotate(1): 1 -> ["Guui", "Kondae", "Jayang"]
+Line each: Jayang Guui Kondae -> :done
+Line map:  -> ["JAYANG", "GUUI", "KONDAE"]
+Line push: Achasan -> ["Jayang", "Guui", "Kondae", "Achasan"]
+Line fares[1]: 1 -> 1500
+Line fares.first(2): 2 -> [1400, 1500]
+Line fares.sum:  -> 4550
+Line hops[0]: 0 -> 1.5
+Line hops.take(1): 1 -> [1.5]
+Line legs[1]: 1 -> [3]
+Line legs.first(1): 1 -> [[1, 2]]
+nil [1]: 1 -> NoMethodError undefined method '[]' for nil
+nil [1, 2]: 1 2 -> NoMethodError undefined method '[]' for nil
+nil first(2): 2 -> NoMethodError undefined method 'first' for nil
+nil last(2): 2 -> NoMethodError undefined method 'last' for nil
+nil take(2): 2 -> NoMethodError undefined method 'take' for nil
+nil drop(1): 1 -> NoMethodError undefined method 'drop' for nil
+nil fetch(1): 1 -> NoMethodError undefined method 'fetch' for nil
+nil dig(0): 0 -> NoMethodError undefined method 'dig' for nil
+nil values_at(2): 2 -> NoMethodError undefined method 'values_at' for nil
+nil index: Guui -> NoMethodError undefined method 'index' for nil
+nil join: - -> NoMethodError undefined method 'join' for nil
+nil reverse:  -> NoMethodError undefined method 'reverse' for nil
+nil rotate(1): 1 -> NoMethodError undefined method 'rotate' for nil
+nil each:  -> NoMethodError undefined method 'each' for nil
+nil map:  -> NoMethodError undefined method 'map' for nil
+nil push: Achasan -> NoMethodError undefined method 'push' for nil
+nil fares[1]: 1 -> NoMethodError undefined method '[]' for nil
+nil fares.first(2): 2 -> NoMethodError undefined method 'first' for nil
+nil fares.sum:  -> NoMethodError undefined method 'sum' for nil
+nil hops[0]: 0 -> NoMethodError undefined method '[]' for nil
+nil hops.take(1): 1 -> NoMethodError undefined method 'take' for nil
+nil legs[1]: 1 -> NoMethodError undefined method '[]' for nil
+nil legs.first(1): 1 -> NoMethodError undefined method 'first' for nil

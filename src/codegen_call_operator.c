@@ -1152,11 +1152,13 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
     }
-    /* Comparable: object with a user `<=>` method but no direct `<` etc. */
+    /* Comparable: object with a user `<=>` method but no direct `<` etc.,
+       and the module included (class_is_comparable); without it the call
+       has no method */
     if (ty_is_object(rt)) {
       int cid4 = ty_object_class(rt);
       if (comp_method_in_chain(c, cid4, name, NULL) < 0 &&
-          comp_method_in_chain(c, cid4, "<=>", NULL) >= 0) {
+          comp_method_in_chain(c, cid4, "<=>", NULL) >= 0 && class_is_comparable(c, cid4)) {
         if (user_cmp_invalid_ret(c, cid4) != TY_UNKNOWN)
           unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
         /* a `<=>` that can return nil: check it -- incomparable raises the
@@ -1173,6 +1175,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         free(selfb.p);
         return 1;
       }
+    }
+    /* an object whose class has no such method and no Comparable to supply
+       it (a `<=>` alone gives none): CRuby's NoMethodError, raised once the
+       argument has run */
+    if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
+      int tv = hoist_boxed_rooted(c, recv);
+      buf_puts(b, "({ (void)(");
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "); (sp_bool)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })", name, tv);
+      return 1;
     }
     /* Hash subset/superset: < <= > >= over any hash-variant pairing. An empty
        `{}` literal operand (TY_UNKNOWN) is an empty hash all the same (#2399). */
@@ -1491,6 +1503,10 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
 
 /* String concatenation, unary -@ +@ ~ !, element stores and the arithmetic on a poly operand */
 int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
+  /* An operator override owns its poly arm before the builtin protocol's
+     delegation. The existing dispatch reads each arm's planned target. */
+  if (cplan_poly_operator_ret(c, id) != TY_UNKNOWN && emit_poly_method_dispatch(c, id, b)) return 1;
+
   /* String#concat with no arguments returns the receiver unchanged (#2309):
      a stage-1 builtin-op row (builtin_ops.c); the shared handle's arm stays */
   if (recv >= 0 && rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 1, b)) return 1;

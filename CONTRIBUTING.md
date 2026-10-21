@@ -165,15 +165,26 @@ and coercions; not every handwritten argument or element store uses it.
   `sp_compat.h`. `lib/spinel_rt.h` changes are additive; a change to
   existing runtime code is accepted case by case, when the fix's natural
   home is there and the pull request explains why the additive alternative
-  is worse (#8328).
+  is worse (#8328). An emitter that needs a node to read differently for one
+  emission uses a view (docs/internals/architecture.md, "Views"); it never
+  writes the node table or a global for it.
 - **One place per decision (#7100, #8328).** The analysis and
   representation layer decides once, and the emitters read that decision.
+  [docs/internals/architecture.md](docs/internals/architecture.md) lists the
+  layers, the question each one answers and its entry points. Three rules:
+  put a fact in the layer that owns it; convert old-style code on the lines
+  you touch; when the right layer lacks the fact, add it there rather than
+  special-casing one call site.
 - **Mutable Strings (#6765, #9258).** A String is shared by reference, as
   in CRuby: it is the one mode, with no option for the copying behaviour,
-  and `--share-strings` is accepted and ignored. The direction (#8328): a
-  String reaches its consumer as the object, and bytes or a copy are used
-  only where the analysis proves the difference cannot be observed. What is
-  still wrong under the one mode is tracked in #9258.
+  and `--share-strings` is accepted and ignored. The direction (#9258): the
+  handle becomes the one representation of every String slot, with bytes
+  only as a transient read face inside an expression, and the share
+  analysis, the String plan and the route refusals go away as correctness
+  mechanisms. Until that lands, pull requests that add or widen a String
+  route (`strbuf_*`, `emit_strbuf_*`, `share_plan_*`, the `sh_*` walks) are
+  paused; reports of wrong answers on String identity, with a reduction,
+  are welcome on #9258.
 
 ## Stacked pull requests
 

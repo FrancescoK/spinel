@@ -718,6 +718,11 @@ const char *builtin_class_of_type(TyKind t) {
   if (t == TY_IO) return "File";
   if (t == TY_CLASS) return "Class";
   if (t == TY_NIL) return "NilClass";
+  if (t == TY_MATCHDATA) return "MatchData";
+  if (t == TY_REGEX) return "Regexp";
+  if (t == TY_THREAD) return "Thread";
+  if (t == TY_FIBER) return "Fiber";
+  if (t == TY_RANDOM) return "Random";
   if (ty_is_array(t)) return "Array";
   if (ty_is_hash(t)) return "Hash";
   return NULL;
@@ -1320,6 +1325,61 @@ static void file_detached(Compiler *c, int n, int ds, int depth) {
   }
 }
 
+/* The Ruby path a class header's parent PAR is written as (`A::B` for
+   `class A::B::C`), into OUT. 0 when it is no plain constant path. */
+static int header_parent_path(const NodeTable *nt, int par, char *out, size_t cap) {
+  char chain[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0, n = qc_read_chain(nt, par, chain, &abs_anchor);
+  out[0] = '\0';
+  for (int i = 0; i < n; i++) {
+    if (i) strncat(out, "::", cap - strlen(out) - 1);
+    strncat(out, chain[i], cap - strlen(out) - 1);
+  }
+  return n > 0;
+}
+
+/* Whether Ruby name NAME is PATH or ends in `::PATH`. */
+static int ruby_path_ends_with(const char *name, const char *path) {
+  size_t nl = strlen(name), pl = strlen(path);
+  if (nl == pl) return sp_streq(name, path);
+  return nl > pl + 1 && sp_streq(name + nl - pl, path) && name[nl - pl - 1] == ':';
+}
+
+/* The program class whose Ruby name is PATH, among those that carry it
+   (a class whose leaf collided is keyed by a qualified name), or -1. */
+static int class_by_ruby_path(Compiler *c, const char *path) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].ruby_name_cache && sp_streq(c->classes[k].ruby_name_cache, path)) return k;
+  return -1;
+}
+
+/* `class A::B` names B in A wherever it is written: A encloses it, as
+   `module A; class B` does, and its name is A::B (#8369). An A whose leaf
+   collided is found by the path the header writes. Under a builtin
+   (`module Comparable::Ext`) the class is modelled outside it, and its
+   name keeps the builtin's path, as CRuby's does. */
+static void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, int named) {
+  char path[256];
+  int has_path = header_parent_path(c->nt, par, path, sizeof path);
+  int pc = has_path ? class_by_ruby_path(c, path) : -1;
+  if (pc < 0) pc = comp_class_index(c, nt_str(c->nt, par, "name"));
+  /* a leaf match that carries another path is another module of that leaf
+     (`Integer::Box` for `Right::Box` whose leaf collided) */
+  const char *pn = pc >= 0 ? c->classes[pc].ruby_name_cache : NULL;
+  if (pn && has_path && !ruby_path_ends_with(pn, path)) pc = -1;
+  if (pc >= 0 && pc != child && !c->classes[pc].is_builtin_const) {
+    c->classes[child].enclosing_class = pc;
+    return;
+  }
+  char head[64];
+  snprintf(head, sizeof head, "%.*s", (int)strcspn(path, ":"), path);
+  if (!has_path || named || !leaf || !(is_builtin_class_name(head) || is_builtin_module_name(head))) return;
+  char rn[320];
+  snprintf(rn, sizeof rn, "%s::%s", path, leaf);
+  c->classes[child].ruby_name_cache = strdup(rn);
+}
+
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -1454,14 +1514,12 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
          resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
       const char *qrn = cp >= 0 ? nt_str(c->nt, cp, "qc_ruby_name") : NULL;
       if (qrn) c->classes[child_class].ruby_name_cache = strdup(qrn);
-      /* `class A::B` names B in A wherever it is written: A encloses it, as
-         `module A; class B` does, and its name is A::B (#8369) */
+      /* `class A::B`: A encloses B wherever it is written. The leaf is the
+         header's as written: a `__` in it is the program's own, not the
+         nesting mark cls_leaf strips */
       int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
-      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode)) {
-        int pc = comp_class_index(c, nt_str(c->nt, par, "name"));
-        if (pc >= 0 && pc != child_class && !c->classes[pc].is_builtin_const)
-          c->classes[child_class].enclosing_class = pc;
-      }
+      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
+        header_parent_encloses(c, par, child_class, cname, qrn != NULL);
       /* `class ::B` names B at the top level wherever it is written: no
          module encloses it, and its name is B */
       else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
@@ -8012,19 +8070,38 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   }
 }
 
-/* Is `name` called anywhere on a receiver that is neither a constant nor self,
-   one that may hold a Class value known only at run time? */
-static int name_called_on_dynamic_recv(Compiler *c, const char *name, int node_count) {
-  const NodeTable *nt = c->nt;
-  for (int id = 0; id < node_count; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
-    int r = nt_ref(nt, id, "receiver");
-    if (r < 0) continue;
-    NodeKind rk = nt_kind(nt, r);
-    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
-    return 1;
+/* The names a `class << self` alias gives (`alias fetch_entry lookup`,
+   `alias_method`), each once: a call by one of them runs the aliased class
+   method, so it counts as a call of that method on its receiver. */
+typedef struct { char **nm; int n; } SgAliasNames;
+static SgAliasNames sg_alias_names(Compiler *c) {
+  SgAliasNames an = { NULL, 0 };
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *cls = &c->classes[k];
+    for (int i = 0; cls->alias_sg && i < cls->naliases; i++) {
+      if (!cls->alias_sg[i] || !cls->alias_new[i]) continue;
+      int seen = 0;
+      for (int j = 0; j < an.n && !seen; j++) seen = sp_streq(an.nm[j], cls->alias_new[i]);
+      if (seen) continue;
+      char **g = realloc(an.nm, sizeof(char *) * (size_t)(an.n + 1));
+      if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      an.nm = g; an.nm[an.n++] = cls->alias_new[i];
+    }
+  }
+  return an;
+}
+
+/* Does a call named `nm` on one of the classes `from` run the class method
+   mi: its own name, or an alias of it (a copy of mi made for that class is
+   the same method)? */
+static int cm_call_names(Compiler *c, const char *nm, int mi, const int *from, int nfrom,
+                         const SgAliasNames *an) {
+  if (sp_streq(nm, c->scopes[mi].name)) return 1;
+  int alias = 0;
+  for (int j = 0; j < an->n && !alias; j++) alias = sp_streq(an->nm[j], nm);
+  for (int f = 0; alias && f < nfrom; f++) {
+    int r = comp_cmethod_in_chain(c, from[f], nm, NULL);
+    if (r >= 0 && c->scopes[r].is_cmethod && c->scopes[r].def_node == c->scopes[mi].def_node) return 1;
   }
   return 0;
 }
@@ -8040,6 +8117,26 @@ static const char *cls_call_name(Compiler *c, int id) {
                      sp_streq(nm, "public_send"));
   const char *sym = named ? method_sym_arg(c, id) : NULL;
   return sym ? sym : nm;
+}
+
+/* Is the class method mi called anywhere, on one of the classes `from`, with
+   a receiver that is neither a constant nor self, one that may hold a Class
+   value known only at run time? By its name, an alias's, or a send's (or
+   method's) literal name: `k.send(:m)` runs m on k's class too. */
+static int name_called_on_dynamic_recv(Compiler *c, int mi, const int *from, int nfrom, int node_count,
+                                       const SgAliasNames *an) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < node_count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = cls_call_name(c, id);
+    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an)) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) continue;
+    NodeKind rk = nt_kind(nt, r);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
+    return 1;
+  }
+  return 0;
 }
 
 /* `Subclass.create` where `create` is an inherited class method whose body
@@ -8103,6 +8200,7 @@ void specialize_inherited_cls_new(Compiler *c) {
   sn_begin();
   int node_count = nt->count;   /* don't scan nodes appended by cloning */
   int did_clone = 0;
+  SgAliasNames an = sg_alias_names(c);
   /* self in a class body is the class, so a receiver-less call there names a
      class method of THAT class even though the statement belongs to no class
      method scope. Map each such statement to its class up front; the loop below
@@ -8238,7 +8336,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!nt2) break;
       tgt = nt2; tgt[ntgt++] = k;
     }
-    if (ntgt > 0 && name_called_on_dynamic_recv(c, mname, node_count))
+    if (ntgt > 0 && name_called_on_dynamic_recv(c, mi, tgt, ntgt, node_count, &an))
       for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t]);
     free(tgt);
   }
@@ -8283,11 +8381,13 @@ void specialize_inherited_cls_new(Compiler *c) {
     int called_direct = 0;
     for (int ii = 0; ii < nccall && !called_direct; ii++) {
       int id = ccall[ii];
-      if (!cls_call_name(c, id) || !sp_streq(cls_call_name(c, id), src->name)) continue;
+      const char *nm1 = cls_call_name(c, id);
+      if (!nm1) continue;
       int r = nt_ref(nt, id, "receiver");
       int rc = comp_class_index(c, nt_str(nt, r, "name"));
       if (rc < 0) continue;
-      if (rc == src->class_id || comp_cmethod_in_chain(c, rc, src->name, NULL) == s) called_direct = 1;
+      if (sp_streq(nm1, src->name) ? rc == src->class_id || comp_cmethod_in_chain(c, rc, src->name, NULL) == s
+                                   : comp_cmethod_in_chain(c, rc, nm1, NULL) == s) called_direct = 1;
     }
     /* ... or if a bare call inside some class-method body still resolves to
        this source (a class with no specialized copy of its own) */
@@ -8296,7 +8396,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       int r2 = nt_ref(nt, id, "receiver");
       if (r2 >= 0 && !(nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "SelfNode"))) continue;
       const char *nm2 = cls_call_name(c, id);
-      if (!nm2 || !sp_streq(nm2, src->name)) continue;
+      if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an)) continue;
       Scope *encl = comp_scope_of(c, id);
       if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
       if (comp_cmethod_in_chain(c, encl->class_id, nm2, NULL) == s) called_direct = 1;
@@ -8307,7 +8407,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (!body_cls || body_cls[id] < 0) continue;
       const char *nm3 = nt_str(nt, id, "name");
-      if (!nm3 || !sp_streq(nm3, src->name)) continue;
+      if (!nm3 || !cm_call_names(c, nm3, s, &src->class_id, 1, &an)) continue;
       if (comp_cmethod_in_chain(c, body_cls[id], nm3, NULL) == s) called_direct = 1;
     }
     /* ... or if an `obj.class.<name>` call exists anywhere. That compiles to a
@@ -8318,7 +8418,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (nt_kind(nt, id) != NK_CallNode) continue;
       const char *nm4 = cls_call_name(c, id);
-      if (!nm4 || !sp_streq(nm4, src->name)) continue;
+      if (!nm4 || !cm_call_names(c, nm4, s, &src->class_id, 1, &an)) continue;
       int r4 = nt_ref(nt, id, "receiver");
       if (r4 < 0 || nt_kind(nt, r4) != NK_CallNode) continue;
       const char *rn4 = nt_str(nt, r4, "name");
@@ -8327,11 +8427,12 @@ void specialize_inherited_cls_new(Compiler *c) {
     /* ... or if the defining class itself escapes as a value a dynamic
        receiver's call can reach */
     if (!called_direct && class_value_escapes(c, src->class_id) &&
-        name_called_on_dynamic_recv(c, src->name, node_count)) called_direct = 1;
+        name_called_on_dynamic_recv(c, s, &src->class_id, 1, node_count, &an)) called_direct = 1;
     if (!called_direct) src->is_transplanted_source = 1;
   }
   free(ccall);
   free(body_cls);
+  free(an.nm);
   sn_end();
   /* The cloned bodies introduced new local/ivar nodes; intern them. */
   if (did_clone) register_locals(c);

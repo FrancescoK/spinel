@@ -1,0 +1,13 @@
+["a", "cc", "bbb"]
+"bbb"
+[1, 2, 3]
+[:a, :cc]
+[3, 2, 1]
+[[:b, 1], [:a, 2]]
+[["cc", 2], ["a", 1], ["bbb", 0]]
+["1:2", "1:9", "1:10"]
+["1:9", "1:10", "2:0"]
+["1", "2", "3"]
+1
+[1, 3]
+ArgumentError: comparison of Partial with Partial failed

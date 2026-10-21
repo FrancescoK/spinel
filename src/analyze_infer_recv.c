@@ -1349,12 +1349,12 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        Integer-endpoint (range form) bound can be returned as-is, so the
        result is boxed. */
     if (sp_streq(name, "clamp") && argc == 2 &&
-        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)) {
       TyKind lo = infer_type(c, argv[0]), hi = infer_type(c, argv[1]);
       { *out = ((lo == rt || lo == TY_NIL) && (hi == rt || hi == TY_NIL)) ? rt : TY_POLY; return 1; }
     }
     if (sp_streq(name, "clamp") && argc == 1 && infer_type(c, argv[0]) == TY_RANGE &&
-        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)) {
       /* a literal range with same-class endpoints unfolds to the object
          clamp, whose result is one of the three same-class values */
       int rn2 = nt_paren_single(nt, argv[0]);
@@ -1371,9 +1371,10 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = TY_POLY; return 1; }
     }
-    /* Comparable#between?(lo, hi) on an object with `<=>` is a boolean. */
+    /* Comparable#between?(lo, hi) on an object with `<=>` is a boolean
+       (class_is_comparable: without the module there is none). */
     if (sp_streq(name, "between?") && argc == 2 &&
-        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) { *out = TY_BOOL; return 1; }
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)) { *out = TY_BOOL; return 1; }
     /* default Object#<=> (no user method): 0 or nil, so poly (#2686). */
     if (sp_streq(name, "<=>") && argc == 1 &&
         comp_method_in_chain(c, cid, "<=>", NULL) < 0) { *out = TY_POLY; return 1; }
@@ -1412,6 +1413,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         if (k == cid || !is_descendant(c, k, cid)) continue;
         int kmi = comp_method_in_chain(c, k, name, NULL);
         if (kmi < 0 || kmi == base_mi) continue;
+        if (g_plan_check) an_user_call_record(c, id, kmi, UC_POLY, k);
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (kr != TY_UNKNOWN && kr != *out) *out = ty_unify(*out, kr);
       }

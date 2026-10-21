@@ -945,7 +945,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", qm);
         return 1;
       }
-      int yes = const_defined_known(c, cd_rnm, qm);
+      int yes = const_defined_from(c, cd_rnm, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
       if (yes && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
@@ -3107,9 +3107,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 
   /* self.class.new(args) in a leaf-class instance method -> construct the
      enclosing class statically (no subclass can shadow it at runtime). */
-  /* Class#allocate: a bare instance with default/nil ivars and no initialize.
-     Exception subclasses carry raise/message state set up by their dedicated
-     constructor, so they are excluded (fall through to the generic reject). */
+  /* Class#allocate skips initialize. The common allocator also supplies the
+     exception layout and state for an exception subclass. */
   if (recv >= 0 && sp_streq(name, "allocate")) {
     int oc = allocate_on_own_class(c, id);
     if (oc >= 0 && !class_is_exc_subclass(c, oc)) { emit_own_class_alloc(c, id, oc, b); return 1; }
@@ -3118,7 +3117,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     int acid = comp_class_index(c, nt_str(nt, recv, "name"));
-    if (acid >= 0 && !class_is_exc_subclass(c, acid)) {
+    if (acid >= 0 && (!class_is_exc_subclass(c, acid) ||
+        comp_cmethod_in_chain(c, acid, "allocate", NULL) < 0)) {
       emit_obj_alloc_expr(c, acid, b);
       return 1;
     }
@@ -3131,6 +3131,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       if (bcn && sp_streq(bcn, "Array"))  { buf_puts(b, "sp_PolyArray_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { buf_puts(b, "sp_PolyPolyHash_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Object")) { buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)"); return 1; }
+      if (bcn && sp_streq(bcn, "Integer")) {
+        buf_puts(b, "({ sp_raise_cls(\"TypeError\", SPL(\"allocator undefined for Integer\")); sp_box_nil(); })");
+        return 1;
+      }
     }
   }
 
@@ -3957,7 +3961,22 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", cn0);
           return 1;
         }
-        int yes = const_defined_known(c, rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL, cn0);
+        int lit0 = rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode;
+        int yes = lit0 ? const_defined_from(c, nt_str(nt, recv, "name"), cn0) : const_defined_known(c, NULL, cn0);
+        /* a Class known only at run time: the classes that see the constant,
+           as its literal form decides for one (#9876); a top-level one, or
+           a qualified name, every class sees */
+        if (!lit0 && yes && !strstr(cn0, "::") && !const_name_resolves_top_level(c, cn0)) {
+          int tc = ++g_tmp;
+          buf_printf(b, "({ sp_Class _t%d = ", tc); emit_expr(c, recv, b);
+          buf_printf(b, "; (0");
+          for (int k = 0; k < c->nclasses; k++)
+            if (const_seen_by_class(c, k, cn0)) buf_printf(b, " || _t%d.cls_id == %d", tc, k);
+          buf_puts(b, ")");
+          if (const_has_flag(comp_const(c, cn0))) buf_printf(b, " && cst_%s__set", cn0);
+          buf_puts(b, "; })");
+          return 1;
+        }
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
         /* a constant not assigned yet is not defined: asked at run time */
         if (yes && const_has_flag(comp_const(c, cn0))) buf_printf(b, "), cst_%s__set)", cn0);
@@ -4477,6 +4496,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             int defcls9 = -1;
             int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
             if (kmi < 0) continue;
+            /* a method copied into each class a value can hold is not emitted
+               itself: no value holds a class that answers by it */
+            if (c->scopes[kmi].is_transplanted_source && !scope_toplevel_included(c, kmi)) continue;
             int rarm9 = emit_reopen_arm_test(c, kmi, name, rcls9, rraise9, b);
             if (!rarm9) buf_printf(b, " case %d: ", k);
             rdef9 |= rarm9;
@@ -4880,11 +4902,14 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         }
       }
       if (defmi >= 0 && !dyield) {
-        /* Count distinct class method impls across the hierarchy */
+        /* Count distinct class method impls across the hierarchy: the ones
+           each class answers the name with (an alias's name, `class << self;
+           alias fetch_entry lookup; end`, names no method of its own) */
         int nimpl = 0;
         for (int k = 0; k < c->nclasses; k++) {
+          int kdef = -1;
           if (!is_descendant(c, k, cid)) continue;
-          if (comp_cmethod_in_class(c, k, name) >= 0) nimpl++;
+          if (comp_cmethod_in_chain(c, k, name, &kdef) >= 0 && kdef == k) nimpl++;
         }
         TyKind cret = (TyKind)c->scopes[defmi].ret;
         /* Stash the receiver object in a temp (referenced in every switch case) */
@@ -5282,7 +5307,16 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     {
       int oc_ci3 = comp_class_index(c, "Object");
       if (oc_ci3 >= 0) {
-        int oc_mi3 = comp_method_in_chain(c, oc_ci3, name, NULL);
+        const CallPlan *pl = cplan_user(c, id);
+        int planned = pl->via == UC_REOPEN && pl->owner_ci == oc_ci3 && pl->dispatch == CP_DIRECT;
+        int oc_mi3 = planned ? pl->mi : comp_method_in_chain(c, oc_ci3, name, NULL);
+        if (g_plan_check && planned) {
+          cplan_served("object-fallback");
+          int own = comp_method_in_chain(c, oc_ci3, name, NULL);
+          if (own != oc_mi3)
+            fprintf(stderr, "plan-check: cplan-conflict: object-fallback node %d: plan %d, lookup %d\n",
+                    id, oc_mi3, own);
+        }
         /* a yielding one goes through its proc form (#5779), with the
            call's block or without one: it has no symbol of its own, being
            spliced where it can */

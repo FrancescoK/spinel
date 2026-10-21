@@ -31,6 +31,7 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->send_fallback = -1;
+  p->delegate = NULL;
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
@@ -255,14 +256,19 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       return;
     }
     /* the operators an object answers through another of its methods:
-       `!=` through `==`, the comparisons through `<=>` */
-    const char *via_op = sp_streq(name, "!=") ? "==" :
-                         (sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
-                          sp_streq(name, ">=") || sp_streq(name, "between?") ||
-                          sp_streq(name, "clamp")) ? "<=>" : NULL;
+       `!=` through `==`, the comparisons through `<=>` when Comparable
+       supplies them (class_is_comparable) */
+    const char *via_op = builtin_operator_delegate(name);
+    if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    if (dmi < 0 && via_op) {
+      via_op = builtin_operator_delegate(via_op);
+      if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
+      dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    }
     if (dmi >= 0) {
       cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
+      p->delegate = via_op;
       return;
     }
     /* a reader a subclass overrides with a method: the switch reaches the
@@ -284,6 +290,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
     for (int i = 0; i < npc; i++) {
       if (c->classes[pcs[i].cls].is_native_class) continue;
+      /* a reader candidate written as a method (`def x = @x`) is that method */
       int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
       if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
     }
@@ -336,7 +343,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
   const char *bcls = builtin_class_of_type(rt);
-  if (bcls && !builtin_method_known(bcls, name)) cplan_object_reopen(c, name, p);
+  if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, name, p);
 }
 
 static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
@@ -380,7 +387,7 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->mi < 0) return 0;
   if (p->mi == mi) return 1;
   if (p->dispatch < CP_SWITCH) return 0;
-  const char *name = nt_str(c->nt, id, "name");
+  const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
   if (p->by_name) {
     int ncc = 0;
@@ -697,7 +704,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   int n = 0;
   out[n++] = plan.mi;
   if (plan.dispatch < CP_SWITCH) return n;
-  const char *name = c->scopes[plan.mi].name;
+  const char *name = plan.delegate ? plan.delegate : c->scopes[plan.mi].name;
   if (!name) return n;
   if (g_ct_nidx < 0) ct_index_build(c);
   int lo = 0, hi = g_ct_nidx;
@@ -716,7 +723,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   /* --share-strings: the methods named by the call, each class's own
      (comp_poly_candidates follows an alias, `alias get text`, whose method
      has another name than the call's and the first target's) */
-  const char *cn = nt_str(c->nt, id, "name");
+  const char *cn = plan.delegate ? plan.delegate : nt_str(c->nt, id, "name");
   /* (not for a text conversion, #to_s or #inspect: the boxed to_s route
      asks each class the receiver can hold for its own method, and adding
      every class's here widened the facts of the bundled library's calls,
@@ -736,6 +743,27 @@ static int ct_resolve(Compiler *c, int id, int *out) {
     }
   }
   return n;
+}
+
+/* A poly protocol keeps each class's own operator arm ahead of the
+   builtin delegation. Those arms may answer values other than Boolean. */
+TyKind cplan_poly_operator_ret(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || is_equality_name(name) || !(is_eq_op(name) || is_cmp_op(name))) return TY_UNKNOWN;
+  int recv = nt_ref(c->nt, id, "receiver"), argc = 0;
+  call_args(c->nt, id, &argc);
+  if (argc != 1 || recv < 0 || comp_ntype(c, recv) != TY_POLY) return TY_UNKNOWN;
+  const CallPlan *p = cplan_user_fresh(c, id);
+  if (p->via != UC_POLY || p->mi < 0) return TY_UNKNOWN;
+  int n = 0, found = 0;
+  const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &n);
+  for (int i = 0; i < n; i++) {
+    int mi = pcs[i].mi;
+    if (mi < 0 || c->classes[pcs[i].cls].is_native_class) continue;
+    found = 1;
+    if (c->scopes[mi].ret != TY_BOOL) return TY_POLY;
+  }
+  return found ? TY_BOOL : TY_UNKNOWN;
 }
 
 int cplan_target_binds(Compiler *c, int id, int mi) {
@@ -1720,7 +1748,7 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
   int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
                  nt_ref(c->nt, id, "block") < 0;
-  if (!ps->pred && !ps->strftime && !is_aref && !is_aref2 && !is_fetch && !ps->include && !ps->push &&
+  if (!ps->pred && !(ps->strftime && ps->ncand == 0) && !is_aref && !is_aref2 && !is_fetch && !ps->include && !ps->push &&
       !ps->cover && !ps->gcdlcm && !ps->strdel && !ps->strsplit && !ps->pdelete && !ps->pdig &&
       !ps->pvalues_at && !ps->pfirstn && !ps->pmerge) {
     cpoly_family(p, cap, PB_ND_GENERIC);
@@ -1774,7 +1802,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
     kwty = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
     for (int e = 0; e < kwn; e++) {
       int val = nt_ref(nt, kwels[e], "value");
-      TyKind at = val >= 0 ? comp_ntype(c, val) : TY_NIL;
+      TyKind at = val >= 0 ? repr_of(c, val).as_ty : TY_NIL;
       kwty[e] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
     }
   }
@@ -1796,10 +1824,19 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
     cpoly_trial(p, cap, PT_GENERIC_TAIL);
   /* the families that write the switch's `default:` themselves */
   static const int dflt[] = { PB_ND_GENERIC, PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,
-                              PB_PUSH, PB_INCLUDE_CASES, PB_STRFTIME, PB_PRED_N };
-  int has_default = 0;
+                              PB_PUSH, PB_INCLUDE_CASES, PB_PRED_N };
+  int has_default = ps.cover || (ps.strftime && ps.ncand == 0);
   for (size_t i = 0; i < sizeof dflt / sizeof dflt[0]; i++) has_default |= cpoly_has_family(p, dflt[i]);
   if (!is_setter_val && !has_default) cpoly_trial(p, cap, PT_DEFAULT_N);
+}
+
+/* A String-typed slot may already hold the shared handle. The argument
+   temp keeps that representation so boxed arms keep its identity too. */
+TyKind cplan_poly_arg_storage(Compiler *c, int id) {
+  Repr r = repr_of(c, id);
+  if (r.strbuf_src == RS_SLOT_POLY) return TY_POLY;
+  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  return r.as_ty;
 }
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
@@ -1835,7 +1872,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   for (int a = 0; a < argc; a++) atmp_ty[a] = TY_UNKNOWN;
   for (int a = 0; a < pos_argc; a++) {
     if (nt_kind(nt, argv[a]) == NK_SplatNode) { atmp_ty[a] = TY_POLY_ARRAY; continue; }
-    TyKind at = comp_ntype(c, argv[a]);
+    TyKind at = cplan_poly_arg_storage(c, argv[a]);
     atmp_ty[a] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
   }
   int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
@@ -2043,7 +2080,7 @@ static int cpoly_cls_value_arms(Compiler *c, int id, const char *name, int argc,
 static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
                                PolyPlan *p, int *cap) {
   int blk = nt_ref(c->nt, id, "block");
-  int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
+  int live_blk = blk >= 0 && (resolve_forwarded_block(c, blk) >= 0 || g_yield_proc_ref);
   if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "each_index")) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
@@ -2239,6 +2276,20 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   return &bp;
 }
 
+/* Whether the boxed class arm calls the method rather than raising for
+   its visibility. Explicit self may call private methods too. */
+int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
+  if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode) return 1;
+  int owner = -1;
+  int vis = comp_cmethod_vis_declared(c, ci, name, &owner);
+  if (vis == SP_VIS_PROTECTED) {
+    Scope *s = comp_scope_of(c, id);
+    int caller = s && s->is_cmethod ? s->class_id : -1;
+    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) return 1;
+  }
+  return vis == SP_VIS_PUBLIC;
+}
+
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   static PolyPlan cp;
   free(cp.arm);
@@ -2247,7 +2298,10 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   int cap = 0;
   const char *name = nt_str(c->nt, id, "name");
   if (!name) return &cp;
+  int argc = 0;
+  call_args(c->nt, id, &argc);
   for (int k = 0; k < c->nclasses; k++) {
+    if (cls_sg_accessor_first(c, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
     int mi = comp_cmethod_in_chain(c, k, name, NULL);
     if (mi < 0) continue;
     int pf = scope_proc_form_of(c, mi);
@@ -2376,6 +2430,46 @@ const char *cplan_call_name(const NodeTable *nt, int id) {
   return wn ? wn : nt_str(nt, id, "name");
 }
 
+/* Does an argument of call id (a keyword's value too) hold an Integer or a
+   Float that can be nil, or a boxed value? A String method converts it as
+   it reads it, and nil, or a value of another class, raises TypeError
+   there. */
+static int cplan_nil_converted_arg(Compiler *c, int v) {
+  TyKind t = comp_ntype(c, v);
+  return t == TY_POLY || (oint_kind(t) && node_is_oint(c, v));
+}
+static int cplan_nil_arg_converts(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    int v = av[i];
+    if (nt_kind(nt, v) == NK_KeywordHashNode) {
+      int en = 0;
+      const int *ev = nt_arr(nt, v, "elements", &en);
+      for (int j = 0; j < en; j++) {
+        int kv = nt_kind(nt, ev[j]) == NK_AssocNode ? nt_ref(nt, ev[j], "value") : -1;
+        if (kv >= 0 && cplan_nil_converted_arg(c, kv)) return 1;
+      }
+    }
+    else if (cplan_nil_converted_arg(c, v)) return 1;
+  }
+  return 0;
+}
+
+/* An ivar read the plan tests, where the release build's policy leaves
+   the others to their arms: an Array in one that no class's initialize
+   sets first (NFW_IVAR), or a String there that call `nm` changes. The
+   Array arms read a NULL receiver as an empty Array or read through it
+   (`@stops[1]` answered nil, `@stops.first(2)` crashed), and a String
+   mutator's frozen check read it as a frozen String (FrozenError, "can't
+   modify frozen String: nil"), where CRuby raises NoMethodError; it is
+   tested as a local's is. */
+static int cplan_nil_ivar_tested(Compiler *c, int r, TyKind rt, const char *nm) {
+  return (ty_is_array(rt) || ty_is_obj_array(rt) || rt == TY_STRH_ARRAY || (rt == TY_STRING && an_str_mutator_name(nm))) &&
+         nil_fact_why(c, r) == NFW_IVAR;
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
@@ -2398,8 +2492,16 @@ int cplan_nil(Compiler *c, int id) {
      a hot path reads one that a reset or a setup fills, and a test in front
      of every call through it is not paid for; a class variable's arms write
      back into it */
+  /* ...but not on a String call with an argument it converts
+     (cplan_nil_arg_converts): the arm or the runtime tests the receiver
+     after it has converted the argument, and the argument's TypeError came
+     first where CRuby raises NoMethodError, having run the arguments. (A
+     mutator writes back into the slot the head would hold.) */
+  int conv = rt == TY_STRING && !an_str_mutator_name(nm) && cplan_nil_arg_converts(c, id);
+  /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
-  if (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode) return CN_NONE;
+  int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt, nm);
+  if ((rk == NK_InstanceVariableReadNode && !conv && !ivar_tested) || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
      back: a slot that holds the pointer, or a shared String's handle; one
      held another way (a box a read unboxes) is left as it is */
@@ -2419,9 +2521,11 @@ int cplan_nil(Compiler *c, int id) {
   /* a nil the program writes (an element of an Array it stores one into
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
-     a hot loop over a receiver that is never nil would pay for */
+     a hot loop over a receiver that is never nil would pay for, unless the
+     call converts an argument or reads an ivar the plan tests (conv and
+     ivar_tested, as above) */
   int why = nil_fact_why(c, r);
-  if (!cplan_nil_written(why)) return CN_NONE;
+  if (!cplan_nil_written(why) && !conv && !ivar_tested) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

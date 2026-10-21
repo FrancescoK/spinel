@@ -1383,6 +1383,14 @@ static TyKind push_elem_ty(Compiler *c, int node) {
   return t;
 }
 
+/* Is a pushed value of kind `t` evidence for the arrays the slot is written?
+   A kind decided at run time widens them to the general Array as any other
+   does; an analysis-only respond_to? probe (`o.push(o)`) stores nothing, and
+   its dummy argument is no evidence. */
+static int push_widens_arrays(const NodeTable *nt, int call, TyKind t) {
+  return t != TY_UNKNOWN && !(t == TY_POLY && nt_int(nt, call, "rt_probe", 0));
+}
+
 /* ---- "this poly slot can hold a builtin container" ----
    TY_POLY is a top type with no member list, so a call on a poly receiver
    cannot tell a union that really includes an Array/Hash from a user object
@@ -2216,7 +2224,7 @@ static int local_hash_alias_source(Compiler *c, const LWIndex *lw, int recv) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, nm) || comp_scope_of(c, w) != sc) continue;
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || ++nw > 1) return -1;
-    src = unwrap_parens(c, nt_ref(nt, w, "value"));
+    src = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
   }
   if (src < 0) return -1;
   if (nt_kind(nt, src) == NK_InstanceVariableReadNode) return src;
@@ -2627,7 +2635,7 @@ static int recv_hash_or_write(Compiler *c, int recv) {
     int last = scope_body_last(c, mi);
     int def = c->scopes[mi].def_node;
     if (def >= 0 && subtree_has_return(nt, nt_ref(nt, def, "body"), last)) return -1;
-    n = unwrap_parens(c, last);
+    n = nt_paren_single(c->nt, last);
   }
   if (n < 0) return -1;
   NodeKind k = nt_kind(nt, n);
@@ -2669,11 +2677,14 @@ static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
 
 /* An attribute target `o.x` nested in a `(a, b)` takes the element, boxed:
    the field an attr_accessor's writer keeps in each class the receiver can
-   be (the receiver's own, or every class with the writer for a boxed one) is
-   unified with it, and the parameter of a `def x=(v)` the program writes is
-   taken the same way. A field or parameter typed for another write alone
-   would take the boxed element through an unchecked cast; the nested target
-   has no call evidence to say otherwise. */
+   be (the receiver's own and its descendants', or every class with the writer
+   for a boxed one) is unified with it, and the parameter of a `def x=(v)` the
+   program writes is taken the same way. A receiver typed for a class can hold
+   an instance of a descendant (`self` in an inherited method), and the store
+   dispatches on the instance's class, so a descendant's override takes the
+   element too. A field or parameter typed for another write alone would take
+   the boxed element through an unchecked cast; the nested target has no call
+   evidence to say otherwise. */
 static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, tgt, "name");
@@ -2685,7 +2696,7 @@ static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   int changed = 0, only = ty_is_object(rt) ? ty_object_class(rt) : -1;
   if (rt != TY_POLY && only < 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (only >= 0 && k != only) continue;
+    if (only >= 0 && k != only && !is_descendant(c, k, only)) continue;
     int wdc = -1, mdc = -1;
     int wmi = comp_method_in_chain(c, k, nm, &mdc);
     if (wmi >= 0) {
@@ -2947,6 +2958,22 @@ static int share_str_value_leaves(Compiler *c, int n) {
   for (int i = 0; i < cnt && !found; i++) found = share_str_elem_read(c, lv[i]);
   if (lv != small) free(lv);
   return found;
+}
+/* A boxed ivar (its writes join an Array with a nil or another kind) holds
+   its arrays the way a boxed local does: a value of another kind pushed
+   widens the arrays it is written (`@a = c ? [1, 2] : nil`). */
+static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int cls, const char *inm, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    Scope *ws = comp_scope_of(c, wi);
+    if (!wnm || !sp_streq(wnm, inm) || nt_kind(nt, wi) != NK_InstanceVariableWriteNode ||
+        !ws || (ws->class_id >= 0 ? ws->class_id : cls) != cls) continue;
+    changed |= widen_boxed_array_sources(c, nt_ref(nt, wi, "value"), elem, 0);
+  }
+  return changed;
 }
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
@@ -3387,8 +3414,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          parameter does: a store of another kind promotes a copy into this
          one slot, and wherever else the array is held keeps it typed. Its
          arrays widen where they are built instead. A value whose kind is
-         decided at run time is exempt, as it is for a typed parameter
-         (#4481): the boxed store checks it, and raises for a foreign one. */
+         decided at run time widens them to the general Array too: a store
+         the typed array took checked at run time raised for a foreign one,
+         where CRuby appends it. */
       if (lv && (!lv->is_param || lv->is_block_param) && lv->type == TY_POLY && (is_push || (is_idx_write && (is_splice || kt == TY_INT))) &&
           !concat_scalar && (!is_splice || is_fill || splice_arr)) {
         /* each pushed value is its own evidence (`z.push(1, [2])`): their
@@ -3396,10 +3424,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         if (elem_argv && elem_an - elem_from > 1) {
           for (int ai = elem_from; ai < elem_an; ai++) {
             TyKind et = push_elem_ty(c, elem_argv[ai]);
-            if (et != TY_UNKNOWN && et != TY_POLY) changed |= widen_boxed_array_sources(c, recv, et, 0);
+            if (push_widens_arrays(nt, id, et)) changed |= widen_boxed_array_sources(c, recv, et, 0);
           }
         }
-        else if (vt != TY_UNKNOWN && vt != TY_POLY)
+        else if (push_widens_arrays(nt, id, (TyKind)vt))
           changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
       }
       /* A proc or lambda literal's boxed parameter written as a Hash
@@ -3678,6 +3706,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       slot = ivar_evidence_slot(c, &ivw_ix, ivar_cls_id, inm, is_push, &ivt);
       if (!slot) continue;
       vt = ivt;
+      if (*slot == TY_POLY && is_push && push_widens_arrays(nt, id, (TyKind)vt) && !concat_scalar)
+        changed |= widen_boxed_ivar_array_sources(c, &ivw_ix, ivar_cls_id, inm, (TyKind)vt);
       watch_nm = inm;
       watch_cls = ivar_cls_id;
     }
@@ -3962,6 +3992,52 @@ static int masgn_poly_local(Compiler *c, Scope *ms, int tgt, TyKind t, int value
   if (mg == lv->type) return 0;
   lv_set_type(lv, mg);
   return lv->rbs_seeded;
+}
+
+/* One write of a proc-typed local and the answer of the proc it writes; the
+   sort groups a local's writes and keeps them in program order (the join is
+   not associative: String, StrBuf, nil) */
+typedef struct { LocalVar *lv; int pr; int seq; } ProcRetWrite;
+static int proc_ret_write_cmp(const void *a, const void *b) {
+  const ProcRetWrite *x = (const ProcRetWrite *)a, *y = (const ProcRetWrite *)b;
+  if (x->lv != y->lv) return x->lv < y->lv ? -1 : 1;
+  return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+/* The answer of a proc-typed local: the join of the answers of the procs it is
+   written. A local written procs that answer different kinds answers their
+   join; the last write's alone was read at the first call's type. What counts
+   as a change is the value the pass leaves against the one it found. Comparing
+   write by write reported both writes of `sh = ->(x) { x }; sh = ->(a, b, c) {
+   a + b + c }` as changes every round, and the fixpoint ran to its cap (#4962). */
+int join_local_proc_rets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = 0, cap = 0, changed = 0;
+  ProcRetWrite *ws = NULL;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    if (!lv || lv->type != TY_PROC) continue;
+    int vnode = nt_ref(nt, id, "value");
+    TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
+    if (pr == TY_UNKNOWN) continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 16;
+      ws = (ProcRetWrite *)realloc(ws, sizeof(ProcRetWrite) * (size_t)cap);
+      if (!ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    ws[n].lv = lv; ws[n].pr = (int)pr; ws[n].seq = n; n++;
+  }
+  if (n > 1) qsort(ws, (size_t)n, sizeof(ProcRetWrite), proc_ret_write_cmp);
+  for (int i = 0; i < n; ) {
+    int j = i, joined = ws[i].pr;
+    while (++j < n && ws[j].lv == ws[i].lv) joined = (int)ty_unify((TyKind)joined, (TyKind)ws[j].pr);
+    if (ws[i].lv->proc_ret != joined) { lv_set_proc_ret(ws[i].lv, joined); changed = 1; }
+    i = j;
+  }
+  free(ws);
+  return changed;
 }
 
 /* infer_write_types's pass over multiple assignments: each target takes its
@@ -4883,38 +4959,9 @@ int infer_write_types(Compiler *c) {
      inside the proc body. Running after the first pass ensures those locals
      have their correct types (e.g. `x = 10` -> TY_INT) before proc_node_ret
      evaluates the body's return type.
-     A local written with two procs of different return types takes the
-     last write's, as before; what counts as a change is the value the pass
-     leaves against the one it found. Comparing write by write reported both
-     writes of `sh = ->(x) { x }; sh = ->(a, b, c) { a + b + c }` as changes
-     every round, and the fixpoint ran to its cap (#4962). */
-  {
-    int npr = 0, cappr = 0;
-    LocalVar **pr_lv = NULL; int *pr_old = NULL;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm) continue;
-      LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-      if (!lv || lv->type != TY_PROC) continue;
-      int vnode = nt_ref(nt, id, "value");
-      TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
-      if (pr == TY_UNKNOWN || (TyKind)lv->proc_ret == pr) continue;
-      int seen = 0;
-      for (int k = 0; k < npr && !seen; k++) if (pr_lv[k] == lv) seen = 1;
-      if (!seen) {
-        if (npr == cappr) {
-          cappr = cappr ? cappr * 2 : 8;
-          pr_lv = (LocalVar **)realloc(pr_lv, sizeof(LocalVar *) * (size_t)cappr);
-          pr_old = (int *)realloc(pr_old, sizeof(int) * (size_t)cappr);
-          if (!pr_lv || !pr_old) { fprintf(stderr, "oom\n"); exit(1); }
-        }
-        pr_lv[npr] = lv; pr_old[npr] = lv->proc_ret; npr++;
-      }
-      lv_set_proc_ret(lv, (int)pr);
-    }
-    for (int k = 0; k < npr; k++) if (pr_lv[k]->proc_ret != pr_old[k]) changed = 1;
-    free(pr_lv); free(pr_old);
-  }
+     A local written with two procs of different return types takes their
+     join (join_local_proc_rets). */
+  changed |= join_local_proc_rets(c);
 
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)
@@ -5556,7 +5603,7 @@ static int method_has_other_body(Compiler *c, int mi);
    method's. */
 static int widen_returned_hashes(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
-  call = unwrap_parens(c, call);
+  call = nt_paren_single(c->nt, call);
   if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") >= 0) return -1;
   int mi = backprop_call_target(c, call);
   if (mi < 0) return -1;
@@ -5826,7 +5873,7 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       int w = lw_shared_node(q);
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != rs ||
           !sp_streq(nt_str(nt, w, "name"), rn)) continue;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv >= 0 && nt_kind(nt, wv) == NK_CallNode) nl = container_literals(c, wv, lits, nl, 32, 0);
     }
   }
@@ -5992,7 +6039,7 @@ static int masgn_target_value(Compiler *c, int t) {
     while (i < ln && lefts[i] != t) i++;
     if (i == ln) continue;
     nt_arr(nt, mw, "rights", &rn);
-    int val = unwrap_parens(c, nt_ref(nt, mw, "value"));
+    int val = nt_paren_single(c->nt, nt_ref(nt, mw, "value"));
     if (nt_ref(nt, mw, "rest") >= 0 || rn > 0 || val < 0 || nt_kind(nt, val) != NK_ArrayNode) return -1;
     const int *ev = nt_arr(nt, val, "elements", &en);
     if (en != ln) return -1;
@@ -6076,7 +6123,7 @@ static int named_writes_fresh(Compiler *c, int v) {
         if (comp_cvar_owner(c, wc, nt_str(nt, v, "name")) != vcls) continue;
       }
       if (t >= 2) return 0;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv < 0 || (nt_kind(nt, wv) != NK_NilNode && !is_fresh_array(c, wv))) return 0;
       saw = 1;
     }
@@ -6101,7 +6148,7 @@ static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn, int apply, i
       int wc = ws && ws->class_id >= 0 ? ws->class_id : c->node_cbody[w];
       if (wc < 0 || (wc != cls && !is_descendant(c, wc, cls) && !is_descendant(c, cls, wc))) continue;
       if (t >= 2) return 0;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv < 0) return 0;
       saw = 1;
       if (nt_kind(nt, wv) == NK_NilNode || is_fresh_array(c, wv)) continue;
@@ -6169,11 +6216,11 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
   for (int w0 = lw_shared_first(c, rn, (int)(sc - c->scopes)); w0 >= 0; w0 = lw_shared_next(w0)) {
     int w = lw_shared_node(w0);
     if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), rn)) continue;
-    int lit = unwrap_parens(c, nt_ref(nt, w, "value"));
+    int lit = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_kind(nt, lit) != NK_ArrayNode) return -1;
     int en = 0; const int *ev = nt_arr(nt, lit, "elements", &en);
     for (int e = 0; e < en; e++) {
-      int el = unwrap_parens(c, ev[e]);
+      int el = nt_paren_single(c->nt, ev[e]);
       TyKind et = infer_type(c, el);
       if (nt_kind(nt, el) != NK_ArrayNode || !is_fresh_array(c, el) || ty_is_ptr_array(et) ||
           (et != TY_UNKNOWN && !ty_is_array(et)) || !c->arr_want || el >= c->node_cap) return -1;
@@ -6204,7 +6251,7 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
    method does. */
 static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack, int depth) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0 || depth > 6) return 0;
   stack[depth] = -1;
   TyKind vt = infer_type(c, v);
@@ -6540,7 +6587,7 @@ static int leaves_widen_to_poly_array(Compiler *c, const int *lv, int n, int app
    binding checks (boxed_push_elem). */
 int proc_lit_carrier(Compiler *c, int v, int lit) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v == lit) return 1;
   if (v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -6559,7 +6606,7 @@ int proc_lit_carrier(Compiler *c, int v, int lit) {
    binding (boxed_store_key/val), or widens as a typed one does. */
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  arg = nt_paren_single(c->nt, arg);
   TyKind at = infer_type(c, arg);
   if (nt_kind(nt, arg) == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
@@ -6865,7 +6912,7 @@ static void wbas_share_end(void) {
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
   if (depth == 0) { wbas_walk++; if (!wbas_shared) wbas_touch(); }
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   int ch = 0, shadow = 0;
   if (!wbas_seen(0, v, elem, depth, &shadow)) {
     unsigned gen = wbas_gen;
@@ -7190,7 +7237,7 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
     /* An empty literal splat cannot move a source into the rest. Keep
        the individual positional queries' existing conservative bounds. */
     if (i == m->rest_idx && v && k < pos_argc) {
-      int ex = unwrap_parens(c, nt_ref(nt, argv[k], "expression")), en = 0;
+      int ex = nt_paren_single(c->nt, nt_ref(nt, argv[k], "expression")), en = 0;
       if (ex >= 0 && nt_kind(nt, ex) == NK_ArrayNode) {
         nt_arr(nt, ex, "elements", &en);
         if (!en) { if (k == s) return 0; continue; }
@@ -7416,7 +7463,7 @@ static int ivar_writes_all_empty_array(Compiler *c, int cls, const char *ivn) {
    the next binding. 1 on a change. */
 static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  arg = nt_paren_single(c->nt, arg);
   TyRef slot = NULL;
   if (nt_kind(nt, arg) == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
@@ -7480,7 +7527,7 @@ static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWa
 }
 static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0 || v >= nt->count) return 0;
   cext_walk_grow(c, seen);
   if (seen->nodes[v]) return 0;
@@ -7680,7 +7727,7 @@ static int is_fresh_hash(Compiler *c, int v);
    decides no key type, and nothing in the caller stores into it). */
 static int local_only_fresh_hash(Compiler *c, int anode) {
   const NodeTable *nt = c->nt;
-  anode = unwrap_parens(c, anode);
+  anode = nt_paren_single(c->nt, anode);
   if (anode < 0 || nt_kind(nt, anode) != NK_LocalVariableReadNode) return 0;
   const char *an = nt_str(nt, anode, "name");
   Scope *asc = an ? comp_scope_of(c, anode) : NULL;
@@ -8074,6 +8121,22 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
   return bind_args_params(c, call_id, mi, argv, argc);
+}
+
+/* A newly observed protocol edge must not narrow an unknown operand:
+   boxed callbacks can reach the same method without a typed call node. */
+static int bind_delegated_params(Compiler *c, int id, int mi) {
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(c->nt, id, "arguments"), argc = 0, changed = 0;
+  const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < m->nparams; i++) {
+    LocalVar *lv = scope_local(m, m->pnames[i]);
+    if (!lv || lv->type != TY_UNKNOWN || lv->rbs_seeded) continue;
+    if (i != m->rest_idx && call_param_arg(c, m, argv, argc, i) < 0) continue;
+    changed |= lv_widen(lv, i == m->rest_idx ? TY_POLY_ARRAY : TY_POLY);
+  }
+  return changed | bind_call_params(c, id, mi);
 }
 
 /* Propagate param types from each prep-chain source scope (the transplanted
@@ -10068,8 +10131,12 @@ static int infer_param_types_ex(Compiler *c, int settle) {
       int mi3 = comp_method_in_chain(c, cid3, name, NULL);
       /* Comparable: `a < b` etc. on an object with `<=>` but no direct `<`
          bind the argument to `<=>` param instead. */
-      if (mi3 < 0 && is_cmp_op(name))
-        mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
+      /* Equality protocols bind the same delegated target from the plan. */
+      const char *bound_name = name;
+      if (mi3 < 0 && (is_cmp_op(name) || is_eq_op(name))) {
+        const CallPlan *p = cplan_user_fresh(c, id);
+        if (p->delegate) { mi3 = p->mi; bound_name = p->delegate; }
+      }
       /* a method the program adds to Object, which the class's chain stops
          short of: the call reaches it (codegen's Object fallback), so its
          arguments type it (#5779) */
@@ -10077,14 +10144,16 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         int oci3 = comp_class_index(c, "Object");
         if (oci3 >= 0 && oci3 != cid3) mi3 = comp_method_in_class(c, oci3, name);
       }
-      changed |= bind_call_params(c, id, mi3);
+      changed |= bound_name != name && is_eq_op(name) ? bind_delegated_params(c, id, mi3)
+                                                     : bind_call_params(c, id, mi3);
       /* Also propagate to descendant overrides: codegen will emit a cls_id
          switch that calls each override, so each must have the right param
          types. */
       int nd3 = 0; const int *ds3 = comp_descendants(c, cid3, &nd3);
       for (int di = 0; di < nd3; di++) {
-        int dmi3 = comp_method_in_class(c, ds3[di], name);
-        if (dmi3 >= 0) changed |= bind_call_params(c, id, dmi3);
+        int dmi3 = comp_method_in_class(c, ds3[di], bound_name);
+        if (dmi3 >= 0) changed |= bound_name != name ? bind_delegated_params(c, id, dmi3)
+                                                   : bind_call_params(c, id, dmi3);
       }
     }
     else if (rt == TY_POLY) {
@@ -11153,9 +11222,12 @@ static int block_reach(Compiler *c, int si, const BlockSig *s, TyKind *pos,
       continue;
     }
     int found = 0;
-    for (int u = 1; byname && u < c->nscopes; u++) {
+    /* (every scope of the name, in order, from the by-name table: the
+       scan of every scope per forwarded call was 118k name compares on a
+       Rails program late in its fixpoint) */
+    for (int u = byname ? an_scopes_named_first(c, fn) : -1; u >= 1; u = an_scopes_named_next(c, fn, u)) {
       Scope *us = &c->scopes[u];
-      if (us->is_cmethod || !us->name || !sp_streq(us->name, fn)) continue;
+      if (us->is_cmethod) continue;
       int y = forwarding_yield_target(c, u, 0);
       if (y < 0) continue;
       found = 1;
@@ -14122,7 +14194,15 @@ static void ple_build(Compiler *c) {
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
   if (ple_nt != nt || ple_ntc != nt->count) ple_build(c);
-  return ple_escaped && lit >= 0 && lit < nt->count && ple_escaped[lit];
+  if (!ple_escaped || lit < 0 || lit >= nt->count) return 0;
+  if (ple_escaped[lit]) return 1;
+  /* one write of a local that holds more than procs (`x = nil; x = ->(s) { }`)
+     shares the slot with the others: the local's type is the join of its writes */
+  VpUp up;
+  if (vp_climb(nt, comp_parent_map(c), lit, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+      nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) return 0;
+  LocalVar *lv = scope_local(comp_scope_of(c, up.parent), nt_str(nt, up.parent, "name"));
+  return lv && lv->type != TY_PROC && lv->type != TY_UNKNOWN;
 }
 
 /* Type a proc literal's required params from one `.call` site, unless the

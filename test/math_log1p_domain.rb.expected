@@ -1,0 +1,25 @@
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+-Infinity
+true
+Infinity
+-Infinity
+Infinity
+true
+true
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+-Infinity
+-Infinity
+0.0
+0.4054651081081644
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+0.4054651081081644
+[TypeError, "can't convert nil into Float"]
+[TypeError, "can't convert String into Float"]
+argument
+[Math::DomainError, "Numerical argument is out of domain - log1p"]
+ensure
+continued

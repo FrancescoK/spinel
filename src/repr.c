@@ -293,7 +293,7 @@ static int repr_targets_return_handle(Compiler *c, int v, const int *mis, int n)
 }
 int repr_call_returns_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (repr_super_native_keeps(c, v)) return 1;
   if (repr_share_rule(c) && v >= 0 && (nt_kind(nt, v) == NK_SuperNode || nt_kind(nt, v) == NK_ForwardingSuperNode)) {
     const CallPlan *p = cplan_user(c, v);
@@ -479,7 +479,7 @@ static int repr_user_answers_self(Compiler *c, int v) {
    a reopening's conversion that answers self. The seal, the route emitter
    and boxed-form prediction use the same fact. */
 int repr_string_conversion_operand(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode) return -1;
   int r = nt_ref(c->nt, v, "receiver");
   return r >= 0 && is_receiver_conversion(nt_str(c->nt, v, "name")) &&
@@ -862,7 +862,7 @@ int repr_store_fits(Compiler *c, TyKind from, TyKind to) {
    a constructor for. */
 static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
   int n = 0;
@@ -1407,7 +1407,7 @@ static int repr_value_raises_first(Compiler *c, int v) {
     if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
     int n = 0; const int *b = nt_arr(nt, st, "body", &n);
     for (int i = 0; b && i < n; i++) {
-      int s = unwrap_parens(c, b[i]);
+      int s = nt_paren_single(c->nt, b[i]);
       const char *nm = s >= 0 && nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0
                        ? nt_str(nt, s, "name") : NULL;
       if (nm && is_raise_alias(nm) && !bare_call_class_owned(c, s) && cplan_user_fresh(c, s)->mi < 0)
@@ -1436,7 +1436,7 @@ static int repr_call_answers_nothing(Compiler *c, int v) {
 /* Does flow value node v need the route check: a String (or a box that may
    hold one) whose class the rule shares? */
 static int repr_flow_checked(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0) return 0;
   if (repr_value_raises_first(c, v) || repr_call_answers_nothing(c, v)) return 0;
   NodeKind k = nt_kind(c->nt, v);
@@ -1504,7 +1504,7 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
        does not share is handed on as that lend is: the lend's own flow is
        the one checked (`sig(pick(h, k, fb))`, #9258 cluster 14) */
     if (kind == SHFL_ARG && lent && lent[v] && share_flow_dest_shares(c, i) == 0) continue;
-    int u = unwrap_parens(c, v);
+    int u = nt_paren_single(c->nt, v);
     int ok = strbuf_flow_carries(c, kind, site, v);
     if (stats && stats[0] == '2') {
       char rn[160];

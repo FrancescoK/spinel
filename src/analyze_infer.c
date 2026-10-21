@@ -463,11 +463,37 @@ int an_user_defines_or_reads(Compiler *c, const char *name) {
      method 'size' called", not with the method. Counting it made every caller
      of this predicate stand its builtin arm down, and `def upcase(v) = v.upcase`
      compiled its own body to an unconditional NoMethodError. */
-  if (memo && udr_n < udr_cap) {
-    udr_names[udr_n] = strdup(name);
-    if (udr_names[udr_n]) {
-      udr_ans[udr_n] = (signed char)ans;
-      udr_next[udr_n] = udr_head[b]; udr_head[b] = udr_n; udr_n++;
+  if (memo) {
+    /* A full memo grows, and its buckets with it: it stopped recording at
+       4,096 names, and a Rails program asks after more (4,378 method names
+       alone), so every name past the first 4,096 walked every class again
+       at each ask, every round. */
+    if (udr_n == udr_cap) {
+      int ncap = udr_cap * 2;
+      char **nn = realloc(udr_names, sizeof(char *) * (size_t)ncap);
+      signed char *na = realloc(udr_ans, (size_t)ncap);
+      int *nx = realloc(udr_next, sizeof(int) * (size_t)ncap);
+      int *nh = realloc(udr_head, sizeof(int) * (size_t)ncap);
+      if (nn) udr_names = nn;
+      if (na) udr_ans = na;
+      if (nx) udr_next = nx;
+      if (nh) udr_head = nh;
+      if (nn && na && nx && nh) {
+        udr_cap = ncap;
+        for (int i = 0; i < udr_cap; i++) udr_head[i] = -1;
+        for (int i = 0; i < udr_n; i++) {
+          unsigned h = sp_strhash(udr_names[i]) & (unsigned)(udr_cap - 1);
+          udr_next[i] = udr_head[h]; udr_head[h] = i;
+        }
+        b = sp_strhash(name) & (unsigned)(udr_cap - 1);
+      }
+    }
+    if (udr_n < udr_cap) {
+      udr_names[udr_n] = strdup(name);
+      if (udr_names[udr_n]) {
+        udr_ans[udr_n] = (signed char)ans;
+        udr_next[udr_n] = udr_head[b]; udr_head[b] = udr_n; udr_n++;
+      }
     }
   }
   return ans;
@@ -2270,16 +2296,20 @@ int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want) {
   for (int k = 0; k < c->nclasses; k++) {
     /* a native class answers by its declared bindings, as the dispatch
        arms do (#4504); a Ruby-side def on it has no arm to disagree with */
-    if (c->classes[k].is_native_class) {
-      int nmi = comp_native_method_find(c, k, name, 0, 0);
-      if (nmi >= 0) {
-        TyKind r = sp_streq(c->native_methods[nmi].ret, "self")
-                     ? ty_object(k) : native_spec_to_ty(c->native_methods[nmi].ret);
-        if (r != want && r != TY_UNKNOWN) return 1;
-      }
-      continue;
+    if (!c->classes[k].is_native_class) continue;
+    int nmi = comp_native_method_find(c, k, name, 0, 0);
+    if (nmi >= 0) {
+      TyKind r = sp_streq(c->native_methods[nmi].ret, "self")
+                   ? ty_object(k) : native_spec_to_ty(c->native_methods[nmi].ret);
+      if (r != want && r != TY_UNKNOWN) return 1;
     }
-    int mi = comp_method_in_chain(c, k, name, NULL);
+  }
+  /* the program's classes: those whose chain answers the name */
+  int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+  for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+    if (rp) k = rp[2 * i];
+    if (c->classes[k].is_native_class) continue;
+    int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
     if (mi < 0 || mi >= c->nscopes) continue;
     TyKind r = (TyKind)c->scopes[mi].ret;
     if (r != want && r != TY_UNKNOWN) return 1;
@@ -2772,6 +2802,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
   if (omi < 0) return 0;
   /* a yielding one given a block answers what its proc form does, a boxed
      value (#5779), as the general Object fallback says */
+  an_user_call_record(c, call_id, omi, UC_REOPEN, oci);
   *out = c->scopes[omi].yields && nt_ref(c->nt, call_id, "block") >= 0
          ? TY_POLY : an_user_call(c, call_id, omi, UC_REOPEN, oci);
   return 1;
@@ -2788,7 +2819,8 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
-  if (!g_plan_check || an_builtin_only || an_pure_reads || id < 0 || id >= c->node_cap) return;
+  if (!g_plan_check || an_builtin_only || an_pure_reads || id == an_pinned_node ||
+      id < 0 || id >= c->node_cap) return;
   c->ucall_inf[id].mi = mi;
   c->ucall_inf[id].owner_ci = (short)owner_ci;
   c->ucall_inf[id].via = (unsigned char)via;
@@ -2820,6 +2852,39 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
      includes the block's boxed answer, also through rescue or ensure. */
   int pf = via == UC_REOPEN && c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
   return method_call_ret(c, pf >= 0 ? pf : mi, id);
+}
+
+/* A concrete truth operator keeps its declared return (which may be
+   non-Boolean), and records the method that supplied it. */
+static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
+  an_user_call_record(c, id, mi, UC_INST, ci);
+  return (TyKind)c->scopes[mi].ret;
+}
+
+/* A block's break widens the answer without changing the call's target. */
+static TyKind an_break_call_ret(Compiler *c, int id) {
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+  }
+  return TY_POLY;
+}
+
+static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
+  /* --plan-check: a boxed receiver's call is dispatched over every user
+     class's method of the name; the first candidate stands for that union
+     (an arm below that binds one method records it instead).
+     The call plan also includes class methods, on boxed or Class values.
+     Constants bind in their own rules below; only a Class value needs
+     this union record. */
+  /* Concrete protocols likewise keep the target behind their Boolean answer. */
+  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node && recv >= 0 &&
+      (rt == TY_POLY || (ty_is_object(rt) &&
+       builtin_operator_delegate(nt_str(c->nt, id, "name"))) || (rt == TY_CLASS &&
+       nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
+  }
 }
 
 /* Does the row this pass finds for call `id` count as the call's own? Not
@@ -3008,9 +3073,13 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        (ruby-vips' Image#> builds an image) makes the boxed call's answer
        that value, not the builtin comparison's bool */
     if (is_cmp_op(name)) {
-      for (int k = 0; k < c->nclasses; k++) {
+      /* (the classes whose chain answers the name, or every class while
+         the chain memo cannot be trusted) */
+      int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+      for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+        if (rp) k = rp[2 * i];
         if (c->classes[k].is_native_class) continue;
-        int mi = comp_method_in_chain(c, k, name, NULL);
+        int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
         if (mi < 0 || mi >= c->nscopes) continue;
         TyKind ur = (TyKind)c->scopes[mi].ret;
         if (ty_is_object(ur) || ur == TY_POLY) { *out = TY_POLY; return 1; }
@@ -3022,9 +3091,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        Only a boxed receiver may be that class: a Float or Integer one with
        a boxed argument is the builtin ==, whose bool codegen emits. */
     if (rt == TY_POLY && sp_streq(name, "==") && argc == 1) {
-      for (int k = 0; k < c->nclasses; k++) {
+      int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+      for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+        if (rp) k = rp[2 * i];
         if (c->classes[k].is_native_class) continue;
-        int mi = comp_method_in_chain(c, k, name, NULL);
+        int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
         if (mi < 0 || mi >= c->nscopes) continue;
         TyKind ur = (TyKind)c->scopes[mi].ret;
         if (ur != TY_BOOL && ur != TY_UNKNOWN && ur != TY_VOID &&
@@ -3915,7 +3986,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin (`class String; def ...`) keeps its builtin
            representation: `String.new` is a String, not a user object (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
@@ -3968,7 +4042,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin keeps its builtin representation (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
       }
@@ -4790,7 +4867,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       ok = 0; break;
     }
     /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
-    lazy_src = an_unparen(nt, lazy_src);
+    switch (vp_one(nt, lazy_src, VPS_NONE | VP_PARENS_ONLY, &lazy_src)) {
+    case VP1_NODE: break;
+    case VP1_NIL: lazy_src = -1; break;
+    case VP1_MANY: lazy_src = -1; break;
+    }
     if (ok && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
       int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
@@ -5176,8 +5257,8 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
       }
       { *out = TY_UNKNOWN; return 1; }
     }
-    /* array * int -> same array type (repeat); array * string -> join string */
-    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) { *out = rt; return 1; }
+    /* Array repetition accepts Integer and Float counts; String joins. */
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && (a0 == TY_INT || a0 == TY_FLOAT)) { *out = rt; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && ty_is_object(a0)) {
       int smi = comp_method_in_chain(c, ty_object_class(a0), "to_str", NULL);
@@ -5281,7 +5362,16 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     { *out = TY_UNKNOWN; return 1; }
   }
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
-  if (recv >= 0 && argc == 1 && is_cmp_op(name)) { *out = TY_BOOL; return 1; }
+  if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
+    /* The comparison is Boolean even when the plan routes it through a
+       user method returning the ordering value. Keep that target too. */
+    if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+        ty_is_object(rt)) {
+      const CallPlan *p = cplan_user_fresh(c, id);
+      if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    }
+    *out = TY_BOOL; return 1;
+  }
   if (argc == 1 && is_eq_op(name)) { *out = TY_BOOL; return 1; }
 
   /* integer bitwise operators */
@@ -5820,14 +5910,16 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-      /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
-         so inference and emission agree on which classes take the allocate path. */
-      if (ci >= 0 && !class_is_exc_subclass(c, ci)) { *out = ty_object(ci); return 1; }
+      /* Exception subclasses have a dedicated storage layout in the common
+         allocator. A user class method of their own still takes precedence. */
+      if (ci >= 0 && (!class_is_exc_subclass(c, ci) ||
+          comp_cmethod_in_chain(c, ci, "allocate", NULL) < 0)) { *out = ty_object(ci); return 1; }
       const char *bcn = nt_str(nt, recv, "name");
       if (bcn && sp_streq(bcn, "String")) { *out = TY_STRING; return 1; }
       if (bcn && sp_streq(bcn, "Array"))  { *out = TY_POLY_ARRAY; return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { *out = TY_POLY_POLY_HASH; return 1; }
       if (bcn && sp_streq(bcn, "Object")) { *out = TY_POLY; return 1; }
+      if (bcn && sp_streq(bcn, "Integer")) { *out = TY_POLY; return 1; }
     }
   }
   return 0;
@@ -5862,6 +5954,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
               if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
               int kmi = comp_method_in_chain(c, k, name, NULL);
               if (kmi < 0 || kmi == base_mi2) continue;
+              if (g_plan_check) an_user_call_record(c, id, kmi, UC_POLY, k);
               TyKind kr = (TyKind)c->scopes[kmi].ret;
               if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
             }
@@ -6098,6 +6191,15 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
 
 /* A method the program defines on the receiver (a class method, a Struct's member, a reopened builtin's method) and instance-variable reflection (infer_call_inner's rules, in their order) */
 static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int bonly, TyKind *out) {
+  /* The plan keeps an operator override's value alongside the builtin's
+     Boolean answer, independently for every receiver arm. */
+  TyKind protocol_ret = bonly || an_builtin_only ? TY_UNKNOWN : cplan_poly_operator_ret(c, id);
+  if (protocol_ret != TY_UNKNOWN) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    *out = protocol_ret; return 1;
+  }
+
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
      method_call_ret, not the raw scope ret: a tail-yield class method carries
      THIS call site's block value (the instance/implicit-self arms already
@@ -6627,7 +6729,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY ? "Object" : builtin_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : builtin_class_of_type(rt);
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
@@ -8092,9 +8194,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
      clears nor makes the call's records (the builtin-op one is the call's
-     for a desugar-built call, an_bop_records) */
+     for a desugar-built call, an_bop_records). A pinned emission trial is
+     likewise hypothetical: its target must not replace the call's. */
   if (an_bop_records(c, id)) c->bop_inf[id] = NULL;
-  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap)
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+      id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
 
   return TY_UNKNOWN;
@@ -8505,7 +8609,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     TyKind nrt = infer_type(c, recv);
     if (ty_is_object(nrt)) {
       int nmi = comp_method_in_chain(c, ty_object_class(nrt), name, NULL);
-      if (nmi >= 0) return (TyKind)c->scopes[nmi].ret;
+      if (nmi >= 0) return an_user_operator_ret(c, id, nmi, ty_object_class(nrt));
     }
   }
 
@@ -8522,22 +8626,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-  /* --plan-check: a boxed receiver's call is dispatched over every user
-     class's method of the name; the first candidate stands for that union
-     (an arm below that binds one method records it instead) */
-  if (g_plan_check && recv >= 0 && rt == TY_POLY && name && !an_builtin_only) {
-    int npc = 0;
-    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    for (int pi = 0; pi < npc; pi++) {
-      if (c->classes[pcs[pi].cls].is_native_class) continue;
-      /* a reader candidate written as a method (`def x = @x`) is that method */
-      int pmi = pcs[pi].mi >= 0 ? pcs[pi].mi : comp_method_in_chain(c, pcs[pi].cls, name, NULL);
-      if (pmi >= 0) { an_user_call_record(c, id, pmi, UC_POLY, pcs[pi].cls); break; }
-    }
-  }
+  if (g_plan_check) an_user_union_record(c, id, recv, rt);
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
      (respond_to_user_defined: an instantiated class with respond_to? in its
@@ -9221,7 +9313,7 @@ static int stmts_diverge(Compiler *c, int st) {
   if (st < 0) return 0;
   int n = 0; const int *b = nt_arr(nt, st, "body", &n);
   if (n <= 0 || !b) return 0;
-  int last = unwrap_parens(c, b[n - 1]);
+  int last = nt_paren_single(c->nt, b[n - 1]);
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
   return nm && is_diverging_call(nm) && !an_bare_call_class_owned(c, last) &&
@@ -9346,6 +9438,8 @@ static int yield_uses(Compiler *c, int y) {
       int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
       for (int e = 0; e < ac; e++) yu_collect(nt, av[e], w, YU_ARGUMENT);
     }
+    NT_FOREACH_KIND(nt, NK_RescueModifierNode, w)
+      yu_collect(nt, nt_ref(nt, w, "expression"), w, YU_FRAME);
     NT_FOREACH_KIND(nt, NK_BeginNode, w) {
       int st = nt_ref(nt, w, "statements");
       if (st < 0) continue;
@@ -9480,8 +9574,14 @@ static TyKind an_paren_ty(Compiler *c, int id) {
 int an_or_empty_hash_fallback(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_OrNode) return -1;
-  int r = an_unparen(nt, nt_ref(nt, node, "right"));   /* `x || ({})` is `x || {}` */
-  if (r < 0 || nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
+  int r;
+  /* `x || ({})` is `x || {}` */
+  switch (vp_one(nt, nt_ref(nt, node, "right"), VPS_NONE | VP_PARENS_ONLY, &r)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return -1;
+  case VP1_MANY: return -1;
+  }
+  if (nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
   if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
   TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
   return (lt == TY_NIL || lt == TY_UNKNOWN) ? r : -1;
@@ -9863,6 +9963,12 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            inlined site boxes its own value. A rescue frame the same: its
            value slot takes the body's value or the rescue arm's, `def
            guarded; yield; rescue; "rescued"; end`. */
+        /* A modifier holds its try value in the same kind of result slot. */
+        if (nt_kind(nt, w) == NK_RescueModifierNode) {
+          if (value_arm_is(nt, nt_ref(nt, w, "expression"), id) && yvd_once(c, ymi, &dv))
+            { *out = TY_POLY; return 1; }
+          break;
+        }
         if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
         int st = nt_ref(nt, w, "statements");
         if (st < 0) break;
@@ -11219,9 +11325,18 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* a yield whose block answers nil is a value, nil beside the rescue's:
        the join the arms of an `if` make (a slot that cannot hold a nil, a
        Range or a bool, is boxed). Any other nil-typed expression is taken
-       as one that diverges (a raise the folder has turned into a call). */
-    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0 && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)
-      return ty_unify(et, rt);
+       as one that diverges (a raise the folder has turned into a call).
+       Empty parentheses and a literal nil also carry a nil value. */
+    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0) {
+      int one;
+      switch (vp_one(nt, e, VPS_NONE | VP_PARENS_ONLY, &one)) {
+      case VP1_NODE:
+        if (nt_kind(nt, one) == NK_YieldNode || nt_kind(nt, one) == NK_NilNode) return ty_unify(et, rt);
+        break;
+      case VP1_NIL: return ty_unify(et, rt);
+      case VP1_MANY: break;
+      }
+    }
     if (et == TY_VOID || et == TY_NIL) return rt;
     if (et == TY_UNKNOWN) {
       /* an empty container carries a value; the union of the two arms is poly */
@@ -11421,7 +11536,11 @@ int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed
    is not known to be. */
 int an_rat_value(Compiler *c, int n) {
   if (!g_promote_mode || n < 0) return 0;
-  n = an_unparen(c->nt, n);
+  switch (vp_one(c->nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 0;
+  case VP1_MANY: return 0;
+  }
   if (an_rat_boxed(n)) return 1;
   NodeKind k = nt_kind(c->nt, n);
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
@@ -11430,6 +11549,11 @@ int an_rat_value(Compiler *c, int n) {
   int key = -1;
   if (k == NK_LocalVariableReadNode) {
     if (!h.lv || h.lv->is_param) return 0;
+    /* the slot is the read's own scope's (holder_of_node resolves it
+       there); asking every scope which holds the slot was 17k range
+       tests per numeric call site, every round */
+    Scope *own = comp_scope_of(c, n);
+    if (own && h.lv >= own->locals && h.lv < own->locals + own->nlocals) key = (int)(own - c->scopes);
     for (int si = 0; si < c->nscopes && key < 0; si++)
       if (h.lv >= c->scopes[si].locals && h.lv < c->scopes[si].locals + c->scopes[si].nlocals) key = si;
   }
@@ -11442,7 +11566,14 @@ int an_rat_value(Compiler *c, int n) {
     if (!wn || !sp_streq(wn, h.name)) continue;
     NodeKind wk = nt_kind(c->nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_InstanceVariableWriteNode) return 0;
-    if (!an_rat_boxed(w) && !an_rat_boxed(an_unparen(c->nt, nt_ref(c->nt, w, "value")))) return 0;
+    if (!an_rat_boxed(w)) {
+      int value;
+      switch (vp_one(c->nt, nt_ref(c->nt, w, "value"), VPS_NONE | VP_PARENS_ONLY, &value)) {
+      case VP1_NODE: if (!an_rat_boxed(value)) return 0; break;
+      case VP1_NIL: return 0;
+      case VP1_MANY: return 0;
+      }
+    }
     any = 1;
   }
   return any;

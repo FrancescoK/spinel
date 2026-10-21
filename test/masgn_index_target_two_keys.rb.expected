@@ -1,0 +1,48 @@
+[1, 9, 2, 3, 4]
+:x
+[1, 9, 3, 4]
+:x
+[1, 9, 4]
+:x
+[7, 8, 6, 3, 4]
+:x
+[1, 7, 8, 2, 3, 4]
+:x
+[1, 9, 4]
+:x
+[1, 2, 3, 4, nil, nil, 9]
+:x
+[1, 2, 5]
+:x
+[1, :short, 4]
+nil
+[1, nil, 4]
+5
+[0, 8, 8, 4]
+[1.5, 9.5]
+["x", "y", "z", "c"]
+["x", "q", "z", "c"]
+[1, nil, 5, 4.0]
+[5, 6, 8, 4]
+7
+8
+[5, 0, 0, 0, 0]
+1
+2
+2
+[1, 2, 9, 4, 5]
+2
+2
+[7, 3, 4, 5]
+8
+[0, 2, 7, 8]
+[1, 9, 4]
+["z", "w", "b", "c"]
+wrong number of arguments (given 3, expected 2)
+true
+{1 => 2}
+[9, 3, 4]
+ArgumentError: wrong number of arguments (given 3, expected 2)
+NoMethodError: undefined method '[]=' for nil
+NoMethodError: undefined method '[]=' for an instance of Symbol
+NoMethodError: undefined method '[]=' for an instance of Integer
