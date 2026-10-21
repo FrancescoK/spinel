@@ -1412,6 +1412,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         if (k == cid || !is_descendant(c, k, cid)) continue;
         int kmi = comp_method_in_chain(c, k, name, NULL);
         if (kmi < 0 || kmi == base_mi) continue;
+        if (g_plan_check) an_user_call_record(c, id, kmi, UC_POLY, k);
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (kr != TY_UNKNOWN && kr != *out) *out = ty_unify(*out, kr);
       }

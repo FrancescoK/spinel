@@ -2788,7 +2788,8 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
-  if (!g_plan_check || an_builtin_only || an_pure_reads || id < 0 || id >= c->node_cap) return;
+  if (!g_plan_check || an_builtin_only || an_pure_reads || id == an_pinned_node ||
+      id < 0 || id >= c->node_cap) return;
   c->ucall_inf[id].mi = mi;
   c->ucall_inf[id].owner_ci = (short)owner_ci;
   c->ucall_inf[id].via = (unsigned char)via;
@@ -2820,6 +2821,37 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
      includes the block's boxed answer, also through rescue or ensure. */
   int pf = via == UC_REOPEN && c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
   return method_call_ret(c, pf >= 0 ? pf : mi, id);
+}
+
+/* A concrete truth operator keeps its declared return (which may be
+   non-Boolean), and records the method that supplied it. */
+static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
+  an_user_call_record(c, id, mi, UC_INST, ci);
+  return (TyKind)c->scopes[mi].ret;
+}
+
+/* A block's break widens the answer without changing the call's target. */
+static TyKind an_break_call_ret(Compiler *c, int id) {
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+  }
+  return TY_POLY;
+}
+
+static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
+  /* --plan-check: a boxed receiver's call is dispatched over every user
+     class's method of the name; the first candidate stands for that union
+     (an arm below that binds one method records it instead).
+     The call plan also includes class methods, on boxed or Class values.
+     Constants bind in their own rules below; only a Class value needs
+     this union record. */
+  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+      recv >= 0 && (rt == TY_POLY || (rt == TY_CLASS &&
+      nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
+  }
 }
 
 /* Does the row this pass finds for call `id` count as the call's own? Not
@@ -3915,7 +3947,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin (`class String; def ...`) keeps its builtin
            representation: `String.new` is a String, not a user object (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
@@ -3968,7 +4003,10 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (class_inherits_builtin_exception(c, ci))
           { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        if (ucnew >= 0) {
+          an_user_call_record(c, id, ucnew, UC_CMETH, ci);
+          *out = (TyKind)c->scopes[ucnew].ret; return 1;
+        }
         /* a reopened builtin keeps its builtin representation (#3109) */
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
       }
@@ -5281,7 +5319,16 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     { *out = TY_UNKNOWN; return 1; }
   }
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
-  if (recv >= 0 && argc == 1 && is_cmp_op(name)) { *out = TY_BOOL; return 1; }
+  if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
+    /* The comparison is Boolean even when the plan routes it through a
+       user method returning the ordering value. Keep that target too. */
+    if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+        ty_is_object(rt)) {
+      const CallPlan *p = cplan_user_fresh(c, id);
+      if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    }
+    *out = TY_BOOL; return 1;
+  }
   if (argc == 1 && is_eq_op(name)) { *out = TY_BOOL; return 1; }
 
   /* integer bitwise operators */
@@ -5864,6 +5911,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
               if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
               int kmi = comp_method_in_chain(c, k, name, NULL);
               if (kmi < 0 || kmi == base_mi2) continue;
+              if (g_plan_check) an_user_call_record(c, id, kmi, UC_POLY, k);
               TyKind kr = (TyKind)c->scopes[kmi].ret;
               if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
             }
@@ -8094,9 +8142,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
      clears nor makes the call's records (the builtin-op one is the call's
-     for a desugar-built call, an_bop_records) */
+     for a desugar-built call, an_bop_records). A pinned emission trial is
+     likewise hypothetical: its target must not replace the call's. */
   if (an_bop_records(c, id)) c->bop_inf[id] = NULL;
-  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap)
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node &&
+      id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
 
   return TY_UNKNOWN;
@@ -8507,7 +8557,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     TyKind nrt = infer_type(c, recv);
     if (ty_is_object(nrt)) {
       int nmi = comp_method_in_chain(c, ty_object_class(nrt), name, NULL);
-      if (nmi >= 0) return (TyKind)c->scopes[nmi].ret;
+      if (nmi >= 0) return an_user_operator_ret(c, id, nmi, ty_object_class(nrt));
     }
   }
 
@@ -8524,22 +8574,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-  /* --plan-check: a boxed receiver's call is dispatched over every user
-     class's method of the name; the first candidate stands for that union
-     (an arm below that binds one method records it instead) */
-  if (g_plan_check && recv >= 0 && rt == TY_POLY && name && !an_builtin_only) {
-    int npc = 0;
-    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    for (int pi = 0; pi < npc; pi++) {
-      if (c->classes[pcs[pi].cls].is_native_class) continue;
-      /* a reader candidate written as a method (`def x = @x`) is that method */
-      int pmi = pcs[pi].mi >= 0 ? pcs[pi].mi : comp_method_in_chain(c, pcs[pi].cls, name, NULL);
-      if (pmi >= 0) { an_user_call_record(c, id, pmi, UC_POLY, pcs[pi].cls); break; }
-    }
-  }
+  if (g_plan_check) an_user_union_record(c, id, recv, rt);
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
      (respond_to_user_defined: an instantiated class with respond_to? in its
