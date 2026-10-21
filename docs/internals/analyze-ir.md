@@ -13,9 +13,11 @@ binary**, sharing one in-memory state object:
 analyzer and code generator are the same process and share heap state;
 nothing is serialized between them.
 
-The contract is that analysis decides and codegen prints. Analysis fills
-the tables below and, from them, the layers that answer codegen's
-questions: `repr_of` for how a value is laid out, the call plan and the
+The contract is that analysis decides what each value is and what each
+call does, and codegen prints it. (Which runtime helpers and tables a
+program needs is the exception: codegen's scan passes recompute that just
+before emission, under "Program tables" below.) Analysis fills the tables
+below and, from them, the layers that answer codegen's questions: `repr_of` for how a value is laid out, the call plan and the
 builtin-op rows for what a call does, the class facts for which classes
 a value can hold. [architecture.md](architecture.md) lists every layer,
 its entry points, and how a change that bypasses one looks in a diff.
@@ -95,18 +97,20 @@ each named in an `AN_PHASE` line, so `--timing` reports them one by one:
 4. **Settle.** The post-fixpoint phases (procs, method backstops, late
    widening, storage, value types) and reachability.
 5. **Seal.** `repr_seal` makes the representation flags final; after it
-   `repr_of` is a pure read. The block bodies codegen types per arm are
-   typed once (`an_arm_facts`).
+   `repr_of` is a pure read. Analysis then types once each block body
+   that codegen emits per poly arm (`an_arm_facts`).
 
-The call plan is resolved per call node on first request
-(`cplan_user`) from the settled facts, and memoized.
+The call plan is resolved per call node on request (`cplan_user`), from
+the settled facts. It is memoized only while the node is read as itself:
+under a view, a moved scope, an `instance_exec` class or an inline
+splice, it is resolved fresh and not kept.
 
 A new pass is a new phase in that sequence, not a loop appended to
 another one.
 
 Codegen still calls back into inference in a few places (`infer_type`,
-`infer_call`, `an_builtin_answer`), for a type analysis did not hand
-over. Each one is a fact a layer should carry; they are being retired,
+`infer_call`, `an_builtin_answer`) where analysis has not handed over
+the type it needs. Each one is a fact a layer should carry; they are being retired,
 and a new one is the old way.
 
 ## Adding analysis state
