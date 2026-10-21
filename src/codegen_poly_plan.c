@@ -31,6 +31,8 @@ int pa_begin(int id) {
   return g_pa_n++;
 }
 
+int pa_current(void) { return g_pa_n - 1; }
+
 void pa_resume(int frame) {
   if (frame >= 0 && frame < g_pa_n) g_pa_n = frame + 1;
 }
@@ -4545,6 +4547,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
   int is_cover = ps->cover, is_gcdlcm = ps->gcdlcm, is_strdel = ps->strdel, is_strsplit = ps->strsplit;
   int is_pdelete = ps->pdelete, is_pdig = ps->pdig, is_pvalues_at = ps->pvalues_at;
   int is_pfirstn = ps->pfirstn, is_pmerge = ps->pmerge, is_arr_index = ps->arr_index;
+  int pa_frame = g_plan_check ? pa_current() : -1;
   int kwmark = g_n_argov;
   if (bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK) {
     for (int e = 0; e < kw->kwn; e++) {
@@ -4760,6 +4763,9 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
          !(answer = emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
                                               ret, tv, is_setter_val ? -1 : tr, 0, b) ? 3 : 0))))
       buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
+    /* A declined builtin trial may leave a nested frame behind. Its
+       result belongs to this switch, as the plan's trial does. */
+    if (g_plan_check) pa_resume(pa_frame);
     if (g_plan_check && dl_open) pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_GENERIC_TAIL, -1, TY_UNKNOWN, answer);
   }
   /* `[]` gets a default of its own. The arms above enumerate the kinds

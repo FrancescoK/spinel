@@ -8663,13 +8663,6 @@ static int poly_identity_operand(Compiler *c, const char *name, int pos_argc, in
          strbuf_arg_carries(c, v);
 }
 
-/* A String-typed slot may already hold the shared handle. The argument
-   temp keeps that representation so boxed arms keep its identity too. */
-static TyKind poly_arg_storage(Compiler *c, Repr r) {
-  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
-  return r.as_ty;
-}
-
 /* `sp_raise_cls("ArgumentError", msg);` with msg a C string literal: a
    keyword's #inspect in it (`unknown keyword: "s"`) carries quotes. */
 void emit_poly_arity_raise(Buf *b, const char *msg) {
@@ -9893,7 +9886,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           continue;
         }
         Repr ar = repr_of(c, argv[a]);
-        TyKind at = poly_arg_storage(c, ar);
+        TyKind at = cplan_poly_arg_storage(c, argv[a]);
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
@@ -9901,7 +9894,6 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            sp_String * (#7305). */
         /* A narrowed read can now take the handle out; its boxed argument
            still hands on the original box, as repr's source records. */
-        if (ar.strbuf_src == RS_SLOT_POLY) at = TY_POLY;
         /* --share-strings: the right-hand side of an assignment whose value
            is taken as the handle each arm stores (user_assign_handle) is
            held as that handle, a new String's included */
@@ -21841,17 +21833,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                `class << self; private`) refuses it here as a direct `C.foo`
                does: the value only names the class at run time (#8202) */
             {
-              int vowner = -1;
-              int vis = comp_cmethod_vis_declared(c, ccls[k], nm, &vowner);
-              if (vis == SP_VIS_PROTECTED) {
-                Scope *cs = comp_scope_of(c, id);
-                int caller = (cs && cs->is_cmethod) ? cs->class_id : -1;
-                if (caller >= 0 && vowner >= 0 && is_descendant(c, caller, vowner)) vis = SP_VIS_PUBLIC;
-              }
               /* ...but self may call its own private methods: a boxed self
                  (a kept block's, which instance_exec may rebind) as well */
-              if (nt_kind(nt, recv) == NK_SelfNode) vis = SP_VIS_PUBLIC;
-              if (vis != SP_VIS_PUBLIC) {
+              if (!cplan_cmethod_visible(c, id, ccls[k], nm)) {
+                int vis = comp_cmethod_vis_declared(c, ccls[k], nm, NULL);
                 const char *vrn = class_ruby_name(c, ccls[k]) ? class_ruby_name(c, ccls[k]) : c->classes[ccls[k]].name;
                 int is_mod = nt_kind(nt, c->classes[ccls[k]].def_node) == NK_ModuleNode;
                 buf_printf(b, "(sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s %s\")[1])), sp_box_nil()) : ",
