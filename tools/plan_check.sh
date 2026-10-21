@@ -98,7 +98,8 @@ ppc=$(grep -c ': plan-check: poly-conflict:' "$OUT")
 # (poly-extra): both 0 over the corpus since #9866, so either fails
 ppm=$(grep -c ': plan-check: poly-missing:' "$OUT")
 ppe=$(grep -c ': plan-check: poly-extra:' "$OUT")
-grep -E ': plan-check: poly-(missing|extra):' "$OUT" | head -20
+grep ': plan-check: poly-missing:' "$OUT" | head -20
+grep ': plan-check: poly-extra:' "$OUT" | head -20
 # refusals: the ones codegen reports against the plan's (CP_REFUSE); the
 # ones only codegen decides are counted by what is left (codegen_util.c)
 rfsum=$(grep ': plan-check: refuse: ' "$OUT" | sed 's/.*refuse: //' | tr -d '(),' |
