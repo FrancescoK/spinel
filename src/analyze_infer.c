@@ -4867,7 +4867,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       ok = 0; break;
     }
     /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
-    lazy_src = an_unparen(nt, lazy_src);
+    switch (vp_one(nt, lazy_src, VPS_NONE | VP_PARENS_ONLY, &lazy_src)) {
+    case VP1_NODE: break;
+    case VP1_NIL: lazy_src = -1; break;
+    case VP1_MANY: lazy_src = -1; break;
+    }
     if (ok && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
       int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
@@ -9309,7 +9313,7 @@ static int stmts_diverge(Compiler *c, int st) {
   if (st < 0) return 0;
   int n = 0; const int *b = nt_arr(nt, st, "body", &n);
   if (n <= 0 || !b) return 0;
-  int last = unwrap_parens(c, b[n - 1]);
+  int last = nt_paren_single(c->nt, b[n - 1]);
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
   return nm && is_diverging_call(nm) && !an_bare_call_class_owned(c, last) &&
@@ -9434,6 +9438,8 @@ static int yield_uses(Compiler *c, int y) {
       int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
       for (int e = 0; e < ac; e++) yu_collect(nt, av[e], w, YU_ARGUMENT);
     }
+    NT_FOREACH_KIND(nt, NK_RescueModifierNode, w)
+      yu_collect(nt, nt_ref(nt, w, "expression"), w, YU_FRAME);
     NT_FOREACH_KIND(nt, NK_BeginNode, w) {
       int st = nt_ref(nt, w, "statements");
       if (st < 0) continue;
@@ -9568,8 +9574,14 @@ static TyKind an_paren_ty(Compiler *c, int id) {
 int an_or_empty_hash_fallback(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_OrNode) return -1;
-  int r = an_unparen(nt, nt_ref(nt, node, "right"));   /* `x || ({})` is `x || {}` */
-  if (r < 0 || nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
+  int r;
+  /* `x || ({})` is `x || {}` */
+  switch (vp_one(nt, nt_ref(nt, node, "right"), VPS_NONE | VP_PARENS_ONLY, &r)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return -1;
+  case VP1_MANY: return -1;
+  }
+  if (nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
   if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
   TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
   return (lt == TY_NIL || lt == TY_UNKNOWN) ? r : -1;
@@ -9951,6 +9963,12 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            inlined site boxes its own value. A rescue frame the same: its
            value slot takes the body's value or the rescue arm's, `def
            guarded; yield; rescue; "rescued"; end`. */
+        /* A modifier holds its try value in the same kind of result slot. */
+        if (nt_kind(nt, w) == NK_RescueModifierNode) {
+          if (value_arm_is(nt, nt_ref(nt, w, "expression"), id) && yvd_once(c, ymi, &dv))
+            { *out = TY_POLY; return 1; }
+          break;
+        }
         if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
         int st = nt_ref(nt, w, "statements");
         if (st < 0) break;
@@ -11305,9 +11323,18 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* a yield whose block answers nil is a value, nil beside the rescue's:
        the join the arms of an `if` make (a slot that cannot hold a nil, a
        Range or a bool, is boxed). Any other nil-typed expression is taken
-       as one that diverges (a raise the folder has turned into a call). */
-    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0 && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)
-      return ty_unify(et, rt);
+       as one that diverges (a raise the folder has turned into a call).
+       Empty parentheses and a literal nil also carry a nil value. */
+    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0) {
+      int one;
+      switch (vp_one(nt, e, VPS_NONE | VP_PARENS_ONLY, &one)) {
+      case VP1_NODE:
+        if (nt_kind(nt, one) == NK_YieldNode || nt_kind(nt, one) == NK_NilNode) return ty_unify(et, rt);
+        break;
+      case VP1_NIL: return ty_unify(et, rt);
+      case VP1_MANY: break;
+      }
+    }
     if (et == TY_VOID || et == TY_NIL) return rt;
     if (et == TY_UNKNOWN) {
       /* an empty container carries a value; the union of the two arms is poly */
@@ -11507,7 +11534,11 @@ int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed
    is not known to be. */
 int an_rat_value(Compiler *c, int n) {
   if (!g_promote_mode || n < 0) return 0;
-  n = an_unparen(c->nt, n);
+  switch (vp_one(c->nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 0;
+  case VP1_MANY: return 0;
+  }
   if (an_rat_boxed(n)) return 1;
   NodeKind k = nt_kind(c->nt, n);
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
@@ -11533,7 +11564,14 @@ int an_rat_value(Compiler *c, int n) {
     if (!wn || !sp_streq(wn, h.name)) continue;
     NodeKind wk = nt_kind(c->nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_InstanceVariableWriteNode) return 0;
-    if (!an_rat_boxed(w) && !an_rat_boxed(an_unparen(c->nt, nt_ref(c->nt, w, "value")))) return 0;
+    if (!an_rat_boxed(w)) {
+      int value;
+      switch (vp_one(c->nt, nt_ref(c->nt, w, "value"), VPS_NONE | VP_PARENS_ONLY, &value)) {
+      case VP1_NODE: if (!an_rat_boxed(value)) return 0; break;
+      case VP1_NIL: return 0;
+      case VP1_MANY: return 0;
+      }
+    }
     any = 1;
   }
   return any;

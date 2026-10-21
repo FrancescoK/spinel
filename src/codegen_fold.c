@@ -8990,7 +8990,7 @@ static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
 /* --share-strings: is v a bang (`s.upcase!`) on a handle, which answers that
    handle or nil? */
 static int arg_bang_on_handle(Compiler *c, int v) {
-  int u = unwrap_parens(c, v);
+  int u = nt_paren_single(c->nt, v);
   const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
   return nm && nm[0] && nm[strlen(nm) - 1] == '!' && strbuf_bang_self_local(c, u);
 }
@@ -9008,7 +9008,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   /* So does a write whose slot holds the --share-strings handle
      (emit_strbuf_write_handle): it runs here, its handle taken, and the
      value is the slot's read of that handle. */
-  int wshare = repr_write_share(c, unwrap_parens(c, v));
+  int wshare = repr_write_share(c, nt_paren_single(c->nt, v));
   /* So does a value whose String's handle it hands on (arg_temp_conversion) */
   int conversion = arg_temp_conversion(c, v, at);
   /* A String Range's endpoint the Range keeps no handle for reads as the
@@ -9070,7 +9070,7 @@ static void emit_arg_temp(Compiler *c, int v) {
      the String's or nil: its bytes are the handle's read, where the node's
      Repr says handle */
   else if (conversion && at == TY_STRING &&
-           (arg_bang_on_handle(c, v) || face_str_bang_call(c, unwrap_parens(c, v)) ||
+           (arg_bang_on_handle(c, v) || face_str_bang_call(c, nt_paren_single(c->nt, v)) ||
             (strbuf_arg_bang_value(c, v) && !strbuf_arg_bang(c, v)))) {
     buf_printf(&hb, "sp_strbuf_read_pub(_t%d)", th);
   }
@@ -9443,7 +9443,7 @@ static int emit_arg_handle_first(Compiler *c, int v, int rebound) {
   TyKind at = repr_handle_apart(c, v, r) ? TY_STRING : r.as_ty;
   if (at != TY_STRING || k == NK_SplatNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
       repr_static_read_kind(k) || arg_ran_first(v, 0) || (!rebound && !subtree_has_side_effect(c, v)) ||
-      repr_write_share(c, unwrap_parens(c, v)) || arg_temp_conversion(c, v, at) || !strbuf_arg_carries(c, v))
+      repr_write_share(c, nt_paren_single(c->nt, v)) || arg_temp_conversion(c, v, at) || !strbuf_arg_carries(c, v))
     return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
   emit_strbuf_handle_of(c, v, &hb);
@@ -12007,7 +12007,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       /* any other write whose slot holds the --share-strings handle runs
          with its handle taken, which a box or a handle slot binds
          (emit_arg_temp, ran_first_handle) */
-      if (repr_write_share(c, unwrap_parens(c, argv[k]))) { emit_arg_temp(c, argv[k]); continue; }
+      if (repr_write_share(c, nt_paren_single(c->nt, argv[k]))) { emit_arg_temp(c, argv[k]); continue; }
       /* --share-strings: a value that hands on a shared String's handle (a
          route, `s << x`) into a parameter that is the handle runs as that
          handle, which the binding takes (ran_first_handle) */

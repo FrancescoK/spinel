@@ -2224,7 +2224,7 @@ static int local_hash_alias_source(Compiler *c, const LWIndex *lw, int recv) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, nm) || comp_scope_of(c, w) != sc) continue;
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || ++nw > 1) return -1;
-    src = unwrap_parens(c, nt_ref(nt, w, "value"));
+    src = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
   }
   if (src < 0) return -1;
   if (nt_kind(nt, src) == NK_InstanceVariableReadNode) return src;
@@ -2635,7 +2635,7 @@ static int recv_hash_or_write(Compiler *c, int recv) {
     int last = scope_body_last(c, mi);
     int def = c->scopes[mi].def_node;
     if (def >= 0 && subtree_has_return(nt, nt_ref(nt, def, "body"), last)) return -1;
-    n = unwrap_parens(c, last);
+    n = nt_paren_single(c->nt, last);
   }
   if (n < 0) return -1;
   NodeKind k = nt_kind(nt, n);
@@ -5603,7 +5603,7 @@ static int method_has_other_body(Compiler *c, int mi);
    method's. */
 static int widen_returned_hashes(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
-  call = unwrap_parens(c, call);
+  call = nt_paren_single(c->nt, call);
   if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") >= 0) return -1;
   int mi = backprop_call_target(c, call);
   if (mi < 0) return -1;
@@ -5873,7 +5873,7 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       int w = lw_shared_node(q);
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != rs ||
           !sp_streq(nt_str(nt, w, "name"), rn)) continue;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv >= 0 && nt_kind(nt, wv) == NK_CallNode) nl = container_literals(c, wv, lits, nl, 32, 0);
     }
   }
@@ -6039,7 +6039,7 @@ static int masgn_target_value(Compiler *c, int t) {
     while (i < ln && lefts[i] != t) i++;
     if (i == ln) continue;
     nt_arr(nt, mw, "rights", &rn);
-    int val = unwrap_parens(c, nt_ref(nt, mw, "value"));
+    int val = nt_paren_single(c->nt, nt_ref(nt, mw, "value"));
     if (nt_ref(nt, mw, "rest") >= 0 || rn > 0 || val < 0 || nt_kind(nt, val) != NK_ArrayNode) return -1;
     const int *ev = nt_arr(nt, val, "elements", &en);
     if (en != ln) return -1;
@@ -6123,7 +6123,7 @@ static int named_writes_fresh(Compiler *c, int v) {
         if (comp_cvar_owner(c, wc, nt_str(nt, v, "name")) != vcls) continue;
       }
       if (t >= 2) return 0;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv < 0 || (nt_kind(nt, wv) != NK_NilNode && !is_fresh_array(c, wv))) return 0;
       saw = 1;
     }
@@ -6148,7 +6148,7 @@ static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn, int apply, i
       int wc = ws && ws->class_id >= 0 ? ws->class_id : c->node_cbody[w];
       if (wc < 0 || (wc != cls && !is_descendant(c, wc, cls) && !is_descendant(c, cls, wc))) continue;
       if (t >= 2) return 0;
-      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      int wv = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
       if (wv < 0) return 0;
       saw = 1;
       if (nt_kind(nt, wv) == NK_NilNode || is_fresh_array(c, wv)) continue;
@@ -6216,11 +6216,11 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
   for (int w0 = lw_shared_first(c, rn, (int)(sc - c->scopes)); w0 >= 0; w0 = lw_shared_next(w0)) {
     int w = lw_shared_node(w0);
     if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), rn)) continue;
-    int lit = unwrap_parens(c, nt_ref(nt, w, "value"));
+    int lit = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_kind(nt, lit) != NK_ArrayNode) return -1;
     int en = 0; const int *ev = nt_arr(nt, lit, "elements", &en);
     for (int e = 0; e < en; e++) {
-      int el = unwrap_parens(c, ev[e]);
+      int el = nt_paren_single(c->nt, ev[e]);
       TyKind et = infer_type(c, el);
       if (nt_kind(nt, el) != NK_ArrayNode || !is_fresh_array(c, el) || ty_is_ptr_array(et) ||
           (et != TY_UNKNOWN && !ty_is_array(et)) || !c->arr_want || el >= c->node_cap) return -1;
@@ -6251,7 +6251,7 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
    method does. */
 static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack, int depth) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0 || depth > 6) return 0;
   stack[depth] = -1;
   TyKind vt = infer_type(c, v);
@@ -6587,7 +6587,7 @@ static int leaves_widen_to_poly_array(Compiler *c, const int *lv, int n, int app
    binding checks (boxed_push_elem). */
 int proc_lit_carrier(Compiler *c, int v, int lit) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v == lit) return 1;
   if (v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -6606,7 +6606,7 @@ int proc_lit_carrier(Compiler *c, int v, int lit) {
    binding (boxed_store_key/val), or widens as a typed one does. */
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  arg = nt_paren_single(c->nt, arg);
   TyKind at = infer_type(c, arg);
   if (nt_kind(nt, arg) == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
@@ -6912,7 +6912,7 @@ static void wbas_share_end(void) {
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
   if (depth == 0) { wbas_walk++; if (!wbas_shared) wbas_touch(); }
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   int ch = 0, shadow = 0;
   if (!wbas_seen(0, v, elem, depth, &shadow)) {
     unsigned gen = wbas_gen;
@@ -7237,7 +7237,7 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
     /* An empty literal splat cannot move a source into the rest. Keep
        the individual positional queries' existing conservative bounds. */
     if (i == m->rest_idx && v && k < pos_argc) {
-      int ex = unwrap_parens(c, nt_ref(nt, argv[k], "expression")), en = 0;
+      int ex = nt_paren_single(c->nt, nt_ref(nt, argv[k], "expression")), en = 0;
       if (ex >= 0 && nt_kind(nt, ex) == NK_ArrayNode) {
         nt_arr(nt, ex, "elements", &en);
         if (!en) { if (k == s) return 0; continue; }
@@ -7463,7 +7463,7 @@ static int ivar_writes_all_empty_array(Compiler *c, int cls, const char *ivn) {
    the next binding. 1 on a change. */
 static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   const NodeTable *nt = c->nt;
-  arg = unwrap_parens(c, arg);
+  arg = nt_paren_single(c->nt, arg);
   TyRef slot = NULL;
   if (nt_kind(nt, arg) == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
@@ -7527,7 +7527,7 @@ static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWa
 }
 static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   if (v < 0 || v >= nt->count) return 0;
   cext_walk_grow(c, seen);
   if (seen->nodes[v]) return 0;
@@ -7727,7 +7727,7 @@ static int is_fresh_hash(Compiler *c, int v);
    decides no key type, and nothing in the caller stores into it). */
 static int local_only_fresh_hash(Compiler *c, int anode) {
   const NodeTable *nt = c->nt;
-  anode = unwrap_parens(c, anode);
+  anode = nt_paren_single(c->nt, anode);
   if (anode < 0 || nt_kind(nt, anode) != NK_LocalVariableReadNode) return 0;
   const char *an = nt_str(nt, anode, "name");
   Scope *asc = an ? comp_scope_of(c, anode) : NULL;

@@ -15373,7 +15373,7 @@ static void mark_empty_literal_tails(Compiler *c) {
     if (bn < 1 || nt_kind(nt, bb[bn - 1]) != NK_NextNode) continue;
     int na = nt_ref(nt, bb[bn - 1], "arguments");
     int an = 0; const int *av = na >= 0 ? nt_arr(nt, na, "arguments", &an) : NULL;
-    int v = an == 1 ? unwrap_parens(c, av[0]) : -1;   /* `next({})` */
+    int v = an == 1 ? nt_paren_single(c->nt, av[0]) : -1;   /* `next({})` */
     if (v < 0 || v >= c->node_cap) continue;
     int en = 0;
     if (nt_kind(nt, v) == NK_ArrayNode) {
@@ -22194,7 +22194,7 @@ static int share_demand_literal_arg(Compiler *c, int a) {
     return changed;
   }
   if (k == NK_SplatNode) a = nt_ref(nt, a, "expression");
-  a = unwrap_parens(c, a);
+  a = nt_paren_single(c->nt, a);
   if (a < 0 || (nt_kind(nt, a) != NK_ArrayNode && nt_kind(nt, a) != NK_HashNode) ||
       !share_node_elems_share(c, a))
     return 0;
@@ -23257,7 +23257,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     }
     else r = nt_ref(c->nt, n, kinds[k] == NK_CaseMatchNode ? "predicate" : "value");
     if (r < 0) continue;
-    r = unwrap_parens(c, r);
+    r = nt_paren_single(c->nt, r);
     if (kinds[k] == NK_CallNode) changed |= share_demand_nested_read(c, n, r);
     if (r < 0 || (nt_kind(c->nt, r) != NK_ArrayNode && nt_kind(c->nt, r) != NK_HashNode)) continue;
     if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
@@ -46297,7 +46297,15 @@ static void mark_struct_aset_targets(Compiler *c) {
     if (ty_is_object(rt) && sp_streq(nt_str(nt, ev, "name"), "[]=")) {
       int evn = 0, lo, hi, str = 0;
       const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
-      TyKind vt = evn == 2 ? comp_ntype(c, an_unparen(nt, eva[1])) : TY_UNKNOWN;
+      TyKind vt = TY_UNKNOWN;
+      if (evn == 2) {
+        int value;
+        switch (vp_one(nt, eva[1], VPS_NONE | VP_PARENS_ONLY, &value)) {
+        case VP1_NODE: vt = comp_ntype(c, value); break;
+        case VP1_NIL: vt = TY_NIL; break;
+        case VP1_MANY: break;
+        }
+      }
       if (struct_aset_members(c, ev, ty_object_class(rt), &lo, &hi))
         for (int m = lo; m < hi; m++) {
           TyKind mt = c->classes[ty_object_class(rt)].ivar_types[m];
@@ -52582,7 +52590,7 @@ static void an_phase_reconcile_check(Compiler *c) {
     };
     NT_FOREACH_KIND(c->nt, NK_LocalVariableWriteNode, id) {
       int v = nt_ref(c->nt, id, "value");
-      if (v >= 0) v = unwrap_parens(c, v);      /* `c = (a << x)` */
+      if (v >= 0) v = nt_paren_single(c->nt, v);      /* `c = (a << x)` */
       if (v < 0 || nt_kind(c->nt, v) != NK_CallNode) continue;
       const char *cn = nt_str(c->nt, v, "name");
       if (!cn) continue;
