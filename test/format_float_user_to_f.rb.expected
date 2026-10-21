@@ -1,0 +1,46 @@
+to_f
+to_f
+["1.2", "1.2"]
+to_f
+"1.2"
+to_f
+"1.2e+00"
+to_f
+"1.2E+00"
+to_f
+"1.2"
+to_f
+"1.2"
+to_f
+"0x1.4p+0"
+to_f
+"0X1.4P+0"
+to_f
+"1.2"
+to_f
+"1.2!"
+to_f
+"1.2"
+to_f
+"1.2"
+"3.0"
+"2.5"
+"0.5"
+"4.5"
+[TypeError, "can't convert nil into Float"]
+parent
+"1.2"
+bad to_f
+[TypeError, "can't convert Bad to Float (Bad#to_f gives Integer)"]
+ensure
+raising to_f
+[ArgumentError, "conversion"]
+ensure
+[TypeError, "can't convert Missing into Float"]
+ensure
+spec
+value
+value
+to_f
+to_f
+"1.2 1.2"

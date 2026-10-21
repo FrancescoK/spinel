@@ -1540,6 +1540,11 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       /* a String converts the way Float() does; anything else is not a number
          and CRuby refuses rather than formatting a zero (#4010) */
       else if (v.tag == SP_TAG_STR) dv = (double)sp_str_to_f_strict(v.v.s ? v.v.s : sp_str_empty);
+      /* a user object converts through its #to_f, which may allocate */
+      else if (sp_poly_is_user_obj(v)) {
+        SP_GC_ROOT(a); SP_GC_ROOT_STR(fmt);
+        dv = sp_poly_Float_ex(v, 1).v;
+      }
       else { free(buf); sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", sp_convert_src_name(v))); }
       /* Ruby prints non-finite floats as Inf/-Inf/NaN (C printf lowercases) */
       if (!isfinite(dv)) wn = snprintf(tmp, sizeof(tmp), "%s", isnan(dv) ? "NaN" : dv > 0 ? "Inf" : "-Inf");
