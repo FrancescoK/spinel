@@ -4610,7 +4610,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     buf_puts(&rb, "sp_box_nil()");
   }
   else if (ro) emit_oint_expr(c, recv, et, &rb);
-  else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+  else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr_face(c, recv, et, &rb);
   emit_indent(g_pre, g_indent);
   if (ro) buf_puts(g_pre, oint_ctype(et)); else emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);

@@ -6257,7 +6257,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         continue;
       }
       Buf vb; memset(&vb, 0, sizeof vb);
-      emit_expr(c, v, &vb);
+      emit_expr_face(c, v, vt, &vb);   /* (one representation: in the temp's face) */
       emit_indent(g_pre, g_indent);
       if (vt == TY_NIL || vt == TY_VOID) {
         buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");

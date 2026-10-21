@@ -15512,7 +15512,7 @@ static int masgn_hoist_part(Compiler *c, int node, TyKind t, Buf *hb) {
   Buf eb; memset(&eb, 0, sizeof eb);
   if (t == TY_POLY) emit_boxed(c, node, &eb);
   else if (t == TY_INT) emit_int_expr(c, node, &eb);
-  else emit_expr(c, node, &eb);
+  else emit_expr_face(c, node, t, &eb);
   int tmp = ++g_tmp;
   emit_indent(hb, g_indent);
   emit_ctype(c, t, hb);
@@ -17539,7 +17539,8 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     if (hread || hwrite) {
       /* `+s` is s itself unless s is frozen */
       if (hwrite) buf_printf(b, (g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s);" : "sp_String * _t%d = %s;"), tmps[i], hw.p ? hw.p : "NULL");
-      else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc.p);
+      else buf_printf(b, hup >= 0 ? (g_one_string ? "sp_String * _t%d = sp_String_uplus(SP_STR_HDL(%s));" : "sp_String * _t%d = sp_String_uplus(%s);")
+                                  : (g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s);" : "sp_String * _t%d = %s;"), tmps[i], hsrc.p);
       free(hw.p); free(hsrc.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
       int later_alloc_h = store_alloc || fresh_stmt || (hface && i + 1 < en);
@@ -17604,7 +17605,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       view_pop(c, sv);
     }
     else {
-      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
+      /* (one representation: the value's text may be of either face; the
+         temp is declared in the element's) */
+      Buf vb; memset(&vb, 0, sizeof vb); emit_expr_face(c, els[i], elt, &vb);
       buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
     }
     buf_puts(b, ";");

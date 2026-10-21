@@ -14755,7 +14755,11 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       else buf_printf(val, "({ (void)(%s); %s; _t%d; })", call, wb.p, box);
       nat = TY_POLY;
     }
-    else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", c_type_name(nat), tr, call, wb.p, tr);
+    /* (one representation: a String answer keeps the face the typed
+       emitter gave it, which the consumer reads through the face macros) */
+    else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })",
+                    g_one_string && (nat == TY_STRING || nat == TY_STRBUF) ? "__auto_type" : c_type_name(nat),
+                    tr, call, wb.p, tr);
     free(wb.p);
   }
   else if (!(kind == PF_SRANGE && face_srange_sym_value(c, id, t, call, &nat, val))) buf_puts(val, call);
