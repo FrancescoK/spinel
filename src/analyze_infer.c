@@ -6180,6 +6180,9 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       { *out = TY_POLY; return 1; }
     }
     if (sp_streq(name, "srand")) { *out = TY_INT; return 1; }
+    /* Kernel#select answers ready descriptor arrays, or nil on timeout. */
+    if (sp_streq(name, "select") && argc >= 1 && argc <= 4 &&
+        !an_bare_call_class_owned(c, id)) { *out = TY_POLY; return 1; }
     if (sp_streq(name, "sleep") && argc <= 1) { *out = TY_INT; return 1; }
     if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
       { *out = TY_STRING; return 1; }   /* ARGF's next line, or nil */

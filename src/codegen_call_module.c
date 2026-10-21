@@ -990,6 +990,60 @@ int emit_marshal_value_call(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* IO.select(read, write, error, timeout), and Kernel#select, which is the
+   same call. Arrays of boxed values and literal nils go straight to
+   sp_io_select; any other array argument (an untyped empty [] is an Integer
+   array) goes through its box, each argument rooted while the rest are
+   evaluated and converted (an Array, else CRuby's "wrong argument type";
+   select takes no #to_ary).
+   A nil array watches nothing; a literal nil timeout waits. */
+static int io_select_arg_direct(Compiler *c, int node) {
+  return nt_kind(c->nt, node) == NK_NilNode || repr_of(c, node).as_ty == TY_POLY_ARRAY;
+}
+int emit_io_select(Compiler *c, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int direct = 1;
+  for (int k = 0; k < 3 && k < argc; k++)
+    if (!io_select_arg_direct(c, argv[k])) direct = 0;
+  if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode && comp_ntype(c, argv[3]) == TY_NIL) direct = 0;
+  if (direct) {
+    buf_puts(b, "sp_io_select(");
+    for (int k = 0; k < 3; k++) {
+      if (k) buf_puts(b, ", ");
+      if (k >= argc || nt_kind(nt, argv[k]) == NK_NilNode) buf_puts(b, "NULL");
+      else emit_expr(c, argv[k], b);
+    }
+    buf_puts(b, ", ");
+    if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode) emit_float_expr(c, argv[3], b);
+    else buf_puts(b, "-1.0");
+    buf_puts(b, ")");
+    return 1;
+  }
+  int vals[3], arrays[3];
+  buf_puts(b, "({ ");
+  for (int k = 0; k < 3; k++) {
+    vals[k] = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = ", vals[k]);
+    if (k < argc) emit_boxed(c, argv[k], b); else buf_puts(b, "sp_box_nil()");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", vals[k]);
+  }
+  int timeout = ++g_tmp;
+  buf_printf(b, "double _t%d = ", timeout);
+  if (argc >= 4 && comp_ntype(c, argv[3]) != TY_NIL) emit_float_expr(c, argv[3], b);
+  else if (argc >= 4) { buf_puts(b, "((void)("); emit_expr(c, argv[3], b); buf_puts(b, "), -1.0)"); }
+  else buf_puts(b, "-1.0");
+  buf_puts(b, "; ");
+  for (int k = 0; k < 3; k++) {
+    arrays[k] = ++g_tmp;
+    buf_printf(b, "sp_PolyArray *_t%d = _t%d.tag == SP_TAG_NIL ? NULL : "
+                  "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) ? sp_poly_to_poly_array(_t%d) : "
+                  "(sp_bm_arg_mismatch(_t%d, \"Array\"), (sp_PolyArray *)NULL); SP_GC_ROOT(_t%d); ",
+               arrays[k], vals[k], vals[k], vals[k], vals[k], vals[k], arrays[k]);
+  }
+  buf_printf(b, "sp_io_select(_t%d, _t%d, _t%d, _t%d); })", arrays[0], arrays[1], arrays[2], timeout);
+  return 1;
+}
+
 int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* StringIO is a native-bound package class; .open is Ruby in the package. */
 
@@ -1672,21 +1726,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
       /* IO.select(read, write, error, timeout): a nil array watches nothing */
-      if (sp_streq(name, "select") && argc >= 1 && argc <= 4) {
-        buf_puts(b, "sp_io_select(");
-        for (int k = 0; k < 3; k++) {
-          if (k) buf_puts(b, ", ");
-          if (k >= argc || (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "NilNode")))
-            buf_puts(b, "NULL");
-          else emit_expr(c, argv[k], b);
-        }
-        buf_puts(b, ", ");
-        if (argc >= 4 && !(nt_type(nt, argv[3]) && sp_streq(nt_type(nt, argv[3]), "NilNode")))
-          emit_float_expr(c, argv[3], b);
-        else buf_puts(b, "-1.0");
-        buf_puts(b, ")");
-        return 1;
-      }
+      if (sp_streq(name, "select") && argc >= 1 && argc <= 4) return emit_io_select(c, argc, argv, b);
       if (sp_streq(name, "copy_stream") && argc == 2) {
         /* IO.copy_stream(src, dst): read the whole source, write it to the dest,
            returning the byte count. sp_io_copy_stream takes two path strings, so

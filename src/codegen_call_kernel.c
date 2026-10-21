@@ -70,6 +70,12 @@ static int emit_kconv_obj_nil(Compiler *c, int arg, int ci, const char *m1, cons
 }
 
 int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  /* Kernel's private select is IO.select, after user methods (Kernel.select
+     reaches here bare: desugar_kernel_recv drops the receiver). */
+  if (recv < 0 && sp_streq(name, "select") && argc >= 1 && argc <= 4 &&
+      !bare_call_class_owned(c, id))
+    return emit_io_select(c, argc, argv, b);
+
   /* __dir__ -> the source file's directory (compile-time literal, mirroring
      the legacy generator). */
   if (recv < 0 && sp_streq(name, "__dir__") && argc == 0) {

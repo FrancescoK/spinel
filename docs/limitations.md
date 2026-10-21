@@ -458,6 +458,11 @@ still missing, so `ancestors` diverges past `IO`.)
 the whole IO surface a handle carries (`#gets`, `#read`, `#readpartial`,
 `#write`, `#puts`, `#print`, `#flush`, `#close`, `#closed?`, `#eof?`,
 `#fileno`, `#each_line`, the `IO#wait_*` readiness family, `IO.select`).
+`Kernel#select` (bare `select`, `Kernel.select`, or `::Kernel.select`) uses
+`IO.select`'s readiness implementation for one to four positional arguments,
+including nil or omitted descriptor arrays and a timeout written as nil or
+omitted. A nil timeout held in a variable or a defaulted parameter can raise
+TypeError, as `IO.select` does.
 `#addr` / `#peeraddr` return CRuby's numeric 4-element form. `#accept` parks
 cooperatively on the green-thread scheduler, so a thread-per-connection server
 does not stall its siblings, and socket writes bypass stdio (`#sync` is true,
