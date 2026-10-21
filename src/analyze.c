@@ -20044,11 +20044,36 @@ static void refuse_callee_container_store(Compiler *c, int l, int a) {
   q.carry = c->share_strings && share_frozen_string(c, l) ? SHARE_CARRY_NONE : l;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, l, msg);
 }
+/* Does call u hand a read of local `vn` as an argument, where
+   arg_layout_param_node could answer it: a positional, or a keyword's
+   value? The walk below resolved every call's target before asking, and
+   a scope's calls are asked per container local, every round. */
+static int call_passes_local(const NodeTable *nt, int u, const char *vn) {
+  int a = nt_ref(nt, u, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_LocalVariableReadNode) {
+      const char *an = nt_str(nt, av[i], "name");
+      if (an && sp_streq(an, vn)) return 1;
+    }
+    else if (k == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, av[i], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+        int v = nt_ref(nt, el[e], "value");
+        if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), vn)) return 1;
+      }
+    }
+  }
+  return 0;
+}
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   StoreVals st = {0};
   for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
-    int mi = nt_kind(nt, u) == NK_CallNode && comp_scope_of(c, u) == vs ? an_call_target_mi(c, u) : -1;
+    if (nt_kind(nt, u) != NK_CallNode || !call_passes_local(nt, u, vn)) continue;
+    int mi = comp_scope_of(c, u) == vs ? an_call_target_mi(c, u) : -1;
     Scope *m = mi > 0 ? &c->scopes[mi] : NULL;
     for (int j = 0; m && j < m->nparams; j++) {
       int a = arg_layout_param_node(c, m, u, j, NULL);
