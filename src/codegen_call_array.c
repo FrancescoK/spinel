@@ -2590,7 +2590,7 @@ static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt,
   TyKind et = ty_array_elem(rt);
   const char *e = ab.p ? ab.p : "";
   if (rt == TY_POLY_ARRAY) buf_puts(b, e);
-  else if (et == TY_STRING) buf_printf(b, "sp_box_nullable_str(%s)", e);
+  else if (et == TY_STRING) buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), e);
   else buf_printf(b, "%s(%s)", oint_box(et), e);
   free(ab.p);
   buf_puts(b, "; })");

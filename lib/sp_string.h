@@ -222,6 +222,11 @@ int sp_String_chilled_now(sp_String*h);
 const char*sp_sym_to_s_chilled(sp_sym id);
 static inline sp_String*sp_String_new_shared(const char*s){
   if(!s)return NULL;   /* nil into a shared-string slot stays nil (a nullable String, #4567) */
+#ifdef SP_ONE_STRING
+  /* one representation: the bytes of a live payload are the handle its
+     owner link names (sp_fd_own), which keeps the String's identity */
+  if(((const unsigned char*)s)[-1]==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
+#endif
   /* Read every property of `s` HERE, before the allocation below: the handle's
      constructor can collect, and `s` is typically an unrooted temporary (the
      codegen hands this `sp_IntArray_pack(...)` directly), so touching it
@@ -245,7 +250,9 @@ static inline sp_String*sp_String_new_shared(const char*s){
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];
-#ifdef SP_SHARE_STRING_LITERALS
+#if defined(SP_SHARE_STRING_LITERALS) || defined(SP_ONE_STRING)
+  /* (one representation: the runtime takes a literal's bytes into an
+     element itself, sp_strelem_of, so its own copy asks the slot too) */
   sp_StringLiteral *literal = sp_String_literal_slot(s);
   if (literal) return sp_String_literal_handle(literal, s);
 #endif
@@ -264,14 +271,6 @@ static inline sp_String*sp_String_new_shared(const char*s){
   return r;
 }
 #ifdef SP_ONE_STRING
-/* The handle whose String bytes b are (SP_SEF): the bytes of a live payload
-   (marker 0xfd) are the handle the payload's owner link names (sp_fd_own),
-   so a store of a String read through its bytes face keeps its identity;
-   any other bytes get a handle as sp_String_new_shared gives one. */
-static inline sp_String*sp_String_adopt(const char*b){
-  if(b&&((const unsigned char*)b)[-1]==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(b))->next;if(o)return o;}
-  return sp_String_new_shared(b);
-}
 /* The handle a Hash key stands for (SP_SEK): a frozen handle's payload, which
    sp_hash_key_str keeps as the key, answers that handle through the owner
    link; any other key (a frozen copy, a static) a new frozen handle over it. */
@@ -293,6 +292,7 @@ static inline sp_String*sp_string_handle_id(sp_String*h){return h;}
 static inline sp_String*sp_String_new_fresh(const char*s){
   if(!s)return NULL;
 #ifdef SP_ONE_STRING
+  if(((const unsigned char*)s)[-1]==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
   /* one representation: a heap byte string a builtin answered is a temporary
      no other name holds; the handle adopts its bytes (sp_String_new_shared) */
   if(((const unsigned char*)s)[-1]==0xfe)return sp_String_new_shared(s);
@@ -300,7 +300,9 @@ static inline sp_String*sp_String_new_fresh(const char*s){
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];
-#ifdef SP_SHARE_STRING_LITERALS
+#if defined(SP_SHARE_STRING_LITERALS) || defined(SP_ONE_STRING)
+  /* (one representation: the runtime takes a literal's bytes into an
+     element itself, sp_strelem_of, so its own copy asks the slot too) */
   sp_StringLiteral *literal = sp_String_literal_slot(s);
   if (literal) return sp_String_literal_handle(literal, s);
 #endif

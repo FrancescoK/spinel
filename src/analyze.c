@@ -2227,6 +2227,9 @@ static void desugar_env_values(Compiler *c) {
     nt_node_set_ref(nt, id, "receiver", -1);
     nt_node_set_ref(nt, id, "arguments", -1);
     nt_node_set_ref(nt, id, "block", -1);
+    /* (ENV itself as a value, a store into which copies as ENV's does;
+       the one representation's emitter reads it) */
+    nt_node_set_int(nt, id, "env_value", 1);
   }
   free(ok);
 }

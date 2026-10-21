@@ -4985,7 +4985,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
      just snapshots it. #2545 / #2548 / #2551 */
   /* the desugared ENV snapshot (#2742) */
   if (recv < 0 && sp_streq(name, "__env_to_h") && argc == 0) {
-    buf_puts(b, "sp_env_to_h()");
+    /* (one representation: a String Hash holds the String it is handed,
+       and ENV a frozen copy; ENV itself as a value is a snapshot that
+       copies what is stored into it, sp_env_value) */
+    buf_puts(b, g_one_string && nt_int(nt, id, "env_value", 0) ? "sp_env_value()" : "sp_env_to_h()");
     return 1;
   }
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) {
@@ -6747,7 +6750,7 @@ void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
    dispatch did not hold. */
 static void emit_poly_kw_handle(const PolyKw *kw, int e, const char *tn, Buf *pa) {
   if (kw->kwhtmp && kw->kwhtmp[e]) buf_printf(pa, "_t%d", kw->kwhtmp[e]);
-  else buf_printf(pa, "sp_String_new_shared(%s)", tn);
+  else buf_printf(pa, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_shared(%s)"), tn);
 }
 
 static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
@@ -7970,7 +7973,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
       emit_exc_text_handle(c, id, e, &ib);
       buf_printf(&ib, " : sp_String_new_shared(%s))", nb->p);
     }
-    else if (wrap_h && !is_raise) buf_printf(&ib, "sp_String_new_shared(%s)", nb->p);
+    else if (wrap_h && !is_raise) buf_printf(&ib, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_shared(%s)"), nb->p);
     /* a generic entry's arm typed boxed: boxed by the C type it has */
     else if (g_bi_count_arm && ret == TY_POLY && bt == TY_POLY && !is_raise) buf_printf(&ib, "SP_BI_BOX(%s)", nb->p);
     else buf_puts(&ib, nb->p);
@@ -9465,7 +9468,7 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
   buf_puts(cb, ")");
   if (sp_streq(nmet->ret, "string?")) {
     Buf wb; memset(&wb, 0, sizeof wb);
-    buf_printf(&wb, "sp_box_nullable_str(%s)", cb->p ? cb->p : "");
+    buf_printf(&wb, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), cb->p ? cb->p : "");
     free(cb->p); *cb = wb;
   }
   *mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
@@ -9631,9 +9634,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       TyKind ret = repr_of(c, id).as_ty;
       /* (one representation: a String answer of either face is collected in
          a bytes slot, the arms answering bytes (a user arm's published
-         handle as its view, emit_strbuf_pickup), and adopted once at the
-         end: a handle keeps its identity, fresh bytes get one; the consumers
-         of a handle-typed call take the handle) */
+         handle as its view, emit_strbuf_pickup), and taken as the handle
+         once at the end (SP_STR_HDL): a handle keeps its identity, fresh
+         bytes get one) */
       int one_ret_h = g_one_string && ret == TY_STRBUF;
       if (one_ret_h) { ret = TY_STRING; g_one_arm_bytes_node = id; }
       /* an OpenStruct member is a boxed value; but when analyze typed the
@@ -9732,8 +9735,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         g_pd_ret_ctype = tr_o ? oint_ctype(ret) : NULL;
         int hoisted0 = pd_hoist(c, id, name, b, pd_from, tr, is_scalar_ret(ret) ? ret : TY_INT, pid0, pty0, blk_tmp0 >= 0 ? 2 : 1);
         g_pd_ret_ctype = NULL;
-        if (hoisted0) buf_printf(b, one_ret_h ? " sp_String_new_fresh(_t%d); })" : " _t%d; })", tr);
-        else buf_printf(b, one_ret_h ? " } sp_String_new_fresh(_t%d); })" : " } _t%d; })", tr); }
+        if (hoisted0) buf_printf(b, one_ret_h ? " SP_STR_HDL(_t%d); })" : " _t%d; })", tr);
+        else buf_printf(b, one_ret_h ? " } SP_STR_HDL(_t%d); })" : " } _t%d; })", tr); }
       if (one_ret_h) g_one_arm_bytes_node = -1;
       return 1;
     }
@@ -9806,9 +9809,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       TyKind ret = repr_of(c, id).as_ty;
       /* (one representation: a String answer of either face is collected in
          a bytes slot, the arms answering bytes (a user arm's published
-         handle as its view, emit_strbuf_pickup), and adopted once at the
-         end: a handle keeps its identity, fresh bytes get one; the consumers
-         of a handle-typed call take the handle) */
+         handle as its view, emit_strbuf_pickup), and taken as the handle
+         once at the end (SP_STR_HDL): a handle keeps its identity, fresh
+         bytes get one) */
       int one_ret_h = g_one_string && ret == TY_STRBUF;
       if (one_ret_h) { ret = TY_STRING; g_one_arm_bytes_node = id; }
       int tv = ++g_tmp, tr = ++g_tmp;
@@ -10199,7 +10202,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         emit_boxed_text(c, atmp_ty[0], sref, b);
         buf_puts(b, "; })");
       }
-      else if (one_ret_h && (pd_done || !is_setter_val)) buf_printf(b, " sp_String_new_fresh(_t%d); })", tr);
+      else if (one_ret_h && (pd_done || !is_setter_val)) buf_printf(b, " SP_STR_HDL(_t%d); })", tr);
       else buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
       if (one_ret_h) g_one_arm_bytes_node = -1;
       free(atmp);
@@ -11076,7 +11079,7 @@ void emit_reopen_self_arg(Compiler *c, int id, int mi, Buf *b) {
   int from = s && repr_self_handle(c, (int)(s - c->scopes));
   int to = repr_self_handle(c, mi);
   if (from && !to) buf_printf(b, "sp_strbuf_read_pub(%s)", g_self);
-  else if (to && !from) buf_printf(b, "sp_String_new_shared(%s)", g_self);
+  else if (to && !from) buf_printf(b, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_shared(%s)"), g_self);
   else buf_puts(b, g_self);
 }
 
@@ -18278,7 +18281,7 @@ static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
     switch (p) {
     case TY_POLY: case TY_UNKNOWN:           /* param is sp_RbVal: box it */
       if (sp_streq(spec, "ptr"))                          buf_printf(&call, "sp_box_foreign_ptr((void *)%s)", a);
-      else if (ffi_spec_is_str(spec))                     buf_printf(&call, "sp_box_str(%s)", a);
+      else if (ffi_spec_is_str(spec))                     buf_printf(&call, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_str(%s)"), a);
       else if (sp_streq(spec, "float") || sp_streq(spec, "double")) buf_printf(&call, "sp_box_float(%s)", a);
       else                                                buf_printf(&call, "sp_box_int((sp_int)%s)", a);
       break;
@@ -19266,7 +19269,7 @@ static int splat_binding_call(Compiler *c, NativeMethod *m, int cid, int kind, i
   buf_puts(cb, ")");
   if (sp_streq(m->ret, "string?")) {
     Buf wb; memset(&wb, 0, sizeof wb);
-    buf_printf(&wb, "sp_box_nullable_str(%s)", cb->p);
+    buf_printf(&wb, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), cb->p);
     free(cb->p); *cb = wb;
   }
   return 1;
@@ -23749,6 +23752,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
         emit_strbuf_node_read(c, node[i], thr, &opb[i]);
         tmp[i] = ++g_tmp;
         ran_first_bind(node[i], tmp[i], th[i]);
+        /* (one representation: the temp holds the handle itself, below; its
+           value reads are bytes) */
+        if (g_one_string && ty[i] != TY_STRBUF) snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", tmp[i]);
         continue;
       }
       tmp[i] = ++g_tmp;
@@ -23761,7 +23767,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
         held[nh++] = view_push(c, node[i], TY_POLY);
         continue;
       }
-      if (operand_binds_handle(c, node[i], harg)) ran_first_bind(node[i], tmp[i], tmp[i]);
+      if (operand_binds_handle(c, node[i], harg)) {
+        ran_first_bind(node[i], tmp[i], tmp[i]);
+        /* (one representation: the temp holds the handle; a value read of it is bytes) */
+        if (g_one_string && ty[i] == TY_STRING)
+          snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", tmp[i]);
+      }
       else if (oo[i]) view_bind_o(node[i], "_t%d", tmp[i]);
       /* (one representation: the temp is of either face; its reads are bytes) */
       else if (g_one_string && ty[i] == TY_STRING) view_bind(node[i], "SP_STR_B(_t%d)", tmp[i]);
@@ -23839,7 +23850,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       else {
         if (opp[i].p) buf_puts(b, opp[i].p);
         free(opp[i].p);
-        buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", lh, opb[i].p ? opb[i].p : "NULL", lh);
+        buf_printf(b, g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ",
+                   lh, opb[i].p ? opb[i].p : "NULL", lh);   /* (one representation: the text of either face) */
         free(opb[i].p);
       }
       continue;
@@ -23869,6 +23881,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     /* (one representation: a String of either face is held as it is, the C
        compiler naming the type, and read where it is used, SP_STR_B) */
     if (g_one_string && !oo[i] && ty[i] == TY_STRING && opb[i].p) buf_printf(b, "__auto_type _t%d = (%s); ", tmp[i], opb[i].p);
+    /* (and a handle temp takes a text of either face as the handle) */
+    else if (g_one_string && !oo[i] && ty[i] == TY_STRBUF && opb[i].p)
+      buf_printf(b, repr_of(c, node[i]).kind == RK_BOXED ? "sp_String * _t%d = sp_poly_as_strbuf(%s); " : "sp_String * _t%d = SP_STR_HDL(%s); ",
+                 tmp[i], opb[i].p);
     else {
     if (oo[i]) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
     buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : oo[i] ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
@@ -30728,11 +30744,12 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
    did. */
 void emit_published_pickup(Compiler *c, int id, Buf *b) {
   int tvD = ++g_tmp;
-  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
+  /* (one representation: the call may answer the handle itself; held by face) */
+  buf_printf(b, g_one_string ? "({ _sp_ret_strbuf = NULL; __auto_type _v%d = (" : "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
   int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
   emit_call(c, id, b);
   view_pop(c, vs);
-  buf_puts(b, "; ");
+  buf_puts(b, g_one_string ? "); " : "; ");
   /* --share-strings: a tail answering nil publishes nothing, and an
      earlier read may have published (an_tail_is_shared_handle): the
      call's nil is nil. A target the plan cannot list may be such a

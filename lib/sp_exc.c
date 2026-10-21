@@ -184,6 +184,34 @@ const char *sp_exc_cls_display(const char *cn) {
 sp_bool sp_exc_cls_unnamed(const char *shown) {
   return shown && strncmp(shown, "#<Class:", 8) == 0;
 }
+/* One representation (string-one-repr-design.md): a message given as the
+   bytes of a live String handle (a payload view, marker 0xfd) is that String,
+   which #message and #to_s answer themselves, as CRuby's do: the exception
+   keeps the handle (msg_h), the payload's owner, beside the copy in msg that
+   the text readers take. */
+#ifdef SP_ONE_STRING
+static inline sp_String *sp_exc_one_owner(const char *m) {
+  if (m && ((const unsigned char *)m)[-1] == 0xfd)
+    return (sp_String *)(void *)((sp_str_hdr *)((char *)m - sizeof(sp_str_hdr) - 1))->next;
+  return NULL;
+}
+/* the owner, read before the message is copied to the heap, and rooted */
+#define SP_EXC_ONE_OWNER(m) sp_String *_one_h = sp_exc_one_owner(m); SP_GC_ROOT(_one_h);
+static inline void sp_exc_one_attach(sp_Exception *e, sp_String *h) {
+  if (e && h) { sp_gc_wb((void *)e); e->msg_h = h; return; }
+  /* a message no one else holds (a new String): the exception's own handle
+     over its copy, so #message answers one String each time, which a change
+     through it shows in, as CRuby's does; a frozen one stays as it is */
+  if (e && !e->msg_h && e->msg && !sp_str_is_frozen_val(e->msg) && e->msg != sp_exc_no_msg) {
+    SP_GC_ROOT(e);
+    sp_String *nh = sp_String_new_fresh(e->msg);
+    sp_gc_wb((void *)e); e->msg_h = nh;
+  }
+}
+#else
+#define SP_EXC_ONE_OWNER(m) void *_one_h = NULL; (void)_one_h;
+#define sp_exc_one_attach(e, h) ((void)0)
+#endif
 static const char *sp_exc_msg_copy(const char *m) {
   if (sp_cmsg_p(m)) {   /* the counted message decodes to its payload, a NUL kept */
     size_t cn = sp_cmsg_len(m);
@@ -243,9 +271,11 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
   /* the caller's message may be held by nothing else: rooted before the
      copy allocates (#8323) */
   const char *msg0 = msg; SP_GC_ROOT_STR(msg0);
+  SP_EXC_ONE_OWNER(msg)
   if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
   if (fz && e->msg) ((unsigned char *)e->msg)[-1] = 0xfa;
+  sp_exc_one_attach(e, (sp_String *)_one_h);
   if (sp_user_exc_parent_fn) {
     const char *par = sp_user_exc_parent_fn(cls);
     if (par) {
@@ -276,7 +306,7 @@ void *sp_exc_ensure_obj(void **obj, const char **msg, const char *cls) {
    where a user subclass with ivars was raised without a carried object
    (#1415). The class the name says decides the size, the scan and the
    ivars' unset state (sp_exc_alloc_named). */
-void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {SP_EXC_ONE_OWNER(msg) if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_alloc_named(sz, cls_name);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
@@ -293,6 +323,9 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
     e->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
+    /* (after the copy: a message no one else holds gets the exception's
+       own handle over it, which reads e->msg and its frozen mark) */
+    sp_exc_one_attach(e, (sp_String *)_one_h);
   }
   /* The copy can collect, and a collection promotes the rooted object it
      is filling: an old holder then receives a young string. Recorded after
@@ -354,7 +387,7 @@ sp_RbVal sp_Exception_set_backtrace(sp_Exception *e, sp_StrArray *bt) {
    collection in between (sp_msg_heapify), so an unrooted heap message cannot
    be swept out from under it either. The no-message sentinel keeps its
    identity: it is what tells an empty message apart from none at all. */
-sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {SP_EXC_ONE_OWNER(msg) if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_alloc_named(sizeof(sp_Exception), cls_name);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->parent_cls_name = NULL;
@@ -380,6 +413,9 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (!sp_exc_msg
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
     e->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
+    /* (after the copy: a message no one else holds gets the exception's
+       own handle over it, which reads e->msg and its frozen mark) */
+    sp_exc_one_attach(e, (sp_String *)_one_h);
   }
   sp_gc_wb((void *)e);   /* same reason as sp_exc_new_sub_sized */
   return e;
@@ -403,8 +439,9 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
     size_t al = sp_str_byte_len(am), bl = sp_str_byte_len(bm);
     return al == bl && memcmp(am, bm, al) == 0; }
 }
-sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {SP_EXC_ONE_OWNER(msg) if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
+  sp_exc_one_attach(e, (sp_String *)_one_h);
   e->parent_cls_name = parent_cls;
   sp_exc_syserr_init(e);
   /* `.new` records no key or receiver (KeyError#key raises for it) */
@@ -432,9 +469,9 @@ sp_Exception *sp_exc_clone(sp_Exception *e) {
 }
 /* Write the staged introspection values (receiver/key/value) into the carried
    exception, creating one when the raise had none (see sp_raise_cls). */
-void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {SP_EXC_ONE_OWNER(msg) if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = (sp_Exception *)obj;
-  if (!e) e = sp_exc_new(cls, msg);
+  if (!e) { e = sp_exc_new(cls, msg); sp_exc_one_attach(e, (sp_String *)_one_h); }
   /* `obj` is a caller-supplied exception that may have been promoted long ago
      (`raise SomeError` on a constant instance, a re-raised one), and the three
      stores below put young values into it. */
@@ -450,13 +487,14 @@ int sp_exc_exit_status(void *obj) {
   return (e && e->result.tag == SP_TAG_INT) ? (int)e->result.v.i : 0;
 }
 /* Exception#exception(msg): a copy of the receiver carrying the new message. */
-sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);SP_EXC_ONE_OWNER(msg) if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
   /* an explicitly given empty message stays empty, frozen for a literal's,
      as sp_exc_new keeps it; none given (exception(nil)) clears the message */
   n->msg = NULL;
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
+    sp_exc_one_attach(n, (sp_String *)_one_h);
     n->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   }
@@ -565,7 +603,12 @@ const char *sp_exc_message(volatile sp_Exception *ve) {
   /* a message never set (super(nil), Exception.new) defaults to the class
      name, as CRuby's Exception#message does */
   if (!e) return sp_str_empty;
+#ifdef SP_ONE_STRING
+  /* (one representation: the message String itself, its bytes face) */
+  if (e->msg_h) return sp_String_cstr((sp_String *)e->msg_h);
+#else
   if (e->msg_h) return sp_exc_msg_handle_copy((sp_String *)e->msg_h);
+#endif
   if (e->msg) return e->msg;
   /* none given: the class name as it shows now, read when it is asked, so a
      class named after the exception was built answers its new name */

@@ -2,6 +2,7 @@
    prepend / insert / replace / dup are off the hot string-building path, so they
    are compiled once here instead of inline in every generated TU. */
 #include "sp_string.h"
+#include "sp_str.h"   /* sp_str_concat (sp_str_keep_copy) */
 #include <string.h>
 
 /* Only evaluated literal handles join these permanent roots; unused
@@ -126,3 +127,8 @@ const char*sp_sym_to_s_chilled(sp_sym id){
   SP_HEAP_UNLOCK();
   return r;
 }
+
+#ifdef SP_ONE_STRING
+struct sp_String_s *sp_strelem_of(const char *b) { return sp_String_new_shared(b); }
+const char *sp_str_keep_copy(const char *s) { return sp_str_concat(s, sp_str_empty); }
+#endif

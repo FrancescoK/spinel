@@ -662,7 +662,7 @@ int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b) {
   else if (vt == TY_POLY) buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d));", tp, hn, th, tk);
   else if (vt == TY_INT && hash_vals_nullable(c, recv)) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_oint(sp_%sHash_vget(_t%d, _t%d)));", tp, hn, th, tk);
   else if (vt == TY_INT) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
-  else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
+  else buf_printf(b, " sp_PolyArray_push(_t%d, %ssp_%sHash_get%s(_t%d, _t%d)));", tp, ONE_HV_BOXO(hn), hn, ONE_HV_GE(hn), th, tk);
   buf_printf(b, " _t%d = sp_box_poly_array(_t%d);", tr, tp);
   buf_printf(b, " sp_%sHash_delete%s(_t%d, _t%d); }", hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", th, tk);
   buf_printf(b, " _t%d; })", tr);
@@ -697,8 +697,10 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; sp_oint _t%d = sp_%sHash_has_key%s(_t%d, _t%d) ? sp_oint_of(sp_%sHash_get%s(_t%d, _t%d)) : sp_oint_nil();",
                tv, hn, ks, th, tk, hn, ks, th, tk);
   else
-    buf_printf(b, "; %s _t%d = sp_%sHash_has_key%s(_t%d, _t%d) ? sp_%sHash_get%s(_t%d, _t%d) : %s;",
-               c_type_name(vt), tv, hn, ks, th, tk, hn, ks, th, tk,
+    /* (one representation: a String value is the handle, read here as its bytes face) */
+    buf_printf(b, "; %s _t%d = sp_%sHash_has_key%s(_t%d, _t%d) ? %ssp_%sHash_get%s(_t%d, _t%d)%s : %s;",
+               c_type_name(vt), tv, hn, ks, th, tk, g_one_string && vt == TY_STRING ? "SP_STR_B(" : "", hn, ks, th, tk,
+               g_one_string && vt == TY_STRING ? ")" : "",
                vt == TY_POLY ? "sp_box_nil()" : vt == TY_STRING ? "NULL" : default_value_from_compiler(c, vt));
   buf_printf(b, " sp_%sHash_delete%s(_t%d, _t%d); ", hn, rt == TY_STR_POLY_HASH ? "_bytes" : ks, th, tk);
   if (vt == TY_INT) { oint_open(c, x->id, TY_INT, b); buf_printf(b, "_t%d", tv); oint_close(c, x->id, b); buf_puts(b, "; })"); }
@@ -751,7 +753,7 @@ int emit_op_hash_invert(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, " sp_RbVal _v%d = sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", ti, hn, th, th, ti);
     }
     else {
-      buf_printf(b, " sp_RbVal _v%d = sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", ti, hn, th, th, ti);
+      buf_printf(b, " sp_RbVal _v%d = %ssp_%sHash_get%s(_t%d, _t%d->order[_t%d]));", ti, ONE_HV_BOXO(hn), hn, ONE_HV_GE(hn), th, th, ti);
     }
     buf_printf(b, " sp_PolyPolyHash_set(_t%d, _v%d, _k%d); }", tr, ti, ti);
     buf_printf(b, " _t%d; })", tr);
@@ -797,7 +799,7 @@ int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   else if (vt == TY_INT)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
   else
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
+    buf_printf(b, " sp_PolyArray_push(_t%d, %ssp_%sHash_get%s(_t%d, _t%d->order[_t%d])));", tr, ONE_HV_BOXO(hn), hn, ONE_HV_GE(hn), th, th, ti);
   buf_printf(b, " } _t%d; })", tr);
   return 1;
 }

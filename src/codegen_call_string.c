@@ -1244,7 +1244,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) { ",
                  ti, ti, tl, ti);
       if (p0) {
-        if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
+        if (p0_box_poly_ech) buf_printf(b, "lv_%s = %ssp_StrArray_get%s(_t%d, _t%d)); ", p0, ONE_SA_BOXO, ONE_SA_GE, tl, ti);
         else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
         else buf_printf(b, g_one_string ? "lv_%s = SP_STR_B(sp_StrArray_get(_t%d, _t%d)); " : "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);   /* (one representation: the line is a handle, the parameter's slot bytes) */
       }
@@ -1371,7 +1371,7 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
     int hnd = !box && plv && repr_of_slot(c, plv).handle;
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d, _t%d, _t%d)%s;\n",
-               rename_local(p0), box ? "sp_box_str(" : hnd ? "sp_String_new_fresh(" : "", ts, tb, tn,
+               rename_local(p0), box ? "sp_box_str(" : hnd ? (g_one_string ? "SP_STR_HDL(" : "sp_String_new_fresh(") : "", ts, tb, tn,
                (box || hnd) ? ")" : "");
   }
   int save = g_indent; g_indent++;

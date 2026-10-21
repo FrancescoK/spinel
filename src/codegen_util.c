@@ -3758,9 +3758,13 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   /* (one representation: the typed container's own read answers the handle;
      emit_expr reads it as bytes unless the node is named here) */
   if (one_str_elem_call(c, v, TY_UNKNOWN)) {
+    /* (the read answers the element's bytes face, or a temp it is bound to
+       of either face; the handle is its owner, SP_STR_HDL) */
     int save = g_one_elem_raw;
     g_one_elem_raw = v;
+    buf_puts(b, "SP_STR_HDL(");
     emit_expr(c, v, b);
+    buf_puts(b, ")");
     g_one_elem_raw = save;
     return;
   }
@@ -3790,6 +3794,28 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
    keeps? The handle element emitters then render v as the call it is. */
 int g_one_elem_raw = -1;
 int g_one_arm_bytes_node = -1;
+/* One representation: the temps held by face (__auto_type, a handle or
+   bytes), which view_bind reads through SP_STR_B wherever the node held is
+   bound to one: the binder writes `_t<n>` and the consumer takes bytes.
+   Keyed on the temp and the node: a temp's number is reused (a declined
+   rendering resets g_tmp, each function counts from its own start), and
+   another node bound to the reused number holds what its own binder made
+   (a box, a handle). */
+static int *g_one_face_node;
+static int g_one_face_cap;
+void one_face_mark(int t, int node) {
+  if (t < 0) return;
+  if (t >= g_one_face_cap) {
+    int nc = g_one_face_cap ? g_one_face_cap : 1024;
+    while (nc <= t) nc *= 2;
+    int *nb = realloc(g_one_face_node, (size_t)nc * sizeof *nb);
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(nb + g_one_face_cap, 0, (size_t)(nc - g_one_face_cap) * sizeof *nb);
+    g_one_face_node = nb; g_one_face_cap = nc;
+  }
+  g_one_face_node[t] = node + 1;
+}
+int one_face_is(int t, int node) { return t >= 0 && t < g_one_face_cap && g_one_face_node[t] == node + 1; }
 int one_str_elem_call(Compiler *c, int v, TyKind rt) {
   const NodeTable *nt = c->nt;
   if (!g_one_string || v < 0) return 0;
@@ -3800,11 +3826,21 @@ int one_str_elem_call(Compiler *c, int v, TyKind rt) {
     v = n >= 1 ? st[n - 1] : -1;
   }
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  /* (a read whose emitter answers a box, a fetch with a default or a poly
+     index's, is no handle source) */
+  { TyKind vt0 = comp_ntype(c, v); if (vt0 != TY_STRING && vt0 != TY_STRBUF) return 0; }
   int recv0 = nt_ref(nt, v, "receiver");
   if (rt == TY_UNKNOWN && recv0 >= 0) rt = comp_ntype(c, recv0);
   if (rt == TY_STR_ARRAY) {
     int op = strh_call_op_in(c, v, TY_STRH_ARRAY, 0);
     if (op == STRH_ELEM || op == STRH_TAKE) return 1;
+    /* (an index known only at run time, the call typed a String: its
+       emitter reads the element, sp_StrArray_get) */
+    const char *nm0 = nt_str(nt, v, "name");
+    int ca0 = nt_ref(nt, v, "arguments"), an0 = 0;
+    const int *av0 = ca0 >= 0 ? nt_arr(nt, ca0, "arguments", &an0) : NULL;
+    if (nm0 && sp_streq(nm0, "[]") && an0 == 1 && nt_ref(nt, v, "block") < 0 &&
+        comp_ntype(c, av0[0]) == TY_POLY && comp_ntype(c, v) == TY_STRING) return 1;
   }
   else if (rt != TY_STR_STR_HASH && rt != TY_INT_STR_HASH) return 0;
   const char *nm = nt_str(nt, v, "name");
@@ -4732,6 +4768,8 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
   /* the form is repr_coerce_text_form's (repr.c) */
   switch (repr_coerce_text_form(c, node, from, slot, how)) {
   case CF_FIT:
+    /* (one representation: a handle text fits a String slot as its bytes face) */
+    if (g_one_string && slot == TY_STRING && from == TY_STRBUF) { buf_printf(b, "SP_STR_B(%s)", text); RCCT(CF_FIT); return; }
     buf_puts(b, text);
     RCCT(CF_FIT);
     return;
@@ -4817,8 +4855,9 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
     }
     /* (one representation: a handle fits a bytes slot as its view, which
        keeps the handle alive through the slot's root) */
-    if (g_one_string && slot == TY_STRING &&
-        (comp_ntype(c, node) == TY_STRBUF || repr_of(c, node).as_ty == TY_STRBUF || repr_call_returns_handle(c, node))) {
+    /* (the node's C value can be the handle where its type says String: a
+       slot one_elem_bind_slot made a handle; SP_STR_B takes either) */
+    if (g_one_string && slot == TY_STRING) {
       buf_puts(b, "SP_STR_B(");
       emit_expr(c, node, b);
       buf_puts(b, ")");

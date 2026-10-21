@@ -2290,6 +2290,7 @@ void sp_File_close_half(sp_File *f, sp_bool reading) {SP_GC_ROOT(f);
 }
 /* IO#reopen(path, mode): rebind the handle to another file. */
 sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_ROOT(f);SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(mode); sp_gc_wb((void*)f);
+  path = sp_str_keep(path);   /* (the File keeps its path, sp_str_keep) */
   if (!f) return f;
   /* with no mode the handle keeps its own, as CRuby's does: a "w" handle
      reopens for writing (and truncates), an "rb" one stays binary. fopen

@@ -411,7 +411,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else
         snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[nmet->class_id].c_struct, tv, rest0);
       if (sp_streq(nmet->ret, "string?"))
-        snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s)", cbuf);
+        snprintf(nbuf, sizeof nbuf, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), cbuf);
       else
         snprintf(nbuf, sizeof nbuf, "%s", cbuf);
       TyKind mret = native_spec_to_ty(nmet->ret);
@@ -609,7 +609,8 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else if (ret == TY_STRBUF && cret9 == TY_STRING) {
         if (repr_share_rule(c) && c->scopes[pf9 ? pfi9 : mi].ret_handle) {
           int pv = ++g_tmp;
-          buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : _sp_ret_strbuf ? "
+          buf_printf(b, g_one_string ? "({ _sp_ret_strbuf = NULL; __auto_type _v%d = (%s); !_v%d ? NULL : _sp_ret_strbuf ? "
+                        "(sp_String *)_sp_ret_strbuf : " : "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : _sp_ret_strbuf ? "
                         "(sp_String *)_sp_ret_strbuf : ", pv, call, pv);
           str_new_handle_open(b);
           buf_printf(b, "_v%d", pv);
@@ -1503,7 +1504,7 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
     if (ret == TY_POLY && mret != TY_POLY) { emit_poly_user_box(c, id, ms, call, b); conv = PC_BOX; }
     else if (c->n_cext_extensions && ret == TY_STRBUF && mret == TY_STRING) {
       int temp = ++g_tmp;
-      buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : ", temp, call, temp);
+      buf_printf(b, g_one_string ? "({ _sp_ret_strbuf = NULL; __auto_type _v%d = (%s); !_v%d ? NULL : " : "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : ", temp, call, temp);
       if (ms && ms->ret_handle) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
       str_new_handle_open(b);
       buf_printf(b, "_v%d", temp);
@@ -1531,7 +1532,7 @@ void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, int s
     /* An Integer or Float array answers a nil element, and any index
        past its end, as nil: the _oget read, boxed */
     buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_box_oint(sp_IntArray_oget((sp_IntArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
-    buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_box_str(sp_StrArray_get((sp_StrArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+    buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_get%s((sp_StrArray *)_t%d.v.p, %s)); break;", tr, ONE_SA_BOXO, ONE_SA_GE, tv, idxref);
     buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = sp_box_ofloat(sp_FloatArray_oget((sp_FloatArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
     buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
     buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = sp_PtrArray_get_box((sp_PtrArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
@@ -2758,7 +2759,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     char rv[80];
     snprintf(rv, sizeof rv, "sp_File_read((sp_File *)_t%d.v.p)", tv);
     buf_printf(b, " case SP_BUILTIN_IO: _t%d = ", tr);
-    if (ret == TY_POLY) buf_printf(b, "sp_box_nullable_str(%s)", rv);
+    if (ret == TY_POLY) buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), rv);
     else buf_puts(b, rv);
     buf_puts(b, "; break;");
   }
@@ -3497,7 +3498,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  unread);
     }
     buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
-    if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s)", eb.p); else buf_puts(b, eb.p);
+    if (ret == TY_POLY) buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_str(%s)"), eb.p); else buf_puts(b, eb.p);
     buf_puts(b, "; }\nelse ");
     free(eb.p);
   }

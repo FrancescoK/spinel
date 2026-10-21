@@ -390,25 +390,25 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT(r);
   if (ms < 0) {
     /* new Strings, as CRuby's: not the receiver, nor one shared "" */
-    sp_StrArray_push(r, SP_SEF(sp_str_dup(sp_str_empty)));
-    sp_StrArray_push(r, SP_SEF(sp_str_dup(sp_str_empty)));
-    sp_StrArray_push(r, SP_SEF(sp_str_dup(str)));
+    sp_StrArray_push_e(r, SP_SEF(sp_str_dup(sp_str_empty)));
+    sp_StrArray_push_e(r, SP_SEF(sp_str_dup(sp_str_empty)));
+    sp_StrArray_push_e(r, SP_SEF(sp_str_dup(str)));
     return r;
   }
   char *before = sp_str_alloc_raw(ms + 1);
   memcpy(before, str, ms); before[ms] = 0;
   sp_str_set_len(before, (size_t)ms);
-  sp_StrArray_push(r, SP_SEF(before));
+  sp_StrArray_push_e(r, SP_SEF(before));
   int mlen = (int)(me - ms);
   char *mid = sp_str_alloc_raw(mlen + 1);
   memcpy(mid, str + ms, mlen); mid[mlen] = 0;
   sp_str_set_len(mid, (size_t)mlen);
-  sp_StrArray_push(r, SP_SEF(mid));
+  sp_StrArray_push_e(r, SP_SEF(mid));
   int alen = (int)(slen - me);
   char *after = sp_str_alloc_raw(alen + 1);
   memcpy(after, str + me, alen); after[alen] = 0;
   sp_str_set_len(after, (size_t)alen);
-  sp_StrArray_push(r, SP_SEF(after));
+  sp_StrArray_push_e(r, SP_SEF(after));
   return r;
 }
 sp_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str) {
@@ -779,7 +779,7 @@ sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
     int len = caps[1] - caps[0];
     char *m = sp_str_alloc_raw(len+1); memcpy(m, str+caps[0], len); m[len] = 0;
     sp_str_set_len(m, (size_t)len);
-    sp_StrArray_push(arr, SP_SEF(m));
+    sp_StrArray_push_e(arr, SP_SEF(m));
     pos = caps[1]; if (caps[0] == caps[1]) pos++;
   }
   if (sp_re_track_last) sp_re_set_last_match(pat, str, lastcaps, lastn);
@@ -801,7 +801,7 @@ static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, in
   char *m = sp_str_alloc_raw(len + 1);
   memcpy(m, str + from, len); m[len] = 0;
   sp_str_set_len(m, (size_t)len);
-  sp_StrArray_push(arr, SP_SEF(sp_str_bin_like(str, m)));
+  sp_StrArray_push_e(arr, SP_SEF(sp_str_bin_like(str, m)));
 }
 
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit) {SP_GC_ROOT_STR(str);if(!str)sp_nil_recv("split");
@@ -1206,6 +1206,7 @@ sp_MatchData *sp_re_matchdata(mrb_regexp_pattern *pat, const char *str) {SP_GC_R
     return NULL;
   }
   int pairs = (n > 64 ? 64 : n) / 2;
+  str = sp_str_keep(str);   /* (the MatchData and $~ keep the target: a copy of a live payload, sp_str_keep) */
   sp_re_set_captures(str, caps, pairs);
   sp_MatchData *m = sp_md_alloc(pairs);
   m->source = str;
@@ -1231,6 +1232,7 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, sp_in
     return NULL;
   }
   int pairs = (n > 64 ? 64 : n) / 2;
+  str = sp_str_keep(str);   /* (the MatchData and $~ keep the target: a copy of a live payload, sp_str_keep) */
   sp_re_set_captures(str, caps, pairs);
   sp_MatchData *m = sp_md_alloc(pairs);
   m->source = str;
@@ -1301,7 +1303,7 @@ sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat) {
     sp_strelem el = SP_SEF(nm);
     /* a name reused across alternatives is one name, however many groups
        carry it (#3682) */
-    if (!sp_StrArray_include(a, el)) sp_StrArray_push(a, el);
+    if (!sp_StrArray_include_e(a, el)) sp_StrArray_push_e(a, el);
   }
   return a;
 }
@@ -1321,7 +1323,7 @@ sp_StrArray *sp_MatchData_names(sp_MatchData *m) {SP_GC_ROOT(m);
     if (!nm) continue;
     nm = sp_str_dup_external(nm);   /* as in sp_Regexp_names */
     sp_strelem el = SP_SEF(nm);
-    if (!sp_StrArray_include(a, el)) sp_StrArray_push(a, el);
+    if (!sp_StrArray_include_e(a, el)) sp_StrArray_push_e(a, el);
   }
   return a;
 }

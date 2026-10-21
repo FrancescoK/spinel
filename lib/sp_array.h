@@ -225,8 +225,10 @@ sp_IntArray *sp_IntArray_shuffle(sp_IntArray *a);
 sp_oint sp_IntArray_sample_o(sp_IntArray *a);
 sp_oint sp_IntArray_min_o(sp_IntArray *a);
 sp_oint sp_IntArray_max_o(sp_IntArray *a);
-sp_strelem sp_StrArray_min(sp_StrArray *a);
-sp_strelem sp_StrArray_max(sp_StrArray *a);
+sp_strelem sp_StrArray_min_e(sp_StrArray *a);
+sp_strelem sp_StrArray_max_e(sp_StrArray *a);
+static inline const char *sp_StrArray_min(sp_StrArray *a){sp_strelem e=sp_StrArray_min_e(a);return SP_SEB(e);}
+static inline const char *sp_StrArray_max(sp_StrArray *a){sp_strelem e=sp_StrArray_max_e(a);return SP_SEB(e);}
 sp_int sp_IntArray_sum(sp_IntArray *a, sp_int init);
 /* A vectorizable reduction for nonnegative, bounded elements. The OR is
    an upper bound for every term, so the bound covers every ordered prefix.
@@ -600,19 +602,26 @@ static void sp_StrArray_fin(void*p){sp_StrArray*a=(sp_StrArray*)p;if(a->data!=a-
 static void sp_StrArray_scan(void*p){sp_StrArray*a=(sp_StrArray*)p;for(sp_int i=0;i<a->len;i++)SP_SEM(a->data[i]);}
 static sp_StrArray*sp_StrArray_new(void){sp_StrArray*a=(sp_StrArray*)sp_gc_alloc(sizeof(sp_StrArray),sp_StrArray_fin,sp_StrArray_scan);a->cap=SP_STRARR_INLINE;a->data=a->inline_data;a->len=0;return a;}
 static void sp_StrArray_init_embedded(sp_StrArray*a){a->cap=SP_STRARR_INLINE;a->data=a->inline_data;a->len=0;}  /* see sp_IntArray_init_embedded */
-static inline void sp_StrArray_push(sp_StrArray*a,sp_strelem v){sp_gc_wb((void*)a); if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_int nc=((((((a->cap*2))))))+1;if(a->data==a->inline_data){sp_strelem*nd=(sp_strelem*)sp_pl_alloc(sizeof(sp_strelem)*nc);if(!nd)sp_oom_die();memcpy(nd,a->data,sizeof(sp_strelem)*a->len);a->data=nd;}
+static inline void sp_StrArray_push_e(sp_StrArray*a,sp_strelem v){sp_gc_wb((void*)a); if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_int nc=((((((a->cap*2))))))+1;if(a->data==a->inline_data){sp_strelem*nd=(sp_strelem*)sp_pl_alloc(sizeof(sp_strelem)*nc);if(!nd)sp_oom_die();memcpy(nd,a->data,sizeof(sp_strelem)*a->len);a->data=nd;}
 else{sp_gc_bytes_sub(sizeof(sp_strelem)*a->cap);h->size-=sizeof(sp_strelem)*a->cap;void*nd=sp_pl_realloc(a->data,sizeof(sp_strelem)*nc);if(!nd)sp_oom_die();a->data=(sp_strelem*)nd;}a->cap=nc;h->size+=sizeof(sp_strelem)*a->cap;sp_gc_bytes_add(sizeof(sp_strelem)*a->cap);}a->data[a->len++]=v;}
+static inline void sp_StrArray_push(sp_StrArray*a,const char*v){sp_StrArray_push_e(a,SP_SEFX(v));}
 static inline sp_int sp_StrArray_length(sp_StrArray*a){return a ? a->len : 0;}
 static inline sp_int sp_StrArray_length_m(sp_StrArray*a){if (SP_UNLIKELY(!a)) sp_nil_recv("length");return a->len;}
 static inline sp_bool sp_StrArray_empty(sp_StrArray*a){sp_gc_wb((void*)a); return a->len==0;}
-static inline sp_strelem sp_StrArray_get(sp_StrArray*a,sp_int i){if(!a)return NULL;if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;return a->data[i];}
-static inline sp_strelem sp_StrArray_get_m(sp_StrArray*a,sp_int i){if (SP_UNLIKELY(!a)) sp_nil_recv("[]"); return sp_StrArray_get(a,i); }
-static inline void sp_StrArray_set(sp_StrArray*a,sp_int i,sp_strelem v){sp_gc_wb((void*)a); if (SP_UNLIKELY(!a)) sp_nil_recv("[]=");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->len)sp_StrArray_push(a,NULL);a->data[i]=v;}  /* the gap is nil, not "" (#3836) */
+static inline sp_strelem sp_StrArray_get_e(sp_StrArray*a,sp_int i){if(!a)return NULL;if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;return a->data[i];}
+static inline sp_strelem sp_StrArray_get_m_e(sp_StrArray*a,sp_int i){if (SP_UNLIKELY(!a)) sp_nil_recv("[]"); return sp_StrArray_get_e(a,i); }
+/* the element's bytes (SP_SEB): what a reader of the String takes; the element as the container keeps it is the _e form, the handle under SP_ONE_STRING */
+static inline const char *sp_StrArray_get(sp_StrArray*a,sp_int i){sp_strelem e=sp_StrArray_get_e(a,i);return SP_SEB(e);}
+static inline const char *sp_StrArray_get_m(sp_StrArray*a,sp_int i){sp_strelem e=sp_StrArray_get_m_e(a,i);return SP_SEB(e);}
+static inline void sp_StrArray_set_e(sp_StrArray*a,sp_int i,sp_strelem v){sp_gc_wb((void*)a); if (SP_UNLIKELY(!a)) sp_nil_recv("[]=");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->len)sp_StrArray_push(a,NULL);a->data[i]=v;}  /* the gap is nil, not "" (#3836) */
+static inline void sp_StrArray_set(sp_StrArray*a,sp_int i,const char*v){sp_StrArray_set_e(a,i,SP_SEFX(v));}
 
 /* ---- sp_StrArray cold ops (compiled in lib/sp_array.c) ---- */
 void sp_StrArray_replace(sp_StrArray *dst, sp_StrArray *src);
-sp_strelem sp_StrArray_pop(sp_StrArray *a);
-sp_strelem sp_StrArray_shift(sp_StrArray *a);
+sp_strelem sp_StrArray_pop_e(sp_StrArray *a);
+sp_strelem sp_StrArray_shift_e(sp_StrArray *a);
+static inline const char *sp_StrArray_pop(sp_StrArray *a){sp_strelem e=sp_StrArray_pop_e(a);return SP_SEB(e);}
+static inline const char *sp_StrArray_shift(sp_StrArray *a){sp_strelem e=sp_StrArray_shift_e(a);return SP_SEB(e);}
 sp_StrArray *sp_StrArray_slice(sp_StrArray *a, sp_int start, sp_int len);
 sp_StrArray *sp_StrArray_slice_range(sp_StrArray *a, sp_int start, sp_int end_, sp_int excl);
 void sp_StrArray_reverse_bang(sp_StrArray *a);
@@ -621,16 +630,22 @@ void sp_StrArray_sort_bang(sp_StrArray *a);
 void sp_StrArray_uniq_bang(sp_StrArray *a);
 sp_StrArray *sp_StrArray_uniq(sp_StrArray *a);
 const char *sp_StrArray_join(sp_StrArray *a, const char *sep);
-sp_bool sp_StrArray_include(sp_StrArray *a, sp_strelem v);
+sp_bool sp_StrArray_include_e(sp_StrArray *a, sp_strelem v);
 #ifdef SP_ONE_STRING
 sp_bool sp_StrArray_include_s(sp_StrArray *a, const char *v);
+/* (the bytes compare: a needle is no element to adopt) */
+static inline sp_bool sp_StrArray_include(sp_StrArray *a, const char *v){return sp_StrArray_include_s(a,v);}
+#else
+static inline sp_bool sp_StrArray_include(sp_StrArray *a, const char *v){return sp_StrArray_include_e(a,v);}
 #endif
 sp_StrArray *sp_StrArray_intersect(sp_StrArray *a, sp_StrArray *b);
 sp_bool sp_StrArray_intersect_p(sp_StrArray *a, sp_StrArray *b);
 sp_StrArray *sp_StrArray_union(sp_StrArray *a, sp_StrArray *b);
 sp_StrArray *sp_StrArray_difference(sp_StrArray *a, sp_StrArray *b);
-sp_int sp_StrArray_index(sp_StrArray *a, sp_strelem v);
-sp_int sp_StrArray_rindex(sp_StrArray *a, sp_strelem v);
+sp_int sp_StrArray_index_e(sp_StrArray *a, sp_strelem v);
+static inline sp_int sp_StrArray_index(sp_StrArray *a, const char *v){return sp_StrArray_index_e(a,SP_SEFX(v));}
+sp_int sp_StrArray_rindex_e(sp_StrArray *a, sp_strelem v);
+static inline sp_int sp_StrArray_rindex(sp_StrArray *a, const char *v){return sp_StrArray_rindex_e(a,SP_SEFX(v));}
 sp_StrArray *sp_StrArray_compact(sp_StrArray *a);
 sp_IntArray *sp_IntArray_compact(sp_IntArray *a);
 sp_FloatArray *sp_FloatArray_compact(sp_FloatArray *a);
@@ -661,16 +676,20 @@ sp_FloatArray *sp_FloatArray_nil_sum_ck(sp_FloatArray *a, int float_seed);
 #define sp_FloatArray_nil_cmp_if_flagged(a) ({ sp_FloatArray *_ff_a = (a); (_ff_a && SP_MAY_NIL(_ff_a)) ? sp_FloatArray_nil_cmp_ck(_ff_a) : _ff_a; })
 #define sp_IntArray_nil_sum_if_flagged(a, fs) ({ sp_IntArray *_ff_a = (a); (_ff_a && SP_MAY_NIL(_ff_a)) ? sp_IntArray_nil_sum_ck(_ff_a, (fs)) : _ff_a; })
 #define sp_FloatArray_nil_sum_if_flagged(a, fs) ({ sp_FloatArray *_ff_a = (a); (_ff_a && SP_MAY_NIL(_ff_a)) ? sp_FloatArray_nil_sum_ck(_ff_a, (fs)) : _ff_a; })
-sp_strelem sp_StrArray_delete_at(sp_StrArray *a, sp_int i);
-sp_strelem sp_StrArray_delete(sp_StrArray *a, sp_strelem v);
-void sp_StrArray_insert(sp_StrArray *a, sp_int i, sp_strelem v);
+sp_strelem sp_StrArray_delete_at_e(sp_StrArray *a, sp_int i);
+sp_strelem sp_StrArray_delete_e(sp_StrArray *a, sp_strelem v);
+static inline const char *sp_StrArray_delete_at(sp_StrArray *a, sp_int i){sp_strelem e=sp_StrArray_delete_at_e(a,i);return SP_SEB(e);}
+static inline const char *sp_StrArray_delete(sp_StrArray *a, const char *v){sp_strelem e=sp_StrArray_delete_e(a,SP_SEFX(v));return SP_SEB(e);}
+void sp_StrArray_insert_e(sp_StrArray *a, sp_int i, sp_strelem v);
+static inline void sp_StrArray_insert(sp_StrArray *a, sp_int i, const char *v){sp_StrArray_insert_e(a,i,SP_SEFX(v));}
 void sp_StrArray_shuffle_bang(sp_StrArray *a);
 sp_StrArray *sp_StrArray_dup(sp_StrArray *a);
 static inline sp_StrArray *sp_StrArray_to_a(sp_StrArray *a) { return a ? a : sp_StrArray_new(); }
 static inline sp_StrArray *sp_StrArray_entries(sp_StrArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("entries"); return sp_StrArray_dup(a); }
 sp_StrArray *sp_StrArray_sort(sp_StrArray *a);
 sp_StrArray *sp_StrArray_shuffle(sp_StrArray *a);
-sp_strelem sp_StrArray_sample(sp_StrArray *a);
+sp_strelem sp_StrArray_sample_e(sp_StrArray *a);
+static inline const char *sp_StrArray_sample(sp_StrArray *a){sp_strelem e=sp_StrArray_sample_e(a);return SP_SEB(e);}
 
 /* The searches with a needle that may itself be nil: a nil needle finds the
    array's nil elements, a value its equals. */
@@ -704,8 +723,10 @@ sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b);
 const char*sp_PtrArray_str_join(sp_PtrArray*a,const char*sep);
 sp_RbVal sp_IntArray_index_poly(sp_IntArray *a, sp_int v);
 sp_RbVal sp_IntArray_rindex_poly(sp_IntArray *a, sp_int v);
-sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, sp_strelem v);
-sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, sp_strelem v);
+sp_RbVal sp_StrArray_index_poly_e(sp_StrArray *a, sp_strelem v);
+static inline sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, const char *v){return sp_StrArray_index_poly_e(a,SP_SEFX(v));}
+sp_RbVal sp_StrArray_rindex_poly_e(sp_StrArray *a, sp_strelem v);
+static inline sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v){return sp_StrArray_rindex_poly_e(a,SP_SEFX(v));}
 sp_oint sp_IntArray_index_opt(sp_IntArray *a, sp_int v);
 sp_oint sp_IntArray_rindex_opt(sp_IntArray *a, sp_int v);
 /* index(nil) / rindex(nil) / include?(nil) / count(nil): the bitmap's view */

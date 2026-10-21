@@ -65,7 +65,7 @@ static inline void sp_str_split_push(sp_StrArray*a,const char*p,size_t n){
   /* record the real length: alloc_raw leaves it unset, so a piece holding an
      embedded NUL would answer strlen and read short */
   sp_str_set_len(r,n);
-  sp_StrArray_push(a,SP_SEF(r));
+  sp_StrArray_push_e(a,SP_SEF(r));
 }
 
 const char *sp_bytestr(const char *hay, size_t hn, const char *need, size_t nn);   /* byte-wise substring search; lib/sp_str.c, also used by lib/sp_str_cold.c */

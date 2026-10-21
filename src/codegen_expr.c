@@ -2054,7 +2054,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
      names the node in g_one_elem_raw. A sink handed the bytes of a live
      payload finds its handle again through the payload's owner link
      (sp_strface_owner), so neither face loses the String's identity. */
-  if (g_one_string && id != g_one_elem_raw && one_str_elem_call(c, id, TY_UNKNOWN)) {
+  /* (a node an emitter has bound to a temp reads as that temp, in the face
+     its binder chose) */
+  int one_bound = 0;
+  if (g_one_string) for (int i = g_n_argov - 1; i >= 0 && !one_bound; i--) if (g_argov_node[i] == id) one_bound = 1;
+  if (g_one_string && !one_bound && id != g_one_elem_raw && one_str_elem_call(c, id, TY_UNKNOWN)) {
     int save = g_one_elem_raw;
     g_one_elem_raw = id;
     buf_puts(b, "SP_STR_B(");
@@ -4123,13 +4127,13 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
             if (rlo >= 0 && comp_ntype(c, rlo) == TY_STRING) {
               Buf lo_b; memset(&lo_b, 0, sizeof lo_b); emit_expr(c, rlo, &lo_b);
               Buf hi_b; memset(&hi_b, 0, sizeof hi_b); emit_expr(c, rhi, &hi_b);
-              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n",
-                         lo_b.p ? lo_b.p : "NULL", hi_b.p ? hi_b.p : "NULL", rexcl, t);
+              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s); }\n",
+                         lo_b.p ? lo_b.p : "NULL", hi_b.p ? hi_b.p : "NULL", rexcl, t, ONE_SA_BOX);
               free(lo_b.p); free(hi_b.p);
             }
             else if (ir.range == TY_STRING)
               /* a String Range held in a variable: its bounds are in the value */
-              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_srange_to_a(%s); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
+              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_srange_to_a(%s); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s); }\n", ep, t, ONE_SA_BOX);
             else {
               buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, t);
             }
@@ -4140,7 +4144,7 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
                        ep, t);
           }
           else if (ir.elem == TY_STRING)
-            buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
+            buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s); }\n", ep, t, ONE_SA_BOX);
           else if (ir.elem == TY_FLOAT) {
             buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_ofloat(sp_FloatArray_oget(_sa, _si))); }\n",
                        ep, t);
@@ -4220,8 +4224,8 @@ else {
             int rhi2 = nt_ref(nt, rn2, "right");
             Buf lo2; memset(&lo2, 0, sizeof lo2); emit_expr(c, rlo2, &lo2);
             Buf hi2; memset(&hi2, 0, sizeof hi2); emit_expr(c, rhi2, &hi2);
-            buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n",
-                       lo2.p ? lo2.p : "NULL", hi2.p ? hi2.p : "NULL", rexcl2, k, t);
+            buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, %s); }\n",
+                       lo2.p ? lo2.p : "NULL", hi2.p ? hi2.p : "NULL", rexcl2, k, t, ONE_SA_ELEM);
             free(lo2.p); free(hi2.p);
           }
           else {
@@ -4232,7 +4236,7 @@ else {
           /* not the slot itself: a nil lives in the bitmap, and the slot alone reads 0 */
           buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push_o(_t%d, sp_IntArray_oget(_sa, _si)); }\n", ep, k, t);
         else if (ir.elem == TY_STRING && sp_streq(k, "Str"))
-          buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
+          buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, %s); }\n", ep, k, t, ONE_SA_ELEM);
         else if (ir.elem == TY_FLOAT && sp_streq(k, "Float"))
           buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push_o(_t%d, sp_FloatArray_oget(_sa, _si)); }\n", ep, t);
         else if (it == TY_NIL)
@@ -4887,7 +4891,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     #undef EMIT_ARM
     if (lhandle && res == TY_STRING && rarm.p) {
       Buf hr; memset(&hr, 0, sizeof hr);
-      buf_printf(&hr, "sp_String_new_fresh(%s)", rarm.p);
+      buf_printf(&hr, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_fresh(%s)"), rarm.p);
       free(rarm.p); rarm = hr;
     }
     int rhoists = rpre.p && rpre.p[0];
@@ -5854,7 +5858,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d);", tc2, hn, ta2, tb2);
         buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { ", is_or2 ? "!" : "", tc2);
         emit_guarded_poly_slot_assign(c, iv, tc2, b);
-        buf_printf(b, "; sp_%sHash_set(_t%d, _t%d, _t%d); } _t%d; })", hn, ta2, tb2, tc2, tc2);
+        buf_printf(b, "; sp_%sHash_set(_t%d, _t%d, %s_t%d%s); } _t%d; })", hn, ta2, tb2, ONE_HV_O(hn), tc2, ONE_HV_C(hn), tc2);
       }
       else if (oint_kind(vt)) {
         /* an Integer or Float slot is read with its nil (a miss, a nil
@@ -5879,7 +5883,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         emit_slot_nil_test(c, vt, tc2, is_or2, b);
         buf_puts(b, ") { ");
         emit_guarded_slot_assign(c, iv, tc2, b);
-        buf_printf(b, "; sp_%sHash_set(_t%d, %s, _t%d); } _t%d; })", hn, ta2, sk, tc2, tc2);
+        buf_printf(b, "; sp_%sHash_set(_t%d, %s, %s_t%d%s); } _t%d; })", hn, ta2, sk, ONE_HV_O(hn), tc2, ONE_HV_C(hn), tc2);
       }
     }
     else if (irt == TY_POLY) {

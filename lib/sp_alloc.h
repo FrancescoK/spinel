@@ -1054,6 +1054,19 @@ static inline sp_bool sp_str_is_frozen_val(const char *s) {
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
 }
+/* A String a runtime object keeps past the call (a File's path, a
+   MatchData's target): under the one representation, bytes that are a live
+   payload's view (0xfd, of a handle that is not frozen) are copied, since
+   the handle changes under the hold, where CRuby's object keeps what it was
+   given then. Any other bytes are kept as they are. */
+#ifdef SP_ONE_STRING
+const char *sp_str_keep_copy(const char *s);
+static inline const char *sp_str_keep(const char *s) {
+  return s && ((const unsigned char *)s)[-1] == 0xfd && !sp_str_fd_owner_frozen(s) ? sp_str_keep_copy(s) : s;
+}
+#else
+#define sp_str_keep(s) (s)
+#endif
 /* A String key as a Hash stores it: a mutable string is copied into a frozen
    0xfa, so a later `<<` or setbyte on the caller's string cannot move the key
    (CRuby's rb_hash_key_str). A frozen or literal key is stored as is, and so

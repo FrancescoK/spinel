@@ -385,7 +385,7 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
 /* (one representation: the text may be of either face, a handle or a view
    of one; sp_box_nullable_str / sp_box_str box the handle either way) */
 void str_box_open(Buf *b, int nullable) {
-  if (g_one_string) { buf_puts(b, nullable ? "sp_box_nullable_str(" : "sp_box_str("); return; }
+  if (g_one_string) { buf_puts(b, "SP_STR_BOX("); return; }
   buf_puts(b, nullable ? "sp_box_nullable_obj(" : "sp_box_obj(");
 }
 void str_box_close(Buf *b) {
@@ -436,7 +436,8 @@ void str_read_handle_close(Buf *b) {
    names (sp_String_new_shared), as a route hands on where the String it
    converts has no handle. */
 void str_new_handle_open(Buf *b) {
-  buf_puts(b, "sp_String_new_shared(");
+  /* (one representation: the operand may be of either face, SP_STR_HDL) */
+  buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_String_new_shared(");
 }
 void str_new_handle_close(Buf *b) {
   buf_puts(b, ")");
@@ -737,7 +738,7 @@ static void str_identity_operand_form(Compiler *c, int v, StrForm *sf) {
 static void str_identity_box_text(const StrForm *sf, const char *e, Buf *b) {
   if (sf->cty == TY_POLY) buf_puts(b, e);
   else if (sf->cty == TY_STRBUF) str_box_handle(b, e);
-  else buf_printf(b, "sp_box_str(%s)", e);
+  else buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_str(%s)"), e);
 }
 
 /* Node v, a String, as the box a dispatch answers it in (an arm of a

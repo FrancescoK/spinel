@@ -110,6 +110,13 @@ static int view_bind_v(int node, int oint, const char *fmt, va_list ap) {
     else snprintf(g_argov_text[slot], sizeof g_argov_text[0], "%s", text);
   }
   else n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
+  /* (one representation: a node bound to a temp held by face reads it as bytes) */
+  if (g_one_string && n > 2 && g_argov_text[slot][0] == '_' && g_argov_text[slot][1] == 't') {
+    char *end = NULL;
+    long tn = strtol(g_argov_text[slot] + 2, &end, 10);
+    if (end && *end == '\0' && one_face_is((int)tn, node))
+      n = snprintf(g_argov_text[slot], sizeof g_argov_text[0], "SP_STR_B(_t%ld)", tn);
+  }
   if (n < 0 || (size_t)n >= sizeof g_argov_text[0]) {
     fprintf(stderr, "spinel: internal error: a bound node's text is %d bytes, over the %d a slot holds (ARGOV_TEXT_LEN): %.40s...\n",
             n, ARGOV_TEXT_LEN - 1, g_argov_text[slot]);
