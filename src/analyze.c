@@ -13771,6 +13771,9 @@ static int narrow_object_arrays(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (ty && (sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode"))) oa_mark_subtree(nt, id, in_blk);
   }
+  /* (the ivar names such a write names outside its own class, as a set:
+     matched against the slots once below, not per write) */
+  ANameHash ivw; memset(&ivw, 0, sizeof ivw);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
@@ -13789,8 +13792,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (i >= 0) sl[i].alive = 0;
         continue;
       }
-      for (int i = 0; i < n; i++)
-        if (sl[i].ici >= 0 && sp_streq(c->classes[sl[i].ici].ivars[sl[i].iiv], nm)) sl[i].alive = 0;
+      if (!anh_has(&ivw, nm)) anh_add(&ivw, nm);
       continue;
     }
     if (!sp_streq(ty, "LocalVariableOperatorWriteNode") &&
@@ -13803,6 +13805,10 @@ static int narrow_object_arrays(Compiler *c) {
     int si = lv ? oa_find(sl, n, sidx, lv) : -1;
     if (si >= 0) sl[si].alive = 0;
   }
+  if (ivw.n)
+    for (int i = 0; i < n; i++)
+      if (sl[i].ici >= 0 && anh_has(&ivw, c->classes[sl[i].ici].ivars[sl[i].iiv])) sl[i].alive = 0;
+  anh_free(&ivw);
   free(in_blk);
 
   /* 3a. a route that INVOKES an ivar's writer. A writer stores whatever it is
@@ -14168,6 +14174,11 @@ static int narrow_object_arrays(Compiler *c) {
     const int *aav = aa >= 0 ? nt_arr(nt, aa, "arguments", &aan) : NULL;
     for (int k = 0; k < aan; k++) if (aav[k] >= 0 && aav[k] < nc) attr_sym[aav[k]] = 1;
   }
+  /* The names the program's Symbols and supers spell, as a set: each
+     Symbol was compared with every slot (tens of thousands of Symbols by
+     thousands of slots on a Rails program, every round), and a slot dies
+     on any match, so asking the set per slot answers the same. */
+  ANameHash spelled; memset(&spelled, 0, sizeof spelled);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
@@ -14177,19 +14188,22 @@ static int narrow_object_arrays(Compiler *c) {
       Scope *ssc = comp_scope_of(c, id);
       mn = ssc ? ssc->name : NULL;
     }
-    if (!mn) continue;
+    if (!mn || anh_has(&spelled, mn)) continue;
+    anh_add(&spelled, mn);
+  }
+  if (spelled.n)
     for (int i = 0; i < n; i++) {
       if (sl[i].ici >= 0) {
         /* `send(:items)`, `instance_variable_get(:@items)`, `method(:items)`,
            a re-declared accessor: any symbol naming the ivar or its reader */
         const char *ivn = c->classes[sl[i].ici].ivars[sl[i].iiv];
-        if (sp_streq(ivn, mn) || sp_streq(ivn + 1, mn)) sl[i].alive = 0;
+        if (anh_has(&spelled, ivn) || anh_has(&spelled, ivn + 1)) sl[i].alive = 0;
         continue;
       }
       if (!sl[i].lv && c->scopes[sl[i].sidx].name &&
-          sp_streq(c->scopes[sl[i].sidx].name, mn)) sl[i].alive = 0;
+          anh_has(&spelled, c->scopes[sl[i].sidx].name)) sl[i].alive = 0;
     }
-  }
+  anh_free(&spelled);
 
   /* Enumerable#each_with_index answers `self` from the block arm of
      `if block_given?`. That read is the method's value, the same table,
