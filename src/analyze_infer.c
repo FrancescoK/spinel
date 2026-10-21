@@ -2802,6 +2802,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
   if (omi < 0) return 0;
   /* a yielding one given a block answers what its proc form does, a boxed
      value (#5779), as the general Object fallback says */
+  an_user_call_record(c, call_id, omi, UC_REOPEN, oci);
   *out = c->scopes[omi].yields && nt_ref(c->nt, call_id, "block") >= 0
          ? TY_POLY : an_user_call(c, call_id, omi, UC_REOPEN, oci);
   return 1;
@@ -2876,9 +2877,11 @@ static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
      The call plan also includes class methods, on boxed or Class values.
      Constants bind in their own rules below; only a Class value needs
      this union record. */
-  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node &&
-      recv >= 0 && (rt == TY_POLY || (rt == TY_CLASS &&
-      nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
+  /* Concrete protocols likewise keep the target behind their Boolean answer. */
+  if (!an_builtin_only && !an_pure_reads && id != an_pinned_node && recv >= 0 &&
+      (rt == TY_POLY || (ty_is_object(rt) &&
+       builtin_operator_delegate(nt_str(c->nt, id, "name"))) || (rt == TY_CLASS &&
+       nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode))) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, rt == TY_CLASS ? UC_POLY : p->via, p->owner_ci);
   }
@@ -6184,6 +6187,15 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
 
 /* A method the program defines on the receiver (a class method, a Struct's member, a reopened builtin's method) and instance-variable reflection (infer_call_inner's rules, in their order) */
 static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int bonly, TyKind *out) {
+  /* The plan keeps an operator override's value alongside the builtin's
+     Boolean answer, independently for every receiver arm. */
+  TyKind protocol_ret = bonly || an_builtin_only ? TY_UNKNOWN : cplan_poly_operator_ret(c, id);
+  if (protocol_ret != TY_UNKNOWN) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+    *out = protocol_ret; return 1;
+  }
+
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
      method_call_ret, not the raw scope ret: a tail-yield class method carries
      THIS call site's block value (the instance/implicit-self arms already
@@ -6713,7 +6725,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY ? "Object" : builtin_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : builtin_class_of_type(rt);
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }

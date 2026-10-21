@@ -9642,6 +9642,14 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   int rt_boxed = repr_of(c, recv).kind == RK_BOXED;
+  /* A boxed relational comparison with no planned class arm uses its builtin path
+     directly, before dispatch allocates roots or temporary numbers.
+     A delegated target or target view still supplies a user arm under
+     another name. */
+  if (rt_boxed && argc == 1 && is_cmp_op(name) && !cplan_user_fresh(c, id)->delegate &&
+      sp_streq(name, view_call_name(c, id)) &&
+      cplan_poly_arms(c, id)->n == 0)
+    return 0;
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
@@ -15407,10 +15415,7 @@ static int emit_eq_on_nil_slot(Compiler *c, int id, int recv, int arg, int ecid,
   TyKind rt = comp_ntype(c, recv), at = ar.as_ty;
   if (rr.kind != RK_PTR || !rr.may_nil || rr.nil_tested) return 0;
   if (comp_ntype(c, id) != TY_BOOL || nt_ref(nt, id, "block") >= 0) return 0;
-  for (int k = 0; k < c->nclasses; k++) {
-    int kmi = is_descendant(c, k, ecid) ? comp_method_in_chain(c, k, name, NULL) : -1;
-    if (kmi >= 0 && c->scopes[kmi].ret != TY_BOOL) return 0;
-  }
+  /* A delegated condition reads any return kind through the target view. */
   /* the argument's nil: a literal's, a pointer's NULL, or the box's, which
      says what an Integer / Float's own nil is (RK_OPT: beside the value) */
   int lit_nil = nt_kind(nt, arg) == NK_NilNode;
@@ -15444,7 +15449,12 @@ static int emit_eq_on_nil_slot(Compiler *c, int id, int recv, int arg, int ecid,
     mark = ao ? view_bind_o(arg, "_t%d", ta) : view_bind(arg, "_t%d", ta);
   }
   buf_printf(b, "((%s) ? %s", selfb.p, eq || !sp_streq(name, "==") ? "" : "!");
-  emit_dispatch(c, ecid, name, selfb.p, nt_ref(nt, id, "arguments"), -1, b);
+  int mi = comp_method_in_chain(c, ecid, name, NULL);
+  int ret = view_push(c, id, dispatch_ret_over(c, ecid, name, 0, mi, mi >= 0 ? c->scopes[mi].ret : TY_BOOL, -1));
+  int self = view_bind(recv, "%s", selfb.p);
+  int target = view_push_target(c, id, name), tested = view_push_repr(c, recv, VR_NIL_TESTED, 1);
+  emit_cond(c, id, b);
+  view_pop(c, tested); view_pop(c, target); view_pop(c, ret); view_unbind(self);
   buf_puts(b, eq ? " : " : " : !");
   if (lit_nil) buf_puts(b, "1");
   else if (ar.kind == RK_PTR) buf_printf(b, "((%s) == NULL)", argb.p);
@@ -15455,9 +15465,38 @@ static int emit_eq_on_nil_slot(Compiler *c, int id, int recv, int arg, int ecid,
   free(selfb.p);
   return 1;
 }
+/* A synthesized inequality negates Ruby truthiness. Re-enter the ordinary
+   condition emitter under the protocol's name and return view, so its
+   argument layout and callback handling remain those of the user call. */
+static void delegated_cond_probe(Compiler *c, int id, void *ctx, Buf *b) {
+  (void)ctx; emit_cond(c, id, b);
+}
+int emit_delegated_equality(Compiler *c, int id, int negate, Buf *b) {
+  const CallPlan p = *cplan_user(c, id);
+  if (p.mi < 0 || p.chain || p.via != UC_INST || !p.delegate || !is_equality_name(p.delegate)) return 0;
+  TyKind er = dispatch_ret_over(c, p.owner_ci, p.delegate, 0,
+                               p.mi, c->scopes[p.mi].ret, -1);
+  int recv = nt_ref(c->nt, id, "receiver"), argc;
+  const int *argv = call_args(c->nt, id, &argc);
+  if (argc == 1 && emit_eq_on_nil_slot(c, id, recv, argv[0], p.owner_ci, p.delegate, !negate, b)) return 1;
+  if (negate && er == TY_BOOL) return 0;
+  int mark = view_push(c, id, er);
+  int target = view_push_target(c, id, p.delegate);
+  Buf cond = {0}; char *pre = NULL;
+  int ok = poly_arm_probe(c, id, delegated_cond_probe, NULL, &cond, &pre);
+  view_pop(c, target);
+  view_pop(c, mark);
+  if (!ok) { free(cond.p); unsupported(c, id, "delegated equality condition"); }
+  if (pre) buf_printf(b, "({ %s ", pre);
+  buf_printf(b, "(%s(%s))", negate ? "!" : "!!", cond.p);
+  if (pre) buf_puts(b, "; })");
+  free(cond.p); free(pre);
+  return 1;
+}
+
 static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
+  const char *name = view_call_name(c, id);
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
@@ -15857,6 +15896,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       c->args_in_call = recv;
       return 1;
     }
+    if (!eq && recv >= 0 && ty_is_object(rt) && emit_delegated_equality(c, id, 1, b)) return 1;
     /* a poly operand compares dynamically (covers string-vs-poly etc.) --
        EXCEPT when the typed object receiver's class defines #==: that method
        must dispatch (sp_poly_eq would compare object identity), e.g. the
@@ -15990,7 +16030,9 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       /* no direct == : use <=> == 0 when the class supports Comparable */
-      if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
+      /* A synthesized != follows == before Comparable's fallback. */
+      const CallPlan ep = *cplan_user(c, id);
+      if (ep.mi >= 0 && ep.delegate && !is_equality_name(ep.delegate)) {
         /* a `<=>` statically returning a non-{Integer,Float,nil} value is a
            protocol violation, caught at compile time (#2961) */
         if (user_cmp_invalid_ret(c, ecid) != TY_UNKNOWN)
@@ -31431,7 +31473,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_tap_then_expr)) return;
   }
   if (emit_or_take_back(c, id, b, emit_inline_expr)) return;  /* value-returning yield method */
-  const char *name = nt_str(nt, id, "name");
+  const char *name = view_call_name(c, id);
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);

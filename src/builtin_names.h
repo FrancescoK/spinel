@@ -404,4 +404,5 @@ int is_first_name(const char *n);             /* first */
 
 
 const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
+const char *builtin_operator_delegate(const char *name);
 #endif

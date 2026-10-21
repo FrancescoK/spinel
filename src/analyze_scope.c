@@ -718,6 +718,11 @@ const char *builtin_class_of_type(TyKind t) {
   if (t == TY_IO) return "File";
   if (t == TY_CLASS) return "Class";
   if (t == TY_NIL) return "NilClass";
+  if (t == TY_MATCHDATA) return "MatchData";
+  if (t == TY_REGEX) return "Regexp";
+  if (t == TY_THREAD) return "Thread";
+  if (t == TY_FIBER) return "Fiber";
+  if (t == TY_RANDOM) return "Random";
   if (ty_is_array(t)) return "Array";
   if (ty_is_hash(t)) return "Hash";
   return NULL;

@@ -5307,7 +5307,16 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     {
       int oc_ci3 = comp_class_index(c, "Object");
       if (oc_ci3 >= 0) {
-        int oc_mi3 = comp_method_in_chain(c, oc_ci3, name, NULL);
+        const CallPlan *pl = cplan_user(c, id);
+        int planned = pl->via == UC_REOPEN && pl->owner_ci == oc_ci3 && pl->dispatch == CP_DIRECT;
+        int oc_mi3 = planned ? pl->mi : comp_method_in_chain(c, oc_ci3, name, NULL);
+        if (g_plan_check && planned) {
+          cplan_served("object-fallback");
+          int own = comp_method_in_chain(c, oc_ci3, name, NULL);
+          if (own != oc_mi3)
+            fprintf(stderr, "plan-check: cplan-conflict: object-fallback node %d: plan %d, lookup %d\n",
+                    id, oc_mi3, own);
+        }
         /* a yielding one goes through its proc form (#5779), with the
            call's block or without one: it has no symbol of its own, being
            spliced where it can */

@@ -2320,6 +2320,10 @@ void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node);
    saves view_mark() and view_unwind()s back to it after a refusal.
    view_depth() counts the views of nodes open. */
 int view_push(Compiler *c, int id, TyKind t);
+/* The effective method for this call emission; the node keeps its own name. */
+int view_push_target(Compiler *c, int node, const char *name);
+const char *view_call_name(Compiler *c, int node);
+int emit_delegated_equality(Compiler *c, int id, int negate, Buf *b);
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
 /* node `id`'s type with no view open, asked without recording it (codegen_util.c) */

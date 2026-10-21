@@ -1486,6 +1486,10 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
 
 /* String concatenation, unary -@ +@ ~ !, element stores and the arithmetic on a poly operand */
 int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
+  /* An operator override owns its poly arm before the builtin protocol's
+     delegation. The existing dispatch reads each arm's planned target. */
+  if (cplan_poly_operator_ret(c, id) != TY_UNKNOWN && emit_poly_method_dispatch(c, id, b)) return 1;
+
   /* String#concat with no arguments returns the receiver unchanged (#2309):
      a stage-1 builtin-op row (builtin_ops.c); the shared handle's arm stays */
   if (recv >= 0 && rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 1, b)) return 1;

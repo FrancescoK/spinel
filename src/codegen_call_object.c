@@ -2475,7 +2475,7 @@ static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
   int argc = 0; const int *argv = call_args(nt, id, &argc);
   TyKind at = comp_ntype(c, argv[0]);
   int mi = comp_method_in_chain(c, ty_object_class(rt), "==", NULL);
-  if (mi < 0 || (c->scopes[mi].ret != TY_BOOL && c->scopes[mi].ret != TY_POLY) || comp_ty_value_obj(c, rt) ||
+  if (mi < 0 || comp_ty_value_obj(c, rt) ||
       !(ty_is_object(at) || at == TY_POLY) || comp_ty_value_obj(c, at) ||
       !plain_read_node(nt, recv) || !plain_read_node(nt, argv[0])) return 0;
   Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
@@ -2485,12 +2485,14 @@ static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
   else buf_printf(b, "((void *)(%s) == (void *)(%s) || ", ab.p ? ab.p : "", rb.p ? rb.p : "");
   free(rb.p); free(ab.p);
   /* a #== answering a boxed value is read for its truth, as rb_equal does */
-  int boxed = c->scopes[mi].ret == TY_POLY;
-  if (boxed) buf_puts(b, "sp_poly_truthy(");
-  char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "==");
-  emit_call(c, id, b);
-  nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
-  buf_puts(b, boxed ? "))" : ")");
+  /* The condition path also reads scalar and nullable answers by their truth. */
+  int ret = view_push(c, id, dispatch_ret_over(c, ty_object_class(rt), "==", 0,
+                                              mi, c->scopes[mi].ret, -1));
+  int target = view_push_target(c, id, "==");
+  emit_cond(c, id, b);
+  view_pop(c, target);
+  view_pop(c, ret);
+  buf_puts(b, ")");
   return 1;
 }
 /* The respond_to? a `defined?(recv.m)` asks (desugar_defined_method_call)
@@ -2591,7 +2593,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
      definition before the default negation takes over (#3740). */
   {
     int nr2 = nt_ref(nt, id, "receiver");
-    const char *nn2 = nt_str(nt, id, "name");
+    const char *nn2 = view_call_name(c, id);
     int na2 = nt_ref(nt, id, "arguments");
     int nc2 = 0; const int *nv2 = na2 >= 0 ? nt_arr(nt, na2, "arguments", &nc2) : NULL;
     if (nr2 >= 0 && nn2 && (sp_streq(nn2, "!") || sp_streq(nn2, "!=")) &&
@@ -2683,7 +2685,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
      to #==. Both infer as Bool, so the node's cached type stays right when we
      re-dispatch under the #== name (#3018). */
   {
-    const char *enm = nt_str(nt, id, "name");
+    const char *enm = view_call_name(c, id);
     int erecv = nt_ref(nt, id, "receiver");
     if (enm && sp_streq(enm, "===") && erecv >= 0) {
       int eac = 0; call_args(nt, id, &eac);
@@ -2691,9 +2693,10 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
       if (eac == 1 && ty_is_object(ert) &&
           comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0) {
         if (emit_case_eq_identity(c, id, erecv, b)) return 1;
-        char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "==");
-        emit_call(c, id, b);
-        nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
+        if (emit_delegated_equality(c, id, 0, b)) return 1;
+        int target = view_push_target(c, id, "==");
+        emit_cond(c, id, b);
+        view_pop(c, target);
         return 1;
       }
     }

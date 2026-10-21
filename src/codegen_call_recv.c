@@ -11754,7 +11754,7 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
 
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
+  const char *name = view_call_name(c, id);
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);

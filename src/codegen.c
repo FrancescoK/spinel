@@ -15504,7 +15504,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "    case %s: {\n", bcase);
     }
     else {
-      snprintf(callee, sizeof callee, "sp_%s_%s", dcn, mc("<=>"));
+      snprintf(callee, sizeof callee, "sp_%s_%s", dcn, mc(m->name ? m->name : "<=>"));
       snprintf(selfarg, sizeof selfarg, "%s(sp_%s *)a.v.p", self_vt ? "*" : "", dcn);
       buf_printf(b, "    case %d: {\n", cid);
     }
@@ -16245,7 +16245,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "    case %d: { %s%sreturn sp_%s_%s(%s(sp_%s *)a.v.p%s); }\n",
                  comp_class_index(c, ci->name),
                  builds ? "SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); " : "", pre.p ? pre.p : "",
-                 dcn, mc("=="), slf, dcn, args.p);
+                 dcn, mc(m->name ? m->name : "=="), slf, dcn, args.p);
     else
       buf_printf(b, "    case %d: { %s return FALSE; }\n", comp_class_index(c, ci->name), raise);
     free(pre.p); free(args.p);

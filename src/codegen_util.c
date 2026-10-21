@@ -7746,7 +7746,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int sr = nt_ref(nt, node, "receiver");
       if (repr_share_rule(c) && sr >= 0 && repr_of(c, sr).as_ty == TY_STRBUF && repr_of(c, sr).kind != RK_BOXED) return 1;
     }
-    const char *nm = nt_str(nt, node, "name");
+    const char *nm = view_call_name(c, node);
     if (!nm) return 0;
     /* a File::Stat field and File.size?: the runtime answers the oint */
     if (file_stat_nil_call(c, node)) return 1;

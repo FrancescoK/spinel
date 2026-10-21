@@ -31,6 +31,7 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->send_fallback = -1;
+  p->delegate = NULL;
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
@@ -256,13 +257,15 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     /* the operators an object answers through another of its methods:
        `!=` through `==`, the comparisons through `<=>` */
-    const char *via_op = sp_streq(name, "!=") ? "==" :
-                         (sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
-                          sp_streq(name, ">=") || sp_streq(name, "between?") ||
-                          sp_streq(name, "clamp")) ? "<=>" : NULL;
+    const char *via_op = builtin_operator_delegate(name);
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    if (dmi < 0 && via_op) {
+      via_op = builtin_operator_delegate(via_op);
+      dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    }
     if (dmi >= 0) {
       cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
+      p->delegate = via_op;
       return;
     }
     /* a reader a subclass overrides with a method: the switch reaches the
@@ -337,7 +340,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
   const char *bcls = builtin_class_of_type(rt);
-  if (bcls && !builtin_method_known(bcls, name)) cplan_object_reopen(c, name, p);
+  if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, name, p);
 }
 
 static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
@@ -381,7 +384,7 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->mi < 0) return 0;
   if (p->mi == mi) return 1;
   if (p->dispatch < CP_SWITCH) return 0;
-  const char *name = nt_str(c->nt, id, "name");
+  const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
   if (p->by_name) {
     int ncc = 0;
@@ -698,7 +701,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   int n = 0;
   out[n++] = plan.mi;
   if (plan.dispatch < CP_SWITCH) return n;
-  const char *name = c->scopes[plan.mi].name;
+  const char *name = plan.delegate ? plan.delegate : c->scopes[plan.mi].name;
   if (!name) return n;
   if (g_ct_nidx < 0) ct_index_build(c);
   int lo = 0, hi = g_ct_nidx;
@@ -717,7 +720,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   /* --share-strings: the methods named by the call, each class's own
      (comp_poly_candidates follows an alias, `alias get text`, whose method
      has another name than the call's and the first target's) */
-  const char *cn = nt_str(c->nt, id, "name");
+  const char *cn = plan.delegate ? plan.delegate : nt_str(c->nt, id, "name");
   /* (not for a text conversion, #to_s or #inspect: the boxed to_s route
      asks each class the receiver can hold for its own method, and adding
      every class's here widened the facts of the bundled library's calls,
@@ -737,6 +740,27 @@ static int ct_resolve(Compiler *c, int id, int *out) {
     }
   }
   return n;
+}
+
+/* A poly protocol keeps each class's own operator arm ahead of the
+   builtin delegation. Those arms may answer values other than Boolean. */
+TyKind cplan_poly_operator_ret(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || is_equality_name(name) || !(is_eq_op(name) || is_cmp_op(name))) return TY_UNKNOWN;
+  int recv = nt_ref(c->nt, id, "receiver"), argc = 0;
+  call_args(c->nt, id, &argc);
+  if (argc != 1 || recv < 0 || comp_ntype(c, recv) != TY_POLY) return TY_UNKNOWN;
+  const CallPlan *p = cplan_user_fresh(c, id);
+  if (p->via != UC_POLY || p->mi < 0) return TY_UNKNOWN;
+  int n = 0, found = 0;
+  const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &n);
+  for (int i = 0; i < n; i++) {
+    int mi = pcs[i].mi;
+    if (mi < 0 || c->classes[pcs[i].cls].is_native_class) continue;
+    found = 1;
+    if (c->scopes[mi].ret != TY_BOOL) return TY_POLY;
+  }
+  return found ? TY_BOOL : TY_UNKNOWN;
 }
 
 int cplan_target_binds(Compiler *c, int id, int mi) {
