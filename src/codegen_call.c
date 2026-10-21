@@ -27708,13 +27708,8 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
      inheriting class, an instance_eval block whose self codegen keeps).
      --plan-check holds it against the lookup. */
   int mi = implicit_self_plan_mi(c, id, dispatch_cid);
-  if (g_plan_check) {
-    cplan_served("implicit-self");
-    int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-    if (omi != mi)
-      fprintf(stderr, "plan-check: cplan-conflict: implicit-self node %d %s: plan %d, lookup %d\n",
-              id, name, mi, omi);
-  }
+  if (g_plan_check) cplan_served("implicit-self");
+  cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self");
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
     int nullable = 0;

@@ -12330,20 +12330,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        receiver class's own lookup of the name; otherwise, and under
        --plan-check as the assertion, the arm looks it up itself */
     const CallPlan *opl = cplan_user(c, id);
-    int mi = opl->chain && opl->via == UC_INST && opl->owner_ci == cid ? opl->mi : -1;
+    if (!sp_streq(name, nt_str(nt, id, "name")) ||
+        !(opl->chain && opl->via == UC_INST && opl->owner_ci == cid))
+      opl = cplan_user_in(c, id, cid, CPX_TARGET);
+    int mi = opl->mi;
     if (g_plan_check && mi >= 0) cplan_served("object-call");
     /* a call an alias captured the builtin for (builtin_only) runs the
        builtin, past the class's own method of the name */
-    if ((g_plan_check || mi < 0) && !nt_int(nt, id, "builtin_only", 0)) {
-      int omi = comp_method_in_chain(c, cid, name, NULL);
-      if (mi < 0) {
-        if (g_plan_check && omi >= 0)
-          fprintf(stderr, "plan-check: cplan-fallback: object-call node %d %s\n", id, name);
-        mi = omi;
-      }
-      else if (omi != mi)
-        fprintf(stderr, "plan-check: cplan-conflict: object-call node %d %s: plan %d, lookup %d\n", id, name, mi, omi);
-    }
+    cplan_check_missing(c, id, mi, cid, name, 0, "object-call");
     /* a demand-marked read through a simple hand-written reader
        (`def body = @body`) hands out the ivar HANDLE via a field access:
        the C reader function returns the safe copy (#3227 P5). Either mark

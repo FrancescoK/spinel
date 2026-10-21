@@ -82,10 +82,11 @@ echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
 echo "plan-check: plan readers: $pc conflicts, $pf fallbacks, $pm cplan-missing"
 # per site: the calls each took from the plan, and the ones it fell back on
-for site in $(grep ': plan-check: cplan-served: ' "$OUT" | awk '{print $4}' | sort -u); do
+for site in $(grep -E ': plan-check: cplan-(served|fallback|conflict|missing): ' "$OUT" | awk '{print $4}' | sort -u); do
   sv=$(grep ": plan-check: cplan-served: $site " "$OUT" | awk '{ s += $5 } END { print s + 0 }')
   fb=$(grep -c ": plan-check: cplan-fallback: $site " "$OUT")
-  echo "plan-check:   $site: $sv served, $fb fallbacks"
+  cf=$(grep -c ": plan-check: cplan-conflict: $site " "$OUT")
+  echo "plan-check:   $site: $sv served, $fb fallbacks, $cf conflicts"
 done
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 # poly dispatch arms: the switch codegen wrote against the resolver's arms

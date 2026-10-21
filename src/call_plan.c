@@ -488,13 +488,16 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   cplan_set(&ctx, -1, -1, UC_NONE, CP_NONE);
   if (id < 0 || id >= c->node_cap || self_ci >= c->nclasses || nt_kind(c->nt, id) != NK_CallNode)
     return &ctx;
-  const char *name = nt_str(c->nt, id, "name");
+  if ((flags & CPX_TARGET) && nt_int(c->nt, id, "builtin_only", 0)) return &ctx;
+  const char *name = flags & CPX_TARGET ? view_call_name(c, id) : nt_str(c->nt, id, "name");
   int mi = name ? comp_method_in_chain(c, self_ci, name, NULL) : -1;
   if (mi >= 0) {
-    cplan_set(&ctx, mi, self_ci, UC_INST, cplan_dispatch_form(c, self_ci, name, 1));
+    int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, self_ci, name, 1);
+    cplan_set(&ctx, mi, self_ci, UC_INST, form);
     ctx.chain = 1;
     return &ctx;
   }
+  if (flags & CPX_TARGET) return &ctx;
   /* a miss is no method, but a dispatch on the class still has a form: a
      method only descendants define takes the switch */
   if (!(flags & CPX_IE) && name) {

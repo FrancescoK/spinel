@@ -5367,26 +5367,19 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return 1;
       /* the method is the call's plan for self of dispatch_cid
          (implicit_self_plan_mi); --plan-check holds it against the lookup */
-      int mi = implicit_self_plan_mi(c, id, dispatch_cid);
-      if (g_plan_check) {
-        cplan_served("implicit-self-late");
-        int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-        if (omi != mi)
-          fprintf(stderr, "plan-check: cplan-conflict: implicit-self-late node %d %s: plan %d, lookup %d\n",
-                  id, name, mi, omi);
-      }
+      const CallPlan *pl = cplan_user(c, id);
+      if (!(pl->chain && pl->via == UC_INST && pl->owner_ci == dispatch_cid))
+        pl = cplan_user_in(c, id, dispatch_cid, 0);
+      int mi = pl->mi;
+      if (g_plan_check) cplan_served("implicit-self-late");
+      cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self-late");
       /* Template-method pattern: a base-class method calls an abstract method
          that is implemented only in subclasses. Not found up the chain, but if a
          descendant defines it, emit_dispatch can still resolve it virtually on
          self's runtime class. */
-      if (mi < 0 && !self->is_cmethod) {
-        for (int k = 0; k < c->nclasses; k++) {
-          if (k == dispatch_cid || !is_descendant(c, k, dispatch_cid)) continue;
-          if (comp_method_in_chain(c, k, name, NULL) >= 0) { mi = k; break; }
-        }
-      }
-      if (mi >= 0 && emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
-      if (mi >= 0) {
+      int dispatch = mi >= 0 || (!self->is_cmethod && pl->dispatch >= CP_SWITCH);
+      if (dispatch && emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
+      if (dispatch) {
         emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return 1;
       }

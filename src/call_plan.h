@@ -141,7 +141,8 @@ int cplan_define_method_early(Compiler *c, int id);
    the call resolves as its own (the instance_exec receiver is asked first).
    It is computed afresh and never kept: only cplan_user memoizes. A
    self_ci < 0 is the node's own context, cplan_user. */
-enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4 };
+/* CPX_TARGET reads only the direct chain target under its name view, respecting builtin-only aliases. */
+enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4, CPX_TARGET = 8 };
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
 /* Is the node codegen is at read as itself: no view, no instance_exec scope
    move or class, no inline splice? Only there may a memo per node answer
