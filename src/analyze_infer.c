@@ -5820,14 +5820,16 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-      /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
-         so inference and emission agree on which classes take the allocate path. */
-      if (ci >= 0 && !class_is_exc_subclass(c, ci)) { *out = ty_object(ci); return 1; }
+      /* Exception subclasses have a dedicated storage layout in the common
+         allocator. A user class method of their own still takes precedence. */
+      if (ci >= 0 && (!class_is_exc_subclass(c, ci) ||
+          comp_cmethod_in_chain(c, ci, "allocate", NULL) < 0)) { *out = ty_object(ci); return 1; }
       const char *bcn = nt_str(nt, recv, "name");
       if (bcn && sp_streq(bcn, "String")) { *out = TY_STRING; return 1; }
       if (bcn && sp_streq(bcn, "Array"))  { *out = TY_POLY_ARRAY; return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { *out = TY_POLY_POLY_HASH; return 1; }
       if (bcn && sp_streq(bcn, "Object")) { *out = TY_POLY; return 1; }
+      if (bcn && sp_streq(bcn, "Integer")) { *out = TY_POLY; return 1; }
     }
   }
   return 0;

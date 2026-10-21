@@ -3107,9 +3107,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 
   /* self.class.new(args) in a leaf-class instance method -> construct the
      enclosing class statically (no subclass can shadow it at runtime). */
-  /* Class#allocate: a bare instance with default/nil ivars and no initialize.
-     Exception subclasses carry raise/message state set up by their dedicated
-     constructor, so they are excluded (fall through to the generic reject). */
+  /* Class#allocate skips initialize. The common allocator also supplies the
+     exception layout and state for an exception subclass. */
   if (recv >= 0 && sp_streq(name, "allocate")) {
     int oc = allocate_on_own_class(c, id);
     if (oc >= 0 && !class_is_exc_subclass(c, oc)) { emit_own_class_alloc(c, id, oc, b); return 1; }
@@ -3118,7 +3117,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     int acid = comp_class_index(c, nt_str(nt, recv, "name"));
-    if (acid >= 0 && !class_is_exc_subclass(c, acid)) {
+    if (acid >= 0 && (!class_is_exc_subclass(c, acid) ||
+        comp_cmethod_in_chain(c, acid, "allocate", NULL) < 0)) {
       emit_obj_alloc_expr(c, acid, b);
       return 1;
     }
@@ -3131,6 +3131,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       if (bcn && sp_streq(bcn, "Array"))  { buf_puts(b, "sp_PolyArray_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { buf_puts(b, "sp_PolyPolyHash_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Object")) { buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)"); return 1; }
+      if (bcn && sp_streq(bcn, "Integer")) {
+        buf_puts(b, "({ sp_raise_cls(\"TypeError\", SPL(\"allocator undefined for Integer\")); sp_box_nil(); })");
+        return 1;
+      }
     }
   }
 
