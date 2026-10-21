@@ -1451,6 +1451,7 @@ int is_kernel_module_function(const char *m) {
     "rand", "srand", "sleep", "gets", "loop", "lambda", "proc",
     "block_given?", "catch", "throw", "caller", "binding", "__method__",
     "require", "require_relative", "load", "warn", "system", "exec", "spawn",
+    "select",
     "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
     NULL
   };

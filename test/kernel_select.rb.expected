@@ -1,0 +1,6 @@
+nil
+nil
+[true, [], []]
+[[], true, []]
+nil
+"wrong argument type IO (expected Array)"
