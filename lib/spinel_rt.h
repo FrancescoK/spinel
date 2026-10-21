@@ -4514,6 +4514,19 @@ static SP_UNUSED sp_RbVal sp_rand_frange_v(sp_Random *g, sp_FloatRange r, int ke
   if (r.first > r.last || (r.excl && r.first == r.last)) return sp_rand_empty(sp_frange_inspect(r), kernel);
   return sp_box_float(sp_Random_rand_float_range(g, r.first, r.last));
 }
+/* Typed Random Float draws keep the range metadata for empty-range errors.
+   Leave non-finite endpoint validation and the draw to the existing helper. */
+static SP_UNUSED sp_float sp_random_rand_frange(sp_Random *g, sp_FloatRange r) {
+  if (isfinite(r.first) && isfinite(r.last) && (r.first > r.last || (r.excl && r.first == r.last)))
+    sp_rand_empty(sp_frange_inspect(r), 0);
+  return sp_Random_rand_float_range(g, r.first, r.last);
+}
+static SP_UNUSED sp_float sp_random_rand_fend(sp_Random *g, sp_Range r) {
+  sp_float lo = (sp_float)r.first, hi = sp_range_end_num(r);
+  if (isfinite(hi) && (lo > hi || (sp_range_excl_end(r) && lo == hi)))
+    sp_rand_empty(sp_range_inspect(r), 0);
+  return sp_Random_rand_float_range(g, lo, hi);
+}
 /* the argument boxed: whatever CRuby's rand takes (an Integer or Float
    bound, a Range of either, nil) answers as it does there, and anything else
    is the conversion TypeError */
