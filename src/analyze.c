@@ -12465,7 +12465,7 @@ static int oa_block_has_nested_block(const NodeTable *nt, int blk) {
   return blk >= 0 && oa_block_has_nested_block_in(nt, nt_ref(nt, blk, "body"));
 }
 
-typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; } OAS;
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; } OAS;
 
 /* The (sidx, lv) -> first slot index map, so a lookup is not a scan of every
    slot: the pass asks once per node, and the slot list grows with the
@@ -12669,6 +12669,10 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (is_len_alias(nm) && argc == 0) return 1;
   if (sp_streq(nm, "empty?") && argc == 0) return 1;
   if ((is_endpoint_query(nm)) && argc == 0) return 1;
+  /* the removals: pop and shift answer an element, delete_at the element at
+     an Integer index (step 4 checks the type), and clear the array itself */
+  if ((sp_streq(nm, "pop") || sp_streq(nm, "shift") || sp_streq(nm, "clear")) && argc == 0) return 1;
+  if (sp_streq(nm, "delete_at") && argc == 1) return 1;
   /* no-block comparisons: usable when the element class has `<=>` (the
      needs_cmp bit, checked at component resolution). sort's RESULT must
      also land in a modeled place (slot alias or statement position) --
@@ -13046,9 +13050,12 @@ static int narrow_int_table_ivars(Compiler *c, int in_round) {
           int ua = nt_ref(nt, u, "arguments"); int uan = 0;
           if (ua >= 0) nt_arr(nt, ua, "arguments", &uan);
           /* sort/min/max need the boxed comparator, which this element kind
-             has no arm for: leave those tables alone */
+             has no arm for, and the removals are typed only for an object
+             array: leave those tables alone */
           if (un && (sp_streq(un, "sort") || sp_streq(un, "sort!") ||
-                     sp_streq(un, "min") || sp_streq(un, "max"))) { used = 0; break; }
+                     sp_streq(un, "min") || sp_streq(un, "max") ||
+                     sp_streq(un, "pop") || sp_streq(un, "shift") ||
+                     sp_streq(un, "clear") || sp_streq(un, "delete_at"))) { used = 0; break; }
           if (!oa_recv_op_ok(un, uan, nt_ref(nt, u, "block") >= 0)) { used = 0; break; }
           /* what a store puts in the table is a row: a boxed value or another
              kind would be taken as a bare sp_IntArray *. A value not typed
@@ -13292,12 +13299,13 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
   if (sp_streq(vty, "NilNode")) return;   /* nullable, neutral */
   if (sp_streq(vty, "CallNode")) {
     /* `b = arr.sort` / `b = arr.sort!`: the sorted array shares arr's
-       element class -- an alias edge, like a plain slot-to-slot copy. */
+       element class -- an alias edge, like a plain slot-to-slot copy.
+       `arr.clear` answers arr itself, the same edge. */
     const char *cn = nt_str(nt, v, "name");
     int crecv = nt_ref(nt, v, "receiver");
     int cargs = nt_ref(nt, v, "arguments");
     int can = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &can);
-    if (cn && (is_sort_family(cn)) && can == 0 &&
+    if (cn && (is_sort_family(cn) || sp_streq(cn, "clear")) && can == 0 &&
         nt_ref(nt, v, "block") < 0 && crecv >= 0 && read_slot[crecv] >= 0) {
       claimed[crecv] = 1;
       oa_uf_union(sl, S, read_slot[crecv]);
@@ -13538,7 +13546,7 @@ static int narrow_object_arrays(Compiler *c) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded || cext_scope(c, s)) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
       sl[n].old_pin = lv->oa_pin; lv->oa_pin = TY_UNKNOWN; n++;
     }
   }
@@ -13568,7 +13576,7 @@ static int narrow_object_arrays(Compiler *c) {
        Money#coerce for a pair) */
     if (method_name_implicitly_invoked(sc->name)) continue;
     if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
     sl[n].old_pin = sc->ret_oa_pin; sc->ret_oa_pin = TY_UNKNOWN; n++;
   }
   /* 1c. one slot per @ivar holding a poly array (#4444). An ivar's references
@@ -13605,7 +13613,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (comp_ivar_index(&c->classes[k], ivn) >= 0) { inherited = 1; break; }
       if (inherited) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv;
+      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv;
       /* An `Array[Array[Integer]]` / `Array[Array[Float]]` seed is element
          evidence, the same evidence a pushed row gives: it decides the kind
          when the program's own rows are silent (`Array.new(n) { [] }`), and
@@ -13940,6 +13948,16 @@ static int narrow_object_arrays(Compiler *c) {
              in a modeled consumer, or a chained `a.push(x).push(y)` pushes
              an element no slot sees */
           if (!(id < nc && value_ok[id])) sl[S].alive = 0;
+        }
+        /* the removals have emitters for an object array only (the
+           removes bit, checked at component resolution). clear answers the
+           array, so like an append it must land in a modeled consumer, and
+           the emitter reads delete_at's index as a C integer. */
+        else if (name && (sp_streq(name, "pop") || sp_streq(name, "shift") ||
+                          sp_streq(name, "clear") || sp_streq(name, "delete_at"))) {
+          sl[S].removes = 1;
+          if (sp_streq(name, "clear") && !(id < nc && value_ok[id])) sl[S].alive = 0;
+          if (sp_streq(name, "delete_at") && infer_type(c, argv[0]) != TY_INT) sl[S].alive = 0;
         }
         else if (name && sp_streq(name, "[]=") && argc == 2) {
           /* a range-keyed []= is a splice, which the obj-array representation
@@ -14282,6 +14300,7 @@ static int narrow_object_arrays(Compiler *c) {
     if (r == i) continue;
     sl[r].cls = oa_cls_join(sl[r].cls, sl[i].cls);
     if (sl[i].needs_cmp) sl[r].needs_cmp = 1;
+    if (sl[i].removes) sl[r].removes = 1;
     if (sl[i].poly_elem) sl[r].poly_elem = 1;
     sl[r].row_iter |= sl[i].row_iter;
     if (!sl[i].alive) sl[r].alive = 0;
@@ -14343,12 +14362,13 @@ static int narrow_object_arrays(Compiler *c) {
     if (OA_CLS_IS_NESTED(sl[r].cls)) {
       /* a nested scalar array: the codegen supports index/push/[]=/length/
          first/last but not the boxed sort/min/max comparators yet, so a
-         component that used those (needs_cmp) stays on the poly path for now.
+         component that used those (needs_cmp) stays on the poly path for now,
+         and so does one that used pop, shift, delete_at or clear (removes).
          A boxed element stored as a row stays there too: an object element
          is unboxed with a class check, but a row is taken as a bare pointer,
          and a boxed poly array read back through the table as an
          sp_IntArray * printed garbage and crashed. */
-      if (sl[r].needs_cmp || sl[r].poly_elem) {
+      if (sl[r].needs_cmp || sl[r].removes || sl[r].poly_elem) {
         OA_DROP_SRC_STAMP();
         if (sl[i].ici >= 0) continue;
         oa_restore_pin(c, &sl[i]);
@@ -50844,13 +50864,14 @@ static void an_phase_late_widen(Compiler *c) {
       if (by)   /* the request is not applied, and the C is as without it */
         fprintf(stderr, "spinel: %s: warning: inline RBS: the type of %s %s is not applied: Array[%s] "
                         "stays a boxed array; every use of it must be one the unboxed array supports "
-                        "([], []=, push, length, empty?, first, last, min, max, sort) from the class's "
-                        "own instance methods or its attr_reader\n",
+                        "([], []=, push, pop, shift, delete_at, clear, length, empty?, first, last, min, "
+                        "max, sort) from the class's own instance methods or its attr_reader\n",
                 byp->head, cl->name, cl->ivars[iv], asked);
       else
         fprintf(stderr, "warning: --rbs: %s %s: Array[%s] stays a boxed array; every use of it must be "
-                        "one the unboxed array supports ([], []=, push, length, empty?, first, last, "
-                        "min, max, sort) from the class's own instance methods or its attr_reader\n",
+                        "one the unboxed array supports ([], []=, push, pop, shift, delete_at, clear, "
+                        "length, empty?, first, last, min, max, sort) from the class's own instance "
+                        "methods or its attr_reader\n",
                 cl->name, cl->ivars[iv], asked);
     }
   }

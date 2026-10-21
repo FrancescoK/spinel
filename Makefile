@@ -4578,6 +4578,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q '(lv_x)->iv_name' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an element call is not a direct read)"; ok=0; }; \
 	$(SPINEL) test/infer/obj_array_literal_arg.rb -c --no-line-map -o "$$tmp/oal.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_literal_arg: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_steps;' "$$tmp/oal.c" && grep -q 'sp_total(sp_PtrArray \* lv_parts' "$$tmp/oal.c" || { echo "infer-test: FAIL (an object Array literal passed as an argument stayed boxed)"; ok=0; }; \
+	$(SPINEL) test/obj_array_removals.rb -c --no-line-map -o "$$tmp/oar.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_removals: -c)"; ok=0; }; \
+	grep -q 'sp_PtrArray \* iv_jobs;' "$$tmp/oar.c" && grep -q 'sp_PtrArray_pop(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_shift(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_delete_at(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_clear(' "$$tmp/oar.c" || { echo "infer-test: FAIL (pop, shift, delete_at or clear left an array of one class boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' 'const char \* iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

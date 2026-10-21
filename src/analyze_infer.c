@@ -7003,6 +7003,11 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
     if (is_push_alias(name)) { *out = rt; return 1; }
     if (is_len_alias(name) && argc == 0) { *out = TY_INT; return 1; }
     if (sp_streq(name, "empty?") && argc == 0) { *out = TY_BOOL; return 1; }
+    /* the removals: an element (NULL-encoded nil when there is none), and
+       clear the array */
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    if (sp_streq(name, "delete_at") && argc == 1) { *out = ty_object(ecls); return 1; }
+    if (sp_streq(name, "clear") && argc == 0) { *out = rt; return 1; }
     /* no-block comparisons (admitted by the narrowing pass only for element
        classes with `<=>`): sort keeps the array type, min/max yield an
        element (NULL-encoded nil when empty). */
