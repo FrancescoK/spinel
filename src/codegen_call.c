@@ -2963,7 +2963,7 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b) {
    nil is Ruby's TypeError at run time (`Complex(nil, 1)`), not a store the
    program is refused for. */
 static void emit_complex_component(Compiler *c, int node, Buf *b) {
-  if (oint_kind(comp_ntype(c, node)) && node_may_be_nil(c, node)) {
+  if (repr_opt_kind(c, node) != TY_UNKNOWN && node_may_be_nil(c, node)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_ofloat _t%d = ", t); emit_oint_expr(c, node, TY_FLOAT, b);
     buf_printf(b, "; if (_t%d.nil) sp_raise_cls(\"TypeError\", \"can't convert nil into Complex\"); _t%d.v; })", t, t);
@@ -5477,18 +5477,18 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
            expression runs, which may allocate (the compose-operand hazard).
            An int-typed count validates directly; a nil-typed or boxed one is
            decided at run time, exactly as CRuby's proc_curry reads it. */
-        TyKind cty = comp_ntype(c, argv[0]);
+        Repr cr = repr_of(c, argv[0]);
         /* an Integer count that can be nil goes boxed, nil included: the
            boxed constructor reads nil as no count */
-        if (cty == TY_INT && node_has_oint_form(c, argv[0])) cty = TY_POLY;
+        int plain = cr.kind == RK_SCALAR && cr.as_ty == TY_INT;
         int tcn = ++g_tmp;
         buf_printf(b, "({ sp_Proc *_t%d = ", tcn); emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); sp_curry_new_%s(_t%d, ", tcn,
-                   cty == TY_INT ? "n" : "v", tcn);
+                   plain ? "n" : "v", tcn);
         /* a NILABLE Integer count went boxed above: sp_curry_new_v reads
            its nil as CRuby's nil count (no count at all), which is what
            `curry(h[:missing])` means, so it must not be refused (#4896) */
-        if (cty == TY_INT) emit_int_expr_nilable(c, argv[0], b);
+        if (plain) emit_int_expr_nilable(c, argv[0], b);
         else emit_boxed(c, argv[0], b);
         buf_printf(b, ", %d); })", curry_count_max(c, recv));
         return 1;
@@ -23331,7 +23331,7 @@ static void render_operand(Compiler *c, int node, int fresh, int handle, int oin
   }
   /* an Integer / Float producer whose nil rides beside the value keeps it
      in the temp (view_bind_o): `a[i] = xs.max` stores the nil */
-  else if (oint) emit_oint_expr(c, node, comp_ntype(c, node), out);
+  else if (oint) emit_oint_expr(c, node, repr_of(c, node).as_ty, out);
   else emit_expr(c, node, out);
   g_pre = sv;
 }

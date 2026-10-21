@@ -3655,8 +3655,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     buf_puts(b, "; ");
   }
   else if (as_expr && !rd_lbl && !nx_own && bn3 > 0 && !nx_tail_stmt &&
-           nt_kind(nt, bd3[bn3 - 1]) == NK_CallNode && oint_kind(comp_ntype(c, bd3[bn3 - 1])) &&
-           node_is_oint(c, bd3[bn3 - 1]) && tail_iter_receiver(c, bd3[bn3 - 1]) < 0) {
+           nt_kind(nt, bd3[bn3 - 1]) == NK_CallNode &&
+           repr_of(c, bd3[bn3 - 1]).opt_producer && tail_iter_receiver(c, bd3[bn3 - 1]) < 0) {
     /* a tail call answering its oint, read as the statement expression's
        value in the plain form: emitted as the value, not as a statement
        (which discards an oint) */

@@ -63,6 +63,9 @@ typedef struct {
                              cast reads. Which class the value is stays the
                              type's: as_ty is TY_EXCEPTION for the builtin
                              and an object type for a subclass */
+  unsigned opt_producer:1; /* a scalar producer returns its optional form;
+                              a narrowed leaf can still have RK_OPT from
+                              its slot without returning that form */
   unsigned nil_scalar:1;  /* an Integer or Float whose box reads its nil
                              (sp_box_oint / sp_box_ofloat) */
   unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
@@ -189,6 +192,9 @@ int repr_hash_is(Repr r, TyKind key, TyKind val);
 void repr_seal(Compiler *c);
 /* Whether the leaf slot holds an optional scalar. */
 int repr_leaf_slot_is_opt(Compiler *c, int node);
+/* The scalar kind of an sp_oint / sp_ofloat value, or TY_UNKNOWN when
+   its representation has no nil beside a scalar. */
+TyKind repr_opt_kind(const Compiler *c, int node);
 /* Whether an Integer or Float node's box has to read its nil (emit_boxed's
    sp_box_oint / sp_box_ofloat): the node has an sp_oint form of its own. */
 int repr_nil_scalar(const Compiler *c, int node, TyKind t);

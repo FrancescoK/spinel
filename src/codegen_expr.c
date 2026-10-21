@@ -2033,13 +2033,14 @@ void emit_expr(Compiler *c, int id, Buf *b) {
      that, an oint producer is read as a plain scalar through sp_oint_arg
      (TypeError for nil), and a leaf read of an oint slot as its `.v`. */
   int want_o = g_want_oint; g_want_oint = 0;
-  TyKind ot = comp_ntype(c, id);
+  Repr opr = repr_of(c, id);
+  TyKind ot = opr.as_ty;
   /* a node bound to a hoisted temp (view_bind) is that plain temp */
   int bound = 0, bound_o = 0;
   for (int i = g_n_argov - 1; i >= 0 && !bound; i--) if (g_argov_node[i] == id) { bound = 1; bound_o = g_argov_oint[i]; }
-  int is_o = oint_kind(ot) && (bound ? bound_o : node_is_oint(c, id));
-  int leaf_o = !bound && want_o && !is_o && node_has_oint_form(c, id);
+  int is_o = bound ? oint_kind(ot) && bound_o : opr.opt_producer;
   NodeKind ok = nt_kind(c->nt, id);
+  int leaf_o = !bound && want_o && !is_o && (ok == NK_NilNode || opr.kind == RK_OPT);
   g_oint_read = (is_o || leaf_o) &&
                 (ok == NK_LocalVariableReadNode || ok == NK_InstanceVariableReadNode ||
                  ok == NK_ClassVariableReadNode || ok == NK_GlobalVariableReadNode);
@@ -2049,7 +2050,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   Buf side; memset(&side, 0, sizeof side);
   /* (an oint wanted of an oint producer is rendered aside too: a diverging
      text there carries the plain default, which the oint slot cannot take) */
-  int keep_o = want_o && is_o && oint_kind(ot);
+  int keep_o = want_o && oint_kind(ot) && is_o;
   Buf *ob = (wrap_arg || wrap_of || keep_o) ? &side : b;
   /* an Array subclass instance read where an Array is wanted -- a splat, a
      destructuring, a `for` collection, an element write that is no call --
@@ -2271,7 +2272,7 @@ static void emit_local_orw_result(Compiler *c, int id, LocalVar *lv, const char 
     /* an oint slot answers its value where the expression is plain (an
        expression typed past the slot -- poly -- is boxed from the oint by
        its consumer) */
-    if (lv && slot_is_oint(lv) && !node_is_oint(c, id) && oint_kind(comp_ntype(c, id))) buf_puts(b, ".v");
+    if (lv && repr_slot_kind(c, lv) == RK_OPT && !r.opt_producer && oint_kind(r.as_ty)) buf_puts(b, ".v");
   }
 }
 
@@ -6067,9 +6068,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     if (n == 1) {
       /* the paren's value is its tail's, oint and all */
-      TyKind pt1 = comp_ntype(c, id);
+      Repr r = repr_of(c, id);
       buf_puts(b, "(");
-      if (oint_kind(pt1) && node_is_oint(c, id)) emit_oint_expr(c, bd[0], pt1, b); else emit_expr(c, bd[0], b);
+      if (r.opt_producer) emit_oint_expr(c, bd[0], r.as_ty, b); else emit_expr(c, bd[0], b);
       buf_puts(b, ")");
       return;
     }

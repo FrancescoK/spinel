@@ -54,6 +54,7 @@ static int dispatch_answers_nil(Compiler *c, int cid, const char *nm, int mi) {
 
 int file_stat_nil_call(Compiler *c, int v);   /* analyze.c */
 static int node_is_oint_asked(Compiler *c, int node);
+
 /* Codegen asks this while a view overrides a node's type (a re-entered
    call on its receiver boxed), and the analysis it asks (nullable_int_value)
    re-derives a receiver's type: asked as a pure read, as repr_of asks
@@ -505,29 +506,6 @@ static int node_is_oint_asked(Compiler *c, int node) {
   }
 }
 
-/* The slot a leaf read names, when that slot is an oint: the local, the
-   instance ivar with a nil bit, the oint static. */
-int repr_leaf_slot_is_opt(Compiler *c, int node) {
-  const NodeTable *nt = c->nt;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_LocalVariableReadNode) {
-    const char *ln = nt_str(nt, node, "name");
-    Scope *s = ln ? comp_scope_of(c, node) : NULL;
-    return slot_is_oint(s ? scope_local(s, ln) : NULL);
-  }
-  if (k == NK_InstanceVariableReadNode) return ivar_read_slot_is_oint(c, node);
-  if (k == NK_ClassVariableReadNode) {
-    HolderRef h;
-    return holder_of_node_in(c, node, g_class_body_id, &h) && cvar_is_oint(c, h.cid, h.idx);
-  }
-  if (k == NK_GlobalVariableReadNode) {
-    const char *gn = nt_str(nt, node, "name");
-    const char *rn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
-    return gvar_is_oint(c, rn ? comp_gvar(c, rn) : NULL);
-  }
-  return 0;
-}
-
 static int repr_sealed_flag;
 
 /* the kind a value of type t is held in, before any flag refines it */
@@ -643,20 +621,58 @@ static void repr_set_class_facts(const Compiler *c, Repr *r, TyKind t) {
   r->exc = exc;
 }
 
+/* The slot a leaf read names, when that slot is an oint: the local, the
+   instance ivar with a nil bit, the oint static. */
+int repr_leaf_slot_is_opt(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, node, "name");
+    Scope *s = ln ? comp_scope_of(c, node) : NULL;
+    return slot_is_oint(s ? scope_local(s, ln) : NULL);
+  }
+  if (k == NK_InstanceVariableReadNode) return ivar_read_slot_is_oint(c, node);
+  if (k == NK_ClassVariableReadNode) {
+    HolderRef h;
+    return holder_of_node_in(c, node, g_class_body_id, &h) && cvar_is_oint(c, h.cid, h.idx);
+  }
+  if (k == NK_GlobalVariableReadNode) {
+    const char *gn = nt_str(nt, node, "name");
+    const char *rn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
+    return gvar_is_oint(c, rn ? comp_gvar(c, rn) : NULL);
+  }
+  return 0;
+}
+
 /* An Integer or Float node whose box has to test for nil, as emit_boxed
    decides it: the node has an oint form (node_has_oint_form), the value
    carrying its nil beside it.
    The analysis re-derives a receiver's type (infer_type) to answer, so the
    question is asked as a pure read (an_pure_read_begin): nothing derived is
-   recorded, and asking changes nothing codegen reads next. */
+   recorded, and asking changes nothing codegen reads next.
+   Read the producer and slot facts directly here: the public form query
+   reads Repr, so calling it would ask this same question again. */
 
-int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
+static int repr_nil_scalar_form(const Compiler *c, int node, TyKind t, int *producer) {
   Compiler *mc = (Compiler *)c;
   int r = 0;
   an_pure_read_begin();
-  if (t == TY_INT || t == TY_FLOAT) r = node_has_oint_form(mc, node);
+  if (node >= 0 && (t == TY_INT || t == TY_FLOAT)) {
+    int p = node_is_oint(mc, node);
+    if (producer) *producer = p;
+    r = p || repr_leaf_slot_is_opt(mc, node);
+  }
   an_pure_read_end();
   return r;
+}
+
+int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
+  return repr_nil_scalar_form(c, node, t, NULL);
+}
+
+TyKind repr_opt_kind(const Compiler *c, int node) {
+  Repr r = repr_of(c, node);
+  return r.kind == RK_OPT ? r.as_ty : TY_UNKNOWN;
 }
 
 /* repr.h: the write's slot holds the rule's handle */
@@ -1244,10 +1260,12 @@ Repr repr_of(const Compiler *c, int node) {
   TyKind kt = r.as_ty;
   r.kind = (unsigned char)repr_kind_of_type(c, kt);
   repr_set_class_facts(c, &r, kt);
-  if (repr_nil_scalar(c, node, kt)) {
+  int opt_producer = 0;
+  if (repr_nil_scalar_form(c, node, kt, &opt_producer)) {
     r.kind = RK_OPT;
     r.may_nil = r.nil_scalar = 1;
   }
+  r.opt_producer = (unsigned)opt_producer;
   r.strbuf_src = (unsigned char)repr_strbuf_src(c, node, kt);
   r.share = (unsigned)repr_static_share(c, node);
   if (r.strbuf_src == RS_SLOT_POLY && !(c->share_strings && r.narrowed == TY_STRBUF)) r.kind = RK_BOXED;

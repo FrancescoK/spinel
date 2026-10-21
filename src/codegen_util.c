@@ -5862,9 +5862,9 @@ void emit_hash_okey(Compiler *c, int key, Buf *b) {
 int hash_okey_form(Compiler *c, int key, TyKind kt) {
   if (kt != TY_INT) return 0;
   if (hash_key_misses(c, key, kt)) return 1;
-  TyKind at = comp_ntype(c, key);
-  if (repr_of(c, key).kind == RK_BOXED) return 1;
-  return at == TY_INT && node_is_oint(c, key);
+  Repr r = repr_of(c, key);
+  if (r.kind == RK_BOXED) return 1;
+  return r.opt_producer && r.as_ty == TY_INT;
 }
 /* a lookup site's three parts for such a key: the key temp's C type, the
    op's name suffix, and the key itself */
@@ -7596,6 +7596,7 @@ int cmethod_sibling_answers_nil(Compiler *c, int cid, const char *nm) {
   return 0;
 }
 
+
 int g_want_oint = 0;
 
 /* the method being emitted answers an sp_oint / sp_ofloat (method_ret_is_oint
@@ -7719,7 +7720,7 @@ int node_may_be_nil(Compiler *c, int node) {
   /* an oint producer the analysis proved never nil (`[a].first`: the
      runtime function's form, not a nil) is unwrapped at the store, which
      keeps the proof honest at run time (sp_oint_arg) */
-  return node_is_oint(c, node) && nullable_int_value(c, node);
+  return repr_of(c, node).opt_producer && nullable_int_value(c, node);
 }
 
 /* A conditional's result slot (an if / case / begin / `||` in value
@@ -7798,7 +7799,7 @@ void emit_slot_nil_read(Compiler *c, TyKind t, Buf *b) {
 }
 
 int node_has_oint_form(Compiler *c, int node) {
-  return node >= 0 && (node_is_oint(c, node) || repr_leaf_slot_is_opt(c, node));
+  return node >= 0 && (nt_kind(c->nt, node) == NK_NilNode || repr_opt_kind(c, node) != TY_UNKNOWN);
 }
 
 void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
@@ -7818,11 +7819,10 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
   Repr r = repr_of(c, node);
   TyKind vt = r.as_ty;
   /* the call inside parentheses (`(table(x))`) */
-  int vc = node;
-  while (vc >= 0 && (nt_kind(nt, vc) == NK_ParenthesesNode || nt_kind(nt, vc) == NK_StatementsNode)) {
-    int pb = nt_kind(nt, vc) == NK_ParenthesesNode ? nt_ref(nt, vc, "body") : vc;
-    int pn = 0; const int *pv = pb >= 0 && nt_kind(nt, pb) == NK_StatementsNode ? nt_arr(nt, pb, "body", &pn) : NULL;
-    vc = pv && pn == 1 ? pv[0] : (pb >= 0 && nt_kind(nt, pb) != NK_StatementsNode ? pb : -1);
+  int vc = nt_paren_single(nt, node);
+  if (vc >= 0 && nt_kind(nt, vc) == NK_StatementsNode) {
+    int pn = 0; const int *pv = nt_arr(nt, vc, "body", &pn);
+    vc = pv && pn == 1 ? nt_paren_single(nt, pv[0]) : -1;
   }
   /* a value with no C type of its own (a call on a method that answers
      nothing included): evaluated for its effect, then nil */
@@ -7849,7 +7849,7 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
   }
   /* an Integer into a Float slot (or the reverse) converts the value */
   if (oint_kind(vt) && vt != t) {
-    if (node_is_oint(c, node) || repr_leaf_slot_is_opt(c, node)) {
+    if (r.kind == RK_OPT) {
       int tn = ++g_tmp;
       buf_printf(b, "({ %s _t%d = ", oint_ctype(vt), tn);
       emit_oint_expr(c, node, vt, b);
@@ -7860,7 +7860,7 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
     }
     return;
   }
-  if (node_is_oint(c, node) || repr_leaf_slot_is_opt(c, node)) {
+  if (r.kind == RK_OPT) {
     /* the bare producer: emit_expr consumes the flag for this node */
     g_want_oint = 1;
     emit_expr(c, node, b);
@@ -7921,7 +7921,7 @@ void emit_oint_unwrap_ck(Compiler *c, int node, TyKind t, const char *op, Buf *b
    Unwrapped ahead of the call (sp_oint_arg), the key's TypeError ran first
    and a Hash's nil key raised. */
 int poly_int_key_boxed(Compiler *c, int key) {
-  return key >= 0 && comp_ntype(c, key) == TY_INT && node_has_oint_form(c, key);
+  return repr_opt_kind(c, key) == TY_INT;
 }
 
 void emit_scalar_operand_op(Compiler *c, int node, const char *op, Buf *b) {
