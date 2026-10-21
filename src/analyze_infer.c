@@ -2830,6 +2830,15 @@ static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
   return (TyKind)c->scopes[mi].ret;
 }
 
+/* A block's break widens the answer without changing the call's target. */
+static TyKind an_break_call_ret(Compiler *c, int id) {
+  if (g_plan_check) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+  }
+  return TY_POLY;
+}
+
 /* Does the row this pass finds for call `id` count as the call's own? Not
    under the builtin-only re-derivation, whose answer is not the call's (a
    user method owns the name there). Except for the call that re-derivation
@@ -8543,7 +8552,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   /* --plan-check: a boxed receiver's call is dispatched over every user

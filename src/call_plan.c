@@ -284,6 +284,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
     for (int i = 0; i < npc; i++) {
       if (c->classes[pcs[i].cls].is_native_class) continue;
+      /* a reader candidate written as a method (`def x = @x`) is that method */
       int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
       if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
     }
