@@ -8532,16 +8532,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   /* --plan-check: a boxed receiver's call is dispatched over every user
      class's method of the name; the first candidate stands for that union
-     (an arm below that binds one method records it instead) */
-  if (g_plan_check && recv >= 0 && rt == TY_POLY && name && !an_builtin_only) {
-    int npc = 0;
-    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    for (int pi = 0; pi < npc; pi++) {
-      if (c->classes[pcs[pi].cls].is_native_class) continue;
-      /* a reader candidate written as a method (`def x = @x`) is that method */
-      int pmi = pcs[pi].mi >= 0 ? pcs[pi].mi : comp_method_in_chain(c, pcs[pi].cls, name, NULL);
-      if (pmi >= 0) { an_user_call_record(c, id, pmi, UC_POLY, pcs[pi].cls); break; }
-    }
+     (an arm below that binds one method records it instead).
+     The call plan also includes class methods, on boxed or Class values. */
+  if (g_plan_check && recv >= 0 && (rt == TY_POLY || rt == TY_CLASS) && !an_builtin_only) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
   }
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
