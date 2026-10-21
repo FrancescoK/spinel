@@ -46297,7 +46297,15 @@ static void mark_struct_aset_targets(Compiler *c) {
     if (ty_is_object(rt) && sp_streq(nt_str(nt, ev, "name"), "[]=")) {
       int evn = 0, lo, hi, str = 0;
       const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
-      TyKind vt = evn == 2 ? comp_ntype(c, an_unparen(nt, eva[1])) : TY_UNKNOWN;
+      TyKind vt = TY_UNKNOWN;
+      if (evn == 2) {
+        int value;
+        switch (vp_one(nt, eva[1], VPS_NONE | VP_PARENS_ONLY, &value)) {
+        case VP1_NODE: vt = comp_ntype(c, value); break;
+        case VP1_NIL: vt = TY_NIL; break;
+        case VP1_MANY: break;
+        }
+      }
       if (struct_aset_members(c, ev, ty_object_class(rt), &lo, &hi))
         for (int m = lo; m < hi; m++) {
           TyKind mt = c->classes[ty_object_class(rt)].ivar_types[m];
