@@ -1139,6 +1139,14 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     int m = is_cm ? comp_cmethod_in_class(c, cid, rn) : comp_method_in_class(c, cid, rn);
     if (m >= 0) { mi = m; dc = cid; break; }
   }
+  /* A class-side alias of an inherited method resumes at the ancestor that
+     owned it, but the receiver's own copy of that body (one made for a class
+     below, which runs it with that class as self) is the same method */
+  for (int cid = class_id; is_cm && mi >= 0 && start != class_id && cid >= 0 && cid != start;
+       cid = c->classes[cid].parent) {
+    int m = comp_cmethod_in_class(c, cid, rn);
+    if (m >= 0 && c->scopes[m].def_node == c->scopes[mi].def_node) { mi = m; dc = cid; break; }
+  }
   if (a) { a[2 * class_id] = mi; a[2 * class_id + 1] = dc; }
   if (mi >= 0 && def_class) *def_class = dc;
   return mi;

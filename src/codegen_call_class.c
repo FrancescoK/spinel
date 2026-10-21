@@ -4481,6 +4481,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             int defcls9 = -1;
             int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
             if (kmi < 0) continue;
+            /* a method copied into each class a value can hold is not emitted
+               itself: no value holds a class that answers by it */
+            if (c->scopes[kmi].is_transplanted_source && !scope_toplevel_included(c, kmi)) continue;
             int rarm9 = emit_reopen_arm_test(c, kmi, name, rcls9, rraise9, b);
             if (!rarm9) buf_printf(b, " case %d: ", k);
             rdef9 |= rarm9;
@@ -4884,11 +4887,14 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         }
       }
       if (defmi >= 0 && !dyield) {
-        /* Count distinct class method impls across the hierarchy */
+        /* Count distinct class method impls across the hierarchy: the ones
+           each class answers the name with (an alias's name, `class << self;
+           alias fetch_entry lookup; end`, names no method of its own) */
         int nimpl = 0;
         for (int k = 0; k < c->nclasses; k++) {
+          int kdef = -1;
           if (!is_descendant(c, k, cid)) continue;
-          if (comp_cmethod_in_class(c, k, name) >= 0) nimpl++;
+          if (comp_cmethod_in_chain(c, k, name, &kdef) >= 0 && kdef == k) nimpl++;
         }
         TyKind cret = (TyKind)c->scopes[defmi].ret;
         /* Stash the receiver object in a temp (referenced in every switch case) */
