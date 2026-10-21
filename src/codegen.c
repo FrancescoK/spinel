@@ -1687,8 +1687,8 @@ int text_diverges(const char *txt) {
     if (*p == '{') { p++; while (*p == ' ') p++; p = past_open_parens(p); continue; }
     break;
   }
-  return strncmp(p, "sp_raise_", 9) == 0 || strncmp(p, "sp_abort_raise(", 15) == 0 ||
-         strncmp(p, "sp_exit_raise(", 14) == 0;
+  return strncmp(p, "sp_raise_", 9) == 0 || strncmp(p, "sp_raise(", 9) == 0 ||   /* Kernel#raise with a message */
+         strncmp(p, "sp_abort_raise(", 15) == 0 || strncmp(p, "sp_exit_raise(", 14) == 0;
 }
 
 static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {

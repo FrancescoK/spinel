@@ -4748,6 +4748,21 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
       RCC(CF_FIT);
       return;
     }
+    /* a call whose receiver raises (`raise("...").first`) is untyped too, and
+       its text is the raise with a boxed nil behind it: into a slot of
+       another kind it answers that slot's zero, as a bare raise does (#9879) */
+    if (nt_kind(c->nt, node) == NK_CallNode && slot != TY_POLY && slot != TY_UNKNOWN &&
+        (comp_ntype(c, node) == TY_UNKNOWN || comp_ntype(c, node) == TY_POLY)) {
+      Buf t; memset(&t, 0, sizeof t);
+      emit_expr(c, node, &t);
+      const char *tx = t.p ? t.p : "";
+      if (strncmp(tx, "((void)(", 8) == 0 && text_diverges(tx))
+        buf_printf(b, "({ (void)%s; %s; })", tx, default_value_from_compiler(c, slot));
+      else buf_puts(b, tx);
+      free(t.p);
+      RCC(CF_FIT);
+      return;
+    }
     emit_expr(c, node, b);
     RCC(CF_FIT);
     return;
