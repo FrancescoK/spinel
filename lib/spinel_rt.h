@@ -6283,6 +6283,10 @@ static SP_INLINE sp_oint sp_poly_spaceship_body(sp_RbVal a, sp_RbVal b) {
   if (a.tag == b.tag &&
       (a.tag == SP_TAG_NIL || (a.tag == SP_TAG_BOOL && a.v.b == b.v.b)))
     return sp_oint_of(0);
+  /* A Comparable program object's default was already answered by the hook:
+     retrying equality repeats it or bypasses Numeric's identity rule. */
+  if (sp_poly_is_user_obj(a) && sp_obj_comparable_hook &&
+      sp_obj_comparable_hook(a.cls_id)) return sp_oint_nil();
   /* the default Object#<=> answers 0 when the operands are ==, nil otherwise
      -- so an object compared with itself is 0, not nil (#3017) */
   if (sp_poly_rb_equal(a, b)) return sp_oint_of(0);
