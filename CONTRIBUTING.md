@@ -165,7 +165,9 @@ and coercions; not every handwritten argument or element store uses it.
   `sp_compat.h`. `lib/spinel_rt.h` changes are additive; a change to
   existing runtime code is accepted case by case, when the fix's natural
   home is there and the pull request explains why the additive alternative
-  is worse (#8328).
+  is worse (#8328). An emitter that needs a node to read differently for one
+  emission uses a view (docs/internals/architecture.md, "Views"); it never
+  writes the node table or a global for it.
 - **One place per decision (#7100, #8328).** The analysis and
   representation layer decides once, and the emitters read that decision.
   [docs/internals/architecture.md](docs/internals/architecture.md) lists the

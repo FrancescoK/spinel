@@ -30,7 +30,7 @@ Three rules follow from it:
 | a String's form: the object, its bytes, a new handle                           | the String plan                                    | `share_plan.c:share_plan_of`, `share_plan_producer`; renderer `codegen_str.c:emit_str_form`                                                     | an emitter choosing handle or copy itself; a copy written as literal text; a refusal or copy keyed on one method name                |
 | layout in codegen: boxed, scalar, sentinel, handle, struct                     | `Repr` and the type traits                         | `repr.c:repr_of`, `repr_of_slot`; `holder.c:holder_of_node`; `types.h:ty_traits_of`; `codegen_util.c:emit_coerce`                               | layout decided from `comp_ntype`; hand-written boxing or nil tests; a cast into a slot instead of `emit_coerce`                      |
 | where a value comes from, how its parent uses it, a Prism flag                 | the value-position walkers and the node predicates | `value_pos.c:for_each_value_position`, `vp_one`, `vp_climb`; `node_table.h:nt_paren_single`, `nt_safe_nav`                                      | recursion over `elsif` or `rescue` with a depth limit; `sp_streq(op, "&.")`; a raw flag bit                                          |
-| a fact about one emission, or one poly arm's state                             | views and `ArmCtx`                                 | `codegen_view.c:view_push`, `view_push_repr`, `view_bind`, `view_push_arm`                                                                      | a node type overwritten in an emitter; a flag saved and restored by hand; a new `g_*` global                                         |
+| a fact about one emission, or one poly arm's state                             | views and `ArmCtx`                                 | `codegen_view.c:view_push`, `view_push_repr`, `view_bind`, `view_push_arm`                                                                      | a node's type, flag or name overwritten and restored around an emitter call; a new `g_*` global                                      |
 | membership in a family of names                                                | the name predicates                                | `builtin_names.c:is_call_alias`, `is_then_alias`, ...                                                                                           | the same inline `sp_streq` chain in inference and in codegen                                                                         |
 | when a pass runs, and what inference reads                                     | the phase driver and the counted setters           | `analyze.c:analyze_program`; `comp_set_ntype`, `lv_set_type`, `ivar_set_type`                                                                   | a loop appended to `analyze_program`; a direct write to a table `infer_type` reads                                                   |
 
@@ -42,6 +42,38 @@ identity is reported on #9258 instead.
 `comp_ntype` stays the answer to a semantic question (is this a String,
 which class is the receiver); it cannot alone decide how a value is laid
 out, which is `repr_of`'s answer.
+
+## Views
+
+The analysis decides one answer per node: its type, its representation flags,
+which method a call reaches. Codegen often emits the same node more than once
+under different assumptions: inside each arm of a poly dispatch, where the
+receiver is one class; as a temp a receiver was materialized into; with a
+flag lifted for one re-entry; as the text of a hoisted argument.
+
+A view says that for one nested emission only. `view_push` (a type),
+`view_push_repr` (a representation flag), `view_bind` (the text written for
+a node) and `view_push_arm` (a dispatch arm's context) record the previous
+answer and install the new one; `view_pop` restores it. Everything that
+reads the node in between (`comp_ntype`, `repr_of`, `emit_expr`) sees the
+view, and nothing outside it does.
+
+They are one stack rather than ad hoc overrides because each of these went
+wrong by hand:
+
+- **An early exit leaves the override behind.** A refusal unwinds every
+  view, binding and arm context opened since its `view_mark()`
+  (`view_unwind`).
+- **Nested overrides restore out of order.** A pop out of order is an
+  internal error, not a silent wrong answer.
+- **A cache keeps a temporary answer.** Anything that memoizes per node
+  caches only with no view open, or keys on `view_epoch()`.
+- **An override is invisible.** Every one is on the stack, and `repr_of`
+  stays a pure read of it, which `--repr-check` relies on.
+
+So codegen changes how a node reads for one emission only through a view,
+and never writes the node table or the analysis's answers itself. A fact a
+view cannot yet carry gets a new kind of view.
 
 ## Reading a diff for the old way
 
