@@ -12612,12 +12612,34 @@ static void oa_note_empty(Compiler *c, int S, int node) {
   }
   g_oa_empt_slot[g_oa_empt_n] = S; g_oa_empt_node[g_oa_empt_n] = node; g_oa_empt_n++;
 }
+/* The class evidence of a boxed local's plain `=` writes. A boxed value is
+   neutral evidence (oa_obj_class_of), but a local is boxed because its writes
+   disagree: `t = buf.last` and `t = Text.new` both reach `buf << t`, and the
+   Text is an element of another class that the pointer array would hold
+   under the wrong struct. Its writes are the evidence it has. A write of
+   another kind (an op-assign, a multiple-assignment target) stays neutral. */
+static int oa_local_write_evidence(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int s = c->nscope[node];
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm) return -1;
+  int cls = -1;
+  for (int w = comp_lvw_first_sc(c, s, nm); w >= 0 && cls != -2; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || c->nscope[w] != s || !wn || !sp_streq(wn, nm)) continue;
+    cls = oa_cls_join(cls, oa_obj_class_of(c, nt_ref(nt, w, "value")));
+  }
+  return cls;
+}
 /* element evidence from one value flowing into slot S, noting an empty
    literal for the stamp above and a boxed element for the row check at
    resolution */
 static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
   oa_note_empty(c, S, node);
-  if (node >= 0 && infer_type(c, node) == TY_POLY) sl[S].poly_elem = 1;
+  if (node >= 0 && infer_type(c, node) == TY_POLY) {
+    sl[S].poly_elem = 1;
+    if (nt_kind(c->nt, node) == NK_LocalVariableReadNode) return oa_local_write_evidence(c, node);
+  }
   return oa_obj_class_of(c, node);
 }
 /* `[A.new, A.new]` passed straight to a method: a literal of objects only,
