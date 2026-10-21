@@ -16417,8 +16417,11 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   TyKind elem = ty_array_elem(rt);
   if (!k) { unsupported(c, id, "array splice on this receiver type"); return; }
   /* Runtime `src` pointer type per element kind (Str stores `const char *`). */
+  /* (one representation: a String Array's elements are its handles,
+     sp_strelem) */
   const char *srcty = elem == TY_INT   ? "const sp_int *"
                     : elem == TY_FLOAT ? "const sp_float *"
+                    : g_one_string     ? "const sp_strelem *"
                     :                    "const char *const *";
 
   /* Typed receiver: bind recv, derive a (src, srcn) pair from the RHS, then
