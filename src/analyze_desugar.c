@@ -4604,6 +4604,23 @@ static int engine_absent(NodeTable *nt, int e, int in) {
       x = nt_str(nt, below, "name");
       if (below == nt_ref(nt, e, "value") && engine_source_lib_defines(nt, lib, x, in)) return 0;
     }
+    /* `unless defined?(::A::B)` around B's only declaration (a reload
+       guard: discourse's Discourse::VERSION) is absent there, whatever A
+       is: the root alone was asked, and the path folded true off the
+       declaration the guard skips (#9884) */
+    int val = nt_ref(nt, e, "value");
+    const char *leaf = nt_kind(nt, val) == NK_ConstantPathNode ? nt_str(nt, val, "name") : NULL;
+    if (leaf && !comp_is_wellknown_const(leaf) && !is_builtin_class_name(leaf) &&
+        !is_builtin_module_name(leaf) && !is_builtin_exception_name(leaf)) {
+      int inside = 0, outside = 0;
+      for (int id = 0; id < nt->count && !outside; id++) {
+        const char *w = engine_written(nt, id);
+        if (!w || !sp_streq(w, leaf)) continue;
+        if (subtree_has(nt, in, id)) inside = 1;
+        else if (!engine_exclusive_arms(nt, in, id)) outside = 1;
+      }
+      if (inside && !outside) return 1;
+    }
   }
   else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
                                                      nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode)) {
