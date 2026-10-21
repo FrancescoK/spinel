@@ -28318,6 +28318,13 @@ static void emit_thunk_unbox(Compiler *c, TyKind pt, const char *slot, Buf *pb) 
     case TY_PROC:   buf_printf(pb, "sp_bm_arg_proc(%s)", slot); return;
     default: break;
   }
+  /* (one representation: a String parameter's slot is the handle; a handle's
+     box is taken as it is, any other value is checked as a String the way
+     the bytes slot's reader checks it) */
+  if (g_one_string && pt == TY_STRBUF) {
+    buf_printf(pb, "(sp_poly_is_strbuf(%s) ? (sp_String *)(%s).v.p : SP_STR_HDL(sp_bm_arg_str(%s)))", slot, slot, slot);
+    return;
+  }
   if (ty_is_array(pt) || ty_is_hash(pt) || pt == TY_STRBUF) {
     /* the converting entry answers NULL for a value of another kind */
     Buf cv; memset(&cv, 0, sizeof cv);
