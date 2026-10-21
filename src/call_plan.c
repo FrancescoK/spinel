@@ -30,6 +30,8 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 }
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
+  p->method_node = -1;
+  p->method_call = 0;
   p->send_fallback = -1;
   p->delegate = NULL;
   p->mi = mi; p->owner_ci = (short)owner;
@@ -498,6 +500,8 @@ CallPlan cplan_method_call(Compiler *c, int id) {
   int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
   an_pure_read_end();
   if (mi >= 0) cplan_set(&p, mi, c->scopes[mi].class_id, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, CP_DIRECT);
+  p.method_node = mn;
+  p.method_call = 1;
   return p;
 }
 

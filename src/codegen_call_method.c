@@ -779,10 +779,10 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* <method>.call(args) / [] -> invoke the bound function. A top-level
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, sp_int...) ABI, evaluating recv once. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      is_method_invoke(name)) {
-    int mn = method_recv_node(c, recv);
-    CallPlan plan = cplan_method_call(c, id);
+  CallPlan plan = {0};
+  if (is_method_invoke(name)) plan = cplan_method_call(c, id);
+  if (plan.method_call) {
+    int mn = plan.method_node;
     int target = plan.mi;
     if (g_plan_check && target >= 0 && is_call_alias(name)) ucall_observe(c, id, target, c->scopes[target].class_id, 0);
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
