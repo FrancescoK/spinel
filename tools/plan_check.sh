@@ -9,8 +9,11 @@
 # same receiver kind) fails: the two halves of the compiler decided the
 # call differently. An "unrecorded" call (inference answered without a
 # row) and a "respecialized" one (the node is emitted per copy with its
-# receiver typed per copy) are reported as counts; -v lists all three. An
-# unrecorded call in one of the strict programs (STRICT_PROGRAMS, below) fails.
+# receiver typed per copy, compared with its own copy's row) fail too, as
+# does a user call respecialized against its copy's method: all three were
+# brought to 0 over the corpus (#9821, #9830), and a new one is fixed in its
+# row, not counted. -v lists every kind; the user-call and poly-arm counts
+# that are not 0 yet are reported.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -57,6 +60,9 @@ rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: /
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 grep ': plan-check: cplan-conflict:' "$OUT" | head -20
+grep ': plan-check: unrecorded:' "$OUT" | head -20
+grep ': plan-check: respecialized:' "$OUT" | head -20
+grep ': plan-check: ucall-respecialized:' "$OUT" | head -20
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
 echo "plan-check: plan readers: $pc conflicts, $pf fallbacks"
@@ -88,11 +94,10 @@ rfw=$(grep -c ': plan-check: refuse-wrong:' "$OUT")
 irc=$(grep -c ': plan-check: iter-row-error:' "$OUT")
 grep ': plan-check: iter-row-error:' "$OUT" | head -20
 echo "plan-check: iterator rows: $irc errors"
-# The "unrecorded" count above is a report, not a failure: most of the corpus
-# is not meant to be strict about it. The programs listed here are, each pinning
-# a row flagged BOPF_INFERRED (inference types the call in a rule of its own,
-# so it records no row): such a row losing its flag would otherwise only add to
-# the count. A listed program must compile and report no unrecorded call.
+# The programs listed here each pin a row flagged BOPF_INFERRED (inference
+# types the call in a rule of its own, so it records no row). Beside the
+# corpus-wide unrecorded count above, a listed program must also compile:
+# one that stops compiling would drop out of that count instead of failing.
 #   test/rational_round_inferred_plan.rb: Rational#round, #truncate, #floor and
 #   #ceil with a digit count (builtin_ops.c)
 STRICT_PROGRAMS="test/rational_round_inferred_plan.rb"
@@ -122,4 +127,4 @@ for f in $STRICT_UCALL_PROGRAMS; do
 done
 echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
