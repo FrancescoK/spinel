@@ -2272,7 +2272,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      the container's own string rather than a fresh copy of it (#3941) */
   if (rp->strbuf_src == RS_ELEM) {
     str_box_open(b, 1);
-    buf_puts(b, "sp_poly_as_strbuf(");
+    buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_poly_as_strbuf(");   /* (one representation: the read's face) */
     int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_expr(c, node, b);
     view_pop(c, sv_m2);

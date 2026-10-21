@@ -4001,7 +4001,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     emit_expr(c, recv, &rb3);
     g_ivg_box_node = sv3;
     int fit = rb3.p != NULL;
-    if (fit) buf_printf(b, "sp_poly_as_strbuf(%s)", rb3.p);
+    if (fit) buf_printf(b, g_one_string ? "SP_STR_HDL(%s)" : "sp_poly_as_strbuf(%s)", rb3.p);   /* (one representation: of either face) */
     free(rb3.p);
     return fit;
   }
@@ -4024,7 +4024,9 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
                  (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN)) ||
                 strbuf_reader_field_boxed(c, recv);
     int fit = rb2.p != NULL;
-    if (fit) buf_printf(b, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
+    /* (one representation: the read can be of any face, the box's, the
+       bytes' or the handle's) */
+    if (fit) buf_printf(b, g_one_string ? "SP_STR_HDL(%s)" : boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     else if (repr_share_rule(c) && pre && g_pre == pre && pre->len > pre_mark) {
       pre->len = pre_mark;
       pre->p[pre_mark] = '\0';

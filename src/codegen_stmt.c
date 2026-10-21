@@ -3047,7 +3047,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     v = nt_paren_single(c->nt, v);
     int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     int sv = view_push(c, v, TY_POLY);
-    buf_puts(b, "sp_poly_as_strbuf(");
+    buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_poly_as_strbuf(");   /* (one representation: the read's face) */
     emit_expr(c, v, b);
     buf_puts(b, ")");
     view_pop(c, sv);
@@ -5255,7 +5255,8 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     /* a container element read hands out the element's BOXED handle: take the
        handle out of the box, so the local and the element are one object and
        a mutation through either shows in the other (#3941) */
-    buf_puts(b, "sp_poly_as_strbuf("); emit_expr(c, v, b); buf_puts(b, ")");
+    /* (one representation: the read can be of any face) */
+    buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_poly_as_strbuf("); emit_expr(c, v, b); buf_puts(b, ")");
   }
   /* --share-strings: a boxed local's read (one an is_a? guard narrows, too):
      the local's box lifted to its handle's first (sp_poly_strbuf_lift), so
