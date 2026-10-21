@@ -421,19 +421,6 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (run) buf_puts(b, "; })");
         return 1;
       }
-      /* A boxed native object (or its subclass) answers a literal name
-         through the same inherited binding/visibility table as a runtime
-         name. The probe asks a zero-argument call, not method existence. */
-      if (ans < 0 && recv >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN) &&
-          respond_to_runtime_reaches(c, rt)) {
-        int native = 0;
-        for (int k = 0; k < c->nclasses && !native; k++)
-          native = c->classes[k].is_native_class && comp_native_method_find(c, k, qm, 0, 0) >= 0;
-        if (native) {
-          emit_respond_to_runtime_name(c, id, b, recv, argc, argv);
-          return 1;
-        }
-      }
       /* a user object's include_all known only at run time, or one of
          Object's private methods (exit, puts) to a literal one where some
          class could answer otherwise: the run-time answer, which reads the
@@ -511,12 +498,14 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           int first = 1;
           for (int k = 0; k < c->nclasses; k++) {
             if (comp_is_undeffed_in_chain(c, k, qm)) continue;
+            int nk = comp_native_binding_class(c, k, qm);
+            int native = nk >= 0 && comp_native_method_find(c, nk, qm, 0, 0) >= 0;
+            int native_private = native && comp_method_vis_in_chain(c, k, qm) != SP_VIS_PUBLIC;
             int has = (comp_method_in_chain(c, k, qm, NULL) >= 0 &&
                        !method_hidden_from_reflection(c, k, qm)) ||
                       comp_reader_in_chain(c, k, qm, NULL) ||
                       (is_wr && comp_writer_in_chain(c, k, wbase, NULL)) ||
-                      (c->classes[k].is_native_class &&
-                       comp_native_method_find(c, k, qm, 0, 0) >= 0) ||
+                      native ||
                       /* the names the class carries without a method entry
                          answer as they do on the typed receiver */
                       class_implicit_responds(c, k, qm);
@@ -533,6 +522,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
               for (int q = 0; q < xn; q++)
                 buf_printf(b, "%ssp_exc_cls_matches(((sp_Exception *)_t%d.v.p)->cls_name, \"%s\")",
                            q ? " || " : "", tv, c->classes[xr[q]].name);
+              buf_puts(b, "))");
+            }
+            else if (native_private) {
+              buf_printf(b, "%s(_k%d == %d && (", first ? "" : " || ", tv, k);
+              if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
               buf_puts(b, "))");
             }
             else {

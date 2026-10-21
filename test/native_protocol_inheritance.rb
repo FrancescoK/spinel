@@ -21,3 +21,9 @@ end
   p NativeInheritanceProbe.query(io, :flush)
   p NativeInheritanceProbe.private_query(io, :write)
 end
+
+# Loading a native writer must leave singleton writer queries intact.
+class NativeClassWriter
+  def self.write(text) = text.bytesize
+end
+p NativeInheritanceProbe.literal(NativeClassWriter)
