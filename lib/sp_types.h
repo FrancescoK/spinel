@@ -327,7 +327,9 @@ typedef struct{sp_strelem*data;sp_int len;sp_int cap;sp_int frozen;sp_strelem in
 #ifdef SP_ONE_STRING
 /* sp_String_new_shared and sp_String_key_handle are sp_string.h's: a file
    that expands SP_SEF or SP_SEK includes it (sp_str.h does under the mode) */
-#define SP_SEB(e) ((e) ? (e)->data : (const char *)NULL)
+/* (each evaluates its operand once: `SP_SEBOX(sp_StrArray_pop_e(a))` popped
+   twice and boxed the second, empty, answer) */
+#define SP_SEB(e) ({ struct sp_String_s *_seb_e = (e); _seb_e ? _seb_e->data : (const char *)NULL; })
 #define SP_SEBN(e) ((e)->data)
 #define SP_SEF(b) sp_String_new_shared(b)
 /* the same for a header ahead of sp_string.h (sp_string.c) */
@@ -335,7 +337,7 @@ struct sp_String_s *sp_strelem_of(const char *b);
 #define SP_SEFX(b) sp_strelem_fx(b)   /* sp_array.h: the fast cases inline */
 #define SP_SEM(e) do { if (e) sp_gc_mark((void *)(e)); } while (0)
 #define SP_SER(e) SP_GC_ROOT(e)
-#define SP_SEBOX(e) ((e) ? sp_box_obj((void *)(e), SP_BUILTIN_STRBUF) : sp_box_nil())
+#define SP_SEBOX(e) ({ struct sp_String_s *_sebox_e = (e); _sebox_e ? sp_box_obj((void *)_sebox_e, SP_BUILTIN_STRBUF) : sp_box_nil(); })
 #define SP_SEH(e) (e)
 #define SP_SEK(k) sp_String_key_handle(k)
 #define SP_SEBOXN(e) SP_SEBOX(e)
