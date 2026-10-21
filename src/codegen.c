@@ -10814,10 +10814,13 @@ const char *class_ruby_name(Compiler *c, int ci) {
      it here directly -- the class is leaf-keyed and has no enclosing-class
      chain to rebuild the path from (see register_ffi_decls) */
   if (c->classes[ci].ruby_name_cache) return c->classes[ci].ruby_name_cache;
-  /* collect ancestry: max 16 levels deep */
+  /* collect ancestry: max 16 levels deep. An encloser that carries its
+     name (a class under a builtin, `module Comparable::Ext`, or one whose
+     leaf collided) gives the whole path above it. */
   int chain[16]; int depth = 0;
   for (int k = ci; k >= 0 && depth < 16; ) {
     chain[depth++] = k;
+    if (k != ci && c->classes[k].ruby_name_cache) break;
     k = c->classes[k].enclosing_class;
   }
   if (depth == 1) return c->classes[ci].name; /* top-level: no qualification needed */
@@ -10833,7 +10836,8 @@ const char *class_ruby_name(Compiler *c, int ci) {
   buf[0] = '\0';
   for (int i = depth - 1; i >= 0; i--) {
     const char *seg = c->classes[chain[i]].name;
-    if (!seg) continue;
+    if (i == depth - 1 && i > 0 && c->classes[chain[i]].ruby_name_cache) seg = c->classes[chain[i]].ruby_name_cache;
+    else if (!seg) continue;
     /* A name qualify_colliding_classes rewrote carries its enclosing path
        already (`Brainfuck__Array`): the Ruby-visible name is the leaf, since
        the enclosers are being prepended here. */

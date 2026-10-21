@@ -1,0 +1,21 @@
+"Comparable::Ext::Group::Passive"
+Comparable::Ext::Group::Passive
+"Comparable::Ext::Group"
+"Comparable::Ext"
+Comparable::Ext::Group::Capture
+Comparable::Ext::Group::Named
+Comparable::Ext::Group::Capture
+[Comparable::Ext::Group::Named, Comparable::Ext::Group::Capture]
+"Integer::Box"
+"Kernel::Table::Group::Passive"
+in Comparable::Ext::Group::Passive
+"Comparable::Ext::Group::Passive"
+#<Comparable::Ext::Group::Passive:X>
+undefined method 'missing' for an instance of Comparable::Ext::Group::Passive
+Comparable::Ext::Failure
+#<Comparable::Ext::Failure: boom>
+Kernel::Table::Group
+Right::Box::Only
+"Left::Box::Item"
+[:Item]
+[:Item, :Only]

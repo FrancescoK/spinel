@@ -1320,6 +1320,61 @@ static void file_detached(Compiler *c, int n, int ds, int depth) {
   }
 }
 
+/* The Ruby path a class header's parent PAR is written as (`A::B` for
+   `class A::B::C`), into OUT. 0 when it is no plain constant path. */
+static int header_parent_path(const NodeTable *nt, int par, char *out, size_t cap) {
+  char chain[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0, n = qc_read_chain(nt, par, chain, &abs_anchor);
+  out[0] = '\0';
+  for (int i = 0; i < n; i++) {
+    if (i) strncat(out, "::", cap - strlen(out) - 1);
+    strncat(out, chain[i], cap - strlen(out) - 1);
+  }
+  return n > 0;
+}
+
+/* Whether Ruby name NAME is PATH or ends in `::PATH`. */
+static int ruby_path_ends_with(const char *name, const char *path) {
+  size_t nl = strlen(name), pl = strlen(path);
+  if (nl == pl) return sp_streq(name, path);
+  return nl > pl + 1 && sp_streq(name + nl - pl, path) && name[nl - pl - 1] == ':';
+}
+
+/* The program class whose Ruby name is PATH, among those that carry it
+   (a class whose leaf collided is keyed by a qualified name), or -1. */
+static int class_by_ruby_path(Compiler *c, const char *path) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].ruby_name_cache && sp_streq(c->classes[k].ruby_name_cache, path)) return k;
+  return -1;
+}
+
+/* `class A::B` names B in A wherever it is written: A encloses it, as
+   `module A; class B` does, and its name is A::B (#8369). An A whose leaf
+   collided is found by the path the header writes. Under a builtin
+   (`module Comparable::Ext`) the class is modelled outside it, and its
+   name keeps the builtin's path, as CRuby's does. */
+static void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, int named) {
+  char path[256];
+  int has_path = header_parent_path(c->nt, par, path, sizeof path);
+  int pc = has_path ? class_by_ruby_path(c, path) : -1;
+  if (pc < 0) pc = comp_class_index(c, nt_str(c->nt, par, "name"));
+  /* a leaf match that carries another path is another module of that leaf
+     (`Integer::Box` for `Right::Box` whose leaf collided) */
+  const char *pn = pc >= 0 ? c->classes[pc].ruby_name_cache : NULL;
+  if (pn && has_path && !ruby_path_ends_with(pn, path)) pc = -1;
+  if (pc >= 0 && pc != child && !c->classes[pc].is_builtin_const) {
+    c->classes[child].enclosing_class = pc;
+    return;
+  }
+  char head[64];
+  snprintf(head, sizeof head, "%.*s", (int)strcspn(path, ":"), path);
+  if (!has_path || named || !leaf || !(is_builtin_class_name(head) || is_builtin_module_name(head))) return;
+  char rn[320];
+  snprintf(rn, sizeof rn, "%s::%s", path, leaf);
+  c->classes[child].ruby_name_cache = strdup(rn);
+}
+
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -1457,11 +1512,8 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       /* `class A::B` names B in A wherever it is written: A encloses it, as
          `module A; class B` does, and its name is A::B (#8369) */
       int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
-      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode)) {
-        int pc = comp_class_index(c, nt_str(c->nt, par, "name"));
-        if (pc >= 0 && pc != child_class && !c->classes[pc].is_builtin_const)
-          c->classes[child_class].enclosing_class = pc;
-      }
+      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
+        header_parent_encloses(c, par, child_class, cls_leaf, qrn != NULL);
       /* `class ::B` names B at the top level wherever it is written: no
          module encloses it, and its name is B */
       else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
