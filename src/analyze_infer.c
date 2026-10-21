@@ -463,11 +463,37 @@ int an_user_defines_or_reads(Compiler *c, const char *name) {
      method 'size' called", not with the method. Counting it made every caller
      of this predicate stand its builtin arm down, and `def upcase(v) = v.upcase`
      compiled its own body to an unconditional NoMethodError. */
-  if (memo && udr_n < udr_cap) {
-    udr_names[udr_n] = strdup(name);
-    if (udr_names[udr_n]) {
-      udr_ans[udr_n] = (signed char)ans;
-      udr_next[udr_n] = udr_head[b]; udr_head[b] = udr_n; udr_n++;
+  if (memo) {
+    /* A full memo grows, and its buckets with it: it stopped recording at
+       4,096 names, and a Rails program asks after more (4,378 method names
+       alone), so every name past the first 4,096 walked every class again
+       at each ask, every round. */
+    if (udr_n == udr_cap) {
+      int ncap = udr_cap * 2;
+      char **nn = realloc(udr_names, sizeof(char *) * (size_t)ncap);
+      signed char *na = realloc(udr_ans, (size_t)ncap);
+      int *nx = realloc(udr_next, sizeof(int) * (size_t)ncap);
+      int *nh = realloc(udr_head, sizeof(int) * (size_t)ncap);
+      if (nn) udr_names = nn;
+      if (na) udr_ans = na;
+      if (nx) udr_next = nx;
+      if (nh) udr_head = nh;
+      if (nn && na && nx && nh) {
+        udr_cap = ncap;
+        for (int i = 0; i < udr_cap; i++) udr_head[i] = -1;
+        for (int i = 0; i < udr_n; i++) {
+          unsigned h = sp_strhash(udr_names[i]) & (unsigned)(udr_cap - 1);
+          udr_next[i] = udr_head[h]; udr_head[h] = i;
+        }
+        b = sp_strhash(name) & (unsigned)(udr_cap - 1);
+      }
+    }
+    if (udr_n < udr_cap) {
+      udr_names[udr_n] = strdup(name);
+      if (udr_names[udr_n]) {
+        udr_ans[udr_n] = (signed char)ans;
+        udr_next[udr_n] = udr_head[b]; udr_head[b] = udr_n; udr_n++;
+      }
     }
   }
   return ans;
