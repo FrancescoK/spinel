@@ -11929,8 +11929,10 @@ static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int n
      else raise ArgumentError, "wrong number of arguments (given N, expected 0..1)"
      end
    (the `block_given?` arm only when the block is the method's own). A
-   receiver read twice must read the same thing: a local, an ivar, self or
-   a constant. A builtin taking any number of arguments keeps its splat. */
+   receiver read in each arm must read the same thing: a local, an ivar, self
+   or a constant reads as it stands, and any other (a reader,
+   `def first(*args) = items.first(*args)`) is held in a temporary first, so
+   it runs once. A builtin taking any number of arguments keeps its splat. */
 #define SPL_MAX_ARITY 4
 static int spl_pure_recv(const NodeTable *nt, int r) {
   NodeKind k = nt_kind(nt, r);
@@ -12001,7 +12003,7 @@ int desugar_builtin_splat_forward(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
-    if (!nm || recv < 0 || args < 0 || !spl_pure_recv(nt, recv)) continue;
+    if (!nm || recv < 0 || args < 0) continue;
     int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
     if (an != 1 || nt_kind(nt, av[0]) != NK_SplatNode) continue;
     int sv = nt_ref(nt, av[0], "expression");
@@ -12029,6 +12031,17 @@ int desugar_builtin_splat_forward(Compiler *c) {
     int lo = 0, hi = 0; const char *lo_exp = NULL, *hi_exp = NULL;
     if (!builtin_class_arity_spec(cls, nm, &lo, &hi, &lo_exp, &hi_exp) || hi > SPL_MAX_ARITY || !hi_exp) continue;
     int base = nt->count;
+    /* the receiver held once, where reading it again could answer another */
+    int hold = -1;
+    if (!spl_pure_recv(nt, recv)) {
+      char tn[64];
+      snprintf(tn, sizeof tn, "_spsf%s", comp_node_tag(c, id));
+      int encl = c->nscope[id];
+      if (encl < 0 || encl >= c->nscopes) continue;
+      scope_local_intern(&c->scopes[encl], tn);
+      hold = hwi_lwrite(nt, tn, recv);
+      recv = hwi_lread(nt, tn);
+    }
     /* the arms, innermost last: CRuby's ArgumentError for any other size */
     int tail = -1;
     for (int e = 0; e < 2; e++) {
@@ -12070,7 +12083,8 @@ int desugar_builtin_splat_forward(Compiler *c) {
     }
     long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
     int body = nt_new_node(nt, "StatementsNode");
-    nt_node_set_arr(nt, body, "body", &tail, 1);
+    int stmts[2] = { hold, tail };
+    nt_node_set_arr(nt, body, "body", hold >= 0 ? stmts : &tail, hold >= 0 ? 2 : 1);
     nt_node_reset(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", body);
     nt_node_set_int(nt, id, "node_line", line);
