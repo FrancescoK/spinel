@@ -187,6 +187,8 @@ int repr_hash_is(Repr r, TyKind key, TyKind val);
 /* Called once the analysis is final (the end of analyze_program): from here
    on the flags repr_of reads no longer change. */
 void repr_seal(Compiler *c);
+/* Whether the leaf slot holds an optional scalar. */
+int repr_leaf_slot_is_opt(Compiler *c, int node);
 /* Whether an Integer or Float node's box has to read its nil (emit_boxed's
    sp_box_oint / sp_box_ofloat): the node has an sp_oint form of its own. */
 int repr_nil_scalar(const Compiler *c, int node, TyKind t);
