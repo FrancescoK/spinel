@@ -1,0 +1,56 @@
+Seongsu slice(2): stop -> "o"
+Seongsu [2, 3]: stop -> "ong"
+Seongsu byteslice(2): stop -> "o"
+Seongsu getbyte(2): stop -> 111
+Seongsu center(2): stop -> "Seongsu"
+Seongsu index("o", 2): stop -> 2
+Seongsu * 2: stop -> "SeongsuSeongsu"
+Seongsu unpack1(offset: 2): stop -> 111
+Seongsu match?(/o/, 2): stop -> true
+Seongsu slice(i = 2): stop -> "o"
+Seongsu param slice(2): stop -> "y"
+Seongsu param center(2): stop -> "Jayang"
+Seongsu local byteslice(2): stop -> "n"
+Seongsu local pick(2): stop -> "Children's Grand Park 2"
+Seongsu slice(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu [nil, 3]: stop -> TypeError no implicit conversion from nil to integer
+Seongsu byteslice(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu getbyte(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu center(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu index("o", nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu * nil: stop -> TypeError no implicit conversion from nil to integer
+Seongsu unpack1(offset: nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu match?(/o/, nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu slice(i = nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu param slice(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu param center(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu local byteslice(nil): stop -> TypeError no implicit conversion from nil to integer
+Seongsu local pick(nil): stop -> "Children's Grand Park open"
+nil slice(2): stop -> NoMethodError undefined method 'slice' for nil
+nil [2, 3]: stop -> NoMethodError undefined method '[]' for nil
+nil byteslice(2): stop -> NoMethodError undefined method 'byteslice' for nil
+nil getbyte(2): stop -> NoMethodError undefined method 'getbyte' for nil
+nil center(2): stop -> NoMethodError undefined method 'center' for nil
+nil index("o", 2): stop -> NoMethodError undefined method 'index' for nil
+nil * 2: stop -> NoMethodError undefined method '*' for nil
+nil unpack1(offset: 2): stop -> NoMethodError undefined method 'unpack1' for nil
+nil match?(/o/, 2): stop -> NoMethodError undefined method 'match?' for nil
+nil slice(i = 2): stop -> NoMethodError undefined method 'slice' for nil
+nil param slice(2): stop -> NoMethodError undefined method 'slice' for nil
+nil param center(2): stop -> NoMethodError undefined method 'center' for nil
+nil local byteslice(2): stop -> NoMethodError undefined method 'byteslice' for nil
+nil local pick(2): stop -> NoMethodError undefined method 'pick' for nil
+nil slice(nil): stop -> NoMethodError undefined method 'slice' for nil
+nil [nil, 3]: stop -> NoMethodError undefined method '[]' for nil
+nil byteslice(nil): stop -> NoMethodError undefined method 'byteslice' for nil
+nil getbyte(nil): stop -> NoMethodError undefined method 'getbyte' for nil
+nil center(nil): stop -> NoMethodError undefined method 'center' for nil
+nil index("o", nil): stop -> NoMethodError undefined method 'index' for nil
+nil * nil: stop -> NoMethodError undefined method '*' for nil
+nil unpack1(offset: nil): stop -> NoMethodError undefined method 'unpack1' for nil
+nil match?(/o/, nil): stop -> NoMethodError undefined method 'match?' for nil
+nil slice(i = nil): stop -> NoMethodError undefined method 'slice' for nil
+nil param slice(nil): stop -> NoMethodError undefined method 'slice' for nil
+nil param center(nil): stop -> NoMethodError undefined method 'center' for nil
+nil local byteslice(nil): stop -> NoMethodError undefined method 'byteslice' for nil
+nil local pick(nil): stop -> NoMethodError undefined method 'pick' for nil
