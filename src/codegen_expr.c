@@ -3,6 +3,7 @@
 #include "share.h"
 #include "holder.h"
 #include "call_plan.h"
+#include "value_pos.h"
 
 /* defined? support: does this subtree reference a constant the compiler
    cannot resolve? Any such reference makes the whole defined? answer nil
@@ -4878,7 +4879,16 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     /* An empty container's type reads UNKNOWN for want of an element type; it
        still produces a value, so it must be assigned rather than emitted for
        effect and discarded (#3495). */
-    int e_diverges = (er.untyped || et == TY_VOID || (et == TY_NIL && rt != TY_POLY && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)) &&
+    int one, e_yields = 0, e_nil = 0;
+    switch (vp_one(nt, e, VPS_NONE | VP_PARENS_ONLY, &one)) {
+    case VP1_NODE:
+      e_yields = nt_kind(nt, one) == NK_YieldNode;
+      e_nil = nt_kind(nt, one) == NK_NilNode;
+      break;
+    case VP1_NIL: e_nil = 1; break;
+    case VP1_MANY: break;
+    }
+    int e_diverges = (er.untyped || et == TY_VOID || (et == TY_NIL && rt != TY_POLY && e_yields)) &&
                      !node_is_empty_container(nt, e);
     /* --share-strings: under a handle demand (strbuf_route_begin) the
        result slot is the handle, and each value is taken as one */
@@ -4912,6 +4922,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                                    (comp_scope_of(c, id)->ret_handle && tail_pub_leaf(c, e))))
         emit_tail_value(c, e, &ev);
       else if (hdem) emit_strbuf_handle_of(c, e, &ev);
+      /* A nil type alone can also be an opaque call that raises. Only
+         proven nil values are converted to a slot's own nil here. */
+      else if (et == TY_NIL && e_nil && nil_value(rt)) emit_ternary_arm_o(c, e, rt, res_o, &ev);
       else emit_expr_slot(c, e, rt, &ev);
       g_pre = sv_pre0; g_indent = sv_ind0;
       if (epre.p) buf_puts(b, epre.p);

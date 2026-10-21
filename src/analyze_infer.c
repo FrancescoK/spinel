@@ -9422,6 +9422,8 @@ static int yield_uses(Compiler *c, int y) {
       int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
       for (int e = 0; e < ac; e++) yu_collect(nt, av[e], w, YU_ARGUMENT);
     }
+    NT_FOREACH_KIND(nt, NK_RescueModifierNode, w)
+      yu_collect(nt, nt_ref(nt, w, "expression"), w, YU_FRAME);
     NT_FOREACH_KIND(nt, NK_BeginNode, w) {
       int st = nt_ref(nt, w, "statements");
       if (st < 0) continue;
@@ -9939,6 +9941,12 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            inlined site boxes its own value. A rescue frame the same: its
            value slot takes the body's value or the rescue arm's, `def
            guarded; yield; rescue; "rescued"; end`. */
+        /* A modifier holds its try value in the same kind of result slot. */
+        if (nt_kind(nt, w) == NK_RescueModifierNode) {
+          if (value_arm_is(nt, nt_ref(nt, w, "expression"), id) && yvd_once(c, ymi, &dv))
+            { *out = TY_POLY; return 1; }
+          break;
+        }
         if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
         int st = nt_ref(nt, w, "statements");
         if (st < 0) break;
@@ -11293,9 +11301,18 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* a yield whose block answers nil is a value, nil beside the rescue's:
        the join the arms of an `if` make (a slot that cannot hold a nil, a
        Range or a bool, is boxed). Any other nil-typed expression is taken
-       as one that diverges (a raise the folder has turned into a call). */
-    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0 && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)
-      return ty_unify(et, rt);
+       as one that diverges (a raise the folder has turned into a call).
+       Empty parentheses and a literal nil also carry a nil value. */
+    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0) {
+      int one;
+      switch (vp_one(nt, e, VPS_NONE | VP_PARENS_ONLY, &one)) {
+      case VP1_NODE:
+        if (nt_kind(nt, one) == NK_YieldNode || nt_kind(nt, one) == NK_NilNode) return ty_unify(et, rt);
+        break;
+      case VP1_NIL: return ty_unify(et, rt);
+      case VP1_MANY: break;
+      }
+    }
     if (et == TY_VOID || et == TY_NIL) return rt;
     if (et == TY_UNKNOWN) {
       /* an empty container carries a value; the union of the two arms is poly */

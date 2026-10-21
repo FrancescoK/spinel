@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "repr.h"
 #include "holder.h"
+#include "value_pos.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
 
@@ -1022,6 +1023,17 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
 
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (g_block_id < 0 || id < 0) return 0;
+  /* A parenthesized yield answers its value at this inline site too. The
+     cached union can still be nil when another copy yields another kind. */
+  if (nt_kind(c->nt, id) == NK_ParenthesesNode) {
+    int one;
+    switch (vp_one(c->nt, id, VPS_NONE | VP_PARENS_ONLY, &one)) {
+    case VP1_NODE:
+      return nt_kind(c->nt, one) == NK_YieldNode && sp_yield_site_type(c, one, out);
+    case VP1_NIL: return 0;
+    case VP1_MANY: return 0;
+    }
+  }
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
   if (sp_streq(ty, "CallNode") && yield_operator_site_type(c, id, out)) return 1;
