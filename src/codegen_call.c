@@ -1264,7 +1264,7 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
      (emit_poly_vis_precheck); send and self calls reach any */
   int plain = nt_str(nt, id, "vis_enforce") != NULL ||
               (!nt_str(nt, id, "send_blind") && !nt_int(nt, id, "dyn_arm", 0) &&
-               nt_kind(nt, recv) != NK_SelfNode);
+               !nt_ignore_visibility(nt, id));
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
   int all_public = 1;
@@ -21105,11 +21105,9 @@ static int builtin_reopen_vis_class(Compiler *c, TyKind rt, const char *name) {
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
-  const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
   int stamped = nt_str(nt, id, "vis_enforce") != NULL;
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
-              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode")) &&
-              !nt_int(nt, id, "self_call", 0);  /* a class body's own call, given its class as receiver */
+              !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);  /* a class body's own call, given its class as receiver */
   if (!stamped && !plain) return 0;
   const char *vnm = call_shown_name(nt, id);
   int vcid = -1;
@@ -21175,10 +21173,9 @@ static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
-  const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
   int stamped = nt_str(nt, id, "vis_enforce") != NULL;
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
-              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode"));
+              !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);
   if (!stamped && !plain) return;
   const char *vnm = call_shown_name(nt, id);
   if (!vnm) return;

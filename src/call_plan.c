@@ -2279,7 +2279,7 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
 /* Whether the boxed class arm calls the method rather than raising for
    its visibility. Explicit self may call private methods too. */
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
-  if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode) return 1;
+  if (nt_ignore_visibility(c->nt, id)) return 1;
   int owner = -1;
   int vis = comp_cmethod_vis_declared(c, ci, name, &owner);
   if (vis == SP_VIS_PROTECTED) {

@@ -2985,7 +2985,9 @@ static int ie_rself_name_selfish(Compiler *c, const char *nm) {
   return 0;
 }
 
-/* A call whose receiver is the block's self though no SelfNode spells it: a
+/* The self_call marker tracks receiver identity through rebinding, rather
+   than private-call permission (nt_ignore_visibility).
+   A call whose receiver is the block's self though no SelfNode spells it: a
    receiverless call to a name only a class method answers, or a class body's
    `self.m` / `m` the body desugar gave its class as the receiver. It rebinds
    with the block's self, so it takes a `self.` receiver before marking. */
@@ -5037,7 +5039,7 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
     if (comp_native_method_find(c, ocid, nm, argc, 0) < 0) continue;
     int selfn = nt_new_node(nt, "SelfNode");
     if (selfn < 0) continue;
-    nt_node_set_ref(nt, id, "receiver", selfn);
+    nt_set_self_receiver(nt, id, selfn);
     comp_grow_node_arrays(c);
     c->nscope[selfn] = c->nscope[id];
     changed = 1;
@@ -5141,7 +5143,7 @@ static int give_self_predicates_a_receiver(Compiler *c) {
     if (argc != want) continue;
     int selfn = nt_new_node(nt, "SelfNode");
     if (selfn < 0) continue;
-    nt_node_set_ref(nt, id, "receiver", selfn);
+    nt_set_self_receiver(nt, id, selfn);
     comp_grow_node_arrays(c);
     c->nscope[selfn] = c->nscope[id];
     changed = 1;
@@ -10853,9 +10855,11 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       if (wrap >= 0) {
         nt_node_set_str(nt, wrap, "name", wix ? "to_a" : "to_h");
         nt_node_set_ref(nt, wrap, "receiver", prv);
+        nt_set_ignore_visibility(nt, wrap, nt_ignore_visibility(nt, id));
         nt_node_set_ref(nt, wrap, "arguments", -1);
         nt_node_set_ref(nt, wrap, "block", -1);
         nt_node_set_ref(nt, id, "receiver", wrap);
+        nt_set_ignore_visibility(nt, id, 0);
         if (!wix) nt_node_set_str(nt, id, "name", "each");
         comp_grow_node_arrays(c);
         c->nscope[wrap] = c->nscope[id];
@@ -10900,10 +10904,11 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap = nt_new_node(nt, "CallNode");
       if (selfn < 0 || wrap < 0) continue;
       nt_node_set_str(nt, wrap, "name", "__enum_to_a");
-      nt_node_set_ref(nt, wrap, "receiver", selfn);
+      nt_set_self_receiver(nt, wrap, selfn);
       nt_node_set_ref(nt, wrap, "arguments", -1);
       nt_node_set_ref(nt, wrap, "block", -1);
       nt_node_set_ref(nt, id, "receiver", wrap);
+      nt_set_ignore_visibility(nt, id, 0);
       comp_grow_node_arrays(c);
       c->nscope[selfn] = c->nscope[id];
       c->nscope[wrap] = c->nscope[id];
@@ -10969,6 +10974,7 @@ int desugar_enum_method_recv(Compiler *c) {
           int tk = nt_new_node(nt, "CallNode");
           nt_node_set_str(nt, tk, "name", "take");
           nt_node_set_ref(nt, tk, "receiver", recv);
+          nt_set_ignore_visibility(nt, tk, nt_ignore_visibility(nt, id));
           nt_node_set_ref(nt, tk, "arguments", targs);
           nt_node_set_ref(nt, tk, "block", -1);
           int zero = nt_new_node(nt, "IntegerNode");
@@ -10977,6 +10983,7 @@ int desugar_enum_method_recv(Compiler *c) {
           nt_node_set_arr(nt, zargs, "arguments", &zero, 1);
           nt_node_set_str(nt, id, "name", "[]");
           nt_node_set_ref(nt, id, "receiver", tk);
+          nt_set_ignore_visibility(nt, id, 0);
           nt_node_set_ref(nt, id, "arguments", zargs);
           comp_grow_node_arrays(c);
           c->nscope[one] = c->nscope[id]; c->nscope[targs] = c->nscope[id];
@@ -11021,7 +11028,9 @@ int desugar_enum_method_recv(Compiler *c) {
         nt_node_set_str(nt, wrap3, "name", "to_a");
         nt_node_set_int(nt, wrap3, "made_to_a", 1);
         nt_node_set_ref(nt, wrap3, "receiver", recv);
+        nt_set_ignore_visibility(nt, wrap3, nt_ignore_visibility(nt, id));
         nt_node_set_ref(nt, id, "receiver", wrap3);
+        nt_set_ignore_visibility(nt, id, 0);
         comp_grow_node_arrays(c);
         c->nscope[wrap3] = c->nscope[id];
         changed = 1;
@@ -11035,7 +11044,9 @@ int desugar_enum_method_recv(Compiler *c) {
         nt_node_set_str(nt, wrap2, "name", "to_a");
         nt_node_set_int(nt, wrap2, "made_to_a", 1);
         nt_node_set_ref(nt, wrap2, "receiver", recv);
+        nt_set_ignore_visibility(nt, wrap2, nt_ignore_visibility(nt, id));
         nt_node_set_ref(nt, id, "receiver", wrap2);
+        nt_set_ignore_visibility(nt, id, 0);
         comp_grow_node_arrays(c);
         c->nscope[wrap2] = c->nscope[id];
         changed = 1;
@@ -11077,7 +11088,9 @@ int desugar_enum_method_recv(Compiler *c) {
       nt_node_set_str(nt, wrap, "name", "to_a");
       nt_node_set_int(nt, wrap, "made_to_a", 1);
       nt_node_set_ref(nt, wrap, "receiver", recv);
+      nt_set_ignore_visibility(nt, wrap, nt_ignore_visibility(nt, id));
       nt_node_set_ref(nt, id, "receiver", wrap);
+      nt_set_ignore_visibility(nt, id, 0);
       comp_grow_node_arrays(c);
       c->nscope[wrap] = c->nscope[id];
       enum_hop_yield_view(c, id, wrap);
@@ -11105,6 +11118,7 @@ int desugar_enum_method_recv(Compiler *c) {
         if (zwrap < 0) continue;
         nt_node_set_str(nt, zwrap, "name", "__enum_to_a");
         nt_node_set_ref(nt, zwrap, "receiver", za);
+        nt_set_ignore_visibility(nt, zwrap, nt_kind(nt, za) == NK_SelfNode);
         nt_node_set_ref(nt, zwrap, "arguments", -1);
         nt_node_set_ref(nt, zwrap, "block", -1);
         int newargs[8];
@@ -11139,7 +11153,9 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, wrap, "name", "__enum_to_a");
       nt_node_set_ref(nt, wrap, "receiver", recv);
+      nt_set_ignore_visibility(nt, wrap, nt_ignore_visibility(nt, id));
       nt_node_set_ref(nt, id, "receiver", wrap);
+      nt_set_ignore_visibility(nt, id, 0);
       /* the array's blockless #each yields the Enumerator; each_entry keeps its
          own name (array #each_entry with no block also materializes one) */
       if (sp_streq(nm, "each_entry")) nt_node_set_str(nt, id, "name", "each");
@@ -11195,7 +11211,9 @@ int desugar_enum_method_recv(Compiler *c) {
     int wrap = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, wrap, "name", matn);
     nt_node_set_ref(nt, wrap, "receiver", recv);
+    nt_set_ignore_visibility(nt, wrap, nt_ignore_visibility(nt, id));
     nt_node_set_ref(nt, id, "receiver", wrap);
+    nt_set_ignore_visibility(nt, id, 0);
     comp_grow_node_arrays(c);
     c->nscope[wrap] = c->nscope[id];
     changed = 1;
@@ -43358,7 +43376,7 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
       c->nscope[args] = si;
     }
     nt_node_set_type(nt, id, "CallNode");
-    nt_node_set_ref(nt, id, "receiver", self);
+    nt_set_self_receiver(nt, id, self);
     nt_node_set_ref(nt, id, "arguments", args);
     nt_node_set_str(nt, id, "name", mname);
     nt_node_set_int(nt, id, "builtin_only", 1);
@@ -43411,7 +43429,7 @@ static void rewrite_ivar_reflection_supers(Compiler *c) {
       c->nscope[args] = si;
     }
     nt_node_set_type(nt, id, "CallNode");
-    nt_node_set_ref(nt, id, "receiver", self);
+    nt_set_self_receiver(nt, id, self);
     nt_node_set_ref(nt, id, "arguments", args);
     nt_node_set_str(nt, id, "name", mname);
     nt_node_set_int(nt, id, "builtin_only", 1);
@@ -43574,7 +43592,7 @@ static void rewrite_builtin_alias_self_calls(Compiler *c, int settled) {
     int self = nt_new_node(nt, "SelfNode");
     comp_grow_node_arrays(c);
     c->nscope[self] = c->nscope[id];
-    nt_node_set_ref(nt, id, "receiver", self);
+    nt_set_self_receiver(nt, id, self);
     nt_node_set_str(nt, id, "name", target);
     nt_node_set_int(nt, id, "builtin_only", 1);
     free(target);
@@ -43609,6 +43627,7 @@ static void arysub_set_call(Compiler *c, int id, int recv, const char *name, int
   if (ln) nt_node_set_int(nt, id, "node_line", ln);
   if (fl) nt_node_set_int(nt, id, "node_file", fl);
   nt_node_set_ref(nt, id, "receiver", recv);
+  nt_set_ignore_visibility(nt, id, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
   nt_node_set_str(nt, id, "name", nm);
   nt_node_set_ref(nt, id, "arguments", args);
   nt_node_set_ref(nt, id, "block", blk);
@@ -47648,7 +47667,7 @@ static void an_phase_block_inline(Compiler *c) {
       Scope *s = comp_scope_of(c, id);
       if (!s || !s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
       if (!comp_is_sg_reader(&c->classes[s->class_id], nm)) continue;
-      nt_node_set_ref(ntm, id, "receiver", nt_new_node(ntm, "SelfNode"));
+      nt_set_self_receiver(ntm, id, nt_new_node(ntm, "SelfNode"));
     }
     if (ntm->count != nend) comp_grow_node_arrays(c);
   }
@@ -47674,7 +47693,7 @@ static void an_phase_block_inline(Compiler *c) {
       Scope *s = comp_scope_of(c, id);
       if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
       int sid = nt_new_node(ntm, "SelfNode");
-      nt_node_set_ref(ntm, id, "receiver", sid);
+      nt_set_self_receiver(ntm, id, sid);
       if (npend == cap) { cap = cap ? cap * 2 : 8;
         self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
         self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
@@ -47724,7 +47743,7 @@ static void an_phase_block_inline(Compiler *c) {
       /* a user method of that name is dispatched directly, not as self.builtin */
       if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
       int sid = nt_new_node(ntm, "SelfNode");
-      nt_node_set_ref(ntm, id, "receiver", sid);
+      nt_set_self_receiver(ntm, id, sid);
       if (npend == cap) { cap = cap ? cap * 2 : 8;
         self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
         self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }

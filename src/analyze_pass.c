@@ -11733,7 +11733,7 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
       if (sn < 0) return 0;
       comp_grow_node_arrays(c);
       c->nscope[sn] = c->nscope[root];
-      nt_node_set_ref(nt, root, "receiver", sn);
+      nt_set_self_receiver(nt, root, sn);
       changed = 1;
     }
     if (nm && (is_instance_eval_family(nm))) skip = nt_ref(nt, root, "block");
@@ -13740,6 +13740,7 @@ static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
   free(av);
   nt_node_set_str(nt, call, "name", nmbuf);
   nt_node_set_ref(nt, call, "receiver", recv);
+  nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, tgt));
   nt_node_set_ref(nt, call, "arguments", an);
   nt_node_set_ref(nt, call, "block", -1);
   return call;

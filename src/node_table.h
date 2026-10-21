@@ -465,6 +465,13 @@ static inline int nt_ignore_visibility(const NodeTable *nt, int id) {
 static inline void nt_set_ignore_visibility(NodeTable *nt, int id, int on) {
   if (on || nt_ignore_visibility(nt, id)) nt_node_set_int(nt, id, "ignore_visibility", on ? 1 : 0);
 }
+/* A synthesized implicit-self call spells its receiver explicitly while
+   retaining the private-call permission of the receiverless form. An
+   explicit denial from a public_send rewrite stays denied. */
+static inline void nt_set_self_receiver(NodeTable *nt, int id, int receiver) {
+  nt_node_set_ref(nt, id, "receiver", receiver);
+  nt_set_ignore_visibility(nt, id, nt_int(nt, id, "ignore_visibility", 1) != 0);
+}
 /* PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE: the call is written as an assignment,
    `recv.name = v`, `recv.name=(v)` or `recv[i] = v`, so its value is the
    argument whatever the writer returns. The parser exports it as the

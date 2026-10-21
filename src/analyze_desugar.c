@@ -184,6 +184,7 @@ int desugar_bare_spawn(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[cr] = c->nscope[id];
     nt_node_set_ref(nt, id, "receiver", cr);
+    nt_set_ignore_visibility(nt, id, 0);
     changed = 1;
   }
   return changed;
@@ -263,7 +264,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
   return changed;
@@ -297,7 +298,7 @@ int desugar_ie_bare_object_calls(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
   return changed;
@@ -339,7 +340,7 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
   return changed;
@@ -365,7 +366,7 @@ int desugar_descendant_reader_calls(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
   return changed;
@@ -423,6 +424,7 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   nt_node_set_arr(nt, nargs, "arguments", na, an + 1);
   free(na);
   nt_node_set_ref(nt, call, "receiver", recv);
+  nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, tgt));
   nt_node_set_str(nt, call, "name", nm);
   /* the element read learns whose writer it feeds (elem_miss_call) */
   if (nt_int(nt, val, "masgn_elem", LLONG_MIN) != LLONG_MIN) nt_node_set_int(nt, val, "masgn_recv", recv);
@@ -1297,7 +1299,9 @@ static void kr_self_calls(NodeTable *nt, int node, const char *const *names, int
     for (int i = 0; nm && i < nn; i++)
       if (sp_streq(nm, names[i])) {
         int sn = nt_new_node(nt, "SelfNode");
-        if (sn >= 0) nt_node_set_ref(nt, node, "receiver", sn);
+        if (sn >= 0) {
+          nt_set_self_receiver(nt, node, sn);
+        }
         break;
       }
   }
@@ -2232,6 +2236,7 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
       nt_node_set_str(nt, call, "name", nm);
+      nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, id));
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_ref(nt, call, "arguments", na);
       nt_node_set_ref(nt, call, "block", -1);
@@ -2312,7 +2317,7 @@ int desugar_reopen_implicit_self(Compiler *c) {
       if (c->node_cbody) c->node_cbody[sn] = c->node_cbody[id];
       nt_node_set_int(nt, id, "reopen_self", sn + 1);
     }
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     TyKind t = infer_type(c, id);
     /* A boxed self (Object / Numeric / Array / Hash) keeps the receiver even
        when the call cannot be typed yet: bare, it IS a call on self, and as
@@ -2369,7 +2374,7 @@ int desugar_handle_reopen_self_recv(Compiler *c) {
     if (sf < 0) continue;
     nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
     nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
-    nt_node_set_ref(nt, id, "receiver", sf);
+    nt_set_self_receiver(nt, id, sf);
     comp_grow_node_arrays(c);
     c->nscope[sf] = c->nscope[id];
     changed = 1;
@@ -2520,6 +2525,7 @@ int desugar_compose_method_operand(Compiler *c) {
       nt_node_set_ref(nt, tp, "arguments", -1);
       nt_node_set_ref(nt, tp, "block", -1);
       nt_node_set_ref(nt, id, "receiver", tp);
+      nt_set_ignore_visibility(nt, id, 0);
     }
     if (a_m) {
       int tp = nt_new_node(nt, "CallNode");
@@ -3003,6 +3009,7 @@ int desugar_method_curry(Compiler *c) {
     nt_node_set_ref(nt, tp, "arguments", -1);
     nt_node_set_ref(nt, tp, "block", -1);
     nt_node_set_ref(nt, id, "receiver", tp);
+    nt_set_ignore_visibility(nt, id, 0);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
@@ -3579,6 +3586,7 @@ int desugar_env_enum(Compiler *c) {
         comp_grow_node_arrays(c);
         c->nscope[toa] = c->nscope[id];
         nt_node_set_ref(nt, id, "receiver", toa);
+        nt_set_ignore_visibility(nt, id, 0);
       }
       else nt_node_set_ref(nt, id, "receiver", snap);
     }
@@ -3839,7 +3847,10 @@ int desugar_implicit_send(Compiler *c) {
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_str(nt, id, "name", namebuf);              /* retarget the call */
     nt_node_set_ref(nt, id, "arguments", newargs);         /* drop the name arg */
-    if (vis_enf) nt_node_set_str(nt, id, "vis_enforce", "1");
+    if (vis_enf) {
+      nt_node_set_str(nt, id, "vis_enforce", "1");
+      nt_set_ignore_visibility(nt, id, 0);
+    }
     else nt_node_set_str(nt, id, "send_blind", "1");   /* see desugar_public_send_recv */
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
@@ -3942,7 +3953,10 @@ int desugar_public_send_recv(Compiler *c) {
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_str(nt, id, "name", namebuf);
     nt_node_set_ref(nt, id, "arguments", newargs);
-    if (is_pub && !m_is_send) nt_node_set_str(nt, id, "vis_enforce", "1");
+    if (is_pub && !m_is_send) {
+      nt_node_set_str(nt, id, "vis_enforce", "1");
+      nt_set_ignore_visibility(nt, id, 0);
+    }
     /* `x.send(:m)` ignores visibility, which is the whole point of it: a
        top-level `def` is Object's PRIVATE instance method, so a plain
        `x.m` cannot reach it but a send can. The retargeted call carries
@@ -5668,7 +5682,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       if (sn < 0) continue;
       comp_grow_node_arrays(c);
       c->nscope[sn] = c->nscope[id];
-      nt_node_set_ref(nt, id, "receiver", sn);
+      nt_set_self_receiver(nt, id, sn);
       recv = sn;
       changed = 1;
     }
@@ -6007,6 +6021,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       /* public_send arms enforce visibility at the dispatch site */
       if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
       else nt_node_set_str(nt, call, "send_blind", "1");
+      nt_set_ignore_visibility(nt, call, !nt_str(nt, call, "vis_enforce") && nt_ignore_visibility(nt, id));
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
@@ -6128,6 +6143,7 @@ int desugar_dynamic_method(Compiler *c) {
       nt_node_set_arr(nt, na, "arguments", &sym, 1);
       nt_node_set_ref(nt, arms[k], "receiver", recv);
       nt_node_set_str(nt, arms[k], "name", "method");
+      nt_set_ignore_visibility(nt, arms[k], nt_ignore_visibility(nt, id));
       nt_node_set_str(nt, arms[k], "dyn_name", own[k]);
       nt_node_set_int(nt, arms[k], "dyn_of", id);
       nt_node_set_ref(nt, arms[k], "arguments", na);
@@ -6206,7 +6222,7 @@ int desugar_dynamic_respond_to(Compiler *c) {
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
-    nt_node_set_ref(nt, id, "receiver", sn);
+    nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
   /* `self.respond_to?(name)` in a class method is the receiverless form,
@@ -6273,6 +6289,7 @@ int desugar_dynamic_respond_to(Compiler *c) {
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
       nt_node_set_str(nt, call, "name", "respond_to?");
+      nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, id));
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_ref(nt, call, "arguments", na);
       nt_node_set_ref(nt, call, "block", -1);
@@ -6969,6 +6986,7 @@ int desugar_call_op_write(Compiler *c) {
     int wargs = nt_new_node(nt, "ArgumentsNode");
     if (rd < 0 || binargs < 0 || bin < 0 || wargs < 0) continue;
     nt_node_set_ref(nt, rd, "receiver", recv);
+    nt_set_ignore_visibility(nt, rd, nt_ignore_visibility(nt, id));
     nt_node_set_str(nt, rd, "name", aname);
     { int one[1]; one[0] = val; nt_node_set_arr(nt, binargs, "arguments", one, 1); }
     nt_node_set_ref(nt, bin, "receiver", rd);
@@ -7066,6 +7084,8 @@ int desugar_call_or_write_reopen(Compiler *c) {
     if (tw < 0 || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
     long long line = nt_int(nt, id, "node_line", 0);
     cow_bind_temp(nt, tw, tr1, tr2, tname, recv);
+    nt_set_ignore_visibility(nt, rd, nt_ignore_visibility(nt, id));
+    nt_set_ignore_visibility(nt, wc, nt_ignore_visibility(nt, id));
     nt_node_set_ref(nt, rd, "receiver", tr1); nt_node_set_str(nt, rd, "name", attr);
     nt_node_set_ref(nt, rd, "arguments", -1); nt_node_set_ref(nt, rd, "block", -1);
     nt_node_set_int(nt, rd, "node_line", line);
@@ -7114,12 +7134,16 @@ int desugar_main_self_call(Compiler *c) {
         comp_method_index(c, name) < 0 && self_is_main(c, id)) {
       int sn = nt_new_node(nt, "SelfNode");
       if (sn < 0) continue;
-      nt_node_set_ref(nt, id, "receiver", sn);
+      nt_set_self_receiver(nt, id, sn);
       comp_grow_node_arrays(c);
       c->nscope[sn] = c->nscope[id];
       changed = 1;
       continue;
     }
+    /* Kind identifies main; Prism supplies the private-call permission.
+       Reflected calls retain their own visibility policy at emission. */
+    if (!nt_ignore_visibility(nt, id) && !nt_str(nt, id, "send_blind") &&
+        !nt_str(nt, id, "vis_enforce")) continue;
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     if (nt_safe_nav(nt, id)) continue;
     if (!self_is_main(c, recv) || nt_int(nt, recv, "ie_self", 0)) continue;
@@ -7183,9 +7207,9 @@ static int ix_store_call(NodeTable *nt, int call) {
   if (call >= 0) nt_set_attr_write(nt, call, 1);
   return call;
 }
-static int ixw_call(NodeTable *nt, int recv_tmp_name_node_src, const char *rname, const char *name,
+static int ixw_call(NodeTable *nt, int source, const char *rname, const char *name,
                     const int *args, int nargs) {
-  (void)recv_tmp_name_node_src;
+  /* The held receiver keeps the original call's private-call permission. */
   int rr = nt_new_node(nt, "LocalVariableReadNode");
   int call = nt_new_node(nt, "CallNode");
   int an = nargs > 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
@@ -7193,6 +7217,7 @@ static int ixw_call(NodeTable *nt, int recv_tmp_name_node_src, const char *rname
   nt_node_set_str(nt, rr, "name", rname);
   nt_node_set_int(nt, rr, "depth", 0);
   nt_node_set_ref(nt, call, "receiver", rr);
+  nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, source));
   nt_node_set_str(nt, call, "name", name);
   if (an >= 0) {
     nt_node_set_arr(nt, an, "arguments", args, nargs);
@@ -7263,7 +7288,7 @@ int desugar_index_op_write_user(Compiler *c) {
       nt_node_set_ref(nt, kw, "value", key);
     }
     int k1 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
-    int get = k1 >= 0 ? ixw_call(nt, -1, rname, "[]", &k1, 1) : -1;
+    int get = k1 >= 0 ? ixw_call(nt, id, rname, "[]", &k1, 1) : -1;
     if (get < 0) continue;
     int last = -1;
     if (k == NK_IndexOperatorWriteNode) {
@@ -7276,13 +7301,13 @@ int desugar_index_op_write_user(Compiler *c) {
       nt_node_set_str(nt, bin, "name", opname);
       nt_node_set_ref(nt, bin, "arguments", ba);
       int wa[2] = { k2, bin };
-      last = ix_store_call(nt, ixw_call(nt, -1, rname, "[]=", wa, 2));
+      last = ix_store_call(nt, ixw_call(nt, id, rname, "[]=", wa, 2));
     }
     else {
       int k2 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
       if (k2 < 0) continue;
       int wa[2] = { k2, val };
-      int set = ix_store_call(nt, ixw_call(nt, -1, rname, "[]=", wa, 2));
+      int set = ix_store_call(nt, ixw_call(nt, id, rname, "[]=", wa, 2));
       int logic = nt_new_node(nt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       if (set < 0 || logic < 0) continue;
       nt_node_set_ref(nt, logic, "left", get);
@@ -7350,6 +7375,7 @@ int desugar_symbol_to_proc_call(Compiler *c) {
     if (newargs < 0) continue;
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_ref(nt, id, "receiver", newrecv);           /* receiver = first arg */
+    nt_set_ignore_visibility(nt, id, 0);
     nt_node_set_str(nt, id, "name", namebuf);               /* call the named method */
     nt_node_set_ref(nt, id, "arguments", newargs);          /* drop the receiver arg */
     comp_grow_node_arrays(c);
@@ -7414,6 +7440,7 @@ int desugar_to_h_block(Compiler *c) {
     nt_node_set_ref(nt, mapcall, "arguments", mapargs);
     nt_node_set_ref(nt, mapcall, "block", blk);
     nt_node_set_ref(nt, id, "receiver", mapcall);      /* to_h now consumes the mapped pairs */
+    nt_set_ignore_visibility(nt, id, 0);
     nt_node_set_ref(nt, id, "block", -1);              /* and no longer carries the block */
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
@@ -8202,6 +8229,7 @@ static int fwd_bam_lambda_count(Compiler *c, int ex) {
 /* `recv.name(arg)` (no argument for -1), for the forwards built below */
 static int fwd_new_call(NodeTable *nt, int recv, const char *name, int arg) {
   int call = nt_new_node(nt, "CallNode");
+  nt_set_ignore_visibility(nt, call, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", name);
   int args = -1;
@@ -9166,6 +9194,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
     if (how == 2) nt_node_set_str(nt, toa, "enum_recv", "1");
     nt_node_set_int(nt, toa, "range_hop", 1);   /* srange_member_hop */
     nt_node_set_ref(nt, id, "receiver", toa);
+    nt_set_ignore_visibility(nt, id, 0);
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
     changed = 1;
@@ -15275,7 +15304,7 @@ int desugar_builtin_alias_calls(Compiler *c) {
       if (sf >= 0) {
         nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
         nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
-        nt_node_set_ref(nt, id, "receiver", sf);
+        nt_set_self_receiver(nt, id, sf);
         nt_set_vcall(nt, id, 0);
         comp_grow_node_arrays(c);
         c->nscope[sf] = c->nscope[id];
@@ -16212,7 +16241,7 @@ static int sc_walk(NodeTable *nt, int node, const char *cls) {
     if (r < 0 && sc_self_answer(nm) && nt_ref(nt, node, "block") < 0) {
       int self = fwd_new_node_like(nt, node, "SelfNode");
       nt_node_set_int(nt, self, "sclass_value", 1);
-      nt_node_set_ref(nt, node, "receiver", self);
+      nt_set_self_receiver(nt, node, self);
       changed = 1;
       r = self;
     }
@@ -17338,7 +17367,7 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct,
            !(builtin && cb_method_table_name(cm))) {
     int self = fwd_new_node_like(nt, node, "SelfNode");
     if (self >= 0) {
-      nt_node_set_ref(nt, node, "receiver", self);
+      nt_set_self_receiver(nt, node, self);
       changed = 1;
     }
   }
@@ -18966,7 +18995,7 @@ static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *chang
         !sp_streq(nm, "attr_accessor") && !sp_streq(nm, "attr_writer") && !sp_streq(nm, "binding")) {
       int rself = fwd_new_node_like(nt, node, "SelfNode");
       if (is_array == 1 && rbself_array_method(nm)) nt_node_set_int(nt, rself, "ary_self", 1);
-      nt_node_set_ref(nt, node, "receiver", rself);
+      nt_set_self_receiver(nt, node, rself);
       *changed = 1;
     }
   }
@@ -19103,6 +19132,7 @@ static int mo_guard_pred(NodeTable *nt, int like, const char *cn) {
   int call = fwd_new_node_like(nt, like, "CallNode");
   int args = fwd_new_node_like(nt, like, "ArgumentsNode");
   nt_node_set_ref(nt, call, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
+  nt_set_ignore_visibility(nt, call, 1);
   nt_node_set_str(nt, call, "name", "is_a?");
   int arg = fwd_new_node_like(nt, like, "ConstantReadNode");
   nt_node_set_str(nt, arg, "name", cn);
@@ -20054,7 +20084,7 @@ static void biv_self_call(NodeTable *nt, int id, const char *name, const char *i
   long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
   nt_node_reset(nt, id, "CallNode");
   nt_node_set_str(nt, id, "name", nb);
-  nt_node_set_ref(nt, id, "receiver", self);
+  nt_set_self_receiver(nt, id, self);
   nt_node_set_ref(nt, id, "arguments", args);
   nt_node_set_ref(nt, id, "block", -1);
   if (line) nt_node_set_int(nt, id, "node_line", line);
@@ -20541,6 +20571,7 @@ static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int 
   int aa[2]; int n = 0; aa[n++] = a0; if (a1 >= 0) aa[n++] = a1;
   nt_node_set_arr(nt, na, "arguments", aa, n);
   int call = nt_new_node(nt, "CallNode"); if (call < 0) return -1;
+  nt_set_ignore_visibility(nt, call, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", name);
   nt_node_set_ref(nt, call, "arguments", na);
@@ -20780,6 +20811,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
       if (store < 0) continue;
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, tgt, "CallNode");
+      nt_set_ignore_visibility(nt, tgt, nt_ignore_visibility(nt, store));
       nt_node_set_ref(nt, tgt, "receiver", recv2);
       nt_node_set_str(nt, tgt, "name", "[]=");
       nt_set_attr_write(nt, tgt, 1);
@@ -20819,6 +20851,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
      Klass.a ||= v   ->  Klass.a || (Klass.a = v)     (&&= likewise) */
 static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg) {
   int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
+  nt_set_ignore_visibility(nt, cl, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
   nt_node_set_ref(nt, cl, "receiver", recv); nt_node_set_str(nt, cl, "name", name);
   if (name_is_plain_setter(name)) nt_set_attr_write(nt, cl, 1);
   if (arg >= 0) {
@@ -20881,6 +20914,7 @@ int desugar_safe_nav_attr_write(Compiler *c) {
     nt_node_set_arr(nt, ts, "body", &nil_n, 1);
     /* the op-write itself, on the bound receiver, with a plain `.` */
     nt_node_set_ref(nt, op, "receiver", r2);
+    nt_set_ignore_visibility(nt, op, nt_ignore_visibility(nt, id));
     nt_node_set_str(nt, op, "name", rnb);
     if (bopb[0]) nt_node_set_str(nt, op, "binary_operator", bopb);
     nt_node_set_ref(nt, op, "value", v);
@@ -20928,17 +20962,21 @@ int desugar_const_attr_op_assign(Compiler *c) {
     if (is_op && !op) continue;
     int recv2 = nt_clone_subtree(nt, recv); if (recv2 < 0) continue;
     int read = ca_attr_call(nt, recv, rn, -1); if (read < 0) continue;
+    nt_set_ignore_visibility(nt, read, nt_ignore_visibility(nt, id));
     if (op) {
       int opc = ca_attr_call(nt, read, op, v); if (opc < 0) continue;
       int store = ca_attr_call(nt, recv2, wn, opc); if (store < 0) continue;
+      nt_set_ignore_visibility(nt, store, nt_ignore_visibility(nt, id));
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, id, "CallNode");
+      nt_set_ignore_visibility(nt, id, nt_ignore_visibility(nt, store));
       nt_node_set_ref(nt, id, "receiver", recv2); nt_node_set_str(nt, id, "name", wn);
       nt_set_attr_write(nt, id, 1);
       nt_node_set_ref(nt, id, "arguments", na); nt_node_set_ref(nt, id, "block", -1);
     }
     else {
       int store = ca_attr_call(nt, recv2, wn, v); if (store < 0) continue;
+      nt_set_ignore_visibility(nt, store, nt_ignore_visibility(nt, id));
       nt_node_reset(nt, id, is_or ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, id, "left", read); nt_node_set_ref(nt, id, "right", store);
     }

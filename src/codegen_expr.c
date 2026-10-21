@@ -1659,7 +1659,7 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
      before anything else, the writer only when the assignment runs. Two
      attr halves go the field-store way unless one of them must raise. */
   char wn[300]; snprintf(wn, sizeof wn, "%s=", attr);
-  int self_recv = nt_kind(nt, recv) == NK_SelfNode;
+  int self_recv = nt_ignore_visibility(nt, id);
   int rvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, attr);
   int wvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, wn);
   /* No reader at all -- no method, no attribute, no method_missing to
