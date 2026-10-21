@@ -22256,7 +22256,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
           buf_puts(b, "sp_str_concat("); emit_str_expr(c, argv[0], b);
           buf_printf(b, ", sp_String_cstr(_t%d))", tbR);
         }
-        else emit_expr(c, argv[0], b);
+        else emit_expr_face(c, argv[0], TY_STRING, b);   /* (one representation: its bytes, whatever the face) */
         buf_puts(b, "); }\n");
         return 1;
       }

@@ -1211,7 +1211,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         const char *bp0 = block_param_name(c, blk, 0);
         if (bp0) {
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, g_one_string ? "lv_%s = _ctagh%d;\n" : "lv_%s = _ctag%d;\n", rename_local(bp0), t);
+          /* (one representation: in the parameter slot's face) */
+          if (g_one_string) buf_printf(g_pre, "lv_%s = SP_STR_TO(lv_%s, _ctagh%d);\n", rename_local(bp0), rename_local(bp0), t);
+          else buf_printf(g_pre, "lv_%s = _ctag%d;\n", rename_local(bp0), t);
         }
       }
       if (tag_kind >= 0) {
