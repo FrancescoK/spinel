@@ -11,7 +11,7 @@
 #include "share.h"
 #include "codegen_call_arms.h"
 
-static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
+static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
   /* NilClass#to_s answers its one frozen empty String before a nullable
      exception's own renderer. The call plan already proves the written nil
      arm and its builtin target. */
@@ -23,7 +23,7 @@ static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own,
     buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? ", t, t);
     int mark = view_bind(recv, "_t%d", t);
     int tested = view_push_repr(c, recv, VR_NIL_TESTED, 1);
-    emit_exc_own_render(c, id, recv, xcm, own, b);
+    emit_exc_own_render_raw(c, id, recv, xcm, own, b);
     view_pop(c, tested); view_unbind(mark);
     buf_puts(b, " : sp_str_frozen_empty; })");
     return;
@@ -45,6 +45,15 @@ static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own,
     buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tex, c->classes[defc].c_name,
                mc(c->scopes[own].name), tex);
   }
+}
+
+static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
+  Buf call = {0};
+  emit_exc_own_render_raw(c, id, recv, xcm, own, &call);
+  Repr r = repr_of(c, id);
+  emit_coerce_text(c, id, (TyKind)c->scopes[own].ret, r.kind == RK_BOXED ? TY_POLY : r.as_ty,
+                   CO_HOLD, call.p, "an exception renderer result", b);
+  free(call.p);
 }
 
 static int emit_exception_object_accessor(Compiler *c, int id, int recv, const char *name,
