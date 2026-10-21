@@ -596,10 +596,13 @@ const char *one_elem_get_sfx(const char *k);
 #define ONE_SA_GE (g_one_string ? "_e" : "")
 #define ONE_HV_BOXO(hn) (ONE_HV_O(hn)[0] ? "SP_SEBOX(" : "sp_box_str(")
 #define ONE_HV_GE(hn) (ONE_HV_O(hn)[0] ? "_e" : "")
+/* ...and a typed Array kind `k`'s element form: "_e" for the String Array under the mode */
+#define ONE_SA_KE(k) (g_one_string && sp_streq((k), "Str") ? "_e" : "")
 extern int g_one_elem_raw;   /* the element read emit_expr renders as the handle itself (strh_elem_handle_text) */
 extern int g_one_arm_bytes_node;   /* the dispatch whose arms answer into a bytes slot (emit_strbuf_pickup) */
 void one_face_mark(int t, int node);   /* temp t holds node's String by face (__auto_type): its bound reads are SP_STR_B */
 int one_face_is(int t, int node);
+int one_str_to_open(Buf *b, TyKind st, const char *fmt, ...);   /* SP_STR_TO(dst, around a String slot write under the mode; close with ")" */
 void one_elem_bind_slot(LocalVar *lv, TyKind bt);
 /* An operation on a String Array of handles (codegen_call_array.c) */
 int emit_strh_call(Compiler *c, int id, Buf *b);

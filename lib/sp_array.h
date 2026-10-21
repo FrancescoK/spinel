@@ -17,6 +17,28 @@
 #include <stdint.h>
 #include <math.h>      /* isnan / isinf / signbit / NAN / fabs for sp_float_sum_step */
 #include "sp_gc.h"      /* sp_gc_hdr, sp_gc_bytes, SP_GC_ROOT, sp_oom_die */
+#ifdef SP_ONE_STRING
+/* SP_SEFX's fast cases, where a bytes-form wrapper takes a String in: a
+   payload view's owner (0xfd, the header's link) and a frozen literal
+   whose handle exists already (0xf1, the header's tagged link to its slot,
+   whose first word is the handle: sp_StringLiteral). Anything else, a new
+   handle, goes out of line (sp_strelem_of). */
+static inline struct sp_String_s *sp_strelem_fx(const char *b) {
+  if (b) {
+    unsigned char m = ((const unsigned char *)b)[-1];
+    const sp_str_hdr *h = (const sp_str_hdr *)(const void *)(b - 1) - 1;
+    if (m == 0xfd) { if (h->next) return (struct sp_String_s *)(void *)h->next; }
+    else if (m == 0xf1 && !sp_slab_owns(h)) {
+      uintptr_t p = (uintptr_t)h->next;
+      if (p & 1) {
+        struct sp_String_s *v = SP_ATOMIC_LOAD((struct sp_String_s **)(void *)(p - 1), __ATOMIC_ACQUIRE);
+        if (v) return v;
+      }
+    }
+  }
+  return sp_strelem_of(b);
+}
+#endif
 #include "sp_alloc.h"   /* sp_gc_alloc, sp_str_alloc, sp_raise_cls, sp_raise_frozen_array */
 
 const char *sp_sprintf(const char *fmt, ...);  /* defined in the generated TU */

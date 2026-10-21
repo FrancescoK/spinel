@@ -368,7 +368,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         Buf hb; memset(&hb, 0, sizeof hb);
         emit_strbuf_handle_of(c, expr, &hb);
         int hv = ++g_tmp, tv3 = ++g_tmp;
-        buf_printf(&decls, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", hv, hb.p ? hb.p : "NULL", hv);
+        buf_printf(&decls, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); "), hv, hb.p ? hb.p : "NULL", hv);
         buf_printf(&late, "const char *_t%d = sp_str_or_empty(sp_strbuf_read(_t%d)); SP_GC_ROOT(_t%d); "
                    "size_t _l%d = sp_str_byte_len(_t%d); ", tv3, hv, tv3, tv3, tv3);
         free(hb.p);
@@ -668,7 +668,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
            its bare lv_ name) */
         if (nt_kind(nt, expr) == NK_LocalVariableReadNode) emit_local_ref(c, expr, nt_str(nt, expr, "name"), &hb);
         else emit_strbuf_handle_of(c, expr, &hb);
-        buf_printf(&decls, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, hb.p ? hb.p : "NULL", th);
+        buf_printf(&decls, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); "), th, hb.p ? hb.p : "NULL", th);
         buf_printf(&late, "const char *_t%d = sp_str_or_empty(SP_STR_B(_t%d)); SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
                    tv2, th, tv2, tv2, tv2);
         free(hb.p);
@@ -2204,6 +2204,8 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int res_o, int 
   if (res_o && oint_kind(res)) buf_puts(g_pre, le.p ? le.p : oint_nil(res));
   else if (boxed) buf_puts(g_pre, le.p ? le.p : "sp_box_nil()");
   else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value_from_compiler(c, lt), g_pre)) { }
+  /* (one representation: the arm of either face into the temp's, SP_STR_TO) */
+  else if (le.p && one_str_to_open(g_pre, res, "_t%d", tr)) { buf_puts(g_pre, le.p); buf_puts(g_pre, ")"); }
   else buf_puts(g_pre, le.p ? le.p : default_value_from_compiler(c, res));
   buf_puts(g_pre, ";\n");
   free(le.p);
@@ -4636,6 +4638,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
         else if (subt == TY_NIL && res != TY_POLY && nil_value(res))
           buf_puts(g_pre, nil_value(res));
         else if (emit_arm_text_as_bigint(res, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), g_pre)) { }
+        else if (sub_e.p && one_str_to_open(g_pre, res, "_t%d", tr)) { buf_puts(g_pre, sub_e.p); buf_puts(g_pre, ")"); }
         else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value_from_compiler(c, res));
         buf_puts(g_pre, ";\n");
         free(sub_e.p);
@@ -4815,6 +4818,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     else if (lo) emit_oint_expr(c, left, lt, b);
     else if (lt_hbox) emit_boxed(c, left, b);
     else if (lhandle) emit_strbuf_handle_of(c, left, b);
+    /* (one representation: a String left of either face held as its bytes) */
+    else if (g_one_string && lt == TY_STRING) { buf_puts(b, "SP_STR_B("); emit_unresolved_coerced(c, left, lt, b); buf_puts(b, ")"); }
     else emit_unresolved_coerced(c, left, lt, b);
     free(lunk.p);
     buf_puts(b, "; ");
@@ -4892,6 +4897,12 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     if (lhandle && res == TY_STRING && rarm.p) {
       Buf hr; memset(&hr, 0, sizeof hr);
       buf_printf(&hr, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_fresh(%s)"), rarm.p);
+      free(rarm.p); rarm = hr;
+    }
+    /* (one representation: a right arm of either face beside a bytes left) */
+    else if (g_one_string && !lhandle && !lo && lt == TY_STRING && res == TY_STRING && rarm.p) {
+      Buf hr; memset(&hr, 0, sizeof hr);
+      buf_printf(&hr, "SP_STR_B(%s)", rarm.p);
       free(rarm.p); rarm = hr;
     }
     int rhoists = rpre.p && rpre.p[0];
@@ -5691,9 +5702,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     for (int ti = 0; ti < tcount; ti++) {
       const char *tnm = nt_str(nt, tv[ti], "name");
       if (!tnm) continue;
-      buf_printf(b, "lv_%s = sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), reidx);
+      /* (one representation: the capture, new bytes, into the variable's face) */
+      Scope *nsc = comp_scope_of(c, tv[ti]);
+      LocalVar *nlv = nsc ? scope_local(nsc, rename_local(tnm)) : NULL;
+      int one_to = g_one_string && nlv && (nlv->type == TY_STRING || nlv->type == TY_STRBUF);
+      if (one_to) buf_printf(b, "lv_%s = SP_STR_TO(lv_%s, sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), rename_local(tnm), reidx);
+      else buf_printf(b, "lv_%s = sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), reidx);
       emit_str_literal(b, tnm);
-      buf_puts(b, "); ");
+      buf_puts(b, one_to ? ")); " : "); ");
     }
     buf_printf(b, "_t%d; })", t);
     return;
@@ -6206,7 +6222,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         emit_str_form_handle(c, v, &hw);
         int th = ++g_tmp;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hw.p ? hw.p : "NULL", th);
+        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, hw.p ? hw.p : "NULL", th);
         free(hw.p);
         ran_first_bind_read(v, th);
         held++;

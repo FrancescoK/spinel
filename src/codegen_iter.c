@@ -5784,6 +5784,10 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
   LocalVar *lv = sc ? scope_local(sc, rpn) : NULL;
   TyKind pt = lv ? lv->type : TY_UNKNOWN;
   Buf val; memset(&val, 0, sizeof val);
+  /* (one representation: a String element into the parameter's face, SP_STR_TO) */
+  if (g_one_string && k && sp_streq(k, "Str") && (pt == TY_STRING || pt == TY_STRBUF))
+    buf_printf(&val, "SP_STR_TO(lv_%s, sp_StrArray_get(_t%d, _t%d + %d))", rpn, ta, ti, pj);
+  else
   row_param_value(c, lv, pt, k, rt, ta, ti, pj, &val);
   const char *value = val.p ? val.p : "0";
   const char *nil = pt == TY_UNKNOWN ? NULL : (oint_kind(pt) && lv && slot_is_oint(lv)) ? oint_nil(pt)
@@ -6073,7 +6077,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       lv_set_type(clv0, csaved0); clv0->str_shared = ss0;
     }
     else {
-      if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      if (p0) {
+        emit_indent(b, spIndent);
+        /* (one representation: the element into the variable's face) */
+        if (g_one_string) buf_printf(b, "lv_%s = SP_STR_TO(lv_%s, sp_StrArray_get_e(_t%d, _t%d));\n", p0, p0, tm, ti);
+        else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      }
       emit_loop_body(c, body, b, spIndent);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -6228,7 +6237,8 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         }
         else {
           emit_indent(b, indent + 1);
-          buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          if (g_one_string) buf_printf(b, "lv_%s = SP_STR_TO(lv_%s, sp_StrArray_get_e(_t%d, _t%d));\n", p0, p0, ta, ti);
+          else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
         }
         emit_indent(b, indent); buf_puts(b, "}\n");

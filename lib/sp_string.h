@@ -254,7 +254,7 @@ static inline sp_String*sp_String_new_shared(const char*s){
   /* (one representation: the runtime takes a literal's bytes into an
      element itself, sp_strelem_of, so its own copy asks the slot too) */
   sp_StringLiteral *literal = sp_String_literal_slot(s);
-  if (literal) return sp_String_literal_handle(literal, s);
+  if (literal) { sp_String *lh = SP_ATOMIC_LOAD(&literal->value, __ATOMIC_ACQUIRE); return lh ? lh : sp_String_literal_handle(literal, s); }
 #endif
   int64_t len=(int64_t)sp_str_byte_len(s);
 #ifdef SP_ONE_STRING
@@ -304,7 +304,7 @@ static inline sp_String*sp_String_new_fresh(const char*s){
   /* (one representation: the runtime takes a literal's bytes into an
      element itself, sp_strelem_of, so its own copy asks the slot too) */
   sp_StringLiteral *literal = sp_String_literal_slot(s);
-  if (literal) return sp_String_literal_handle(literal, s);
+  if (literal) { sp_String *lh = SP_ATOMIC_LOAD(&literal->value, __ATOMIC_ACQUIRE); return lh ? lh : sp_String_literal_handle(literal, s); }
 #endif
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_inline_len(s,len);

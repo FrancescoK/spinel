@@ -754,7 +754,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         Buf vb; memset(&vb, 0, sizeof vb);
         emit_strbuf_handle_of(c, nbb[nbn - 1], &vb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", tr, vb.p ? vb.p : "NULL", tr);
+        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), tr, vb.p ? vb.p : "NULL", tr);
         free(vb.p);
         ie_body_restore(c, nsnap);
         g_self = sv_self; g_self_deref = sv_deref;
@@ -1011,6 +1011,8 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
             else buf_puts(&eb, "0");
             if (an >= 0 && pscalar && repr_of(c, an).kind == RK_BOXED)
               emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre);
+            /* (one representation: the argument of either face into the parameter's, SP_STR_TO) */
+            else if (pdecl && eb.p && one_str_to_open(g_pre, plv->type, "lv_%s", rename_local(pn))) { buf_puts(g_pre, eb.p); buf_puts(g_pre, ")"); }
             else buf_puts(g_pre, eb.p ? eb.p : "0");
             free(eb.p);
           }
@@ -1124,7 +1126,7 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
   int th;
   if (strbuf_slot_text(c, recv, &ref) && !strbuf_pickup_may_nil(c, recv)) {
     th = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; ", th, ref.p);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); " : "({ sp_String *_t%d = %s; "), th, ref.p);
   }
   else if (strbuf_assign_route(c, recv)) {
     th = ++g_tmp;
@@ -1697,8 +1699,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       Buf clref; memset(&clref, 0, sizeof clref);
       if (sp_streq(name, "clone") && strbuf_slot_text(c, recv, &clref)) {
         int th = ++g_tmp, tcl = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = _t%d ? sp_str_dup(sp_String_cstr(_t%d)) : NULL;"
-                      " _t%d && sp_String_is_frozen(_t%d) ? sp_str_freeze_val(_t%d) : _t%d; })",
+        buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); const char *_t%d = _t%d ? sp_str_dup(sp_String_cstr(_t%d)) : NULL;"
+                      " _t%d && sp_String_is_frozen(_t%d) ? sp_str_freeze_val(_t%d) : _t%d; })" : "({ sp_String *_t%d = %s; const char *_t%d = _t%d ? sp_str_dup(sp_String_cstr(_t%d)) : NULL;"
+                      " _t%d && sp_String_is_frozen(_t%d) ? sp_str_freeze_val(_t%d) : _t%d; })"),
                    th, clref.p, tcl, th, th, tcl, th, tcl, tcl);
         free(clref.p);
         return 1;
@@ -1817,12 +1820,12 @@ static int emit_safe_nav_self_handle(Compiler *c, int id, int recv, Buf *b) {
   int t = ++g_tmp;
   if (hres) buf_puts(b, hb.p);
   else if (repr_of(c, id).kind == RK_BOXED) {
-    buf_printf(b, "({ sp_String *_t%d = %s; ", t, hb.p);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); " : "({ sp_String *_t%d = %s; "), t, hb.p);
     str_box_handle_tmp(b, t);
     buf_puts(b, "; })");
   }
   else {
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? ", t, hb.p, t);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); _t%d ? " : "({ sp_String *_t%d = %s; _t%d ? "), t, hb.p, t);
     str_read_handle_tmp(b, t, 1);
     buf_puts(b, " : (const char *)NULL; })");
   }
@@ -2305,7 +2308,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           if (emit_strbuf_route(c, recv, &hb)) {
             tsh = ++g_tmp;
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", tsh, hb.p, tsh);
+            buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), tsh, hb.p, tsh);
             buf_printf(&rsn, "_t%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL", tsh, tsh);
           }
           else sn_late = 0;

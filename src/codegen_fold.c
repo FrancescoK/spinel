@@ -2565,11 +2565,16 @@ static int emit_hash_chunk_first_class(Compiler *c, int pr, Repr hr, int block, 
   int box1 = lv1 && lv1->type == TY_POLY && vt != TY_POLY;
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "lv_%s = ", p0);
-  if (box0) emit_boxed_text(c, kt, ksrc, g_pre); else buf_puts(g_pre, ksrc);
+  if (box0) emit_boxed_text(c, kt, ksrc, g_pre);
+  /* (one representation: a String key or value into the parameter's face) */
+  else if (lv0 && one_str_to_open(g_pre, lv0->type, "lv_%s", p0)) { buf_puts(g_pre, ksrc); buf_puts(g_pre, ")"); }
+  else buf_puts(g_pre, ksrc);
   buf_puts(g_pre, ";\n");
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "lv_%s = ", p1);
-  if (box1) emit_boxed_text(c, vt, vsrc, g_pre); else buf_puts(g_pre, vsrc);
+  if (box1) emit_boxed_text(c, vt, vsrc, g_pre);
+  else if (lv1 && one_str_to_open(g_pre, lv1->type, "lv_%s", p1)) { buf_puts(g_pre, vsrc); buf_puts(g_pre, ")"); }
+  else buf_puts(g_pre, vsrc);
   buf_puts(g_pre, ";\n");
 
   /* a `next <key>` writes the key slot itself */
@@ -5334,6 +5339,8 @@ static void row_elem_for_param(Compiler *c, int block, const char *pn, const cha
   if (lv && sp_streq(k, "Poly") && (lv->type == TY_INT || lv->type == TY_FLOAT))
     flatmap_coerce_from_poly(lv->type, slot_is_oint(lv), acc, out);
   else if (oget && lv->type == TY_POLY) buf_printf(out, "%s(%s)", oint_box(sp_streq(k, "Int") ? TY_INT : TY_FLOAT), acc);
+  /* (one representation: a String element into the parameter's face) */
+  else if (lv && sp_streq(k, "Str") && one_str_to_open(out, lv->type, "lv_%s", pn)) { buf_puts(out, acc); buf_puts(out, ")"); }
   else buf_puts(out, acc);
 }
 
@@ -8395,7 +8402,7 @@ void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx,
   case TY_INT_ARRAY:
     buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_int(_t%d->data[_t%d->start+_si]));", tmp, from_idx, tmp, t, tmp, tmp); break;
   case TY_STR_ARRAY:
-    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp); break;
+    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, %s_t%d->data[_si]));", tmp, from_idx, tmp, t, ONE_SA_BOXO, tmp); break;
   case TY_FLOAT_ARRAY:
     buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_float(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp); break;
   case TY_POLY_ARRAY:
@@ -9093,7 +9100,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     emit_strbuf_handle_of(c, v, &hh);
     int t = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, hh.p ? hh.p : "NULL", t);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), t, hh.p ? hh.p : "NULL", t);
     free(hh.p); free(sref.p);
     ran_first_bind_o(v, t, t, 0);
     return;
@@ -9108,7 +9115,7 @@ static void emit_arg_temp(Compiler *c, int v) {
                  strbuf_slot_text(c, v, &sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref.p, th);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, wshare ? hw.p : sref.p, th);
   }
   free(hw.p); free(sref.p);
   int t = ++g_tmp;
@@ -9262,7 +9269,7 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
   if (g_one_string && !boxed && ty == TY_STRING && repr_of(c, node).strbuf_src == RS_HANDLE) {
     Buf hh; memset(&hh, 0, sizeof hh);
     emit_strbuf_handle_of(c, node, &hh);
-    buf_printf(b, "sp_String *_t%d = %s;", t, hh.p ? hh.p : "NULL");
+    buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s);" : "sp_String *_t%d = %s;"), t, hh.p ? hh.p : "NULL");
     if (root) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
     buf_puts(b, sep);
     free(hh.p); free(vb.p);
@@ -9539,7 +9546,7 @@ static int emit_arg_handle_first(Compiler *c, int v, int rebound) {
   emit_strbuf_handle_of(c, v, &hb);
   int ht = ++g_tmp;
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p ? hb.p : "NULL", ht);
+  buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), ht, hb.p ? hb.p : "NULL", ht);
   free(hb.p);
   ran_first_bind(v, ht, ht);
   return 1;
@@ -11536,7 +11543,7 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   if (hoist) {
     int th = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, hb.p ? hb.p : "NULL", th);
     buf_printf(out, "_t%d", th);
     free(hb.p);
   }
@@ -12088,7 +12095,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (repr_of_slot(c, hp).kind == RK_STRBUF &&
           emit_strbuf_local_write_handle(c, argv[k], &hb)) {
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
+        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), ht, hb.p, ht);
         free(hb.p);
         view_bind(argv[k], "_t%d", ht);
         if (held) held[k] = ht;
@@ -12105,7 +12112,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
           at == TY_STRING && strbuf_arg_carries(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
+        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), ht, hb.p, ht);
         free(hb.p);
         ran_first_bind(argv[k], ht, ht);
         continue;
@@ -12119,7 +12126,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
           strbuf_arg_bang_value(c, argv[k]) && !strbuf_bang_self_local(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
+        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), ht, hb.p, ht);
         free(hb.p);
         ran_first_bind(argv[k], ht, ht);
         continue;

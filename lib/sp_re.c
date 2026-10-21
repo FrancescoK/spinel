@@ -148,6 +148,10 @@ void sp_re_frame_pop(sp_re_frame *f) {
   if (sp_gc_nroots > f->nroots) sp_gc_nroots = f->nroots;
 }
 void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(str);
+  /* $~ keeps the target past the call: a copy of a live payload, which a
+     later write (a bang's write-back, a growth's realloc) changes or frees
+     (sp_str_keep; a loop of matches over one String keeps it once ahead) */
+  str = sp_str_keep(str);
   sp_re_last_str = str;
   sp_re_last_ncap = ncaps;
   sp_re_last_lit = 0;

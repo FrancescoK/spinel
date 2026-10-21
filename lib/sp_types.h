@@ -327,7 +327,7 @@ typedef struct{sp_strelem*data;sp_int len;sp_int cap;sp_int frozen;sp_strelem in
 #define SP_SEF(b) sp_String_new_shared(b)
 /* the same for a header ahead of sp_string.h (sp_string.c) */
 struct sp_String_s *sp_strelem_of(const char *b);
-#define SP_SEFX(b) sp_strelem_of(b)
+#define SP_SEFX(b) sp_strelem_fx(b)   /* sp_array.h: the fast cases inline */
 #define SP_SEM(e) do { if (e) sp_gc_mark((void *)(e)); } while (0)
 #define SP_SER(e) SP_GC_ROOT(e)
 #define SP_SEBOX(e) ((e) ? sp_box_obj((void *)(e), SP_BUILTIN_STRBUF) : sp_box_nil())

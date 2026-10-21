@@ -1518,7 +1518,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         int tC2 = ++g_tmp;
         /* marked to hand out the handle (`r = obj.buf.clear`): the
            receiver itself, as for the appends */
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
+        buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));" : "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));"),
                    tC2, srefC.p, tC2);
         free(srefC.p);
         if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tC2);

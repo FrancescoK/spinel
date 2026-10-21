@@ -3112,7 +3112,7 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     th = ++g_tmp;
     size_t at = g_pre->len;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, sb.p ? sb.p : "NULL", th);
     /* (the base's read held ahead of the statement is its handle, as
        emit_bang_held_open declares the receiver reads it holds there) */
     if (g_share_check) share_check_declare_reads(g_pre, at, base);
@@ -15130,6 +15130,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int pk = is_fwd ? struct_zsuper_param(c, s, a, cls->ivars[a] + 1, &roff) : -1;
         if (is_fwd && pk < 0) continue;
         buf_printf(b, "%s->iv_%s = ", g_self, iv_c(cls->ivars[a] + 1));
+        /* (one representation: a String member is the handle; the value of either face into it) */
+        int one_to = one_str_to_open(b, ivt, "%s->iv_%s", g_self, iv_c(cls->ivars[a] + 1));
         if (is_fwd && roff >= 0) {
           LocalVar *rv = scope_local(s, s->pnames[pk]);
           Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
@@ -15159,7 +15161,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
           /* a parameter the initialize appends to is the handle (#6179); a
              String member holds its bytes, copied, since the handle's next
              growing append moves them */
-          else if (ivt == TY_STRING && at == TY_STRBUF)
+          /* (one representation: the member is the handle itself, as CRuby's member is the String) */
+          else if (ivt == TY_STRING && at == TY_STRBUF && !g_one_string)
             buf_printf(b, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", src.p, src.p);
           else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src.p, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
           else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src.p, b);
@@ -15205,6 +15208,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
           }
           else emit_expr(c, sargv[a], b);
         }
+        if (one_to) buf_puts(b, ")");
         buf_puts(b, ", ");
       }
       buf_printf(b, "%s)", default_value_from_compiler(c, repr_of(c, id).as_ty));

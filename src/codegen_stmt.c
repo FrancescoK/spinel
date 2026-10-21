@@ -3694,8 +3694,9 @@ int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, Buf *out) {
     return 1;
   }
   int t = ++g_tmp;
-  buf_printf(out, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
-             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+  buf_printf(out, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
+             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })" : "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
+             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })"),
              t, rb.p, t, name, t);
   free(rb.p);
   return 2;
@@ -3764,8 +3765,9 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
        expression anyway; the caller roots its own temp of the value while
        the mutator can allocate (emit_route_recv_root) */
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
-               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
+               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })" : "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
+               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })"),
                t, hb.p, t, nt_str(c->nt, id, "name"), t);
   }
   free(hb.p);
@@ -4068,7 +4070,7 @@ static int emit_strbuf_chain_in_place_m(Compiler *c, int v, int base, const char
   int na = strbuf_chain_links_m(c, v, base, args, multi);
   if (na < 0) return 0;
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; ", th, bref);
+  buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); " : "({ sp_String *_t%d = %s; "), th, bref);
   for (int i = na - 1; i >= 0; i--) {
     if (args[i] <= -2) {
       int link = -2 - args[i], ac = 0;
@@ -4161,12 +4163,13 @@ void emit_var_conversion_handle(Compiler *c, int v, Buf *b) {
   int plus = is_unary_plus(nm), t = ++g_tmp;
   if (is_itself_name(nm) || (nt_safe_nav(nt, v) && !plus)) buf_puts(b, h);
   else if (is_to_s_name(nm) || is_string_class_name(nm))
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, h, t, t);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })" : "({ sp_String *_t%d = %s; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })"), t, h, t, t);
   else if (plus && nt_safe_nav(nt, v))
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_String_uplus(_t%d) : (sp_String *)NULL; })", t, h, t, t);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); _t%d ? sp_String_uplus(_t%d) : (sp_String *)NULL; })" : "({ sp_String *_t%d = %s; _t%d ? sp_String_uplus(_t%d) : (sp_String *)NULL; })"), t, h, t, t);
   else
-    buf_printf(b, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
-                  "sp_box_nil())); %s_t%d%s; })", t, h, t, nm, plus ? "sp_String_uplus(" : "", t, plus ? ")" : "");
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
+                  "sp_box_nil())); %s_t%d%s; })" : "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
+                  "sp_box_nil())); %s_t%d%s; })"), t, h, t, nm, plus ? "sp_String_uplus(" : "", t, plus ? ")" : "");
   free(hr.p);
 }
 
@@ -4461,7 +4464,7 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
   view_unbind(mark);
   if (handled) {
     /* `&.` answers nil for a nil receiver, where any other call raises */
-    buf_printf(b, "({ sp_String *_t%d = %s; ", tH, hb.p);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); " : "({ sp_String *_t%d = %s; "), tH, hb.p);
     emit_ctype(c, ty, b);
     if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
     else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
@@ -4510,8 +4513,9 @@ int emit_freeze_self_answer(Compiler *c, int id, int recv, Buf *b) {
   int ok = hb.p && hb.p[0];
   if (ok) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? (sp_String_freeze(_t%d), "
-                  "sp_str_freeze_val(sp_strbuf_read_pub(_t%d))) : (const char *)NULL; })", t, hb.p, t, t, t, t);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); _t%d ? (sp_String_freeze(_t%d), "
+                  "sp_str_freeze_val(sp_strbuf_read_pub(_t%d))) : (const char *)NULL; })" : "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? (sp_String_freeze(_t%d), "
+                  "sp_str_freeze_val(sp_strbuf_read_pub(_t%d))) : (const char *)NULL; })"), t, hb.p, t, t, t, t);
   }
   free(hb.p);
   return ok;
@@ -4536,7 +4540,7 @@ static void emit_equal_side(Compiler *c, int n, Buf *b) {
   else if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && uplus_over_self_answer(c, u)) emit_held_handle(c, u, &hb);
   if (hb.p && hb.p[0]) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? ", t, hb.p, t);
+    buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); _t%d ? " : "({ sp_String *_t%d = %s; _t%d ? "), t, hb.p, t);
     str_box_open(b, 0);
     buf_printf(b, "%s_t%d%s", fz ? "sp_String_freeze(" : "", t, fz ? ")" : "");
     str_box_close(b);
@@ -4857,7 +4861,7 @@ void strbuf_hold_slot(Compiler *c, int v, int r, Buf *sb) {
   int th = ++g_tmp;
   size_t at = g_pre->len;
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb->p ? sb->p : "NULL", th);
+  buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, sb->p ? sb->p : "NULL", th);
   if (g_share_check) share_check_declare_reads(g_pre, at, r);
   sb->len = 0;
   buf_printf(sb, "_t%d", th);
@@ -5988,7 +5992,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     else if (t == TY_INT_ARRAY)
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]);", k, tr, ta, ta, tj);
     else
-      buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d]);", k, tr, ta, tj);
+      buf_printf(b, " sp_%sArray_push%s(_t%d, _t%d->data[_t%d]);", k, ONE_SA_KE(k), tr, ta, tj);
     buf_printf(b, " %s = _t%d; }", lval, tr);
     op_assign_slot_end(src, lval, b);
     return 1;
@@ -6433,7 +6437,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
       return;
     }
     int th = ++g_tmp, tr = ++g_tmp;
-    buf_printf(b, "%s = ({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", lval, th, lval, th, tr);
+    buf_printf(b, (g_one_string ? "%s = ({ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); const char *_t%d = " : "%s = ({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = "), lval, th, lval, th, tr);
     emit_op_assign_str_rhs(c, v, 1, b);
     buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String_new_fresh(sp_str_plus(_t%d ? sp_String_cstr(_t%d) : NULL, _t%d)); });\n",
                tr, th, th, tr);
@@ -9144,7 +9148,7 @@ static int pm_subject_handle(Compiler *c, int pred, TyKind pt, int indent, Buf *
     return -1;
   int th = ++g_tmp;
   emit_indent(b, indent);
-  buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sref.p, th);
+  buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, sref.p, th);
   free(sref.p);
   return th;
 }
@@ -12708,6 +12712,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
         emit_boxed_text(c, et2, el2, b);
         buf_puts(b, ";\n");
       }
+      /* (one representation: the element into the variable's face, SP_STR_TO) */
+      else if (g_one_string && k && sp_streq(k, "Str")) {
+        Buf lr; memset(&lr, 0, sizeof lr);
+        emit_local_ref(c, idx, vn, &lr);
+        buf_printf(b, "%s = SP_STR_TO(%s, sp_StrArray_get_e(_t%d, _t%d));\n", lr.p ? lr.p : "", lr.p ? lr.p : "", ta, ti);
+        free(lr.p);
+      }
       else
         { emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_%sArray_get(_t%d, _t%d);\n", k ? k : "Poly", ta, ti); }
     }
@@ -15836,8 +15847,10 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     if (!gv) { unsupported(c, id, "multiple assignment global target"); return 1; }
     emit_indent(b, indent);
     buf_printf(b, "gv_%s = ", gn);
+    int ow = one_str_to_open(b, gv->type, "gv_%s", gn);
     if (gvar_is_oint(c, gv)) masgn_conv_o(c, gv->type, vt, val, b);
     else masgn_conv(c, id, gv->type, vt, val, b);
+    if (ow) buf_puts(b, ")");
     buf_puts(b, ";\n");
     return 1;
   }
@@ -15850,8 +15863,10 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     emit_indent(b, indent);
     emit_cvar_set_flag(c, cid, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
+    int ow = one_str_to_open(b, c->classes[cid].cvar_types[cx], "cvar_%s_%s", c->classes[cid].name, nm + 2);
     if (cvar_is_oint(c, cid, cx)) masgn_conv_o(c, c->classes[cid].cvar_types[cx], vt, val, b);
     else masgn_conv(c, id, c->classes[cid].cvar_types[cx], vt, val, b);
+    if (ow) buf_puts(b, ")");
     buf_puts(b, ";\n");
     return 1;
   }
@@ -15860,7 +15875,9 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     if (!cv) { unsupported(c, id, "multiple assignment constant target"); return 1; }
     emit_indent(b, indent);
     buf_printf(b, "cst_%s = ", nm);
+    int ow = one_str_to_open(b, cv->type, "cst_%s", nm);
     masgn_conv(c, id, cv->type, vt, val, b);
+    if (ow) buf_puts(b, ")");
     buf_puts(b, ";\n");
     emit_const_flag_set(cv, nm, b, indent);
     return 1;
@@ -16714,6 +16731,13 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
            element) into a slot that holds one, the plain value otherwise */
         else if (sp_streq(k, "Int") || sp_streq(k, "Float"))
           buf_printf(b, "sp_%sArray_%s(_t%d, _t%d)", k, rllv && slot_is_oint(rllv) ? "oget" : "get", tarr, tix);
+        /* (one representation: a String element into the variable's face) */
+        else if (g_one_string && sp_streq(k, "Str") && rllv) {
+          Buf lr; memset(&lr, 0, sizeof lr);
+          emit_local_ref(c, rights[j], rlvn, &lr);
+          buf_printf(b, "SP_STR_TO(%s, (_t%d >= _t%d->len ? NULL : %s))", lr.p ? lr.p : "", tix, tarr, rgx);
+          free(lr.p);
+        }
         else {
           const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()" : "NULL";
           buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, rgx);
@@ -16752,6 +16776,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           emit_ivar_lhs_otext(c, iv_home_cid, iv_rt2, ivnm2, iv_lhs, og2, b);
         }
         else if (sp_streq(k, "Int") || sp_streq(k, "Float")) buf_puts(b, get_expr2);
+        else if (g_one_string && sp_streq(k, "Str")) buf_printf(b, "SP_STR_TO(%s, (_t%d >= _t%d->len ? NULL : %s))", iv_lhs, tix, tarr, get_expr2);
         else {
           const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()" : "NULL";
           buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, get_expr2);
@@ -17395,7 +17420,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     hwrite = hwrite || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_route(c, els[i], &hw));
     if (hread || hwrite) {
       /* `+s` is s itself unless s is frozen */
-      if (hwrite) buf_printf(b, "sp_String * _t%d = %s;", tmps[i], hw.p ? hw.p : "NULL");
+      if (hwrite) buf_printf(b, (g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s);" : "sp_String * _t%d = %s;"), tmps[i], hw.p ? hw.p : "NULL");
       else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc.p);
       free(hw.p); free(hsrc.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
@@ -17569,6 +17594,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       emit_indent(b, indent);
       buf_printf(b, "cst_%s = ", cnm_l);
       if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      else if (one_str_to_open(b, comp_const(c, cnm_l)->type, "cst_%s", cnm_l)) buf_printf(b, "_t%d)", tmps[i]);
       else buf_printf(b, "_t%d", tmps[i]);
       buf_puts(b, ";\n");
       emit_const_flag_set(comp_const(c, cnm_l), cnm_l, b, indent);
@@ -17715,6 +17741,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
         masgn_conv_o(c, gv2->type, gvalt, masgn_nil_el(c, els[i]) ? NULL : ex, b);
       }
+      else if (one_str_to_open(b, gv2->type, "gv_%s", rn2)) buf_printf(b, "_t%d)", tmps[i]);
       else buf_printf(b, "_t%d", tmps[i]);
       buf_puts(b, ";\n");
     }
@@ -17826,6 +17853,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
       TyKind valt = tmpts ? tmpts[i] : repr_of(c, els[i]).as_ty;
       if (cvt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      else if (one_str_to_open(b, cvt, "cvar_%s_%s", c->classes[cv_cid].name, cnm + 2)) buf_printf(b, "_t%d)", tmps[i]);
       else buf_printf(b, "_t%d", tmps[i]);
       buf_puts(b, ";\n");
     }
@@ -19577,7 +19605,9 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* with a receiver to check, the value waits in a temp until it has been */
     int val_t = recv_t >= 0 ? ++g_tmp : -1;
     emit_indent(b, indent);
-    if (val_t >= 0) { emit_ctype(c, cv->type, b); buf_printf(b, " _t%d = ", val_t); }
+    /* (one representation: a String held of either face, read through SP_STR_TO below) */
+    if (val_t >= 0 && g_one_string && (cv->type == TY_STRING || cv->type == TY_STRBUF)) buf_printf(b, "__auto_type _t%d = ", val_t);
+    else if (val_t >= 0) { emit_ctype(c, cv->type, b); buf_printf(b, " _t%d = ", val_t); }
     else buf_printf(b, "cst_%s = ", nm);
     if (vty && sp_streq(vty, "NilNode"))
       buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, cv->type));
@@ -19601,12 +19631,14 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* a boxed constant slot (widened under promote, or a union) takes the
        value boxed, as the plain ConstantWriteNode does */
     else if (cv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
+    else if (val_t < 0 && one_str_to_open(b, cv->type, "cst_%s", nm)) { emit_expr(c, v, b); buf_puts(b, ")"); }
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
     if (recv_t >= 0) {
       emit_cpath_recv_check(recv_t, b, indent);
       emit_indent(b, indent);
-      buf_printf(b, "cst_%s = _t%d;\n", nm, val_t);
+      if (g_one_string && (cv->type == TY_STRING || cv->type == TY_STRBUF)) buf_printf(b, "cst_%s = SP_STR_TO(cst_%s, _t%d);\n", nm, nm, val_t);
+      else buf_printf(b, "cst_%s = _t%d;\n", nm, val_t);
       if (cv->type == TY_CLASS) emit_cpath_recv_name(c, nm, recv_t, b, indent);
     }
     else if (cv->type == TY_CLASS) {
@@ -22069,7 +22101,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       if (strbuf_slot_text(c, recv, &srefR2)) {
         int tbR = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, " : "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, "),
                    tbR, srefR2.p, tbR);
         free(srefR2.p);
         if (sp_streq(name, "prepend")) {
@@ -22158,7 +22190,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
         const char *base3 = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
         int tbD = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ",
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), " : "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), "),
                    tbD, srefD.p, tbD, base3, tbD);
         free(srefD.p);
         emit_expr(c, argv[0], b);
@@ -22224,6 +22256,18 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at("); emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, 1, %s, 0); }\n", ti, v ? v : "NULL");
       free(v);
+      return 1;
+    }
+    /* (one representation: a receiver that is no variable, an element read,
+       is still a String the program holds: its handle takes the splice,
+       sp_poly_str_aset_key over the handle's box, which writes it in place) */
+    if (g_one_string && !assignable && sp_streq(name, "[]=") && argc == 2) {
+      int ta = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_RbVal _t%d = SP_STR_BOX(", ta); emit_expr(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tk); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tk, tv); emit_boxed(c, argv[1], b);
+      buf_printf(b, "; (void)sp_poly_str_aset_key(_t%d, _t%d, _t%d); }\n", ta, tk, tv);
       return 1;
     }
     /* s[range] = v: splice over the range's char span (negative n inserts) */
@@ -22351,7 +22395,7 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
   if (!hold) return 0;
   int t = ++g_tmp;
   emit_indent(b, indent);
-  buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);", t, sref->p, t);
+  buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);" : "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);"), t, sref->p, t);
   if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", t, name);
   buf_puts(b, "\n");
   sref->len = 0;
@@ -22459,7 +22503,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
       Buf hb; memset(&hb, 0, sizeof hb);
       strh_elem_handle_text(c, cur, &hb);
       emit_indent(b, indent);
-      buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+      buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, hb.p ? hb.p : "NULL", th);
       free(hb.p);
       buf_printf(&srefC, "_t%d", th);
       one_elem_hold = 1;
@@ -22577,7 +22621,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
           if (at != TY_INT && strbuf_slot_text(c, arg, &sbuf)) {
             int ts = ++g_tmp;
             emit_indent(b, indent);
-            buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ts, sbuf.p, ts);
+            buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), ts, sbuf.p, ts);
             free(sbuf.p);
             emit_indent(b, indent + 1);
             emit_expr(c, cur, b); buf_puts(b, " = sp_str_append_grow_n(");
@@ -22645,7 +22689,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         if (strbuf_slot_text(c, recv, &srefS)) {
           int tbS = ++g_tmp;
           emit_indent(b, indent);
-          buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n",
+          buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n" : "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n"),
                      tbS, srefS.p, tbS, base, tbS);
           free(srefS.p);
           return 1;
@@ -22684,7 +22728,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         int tbA = ++g_tmp;
         char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", abase);
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, " : "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, "),
                    tbA, srefA.p, tbA);
         free(srefA.p);
         size_t wb_at = b->len;
@@ -22849,7 +22893,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       }
       else {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefR.p);
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s);\n" : "{ sp_String *_t%d = %s;\n"), tH, srefR.p);
         free(srefR.p);
         emit_sb_shim_swap(b, indent, tH, &pre, armb.p);
         return 1;
@@ -22885,7 +22929,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       view_unbind(mark0);
       if (handled) {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;", tH, lb.p ? lb.p : hb.p);
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s);" : "{ sp_String *_t%d = %s;"), tH, lb.p ? lb.p : hb.p);
         free(lb.p); lb.p = NULL; free(hb.p);
         emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
@@ -22930,7 +22974,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
         if (!handled) { free(armb.p); free(pre.p); free(srefI.p); }
         else {
           emit_indent(b, indent);
-          buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefI.p);
+          buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s);\n" : "{ sp_String *_t%d = %s;\n"), tH, srefI.p);
           free(srefI.p);
           emit_sb_shim_swap(b, indent, tH, &pre, armb.p);
           return 1;
@@ -22957,7 +23001,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       if (!handled) { free(armb.p); free(pre.p); free(srefL.p); }
       else {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefL.p);
+        buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s);\n" : "{ sp_String *_t%d = %s;\n"), tH, srefL.p);
         free(srefL.p);
         emit_sb_shim_swap(b, indent, tH, &pre, armb.p);
         return 1;

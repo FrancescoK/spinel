@@ -320,7 +320,7 @@ int emit_op_hash_default(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; (_t%d && !_t%d->default_nil) ? sp_box_int(_t%d->default_v) : sp_box_nil(); })", t, t, t);
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-    buf_printf(b, "; (_t%d && _t%d->default_v) ? sp_box_str(_t%d->default_v) : sp_box_nil(); })", t, t, t);
+    buf_printf(b, "; (_t%d && _t%d->default_v) ? %s_t%d->default_v) : sp_box_nil(); })", t, t, g_one_string ? "SP_SEBOX(" : "sp_box_str(", t);
   }
   else {
     buf_printf(b, "; (void)_t%d; sp_box_nil(); })", t);
@@ -589,10 +589,14 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
     buf_printf(b, is_nil ? " if (_t%d) _t%d->default_v = " : " if (_t%d) { _t%d->default_v = ", t, t);
+    /* (one representation: the values' slot holds the element, the handle) */
+    int one_h = g_one_string && !is_nil;
+    if (one_h) buf_puts(b, "SP_STR_HDL(");
     if (is_nil) buf_puts(b, "NULL");
     else if (held && at == TY_POLY) buf_printf(b, "sp_poly_hval_s(%s)", av);
     else if (held) emit_coerce_text(c, argv[0], at, TY_STRING, CO_HOLD, av, "a Hash default", b);
     else emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a Hash default", b);
+    if (one_h) buf_puts(b, ")");
     if (is_nil) buf_puts(b, ";");
     else buf_printf(b, "; sp_gc_wb((void *)_t%d); }", t);
   }

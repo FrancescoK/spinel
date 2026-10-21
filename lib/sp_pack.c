@@ -1017,7 +1017,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
        a A Z B b H h, "" for M, and the TypeError m and u raise */
     if (pk_is_str_spec(spec)) {
       int have = idx < arr->len;
-      pk_str_spec(spec, count, SP_SEBOX(have ? sp_StrArray_get(arr, idx) : NULL), have, &buf, &len, &cap);
+      pk_str_spec(spec, count, SP_SEBOX(have ? sp_StrArray_get_e(arr, idx) : NULL), have, &buf, &len, &cap);
       idx++;
       continue;
     }

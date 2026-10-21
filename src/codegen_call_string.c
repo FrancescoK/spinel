@@ -1473,8 +1473,9 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
     Buf ref; memset(&ref, 0, sizeof ref);
     if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), &ref)) {
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
-                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref.p, t, t);
+      buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (sp_String_is_frozen(_t%d)) "
+                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); " : "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
+                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); "), t, ref.p, t, t);
       free(ref.p);
       if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", t);
       else buf_printf(b, "sp_String_cstr(_t%d); })", t);

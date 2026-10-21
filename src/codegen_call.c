@@ -8559,7 +8559,7 @@ static void emit_poly_route_arg(Compiler *c, int node, TyKind ty, int th, int tn
   emit_strbuf_handle_of(c, node, &val);
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
-  buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, val.p ? val.p : "NULL", th);
+  buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); "), th, val.p ? val.p : "NULL", th);
   emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = sp_strbuf_read_pub(_t%d); ", tn, th);
   free(pre.p); free(val.p);
@@ -9901,7 +9901,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name))) &&
               strbuf_slot_text(c, argv[a], &sref)) {
             htmp[a] = ++g_tmp;
-            buf_printf(b, "sp_String *_t%d = %s; ", htmp[a], sref.p);
+            buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); " : "sp_String *_t%d = %s; "), htmp[a], sref.p);
             free(sref.p);
             if (!repr_share_rule(c) || at != TY_STRBUF || (held != 2 && (a < pos_live || kw_runs ||
                 (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh)))))) {
@@ -10000,7 +10000,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (kwneeds && (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
                 strbuf_slot_text(c, val, &ksref)) {
               kwhtmp[e] = ++g_tmp;
-              buf_printf(b, "sp_String *_t%d = %s; ", kwhtmp[e], ksref.p);
+              buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); " : "sp_String *_t%d = %s; "), kwhtmp[e], ksref.p);
               emit_gc_root_tmp(c, TY_STRBUF, kwhtmp[e], b); buf_puts(b, " ");
             }
             free(ksref.p);
@@ -16540,11 +16540,11 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
                       " sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
                       " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                      " sp_%sArray_push(_t%d, _t%d->data[_t%d]);%s _t%d; })",
+                      " sp_%sArray_push%s(_t%d, _t%d->data[_t%d]);%s _t%d; })",
                    tn, k, tr, k, tr,
                    ti, ti, tn, ti,
                    tj, tj, ta, tj,
-                   k, tr, ta, tj, nf, tr);
+                   k, ONE_SA_KE(k), tr, ta, tj, nf, tr);
       }
     }
     return 1;
@@ -23863,7 +23863,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       /* the handle's temp where the arm reads it (a parameter that shares
          the String); otherwise the copy reads the slot, which nothing runs
          between to rebind */
-      if (used[i] & 2) buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", th[i], sref.p ? sref.p : "", th[i]);
+      if (used[i] & 2) buf_printf(b, (g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); "), th[i], sref.p ? sref.p : "", th[i]);
       else if (used[i]) {
         free(opb[i].p);
         memset(&opb[i], 0, sizeof opb[i]);
@@ -24565,7 +24565,7 @@ static int emit_nil_target_route(Compiler *c, int r, int handle, Buf *b, const c
     t = ++g_tmp;
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
-    buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d);", th, hb.p, th);
+    buf_printf(b, (g_one_string ? "sp_String * _t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);" : "sp_String * _t%d = %s; SP_GC_ROOT(_t%d);"), th, hb.p, th);
     buf_printf(b, " const char * _t%d = ", t);
     str_read_handle_tmp(b, th, 1);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
@@ -24705,7 +24705,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       if (got) {
         int t = ++g_tmp;
         buf_puts(b, lead);
-        buf_printf(b, "sp_String *_t%d = %s;", t, hb.p);
+        buf_printf(b, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s);" : "sp_String *_t%d = %s;"), t, hb.p);
         if (later_alloc) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
         buf_puts(b, *lead ? "\n" : " ");
         free(hb.p);
@@ -25227,7 +25227,7 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
       !arg_ran_first(recv, 0) && read_rebound_by(c, recv, args) && strbuf_slot_text(c, recv, &ref)) {
     int th = ++g_tmp, mark = g_n_argov;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, ref.p, th);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, ref.p, th);
     free(ref.p);
     int sv = view_push_repr(c, recv, VR_STRBUF_BOX, 1), st = view_push(c, recv, TY_STRBUF);
     ran_first_bind(recv, th, th);
@@ -30588,7 +30588,7 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
     Buf rx; memset(&rx, 0, sizeof rx);
     emit_strbuf_handle_of(c, recv, &rx);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, rx.p ? rx.p : "", t);
+    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), t, rx.p ? rx.p : "", t);
     free(rx.p);
     buf_printf(&rb, "_t%d", t);
   }

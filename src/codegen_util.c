@@ -3816,6 +3816,18 @@ void one_face_mark(int t, int node) {
   g_one_face_node[t] = node + 1;
 }
 int one_face_is(int t, int node) { return t >= 0 && t < g_one_face_cap && g_one_face_node[t] == node + 1; }
+/* One representation: a write `dst = v` into a String slot, where the
+   emitter writes v in the type's face (bytes) and the slot is the handle
+   (every String holder is, repr_str_class_shares): v goes in through
+   SP_STR_TO, which takes dst's face. 1 when it opened the wrapper; the
+   caller closes it with ")". */
+int one_str_to_open(Buf *b, TyKind st, const char *fmt, ...) {
+  if (!g_one_string || (st != TY_STRING && st != TY_STRBUF)) return 0;
+  char dst[200];
+  va_list ap; va_start(ap, fmt); vsnprintf(dst, sizeof dst, fmt, ap); va_end(ap);
+  buf_printf(b, "SP_STR_TO(%s, ", dst);
+  return 1;
+}
 int one_str_elem_call(Compiler *c, int v, TyKind rt) {
   const NodeTable *nt = c->nt;
   if (!g_one_string || v < 0) return 0;
@@ -4765,6 +4777,9 @@ static void rcc_note(Compiler *c, int node, TyKind from, TyKind slot, int how, i
 
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b) {
+  /* (one representation: bytes into a handle slot are the String the
+     handle names: a payload view's owner, a new handle over other bytes) */
+  if (g_one_string && slot == TY_STRBUF && from == TY_STRING && text) { buf_printf(b, "SP_STR_HDL(%s)", text); return; }
   /* the form is repr_coerce_text_form's (repr.c) */
   switch (repr_coerce_text_form(c, node, from, slot, how)) {
   case CF_FIT:
