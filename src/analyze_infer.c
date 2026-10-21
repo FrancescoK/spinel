@@ -5966,8 +5966,13 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */
-      if (self->is_cmethod && sp_streq(name, "new"))
-        { *out = ty_object(self->class_id); return 1; }
+      if (self->is_cmethod && is_new_name(name)) {
+        if (g_plan_check) {
+          const CallPlan *p = cplan_user_fresh(c, id);
+          if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+        }
+        *out = ty_object(self->class_id); return 1;
+      }
       /* a class method's self is the class: of the instance methods on its
          chain only Object's and Module's are its own (comp_self_call_mi) */
       int mi = self->is_cmethod ? comp_class_self_inst_mi(c, self->class_id, name)
