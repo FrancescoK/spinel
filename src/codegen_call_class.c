@@ -945,7 +945,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", qm);
         return 1;
       }
-      int yes = const_defined_known(c, cd_rnm, qm);
+      int yes = const_defined_from(c, cd_rnm, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
       if (yes && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
@@ -3961,7 +3961,22 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", cn0);
           return 1;
         }
-        int yes = const_defined_known(c, rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL, cn0);
+        int lit0 = rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode;
+        int yes = lit0 ? const_defined_from(c, nt_str(nt, recv, "name"), cn0) : const_defined_known(c, NULL, cn0);
+        /* a Class known only at run time: the classes that see the constant,
+           as its literal form decides for one (#9876); a top-level one, or
+           a qualified name, every class sees */
+        if (!lit0 && yes && !strstr(cn0, "::") && !const_name_resolves_top_level(c, cn0)) {
+          int tc = ++g_tmp;
+          buf_printf(b, "({ sp_Class _t%d = ", tc); emit_expr(c, recv, b);
+          buf_printf(b, "; (0");
+          for (int k = 0; k < c->nclasses; k++)
+            if (const_seen_by_class(c, k, cn0)) buf_printf(b, " || _t%d.cls_id == %d", tc, k);
+          buf_puts(b, ")");
+          if (const_has_flag(comp_const(c, cn0))) buf_printf(b, " && cst_%s__set", cn0);
+          buf_puts(b, "; })");
+          return 1;
+        }
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
         /* a constant not assigned yet is not defined: asked at run time */
         if (yes && const_has_flag(comp_const(c, cn0))) buf_printf(b, "), cst_%s__set)", cn0);

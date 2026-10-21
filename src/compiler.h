@@ -1739,6 +1739,8 @@ const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int 
 void       const_get_leaves_begin(Compiler *c);  /* index the class leaves while the class table holds still */
 void       const_get_leaves_end(void);
 int        const_defined_known(Compiler *c, const char *rnm, const char *cgn);
+int        const_defined_from(Compiler *c, const char *rnm, const char *cgn);   /* ... and seen from R: R, its ancestors, their modules, or top level (#9876) */
+int        const_seen_by_class(Compiler *c, int k, const char *cgn);
 int        qc_const_qualified(const char *qn);
 int        qc_leaf_qualified(const char *leaf);
 const char *time_strict_parser_call(Compiler *c, int id);
