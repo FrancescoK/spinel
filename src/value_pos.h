@@ -98,6 +98,8 @@ enum {
      for a caller that judges the type the expression has as a whole as well
      as the operands one by one. Not part of VP_ALL_FLAGS. */
   VP_LOGIC_NODES = 1u << 7,
+  /* Leave clause wrappers intact; only parentheses and statement lists peel. */
+  VP_PARENS_ONLY = 1u << 17,
 
   /* The shapes the walk sees through; a shape that is off is a leaf. No bit
      at all means every shape. A walker passes the subset it handled before it

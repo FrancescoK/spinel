@@ -220,6 +220,9 @@ static VpWriteKind vp_write_kind(NodeKind k) {
 
 static VpStep vp_step(VpWalk *w, VpItem *cur) {
   const NodeTable *nt = w->nt;
+  if ((w->flags & VP_PARENS_ONLY) &&
+      (nt_kind(nt, cur->node) == NK_ElseNode || nt_kind(nt, cur->node) == NK_InNode))
+    return VPSTEP_LEAF;
   switch (nt_kind(nt, cur->node)) {
 #include "value_pos_arms.inc"
   /* ---- hand-written arms, one per `role: hand` entry of value_edges.yml ---- */
@@ -387,6 +390,8 @@ static int vp_up_hand(const NodeTable *nt, int p, int child, unsigned flags, uns
 }
 
 static int vp_up_edge(const NodeTable *nt, int p, int child, unsigned flags, unsigned shapes) {
+  if ((flags & VP_PARENS_ONLY) &&
+      (nt_kind(nt, p) == NK_ElseNode || nt_kind(nt, p) == NK_InNode)) return VPE_NONE;
   switch (nt_kind(nt, p)) {
 #include "value_pos_edges.inc"
   default:
@@ -711,6 +716,14 @@ static int vp_check_one(void) {
   nt_node_set_ref(nt, cp, "body", cs);
   nt_node_set_arr(nt, cs, "body", cyc, 1);
   ok &= vp_one(nt, cp, VPS_NONE, &n) == VP1_MANY && n == -1;
+  int clause = nt_new_node(nt, "ElseNode");
+  nt_node_set_ref(nt, clause, "statements", ss);
+  ok &= vp_one(nt, ps, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NODE && n == b;
+  ok &= vp_one(nt, empty, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NIL;
+  ok &= vp_one(nt, clause, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NODE && n == clause;
+  ok &= vp_one(nt, clause, VPS_NONE, &n) == VP1_NODE && n == b;
+  ok &= !vp_is_value_edge(nt, clause, ss, VPS_NONE | VP_PARENS_ONLY);
+  ok &= vp_is_value_edge(nt, clause, ss, VPS_NONE);
   nt_free(nt);
   return ok;
 }

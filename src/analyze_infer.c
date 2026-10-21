@@ -11495,7 +11495,11 @@ int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed
    is not known to be. */
 int an_rat_value(Compiler *c, int n) {
   if (!g_promote_mode || n < 0) return 0;
-  n = an_unparen(c->nt, n);
+  switch (vp_one(c->nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 0;
+  case VP1_MANY: return 0;
+  }
   if (an_rat_boxed(n)) return 1;
   NodeKind k = nt_kind(c->nt, n);
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
@@ -11516,7 +11520,14 @@ int an_rat_value(Compiler *c, int n) {
     if (!wn || !sp_streq(wn, h.name)) continue;
     NodeKind wk = nt_kind(c->nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_InstanceVariableWriteNode) return 0;
-    if (!an_rat_boxed(w) && !an_rat_boxed(an_unparen(c->nt, nt_ref(c->nt, w, "value")))) return 0;
+    if (!an_rat_boxed(w)) {
+      int value;
+      switch (vp_one(c->nt, nt_ref(c->nt, w, "value"), VPS_NONE | VP_PARENS_ONLY, &value)) {
+      case VP1_NODE: if (!an_rat_boxed(value)) return 0; break;
+      case VP1_NIL: return 0;
+      case VP1_MANY: return 0;
+      }
+    }
     any = 1;
   }
   return any;
