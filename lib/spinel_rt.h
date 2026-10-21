@@ -10162,7 +10162,7 @@ static void sp_StrPolyHash_delete_bytes(sp_StrPolyHash*h,const char*k){ sp_gc_wb
 sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b);
 static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(a,b->order[i],sp_StrPolyHash_get(b,b->order[i]));}
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h);
-static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
+static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("replace");if(h==o)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
 void sp_StrPolyHash_clear(sp_StrPolyHash*h);
 static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
@@ -10485,7 +10485,7 @@ static sp_PolyArray *sp_Object_ivars(sp_Object *o){
   for(sp_int i=0;o&&o->ivars&&i<o->ivars->len;i++) sp_PolyArray_push(a,sp_box_sym(o->ivars->order[i]));
   return a;
 }
-static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
+static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace");if(h==o)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
 void sp_SymPolyHash_clear(sp_SymPolyHash*h);
 static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
