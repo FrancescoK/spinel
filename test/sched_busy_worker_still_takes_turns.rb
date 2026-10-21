@@ -1,13 +1,13 @@
 # A worker whose own queue never empties still gives the global queue and its
 # readiness set their turns.
 #
-# With one helper worker (set before the first thread starts; CRuby ignores
-# it), two threads that never block are spawned before the helper is up, so
+# With one helper worker (SPINEL_WORKERS=2: main and one helper, set before
+# the first thread starts; CRuby ignores it), two threads that never block are spawned before the helper is up, so
 # both wait on the global queue. The helper takes one, and must still take
 # the other: the first keeps the helper's own queue busy for good. Then a
 # thread pinned behind them waits to read a pipe, and its readiness event
 # has to be taken from that busy worker's set while both still spin.
-ENV["SPINEL_WORKERS"] = "1"
+ENV["SPINEL_WORKERS"] = "2"
 
 def wait_for(what)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10

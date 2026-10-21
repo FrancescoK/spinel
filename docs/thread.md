@@ -15,10 +15,16 @@ is a user guarantee.
 
 ## The execution model
 
-- **N OS workers.** Worker count is `min(online cores, SPINEL_WORKERS)`.
-  Set `SPINEL_WORKERS=1` to force the single-worker cooperative model, or a
-  fixed number to cap parallelism. Absent the env var, Spinel autodetects the
-  number of online cores.
+- **N OS workers.** `SPINEL_WORKERS=N` is the number of OS threads that run
+  Ruby code, the main thread among them: N-1 helper workers run the other
+  threads beside main. Set `SPINEL_WORKERS=1` to force the single-worker
+  cooperative model: main runs every thread itself, giving each runnable one
+  a timeslice whenever its own code has run a slice, as in CRuby. One OS
+  thread runs them all, so a call that blocks in the OS rather than in the
+  scheduler (`flock` waiting for a lock, a blocking extension call) stops
+  every thread until it returns; I/O, sleeps and Queue / Mutex waits park in
+  the scheduler and do not. A fixed N above 1 caps parallelism. Absent the env var, Spinel autodetects the
+  number of online cores and runs a helper per core beside main.
 - **Real parallelism, no GVL.** Two threads run Ruby code on two cores
   simultaneously. There is no implicit per-object lock, so unsynchronized
   shared mutation is a data race (see [By design](#by-design) below).

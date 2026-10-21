@@ -5,10 +5,10 @@
 # root watermark: the watermarks are per worker like the handler arms, and
 # before they travelled with the exception context (#4546) the rescue
 # restored the second thread's, dropping the roots of the frames above it,
-# so the next collection freed strings those frames still held. One worker
-# (SPINEL_WORKERS, read when the first thread starts) puts both threads on
-# the same arms; CRuby ignores it.
-ENV["SPINEL_WORKERS"] = "1"
+# so the next collection freed strings those frames still held. One helper
+# worker (SPINEL_WORKERS=2: main and one helper, read when the first thread
+# starts) puts both threads on the same arms; CRuby ignores it.
+ENV["SPINEL_WORKERS"] = "2"
 require 'socket'
 $stdout.sync = true
 Thread.report_on_exception = false
