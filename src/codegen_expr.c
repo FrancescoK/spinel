@@ -4073,7 +4073,10 @@ static void emit_str_lit_late(Compiler *c, const int *els, int n, int t) {
     Buf el; memset(&el, 0, sizeof el);
     tmp[j] = ++g_tmp;
     hnd[j] = (char)lit_elem_carries_handle(c, els[j]);
-    if (hnd[j]) emit_strbuf_handle_of(c, els[j], &el);
+    /* (one representation: the element's text may be bytes whatever
+       carries the handle, so the handle is taken through its face) */
+    if (hnd[j] && g_one_string) emit_expr_face(c, els[j], TY_STRBUF, &el);
+    else if (hnd[j]) emit_strbuf_handle_of(c, els[j], &el);
     else emit_coerce(c, els[j], TY_STRING, CO_HOLD, "an Array literal's element", &el);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "%s _t%d = %s; SP_GC_ROOT%s(_t%d);\n", hnd[j] ? "sp_String *" : "const char *", tmp[j],

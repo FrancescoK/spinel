@@ -4861,6 +4861,21 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
   unsupported_feature(c, node, msg);
 }
 
+/* `node` written into a temp an emitter declared with String type `t`.
+   Under the one String representation a String node's text can be either
+   face whatever its type says (a literal is bytes, a handle slot's read is
+   the handle), so the text goes through the face macro of the declared
+   type; anything else is the node as it is. */
+void emit_expr_face(Compiler *c, int node, TyKind t, Buf *b) {
+  if (g_one_string && (t == TY_STRING || t == TY_STRBUF)) {
+    buf_puts(b, t == TY_STRBUF ? "SP_STR_HDL(" : "SP_STR_B(");
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
+    return;
+  }
+  emit_expr(c, node, b);
+}
+
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
   /* repr_coerce_plan decides the form (repr.c), in this order: a boolean
      flag's truthiness, an untyped empty container built at the slot's kind,

@@ -558,6 +558,16 @@ int conv_to_ary_impossible(TyKind t) {
          t == TY_COMPLEX || t == TY_RATIONAL || ty_is_hash(t);
 }
 
+/* The C type of a shared-mutable shim's result temp. The arm it re-runs
+   reads the bytes shadow, so under the one String representation a String
+   answer has the arm's own face (bytes, or a handle it built), which the
+   consumers read through the face macros: the temp takes that face rather
+   than the call's handle. */
+static void emit_sb_res_ctype(Compiler *c, TyKind resty, Buf *b) {
+  if (g_one_string && (resty == TY_STRING || resty == TY_STRBUF)) { buf_puts(b, "__auto_type"); return; }
+  emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+}
+
 /* The shared-mutable shim over an IVAR receiver, in expression position. The
    local form renames the slot so the value arm's reads and its write-back both
    land on a plain shadow; an ivar has no name to rename, so the shadow is
@@ -592,7 +602,7 @@ static int sb_iv_expr_shim(Compiler *c, int id, int recvS, Buf *b,
                 " SP_GC_ROOT(lv__sb%d); "),
              tH, srefI.p, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
   free(pre.p); free(srefI.p);
-  emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+  emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
   buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
@@ -624,7 +634,7 @@ static int sb_reader_expr_shim(Compiler *c, int id, int recvS, Buf *b,
                 " SP_GC_ROOT(lv__sb%d); "),
              tH, srefR.p, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
   free(pre.p); free(srefR.p);
-  emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+  emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
   buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
@@ -673,7 +683,7 @@ static int sb_route_expr_shim(Compiler *c, int id, int recvS, Buf *b,
                 " SP_GC_ROOT(lv__sb%d); ",
              tH, g_one_string ? "SP_STR_HDL(" : "", hb.p, g_one_string ? ")" : "", tH, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
   free(hb.p); free(pre.p);
-  emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+  emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
   buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
@@ -5145,7 +5155,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                         " SP_GC_ROOT(lv__sb%d); "),
                      tH, srefL.p, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
           free(pre.p); free(srefL.p);
-          emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+          emit_sb_res_ctype(c, resty, b);
           buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
           free(armb.p);
           buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);

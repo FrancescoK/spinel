@@ -2781,7 +2781,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       if (aoint[k]) emit_oint_expr(c, argv[k], at, &vb);
       else if (repr_share_rule(c) && at == TY_STRBUF && repr_of(c, argv[k]).as_ty != TY_STRBUF)
         emit_strbuf_handle_of(c, argv[k], &vb);
-      else if (!emit_strbuf_write_handle(c, argv[k], &vb)) emit_expr(c, argv[k], &vb);
+      else if (!emit_strbuf_write_handle(c, argv[k], &vb)) emit_expr_face(c, argv[k], at, &vb);
       /* one the nil arm's head ran is its temp already, rooted ahead of the call */
       /* (an oint temp is its own: the head holds the plain value) */
       int held = storable && at != TY_STRBUF && !aoint[k] ? head_held_read(c, argv[k], vb.p) : -1;

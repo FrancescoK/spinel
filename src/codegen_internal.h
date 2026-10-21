@@ -1162,6 +1162,7 @@ void store_check_kind(Compiler *c, int node, TyKind from, TyKind slot, const cha
 /* How emit_coerce may convert: see codegen_util.c. */
 enum { CO_HOLD, CO_CONVERT };
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b);
+void emit_expr_face(Compiler *c, int node, TyKind t, Buf *b);
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b);
 
