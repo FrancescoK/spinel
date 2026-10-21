@@ -125,7 +125,9 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); sp_puts_line(_fs); }\n");
   }
   else if (t == TY_STRING) {
-    buf_puts(b, "{ const char *_ps = (const char *)("); emit_expr(c, arg, b);
+    /* (one representation: the String of either face as its bytes; the
+       cast read a handle's struct as bytes) */
+    buf_puts(b, g_one_string ? "{ const char *_ps = SP_STR_B(" : "{ const char *_ps = (const char *)("); emit_expr(c, arg, b);
     buf_puts(b, "); sp_puts_str_line(_ps); }\n");
   }
   else if (t == TY_BOOL) {

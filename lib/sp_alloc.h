@@ -1076,10 +1076,18 @@ static inline const char *sp_str_keep(const char *s) {
    as CRuby keys a frozen String. The copy can collect, which clears the
    write barrier's record of the hash: the caller issues its barrier again
    before storing. */
+#ifdef SP_ONE_STRING
+const char *sp_hash_key_handle_copy(const char *s);
+#endif
 static inline const char *sp_hash_key_str(const char *s) {
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m != 0xfe && m != 0xfc && m != 0xfd) return s;
   if (m == 0xfd && sp_str_fd_owner_frozen(s)) return s;
+#ifdef SP_ONE_STRING
+  /* (one representation: the copy is a frozen handle's payload, so the
+     key's handle, sp_String_key_handle, is that one String each time) */
+  return sp_hash_key_handle_copy(s);
+#endif
   char *r = (char *)sp_str_from_bytes(s, sp_str_byte_len(s));
   if (sp_str_is_binary(s)) sp_str_mark_binary(r);
   ((unsigned char *)r)[-1] = 0xfa;
