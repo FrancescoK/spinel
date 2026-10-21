@@ -12812,8 +12812,10 @@ int desugar_dir_surface(Compiler *c) {
       for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
       changed = 1; continue;
     }
-    /* blockless foreach/each_child still enumerate */
-    alias = dir_surface_alias(nm, 1);
+    /* blockless foreach/each_child still enumerate; a foreach with no block
+       at all (not even &b) answers its own Enumerator instead
+       (emit_call_file_dir_time_arms) */
+    alias = sp_streq(nm, "foreach") && blk < 0 ? NULL : dir_surface_alias(nm, 1);
     if (alias) {
       nt_node_set_str(nt, id, "name", alias);
       nt_node_set_int(nt, id, "builtin_only", 1); changed = 1; continue;

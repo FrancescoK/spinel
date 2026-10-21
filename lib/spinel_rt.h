@@ -18880,6 +18880,8 @@ sp_Enumerator *sp_loop_enum(void);
    one streams by succ, a bounded one's step members are materialized. */
 sp_Enumerator *sp_srange_endless_enum(sp_RbVal box, sp_int step);
 sp_Enumerator *sp_srange_stepped_enum(sp_RbVal src, sp_int n, const char *label);
+sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
+                                  const char *(*get_path)(sp_RbVal));
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   /* The receiver is the caller's temporary -- `(11..55).each` passes it straight
      in, unreachable from anywhere else -- and BOTH arms below allocate before
