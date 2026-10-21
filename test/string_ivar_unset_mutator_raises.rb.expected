@@ -1,0 +1,32 @@
+Seongsu <<:  Ro -> "Seongsu Ro"
+Seongsu concat:  Ro -> "Seongsu Ro"
+Seongsu prepend: Ttukseom  -> "Ttukseom Seongsu"
+Seongsu insert: 3 -> "Seo-ngsu"
+Seongsu []=: 2 -> "SeOngsu"
+Seongsu setbyte: 0 -> "seongsu"
+Seongsu slice!: 0 -> "eongsu"
+Seongsu upcase!:  -> "SEONGSU"
+Seongsu sub!: o -> "Se0ngsu"
+Seongsu tr!: o -> "Seungsu"
+Seongsu squeeze!:  -> "Seongsu"
+Seongsu reverse!:  -> "usgnoeS"
+Seongsu append_as_bytes: ! -> "Seongsu!"
+Seongsu replace: Achasan -> "Achasan"
+Seongsu clear:  -> ""
+Seongsu << as a value: ! -> "Seongsu!"
+nil <<:  Ro -> NoMethodError undefined method '<<' for nil
+nil concat:  Ro -> NoMethodError undefined method 'concat' for nil
+nil prepend: Ttukseom  -> NoMethodError undefined method 'prepend' for nil
+nil insert: 3 -> NoMethodError undefined method 'insert' for nil
+nil []=: 2 -> NoMethodError undefined method '[]=' for nil
+nil setbyte: 0 -> NoMethodError undefined method 'setbyte' for nil
+nil slice!: 0 -> NoMethodError undefined method 'slice!' for nil
+nil upcase!:  -> NoMethodError undefined method 'upcase!' for nil
+nil sub!: o -> NoMethodError undefined method 'sub!' for nil
+nil tr!: o -> NoMethodError undefined method 'tr!' for nil
+nil squeeze!:  -> NoMethodError undefined method 'squeeze!' for nil
+nil reverse!:  -> NoMethodError undefined method 'reverse!' for nil
+nil append_as_bytes: ! -> NoMethodError undefined method 'append_as_bytes' for nil
+nil replace: Achasan -> NoMethodError undefined method 'replace' for nil
+nil clear:  -> NoMethodError undefined method 'clear' for nil
+nil << as a value: ! -> NoMethodError undefined method '<<' for nil

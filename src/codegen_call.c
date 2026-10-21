@@ -24311,7 +24311,8 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) return 0;
   if (nt_safe_nav(nt, id)) return 0;
   /* (one the plan tests, once its arguments have run: an Array no
-     initialize sets first, cplan_nil, which reads as tested inside) */
+     initialize sets first, or a String there a mutator changes,
+     cplan_nil, which reads as tested inside) */
   if (cplan_nil(c, id) == CN_RAISE || repr_of(c, recv).nil_tested) return 0;
   const char *nm = nt_str(nt, id, "name");
   /* (a method nil answers itself, CRuby's nil.public_methods: `__id__`
@@ -24555,8 +24556,11 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
   }
   /* (nor an ivar's, when no argument runs code: nothing can write the slot
      between the test and the call, which reads it again, and an element
-     read in a hot loop pays for no temp or root) */
-  int ivar_slot = rk == NK_InstanceVariableReadNode && (a < 0 || !subtree_has_side_effect(c, a));
+     read in a hot loop pays for no temp or root; nor a String ivar a
+     mutator changes, which it writes back into the slot as a local's) */
+  int ivar_slot = rk == NK_InstanceVariableReadNode &&
+                  (a < 0 || !subtree_has_side_effect(c, a) ||
+                   (repr_of(c, r).as_ty == TY_STRING && an_str_mutator_name(nt_str(nt, id, "name"))));
   if ((rk != NK_LocalVariableReadNode || rebound) && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
       !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode)) && !ivar_slot) {
     node[n] = r; ty[n] = repr_of(c, r).as_ty; n++;
