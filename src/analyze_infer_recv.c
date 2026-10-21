@@ -10,6 +10,7 @@
    "declined". */
 #include "analyze_internal.h"
 #include "builtin_ops.h"
+#include "call_plan.h"
 #include "share.h"
 #include <stdio.h>
 #include <string.h>
@@ -1274,8 +1275,14 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        The emitter routes the same shape through the poly dispatch. */
     if (comp_method_in_chain(c, cid, name, NULL) < 0 &&
         !comp_reader_in_chain(c, cid, name, NULL) && !cls->is_native_class &&
-        comp_subclass_answers(c, cid, name))
-      { *out = TY_POLY; return 1; }
+        comp_subclass_answers(c, cid, name)) {
+      /* Runtime-name send arms on boxed self may include classes the descendant plan excludes. */
+      if (g_plan_check && !nt_int(nt, id, "dyn_arm", 0)) {
+        const CallPlan *p = cplan_user_fresh(c, id);
+        if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+      }
+      *out = TY_POLY; return 1;
+    }
     /* a class's own respond_to? -- or is_a?, instance_of?, == and the rest
        below -- is the call's answer, which the emitter dispatches to: typed
        by what it returns, which need not be true or false (an

@@ -192,6 +192,20 @@ static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
   return;
 }
 
+/* A missing base implementation still dispatches to the existing descendants. */
+static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cmeth, CallPlan *p) {
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int mi = cmeth ? comp_cmethod_in_class(c, ds[i], name)
+                   : comp_method_in_class(c, ds[i], name);
+    if (mi < 0) continue;
+    cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
+              cmeth ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+    return;
+  }
+}
+
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -321,6 +335,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     if (class_is_exc_subclass(c, cid)) cplan_exc_reopen(c, name, p);
     if (p->mi < 0) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && !comp_reader_in_chain(c, cid, name, NULL) && !c->classes[cid].is_native_class)
+      cplan_descendant_call(c, cid, name, 0, p);
     return;
   }
   if (rt == TY_POLY) { cplan_resolve_poly(c, name, p); return; }
