@@ -109,7 +109,7 @@ for f in $STRICT_PROGRAMS; do
   fi
 done
 # Emission trials must preserve the inferred user target of the real call.
-STRICT_UCALL_PROGRAMS="test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb"
+STRICT_UCALL_PROGRAMS="test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb test/call_plan_reader_target.rb"
 for f in $STRICT_UCALL_PROGRAMS; do
   if ! grep -q "^$f: plan-check: " "$OUT" ||
      grep -q "^$f: plan-check-exit:" "$OUT" ||

@@ -5880,6 +5880,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
               if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
               int kmi = comp_method_in_chain(c, k, name, NULL);
               if (kmi < 0 || kmi == base_mi2) continue;
+              if (g_plan_check) an_user_call_record(c, id, kmi, UC_POLY, k);
               TyKind kr = (TyKind)c->scopes[kmi].ret;
               if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
             }
