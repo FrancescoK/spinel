@@ -8012,14 +8012,52 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   }
 }
 
-/* Is `name` called anywhere on a receiver that is neither a constant nor self,
-   one that may hold a Class value known only at run time? */
-static int name_called_on_dynamic_recv(Compiler *c, const char *name, int node_count) {
+/* The names a `class << self` alias gives (`alias fetch_entry lookup`,
+   `alias_method`), each once: a call by one of them runs the aliased class
+   method, so it counts as a call of that method on its receiver. */
+typedef struct { char **nm; int n; } SgAliasNames;
+static SgAliasNames sg_alias_names(Compiler *c) {
+  SgAliasNames an = { NULL, 0 };
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *cls = &c->classes[k];
+    for (int i = 0; cls->alias_sg && i < cls->naliases; i++) {
+      if (!cls->alias_sg[i] || !cls->alias_new[i]) continue;
+      int seen = 0;
+      for (int j = 0; j < an.n && !seen; j++) seen = sp_streq(an.nm[j], cls->alias_new[i]);
+      if (seen) continue;
+      char **g = realloc(an.nm, sizeof(char *) * (size_t)(an.n + 1));
+      if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      an.nm = g; an.nm[an.n++] = cls->alias_new[i];
+    }
+  }
+  return an;
+}
+
+/* Does a call named `nm` on one of the classes `from` run the class method
+   mi: its own name, or an alias of it (a copy of mi made for that class is
+   the same method)? */
+static int cm_call_names(Compiler *c, const char *nm, int mi, const int *from, int nfrom,
+                         const SgAliasNames *an) {
+  if (sp_streq(nm, c->scopes[mi].name)) return 1;
+  int alias = 0;
+  for (int j = 0; j < an->n && !alias; j++) alias = sp_streq(an->nm[j], nm);
+  for (int f = 0; alias && f < nfrom; f++) {
+    int r = comp_cmethod_in_chain(c, from[f], nm, NULL);
+    if (r >= 0 && c->scopes[r].is_cmethod && c->scopes[r].def_node == c->scopes[mi].def_node) return 1;
+  }
+  return 0;
+}
+
+/* Is the class method mi called anywhere, on one of the classes `from`, with
+   a receiver that is neither a constant nor self, one that may hold a Class
+   value known only at run time? */
+static int name_called_on_dynamic_recv(Compiler *c, int mi, const int *from, int nfrom, int node_count,
+                                       const SgAliasNames *an) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < node_count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
+    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an)) continue;
     int r = nt_ref(nt, id, "receiver");
     if (r < 0) continue;
     NodeKind rk = nt_kind(nt, r);
@@ -8103,6 +8141,7 @@ void specialize_inherited_cls_new(Compiler *c) {
   sn_begin();
   int node_count = nt->count;   /* don't scan nodes appended by cloning */
   int did_clone = 0;
+  SgAliasNames an = sg_alias_names(c);
   /* self in a class body is the class, so a receiver-less call there names a
      class method of THAT class even though the statement belongs to no class
      method scope. Map each such statement to its class up front; the loop below
@@ -8238,7 +8277,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!nt2) break;
       tgt = nt2; tgt[ntgt++] = k;
     }
-    if (ntgt > 0 && name_called_on_dynamic_recv(c, mname, node_count))
+    if (ntgt > 0 && name_called_on_dynamic_recv(c, mi, tgt, ntgt, node_count, &an))
       for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t]);
     free(tgt);
   }
@@ -8283,11 +8322,13 @@ void specialize_inherited_cls_new(Compiler *c) {
     int called_direct = 0;
     for (int ii = 0; ii < nccall && !called_direct; ii++) {
       int id = ccall[ii];
-      if (!cls_call_name(c, id) || !sp_streq(cls_call_name(c, id), src->name)) continue;
+      const char *nm1 = cls_call_name(c, id);
+      if (!nm1) continue;
       int r = nt_ref(nt, id, "receiver");
       int rc = comp_class_index(c, nt_str(nt, r, "name"));
       if (rc < 0) continue;
-      if (rc == src->class_id || comp_cmethod_in_chain(c, rc, src->name, NULL) == s) called_direct = 1;
+      if (sp_streq(nm1, src->name) ? rc == src->class_id || comp_cmethod_in_chain(c, rc, src->name, NULL) == s
+                                   : comp_cmethod_in_chain(c, rc, nm1, NULL) == s) called_direct = 1;
     }
     /* ... or if a bare call inside some class-method body still resolves to
        this source (a class with no specialized copy of its own) */
@@ -8296,7 +8337,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       int r2 = nt_ref(nt, id, "receiver");
       if (r2 >= 0 && !(nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "SelfNode"))) continue;
       const char *nm2 = cls_call_name(c, id);
-      if (!nm2 || !sp_streq(nm2, src->name)) continue;
+      if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an)) continue;
       Scope *encl = comp_scope_of(c, id);
       if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
       if (comp_cmethod_in_chain(c, encl->class_id, nm2, NULL) == s) called_direct = 1;
@@ -8307,7 +8348,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (!body_cls || body_cls[id] < 0) continue;
       const char *nm3 = nt_str(nt, id, "name");
-      if (!nm3 || !sp_streq(nm3, src->name)) continue;
+      if (!nm3 || !cm_call_names(c, nm3, s, &src->class_id, 1, &an)) continue;
       if (comp_cmethod_in_chain(c, body_cls[id], nm3, NULL) == s) called_direct = 1;
     }
     /* ... or if an `obj.class.<name>` call exists anywhere. That compiles to a
@@ -8318,7 +8359,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (nt_kind(nt, id) != NK_CallNode) continue;
       const char *nm4 = cls_call_name(c, id);
-      if (!nm4 || !sp_streq(nm4, src->name)) continue;
+      if (!nm4 || !cm_call_names(c, nm4, s, &src->class_id, 1, &an)) continue;
       int r4 = nt_ref(nt, id, "receiver");
       if (r4 < 0 || nt_kind(nt, r4) != NK_CallNode) continue;
       const char *rn4 = nt_str(nt, r4, "name");
@@ -8327,11 +8368,12 @@ void specialize_inherited_cls_new(Compiler *c) {
     /* ... or if the defining class itself escapes as a value a dynamic
        receiver's call can reach */
     if (!called_direct && class_value_escapes(c, src->class_id) &&
-        name_called_on_dynamic_recv(c, src->name, node_count)) called_direct = 1;
+        name_called_on_dynamic_recv(c, s, &src->class_id, 1, node_count, &an)) called_direct = 1;
     if (!called_direct) src->is_transplanted_source = 1;
   }
   free(ccall);
   free(body_cls);
+  free(an.nm);
   sn_end();
   /* The cloned bodies introduced new local/ivar nodes; intern them. */
   if (did_clone) register_locals(c);
