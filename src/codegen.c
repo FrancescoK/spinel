@@ -4294,8 +4294,37 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
   return g_fi_nm_head[sp_strhash(nm) & (unsigned)(g_fi_nm_nb - 1)];
 }
 
+/* The classes' `alias new old` lines, flat, by the new name: a call of that
+   name reaches the old method's scope, which the name chain above does not
+   hold under it. Built with the same lifetime as that chain. */
+static const char **g_fi_al_nm;
+static int *g_fi_al_cls, g_fi_nal, g_fi_al_nclasses = -1;
+static const ClassInfo *g_fi_al_classes;
+
+static void fi_alias_index(Compiler *c) {
+  if (g_fi_al_nclasses == c->nclasses && g_fi_al_classes == c->classes) return;
+  free(g_fi_al_nm); free(g_fi_al_cls);
+  int tot = 0;
+  for (int k = 0; k < c->nclasses; k++) tot += c->classes[k].naliases;
+  g_fi_al_nm = (const char **)malloc(sizeof(char *) * (size_t)(tot ? tot : 1));
+  g_fi_al_cls = (int *)malloc(sizeof(int) * (size_t)(tot ? tot : 1));
+  g_fi_nal = 0;
+  for (int k = 0; g_fi_al_nm && g_fi_al_cls && k < c->nclasses; k++)
+    for (int a = 0; a < c->classes[k].naliases; a++) {
+      if (!c->classes[k].alias_new[a]) continue;
+      g_fi_al_nm[g_fi_nal] = c->classes[k].alias_new[a];
+      g_fi_al_cls[g_fi_nal++] = k;
+    }
+  g_fi_al_nclasses = c->nclasses;
+  g_fi_al_classes = c->classes;
+}
+
 /* Every user method a call could reach: by the receiver's class when it names
-   one, by the bare name when the receiver is boxed or absent. */
+   one, by the bare name when the receiver is boxed or absent. A name that is
+   an alias reaches the method it names too: Set's `alias < proper_subset?`
+   is the arm a boxed `size < other.size` inside proper_subset? calls (under
+   promote), and forcing that method inline asked gcc to inline it into
+   itself. */
 static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, callnode, "name");
@@ -4316,6 +4345,15 @@ static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max
     if (cid >= 0 && m->class_id != cid &&
         comp_method_in_chain(c, cid, nm, NULL) != si) continue;
     out[(*n)++] = si;
+  }
+  fi_alias_index(c);
+  for (int a = 0; a < g_fi_nal && *n < max; a++) {
+    if (!sp_streq(g_fi_al_nm[a], nm)) continue;
+    int si = comp_method_in_chain(c, cid >= 0 ? cid : g_fi_al_cls[a], nm, NULL);
+    if (si < 0) continue;
+    int dup = 0;
+    for (int q = 0; q < *n && !dup; q++) dup = out[q] == si;
+    if (!dup) out[(*n)++] = si;
   }
 }
 
