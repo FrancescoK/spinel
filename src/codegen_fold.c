@@ -4754,9 +4754,13 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      The keys are boxed here regardless, and sp_poly_cmp orders both, so the
      only thing refusing them did was drop the call to the unresolved-call
      raise: NoMethodError for `sort_by` on an Array (#4061). */
+  /* An object key is the same case: boxed, sp_poly_cmp orders it by its
+     class's `<=>` (sp_obj_cmp_hook), and a pair it does not order raises
+     the comparison failure (the _ck sort), as CRuby does. */
   if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY &&
       kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL && kt != TY_BOOL &&
-      kt != TY_RATIONAL && kt != TY_BIGINT && kt != TY_TIME && !ty_is_array(kt)) return 0;
+      kt != TY_RATIONAL && kt != TY_BIGINT && kt != TY_TIME && !ty_is_array(kt) &&
+      !ty_is_object(kt)) return 0;
 
   /* Schwartzian transform: compute each element's sort key exactly once (CRuby
      semantics -- the old bubble sort re-ran the block per comparison), stable-sort
