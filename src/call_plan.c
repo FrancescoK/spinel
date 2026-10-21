@@ -338,7 +338,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
   const char *bcls = builtin_class_of_type(rt);
-  if (bcls && !builtin_method_known(bcls, name)) cplan_object_reopen(c, name, p);
+  if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, name, p);
 }
 
 static void cplan_resolve(Compiler *c, int id, CallPlan *p) {

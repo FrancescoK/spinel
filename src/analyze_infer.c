@@ -2772,6 +2772,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
   if (omi < 0) return 0;
   /* a yielding one given a block answers what its proc form does, a boxed
      value (#5779), as the general Object fallback says */
+  an_user_call_record(c, call_id, omi, UC_REOPEN, oci);
   *out = c->scopes[omi].yields && nt_ref(c->nt, call_id, "block") >= 0
          ? TY_POLY : an_user_call(c, call_id, omi, UC_REOPEN, oci);
   return 1;
@@ -6679,7 +6680,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY ? "Object" : builtin_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : builtin_class_of_type(rt);
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
