@@ -268,7 +268,7 @@ int nt_clone_subtree(NodeTable *nt, int root) {
   }
   int newroot = map[root];
   nt->count = base + sn;
-  nt->version++; nt->edits++;
+  nt->version++; nt->edits++; nt->clone_version++;
   nt->node_cap = nt->count;  /* realloc above sized the array exactly */
   free(list); free(map);
   return newroot;

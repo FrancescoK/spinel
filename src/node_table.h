@@ -60,9 +60,12 @@ typedef struct {
      keyed on node identity or name can revalidate against it. */
   unsigned version;
   /* The parts of version that a local variable read appended by
-     nt_new_local_read, and a call renamed by nt_node_swap_str or
-     nt_node_restore_str, bumped (nt_stamp_holds). */
-  unsigned read_version, rename_version;
+     nt_new_local_read, a call renamed by nt_node_swap_str or
+     nt_node_restore_str (nt_stamp_holds), and a subtree appended by
+     nt_clone_subtree bumped: a clone touches no node below the count it
+     found, so an index of the nodes by name extends over the clones when
+     every bump since its build was one (an_calls_named_first). */
+  unsigned read_version, rename_version, clone_version;
   /* Bumped by every edit of a node, an int, ref or array field's included,
      which version leaves out. infer_type keeps an earlier query's answers
      only while neither it nor version has moved (#8852). */
