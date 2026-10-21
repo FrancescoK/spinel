@@ -11521,6 +11521,33 @@ static int hcp_program_ok(Compiler *c) {
       return 0;
   return 1;
 }
+/* The named scopes by name, from scope 1 on: a name's first scope, and
+   whether another scope has the name. hcp_param_method wants a name no
+   other scope has, and the parameter loop of hcp_compute the one method a
+   call's name can reach; each asked every scope, for every scope and for
+   every call per pass of the fixpoint, which on a program of 17k scopes
+   and 90k calls was hours of name compares. */
+typedef struct { const char *name; int mi, dup; } HcpName;
+static HcpName *hcp_names;
+static int hcp_names_cap;
+static HcpName *hcp_name_slot(const char *nm) {
+  unsigned i = sp_strhash(nm) & (unsigned)(hcp_names_cap - 1);
+  while (hcp_names[i].name && !sp_streq(hcp_names[i].name, nm)) i = (i + 1) & (unsigned)(hcp_names_cap - 1);
+  return &hcp_names[i];
+}
+static void hcp_names_build(Compiler *c) {
+  free(hcp_names);
+  hcp_names_cap = 1024;
+  while (hcp_names_cap < c->nscopes * 2 + 2) hcp_names_cap *= 2;
+  hcp_names = calloc((size_t)hcp_names_cap, sizeof *hcp_names);
+  if (!hcp_names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 1; s < c->nscopes; s++) {
+    if (!c->scopes[s].name) continue;
+    HcpName *e = hcp_name_slot(c->scopes[s].name);
+    if (e->name) e->dup = 1;
+    else { e->name = c->scopes[s].name; e->mi = s; }
+  }
+}
 /* A method that takes its parameters' proof from its calls: defined at the top
    level, no rest / keyword / forwarding parameter, and no other method of its
    name anywhere (an override could be the one a call reaches) */
@@ -11528,9 +11555,8 @@ static int hcp_param_method(Compiler *c, int mi) {
   Scope *s = &c->scopes[mi];
   if (!s->name || s->class_id >= 0 || s->is_cmethod || s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->fwd_target1)
     return 0;
-  for (int o = 1; o < c->nscopes; o++)
-    if (o != mi && c->scopes[o].name && sp_streq(c->scopes[o].name, s->name)) return 0;
-  return 1;
+  HcpName *e = hcp_name_slot(s->name);
+  return mi >= 1 ? !e->dup : !e->name;
 }
 static LocalVar *hcp_write_lv(Compiler *c, int w) {
   const char *nm = nt_str(c->nt, w, "name");
@@ -11546,6 +11572,7 @@ static void hcp_compute(Compiler *c) {
                                      "instance_method", "define_method", "method_missing", NULL };
   int dyn = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) if (hcp_in(DYN, nt_str(nt, id, "name"))) dyn = 1;
+  hcp_names_build(c);
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     int pm = !dyn && hcp_param_method(c, s);
@@ -11571,31 +11598,35 @@ static void hcp_compute(Compiler *c) {
         if (!good) { lv->hcp_int = -1; changed = 1; }
       }
     }
-    /* a parameter: every call of its method passes such a value (or its default does) */
+    /* a parameter: every call of its method passes such a value (or its
+       default does). Only a parameter of a method hcp_param_method took is
+       still a candidate, and that method is the one scope of its name. */
     NT_FOREACH_KIND(nt, NK_CallNode, call) {
       const char *nm = nt_str(nt, call, "name");
       if (!nm) continue;
-      for (int mi = 1; mi < c->nscopes; mi++) {
-        Scope *ms = &c->scopes[mi];
-        if (!ms->name || !sp_streq(ms->name, nm) || ms->nparams == 0) continue;
-        int r = nt_ref(nt, call, "receiver");
-        int a = nt_ref(nt, call, "arguments"), an = 0;
-        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-        int plain = (r < 0 || nt_kind(nt, r) == NK_SelfNode) && comp_self_call_mi(c, call, nm) == mi;
-        for (int i = 0; plain && i < an; i++) {
-          const char *at = nt_type(nt, av[i]);
-          if (!at || sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") || sp_streq(at, "BlockArgumentNode"))
-            plain = 0;
-        }
-        for (int p = 0; p < ms->nparams; p++) {
-          LocalVar *lv = ms->pnames[p] ? scope_local(ms, ms->pnames[p]) : NULL;
-          if (!lv || lv->hcp_int < 0) continue;
-          int v = p < an ? av[p] : (ms->pdefault ? ms->pdefault[p] : -1);
-          if (!plain || v < 0 || !hcp_val(c, v, 0)) { lv->hcp_int = -1; changed = 1; }
-        }
+      HcpName *e = hcp_name_slot(nm);
+      if (!e->name || e->dup) continue;
+      int mi = e->mi;
+      Scope *ms = &c->scopes[mi];
+      if (ms->nparams == 0) continue;
+      int r = nt_ref(nt, call, "receiver");
+      int a = nt_ref(nt, call, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      int plain = (r < 0 || nt_kind(nt, r) == NK_SelfNode) && comp_self_call_mi(c, call, nm) == mi;
+      for (int i = 0; plain && i < an; i++) {
+        const char *at = nt_type(nt, av[i]);
+        if (!at || sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") || sp_streq(at, "BlockArgumentNode"))
+          plain = 0;
+      }
+      for (int p = 0; p < ms->nparams; p++) {
+        LocalVar *lv = ms->pnames[p] ? scope_local(ms, ms->pnames[p]) : NULL;
+        if (!lv || lv->hcp_int < 0) continue;
+        int v = p < an ? av[p] : (ms->pdefault ? ms->pdefault[p] : -1);
+        if (!plain || v < 0 || !hcp_val(c, v, 0)) { lv->hcp_int = -1; changed = 1; }
       }
     }
   }
+  free(hcp_names); hcp_names = NULL; hcp_names_cap = 0;
   for (int s = 0; s < c->nscopes; s++)
     for (int j = 0; j < c->scopes[s].nlocals; j++)
       if (c->scopes[s].locals[j].hcp_int == 0) c->scopes[s].locals[j].hcp_int = 1;
