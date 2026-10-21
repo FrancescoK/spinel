@@ -18830,7 +18830,11 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     Buf ref; memset(&ref, 0, sizeof ref);
     holder_slot_buf(c, &h, &ref);
     emit_indent(b, indent);
-    if (ct == TY_STRING && op && sp_streq(op, "+")) {
+    if (g_one_string && ct == TY_STRBUF && op && sp_streq(op, "+")) {
+      buf_printf(b, "%s = SP_STR_TO(%s, sp_str_concat(SP_STR_B(%s), ", ref.p, ref.p, ref.p);
+      emit_str_expr(c, v, b); buf_puts(b, "));\n");
+    }
+    else if (ct == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "%s = sp_str_concat(%s, ", ref.p, ref.p);
       emit_str_expr(c, v, b); buf_puts(b, ");\n");
     }
@@ -19296,7 +19300,9 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       /* operators the slot type can't take would otherwise fall through to
          raw C on an sp_Str pointer or an sp_RbVal (pointer arithmetic / a
          type error) */
-      if (ivt == TY_STRING && !(op && sp_streq(op, "+")))
+      /* (one representation: a handle slot is a String slot too) */
+      int ivs = ivt == TY_STRING || (g_one_string && ivt == TY_STRBUF);
+      if (ivs && !(op && sp_streq(op, "+")))
         unsupported(c, id, "call operator write (operator on a string attribute)");
       if (ivt == TY_POLY && !cpf && !bitop)
         unsupported(c, id, "call operator write (operator on a boxed attribute)");
@@ -19316,7 +19322,14 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       free(rx.p);
       const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
       emit_indent(b, indent);
-      if (ivt == TY_STRING) {
+      if (ivs && g_one_string) {
+        /* a new String: the concatenation's bytes, in the slot's face */
+        buf_printf(b, "_t%d%siv_%s = SP_STR_TO(_t%d%siv_%s, sp_str_concat(SP_STR_B(_t%d%siv_%s), ",
+                   trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
+        emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
+        buf_puts(b, "));\n");
+      }
+      else if (ivt == TY_STRING) {
         buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
         emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
         buf_puts(b, ");\n");
@@ -19468,13 +19481,21 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
            error on an sp_RbVal); a runtime object of that class lands in
            the default raise instead -- same skip-on-static-mismatch shape
            as the poly attr-write dispatch above. */
-        if (ivt == TY_STRING && !(op && sp_streq(op, "+"))) continue;
+        /* (one representation: a handle slot is a String slot too) */
+        int ivs = ivt == TY_STRING || (g_one_string && ivt == TY_STRBUF);
+        if (ivs && !(op && sp_streq(op, "+"))) continue;
         if (ivt == TY_POLY && !cpf && !bitop) continue;
         const char *cn = c->classes[pdcls].name;
         any = 1;
         emit_indent(b, indent + 1);
         buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
-        if (ivt == TY_STRING) {
+        if (ivs && g_one_string) {
+          /* a new String: the concatenation's bytes, in the slot's face */
+          buf_printf(b, "_o->iv_%s = SP_STR_TO(_o->iv_%s, sp_str_concat(SP_STR_B(_o->iv_%s), ", iv_c(rn), iv_c(rn), iv_c(rn));
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
+          buf_puts(b, ")); break; }\n");
+        }
+        else if (ivt == TY_STRING) {
           buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, iv_c(rn));
           buf_puts(b, ", ");
           emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);

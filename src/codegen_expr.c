@@ -3192,7 +3192,12 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     TyKind ct = idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_INT;
     Buf ref; memset(&ref, 0, sizeof ref);
     holder_slot_buf(c, &h, &ref);
-    if (ct == TY_STRING && op && sp_streq(op, "+")) {
+    /* (one representation: a handle slot takes the new String in its face) */
+    if (g_one_string && ct == TY_STRBUF && op && sp_streq(op, "+")) {
+      buf_printf(b, "(%s = SP_STR_TO(%s, sp_str_plus(SP_STR_B(%s), ", ref.p, ref.p, ref.p);
+      emit_str_expr(c, v, b); buf_puts(b, ")))");
+    }
+    else if (ct == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "(%s = sp_str_plus(%s, ", ref.p, ref.p);
       emit_str_expr(c, v, b); buf_puts(b, "))");
     }
