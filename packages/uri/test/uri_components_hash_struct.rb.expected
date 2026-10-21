@@ -1,0 +1,3 @@
+#<struct Result track=1, path="a.flac", state=:finished, duration=nil, expected_duration=nil, problems=[], verification=nil, metrics=#<struct Metrics polls=0>>
+"http://u:p@example.com:8080/a?q=1#f"
+"https://example.com/s"
