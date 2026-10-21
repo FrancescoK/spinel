@@ -1720,7 +1720,7 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
   int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
                  nt_ref(c->nt, id, "block") < 0;
-  if (!ps->pred && !ps->strftime && !is_aref && !is_aref2 && !is_fetch && !ps->include && !ps->push &&
+  if (!ps->pred && !(ps->strftime && ps->ncand == 0) && !is_aref && !is_aref2 && !is_fetch && !ps->include && !ps->push &&
       !ps->cover && !ps->gcdlcm && !ps->strdel && !ps->strsplit && !ps->pdelete && !ps->pdig &&
       !ps->pvalues_at && !ps->pfirstn && !ps->pmerge) {
     cpoly_family(p, cap, PB_ND_GENERIC);
@@ -1774,7 +1774,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
     kwty = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
     for (int e = 0; e < kwn; e++) {
       int val = nt_ref(nt, kwels[e], "value");
-      TyKind at = val >= 0 ? comp_ntype(c, val) : TY_NIL;
+      TyKind at = val >= 0 ? repr_of(c, val).as_ty : TY_NIL;
       kwty[e] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
     }
   }
@@ -1796,10 +1796,19 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
     cpoly_trial(p, cap, PT_GENERIC_TAIL);
   /* the families that write the switch's `default:` themselves */
   static const int dflt[] = { PB_ND_GENERIC, PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,
-                              PB_PUSH, PB_INCLUDE_CASES, PB_STRFTIME, PB_PRED_N };
-  int has_default = 0;
+                              PB_PUSH, PB_INCLUDE_CASES, PB_PRED_N };
+  int has_default = ps.cover || (ps.strftime && ps.ncand == 0);
   for (size_t i = 0; i < sizeof dflt / sizeof dflt[0]; i++) has_default |= cpoly_has_family(p, dflt[i]);
   if (!is_setter_val && !has_default) cpoly_trial(p, cap, PT_DEFAULT_N);
+}
+
+/* A String-typed slot may already hold the shared handle. The argument
+   temp keeps that representation so boxed arms keep its identity too. */
+TyKind cplan_poly_arg_storage(Compiler *c, int id) {
+  Repr r = repr_of(c, id);
+  if (r.strbuf_src == RS_SLOT_POLY) return TY_POLY;
+  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  return r.as_ty;
 }
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
@@ -1835,7 +1844,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   for (int a = 0; a < argc; a++) atmp_ty[a] = TY_UNKNOWN;
   for (int a = 0; a < pos_argc; a++) {
     if (nt_kind(nt, argv[a]) == NK_SplatNode) { atmp_ty[a] = TY_POLY_ARRAY; continue; }
-    TyKind at = comp_ntype(c, argv[a]);
+    TyKind at = cplan_poly_arg_storage(c, argv[a]);
     atmp_ty[a] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
   }
   int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
@@ -2043,7 +2052,7 @@ static int cpoly_cls_value_arms(Compiler *c, int id, const char *name, int argc,
 static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
                                PolyPlan *p, int *cap) {
   int blk = nt_ref(c->nt, id, "block");
-  int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
+  int live_blk = blk >= 0 && (resolve_forwarded_block(c, blk) >= 0 || g_yield_proc_ref);
   if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "each_index")) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
@@ -2239,6 +2248,20 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   return &bp;
 }
 
+/* Whether the boxed class arm calls the method rather than raising for
+   its visibility. Explicit self may call private methods too. */
+int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
+  if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode) return 1;
+  int owner = -1;
+  int vis = comp_cmethod_vis_declared(c, ci, name, &owner);
+  if (vis == SP_VIS_PROTECTED) {
+    Scope *s = comp_scope_of(c, id);
+    int caller = s && s->is_cmethod ? s->class_id : -1;
+    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) return 1;
+  }
+  return vis == SP_VIS_PUBLIC;
+}
+
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   static PolyPlan cp;
   free(cp.arm);
@@ -2247,7 +2270,10 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   int cap = 0;
   const char *name = nt_str(c->nt, id, "name");
   if (!name) return &cp;
+  int argc = 0;
+  call_args(c->nt, id, &argc);
   for (int k = 0; k < c->nclasses; k++) {
+    if (cls_sg_accessor_first(c, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
     int mi = comp_cmethod_in_chain(c, k, name, NULL);
     if (mi < 0) continue;
     int pf = scope_proc_form_of(c, mi);

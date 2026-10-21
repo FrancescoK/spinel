@@ -330,6 +330,8 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id);
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
+int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name);
+TyKind cplan_poly_arg_storage(Compiler *c, int id);
 /* The re-entry of a call on an object whose static class cannot answer the
    name while one of its subclasses can (#4023). Computed afresh. */
 const PolyPlan *cplan_poly_sub(Compiler *c, int id);
@@ -345,6 +347,7 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id);
    pa_resume(frame) drops frames a probe abandoned above it, before the
    switch observes again. */
 int  pa_begin(int id);
+int  pa_current(void);
 void pa_resume(int frame);
 void pa_drop(int frame);     /* a dispatch that declined after opening its frame */
 void pa_flags(unsigned flags);
