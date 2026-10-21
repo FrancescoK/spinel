@@ -80,7 +80,9 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         { Buf rb9; memset(&rb9, 0, sizeof rb9); emit_expr(c, recv, &rb9);
           buf_puts(&cb9, rb9.p ? rb9.p : "sp_box_nil()"); free(rb9.p); }
         buf_printf(&cb9, ", \"%s\")", name);
-        if (late9) buf_printf(&cb9, "; %s(_t%d", pn9, tk9);
+        /* (rooted: for a user Enumerable the check answers a new Array, and
+           converting the count may run the program's to_int) */
+        if (late9) buf_printf(&cb9, "; SP_GC_ROOT_RBVAL(_t%d); %s(_t%d", tk9, pn9, tk9);
         if (argc == 1) { Buf nb9; memset(&nb9, 0, sizeof nb9); emit_int_expr(c, argv[0], &nb9);
                          buf_puts(&cb9, ", "); buf_puts(&cb9, nb9.p ? nb9.p : "0"); free(nb9.p); }
         else if (!sp_streq(name, "shuffle")) buf_puts(&cb9, ", 1");   /* rotate's default count */
