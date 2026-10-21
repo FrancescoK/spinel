@@ -16829,6 +16829,61 @@ static int an_any_scope_by_name(Compiler *c, const char *nm) {
   return -1;
 }
 
+/* The scopes of a name, ascending: the first, and the next after s (-1 at
+   the end). Frozen, from a table built once per scope-index epoch, as
+   an_any_scope_by_name's; else the scan. The strbuf walks asked every
+   scope for the methods of a call's name at each call they walked, every
+   round: 17k compares per call on a Rails program, most of its fixpoint. */
+static ANameHash an_sbn_names;
+static int *an_sbn_first, an_sbn_nfirst, *an_sbn_next, an_sbn_stamp_n = -1;
+static unsigned an_sbn_stamp_gen;
+static void an_sbn_build(Compiler *c) {
+  anh_free(&an_sbn_names); memset(&an_sbn_names, 0, sizeof an_sbn_names);
+  free(an_sbn_first); an_sbn_first = NULL; an_sbn_nfirst = 0;
+  free(an_sbn_next);
+  an_sbn_next = malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  if (!an_sbn_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int *last = NULL, cap = 0;
+  for (int i = 1; i < c->nscopes; i++) {
+    const char *sn = c->scopes[i].name;
+    an_sbn_next[i] = -1;
+    if (!sn) continue;
+    int k = anh_find(&an_sbn_names, sn);
+    if (k >= 0) { an_sbn_next[last[k]] = i; last[k] = i; continue; }
+    if (an_sbn_nfirst == cap) {
+      cap = cap ? cap * 2 : 256;
+      an_sbn_first = realloc(an_sbn_first, sizeof(int) * (size_t)cap);
+      last = realloc(last, sizeof(int) * (size_t)cap);
+      if (!an_sbn_first || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    an_sbn_first[an_sbn_nfirst] = i; last[an_sbn_nfirst] = i; an_sbn_nfirst++;
+    anh_add(&an_sbn_names, sn);
+  }
+  free(last);
+  an_sbn_stamp_n = c->nscopes; an_sbn_stamp_gen = comp_scope_index_gen();
+}
+static int an_scopes_named_first(Compiler *c, const char *nm) {
+  if (!nm) return -1;
+  if (comp_scope_index_is_frozen()) {
+    if (an_sbn_stamp_n != c->nscopes || an_sbn_stamp_gen != comp_scope_index_gen()) an_sbn_build(c);
+    int k = anh_find(&an_sbn_names, nm);
+    return k >= 0 ? an_sbn_first[k] : -1;
+  }
+  for (int i = 1; i < c->nscopes; i++)
+    if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return i;
+  return -1;
+}
+static int an_scopes_named_next(Compiler *c, const char *nm, int s) {
+  if (!nm || s < 1) return -1;
+  if (comp_scope_index_is_frozen()) {
+    if (an_sbn_stamp_n != c->nscopes || an_sbn_stamp_gen != comp_scope_index_gen()) an_sbn_build(c);
+    return s < c->nscopes ? an_sbn_next[s] : -1;
+  }
+  for (int i = s + 1; i < c->nscopes; i++)
+    if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return i;
+  return -1;
+}
+
 /* Unique method scope index by name across the program, or -1 (absent or
    defined more than once). Scope 0 is the top level (name NULL). */
 static int an_unique_scope_by_name(Compiler *c, const char *nm) {
@@ -20680,9 +20735,8 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
          was quadratic in the classes. */
       int rcid = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode ? ty_object_class(infer_type(c, recv)) : -1;
       int rdef = rcid >= 0 ? comp_method_in_chain(c, rcid, mn, NULL) : -1;
-      for (int mi = 1; mi < c->nscopes; mi++) {
+      for (int mi = an_scopes_named_first(c, mn); mi >= 1; mi = an_scopes_named_next(c, mn, mi)) {
         Scope *m = &c->scopes[mi];
-        if (!m->name || !sp_streq(m->name, mn)) continue;
         if (rcid >= 0 && mi != rdef && !strbuf_class_may_answer(c, m->class_id, rcid)) continue;
         changed |= strbuf_method_ret_source_walk(c, mi, blk, depth, mode);
       }
@@ -23769,10 +23823,13 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
     if (ty_is_object(rt)) cls = ty_object_class(rt);
   }
   int changed = 0;
-  for (int mi = 1; mi < c->nscopes; mi++) {
+  /* a known class's: the one method its chain answers; else every class's
+     instance method of the name (the scan asked the chain once per scope) */
+  int target = cls >= 0 ? comp_method_in_chain(c, cls, mn, NULL) : -1;
+  for (int mi = cls >= 0 ? target : an_scopes_named_first(c, mn); mi >= 1;
+       mi = cls >= 0 ? -1 : an_scopes_named_next(c, mn, mi)) {
     Scope *m = &c->scopes[mi];
-    if (cls >= 0) { if (mi != comp_method_in_chain(c, cls, mn, NULL)) continue; }
-    else if (!m->name || !sp_streq(m->name, mn) || m->class_id < 0 || m->is_cmethod) continue;
+    if (cls < 0 && (m->class_id < 0 || m->is_cmethod)) continue;
     if (mi < uec_cap) {
       if (uec_seen[mi] == uec_gen && (uec_depth[mi] <= depth || !uec_cut[mi])) {
         uec_cut_now |= uec_cut[mi];
