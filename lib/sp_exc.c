@@ -100,6 +100,11 @@ int sp_exc_nearest_cls(const char *raised, const char *const *targets, int n) {
    NoMethodError elsewhere, matching per-class method definitions. */
 SP_COLD void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc) {SP_GC_ROOT(e);
   if (e && sp_exc_cls_matches(e->cls_name, cls)) return;
+  /* Preserve the failed call's receiver and empty argument list before
+     formatting/raising allocates. The staged values are GC roots. */
+  sp_exc_stage_recv(sp_box_nullable_obj(e, SP_BUILTIN_EXCEPTION));
+  sp_pending_exc_key = sp_box_poly_array(sp_PolyArray_new());
+  sp_pending_exc_flags |= 2;
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method '%s' for %s", acc,
                           e ? sp_sprintf("an instance of %s", e->cls_name) : "nil"));

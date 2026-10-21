@@ -331,6 +331,7 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */
+int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk);
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name);
 TyKind cplan_poly_arg_storage(Compiler *c, int id);

@@ -2290,6 +2290,21 @@ int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
   return vis == SP_VIS_PUBLIC;
 }
 
+/* The class method a value of class k answers `nm` with in a boxed
+   class-method dispatch (cplan_poly_cmeth, and emit_unresolved_call's), or -1
+   when it has no arm there. A yielding class
+   method has no symbol of its own; its proc-form clone is the arm, taking
+   the block as a proc (#3399), through *pfk. */
+int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk) {
+  int mi = comp_cmethod_in_chain(c, k, nm, dc);
+  if (mi < 0) return -1;
+  int pf = scope_proc_form_of(c, mi);
+  if (pf >= 0 && !proc_form_live(c, pf)) pf = -1;
+  if (!scope_has_callable_symbol(c, mi) && pf < 0) return -1;
+  if (pfk) *pfk = pf;
+  return mi;
+}
+
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   static PolyPlan cp;
   free(cp.arm);
@@ -2302,11 +2317,9 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   call_args(c->nt, id, &argc);
   for (int k = 0; k < c->nclasses; k++) {
     if (cls_sg_accessor_first(c, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
-    int mi = comp_cmethod_in_chain(c, k, name, NULL);
+    int pf = -1;
+    int mi = cplan_cmethod_arm(c, k, name, NULL, &pf);
     if (mi < 0) continue;
-    int pf = scope_proc_form_of(c, mi);
-    if (pf >= 0 && !proc_form_live(c, pf)) pf = -1;
-    if (!scope_has_callable_symbol(c, mi) && pf < 0) continue;
     TyKind mret = c->scopes[pf >= 0 ? pf : mi].ret;
     cpoly_add(&cp, &cap, pf >= 0 ? PA_PROC_FORM : PA_USER, k, mi, mret, mret == TY_POLY ? PC_SAME : PC_BOX);
   }

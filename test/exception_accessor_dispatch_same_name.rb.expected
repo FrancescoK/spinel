@@ -1,0 +1,7 @@
+:b
+{1 => :a, 2 => :b}
+[:q, 3]
+:q_inv
+nil
+"bad"
+:q_cause

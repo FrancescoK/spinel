@@ -452,10 +452,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
        is_exception_full_message(name)) &&
       repr_of(c, recv).as_ty == TY_POLY) {
-    int pu = 0;
-    for (int k = 0; k < c->nclasses && !pu; k++)
-      if (comp_method_in_class(c, k, name) >= 0 ||
-          comp_reader_in_chain(c, k, name, NULL)) pu = 1;
+    int pu = user_defines_or_reads(c, name) || cls_value_owns_name(c, id, name);
     if (!pu || g_poly_builtin_arm) {
       if (sp_streq(name, "name")) g_uses_symbols = 1;  /* may intern a recovered name */
       /* a user exception's #to_s is what #message answers, so a boxed
@@ -481,8 +478,8 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         char ep[64];
         snprintf(ep, sizeof ep, "(sp_Exception *)_t%d.v.p", t);
         buf_printf(b, arm, ep);
-        if (boxed) buf_printf(b, " : sp_poly_exc_acc(_t%d, \"message\"); })", t);
-        else buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
+        if (boxed) buf_printf(b, " : sp_poly_exc_acc_m(_t%d, \"message\"); })", t);
+        else buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc_m(_t%d, \"message\")); })", t);
         return 1;
       }
       /* the renderings read the overridden #message, as the typed receiver's do */
@@ -500,14 +497,14 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         else
           buf_printf(b, "_e%d ? sp_exc_detailed_text(_e%d, sp_user_exc_message(_e%d))",
                      t, t, t);
-        buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"%s\")); })", t, name);
+        buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc_m(_t%d, \"%s\")); })", t, name);
         return 1;
       }
       /* message and the two renderings infer TY_STRING: unwrap the boxed
          accessor result */
       int unwrap = repr_of(c, id).as_ty == TY_STRING;
       if (unwrap) buf_puts(b, "sp_poly_to_s(");
-      buf_printf(b, "sp_poly_exc_acc(");
+      buf_printf(b, "sp_poly_exc_acc_m(");
       emit_expr(c, recv, b);
       buf_printf(b, ", \"%s\")", name);
       if (unwrap) buf_puts(b, ")");

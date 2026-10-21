@@ -17047,6 +17047,16 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "backtrace")) return e->backtrace ? sp_box_str_array(e->backtrace) : sp_box_nil();
   return sp_box_nil();
 }
+/* A missing accessor is a failed zero-argument Ruby call, with the same
+   receiver wording and NoMethodError metadata as ordinary dispatch. */
+static sp_RbVal sp_poly_exc_acc_m(sp_RbVal v, const char *which) {
+  if (!(v.tag == SP_TAG_OBJ && v.v.p &&
+        (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id)))) {
+    SP_GC_ROOT_RBVAL(v);
+    return sp_raise_nomethod(sp_nomethod_msg_args(which, v, 0, NULL));
+  }
+  return sp_poly_exc_acc(v, which);
+}
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "LocalJumpError", "reason");
   return sp_exc_sym_slot(e->xkey);

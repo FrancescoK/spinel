@@ -2380,6 +2380,25 @@ int emit_clock_id(Compiler *c, int node, Buf *b) {
   return 0;
 }
 
+/* A class method of `name` owns a boxed call that may hold a Class value:
+   the class-method dispatch tests the tag first and, for any other value,
+   re-emits the call with g_cls_tag_skip set to it, where the builtin takes
+   the call as it would with no class method in the program. (A Hash
+   method's conversion other than `key`'s is staged ahead of that test, so
+   its class method is still not reached.) */
+int cls_value_owns_name(Compiler *c, int id, const char *name) {
+  if (g_cls_tag_skip == id || g_poly_builtin_arm) return 0;
+  /* the dispatch is taken only for a boxed result (emit_unresolved_call) */
+  TyKind ret = repr_of(c, id).as_ty;
+  if (ret != TY_POLY && ret != TY_UNKNOWN) return 0;
+  /* the call plan bounds what the receiver can hold: none of it a Class
+     whose class method answers, and the builtin keeps the call */
+  if (!cplan_boxed_cmethod(c, id, name)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (cplan_cmethod_arm(c, k, name, NULL, NULL) >= 0) return 1;
+  return 0;
+}
+
 int diag_user_defines(Compiler *c, const char *name) {
   return recv_user_defines(c, name) || comp_method_index(c, name) >= 0;
 }
@@ -21802,7 +21821,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     }
     if (grt == TY_POLY && g_pp_hash_node != id &&
         ty_poly_hash_face_name(nt_str(nt, id, "name")) &&
-        g_n_argov < MAX_ARG_OVERRIDE) {
+        g_n_argov < MAX_ARG_OVERRIDE && !cls_value_owns_name(c, id, nt_str(nt, id, "name"))) {
       const char *hnm = nt_str(nt, id, "name");
       int thv = ++g_tmp;
       Buf hrb; memset(&hrb, 0, sizeof hrb); emit_boxed(c, recv, &hrb);
@@ -21911,14 +21930,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         int nsg = 0;
         for (int k = 0; k < c->nclasses; k++) {
           if (cls_sg_accessor_first(c, k, nm, argc)) { nsg++; continue; }
-          int dc = -1;
-          int mi = comp_cmethod_in_chain(c, k, nm, &dc);
+          int dc = -1, pfk = -1;
+          int mi = cplan_cmethod_arm(c, k, nm, &dc, &pfk);
           if (mi < 0) continue;
-          /* a yielding class method has no symbol of its own; its proc-form
-             clone is the arm, taking the block as a proc (#3399) */
-          int pfk = scope_proc_form_of(c, mi);
-          if (pfk >= 0 && !proc_form_live(c, pfk)) pfk = -1;
-          if (!scope_has_callable_symbol(c, mi) && pfk < 0) continue;
           /* A class method that cannot take this call's arguments is still
              the one a value of its class calls: CRuby raises its
              ArgumentError there, once the arguments have run. Dropping the
