@@ -15397,10 +15397,18 @@ static int rod_above_defines(RodIndex *x, const NodeTable *nt, int m, const char
   }
   return 0;
 }
+/* Does class `cls` take `meth` from above: the superclass or an included
+   module of any header of its name? `class Child < Base; end` then
+   `class Child; attr_reader :value; end` stands over Base's value, and a
+   module a later reopening includes is an ancestor too. */
 static int rod_inherits(RodIndex *x, const NodeTable *nt, int cls, const char *meth) {
   x->gen++;
-  x->seen[cls] = x->gen;
-  return rod_above_defines(x, nt, cls, meth);
+  int e = x->qn[cls] ? anh_find(&x->byq, x->qn[cls]) : -1;
+  if (e < 0) { x->seen[cls] = x->gen; return rod_above_defines(x, nt, cls, meth); }
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m]) x->seen[m] = x->gen;
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m])
+    if (rod_above_defines(x, nt, m, meth)) return 1;
+  return 0;
 }
 /* `def meth = @meth` like node `like` */
 static int rod_reader_def(NodeTable *nt, int like, const char *meth) {
