@@ -15305,40 +15305,112 @@ static int rod_body_defs(const NodeTable *nt, int body, const char *meth) {
   }
   return 0;
 }
-/* Does a class or module named `nm`, or one up its chain (a superclass, a
-   module it includes), define the instance method `meth`? */
-static int rod_chain_defines(const NodeTable *nt, const char *nm, const char *meth, int depth) {
-  if (!nm || depth > 32) return 0;
-  for (int pass = 0; pass < 2; pass++)
-    NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
-      const char *mn = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
-      if (!mn || !sp_streq(mn, nm)) continue;
-      int body = nt_ref(nt, m, "body");
-      if (rod_body_defs(nt, body, meth)) return 1;
-      if (!pass && rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, m, "superclass")), meth, depth + 1)) return 1;
-      int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
-      for (int k = 0; k < n; k++) {
-        const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
-        if (!cn || !sp_streq(cn, "include")) continue;
-        int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
-        for (int a = 0; a < ac; a++)
-          if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, depth + 1)) return 1;
-      }
+/* The class and module headers, to follow a chain upward: by the qualified
+   name each defines and the qualified superclass it names
+   (inh_qualified_names), and by leaf name. A walk enters each header once,
+   so a chain whose leaves repeat (`module M; class Base < Top::Base`) ends:
+   followed by leaf, Base led to every Base again, and the walk branched
+   that many ways at each step. */
+typedef struct {
+  char **qn, **qs;                    /* by node */
+  ANameHash byq, byleaf;              /* the names, then each one's headers */
+  int *qhead, *lhead, *qnext, *lnext;
+  int *seen, gen;                     /* by node: the walk that entered it */
+} RodIndex;
+static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper);
+static int rod_index_build(RodIndex *x, const NodeTable *nt, int n0) {
+  memset(x, 0, sizeof *x);
+  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < n0; i++) parent[i] = -1;
+  for (int p = 0; p < n0; p++) {
+    int nr = nt_num_refs(nt, p);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+    int na = nt_num_arrs(nt, p);
+    for (int i = 0; i < na; i++) {
+      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
     }
+  }
+  x->qn = inh_qualified_names(nt, parent, n0, &x->qs);
+  free(parent);
+  if (!x->qn || !x->qs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  size_t sz = sizeof(int) * (size_t)(n0 > 0 ? n0 : 1);
+  x->qnext = malloc(sz); x->lnext = malloc(sz); x->seen = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(int));
+  if (!x->qnext || !x->lnext || !x->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int m = 0; m < n0; m++) {
+    NodeKind k = nt_kind(nt, m);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *leaf = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
+    if (x->qn[m] && anh_find(&x->byq, x->qn[m]) < 0) anh_add(&x->byq, x->qn[m]);
+    if (leaf && anh_find(&x->byleaf, leaf) < 0) anh_add(&x->byleaf, leaf);
+  }
+  x->qhead = malloc(sizeof(int) * (size_t)(x->byq.n + 1));
+  x->lhead = malloc(sizeof(int) * (size_t)(x->byleaf.n + 1));
+  if (!x->qhead || !x->lhead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int e = 0; e < x->byq.n; e++) x->qhead[e] = -1;
+  for (int e = 0; e < x->byleaf.n; e++) x->lhead[e] = -1;
+  for (int m = n0 - 1; m >= 0; m--) {   /* each list in program order */
+    NodeKind k = nt_kind(nt, m);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *leaf = rod_leaf(nt, nt_ref(nt, m, "constant_path"));
+    int e = x->qn[m] ? anh_find(&x->byq, x->qn[m]) : -1;
+    if (e >= 0) { x->qnext[m] = x->qhead[e]; x->qhead[e] = m; }
+    e = leaf ? anh_find(&x->byleaf, leaf) : -1;
+    if (e >= 0) { x->lnext[m] = x->lhead[e]; x->lhead[e] = m; }
+  }
+  return 1;
+}
+static void rod_index_free(RodIndex *x, int n0) {
+  for (int m = 0; m < n0; m++) { if (x->qn) free(x->qn[m]); if (x->qs) free(x->qs[m]); }
+  free(x->qn); free(x->qs);
+  anh_free(&x->byq); anh_free(&x->byleaf);
+  free(x->qhead); free(x->lhead); free(x->qnext); free(x->lnext); free(x->seen);
+}
+static int rod_above_defines(RodIndex *x, const NodeTable *nt, int m, const char *meth);
+/* Does a header of the class or module named `q` (qualified; NULL when the
+   name could not be resolved) or `leaf`, or one up its chain, define the
+   instance method `meth`? A qualified name no header defines (a class
+   reached through an ancestor's namespace, say) is taken by its leaf: by
+   leaf the walk can only find more, and a reader turned into its def
+   answers as the reader would. */
+static int rod_named_defines(RodIndex *x, const NodeTable *nt, const char *q, const char *leaf, const char *meth) {
+  int e = q ? anh_find(&x->byq, q) : -1;
+  int qual = e >= 0;
+  if (!qual) e = leaf ? anh_find(&x->byleaf, leaf) : -1;
+  for (int m = e < 0 ? -1 : qual ? x->qhead[e] : x->lhead[e]; m >= 0; m = qual ? x->qnext[m] : x->lnext[m]) {
+    if (x->seen[m] == x->gen) continue;
+    x->seen[m] = x->gen;
+    if (rod_body_defs(nt, nt_ref(nt, m, "body"), meth) || rod_above_defines(x, nt, m, meth)) return 1;
+  }
   return 0;
 }
-/* Does class `cls` take `meth` from above its own body: its superclass's
+/* Does header `m` take `meth` from above its own body: its superclass's
    chain or a module its body includes? */
-static int rod_inherits(const NodeTable *nt, int cls, const char *meth) {
-  if (rod_chain_defines(nt, rod_leaf(nt, nt_ref(nt, cls, "superclass")), meth, 0)) return 1;
-  int body = nt_ref(nt, cls, "body");
+static int rod_above_defines(RodIndex *x, const NodeTable *nt, int m, const char *meth) {
+  int sc = nt_kind(nt, m) == NK_ClassNode ? nt_ref(nt, m, "superclass") : -1;
+  if (sc >= 0 && rod_named_defines(x, nt, x->qs[m], rod_leaf(nt, sc), meth)) return 1;
+  int body = nt_ref(nt, m, "body");
   int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     const char *cn = nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0 ? nt_str(nt, st[k], "name") : NULL;
     if (!cn || !sp_streq(cn, "include")) continue;
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, st[k], "arguments"), "arguments", &ac);
-    for (int a = 0; a < ac; a++) if (rod_chain_defines(nt, rod_leaf(nt, av[a]), meth, 0)) return 1;
+    for (int a = 0; a < ac; a++) if (rod_named_defines(x, nt, NULL, rod_leaf(nt, av[a]), meth)) return 1;
   }
+  return 0;
+}
+/* Does class `cls` take `meth` from above: the superclass or an included
+   module of any header of its name? `class Child < Base; end` then
+   `class Child; attr_reader :value; end` stands over Base's value, and a
+   module a later reopening includes is an ancestor too. */
+static int rod_inherits(RodIndex *x, const NodeTable *nt, int cls, const char *meth) {
+  x->gen++;
+  int e = x->qn[cls] ? anh_find(&x->byq, x->qn[cls]) : -1;
+  if (e < 0) { x->seen[cls] = x->gen; return rod_above_defines(x, nt, cls, meth); }
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m]) x->seen[m] = x->gen;
+  for (int m = x->qhead[e]; m >= 0; m = x->qnext[m])
+    if (rod_above_defines(x, nt, m, meth)) return 1;
   return 0;
 }
 /* `def meth = @meth` like node `like` */
@@ -15362,6 +15434,7 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
   /* the names some class or module body defines: a reader of any other name
      has nothing to stand over, and is passed without walking the chain */
   ANameHash defs = {0};
+  RodIndex rx; int built = 0;   /* built at the first reader that needs a walk */
   for (int pass = 0; pass < 2; pass++)
     NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, m) {
       int bd = nt_ref(nt, m, "body");
@@ -15385,7 +15458,9 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
       nb[nbn++] = s;
       for (int a = 0; a < ac; a++) {
         const char *meth = sym_or_str_literal(nt, av[a]);
-        if (!meth || !anh_has(&defs, meth) || rod_body_defs(nt, body, meth) || !rod_inherits(nt, cls, meth)) continue;
+        if (!meth || !anh_has(&defs, meth) || rod_body_defs(nt, body, meth)) continue;
+        if (!built) built = rod_index_build(&rx, nt, n0);
+        if (!rod_inherits(&rx, nt, cls, meth)) continue;
         char mb[256]; snprintf(mb, sizeof mb, "%s", meth);
         int d = rod_reader_def(nt, s, mb);
         if (d < 0) continue;
@@ -15400,6 +15475,7 @@ int desugar_readers_over_inherited_defs(Compiler *c) {
     if (any) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
     free(nb);
   }
+  if (built) rod_index_free(&rx, n0);
   anh_free(&defs);
   if (changed) comp_grow_node_arrays(c);
   return changed;
