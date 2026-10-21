@@ -3697,7 +3697,11 @@ sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
   sp_Enumerator *e = sp_Enumerator_new_gen(sp_dir_foreach_gen, cap, sp_box_nil()); SP_GC_ROOT(e);
   /* inspects as CRuby's: Dir:foreach("path") or Dir:foreach("path", encoding: NAME) */
   const char *lbl = sp_str_concat(SPL("foreach("), sp_poly_inspect(path)); SP_GC_ROOT_STR(lbl);
-  if (encoding.tag != SP_TAG_NIL) lbl = sp_str_concat(sp_str_concat(lbl, SPL(", encoding: ")), sp_poly_to_s(encoding));
+  /* the prefix goes into the rooted slot before to_s may allocate */
+  if (encoding.tag != SP_TAG_NIL) {
+    lbl = sp_str_concat(lbl, SPL(", encoding: "));
+    lbl = sp_str_concat(lbl, sp_poly_to_s(encoding));
+  }
   lbl = sp_str_concat(lbl, SPL(")"));
   return sp_enum_with_src(e, sp_box_class_name(SPL("Dir")), lbl);
 }

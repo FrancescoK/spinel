@@ -9,6 +9,8 @@ p e.class, e.size
 p e.to_a.sort
 p e.inspect.sub(d, "D")
 p Dir.foreach(d, encoding: "BINARY").map(&:encoding).uniq
+p Dir.foreach(d, encoding: Encoding::BINARY).inspect.sub(d, "D")
+p Dir.foreach(d, encoding: 1).inspect.sub(d, "D")
 p Dir.foreach(d).first(1).size
 begin
   missing = Dir.foreach(File.join(d, "nope"))
