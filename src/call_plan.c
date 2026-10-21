@@ -172,6 +172,24 @@ int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   return c->share_strings && mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
          c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
 }
+/* The existing boxed dispatch candidates also serve literal-name send arms. */
+static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
+  int npc = 0;
+  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  for (int i = 0; i < npc; i++) {
+    if (c->classes[pcs[i].cls].is_native_class) continue;
+    /* a reader candidate written as a method (`def x = @x`) is that method */
+    int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
+    if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
+  }
+  /* a boxed class value: the dispatch's class-method arms */
+  int ncc = 0;
+  const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+  for (int i = 0; i < ncc; i++)
+    if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_SWITCH); return; }
+  return;
+}
+
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -303,22 +321,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     if (p->mi < 0) cplan_object_reopen(c, name, p);
     return;
   }
-  if (rt == TY_POLY) {
-    int npc = 0;
-    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    for (int i = 0; i < npc; i++) {
-      if (c->classes[pcs[i].cls].is_native_class) continue;
-      /* a reader candidate written as a method (`def x = @x`) is that method */
-      int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
-      if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
-    }
-    /* a boxed class value: the dispatch's class-method arms */
-    int ncc = 0;
-    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
-    for (int i = 0; i < ncc; i++)
-      if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_SWITCH); return; }
-    return;
-  }
+  if (rt == TY_POLY) { cplan_resolve_poly(c, name, p); return; }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
   /* an IO handle's reopen: the File, IO or socket class that defines it */
@@ -481,6 +484,32 @@ void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, 
 int cplan_plain_ctx(void) {
   return view_depth() == 0 && comp_scope_move_depth() == 0 && g_ie_class_id < 0 &&
          inline_splice_depth() == 0;
+}
+
+/* A bound Method already carries its target. Its arguments are bound by
+   the Method adapter, not by the generic call-target argument walk. */
+CallPlan cplan_method_call(Compiler *c, int id) {
+  CallPlan p;
+  cplan_set(&p, -1, -1, UC_NONE, CP_NONE);
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_METHOD || !(is_method_invoke(nt_str(c->nt, id, "name")) || is_bind_call(nt_str(c->nt, id, "name")))) return p;
+  an_pure_read_begin();
+  int mn = method_recv_node(c, recv);
+  int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  an_pure_read_end();
+  if (mi >= 0) cplan_set(&p, mi, c->scopes[mi].class_id, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, CP_DIRECT);
+  return p;
+}
+
+/* A literal-name arm emitted on boxed self uses the existing boxed
+   candidates. Its record must not admit new arms to the outer send. */
+CallPlan cplan_send_arm(Compiler *c, int id) {
+  CallPlan p = *cplan_user_fresh(c, id);
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (p.mi < 0 && nt_int(c->nt, id, "dyn_arm", 0) &&
+      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode))
+    cplan_resolve_poly(c, nt_str(c->nt, id, "name"), &p);
+  return p;
 }
 
 CallPlan cplan_conversion(Compiler *c, int ci, const char *name) {

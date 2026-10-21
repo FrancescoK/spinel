@@ -6510,9 +6510,12 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
       (is_call_alias(name) ||
        (sp_streq(name, "===") && argc >= 1) ||
        (sp_streq(name, "bind_call") && argc >= 1))) {
-    int mn = method_recv_node(c, recv);
-    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-    if (mi >= 0) { *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1; }
+    CallPlan p = cplan_method_call(c, id);
+    int mi = p.mi;
+    if (mi >= 0) {
+      if (g_plan_check) an_user_call_record(c, id, mi, p.via, p.owner_ci);
+      *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1;
+    }
     /* Unresolved target -- a Method that arrived through a parameter or a
        slot, or a typed-array adapter (`<array>.method(:op)`) with no target
        scope. The value is whatever the target answers, boxed by the return
