@@ -22445,6 +22445,24 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       free(v);
       return 1;
     }
+    /* (one representation: `rows[0][0, 2] = v` on an element read, as the
+       single-index form above: the element's handle takes the splice, its
+       start and length converted before the value, as CRuby does) */
+    if (g_one_string && !assignable && sp_streq(name, "[]=") && argc == 3 &&
+        (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED)) {
+      int th = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(", th); emit_expr(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); if (!_t%d) sp_nil_recv(\"[]=\");", th, th);
+      buf_printf(b, " sp_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_int _t%d = ", tl); emit_int_expr(c, argv[1], b); buf_puts(b, ";");
+      char *v = emit_str_splice_value(c, recv, argv[2], 0, ts, b);
+      buf_printf(b, " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);", th, th);
+      buf_printf(b, " sp_String_set_bin(_t%d, sp_str_splice_at(sp_String_cstr(_t%d), _t%d, _t%d, %s, 0)); }\n",
+                 th, th, ts, tl, v ? v : "NULL");
+      free(v);
+      return 1;
+    }
     /* s[start, len] = v; a boxed start goes through the checked unbox like
        the single-index form's (#4060) -- the arm refused it (#4766) */
     if (assignable && sp_streq(name, "[]=") && argc == 3 &&

@@ -654,7 +654,10 @@ static int sb_route_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   Buf *pre0 = g_pre;
   size_t pre0_mark = pre0 ? pre0->len : 0;
   Buf hb; memset(&hb, 0, sizeof hb);
-  if (!emit_recv_route_handle(c, id, recvS, &hb)) { free(hb.p); return 0; }
+  /* (one representation: an element read of a typed String container is
+     the element's handle, which the change goes into) */
+  if (g_one_string && one_str_elem_call(c, u, TY_UNKNOWN)) strh_elem_handle_text(c, u, &hb);
+  else if (!emit_recv_route_handle(c, id, recvS, &hb)) { free(hb.p); return 0; }
   int tH = ++g_tmp;
   int tok = view_push_repr(c, recvS, VR_STRBUF_BOX, 0);
   view_push_repr(c, recvS, VR_HANDLE_DEMAND, 0);
