@@ -4618,7 +4618,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
   if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {
     int is_and = sp_streq(ty, "AndNode");
     int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
-    TyKind lt = comp_ntype(c, left), res = repr_of(c, id).as_ty;
+    TyKind lt = repr_of(c, left).as_ty, res = repr_of(c, id).as_ty;
     /* --share-strings: a bang's held answer on an arm is boxed as its handle
        (emit_boxed_self_answer_cond), not wrapped in a new String below */
     if (res == TY_POLY && emit_boxed_self_answer_cond(c, id, b)) return 1;
@@ -4832,6 +4832,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                 plain type: wrapped where the result is an oint */ \
              else if (lt_falsy_const && oint_kind(res) && ro) buf_puts((TB), oint_nil(res)); /* a nil left's value is nil */ \
              else if (lt == TY_UNKNOWN && oint_kind(res) && ro) buf_printf((TB), "%s(_t%d)", oint_of(res), t); \
+             else if (lt == TY_POLY && ty_is_hash(res)) { \
+               char kept[32]; snprintf(kept, sizeof kept, "_t%d", t); \
+               emit_unbox_text(c, res, kept, (TB)); } \
              else buf_printf((TB), "_t%d", t); } \
     } while (0)
     EMIT_ARM(0, &larm);

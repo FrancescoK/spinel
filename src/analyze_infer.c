@@ -9562,8 +9562,14 @@ static TyKind an_paren_ty(Compiler *c, int id) {
 int an_or_empty_hash_fallback(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_OrNode) return -1;
-  int r = an_unparen(nt, nt_ref(nt, node, "right"));   /* `x || ({})` is `x || {}` */
-  if (r < 0 || nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
+  int r;
+  /* `x || ({})` is `x || {}` */
+  switch (vp_one(nt, nt_ref(nt, node, "right"), VPS_NONE | VP_PARENS_ONLY, &r)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return -1;
+  case VP1_MANY: return -1;
+  }
+  if (nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
   if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
   TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
   return (lt == TY_NIL || lt == TY_UNKNOWN) ? r : -1;
