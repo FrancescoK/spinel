@@ -45067,6 +45067,27 @@ static int sid_maybe_set(Compiler *c, int v, int set_cid) {
   return (ty_is_object(t) && (ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid))) ||
          (t == TY_POLY && !cls_fact_excludes(c, v, set_cid));
 }
+/* Does reflective call id (`instance_variable_get(name)`,
+   `instance_variable_set(name, v)`) reach a place S holds an identity Set
+   in: by a literal naming one, or by a name no literal spells (a list of
+   names, `instance_variables`)? 1 when it may, 0 when it names another
+   instance variable or is no such call, -1 for one of another shape. */
+static int sid_reflect_reaches_place(const NodeTable *nt, const SidSources *S, int id, int *get) {
+  const char *nm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  if (!nm || S->nivars == 0) return 0;
+  int g = sp_streq(nm, "instance_variable_get");
+  if (!g && !sp_streq(nm, "instance_variable_set")) return 0;
+  if (get) *get = g;
+  int ar = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = ar >= 0 ? nt_arr(nt, ar, "arguments", &argc) : NULL;
+  if (argc != (g ? 1 : 2) || nt_ref(nt, id, "block") >= 0) return -1;
+  int a0 = an_unparen(nt, argv[0]);
+  NodeKind ak = nt_kind(nt, a0);
+  if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return -1;
+  if (g == 0 && nt_kind(nt, an_unparen(nt, argv[1])) == NK_SplatNode) return -1;
+  const char *iv = ak == NK_SymbolNode ? nt_str(nt, a0, "value") : ak == NK_StringNode ? nt_str(nt, a0, "content") : NULL;
+  return !iv || sid_name_in(S->ivars, S->nivars, iv);
+}
 /* Is node v a read of a place S holds an identity Set in? */
 static int sid_is_alias(Compiler *c, SidSources *S, int v) {
   const NodeTable *nt = c->nt;
@@ -45084,6 +45105,9 @@ static int sid_is_alias(Compiler *c, SidSources *S, int v) {
   if (k != NK_CallNode) return 0;
   /* a reader's call, a block it ignores or not (`seen { }`) */
   if (sid_name_in(S->readers, S->nreaders, nm)) return 1;
+  /* a reflective read that may answer a place's Set */
+  int get = 0;
+  if (sid_reflect_reaches_place(nt, S, v, &get) == 1 && get) return 1;
   /* a call on an alias that answers the Set or a copy that compares the
      same way (`@seen.add(n)`, `@seen | other`, `@seen.dup`) */
   int r = nt_ref(nt, v, "receiver");
@@ -45158,17 +45182,20 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       if (!comp_value_dropped(c, w) && !sid_alias_use_ok(c, S, r)) return 0;
   }
   /* a reflective read or write reaches an instance variable by a name:
-     one of the places', or one no literal names */
+     one of the places', or one no literal names. A read answers the Set
+     where it may be a place's, and is followed as a read of a place below
+     (sid_is_alias): `instance_variables.map { |v| instance_variable_get(v)
+     .inspect }` uses it as no Set. A write may put any Set there, so one
+     whose value may be a Set is not followed. */
   if (S->nivars > 0) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!sp_streq(nm, "instance_variable_get") && !sp_streq(nm, "instance_variable_set"))) continue;
+      int get = 0, r = sid_reflect_reaches_place(nt, S, id, &get);
+      if (r < 0) return 0;
+      if (r == 0 || get) continue;
       int ar = nt_ref(nt, id, "arguments"), argc = 0;
-      const int *argv = ar >= 0 ? nt_arr(nt, ar, "arguments", &argc) : NULL;
-      int a0 = argc > 0 ? an_unparen(nt, argv[0]) : -1;
-      NodeKind ak = a0 >= 0 ? nt_kind(nt, a0) : NK_NONE;
-      const char *iv = ak == NK_SymbolNode ? nt_str(nt, a0, "value") : ak == NK_StringNode ? nt_str(nt, a0, "content") : NULL;
-      if (!iv || sid_name_in(S->ivars, S->nivars, iv)) return 0;
+      const int *argv = nt_arr(nt, ar, "arguments", &argc);
+      int v = an_unparen(nt, argv[1]);
+      if (sid_fresh_set(nt, v) || sid_maybe_set(c, v, set_cid)) return 0;
     }
   }
   /* every write of a place holds a Set made there (or no Set) */
