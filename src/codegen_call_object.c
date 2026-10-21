@@ -244,11 +244,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       c->args_in_call = recv;
       return 1;
     }
-    /* Comparable: user type with <=> method */
+    /* Comparable: user type with <=> method, the module included
+       (class_is_comparable) */
     if (ty_is_object(rt)) {
       int cid_b = ty_object_class(rt);
       int defcls_b = -1;
-      int mi_b = comp_method_in_chain(c, cid_b, "<=>", &defcls_b);
+      int mi_b = class_is_comparable(c, cid_b) ? comp_method_in_chain(c, cid_b, "<=>", &defcls_b) : -1;
       if (mi_b >= 0 && user_cmp_invalid_ret(c, cid_b) != TY_UNKNOWN)
         unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
       if (mi_b >= 0 && user_cmp_needs_check(c, cid_b)) {

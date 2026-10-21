@@ -15819,8 +15819,9 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
     /* Comparable's `==` is derived from `<=>`: a class that defines the
        compare but not the equality still answers `a == b` as `(a <=> b) == 0`.
        Without an arm the boxed path fell through to identity and said false
-       for two equal values (#3501). */
-    if (derive_eq && !bcase && comp_method_in_chain(c, k, "==", NULL) < 0) {
+       for two equal values (#3501). Only with the module included: a class
+       defining `<=>` alone compares by identity (class_is_comparable). */
+    if (derive_eq && !bcase && comp_method_in_chain(c, k, "==", NULL) < 0 && class_is_comparable(c, k)) {
       int cmp_defcls = -1;
       int cmp_mi = comp_method_in_chain(c, k, "<=>", &cmp_defcls);
       if (cmp_mi >= 0) {

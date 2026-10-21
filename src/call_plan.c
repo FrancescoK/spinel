@@ -256,11 +256,14 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       return;
     }
     /* the operators an object answers through another of its methods:
-       `!=` through `==`, the comparisons through `<=>` */
+       `!=` through `==`, the comparisons through `<=>` when Comparable
+       supplies them (class_is_comparable) */
     const char *via_op = builtin_operator_delegate(name);
+    if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
     if (dmi < 0 && via_op) {
       via_op = builtin_operator_delegate(via_op);
+      if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
       dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
     }
     if (dmi >= 0) {

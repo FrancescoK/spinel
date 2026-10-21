@@ -17505,6 +17505,22 @@ int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
   }
   return 0;
 }
+/* Does an instance of the class answer Comparable's methods (<, <=, >, >=,
+   ==, between?, clamp) through its `<=>`? Only with Comparable among its
+   ancestors: an include in its chain, a builtin superclass that has it
+   (String, Numeric, Time), or Object reopened to include it. A class that
+   defines `<=>` alone compares by identity in `==` and has no `<`, as in
+   CRuby; sort, min and max call its `<=>` either way. */
+int class_is_comparable(Compiler *c, int cid) {
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  if (class_mixes_in(c, cid, "Comparable", 0)) return 1;
+  static const char *const CMP[] = { "String", "Numeric", "Integer", "Float", "Rational",
+                                     "Complex", "Time", NULL };
+  int bp = class_builtin_parent(c, cid);
+  for (int i = 0; CMP[i]; i++) if (bp == builtin_class_id(CMP[i])) return 1;
+  int oc = comp_class_index(c, "Object");
+  return oc >= 0 && oc != cid && class_mixes_in(c, oc, "Comparable", 0);
+}
 /* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
    one, 0 otherwise. */
 int class_struct_kind(Compiler *c, int cid) {
