@@ -1848,8 +1848,6 @@ void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen);
    runtime's strcmp tag match succeeds. Falls back to a runtime string expr. */
 int emit_catch_tag(Compiler *c, int id, Buf *b);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
-/* Strip ParenthesesNode wrappers to reach the inner expression. */
-int unwrap_parens(Compiler *c, int id);
 int hoisted_value_is_stmt(Compiler *c, int id);
 /* Collect a String `<<` chain's args outermost-first (max 64); *base gets
    the node the chain bottoms out at. Returns the link count. */
