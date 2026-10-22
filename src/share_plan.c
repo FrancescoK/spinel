@@ -124,7 +124,7 @@ static int share_plan_self_recv(Compiler *c, int v) {
   int nb = strbuf_narrowed_box_conversion(c, v);
   if (nb >= 0) return nb;
   const char *nm = nt_str(nt, v, "name");
-  int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
+  int r = nt_paren_single(nt, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
   int any_recv = nm && ((sp_streq(nm, "itself") && call_plain_argc(c, v) == 0 && nt_ref(nt, v, "block") < 0) ||
                         (is_tap_name(nm) && nt_ref(nt, v, "block") >= 0));
   if (!nm || r < 0 || (c->ntype[r] != TY_STRING && c->ntype[r] != TY_STRBUF && !(any_recv && c->ntype[r] == TY_POLY)))

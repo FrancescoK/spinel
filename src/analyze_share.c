@@ -5585,7 +5585,7 @@ int share_node_elems_share(const Compiler *c, int n) {
 }
 int share_str_elem_read(Compiler *c, int n) {
   if (!c->share || n < 0) return 0;
-  n = unwrap_parens(c, n);
+  n = nt_paren_single(c->nt, n);
   if (!container_elem_read_p(c->nt, n)) return 0;
   int r = nt_ref(c->nt, n, "receiver");
   return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY && share_node_elems_share(c, r);
