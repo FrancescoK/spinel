@@ -35485,8 +35485,12 @@ static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, 
     for (int k = 0; k < ntg; k++) r |= elem_slots_d(c, scope_body_last(c, tg[k]), 1, depth + 1, fn, ud);
     return r;
   }
-  if (iv >= 0 && (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY))
-    r |= fn(c, &ci->ivar_nullable_int_elem[iv], recv, tail, ud);
+  /* (an ivar's bits are a byte: fn sees them as an int, written back) */
+  if (iv >= 0 && (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY)) {
+    int bits = ci->ivar_nullable_int_elem[iv];
+    r |= fn(c, &bits, recv, tail, ud);
+    ci->ivar_nullable_int_elem[iv] = (unsigned char)bits;
+  }
   return r;
 }
 
