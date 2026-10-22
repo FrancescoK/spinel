@@ -1316,7 +1316,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     return 1;
   }
 
-  /* system(cmd, ...) expr: run and return bool */
+  /* system(cmd, ...) expr: run, and answer true, false or nil */
   if (recv < 0 && sp_streq(name, "system") && argc >= 1 && !bare_call_class_owned(c, id)) {
     if (emit_system_splat(c, id, argv, argc, b)) return 1;
     system_refuse_unsupported(c, id, argv, argc);
@@ -1330,7 +1330,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     buf_printf(b, "const char *_sys_%d[] = { ", ts);
     for (int k = 0; k < argc; k++) { if (k > 0) buf_puts(b, ", "); buf_printf(b, "_sys_%d_%d", ts, k); }
-    buf_printf(b, ", NULL }; (sp_bool)sp_system_args(%d, _sys_%d); })", argc, ts);
+    buf_printf(b, ", NULL }; sp_system_answer(sp_system_args(%d, _sys_%d)); })", argc, ts);
     return 1;
   }
   /* trap(...) / Signal.trap(...): install the handler (a string command or a

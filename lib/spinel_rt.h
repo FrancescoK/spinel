@@ -439,6 +439,9 @@ const char *sp_sprintf(const char *fmt, ...);
 #include "sp_core.h"
 /* system()/backtick ($?) support now lives in libspinel_rt.a (lib/sp_system.c). */
 #include "sp_system.h"
+/* Kernel#system's answer: true for an exit status of zero, false for
+   another, nil when the command could not run (sp_system_envp's -1) */
+static inline sp_RbVal sp_system_answer(int r) { return r < 0 ? sp_box_nil() : sp_box_bool(r); }
 
 /* Math.* wrappers that raise Math::DomainError on out-of-domain input, per
    CRuby. The runtime exception name is the flattened "Math::DomainError"
