@@ -30967,9 +30967,20 @@ void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b) {
 int strbuf_call_picks_up(Compiler *c, int id) {
   /* (the call answers its String as a const char *: a method whose value
      widened past a String after the pickup was marked answers a box) */
-  return c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 && comp_ntype(c, id) != TY_POLY &&
-         (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
-                                            : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS);
+  if (!(c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 && comp_ntype(c, id) != TY_POLY)) return 0;
+  int r = nt_ref(c->nt, id, "receiver");
+  if (r < 0) return implicit_self_reader_cid(c, id) < 0;
+  if (comp_ntype(c, r) != TY_CLASS) return 0;
+  /* (a class method of the program's publishes; a builtin's, `File.join`,
+     does not, and a String an argument read published was taken for its
+     answer) */
+  int k = class_recv_static_ci(c, r);
+  const char *nm = nt_str(c->nt, id, "name");
+  if (k < 0) {
+    const char *cn = nt_kind(c->nt, r) == NK_ConstantReadNode ? nt_str(c->nt, r, "name") : NULL;
+    return !cn || comp_class_index(c, cn) >= 0;
+  }
+  return !nm || comp_cmethod_in_chain(c, k, nm, NULL) >= 0;
 }
 /* deep-return pickup (#3227 P6): a marked receiverless call to a method
    whose every return path yields a shared handle -- reset the side

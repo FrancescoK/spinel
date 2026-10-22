@@ -430,6 +430,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         /* a nullable string (NULL) interpolates as the empty string (a part
            read after the last part keeps its nil, to read nothing then) */
         if (late_call) EMIT_IV();
+        /* (one-String mode: a value of either face, `"#{file || "-"}"`
+           with file a String-or-nil handle) */
+        else if (g_one_string) { buf_puts(&conv, "sp_str_or_empty(SP_STR_B("); EMIT_IV(); buf_puts(&conv, "))"); }
         else { buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")"); }
       }
       else if (g_one_string && t == TY_STRBUF) {

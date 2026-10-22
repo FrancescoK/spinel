@@ -277,6 +277,8 @@ static const char *sio_src_name(sp_RbVal v) {
     default: break;
   }
   if (v.tag == SP_TAG_OBJ) {
+    /* a String's handle box is a String */
+    if (v.cls_id == SP_BUILTIN_STRBUF) return "String";
     if (v.cls_id >= 0 && sp_obj_cls_name_fn) {
       const char *cn = sp_obj_cls_name_fn((int)v.cls_id);
       if (cn) return cn;

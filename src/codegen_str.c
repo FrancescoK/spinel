@@ -108,6 +108,11 @@ static int str_handle_route(Compiler *c, int v, StrForm *sf) {
   return 1;
 }
 static int str_handle_slot(Compiler *c, int v, StrForm *sf) {
+  /* (one-String mode: a variable read that ran first holds the handle, or
+     a view of it, in its temp: the String the variable had) */
+  if (g_one_string && arg_ran_first(v, 0) && str_var_read(c, v))
+    for (int i = g_n_argov - 1; i >= 0; i--)
+      if (g_argov_node[i] == v) { buf_printf(&sf->expr, "SP_STR_HDL(%s)", g_argov_text[i]); return 1; }
   if ((arg_ran_first(v, 0) && str_var_read(c, v)) || !strbuf_slot_text(c, v, &sf->expr)) return 0;
   return 1;
 }
