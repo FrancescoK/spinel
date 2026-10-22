@@ -3697,7 +3697,7 @@ const IterRow *iter_row_of(TyKind rt, const char *name, int argc) {
   const IterRow *r = iter_row(BOP_ANY_RECV, name, argc, 0);
   if (r || !name) return r;
   TyKind fam = ty_is_hash(rt) ? BOP_ANY_HASH
-             : ty_is_array(rt) ? BOP_ANY_ARRAY
+             : ty_is_array(rt) || ty_is_obj_array(rt) ? BOP_ANY_ARRAY
              : rt == TY_INT || rt == TY_FLOAT || rt == TY_STRING || rt == TY_RANGE ||
                rt == TY_FLOAT_RANGE ? rt
              : TY_UNKNOWN;

@@ -344,6 +344,171 @@ def case18
 end
 run("a yield's ivar, boxed") { case18 }
 
+def rec(a, d)
+  if d > 0
+    rec(a, d - 1) { |m| m << H[7] }
+  else
+    yield a
+  end
+end
+give([0]) { |m| }
+give([1]) { |m| }
+give([2]) { |m| }
+give([3]) { |m| }
+give([4]) { |m| }
+give([5]) { |m| }
+give([6]) { |m| }
+give([7]) { |m| }
+give([8]) { |m| }
+give([9]) { |m| }
+give([10]) { |m| }
+give([11]) { |m| }
+give([12]) { |m| }
+give([13]) { |m| }
+give([14]) { |m| }
+give([15]) { |m| }
+give([16]) { |m| }
+give([17]) { |m| }
+give([18]) { |m| }
+give([19]) { |m| }
+give([20]) { |m| }
+give([21]) { |m| }
+give([22]) { |m| }
+give([23]) { |m| }
+give([24]) { |m| }
+give([25]) { |m| }
+give([26]) { |m| }
+give([27]) { |m| }
+give([28]) { |m| }
+give([29]) { |m| }
+give([30]) { |m| }
+give([31]) { |m| }
+give([32]) { |m| }
+give([33]) { |m| }
+give([34]) { |m| }
+give([35]) { |m| }
+give([36]) { |m| }
+give([37]) { |m| }
+give([38]) { |m| }
+give([39]) { |m| }
+give([40]) { |m| }
+give([41]) { |m| }
+give([42]) { |m| }
+give([43]) { |m| }
+give([44]) { |m| }
+give([45]) { |m| }
+give([46]) { |m| }
+give([47]) { |m| }
+give([48]) { |m| }
+give([49]) { |m| }
+give([50]) { |m| }
+give([51]) { |m| }
+give([52]) { |m| }
+give([53]) { |m| }
+give([54]) { |m| }
+give([55]) { |m| }
+give([56]) { |m| }
+give([57]) { |m| }
+give([58]) { |m| }
+give([59]) { |m| }
+give([60]) { |m| }
+give([61]) { |m| }
+give([62]) { |m| }
+give([63]) { |m| }
+give([64]) { |m| }
+give([65]) { |m| }
+give([66]) { |m| }
+give([67]) { |m| }
+give([68]) { |m| }
+give([69]) { |m| }
+
+def sum100(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case100
+  a = [1, 2]
+  b = [1].each { break a }
+  b << H[7]
+  sum100(a)
+end
+run("a break's value") { case100 }
+
+def sum101(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case101
+  a = [1, 2]
+  b = a.then { |x| next x if x.size > 0; [7] }
+  b << H[7]
+  sum101(a)
+end
+run('then with a next') { case101 }
+
+def sum102(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case102
+  a = [1, 2]
+  b = a.then do |x|
+    x
+  rescue ArgumentError
+    x
+  end
+  b << H[7]
+  sum102(a)
+end
+run('then with a rescue') { case102 }
+
+def sum103(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case103
+  a = [1, 2]
+  rec(a, 1) { |m| }
+  sum103(a)
+end
+run("a recursive call's block") { case103 }
+
+def sum104(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case104
+  a = [1, 2]
+  give(a) { |m| m << H[7] }
+  sum104(a)
+end
+run('one of many yield sites') { case104 }
+
 # a block's array a method keeps in an ivar, written through the ivar's reader
 def ksum(fl)
   s = 0

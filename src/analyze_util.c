@@ -2564,15 +2564,16 @@ int yield_block_calls(Compiler *c, int mi, int *out, int max) {
     int cid = yvt_ids[ii];
     if (!yvt_may_reach(c, ii, mi)) continue;
     int fwd_args = yvt_fwd ? yvt_fwd[ii] : yvt_call_forwards_block(nt, cid);
-    if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
     if (!yvt_reaches(c, cid, mi)) continue;
     if (fwd_args || nt_call_has_block_arg(nt, cid)) {
-      if (!call_forwards_own_block(c, cid)) continue;
+      /* (a call in mi itself forwarding mi's own block is mi's caller's) */
+      if ((int)(comp_scope_of(c, cid) - c->scopes) == mi || !call_forwards_own_block(c, cid)) continue;
       Scope *encl = comp_scope_of(c, cid);
       int emi = encl ? (int)(encl - c->scopes) : -1;
       if (emi >= 0 && emi != mi) n += yield_block_calls(c, emi, out + n, max - n);
       continue;
     }
+    /* a recursive call with a literal block reaches the yield too */
     out[n++] = cid;
   }
   g_yvt_depth--;
