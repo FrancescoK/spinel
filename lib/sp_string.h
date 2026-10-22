@@ -255,9 +255,15 @@ static inline sp_String*sp_String_new_shared(const char*s){
   unsigned char mk=((const unsigned char*)s)[-1];
 #ifdef SP_ONE_STRING
   if(mk==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
-  if(mk==0xfe||mk==0xfa||mk==0xf1){sp_String*o=sp_str_born_owner(s);if(o)return sp_String_adopt(s,o);}
+  if(mk==0xfe||mk==0xfa){sp_String*o=sp_str_born_owner(s);if(o)return sp_String_adopt(s,o);}
 #endif
-  if(mk==0xf1){sp_StringLiteral*l=sp_String_literal_slot(s);if(l){sp_String*lh=SP_ATOMIC_LOAD(&l->value,__ATOMIC_ACQUIRE);if(lh)return lh;}}
+  if(mk==0xf1){sp_StringLiteral*l=sp_String_literal_slot(s);if(l){sp_String*lh=SP_ATOMIC_LOAD(&l->value,__ATOMIC_ACQUIRE);if(lh)return lh;}
+#ifdef SP_ONE_STRING
+    /* (a heap String .freeze made 0xf1 is no literal: its handle, when it
+       was born in one) */
+    else{sp_String*o=sp_str_born_owner(s);if(o)return sp_String_adopt(s,o);}
+#endif
+  }
   return sp_String_new_shared_make(s);
 }
 static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s){
