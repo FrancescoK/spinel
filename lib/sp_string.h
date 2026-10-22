@@ -247,6 +247,27 @@ static inline sp_String*sp_String_adopt(const char*s,sp_String*o){
   ((unsigned char*)s)[-1]=0xfd;
   return o;
 }
+/* A static of one byte or none (0xff: the character table s[i] answers
+   from, and the empty String) has no header, mark or literal slot to ask:
+   its handle is laid out directly, as sp_String_new_inline_len would lay it
+   out. Taking a character into a local made one through the general
+   constructor, about 200 instructions of the 300 bm_json_parse spent per
+   character over the default build. */
+static SP_NOINLINE sp_String*sp_String_new_static1(unsigned char c){
+  enum{CAP=1*2+16};
+  sp_String*r=(sp_String*)sp_gc_alloc_sized(sizeof(sp_String)+SP_FD_OVH+CAP,NULL);
+  /* the object comes zeroed: the header's hash, the binary and chilled
+     words and the NUL need no store */
+  sp_str_hdr*h=(sp_str_hdr*)(void*)(r+1);
+  char*data=(char*)(h+1)+1;
+  h->next=(sp_str_hdr*)(void*)r;h->len=c!=0;
+  data[-1]=(char)0xfd;data[0]=(char)c;
+  r->data=data;r->len=c!=0;r->cap=CAP;
+  sp_str_lcache_drop(data);
+  /* (one byte below 0x80, or none, is 7-bit: indexing it is byte indexing) */
+  if(c<0x80)h->size=SP_STR_SIZE_ASCII7;
+  return r;
+}
 #endif
 #if defined(SP_SHARE_STRING_LITERALS) || defined(SP_ONE_STRING)
 static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s);
@@ -256,6 +277,7 @@ static inline sp_String*sp_String_new_shared(const char*s){
 #ifdef SP_ONE_STRING
   if(mk==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
   if(mk==0xfe||mk==0xfa){sp_String*o=sp_str_born_owner(s);if(o)return sp_String_adopt(s,o);}
+  if(mk==0xff&&(!s[0]||!s[1]))return sp_String_new_static1((unsigned char)s[0]);
 #endif
   if(mk==0xf1){sp_StringLiteral*l=sp_String_literal_slot(s);if(l){sp_String*lh=SP_ATOMIC_LOAD(&l->value,__ATOMIC_ACQUIRE);if(lh)return lh;}
 #ifdef SP_ONE_STRING
