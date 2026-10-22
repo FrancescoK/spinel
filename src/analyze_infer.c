@@ -9555,19 +9555,19 @@ static TyKind an_empty_container_tail(Compiler *c, int stmts) {
   int n = 0;
   const int *bb = nt_arr(nt, stmts, "body", &n);
   int tail = (bb && n > 0) ? bb[n - 1] : stmts;
-  tail = an_unparen(nt, tail);   /* `([])` is `[]` */
+  tail = nt_paren_single(nt, tail);   /* `([])` is `[]` */
   if (tail < 0) return TY_UNKNOWN;
-  const char *ty = nt_type(nt, tail);
+  NodeKind tk = nt_kind(nt, tail);
   int len = 0;
-  if (ty && sp_streq(ty, "ArrayNode")) {
+  if (tk == NK_ArrayNode) {
     nt_arr(nt, tail, "elements", &len);
     if (len == 0) return TY_POLY_ARRAY;
   }
-  else if (ty && sp_streq(ty, "HashNode")) {
+  else if (tk == NK_HashNode) {
     nt_arr(nt, tail, "elements", &len);
     if (len == 0) return TY_STR_POLY_HASH;
   }
-  else if (ty && sp_streq(ty, "CallNode")) {
+  else if (tk == NK_CallNode) {
     int k = an_empty_container_new(c, tail);
     if (k) return k == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
   }

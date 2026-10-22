@@ -3542,7 +3542,7 @@ static void vsite_build(Compiler *c, int toplevel) {
     else if (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode || k == NK_GlobalVariableWriteNode)
       vsite_add(c, VS_WRITE, u, u);
     else if (k == NK_CallNode && nt_ref(nt, u, "receiver") >= 0) {
-      int r = nt_ref(nt, u, "receiver"), ru = an_unparen(nt, r);
+      int r = nt_ref(nt, u, "receiver"), ru = nt_paren_single(nt, r);
       const char *un = nt_str(nt, u, "name");
       if (ru >= 0 && ru < n) c->vs_rparent[ru] = u;
       /* a constant or a class variable is a receiver here too: the share
@@ -3589,7 +3589,7 @@ int comp_vsite_var(const Compiler *c, int e) {
 }
 int comp_recv_parent(Compiler *c, int n) {
   vsite_sync(c);
-  n = an_unparen(c->nt, n);
+  n = nt_paren_single(c->nt, n);
   return n >= 0 && n < c->vs_nodes ? c->vs_rparent[n] : -1;
 }
 int comp_lwrite_of_value(Compiler *c, int n) {

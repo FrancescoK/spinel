@@ -1261,10 +1261,6 @@ static int cf_tail(CF *f, int st) {
   int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
   return n > 0 ? b[n - 1] : -1;
 }
-static int cf_unparen(CF *f, int v) {
-  for (int d = 0; v >= 0 && d < 16 && nt_kind(f->nt, v) == NK_ParenthesesNode; d++) v = cf_tail(f, nt_ref(f->nt, v, "body"));
-  return v;
-}
 
 /* a block's or a lambda's parameter names, into out; -1 for a splat, a
    keyword or a rest among them (the positions past it are unknown) */
@@ -2791,8 +2787,8 @@ static int cf_kfalsy_body(CF *f, int mi) {
   if (b < 0) return 1;   /* an empty body: nil */
   if (nt_kind(f->nt, b) == NK_StatementsNode) {
     int bn = 0; const int *bb = nt_arr(f->nt, b, "body", &bn);
-    if (bn != 1) return 0;
-    b = cf_unparen(f, bb[0]);
+    /* parentheses answer their last statement; `()` is not taken (0) */
+    if (bn != 1 || vp_one(f->nt, bb[0], VPS_NONE | VP_PARENS_ONLY, &b) != VP1_NODE) return 0;
   }
   return nt_kind(f->nt, b) == NK_FalseNode || nt_kind(f->nt, b) == NK_NilNode;
 }
@@ -2849,8 +2845,7 @@ static int cf_kpred_classes(CF *f, const char *nm, ClsSet *s) {
    the predicates, whose classes it adds to s? */
 static int cf_kcond(CF *f, int cond, const char *x, int el, int d, ClsSet *s, int depth) {
   const NodeTable *nt = f->nt;
-  cond = cf_unparen(f, cond);
-  if (cond < 0 || depth > 64) return 0;
+  if (depth > 64 || vp_one(nt, cond, VPS_NONE | VP_PARENS_ONLY, &cond) != VP1_NODE) return 0;
   NodeKind k = nt_kind(nt, cond);
   if (k == NK_OrNode)
     return cf_kcond(f, nt_ref(nt, cond, "left"), x, el, d, s, depth + 1) && cf_kcond(f, nt_ref(nt, cond, "right"), x, el, d, s, depth + 1);
@@ -2870,9 +2865,10 @@ static int cf_kcond(CF *f, int cond, const char *x, int el, int d, ClsSet *s, in
     return 0;
   }
   if (k != NK_CallNode || nt_ref(nt, cond, "arguments") >= 0 || nt_ref(nt, cond, "block") >= 0) return 0;
-  int r = cf_unparen(f, nt_ref(nt, cond, "receiver"));
+  int r;
   const char *nm = nt_str(nt, cond, "name");
-  if (!nm || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(cf_knode_name(f, r), x) || cf_kdef_of(f, r) != d ||
+  if (!nm || vp_one(nt, nt_ref(nt, cond, "receiver"), VPS_NONE | VP_PARENS_ONLY, &r) != VP1_NODE ||
+      nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(cf_knode_name(f, r), x) || cf_kdef_of(f, r) != d ||
       cf_lv(f, r, x) != el) return 0;
   return cf_kpred_classes(f, nm, s);
 }

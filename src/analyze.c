@@ -39341,7 +39341,7 @@ static int wnh_boxed_target(Compiler *c, int w) {
 static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *answered, int copies);
 static int wnh_copy_target(Compiler *c, int w, const char *name, Scope *sc) {
   const NodeTable *nt = c->nt;
-  int v = an_unparen(nt, nt_ref(nt, w, "value"));
+  int v = nt_paren_single(nt, nt_ref(nt, w, "value"));
   const char *wn = nt_str(nt, w, "name");
   if (nt_kind(nt, w) != NK_LocalVariableWriteNode || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode ||
       comp_scope_of(c, w) != sc || !wn || !sp_streq(nt_str(nt, v, "name"), name)) return 0;
@@ -39737,7 +39737,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *ms = &c->scopes[mi];
     if (ms->def_node < 0 || !ty_is_hash(ms->ret)) continue;
-    int last = an_unparen(nt, scope_body_last(c, mi));
+    int last = nt_paren_single(nt, scope_body_last(c, mi));
     if (last < 0 || nt_kind(nt, last) != NK_HashNode || comp_scope_of(c, last) != ms) continue;
     TyKind lt = c->ntype[last];
     if (!ty_is_hash(lt) || lt == ms->ret || ty_hash_val(lt) != TY_POLY || ty_hash_val(ms->ret) == TY_POLY) continue;
@@ -39845,7 +39845,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     again = 0;
     NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
       const char *cn = nt_str(nt, id, "name");
-      int v = an_unparen(nt, nt_ref(nt, id, "value"));
+      int v = nt_paren_single(nt, nt_ref(nt, id, "value"));
       LocalVar *cv = cn ? comp_const(c, cn) : NULL;
       if (!cv || v < 0 || (cv->type != TY_INT && cv->type != TY_FLOAT)) continue;
       NodeKind vk = nt_kind(nt, v);
@@ -39913,7 +39913,7 @@ int hash_vals_nullable(Compiler *c, int node) {
    it with its nil) */
 static int hash_store_val_may_nil(Compiler *c, int v) {
   if (v < 0) return 0;
-  if (nt_kind(c->nt, an_unparen(c->nt, v)) == NK_NilNode) return 1;
+  if (nt_kind(c->nt, nt_paren_single(c->nt, v)) == NK_NilNode) return 1;
   return nullable_int_value(c, v) || infer_type(c, v) == TY_POLY;
 }
 /* The block parameters a walk over a Hash binds its key and value to (-1:
@@ -45246,11 +45246,16 @@ static int sid_kind_ok(Compiler *c, TyKind t) {
 }
 static int sid_kinds_ok(int k) { return !(k & (CK_UNSAFE | CK_LIT)); }
 /* Is value v statically one whose identity is CRuby's? A boxed local whose
-   every write in its scope is such a value counts. */
+   every write in its scope is such a value counts. Parentheses answer their
+   last statement's value, and `()` answers nil, which is one object. */
 static int sid_value_ok(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 8) return 0;
+  if (depth > 8) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &v)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 1;
+  case VP1_MANY: return 0;
+  }
   TyKind t = infer_type(c, v);
   if (t != TY_POLY && sid_kind_ok(c, t)) return 1;
   if ((t == TY_POLY || t == TY_STRING || t == TY_STRBUF) && sid_kinds_ok(cls_fact_kinds(c, v))) return 1;
@@ -45280,8 +45285,11 @@ static int sid_no_collection_kind(TyKind t) {
 }
 static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &v)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 1;   /* nil, which brings no member */
+  case VP1_MANY: return 0;
+  }
   TyKind t = infer_type(c, v);
   if (sid_no_collection_kind(t)) return 1;
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
@@ -45319,7 +45327,8 @@ static int sid_block_ok(Compiler *c, int blk, int own) {
   int body = nt_ref(nt, blk, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn == 0) return 1;
-  int v = an_unparen(nt, bb[bn - 1]);
+  int v = bb[bn - 1], one;
+  if (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &one) == VP1_NODE) v = one;
   if (own && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name"))
     for (int k = 0; block_param_name(c, blk, k); k++)
       if (sp_streq(block_param_name(c, blk, k), nt_str(nt, v, "name"))) return 1;
@@ -45440,7 +45449,7 @@ static int iter_disc_self_targets(Compiler *c, int n, int *out, int cap) {
    any, where the answers are of more than one class), or -3. */
 static int iter_disc_call_recv(Compiler *c, int r) {
   const NodeTable *nt = c->nt;
-  r = an_unparen(nt, r);
+  r = nt_paren_single(nt, r);
   if (r < 0 || nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "block") >= 0) return -3;
   const char *nm = nt_str(nt, r, "name");
   /* (no builtin answers it: on self, none of Object's or Kernel's; on a
@@ -45563,11 +45572,11 @@ static int sid_add_name(const char **names, int *n, const char *nm) {
 /* Is v a Set the expression makes: `Set.new(...)`, `Set[...]`, or one of
    them made an identity Set on the spot? */
 static int sid_fresh_set(const NodeTable *nt, int v) {
-  v = an_unparen(nt, v);
+  v = nt_paren_single(nt, v);
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, v, "name");
-  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
-  if (nm && sp_streq(nm, "compare_by_identity") && nt_ref(nt, v, "arguments") < 0) return sid_fresh_set(nt, r);
+  int r = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
+  if (is_compare_by_identity_name(nm) && nt_ref(nt, v, "arguments") < 0) return sid_fresh_set(nt, r);
   if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "[]"))) return 0;
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") &&
          sp_streq(nt_str(nt, r, "name"), "Set");
@@ -45633,7 +45642,7 @@ static int sid_alias_use_ok(Compiler *c, SidSources *S, int a) {
     int p = S->parent[a];
     while (p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode) { a = p; p = S->parent[a]; }
     if (p < 0) return 0;
-    if (nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == an_unparen(nt, a)) {
+    if (nt_kind(nt, p) == NK_CallNode && nt_paren_single(nt, nt_ref(nt, p, "receiver")) == nt_paren_single(nt, a)) {
       const char *nm = nt_str(nt, p, "name");
       if (!nm || sid_hands_on_self(nm)) return 0;
       if (!sid_answers_set(nm) || comp_value_dropped(c, p)) return 1;
@@ -45677,17 +45686,17 @@ static int sid_reflect_reaches_place(const NodeTable *nt, const SidSources *S, i
   int ar = nt_ref(nt, id, "arguments"), argc = 0;
   const int *argv = ar >= 0 ? nt_arr(nt, ar, "arguments", &argc) : NULL;
   if (argc != (g ? 1 : 2) || nt_ref(nt, id, "block") >= 0) return -1;
-  int a0 = an_unparen(nt, argv[0]);
+  int a0 = nt_paren_single(nt, argv[0]);
   NodeKind ak = nt_kind(nt, a0);
   if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return -1;
-  if (g == 0 && nt_kind(nt, an_unparen(nt, argv[1])) == NK_SplatNode) return -1;
+  if (g == 0 && nt_kind(nt, nt_paren_single(nt, argv[1])) == NK_SplatNode) return -1;
   const char *iv = ak == NK_SymbolNode ? nt_str(nt, a0, "value") : ak == NK_StringNode ? nt_str(nt, a0, "content") : NULL;
   return !iv || sid_name_in(S->ivars, S->nivars, iv);
 }
 /* Is node v a read of a place S holds an identity Set in? */
 static int sid_is_alias(Compiler *c, SidSources *S, int v) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
+  v = nt_paren_single(nt, v);
   if (v < 0) return 0;
   NodeKind k = nt_kind(nt, v);
   const char *nm = nt_str(nt, v, "name");
@@ -45719,7 +45728,7 @@ static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   if (p < 0) return 0;
   NodeKind pk = nt_kind(nt, p);
   const char *pn = nt_str(nt, p, "name");
-  if (pk == NK_CallNode && pn && sp_streq(pn, "compare_by_identity") && an_unparen(nt, nt_ref(nt, p, "receiver")) == a)
+  if (pk == NK_CallNode && is_compare_by_identity_name(pn) && nt_paren_single(nt, nt_ref(nt, p, "receiver")) == a)
     return 1;
   if ((pk == NK_InstanceVariableWriteNode || pk == NK_InstanceVariableOrWriteNode) && pn)
     return sid_name_in(S->ivars, S->nivars, pn);
@@ -45735,13 +45744,16 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
+    if (!is_compare_by_identity_name(nm) || nt_ref(nt, id, "arguments") >= 0) continue;
     Scope *s = comp_scope_of(c, id);
     if (s && s->class_id == set_cid) continue;
     /* (a computed name's arm, as refuse_set_identity_members skips it) */
     if (!spelled && (nt_int(nt, id, "dyn_arm", 0) || (s && s->name && strncmp(s->name, "__bam_", 6) == 0))) continue;
-    int r = an_unparen(nt, nt_ref(nt, id, "receiver"));
-    if (r < 0) {
+    /* a receiver in parentheses holding several statements or none counts
+       as none: following its last statement would refuse programs whose
+       identity Sets answer as CRuby's */
+    int r = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
+    if (r < 0 || nt_kind(nt, r) == NK_ParenthesesNode) {
       if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) return 0;
       continue;
     }
@@ -45755,9 +45767,9 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
     if (rk == NK_InstanceVariableReadNode) place = nt_str(nt, r, "name");
     else if (rk == NK_LocalVariableReadNode) { place = nt_str(nt, r, "name"); local = 1; }
     else if (sid_fresh_set(nt, r) && (pk == NK_InstanceVariableWriteNode || pk == NK_InstanceVariableOrWriteNode) &&
-             an_unparen(nt, nt_ref(nt, p, "value")) == an_unparen(nt, w)) place = nt_str(nt, p, "name");
+             nt_paren_single(nt, nt_ref(nt, p, "value")) == nt_paren_single(nt, w)) place = nt_str(nt, p, "name");
     else if (sid_fresh_set(nt, r) && pk == NK_LocalVariableWriteNode &&
-             an_unparen(nt, nt_ref(nt, p, "value")) == an_unparen(nt, w)) { place = nt_str(nt, p, "name"); local = 1; }
+             nt_paren_single(nt, nt_ref(nt, p, "value")) == nt_paren_single(nt, w)) { place = nt_str(nt, p, "name"); local = 1; }
     else return 0;
     if (!place) return 0;
     if (local) {
@@ -45781,8 +45793,10 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
      one of the places', or one no literal names. A read answers the Set
      where it may be a place's, and is followed as a read of a place below
      (sid_is_alias): `instance_variables.map { |v| instance_variable_get(v)
-     .inspect }` uses it as no Set. A write may put any Set there, so one
-     whose value may be a Set is not followed. */
+     .inspect }` uses it as no Set. A write is followed as a write of the
+     place is below: a Set made there (`Set.new`, `Set[...]`) or no Set,
+     whose own value, the Set, is used as an alias may be; one whose value
+     may be another Set is not followed. */
   if (S->nivars > 0) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int get = 0, r = sid_reflect_reaches_place(nt, S, id, &get);
@@ -45790,8 +45804,14 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       if (r == 0 || get) continue;
       int ar = nt_ref(nt, id, "arguments"), argc = 0;
       const int *argv = nt_arr(nt, ar, "arguments", &argc);
-      int v = an_unparen(nt, argv[1]);
-      if (sid_fresh_set(nt, v) || sid_maybe_set(c, v, set_cid)) return 0;
+      int v;
+      switch (vp_one(nt, argv[1], VPS_NONE | VP_PARENS_ONLY, &v)) {
+      case VP1_NODE: break;
+      case VP1_NIL: continue;   /* `()` writes nil, no Set */
+      case VP1_MANY: return 0;
+      }
+      if (!sid_fresh_set(nt, v) && sid_maybe_set(c, v, set_cid)) return 0;
+      if (!sid_alias_use_ok(c, S, id)) return 0;
     }
   }
   /* every write of a place holds a Set made there (or no Set) */
@@ -45853,7 +45873,7 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
    no Set: the builtins answer one only from a Set's own methods. */
 static int sid_operator_answer(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
+  v = nt_paren_single(nt, v);
   if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "receiver") < 0) return 0;
   const char *nm = nt_str(nt, v, "name");
   if (!nm || !nm[0] || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z') || nm[0] == '_') return 0;
@@ -45873,7 +45893,7 @@ static int sid_name_only_member(const NodeTable *nt, const int *parent, int lit)
     int q = parent[u];
     if (q < 0) return 0;
     NodeKind qk = nt_kind(nt, q);
-    if (qk == NK_CallNode && an_unparen(nt, nt_ref(nt, q, "receiver")) == u) {
+    if (qk == NK_CallNode && nt_paren_single(nt, nt_ref(nt, q, "receiver")) == u) {
       const char *m = nt_str(nt, q, "name");
       if (!m || !(sp_streq(m, "to_set") || sp_streq(m, "to_a") || sp_streq(m, "freeze")) ||
           nt_ref(nt, q, "arguments") >= 0 || nt_ref(nt, q, "block") >= 0) return 0;
@@ -45901,7 +45921,7 @@ static int sid_name_only_member(const NodeTable *nt, const int *parent, int lit)
         if (!leaf || !sp_streq(leaf, kn)) continue;
         int w = r, rp = parent[w];
         while (rp >= 0 && nt_kind(nt, rp) == NK_ParenthesesNode) { w = rp; rp = parent[w]; }
-        if (rp < 0 || nt_kind(nt, rp) != NK_CallNode || an_unparen(nt, nt_ref(nt, rp, "receiver")) != r) return 0;
+        if (rp < 0 || nt_kind(nt, rp) != NK_CallNode || nt_paren_single(nt, nt_ref(nt, rp, "receiver")) != r) return 0;
         const char *m = nt_str(nt, rp, "name");
         if (!m || !(sp_streq(m, "include?") || sp_streq(m, "member?") || sp_streq(m, "==="))) return 0;
       }
@@ -45922,8 +45942,9 @@ const char *const g_sid_refusal_msg =
    box, an Integer, a Float or a String. 0 for a refused value. */
 static int sid_value_or_check(Compiler *c, int call, int v) {
   if (sid_value_ok(c, v, 0)) return 1;
-  if (!defer_refusals() || v < 0) return 0;
-  TyKind t = infer_type(c, an_unparen(c->nt, v));
+  int one;
+  if (!defer_refusals() || vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &one) != VP1_NODE) return 0;
+  TyKind t = infer_type(c, one);
   if (t != TY_POLY && t != TY_INT && t != TY_FLOAT && t != TY_STRING && t != TY_STRBUF) return 0;
   nt_node_set_int((NodeTable *)c->nt, v, "idset_check", call + 1);
   g_idset_marks = 1;
@@ -45947,7 +45968,7 @@ static void refuse_set_identity_members(Compiler *c) {
   for (int k = 0; k < 2 && !spelled; k++)
     NT_FOREACH_KIND(nt, k ? NK_StringNode : NK_SymbolNode, lit) {
       const char *v = nt_str(nt, lit, k ? "content" : "value");
-      if (!v || !sp_streq(v, "compare_by_identity")) continue;
+      if (!is_compare_by_identity_name(v)) continue;
       if (!lit_parent) lit_parent = an_parent_map(nt);
       if (!lit_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       if (!sid_name_only_member(nt, lit_parent, lit)) { spelled = 1; break; }
@@ -45955,7 +45976,7 @@ static void refuse_set_identity_members(Compiler *c) {
   free(lit_parent);
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || asked || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
+    if (!is_compare_by_identity_name(nm) || asked || nt_ref(nt, id, "arguments") >= 0) continue;
     Scope *s = comp_scope_of(c, id);
     if (s && s->class_id == set_cid) continue;
     if (!spelled && (nt_int(nt, id, "dyn_arm", 0) || (s && s->name && strncmp(s->name, "__bam_", 6) == 0))) continue;

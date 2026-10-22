@@ -6724,7 +6724,7 @@ int desugar_interp_elided_to_s(Compiler *c) {
     int st = nt_ref(nt, parts[0], "statements"), bn = 0;
     const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
     if (bn < 1) continue;
-    int last = an_unparen(nt, body[bn - 1]);
+    int last = nt_paren_single(nt, body[bn - 1]);
     NodeKind lk = last >= 0 ? nt_kind(nt, last) : NK_NONE;
     if (lk == NK_YieldNode || lk == NK_StringNode || lk == NK_InterpolatedStringNode) continue;
     TyKind t = infer_type(c, body[bn - 1]);
@@ -10023,7 +10023,7 @@ int desugar_empty_hash_compare_by_identity(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int r = nt_ref(nt, id, "receiver");
-    if (!nm || !sp_streq(nm, "compare_by_identity") || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
+    if (!is_compare_by_identity_name(nm) || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
     int en = 0; nt_arr(nt, r, "elements", &en);
     if (en != 0) continue;
     int k = nt_new_node(nt, "ConstantReadNode");
