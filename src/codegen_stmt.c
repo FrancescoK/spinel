@@ -1451,6 +1451,14 @@ const char *strbuf_new_func(Compiler *c, int v) {
   return repr_share_rule(c) && share_value_fresh(c, v, 0) && !share_frozen_literal(c, v)
     ? "sp_String_new_fresh" : "sp_String_new_shared";
 }
+/* The handle strbuf_new_func makes of text t, node v's bytes; in the
+   one-String mode a frozen literal's is its slot's, read where the literal
+   is named (sp_String_literal_of) */
+void strbuf_new_of_text(Compiler *c, int v, const char *t, Buf *b) {
+  int id = g_one_string ? fzl_text_id(t) : -1;
+  if (id >= 0) buf_printf(b, "sp_String_literal_of(&_fzl_%d_slot, (char *)_fzl_%d.d)", id, id);
+  else buf_printf(b, "%s(%s)", strbuf_new_func(c, v), t ? t : "");
+}
 /* --share-strings: put the handle demand on each `next` (k NK_NextNode) or
    `break` (NK_BreakNode) with a value under n that leaves what n is the body
    of: not one in a nested block, lambda, method or loop, which leaves that.
@@ -5241,9 +5249,10 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (rpv.as_ty == TY_STRBUF && emit_strbuf_boxed_store(c, v, b)) { }
   else if (rpv.as_ty == TY_STRBUF) {
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
-    buf_printf(b, "%s(", strbuf_new_func(c, v));
-    emit_str_expr(c, v, b);
-    buf_puts(b, ")");
+    Buf e; memset(&e, 0, sizeof e);
+    emit_str_expr(c, v, &e);
+    strbuf_new_of_text(c, v, e.p, b);
+    free(e.p);
     view_pop(c, sv);
   }
   /* --share-strings (#6765): `r = s.strip!` names s's String when the bang
@@ -5322,7 +5331,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
       const char *rtxt = rv.p ? rv.p : "";
       if (strncmp(past_open_parens(rtxt), "sp_raise_", 9) == 0)
         buf_printf(b, "((void)(%s), (sp_String *)NULL)", rtxt);
-      else buf_printf(b, "%s(%s)", strbuf_new_func(c, v), rtxt);
+      else strbuf_new_of_text(c, v, rtxt, b);
       free(rv.p);
     }
     free(srefC9.p); free(srefC9b.p);

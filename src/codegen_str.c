@@ -147,9 +147,17 @@ static int str_handle_new(Compiler *c, int v, int form, unsigned dest, StrForm *
     sf->needs |= SF_ALLOCATES;
     return form == SPF_HANDLE ? SPF_HANDLE : SPF_WRAP;
   }
-  buf_printf(b, "%s(", own ? "sp_String_new_fresh" : strbuf_new_func(c, v));
-  emit_str_expr(c, v, b);
-  buf_puts(b, ")");
+  if (own) {
+    buf_puts(b, "sp_String_new_fresh(");
+    emit_str_expr(c, v, b);
+    buf_puts(b, ")");
+  }
+  else {
+    Buf e; memset(&e, 0, sizeof e);
+    emit_str_expr(c, v, &e);
+    strbuf_new_of_text(c, v, e.p, b);
+    free(e.p);
+  }
   sf->needs |= SF_ALLOCATES;
   return SPF_WRAP;
 }

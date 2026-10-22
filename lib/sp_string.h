@@ -43,6 +43,14 @@ static inline sp_StringLiteral *sp_String_literal_slot(const char *s) {
   return p & 1 ? (sp_StringLiteral *)(p - 1) : NULL;
 }
 sp_String *sp_String_literal_handle(sp_StringLiteral *slot, const char *s);
+/* The handle of a literal the generated code names with its slot (_fzl_N):
+   the slot read directly, where sp_String_new_shared asks the marks, the
+   header and the slab first, about 20 instructions a store (`@tag = "n"`
+   in each bm_gcbench Node) */
+static inline sp_String *sp_String_literal_of(sp_StringLiteral *slot, const char *s) {
+  sp_String *h = SP_ATOMIC_LOAD(&slot->value, __ATOMIC_ACQUIRE);
+  return h ? h : sp_String_literal_handle(slot, s);
+}
 void sp_String_mark_literals(void);
 static inline const void *sp_String_identity(sp_String *h) {
   return h && sp_String_literal_slot(h->data) ? (const void *)h->data : (const void *)h;

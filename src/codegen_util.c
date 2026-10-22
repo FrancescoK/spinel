@@ -5693,6 +5693,16 @@ void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len
   }
   buf_printf(b, "((char *)_fzl_%d.d)", id);
 }
+/* The id of the literal a text emit_frozen_literal wrote names, as it
+   stands or read through SP_STR_B; -1 for any other text */
+int fzl_text_id(const char *t) {
+  int id = -1, n = 0;
+  if (!t) return -1;
+  if (sscanf(t, "((char *)_fzl_%d.d)%n", &id, &n) == 1 && n > 0 && t[n] == 0) return id;
+  n = 0;
+  if (sscanf(t, "SP_STR_B(((char *)_fzl_%d.d))%n", &id, &n) == 1 && n > 0 && t[n] == 0) return id;
+  return -1;
+}
 /* --repr-check, with handles: a frozen literal built into a handle by a
    constructor that copies it. sp_String_new_shared answers the literal's own
    handle (sp_String_literal_handle) and sp_String_new_unfrozen is the copy a

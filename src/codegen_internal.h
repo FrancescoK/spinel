@@ -198,6 +198,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The handle such a slot takes from value v: its own, or a new one */
 void emit_strbuf_handle_of(Compiler *c, int v, Buf *b);
 const char *strbuf_new_func(Compiler *c, int v);
+void strbuf_new_of_text(Compiler *c, int v, const char *t, Buf *b);
 /* --share-strings: the handle a value route that answers the String it is
    handed (`+s`, `String(s)`, `s.then { |x| x }`) hands on: 1, or 0 with
    nothing emitted */
@@ -1851,6 +1852,7 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b);
 /* A frozen literal from its C-escaped bytes: a reference to the one file-scope
    object for that content, whose definition fzl_emit_defs writes. */
 void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len);
+int fzl_text_id(const char *t);
 void fzl_emit_defs(const char *t, Buf *out, int handles);
 /* Emit a Ruby string literal. len is the true byte count (may exceed strlen
    when the string contains embedded NUL bytes). */
