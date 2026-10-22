@@ -4269,7 +4269,12 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
 static void emit_dyn_name_sym(Compiler *c, int sym, Buf *b) {
   TyKind st = comp_ntype(c, sym);
   if (st == TY_SYMBOL) emit_expr(c, sym, b);
-  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  /* (one-String mode: a name held as its handle, read as its bytes) */
+  else if (st == TY_STRING) {
+    buf_puts(b, g_one_string ? "sp_sym_intern(SP_STR_B(" : "sp_sym_intern(");
+    emit_expr(c, sym, b);
+    buf_puts(b, g_one_string ? "))" : ")");
+  }
   else {
     /* a boxed Symbol already carries its sp_sym; only a String name is
        interned, where rendering the Symbol to text and interning it back ran
@@ -4645,7 +4650,9 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   TyKind st = comp_ntype(c, sym);
   int t = ++g_tmp;
   buf_printf(b, "({ const char *_n%d = ", t);
-  if (st == TY_STRING) emit_expr(c, sym, b);
+  /* (one-String mode: a name of either face, `ARGV[0] || "Entry"`) */
+  if (st == TY_STRING && g_one_string) { buf_puts(b, "SP_STR_B("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  else if (st == TY_STRING) emit_expr(c, sym, b);
   else if (st == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, sym, b); buf_puts(b, ")"); }
   else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, sym, b); buf_puts(b, ")"); }
   buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; ", t, t, def ? "sp_bool" : "sp_RbVal", t);
