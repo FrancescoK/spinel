@@ -303,7 +303,8 @@ TyKind scan_throw_type(Compiler *c, const char *tag);
 TyKind yield_value_type(Compiler *c, int mi);
 /* Tail expressions of the blocks reaching `mi`'s yield (see analyze_util.c). */
 int yield_block_tails(Compiler *c, int mi, int *out, int max);
-/* The calls whose literal block reaches `mi`'s yield (see analyze_util.c). */
+/* The calls whose literal block reaches `mi`'s yield, or -1 when not all
+   are known (see analyze_util.c). */
 int yield_block_calls(Compiler *c, int mi, int *out, int max);
 /* Set: yield_block_tails answers a literal block's `next v` too. */
 extern int yield_block_tails_next;
