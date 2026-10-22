@@ -2196,8 +2196,9 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   static const char *const statm[] = { "blksize", "blockdev?", "blocks", "chardev?",
     "dev", "dev_major", "dev_minor", "directory?", "executable?", "executable_real?",
     "file?", "gid", "grpowned?", "ino", "mode",
-    "nlink", "owned?", "pipe?", "rdev", "readable?", "setgid?", "setuid?", "size",
-    "size?", "socket?", "sticky?", "symlink?", "uid", "writable?", "zero?", NULL };
+    "nlink", "owned?", "pipe?", "rdev", "readable?", "readable_real?", "setgid?",
+    "setuid?", "size", "size?", "socket?", "sticky?", "symlink?", "uid",
+    "world_readable?", "world_writable?", "writable?", "writable_real?", "zero?", NULL };
   static const char *const statm_t[] = { "atime", "birthtime", "ctime", "ftype",
     "mtime", NULL };
   static const char *const statm_b[] = { "<", "<=", ">", ">=", "between?", "clamp",

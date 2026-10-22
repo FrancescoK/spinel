@@ -2941,8 +2941,10 @@ sp_File *sp_io_stat_handle(sp_File *f) {SP_GC_ROOT(f);
 }
 /* One stat(2) field by index, so File::Stat's numeric accessors need one
    runtime entry rather than a dozen. 0=uid 1=gid 2=nlink 3=dev 4=ino
-   5=blksize 6=blocks 7=rdev 8=dev_major 9=dev_minor. nil when the stat
-   itself fails, or for 8 and 9 where the platform has no major/minor. */
+   5=blksize 6=blocks 7=rdev 8=dev_major 9=dev_minor 10=world_readable?
+   11=world_writable? (the permission bits when others may read or write,
+   else nil). nil when the stat itself fails, or for 8 and 9 where the
+   platform has no major/minor. */
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok);
 sp_oint sp_stat_field(sp_File *f, sp_int which) {SP_GC_ROOT(f); int ok = 1; sp_int n = sp_stat_field_n(f, which, &ok); return ok ? sp_oint_of(n) : sp_oint_nil(); }
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
@@ -2974,6 +2976,12 @@ static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
 #else
       *ok = 0; return 0;
 #endif
+    case 10:
+    case 11: {
+      mode_t bit = which == 10 ? S_IROTH : S_IWOTH;
+      if (!(st.st_mode & bit)) { *ok = 0; return 0; }
+      return (sp_int)(st.st_mode & 0777);
+    }
     default: return (sp_int)st.st_rdev;
   }
 }
@@ -3045,16 +3053,22 @@ static sp_bool sp_stat_group_member(gid_t gid) {
   free(groups);
   return found;
 }
-static sp_bool sp_stat_executable_real(const struct stat *st) {
+/* Whether the real uid may read, write or execute what st describes, given
+   that access's owner, group and other bits, as CRuby's File::Stat tests it:
+   root may read and write anything and execute what any x bit allows; else
+   the owner's bits, a member's group bits, or the other bits decide. */
+static sp_bool sp_stat_real_access(const struct stat *st, mode_t usr, mode_t grp, mode_t oth) {
   uid_t uid = getuid();
-  if (uid == 0) return (st->st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
-  if (uid == st->st_uid) return (st->st_mode & S_IXUSR) != 0;
-  if (sp_stat_group_member(st->st_gid)) return (st->st_mode & S_IXGRP) != 0;
-  return (st->st_mode & S_IXOTH) != 0;
+  /* root: any read or write; an execute only where some x bit allows it */
+  if (uid == 0) return usr != S_IXUSR || (st->st_mode & (usr | grp | oth)) != 0;
+  if (uid == st->st_uid) return (st->st_mode & usr) != 0;
+  if (sp_stat_group_member(st->st_gid)) return (st->st_mode & grp) != 0;
+  return (st->st_mode & oth) != 0;
 }
 /* The mode-derived predicates of File::Stat that no path helper covers. Kinds:
    0=pipe? 1=zero? 2=readable? 3=writable? 4=executable? 5=blockdev?
-   6=chardev? 8=executable_real? (7, size?, is sp_stat_size_q). */
+   6=chardev? 8=executable_real? 9=readable_real? 10=writable_real?
+   (7, size?, is sp_stat_size_q). */
 sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
   struct stat st;
   int r;
@@ -3072,7 +3086,9 @@ sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
     case 4: return (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) ? 1 : 0;
     case 5: return S_ISBLK(st.st_mode) ? 1 : 0;
     case 6: return S_ISCHR(st.st_mode) ? 1 : 0;
-    case 8: return sp_stat_executable_real(&st);
+    case 8: return sp_stat_real_access(&st, S_IXUSR, S_IXGRP, S_IXOTH);
+    case 9: return sp_stat_real_access(&st, S_IRUSR, S_IRGRP, S_IROTH);
+    case 10: return sp_stat_real_access(&st, S_IWUSR, S_IWGRP, S_IWOTH);
     default: return 0;
   }
 }

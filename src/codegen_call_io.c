@@ -1320,8 +1320,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
       }
       else if (boxed_stat_name(name)) {
-        int k = 0;
-        while (boxed_stat_sfield[k] && !sp_streq(name, boxed_stat_sfield[k])) k++;
+        int k = stat_field_slot(name);
         emit_stat_handle_only(tio2, name, b);
         /* the field's nil (a failed stat) beside it, in the call's form */
         if (node_is_oint(c, id)) buf_printf(b, "sp_stat_field(_t%d, %d); })", tio2, k);

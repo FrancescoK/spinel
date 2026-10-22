@@ -1397,6 +1397,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "rdev",           0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_field($r, 7)$>", TY_UNKNOWN },
   { TY_IO, "dev_major",      0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_field(sp_stat_extended_recv($r, \"dev_major\"), 8)$>", TY_UNKNOWN },
   { TY_IO, "dev_minor",      0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_field(sp_stat_extended_recv($r, \"dev_minor\"), 9)$>", TY_UNKNOWN },
+  { TY_IO, "world_readable?",0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_field(sp_stat_extended_recv($r, \"world_readable?\"), 10)$>", TY_UNKNOWN },   /* the permission bits, nil unless others may read */
+  { TY_IO, "world_writable?",0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_field(sp_stat_extended_recv($r, \"world_writable?\"), 11)$>", TY_UNKNOWN },   /* the permission bits, nil unless others may write */
   { TY_IO, "size?",          0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "$<sp_stat_size_q($r)$>", TY_UNKNOWN },   /* nil when the stat fails or the size is 0 */
   { TY_IO, "pipe?",          0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 0)", TY_UNKNOWN },
   { TY_IO, "zero?",          0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 1)", TY_UNKNOWN },
@@ -1404,6 +1406,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "writable?",      0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 3)", TY_UNKNOWN },
   { TY_IO, "executable?",    0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 4)", TY_UNKNOWN },
   { TY_IO, "executable_real?",0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred(sp_stat_extended_recv($r, \"executable_real?\"), 8)", TY_UNKNOWN },
+  { TY_IO, "readable_real?", 0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred(sp_stat_extended_recv($r, \"readable_real?\"), 9)", TY_UNKNOWN },
+  { TY_IO, "writable_real?", 0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred(sp_stat_extended_recv($r, \"writable_real?\"), 10)", TY_UNKNOWN },
   { TY_IO, "blockdev?",      0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 5)", TY_UNKNOWN },
   { TY_IO, "chardev?",       0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_stat_pred($r, 6)", TY_UNKNOWN },
   { TY_IO, "inspect",        0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_inspect($r)", TY_UNKNOWN },
