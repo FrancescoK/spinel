@@ -591,14 +591,15 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
 /* Is the receiver of a times / upto / downto form held as an sp_int, or boxed
    (an Integer parameter under promote mode)? */
 static int int_or_boxed_operand(Compiler *c, int node) {
-  TyKind t = repr_of(c, node).as_ty;
-  return t == TY_INT || t == TY_POLY;
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  return t == TY_INT || tr.kind == RK_BOXED;
 }
 
 /* Is a limit a boxed or Bignum value, which the step forms read by its kind? */
 static int boxed_or_big_operand(Compiler *c, int node) {
   Repr r = repr_of(c, node);
-  return r.as_ty == TY_POLY || r.big;
+  return r.kind == RK_BOXED || r.big;
 }
 
 /* the Integer and Range iterators in expression position: range.step(n) { }, times / upto / downto / step with a block (answering the receiver), and the blockless forms that answer a Range */

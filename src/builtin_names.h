@@ -405,4 +405,15 @@ int is_first_name(const char *n);             /* first */
 
 const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
 const char *builtin_operator_delegate(const char *name);
+int is_mul_op(const char *n); /* * */
+int is_pow_op(const char *n); /* ** */
+int is_minus_op(const char *n); /* - */
+int is_clone_name(const char *n); /* clone */
+int is_cover_name(const char *n); /* cover? */
+int is_flatten_name(const char *n); /* flatten */
+int is_hash_name(const char *n); /* hash */
+int is_puts_name(const char *n); /* puts */
+int is_to_f_name(const char *n); /* to_f */
+int is_to_i_name(const char *n); /* to_i */
+int is_intersect_name(const char *n); /* intersect? */
 #endif

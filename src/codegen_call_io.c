@@ -194,12 +194,13 @@ static void emit_io_reopen_poly(Compiler *c, const char *r, int arg, Buf *b) {
    between the two at run time; the strict Integer slot raised TypeError for
    its nil. */
 static void emit_io_read_len_call(Compiler *c, const char *r, int len, Buf *b) {
-  TyKind lt0 = comp_ntype(c, len);
+  Repr lt0r = repr_of(c, len);
+  TyKind lt0 = lt0r.as_ty;
   if (lt0 == TY_NIL) {
     buf_puts(b, "({ (void)("); emit_expr(c, len, b);
     buf_printf(b, "); sp_File_read(%s); })", r);
   }
-  else if (lt0 == TY_POLY) {
+  else if (lt0r.kind == RK_BOXED) {
     int tl = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tl); emit_boxed(c, len, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_File_read(%s) : sp_File_read_n(%s, sp_poly_arg_int_chk(_t%d)); })",
@@ -812,11 +813,11 @@ static int emit_io_timeout_set(Compiler *c, int id, int recv, int value, Buf *b)
   Repr result = repr_of(c, id);
   if (call_is_setter_assign(c->nt, id)) {
     char arg[32]; snprintf(arg, sizeof arg, "_t%d", ta);
-    if (result.kind == RK_BOXED || result.as_ty == TY_POLY) buf_puts(b, arg);
+    if (result.kind == RK_BOXED) buf_puts(b, arg);
     else if (node_is_oint(c, id)) emit_unbox_nilable_text(c, result.as_ty, arg, b);
     else emit_unbox_text(c, result.as_ty, arg, b);
   }
-  else if (result.kind == RK_BOXED || result.as_ty == TY_POLY)
+  else if (result.kind == RK_BOXED)
     buf_printf(b, "_t%d", tv);
   else
     buf_printf(b, "_t%d", tf);
@@ -1190,8 +1191,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
            whose class is only known at run time picks the entry by its tag.
            Chosen statically, a poly String took the plain entry and stopped
            at its first NUL. */
-        TyKind wk2 = repr_of(c, argv[0]).as_ty;
-        if (wk2 == TY_POLY) {
+        Repr wk2r = repr_of(c, argv[0]);
+        TyKind wk2 = wk2r.as_ty;
+        if (wk2r.kind == RK_BOXED) {
           buf_printf(b, "sp_File_write_poly(_t%d, ", tio2);
           emit_boxed(c, argv[0], b);
         }
@@ -1207,12 +1209,13 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
            sp_File_puts_val -- the same split the TY_IO arm makes. */
         int is_puts2 = sp_streq(name, "puts");
         for (int k2 = 0; k2 < argc; k2++) {
-          TyKind akt2 = comp_ntype(c, argv[k2]);
+          Repr arg_repr = repr_of(c, argv[k2]);
+          TyKind akt2 = arg_repr.as_ty;
           Buf ab2; memset(&ab2, 0, sizeof ab2);
           int arr2 = 0;
-          if (is_puts2 && (ty_is_array(akt2) || akt2 == TY_POLY)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
+          if (is_puts2 && (ty_is_array(akt2) || arg_repr.kind == RK_BOXED)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
           else if (akt2 == TY_STRING) emit_expr(c, argv[k2], &ab2);
-          else if (akt2 == TY_POLY) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
+          else if (arg_repr.kind == RK_BOXED) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
           else { buf_puts(&ab2, "sp_poly_to_s("); emit_boxed(c, argv[k2], &ab2); buf_puts(&ab2, ")"); }
           const char *at2 = ab2.p ? ab2.p : "\"\"";
           /* the same String/non-String split the typed arm makes (#4629) */
@@ -2150,7 +2153,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            converted value) and hands both pointer and count to
            sp_File_syswrite, so a poly operand takes that path here rather
            than being routed through sp_File_write_poly. */
-        if (is_sw && repr_of(c, argv[0]).as_ty == TY_POLY) {
+        if (is_sw && repr_of(c, argv[0]).kind == RK_BOXED) {
           int sl = ++g_tmp;
           /* The operand's class is only known at run time, so the length is
              chosen by its TAG rather than off the pointer: a marked String
@@ -2167,7 +2170,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                      "sp_int _r%d = sp_File_syswrite(%s, _s%d, _l%d); _r%d; })",
                      sl, sl, sl, sl, sl, sl, sl, sl, sl, r, sl, sl, sl);
         }
-        else if (repr_of(c, argv[0]).as_ty == TY_POLY) {
+        else if (repr_of(c, argv[0]).kind == RK_BOXED) {
           buf_printf(b, "sp_File_write_poly(%s, ", r);
           emit_boxed(c, argv[0], b);
           buf_puts(b, ")");
@@ -2204,7 +2207,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            interleaves them, so each write is its own held unit rather than
            the call's */
         for (int k = 0; k < argc; k++) {
-          if (is_sw && repr_of(c, argv[k]).as_ty == TY_POLY) {
+          if (is_sw && repr_of(c, argv[k]).kind == RK_BOXED) {
             /* syswrite sizes the operand itself and routes through
                sp_File_syswrite, so a poly operand takes that path here
                rather than being routed through sp_File_write_poly. */
@@ -2214,7 +2217,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                        "sp_File_syswrite(%s, _s, _l); _r; })", r);
             continue;
           }
-          if (repr_of(c, argv[k]).as_ty == TY_POLY) {   /* see the one-argument form */
+          if (repr_of(c, argv[k]).kind == RK_BOXED) {   /* see the one-argument form */
             buf_printf(b, " _t%d += sp_File_write_poly(%s, ", tw, r);
             emit_boxed(c, argv[k], b);
             buf_puts(b, ");");
@@ -2253,7 +2256,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
       int sk = repr_of(c, argv[0]).as_ty == TY_STRING;
-      int pk = repr_of(c, argv[0]).as_ty == TY_POLY;
+      int pk = repr_of(c, argv[0]).kind == RK_BOXED;
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  pk ? "sp_File_write_poly" : sk ? "sp_File_write_bin" : "sp_File_write", t);
       if (pk) emit_boxed(c, argv[0], b);
@@ -2295,9 +2298,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          binary-safe entry and an embedded NUL survives (#4629) */
       int *abin = (int *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(int));
       for (int k = 0; k < argc; k++) {
-        TyKind akt = comp_ntype(c, argv[k]);
+        Repr aktr = repr_of(c, argv[k]);
+        TyKind akt = aktr.as_ty;
         abin[k] = (akt == TY_STRING);
-        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY ||
+        if (is_puts_name(name) && (ty_is_array(akt) || akt == TY_POLY_ARRAY || aktr.kind == RK_BOXED ||
                                        nt_kind(nt, argv[k]) == NK_ArrayNode)) {
           /* an Array argument prints one element per line (#2813); an empty
              literal, which has no element type, prints nothing */
@@ -2313,7 +2317,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
         /* a boxed operand is written by its runtime tag: a String keeps its
            byte count, as the write arm does */
-        else if (akt == TY_POLY) { aarr[k] = 1; emit_boxed(c, argv[k], &abs[k]); }
+        else if (aktr.kind == RK_BOXED) { aarr[k] = 1; emit_boxed(c, argv[k], &abs[k]); }
         else { buf_puts(&abs[k], "sp_poly_to_s("); emit_boxed(c, argv[k], &abs[k]); buf_puts(&abs[k], ")"); }
       }
       /* puts uses sp_File_puts, which appends a newline per argument (and only
@@ -2413,7 +2417,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           }
           /* a boxed variable read is the limit when it holds an Integer (an
              Integer local under --int-overflow=promote): its 0 raises too */
-          else if (repr_of(c, argv[k]).as_ty == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
+          else if (repr_of(c, argv[k]).kind == RK_BOXED && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
             int tz = ++g_tmp;
             buf_printf(b, " { sp_RbVal _t%d = ", tz);
             emit_expr(c, argv[k], b);

@@ -196,14 +196,15 @@ int emit_op_hash_aref(Compiler *c, const BopCtx *x, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  TyKind arg_kt = comp_ntype(c, argv[0]);
+  Repr arg_ktr = repr_of(c, argv[0]);
+  TyKind arg_kt = arg_ktr.as_ty;
   TyKind hash_kt = ty_hash_key(rt);
   /* key type mismatch: sym key on str-keyed hash (or vice versa) -- the key
      can never exist in the hash, so always return the hash's default
      value. A Symbol on a String-keyed hash was excepted here and
      coerced to its name; that was an older Hash.new{} model (#4531). */
   if (hash_kt != TY_POLY && hash_kt != TY_UNKNOWN &&
-      arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
+      arg_ktr.kind != RK_BOXED && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
       !(hash_kt == TY_STRING && arg_kt == TY_STRBUF) &&
       !hash_nil_key_stored(c, argv[0], hash_kt)) {
     TyKind vt = ty_hash_val(rt);
@@ -1189,7 +1190,8 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);
     if (dn >= 0) {
-      TyKind dt = repr_of(c, dn).as_ty;
+      Repr dtr = repr_of(c, dn);
+      TyKind dt = dtr.as_ty;
       int t = ++g_tmp;
       buf_puts(b, "({ ");
       emit_ctype(c, dt, b);
@@ -1203,7 +1205,7 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
           char dv[24]; snprintf(dv, sizeof dv, "_t%d", t);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", ta);
-          if (dt == TY_POLY) buf_puts(b, dv); else emit_boxed_text(c, dt, dv, b);
+          if (dtr.kind == RK_BOXED) buf_puts(b, dv); else emit_boxed_text(c, dt, dv, b);
           buf_puts(b, "); ");
         }
         buf_printf(b, "_t%d; })", ta);

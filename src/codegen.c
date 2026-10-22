@@ -1328,7 +1328,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   /* a boxed value (an Integer under --int-overflow=promote): an Integer
      argument's checked conversion, its TypeError for any other class */
   int unboxed = tmp.p && !strncmp(tmp.p, "sp_poly_arg_int_chk(", 20);
-  if (comp_ntype(c, node) == TY_POLY && !unboxed)
+  if (repr_of(c, node).kind == RK_BOXED && !unboxed)
     buf_printf(b, "sp_poly_arg_int_chk(%s)", tmp.p ? tmp.p : "sp_box_nil()");
   /* ...which an arm's operand override already read as the Integer it
      checked, or its view as the Integer it unboxed */
@@ -1470,7 +1470,7 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
   }
   /* a boxed endpoint (an Integer local under --int-overflow=promote): its
      nil is the absent bound, anything else converts strictly */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     int tn = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tn);
     emit_expr(c, node, b);
@@ -1609,9 +1609,10 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
    for nil, true, false and a Symbol and its class name otherwise -- not the
    conversion slot's "can't convert X into Float". */
 void emit_float_coerce_expr(Compiler *c, int node, Buf *b) {
-  TyKind t = comp_ntype(c, node);
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
   /* a boxed value: the runtime asks the same of its class */
-  if (t == TY_POLY) {
+  if (tr.kind == RK_BOXED) {
     buf_puts(b, "sp_poly_float_operand(");
     emit_boxed(c, node, b);
     buf_puts(b, ")");
@@ -14791,10 +14792,11 @@ static int super_member_nilbit(Compiler *c, ClassInfo *cls, int a, int v, Buf *b
   int scid = (int)(cls - c->classes);
   TyKind ivt = cls->ivar_types[a];
   if (!oint_kind(ivt) || !ivar_has_nilbit(c, scid, a) || v < 0) return 0;
-  TyKind vt = comp_ntype(c, v);
-  if (vt != ivt && vt != TY_POLY && vt != TY_NIL) return 0;
+  Repr vr = repr_of(c, v);
+  TyKind vt = vr.as_ty;
+  if (vt != ivt && vr.kind != RK_BOXED && vt != TY_NIL) return 0;
   Buf ob; memset(&ob, 0, sizeof ob);
-  if (vt == TY_POLY) { buf_printf(&ob, "%s(", oint_unbox(ivt)); emit_expr(c, v, &ob); buf_puts(&ob, ")"); }
+  if (vr.kind == RK_BOXED) { buf_printf(&ob, "%s(", oint_unbox(ivt)); emit_expr(c, v, &ob); buf_puts(&ob, ")"); }
   else emit_oint_expr(c, v, ivt, &ob);
   char pfx[160]; snprintf(pfx, sizeof pfx, "%s->", g_self);
   emit_ivar_text_nilbit(c, scid, a, pfx, ob.p ? ob.p : oint_nil(ivt), b);
@@ -14892,8 +14894,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int hook = 0;
       for (int h = 0; HOOKS[h] && !hook; h++) hook = sp_streq(uname, HOOKS[h]);
       if (hook) {
-        TyKind ht = repr_of(c, id).as_ty;
-        if (ht == TY_POLY) buf_puts(b, "sp_box_nil()");
+        Repr hr = repr_of(c, id);
+        TyKind ht = hr.as_ty;
+        if (hr.kind == RK_BOXED) buf_puts(b, "sp_box_nil()");
         else buf_printf(b, "(%s)", raise_tail_value_c(c, ht));
         return;
       }
@@ -14917,8 +14920,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_printf(b, " if (_t%d.cls_id == %d) sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, NULL})));",
                    tc, par, ta, k);
       }
-      TyKind st = repr_of(c, id).as_ty;
-      if (st == TY_POLY) buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
+      Repr sr = repr_of(c, id);
+      if (sr.kind == RK_BOXED) buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
       else buf_printf(b, " _t%d; })", ta);
       return;
     }

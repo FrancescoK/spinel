@@ -1549,3 +1549,25 @@ int is_frozen_query(const char *n) { return n && sp_streq(n, "frozen?"); }
 int is_pop_name(const char *n) { return n && sp_streq(n, "pop"); }
 
 int is_first_name(const char *n) { return n && sp_streq(n, "first"); }
+
+int is_mul_op(const char *n) { return n && sp_streq(n, "*"); }
+
+int is_pow_op(const char *n) { return n && sp_streq(n, "**"); }
+
+int is_minus_op(const char *n) { return n && sp_streq(n, "-"); }
+
+int is_clone_name(const char *n) { return n && sp_streq(n, "clone"); }
+
+int is_cover_name(const char *n) { return n && sp_streq(n, "cover?"); }
+
+int is_flatten_name(const char *n) { return n && sp_streq(n, "flatten"); }
+
+int is_hash_name(const char *n) { return n && sp_streq(n, "hash"); }
+
+int is_puts_name(const char *n) { return n && sp_streq(n, "puts"); }
+
+int is_to_f_name(const char *n) { return n && sp_streq(n, "to_f"); }
+
+int is_to_i_name(const char *n) { return n && sp_streq(n, "to_i"); }
+
+int is_intersect_name(const char *n) { return n && sp_streq(n, "intersect?"); }

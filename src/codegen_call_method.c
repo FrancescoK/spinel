@@ -1108,7 +1108,8 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(b, "sp_int _t%d = (sp_int)(uintptr_t)(_t%d)", atmp[k], bxtmp[k]);
       }
       else {
-        TyKind pk = repr_of(c, argv[k]).as_ty;
+        Repr pkr = repr_of(c, argv[k]);
+        TyKind pk = pkr.as_ty;
         if (bm_want_boxed && k < 16 && oint_kind(pk) && node_has_oint_form(c, argv[k])) {
           bxtmp[k] = ++g_tmp; bxo[k] = 1; any_bxo = 1;
           buf_printf(b, "sp_RbVal _t%d = %s(", bxtmp[k], pk == TY_FLOAT ? "sp_box_ofloat" : "sp_box_oint");
@@ -1120,7 +1121,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           emit_ctype(c, pk, b); buf_printf(b, " _t%d = ", bxtmp[k]); emit_expr(c, argv[k], b); buf_puts(b, "; ");
           emit_named_root(c, pk, "_t", bxtmp[k], b); buf_puts(b, " ");
           buf_printf(b, "sp_int _t%d = ", atmp[k]);
-          if (pk == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", bxtmp[k]);
+          if (pkr.kind == RK_BOXED) buf_printf(b, "sp_poly_to_i(_t%d)", bxtmp[k]);
           else buf_printf(b, "(sp_int)(_t%d)", bxtmp[k]);
         }
         else {
@@ -1309,7 +1310,8 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
       (is_call_alias(name) ||
        (sp_streq(name, "===") && argc == 1))) {
-    TyKind rty = repr_of(c, id).as_ty;       /* the call's result = proc's body return */
+    Repr rtyr = repr_of(c, id);
+    TyKind rty = rtyr.as_ty;       /* the call's result = proc's body return */
     /* `pr&.call(...)`: a nil proc answers nil and the call does not run. The
        receiver goes into a temp the call below reads (through the argument
        override), so it is evaluated once. Without this the nil receiver
@@ -1328,7 +1330,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       if (oint_kind(rty)) emit_oint_expr(c, id, rty, &cb); else emit_expr(c, id, &cb);
       g_sn_proc_node = sv;
       view_unbind(g_n_argov - 1);
-      const char *nilv = rty == TY_POLY || rty == TY_UNKNOWN ? "sp_box_nil()"
+      const char *nilv = rtyr.kind == RK_BOXED || rty == TY_UNKNOWN ? "sp_box_nil()"
                        : oint_kind(rty) ? oint_nil(rty) : default_value_from_compiler(c, rty);
       buf_printf(b, "(_t%d ? %s : %s)", tq, cb.p ? cb.p : nilv, nilv);
       free(cb.p);
@@ -1415,7 +1417,8 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           rk == NK_ConstantReadNode || rk == NK_SelfNode)
         emit_expr(c, recv, b);
       else {
-        TyKind rct = repr_of(c, recv).as_ty;
+        Repr rctr = repr_of(c, recv);
+        TyKind rct = rctr.as_ty;
         Buf rb = expr_buf(c, recv);
         int tr = ++g_tmp;
         emit_indent(g_pre, g_indent);
@@ -1424,7 +1427,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "");
         free(rb.p);
         emit_indent(g_pre, g_indent);
-        if (rct == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tr);
+        if (rctr.kind == RK_BOXED) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tr);
         else buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
         buf_printf(b, "_t%d", tr);
       }
@@ -1925,10 +1928,11 @@ static void emit_poly_callable_blk_call(Compiler *c, int t, int argc, const int 
   if (pubs) { buf_puts(b, "("); buf_puts(b, pubs); }
   buf_printf(b, "sp_poly_callable_call_blk(_t%d, %d, (sp_int[%d]){", t, argc, argc > 16 ? argc : 16);
   for (int k = 0; k < argc; k++) {
-    TyKind at = repr_of(c, argv[k]).as_ty;
+    Repr ar = repr_of(c, argv[k]);
+    TyKind at = ar.as_ty;
     if (k) buf_puts(b, ", ");
     if (!aptmp) emit_expr(c, argv[k], b);
-    else if (at == TY_POLY) buf_printf(b, "sp_poly_slot_arg(_t%d)", aptmp[k]);
+    else if (ar.kind == RK_BOXED) buf_printf(b, "sp_poly_slot_arg(_t%d)", aptmp[k]);
     else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", aptmp[k]);
     else if (at == TY_FLOAT || proc_slot_via_poly(c, at)) buf_puts(b, "0");
     else buf_printf(b, "_t%d", aptmp[k]);
@@ -2102,7 +2106,8 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         g_needs_proc_poly_argslot = 1;
         if (argc > SP_PROC_ARG_SLOTS) buf_printf(&pubs, "sp_proc_wide_open(%d), ", argc);
         for (int k = 0; k < argc; k++) {
-          TyKind at = repr_of(c, argv[k]).as_ty;
+          Repr ar = repr_of(c, argv[k]);
+          TyKind at = ar.as_ty;
           int storable = ty_is_object(at) || c_type_name(at) != NULL;
           aptmp[k] = ++g_tmp;
           /* the arg may spill setup into g_pre; emit into a private buffer
@@ -2120,7 +2125,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
             emit_indent(g_pre, g_indent);
             if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "sp_int");
             buf_printf(g_pre, " _t%d = %s;\n", aptmp[k], valb.p ? valb.p : "0");
-            if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", aptmp[k]); }
+            if (ar.kind == RK_BOXED) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", aptmp[k]); }
             else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", aptmp[k]); }
           }
           int hold = proc_arg_box_hold(c, at, g_pre, g_indent);
