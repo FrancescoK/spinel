@@ -509,6 +509,23 @@ def case104
 end
 run('one of many yield sites') { case104 }
 
+def give9(a) = yield(1, 2, 3, 4, 5, 6, 7, 8, a)
+def sum106(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case106
+  a = [1, 2]
+  give9(a) { |p1, p2, p3, p4, p5, p6, p7, p8, m| m << H[7] }
+  sum106(a)
+end
+run("a yield's ninth argument") { case106 }
+
 # a block's array a method keeps in an ivar, written through the ivar's reader
 def ksum(fl)
   s = 0
