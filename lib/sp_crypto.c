@@ -437,6 +437,181 @@ const char *sp_crypto_md5_bin(const char *msg) {SP_GC_ROOT_STR(msg);
     return sp_crypto_md5_bin_buf;
 }
 
+/* ---------- Incremental hashing ----------
+ * The three hashes above, fed in pieces: the Init / Update / Final shape of
+ * RFC 1321 (MD5Update) and RFC 6234 (SHA256Input), over the same block
+ * functions and the same padding. A state is the chaining value, the byte
+ * count (8 bytes) and the partial block (64 bytes), copied in and out of a
+ * binary String, so a digest object keeps no more than that between calls.
+ */
+
+static void sp_crypto_sha1_blocks(uint32_t *H, const uint8_t *p, size_t n) {
+    for (; n > 0; n--, p += 64) sp_crypto_sha1_block(H, p);
+}
+
+static void sp_crypto_md5_blocks(uint32_t *H, const uint8_t *p, size_t n) {
+    for (; n > 0; n--, p += 64) sp_crypto_md5_block(H, p);
+}
+
+typedef struct {
+    int words;            /* chaining words: 8, 5 or 4 */
+    uint32_t iv[8];
+    void (*blocks)(uint32_t *H, const uint8_t *p, size_t n);
+    int big_endian;       /* SHA writes the length and the digest big-endian */
+} sp_crypto_stream_alg;
+
+static const sp_crypto_stream_alg sp_crypto_stream_sha256 = {
+    8, { 0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+         0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19 },
+    sp_crypto_sha256_blocks, 1
+};
+static const sp_crypto_stream_alg sp_crypto_stream_sha1 = {
+    5, { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 },
+    sp_crypto_sha1_blocks, 1
+};
+static const sp_crypto_stream_alg sp_crypto_stream_md5 = {
+    4, { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476 },
+    sp_crypto_md5_blocks, 0
+};
+
+#define SP_CRYPTO_STREAM_MAX (8 * 4 + 8 + 64)
+
+static size_t sp_crypto_stream_size(const sp_crypto_stream_alg *a) {
+    return (size_t)a->words * 4 + 8 + 64;
+}
+
+/* The state in `state` into H, the byte count and the partial block; a String
+ * of any other size (the empty one) is the initial state. */
+static void sp_crypto_stream_load(const sp_crypto_stream_alg *a, const char *state,
+                                  uint32_t H[8], uint64_t *count, uint8_t pend[64]) {
+    size_t hw = (size_t)a->words * 4;
+    if (sp_str_byte_len(state) == sp_crypto_stream_size(a)) {
+        memcpy(H, state, hw);
+        memcpy(count, state + hw, 8);
+        memcpy(pend, state + hw + 8, 64);
+    }
+    else {
+        memcpy(H, a->iv, hw);
+        *count = 0;
+        memset(pend, 0, 64);
+    }
+}
+
+static void sp_crypto_stream_store(const sp_crypto_stream_alg *a, char *out,
+                                   const uint32_t H[8], uint64_t count,
+                                   const uint8_t pend[64]) {
+    size_t hw = (size_t)a->words * 4;
+    memcpy(out, H, hw);
+    memcpy(out + hw, &count, 8);
+    memcpy(out + hw + 8, pend, 64);
+    sp_ffi_bin_len = (int)sp_crypto_stream_size(a);
+}
+
+/* `chunk` into the state: the partial block is filled first, the whole blocks
+ * are hashed straight from the chunk, and the rest is the new partial block. */
+static void sp_crypto_stream_update(const sp_crypto_stream_alg *a, const char *state,
+                                    const char *chunk, char *out) {
+    uint32_t H[8];
+    uint64_t count;
+    uint8_t pend[64];
+    sp_crypto_stream_load(a, state, H, &count, pend);
+    const uint8_t *p = (const uint8_t *)chunk;
+    size_t len = sp_str_byte_len(chunk);
+    size_t have = (size_t)(count % 64);
+    count += len;
+    if (have) {
+        size_t take = 64 - have < len ? 64 - have : len;
+        memcpy(pend + have, p, take);
+        p += take;
+        len -= take;
+        if (have + take < 64) {
+            sp_crypto_stream_store(a, out, H, count, pend);
+            return;
+        }
+        a->blocks(H, pend, 1);
+    }
+    size_t full = len & ~((size_t)63);
+    if (full) a->blocks(H, p, full / 64);
+    if (len > full) memcpy(pend, p + full, len - full);
+    sp_crypto_stream_store(a, out, H, count, pend);
+}
+
+/* The digest of what the state has seen, its partial block padded as the
+ * one-shot functions pad their tail. The state does not change. */
+static void sp_crypto_stream_final(const sp_crypto_stream_alg *a, const char *state,
+                                   uint8_t *out) {
+    uint32_t H[8];
+    uint64_t count;
+    uint8_t buf[64];
+    sp_crypto_stream_load(a, state, H, &count, buf);
+    size_t i, rem = (size_t)(count % 64);
+    buf[rem] = 0x80;
+    if (rem >= 56) {
+        for (i = rem + 1; i < 64; i++) buf[i] = 0;
+        a->blocks(H, buf, 1);
+        for (i = 0; i < 56; i++) buf[i] = 0;
+    }
+    else {
+        for (i = rem + 1; i < 56; i++) buf[i] = 0;
+    }
+    uint64_t bits = count * 8;
+    for (i = 0; i < 8; i++)
+        buf[56 + i] = (uint8_t)(a->big_endian ? bits >> (56 - 8*i) : bits >> (8*i));
+    a->blocks(H, buf, 1);
+    if (a->big_endian) {
+        sp_crypto_store_be32(out, H, a->words);
+        return;
+    }
+    for (i = 0; i < (size_t)a->words; i++) {
+        out[i*4]   = (uint8_t)(H[i]);
+        out[i*4+1] = (uint8_t)(H[i] >> 8);
+        out[i*4+2] = (uint8_t)(H[i] >> 16);
+        out[i*4+3] = (uint8_t)(H[i] >> 24);
+    }
+}
+
+static SP_TLS char sp_crypto_sha256_state_buf[SP_CRYPTO_STREAM_MAX];
+static SP_TLS char sp_crypto_sha256_final_buf[32];
+
+const char *sp_crypto_sha256_update(const char *state, const char *chunk) {SP_GC_ROOT_STR(state);SP_GC_ROOT_STR(chunk);
+    sp_crypto_stream_update(&sp_crypto_stream_sha256, state, chunk, sp_crypto_sha256_state_buf);
+    return sp_crypto_sha256_state_buf;
+}
+
+const char *sp_crypto_sha256_final(const char *state) {SP_GC_ROOT_STR(state);
+    sp_crypto_stream_final(&sp_crypto_stream_sha256, state, (uint8_t *)sp_crypto_sha256_final_buf);
+    sp_ffi_bin_len = 32;
+    return sp_crypto_sha256_final_buf;
+}
+
+static SP_TLS char sp_crypto_sha1_state_buf[SP_CRYPTO_STREAM_MAX];
+static SP_TLS char sp_crypto_sha1_final_buf[20];
+
+const char *sp_crypto_sha1_update(const char *state, const char *chunk) {SP_GC_ROOT_STR(state);SP_GC_ROOT_STR(chunk);
+    sp_crypto_stream_update(&sp_crypto_stream_sha1, state, chunk, sp_crypto_sha1_state_buf);
+    return sp_crypto_sha1_state_buf;
+}
+
+const char *sp_crypto_sha1_final(const char *state) {SP_GC_ROOT_STR(state);
+    sp_crypto_stream_final(&sp_crypto_stream_sha1, state, (uint8_t *)sp_crypto_sha1_final_buf);
+    sp_ffi_bin_len = 20;
+    return sp_crypto_sha1_final_buf;
+}
+
+static SP_TLS char sp_crypto_md5_state_buf[SP_CRYPTO_STREAM_MAX];
+static SP_TLS char sp_crypto_md5_final_buf[16];
+
+const char *sp_crypto_md5_update(const char *state, const char *chunk) {SP_GC_ROOT_STR(state);SP_GC_ROOT_STR(chunk);
+    sp_crypto_stream_update(&sp_crypto_stream_md5, state, chunk, sp_crypto_md5_state_buf);
+    return sp_crypto_md5_state_buf;
+}
+
+const char *sp_crypto_md5_final(const char *state) {SP_GC_ROOT_STR(state);
+    sp_crypto_stream_final(&sp_crypto_stream_md5, state, (uint8_t *)sp_crypto_md5_final_buf);
+    sp_ffi_bin_len = 16;
+    return sp_crypto_md5_final_buf;
+}
+
 /* RFC 6455 §1.3 Sec-WebSocket-Accept:
  *     base64(SHA-1(client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
  * Standard Base64 (RFC 4648 §4, `+/` alphabet, `=` padding) -- NOT

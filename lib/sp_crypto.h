@@ -85,6 +85,19 @@ const char *sp_crypto_md5_b64(const char *msg);
 const char *sp_crypto_sha1_b64(const char *msg);
 const char *sp_crypto_sha256_b64(const char *msg);
 
+/* Incremental hashing, for a digest object fed in pieces. The state is a
+ * binary String of a fixed size (104, 92 and 88 bytes): the chaining value,
+ * the byte count and the partial block. An empty String is the initial
+ * state. `_update` answers the state after `chunk`; `_final` answers the raw
+ * digest of what the state has seen and leaves it usable. Both lengths ride
+ * sp_ffi_bin_len, as for sp_crypto_sha256_bin. */
+const char *sp_crypto_sha256_update(const char *state, const char *chunk);
+const char *sp_crypto_sha256_final(const char *state);
+const char *sp_crypto_sha1_update(const char *state, const char *chunk);
+const char *sp_crypto_sha1_final(const char *state);
+const char *sp_crypto_md5_update(const char *state, const char *chunk);
+const char *sp_crypto_md5_final(const char *state);
+
 /* Sec-WebSocket-Accept = base64(SHA-1(client_key + GUID)) per
  * RFC 6455 §1.3. Returns a 28-char string ending in `=`. The
  * only modern use case for SHA-1 in this codebase; sugars the
