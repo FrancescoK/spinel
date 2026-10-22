@@ -10713,7 +10713,7 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   if (!how) return 0;
   int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", NULL)[1];
   TyKind vt = infer_type(c, v);
-  int handle = c->share_strings && an_arg_is_shared_handle(c, an_unparen(nt, v));
+  int handle = c->share_strings && an_arg_is_shared_handle(c, nt_paren_single(nt, v));
   if (handle) vt = TY_POLY;
   if (vt == TY_UNKNOWN) return 0;
   const int *ks = &one;
