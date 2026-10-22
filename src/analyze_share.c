@@ -1646,9 +1646,10 @@ static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap) {
   comp_poly_candidates(c, name, &n);
   if (n == 0) return 0;
   n = 0;
-  for (int k = 0; k < c->nscopes; k++) {
+  /* (the body's copies, by def_node; every scope was read for them) */
+  for (int k = an_scopes_same_def_first(c, si); k >= 0; k = an_scopes_same_def_next(c, k)) {
     const Scope *cp = &c->scopes[k];
-    if (k == si || cp->def_node != s->def_node || cp->class_id < 0 || cp->is_cmethod) continue;
+    if (k == si || cp->class_id < 0 || cp->is_cmethod) continue;
     int mi = comp_method_in_chain(c, cp->class_id, name, NULL);
     if (mi < 0) return 0;
     int seen = 0;
