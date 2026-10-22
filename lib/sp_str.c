@@ -739,6 +739,24 @@ uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){SP_GC_ROOT_STR(s);ret
 /* Reuse an existing StrArray for split, avoiding GC alloc.
    Clears a->len and refills.  Substring strings are still malloc'd. */
 static void sp_str_piece(sp_StrArray*a,const char*s,const char*p,size_t n){sp_str_split_push(a,p,n);sp_str_bin_like(s,(char*)a->data[a->len-1]);}
+/* CRuby refuses to split a UTF-8 String whose bytes are invalid (ArgumentError),
+   as a regexp search refuses it (sp_re_check_subject). Fewer characters than
+   bytes is valid text: the length cache answers for the same String again.
+   The 7-bit bit is set on a String the length walk counted as bytes, which an
+   invalid byte makes it do too (sp_str_length), so with it set the bytes
+   answer, 8 at a time: a byte from 0x80 up is the invalid one. */
+void sp_str_check_valid(const char*s){
+  if(!s||sp_str_is_binary(s))return;
+  if(sp_str_is_ascii7(s)){
+    const unsigned char*p=(const unsigned char*)s,*e=p+sp_str_byte_len(s);
+    uint64_t w,hi=0;
+    for(;p+8<=e;p+=8){memcpy(&w,p,8);hi|=w;}
+    for(;p<e;p++)hi|=*p;
+    if(!(hi&0x8080808080808080ULL))return;
+  }
+  else if((size_t)sp_str_length(s)!=sp_str_byte_len(s)||sp_str_ascii_only(s))return;
+  sp_raise_cls("ArgumentError",(&("\xff" "invalid byte sequence in UTF-8")[1]));
+}
 void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
   SP_GC_ROOT(a);
   SP_GC_ROOT_STR(s);
@@ -772,6 +790,7 @@ void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
 }
 sp_StrArray*sp_str_split(const char*s,const char*sep){if(!s)sp_nil_recv("split");
   SP_GC_ROOT_STR(s);
+  sp_str_check_valid(s);
   SP_GC_ROOT_STR(sep);
   sp_StrArray*a=sp_StrArray_new();
   sp_str_split_into(a,s,sep);
@@ -802,6 +821,7 @@ sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n){if(!s)sp_ni
   SP_GC_ROOT(a);
   const char*pe=s+sp_str_byte_len(s);
   if(pe==s)return a;
+  if(n!=1)sp_str_check_valid(s);   /* a limit of 1 answers the String whole, unread, as CRuby does */
   size_t sl=sp_str_byte_len(sep);
   if(sl==0){
     const char*p=s;
@@ -838,6 +858,7 @@ sp_StrArray*sp_str_split_ws(const char*s){if(!s)sp_nil_recv("split");
   SP_GC_ROOT_STR(s);
   sp_StrArray*a=sp_StrArray_new();
   SP_GC_ROOT(a);
+  sp_str_check_valid(s);
   /* by byte length, not strlen: a NUL is an ordinary character here */
   const char*p=s,*e=s+sp_str_byte_len(s);
   while(p<e&&SP_SPLIT_WS(*p))p++;
@@ -863,6 +884,7 @@ sp_StrArray*sp_str_split_ws_limit(const char*s,sp_int n){if(!s)sp_nil_recv("spli
   const char*e=s+sp_str_byte_len(s);
   if(e==s)return a;
   if(n==1){sp_str_piece(a,s,s,(size_t)(e-s));return a;}
+  sp_str_check_valid(s);
   const char*p=s;
   while(p<e&&SP_SPLIT_WS(*p))p++;
   if(p==e){sp_str_piece(a,s,p,0);return a;}

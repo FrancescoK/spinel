@@ -1519,14 +1519,15 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
 sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src) {SP_GC_ROOT_RBVAL(recv);SP_GC_ROOT_RBVAL(src);
   if (recv.tag != SP_TAG_OBJ) return recv;
   /* String#replace on a shared-mutable handle: swap the buffer contents in
-     place, from a plain string box or another handle (#3227). */
+     place, from a plain string box or another handle (#3227). The receiver
+     takes the source's encoding as well, as CRuby's replace does. */
   if (recv.cls_id == SP_BUILTIN_STRBUF) {
     sp_String *m = (sp_String *)recv.v.p;
     const char *s2 = NULL;
     if (src.tag == SP_TAG_STR) s2 = src.v.s;
     else if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_STRBUF)
       s2 = sp_String_cstr((sp_String *)src.v.p);
-    if (s2) sp_String_set_bin(m, s2);
+    if (s2) sp_String_set_bin_enc(m, s2);
     return recv;
   }
   if (src.tag != SP_TAG_OBJ) return recv;
@@ -5215,6 +5216,7 @@ sp_PolyArray *sp_str_lines_poly(const char *s) {SP_GC_ROOT_STR(s);
    unlike Regexp#match?(str, pos) which uses byte offset. Convert the
    codepoint index to a byte offset before dispatching to spinel_re_exec. */
 sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cpos) {SP_GC_ROOT_STR(str);
+  sp_re_check_subject(str);
   sp_int cl = sp_str_length(str);
   if (cpos < 0) cpos += cl;
   if (cpos < 0 || cpos > cl) return FALSE;
@@ -5906,6 +5908,7 @@ void sp_marv_raise(const char *cls, const char *msg) {SP_GC_ROOT_STR(msg); sp_ra
  * matched substring is dropped (CRuby returns "", not the match).
  * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
 static const char *re_gsub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h, sp_PolyPolyHash *ph) {SP_GC_ROOT_STR(str);SP_GC_ROOT(h);SP_GC_ROOT(ph);
+  sp_re_check_subject(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
   /* a short subject (an attribute being escaped, the common call) builds on
@@ -5980,6 +5983,7 @@ const char *sp_re_gsub_poly_hash(mrb_regexp_pattern *pat, const char *str, sp_Po
 /* Issue #910: sub(regex, hash) -- same lookup semantics as
    sp_re_gsub_str_str_hash but only the first match. */
 static const char *re_sub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h, sp_PolyPolyHash *ph) {SP_GC_ROOT(h);SP_GC_ROOT(ph);SP_GC_ROOT_STR(str);
+  sp_re_check_subject(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[64];
   int n = spinel_re_exec(pat, str, slen, 0, caps, 64, 0);

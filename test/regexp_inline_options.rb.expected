@@ -22,6 +22,7 @@ a***: compiled
 (?(a)b): RegexpError
 (?q)a: RegexpError
 (?x:ab): compiled
+invalid byte sequence in UTF-8
 2
 nil
 1
