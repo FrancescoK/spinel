@@ -2411,6 +2411,12 @@ int recv_user_defines(Compiler *c, const char *name) {
      arm re-enters the call's emission for a genuine Array or Hash, and the
      user class owning the name (a Set#flatten) is not a candidate there */
   if (g_poly_builtin_arm) return 0;
+  /* the classes whose chain answers the name, on either side, or every
+     class while the chain memo cannot be trusted */
+  int ni, nc;
+  comp_name_responders(c, name, 0, &ni);
+  if (ni > 0) return 1;
+  if (ni == 0) { comp_name_responders(c, name, 1, &nc); if (nc >= 0) return nc > 0; }
   for (int uk = 0; uk < c->nclasses; uk++) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
     if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
@@ -19650,9 +19656,14 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   int argc = 0, kwh, with_block = arity_call_block(nt, id, &argc, &kwh);
   if (with_block < 0) return 0;
   if (recv_user_defines(c, name) || comp_method_index(c, name) >= 0) return 0;
+  /* a method_missing anywhere: the classes whose chain answers it, or every
+     class while the chain memo cannot be trusted */
+  int nmm;
+  comp_name_responders(c, "method_missing", 0, &nmm);
+  if (nmm > 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
-        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
+        (nmm < 0 && comp_method_in_chain(c, k, "method_missing", NULL) >= 0)) return 0;
   return poly_arity_rows(c, name, with_block, argc, kwh, 0, tests, exps);
 }
 

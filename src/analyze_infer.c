@@ -3242,9 +3242,15 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          is an Array, as the no-argument call is, unless a class method of the
          name exists (a boxed Class may be the receiver) */
       if (sp_streq(name, "parameters") && proc_parameters_lambda_mode(nt, argc, argv) != -2) {
-        int pcm = 0;
-        for (int k = 0; k < c->nclasses && !pcm; k++)
-          if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) pcm = 1;
+        /* (the classes whose chain answers the name, or every class while
+           the chain memo cannot be trusted) */
+        int pcm;
+        comp_name_responders(c, name, 1, &pcm);
+        if (pcm < 0) {
+          pcm = 0;
+          for (int k = 0; k < c->nclasses && !pcm; k++)
+            if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) pcm = 1;
+        }
         if (!pcm) { *out = an_poly_concrete(c, name, TY_POLY_ARRAY); return 1; }
       }
       /* poly.arity on a Method read out of a container: the stamped arity, an
