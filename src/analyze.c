@@ -976,8 +976,7 @@ void compute_instantiated(Compiler *c, int early) {
      and handed back boxed through a :any binding, with no `.new` in the
      program for this census to see, and a class it left uninstantiated had
      its arms dropped from every poly dispatch (#4504). */
-  for (int k = 0; k < c->nclasses; k++)
-    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+  /* (forced after the scan, which records what it saw in ctor_site first) */
   for (int id = 0; id < nt->count && !disable; id++) {
     /* super in a reachable `self.new` constructs the receiving class: this
        one, or a descendant inheriting the method */
@@ -1080,6 +1079,10 @@ void compute_instantiated(Compiler *c, int early) {
         if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) continue; }
       c->classes[k].instantiated = 1;
     }
+  for (int k = 0; k < c->nclasses; k++) {
+    c->classes[k].ctor_site = c->classes[k].instantiated;
+    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+  }
   for (int k = 0; k < c->nclasses; k++) c->classes[k].ctor_reachable = c->classes[k].instantiated;
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
 }
@@ -13989,6 +13992,12 @@ static int narrow_object_arrays(Compiler *c) {
               infer_type(c, argv[0]) != TY_POLY)
             sl[S].alive = 0;
         }
+        /* ... and a Range-keyed read is a slice, which the element read
+           took as an Integer index and raised TypeError for (#9932): the
+           same slot keeps the poly path */
+        else if (name && is_element_at_alias(name) && argc == 1 &&
+                 (nt_kind(nt, argv[0]) == NK_RangeNode || infer_type(c, argv[0]) == TY_RANGE))
+          sl[S].alive = 0;
         else if (name && sp_streq(name, "[]=") && argc == 2) {
           /* a range-keyed []= is a splice, which the obj-array representation
              has no emitter for: keep the slot on the poly path */

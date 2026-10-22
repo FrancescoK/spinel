@@ -31,3 +31,14 @@ class PlanReopenedAliasBox
   alias_method :items, :reversed_items
 end
 p PlanAliasBox.new.run, PlanReopenedAliasBox.new.run
+
+# An override taking the block as a parameter receives the call's block.
+class PlanProcParent
+  attr_reader :items
+  def initialize = @items = [3, 1, 2]
+  def run = items { |x| x * 10 }
+end
+class PlanProcBox < PlanProcParent
+  def items(&blk) = blk ? @items.map(&blk) : @items
+end
+p PlanProcParent.new.run, PlanProcBox.new.run

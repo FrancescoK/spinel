@@ -4114,7 +4114,16 @@ static int emit_poly_recv_block_dispatch_x(Compiler *c, int id, Buf *b, int inde
     volatile int ok = 1;
     EmitUnitState *sv_state = emit_state_snapshot();
     g_unsup_probe = 1;
-    if (setjmp(g_unsup_recover) == 0) emit_stmt(c, id, ab, indent + 1);
+    if (setjmp(g_unsup_recover) == 0) {
+      /* where the call's value is used, the builtin's own answer is it */
+      if (result >= 0) {
+        emit_indent(ab, indent + 1);
+        buf_printf(ab, "_t%d = ", result);
+        emit_boxed(c, id, ab);
+        buf_puts(ab, ";\n");
+      }
+      else emit_stmt(c, id, ab, indent + 1);
+    }
     else ok = 0;
     emit_state_release(sv_state, !ok);
     memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));

@@ -709,6 +709,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   c->anon_struct_ids_valid = 0;
   memset(ci, 0, sizeof(*ci));
   ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
+  ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
@@ -2304,8 +2305,12 @@ int comp_native_method_find(Compiler *c, int class_id, const char *name, int arg
    answers it first. -1 for an arm of the program's methods. */
 int comp_native_binding_class(Compiler *c, int k, const char *name) {
   if (k < 0 || k >= c->nclasses) return -1;
+  /* a Ruby-side def on a native class answers for the class's objects the
+     program makes (#9903); with no construction of them in reachable code
+     the class contributes its bindings alone, as before: the def is not
+     emitted then, and its arm stood the builtin arms down (#9931, #4504) */
   if (c->classes[k].is_native_class)
-    return comp_method_in_chain(c, k, name, NULL) >= 0 ? -1 : k;
+    return comp_method_in_chain(c, k, name, NULL) >= 0 && c->classes[k].ctor_site ? -1 : k;
   int r = comp_native_answer_class(c, k, name);
   return r >= 0 && comp_native_method_find(c, r, name, 0, 0) >= 0 ? r : -1;
 }

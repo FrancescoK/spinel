@@ -76,6 +76,29 @@ const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v);
 #define backtrace_symbols(buf, n) ((char **)0)
 #define backtrace(buf, sz) 0
 #endif
+/* The capture. macOS's backtrace() walks frame pointers only within the
+   pthread's own stack, and answers no frame on the stack the top level, a
+   fiber or a green thread runs on (an mmap'd one, sp_main_stack_run): there
+   the unwinder takes the frames, by the unwind info (#9930). glibc's
+   backtrace() unwinds the same way already. */
+#if defined(__APPLE__) && defined(HAVE_EXECINFO_H)
+#include <unwind.h>
+typedef struct { void **buf; int max, n; } sp_bt_walk;
+static _Unwind_Reason_Code sp_bt_walk_frame(struct _Unwind_Context *ctx, void *arg) {
+  sp_bt_walk *w = (sp_bt_walk *)arg;
+  uintptr_t ip = _Unwind_GetIP(ctx);
+  if (!ip || w->n >= w->max) return _URC_END_OF_STACK;
+  w->buf[w->n++] = (void *)ip;
+  return _URC_NO_REASON;
+}
+static SP_UNUSED int sp_bt_capture(void **buf, int max) {
+  sp_bt_walk w = { buf, max, 0 };
+  _Unwind_Backtrace(sp_bt_walk_frame, &w);
+  return w.n;
+}
+#else
+#define sp_bt_capture(buf, max) backtrace(buf, max)
+#endif
 #define SP_BT_AVAILABLE 1
 extern int sp_bt_enabled;          /* set to 1 by debug-build main(); defined in lib/sp_cold.c */
 extern const char *sp_bt_srcfile;  /* toplevel .rb path, set by debug main() */
@@ -1302,6 +1325,13 @@ static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
   sp_str_set_len(buf, (size_t)got);
   sp_str_mark_binary(buf);   /* pread answers ASCII-8BIT, as CRuby */
   return buf;
+}
+/* IO#pread(len, offset) without an output buffer: a negative length is
+   CRuby's ArgumentError, raised before the stream is checked (a closed handle
+   says the same). The forms with a buffer keep sp_File_pread's clamp. */
+static inline const char *sp_File_pread_checked(sp_File *f, sp_int len, sp_int off) {
+  if (len < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
+  return sp_File_pread(f, len, off);
 }
 /* IO#pread answering NULL at EOF instead of raising, for the same reason as
    sp_File_readpartial_or_nil. */
@@ -3701,6 +3731,8 @@ static SP_INLINE const char *sp_poly_check_str(sp_RbVal v) {
    no-conversion path too. */
 static SP_NOINLINE const char *sp_str_cmp_conv(sp_RbVal r, sp_RbVal obj) {
   if (r.tag == SP_TAG_STR) return r.v.s;
+  /* a shared String's handle is a String too (sp_obj_conv_str_of) */
+  if (sp_poly_is_strbuf(r)) return sp_String_cstr((sp_String *)r.v.p);
   if (r.tag == SP_TAG_NIL) return NULL;
   sp_raise_cls("TypeError",
                sp_sprintf("can't convert %s to String (%s#to_str gives %s)",
@@ -16070,7 +16102,7 @@ static sp_StrArray *sp_caller_now(void) {
 #if SP_BT_AVAILABLE
   if (!sp_bt_enabled) return sp_StrArray_new();
   void *buf[256];
-  int n = backtrace(buf, 256);
+  int n = sp_bt_capture(buf, 256);
   return sp_bt_format(buf, n);
 #else
   return sp_StrArray_new();
@@ -16258,7 +16290,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   /* A pass-through, a bare raise, or an ensure resuming its saved exception
      keeps the frames of the raise that made it, as CRuby does. */
-  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = backtrace(sp_bt_buf, 256);
+  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = sp_bt_capture(sp_bt_buf, 256);
 #endif
   sp_bt_keep = 0;
   /* A real exception supersedes any non-local unwind in flight (e.g. raised from
@@ -18587,7 +18619,8 @@ static sp_PolyPolyHash *sp_poly_deconstruct_keys(sp_RbVal v, sp_RbVal keys) {
   sp_PolyArray *ks = sp_poly_to_a_arr(keys); SP_GC_ROOT(ks);
   if (ks->len > mh->len) return out;
   for (sp_int i = 0; i < ks->len; i++) {
-    sp_RbVal k = ks->data[i];
+    /* (a shared String's handle is a String key too) */
+    sp_RbVal k = sp_poly_strbuf_deref(ks->data[i]);
     sp_sym s = (sp_sym)-1;
     if (k.tag == SP_TAG_SYM) s = (sp_sym)k.v.i;
     else if (k.tag == SP_TAG_STR) s = sp_sym_intern(k.v.s ? k.v.s : "");
@@ -18995,9 +19028,10 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
     e->source = arr; e->meth = SPL("each");
     return e;
   }
-  /* ...and an endless String Range streams by succ the same way */
+  /* ...and an endless String Range streams by succ the same way (its end as
+     the handle it keeps reads it, SP_SRANGE_OF: a shared end is only there) */
   if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
-      !((sp_StrRange *)arr.v.p)->last)
+      !SP_SRANGE_OF(arr.v.p).last)
     return sp_srange_endless_enum(arr, 1);
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -19445,7 +19479,7 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
   }
   /* ...and so is an endless String Range, which streams by succ */
   if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
-      !((sp_StrRange *)arr.v.p)->last) {
+      !SP_SRANGE_OF(arr.v.p).last) {
     sp_Enumerator *r = sp_Enumerator_with_index(sp_Enumerator_new_from(arr), off);
     r->meth = SPL("each_with_index");
     return r;

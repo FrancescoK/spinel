@@ -1,2 +1,7 @@
 :object
 :object
+listing StandardError
+nil
+listing StandardError
+nil
+"no singleton methods on StandardError"

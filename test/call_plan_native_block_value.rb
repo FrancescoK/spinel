@@ -35,3 +35,14 @@ io = [StringIO.new("a"), PlanFeed.new][ARGV.size]
 p io.each_byte { calls += 1 }.equal?(io)
 p [StringIO.new("z\n"), PlanSource.new][ARGV.size].each_pair_line { calls += 1 }
 p calls
+
+# A builtin receiver beside a native class's own method answers the builtin's value.
+class StringIO
+  def sort_by
+    lines = []
+    each_line { |line| lines << line.chomp }
+    lines.sort_by { |line| yield line }
+  end
+end
+p [[3, 1, 2], StringIO.new("b\na\n")][ARGV.size].sort_by { |x| -x }
+p [[3, 1, 2], StringIO.new("b\na\n")][ARGV.size + 1].sort_by { |x| x }

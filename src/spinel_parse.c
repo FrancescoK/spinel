@@ -554,10 +554,20 @@ static int sp_word_char(char ch) {
    (`&:-@`, `&:+@`, `&:~`) is the same call, `-_spx` (#4300). NULL for any
    other block argument: a binary operator (`&:+`) is left to the
    arithmetic reduce/inject lowering, the rest to the analysis. */
+static size_t sp_quoted_recv_sym(const pm_node_t *n, const char **s);
 static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
   if (PM_NODE_TYPE(node) != PM_BLOCK_ARGUMENT_NODE) return NULL;
   const char *s;
-  size_t n = sp_plain_sym(((pm_block_argument_node_t *)node)->expression, &s);
+  /* the Symbol written in parentheses (`&(:to_s)`) or quoted (`&:"to_s"`)
+     is the same block: left a BlockArgumentNode, a Symbol took no block */
+  const pm_node_t *e = ((pm_block_argument_node_t *)node)->expression;
+  while (e && PM_NODE_TYPE(e) == PM_PARENTHESES_NODE) {
+    const pm_node_t *pb = ((const pm_parentheses_node_t *)e)->body;
+    if (!pb || PM_NODE_TYPE(pb) != PM_STATEMENTS_NODE || ((const pm_statements_node_t *)pb)->body.size != 1) { e = NULL; break; }
+    e = ((const pm_statements_node_t *)pb)->body.nodes[0];
+  }
+  size_t n = sp_plain_sym(e, &s);
+  if (!n) n = sp_quoted_recv_sym(e, &s);
   int word = n > 0;
   for (size_t i = 0; i < n; i++)
     if (!sp_word_char(s[i]) && s[i] != '?' && s[i] != '!' && (unsigned char)s[i] < 0x80) word = 0;

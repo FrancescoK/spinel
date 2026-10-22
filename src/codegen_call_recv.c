@@ -13511,8 +13511,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
         buf_puts(b, "; ");
         if (hold) { emit_gc_root_tmp_refs(c, rt, tr, b); buf_puts(b, " "); }
-        buf_printf(b, "sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
+        /* (a shared String's handle is a String too: its contents) */
+        buf_printf(b, "sp_RbVal _a%d = sp_poly_strbuf_deref(", tr); emit_boxed(c, argv[0], b);
+        buf_printf(b, "); (sp_bool)(_a%d.tag == SP_TAG_STR &&"
                       " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
         return 1;
       }

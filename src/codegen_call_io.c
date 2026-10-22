@@ -456,6 +456,13 @@ const char *io_readpartial_entry(const char *name) {
   return sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_sysread_checked";
 }
 
+/* The runtime entry pread(len, offset) reads through: the two-argument form
+   checks its length first (ArgumentError for a negative one, as CRuby);
+   every emitter of a pread without an output buffer asks here. */
+static const char *io_pread_entry(int argc) {
+  return argc == 2 ? "sp_File_pread_checked" : "sp_File_pread";
+}
+
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b) {
   if (!io_read_nonblock_outbuf(c, id)) return 0;
   if (repr_share_rule(c)) emit_io_read_nonblock_buffer(c, id, 0, b);
@@ -1446,7 +1453,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (is_io_position(name))
         buf_printf(b, "sp_File_tell(_t%d); })", tio2);
       else if (sp_streq(name, "pread") && argc >= 1) {
-        buf_printf(b, "sp_File_pread(_t%d, ", tio2);
+        buf_printf(b, "%s(_t%d, ", io_pread_entry(argc), tio2);
         emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
         if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
@@ -1652,7 +1659,7 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   }
   if (bufn) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_str_check_mutable(_t%d.v.s); ", th[2], th[2]);
   int tpr = ++g_tmp;
-  buf_printf(b, "const char *_t%d = sp_File_pread(_t%d, _t%d, _t%d); ", tpr, tio, tfirst, toff);
+  buf_printf(b, "const char *_t%d = %s(_t%d, _t%d, _t%d); ", tpr, io_pread_entry(argc), tio, tfirst, toff);
   if (bufn) {
     emit_local_ref(c, argv[2], bufn, b);
     if (bt == TY_STRING) buf_printf(b, " = _t%d; ", tpr);
@@ -1885,7 +1892,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       /* the length is NUM2SIZET's, the offset NUM2OFFT's: each words its
          nil its own way */
-      buf_printf(b, "%s(%s, ", bufn ? "sp_File_pread_or_nil" : "sp_File_pread", r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+      buf_printf(b, "%s(%s, ", bufn ? "sp_File_pread_or_nil" : io_pread_entry(argc), r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")");
       if (bufn) {

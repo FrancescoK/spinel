@@ -11,3 +11,4 @@
 test/poly_range_bsearch_float_arm.rb
 test/range_boxed_endpoints.rb
 test/range_symbol_endpoints.rb
+test/string_range_shared_ends_enum.rb
