@@ -114,6 +114,16 @@ module OpenSSL
 
     def hexdigest(data = nil) = digest(data).unpack1("H*")
 
+    def to_s = hexdigest
+    def inspect = "#<#{self.class.name}: #{hexdigest}>"
+
+    # Another digest object compares by its digest, anything with to_str by
+    # the hex digest, and the rest is not equal.
+    def ==(other)
+      return digest == other.digest if other.is_a?(Digest)
+      other.respond_to?(:to_str) && hexdigest == other.to_str
+    end
+
     # The file is read 16 KiB at a time, so its size does not count.
     def file(name)
       File.open(name.respond_to?(:to_path) ? name.to_path : name, "rb") do |f|
