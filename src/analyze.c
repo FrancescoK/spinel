@@ -38439,8 +38439,15 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
       }
       if (nilarg) { p->obj_nilable = 1; changed = 1; }
     }
+    /* A boxed Array argument converts into the typed parameter
+       (sp_poly_as_int_array and its kin), a nil element carried as the
+       slot's nil, and nothing marks a box's elements. Only a late widening
+       makes the two differ: --int-overflow=promote boxes `[f(1), f(-1)]`
+       once f answers poly, after the copy min_by runs in took its
+       parameter's type from it, and the nil element read as an Integer. */
     if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !p->nullable_int_elem &&
-        nullable_int_elem_expr(c, a, 0)) { p->nullable_int_elem = 1; changed = 1; }
+        (nullable_int_elem_expr(c, a, 0) || infer_type(c, a) == TY_POLY_ARRAY || infer_type(c, a) == TY_POLY))
+      { p->nullable_int_elem = 1; changed = 1; }
     if ((p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int) continue;
     /* a strict parameter's nil raises at the call: its slot stays plain */
     if (param_strict(c, mi, k, NULL, NULL)) continue;
