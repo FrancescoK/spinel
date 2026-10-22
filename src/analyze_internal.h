@@ -422,6 +422,7 @@ int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max);
 void resolve_parents(Compiler *c);
 void resolve_inherited_aliases(Compiler *c);
 void settle_object_builtin_aliases(Compiler *c);
+void settle_mixin_aliases(Compiler *c);       /* an alias names the method in effect where it appears */
 void process_include_body(Compiler *c, int ci, int body_node);
 void desugar_module_prepends(Compiler *c);
 void register_includes(Compiler *c);

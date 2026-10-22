@@ -4316,6 +4316,140 @@ void settle_object_builtin_aliases(Compiler *c) {
   }
 }
 
+/* The module an include or prepend argument names, or -1 */
+static int mixin_arg_module(Compiler *c, int arg) {
+  NodeKind ak = nt_kind(c->nt, arg);
+  const char *mn = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(c->nt, arg, "name") : NULL;
+  if (!mn) return -1;
+  int mod = comp_class_index(c, mn);
+  if (mod < 0) { const char *al = resolve_class_alias(c, mn); if (al) mod = comp_class_index(c, al); }
+  return mod;
+}
+
+/* The def node of the method `od` that class k answers at node `at`, where
+   an alias of it appears, as CRuby's lookup finds it then: a module the
+   class prepended before it, the class's own def before it, a module it
+   included before it (the later first), then the superclass. -1 when the
+   class does not answer the name there, or the answer is not a def. The
+   bodies are the class's, in source order. */
+static int alias_def_in_effect(Compiler *c, int k, const char *od, int at,
+                               int nb, const int *bci, const int *bnode) {
+  const NodeTable *nt = c->nt;
+  int inc_def = -1, inc_at = -1, pre_def = -1, pre_at = -1;
+  for (int b = 0; b < nb; b++) {
+    if (bci[b] != k) continue;
+    int n = 0;
+    const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &n) : NULL;
+    for (int j = 0; j < n; j++) {
+      int st = stmts[j];
+      if (st >= at || nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, st, "name");
+      int prep = nm && is_prepend_name(nm);
+      if (!nm || (!prep && !is_include_name(nm))) continue;
+      int a = nt_ref(nt, st, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      /* `include A, B` puts A in front */
+      for (int q = an - 1; q >= 0; q--) {
+        int mod = mixin_arg_module(c, av[q]);
+        int mm = mod >= 0 ? comp_method_in_chain(c, mod, od, NULL) : -1;
+        if (mm < 0) continue;
+        if (prep) { if (st >= pre_at) { pre_at = st; pre_def = c->scopes[mm].def_node; } }
+        else if (st >= inc_at) { inc_at = st; inc_def = c->scopes[mm].def_node; }
+      }
+    }
+  }
+  if (pre_def >= 0) return pre_def;
+  int own = -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != k || sc->is_cmethod || sc->is_include_copy || sc->def_node < 0 ||
+        sc->def_node >= at || nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, sc->def_node, "name");
+    if (dn && sp_streq(dn, od) && sc->def_node > own) own = sc->def_node;
+  }
+  if (own >= 0) return own;
+  if (inc_def >= 0) return inc_def;
+  int par = c->classes[k].parent;
+  int pm = par >= 0 ? comp_method_in_chain(c, par, od, NULL) : -1;
+  return pm >= 0 ? c->scopes[pm].def_node : -1;
+}
+
+/* An alias names the method in effect where it appears. The alias table
+   names a method by its name, which the class's chain answers as it stands
+   at the end of the program: a module included or prepended after the
+   alias, or a def of the name after it over an included module's method,
+   took the alias too (`include A; alias_method :hello, :hi; include B`
+   called B's hi). Such an alias names the class's copy of the method in
+   effect instead (an include or prepend keeps one under a shadow name). It
+   is refused when the class has no copy, and where a subclass's own include
+   or prepend still answers the alias with another method. */
+void settle_mixin_aliases(Compiler *c) {
+  int nb = 0, *bci = NULL, *bnode = NULL;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *cls = &c->classes[k];
+    if (comp_class_is_module(c, cls) || is_builtin_reopen(cls->name)) continue;
+    for (int i = 0; i < cls->naliases; i++) {
+      if ((cls->alias_sg && cls->alias_sg[i]) || (cls->alias_builtin && cls->alias_builtin[i]) ||
+          cls->alias_node[i] < 0) continue;
+      const char *nw = cls->alias_new[i];
+      int at = cls->alias_node[i];
+      /* a later alias or def of the same name replaces this one */
+      int replaced = alias_def_after(c, k, nw, at, 0) >= 0;
+      for (int j = 0; j < cls->naliases && !replaced; j++)
+        replaced = j != i && !(cls->alias_sg && cls->alias_sg[j]) && cls->alias_node[j] > at &&
+                   sp_streq(cls->alias_new[j], nw);
+      if (replaced) continue;
+      int fm = comp_method_in_chain(c, k, nw, NULL);
+      if (fm < 0) continue;
+      if (!bci) nb = class_body_list(c, &bci, &bnode);
+      char od[256];
+      snprintf(od, sizeof od, "%s", cls->alias_old[i]);
+      int want = alias_def_in_effect(c, k, od, at, nb, bci, bnode);
+      if (want < 0) continue;
+      int ok = c->scopes[fm].def_node == want;
+      if (!ok) {
+        int copy = -1;
+        for (int si = 1; si < c->nscopes && copy < 0; si++) {
+          Scope *sc = &c->scopes[si];
+          if (sc->class_id == k && !sc->is_cmethod && sc->def_node == want && sc->name &&
+              !sp_streq(sc->name, nw)) copy = si;
+        }
+        if (copy >= 0) {
+          free(cls->alias_old[i]);
+          cls->alias_old[i] = strdup(c->scopes[copy].name);
+          c->scopes[copy].reachable = 1;
+          comp_class_shape_changed();
+          fm = comp_method_in_chain(c, k, nw, NULL);
+          ok = fm >= 0 && c->scopes[fm].def_node == want;
+        }
+      }
+      /* a subclass that mixes in a module of the name answers the alias
+         through its own chain (`class B < A; include N; end`) */
+      int sub = -1;
+      for (int d = 0; d < c->nclasses && ok && sub < 0; d++) {
+        if (d == k || !is_descendant(c, d, k) || alias_def_after(c, d, nw, -1, 0) >= 0) continue;
+        int dalias = 0;
+        for (int j = 0; j < c->classes[d].naliases && !dalias; j++)
+          dalias = sp_streq(c->classes[d].alias_new[j], nw);
+        if (dalias) continue;
+        /* (a module's own method of the name answers it in the subclass) */
+        int dm = comp_method_in_chain(c, d, nw, NULL);
+        int dd = dm >= 0 ? c->scopes[dm].def_node : -1;
+        const char *ddn = dd >= 0 && nt_kind(c->nt, dd) == NK_DefNode ? nt_str(c->nt, dd, "name") : NULL;
+        if (dd >= 0 && dd != want && !(ddn && sp_streq(ddn, nw))) sub = d;
+      }
+      if (ok && sub < 0) continue;
+      char msg[512];
+      snprintf(msg, sizeof msg, "%s#%s: an alias of %s that a later include, prepend or def%s%s changes is not "
+               "supported: the alias would call the later method, not the one in effect where it appears",
+               cls->name, nw, od,
+               sub >= 0 ? " in subclass " : "", sub >= 0 ? c->classes[sub].name : "");
+      unsupported_feature(c, at, msg);
+    }
+  }
+  free(bci); free(bnode);
+}
+
 /* Does a statement after stmts[k] declare the accessor `nw` -- a reader
    (attr_reader / attr_accessor / attr), or for `x=` a writer
    (attr_writer / attr_accessor)? It then replaces the alias of that name,
@@ -6850,6 +6984,15 @@ static int module_aliases_name(const ClassInfo *mod, const char *m) {
   return 0;
 }
 
+/* Does class cls alias its instance method m? Then an include keeps a copy
+   of the module's m under a shadow name where the class defines m too: the
+   alias may name the module's (settle_mixin_aliases). */
+static int class_aliases_name(const ClassInfo *cls, const char *m) {
+  for (int a = 0; a < cls->naliases; a++)
+    if (!(cls->alias_sg && cls->alias_sg[a]) && sp_streq(cls->alias_old[a], m)) return 1;
+  return 0;
+}
+
 /* The method module `mod` defines that its alias `m` names at last: through
    its aliases of aliases (`alias_method :z, :y` after `alias_method :y, :x`
    names x), or `m` itself */
@@ -6934,7 +7077,8 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
          (register_include_attrs). Otherwise the module method is simply
          shadowed -- nothing to emit. */
       int super_reaches = scope_body_has_super(c, own);
-      if (!super_reaches && !module_aliases_name(&c->classes[mod_id], src->name)) {
+      if (!super_reaches && !module_aliases_name(&c->classes[mod_id], src->name) &&
+          !class_aliases_name(&c->classes[ci], src->name)) {
         if (!src->is_module_function) src->is_transplanted_source = 1;
         continue;
       }
