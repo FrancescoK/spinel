@@ -45698,9 +45698,12 @@ static int sa_unseen_element(Compiler *c, int u, int k) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, u, "name");
   int r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
+  /* the arguments are read once the call is an Array's: the store walk asks
+     this of every store into a container local, the writes of it too (no
+     receiver), and their argument scan was 2% of a sampled Rails window */
+  if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
   int a = nt_ref(nt, u, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
   int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
   if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
     int body = nt_ref(nt, block, "body");
