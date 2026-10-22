@@ -44918,11 +44918,16 @@ static int sid_kind_ok(Compiler *c, TyKind t) {
 }
 static int sid_kinds_ok(int k) { return !(k & (CK_UNSAFE | CK_LIT)); }
 /* Is value v statically one whose identity is CRuby's? A boxed local whose
-   every write in its scope is such a value counts. */
+   every write in its scope is such a value counts. Parentheses answer their
+   last statement's value, and `()` answers nil, which is one object. */
 static int sid_value_ok(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 8) return 0;
+  if (depth > 8) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &v)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 1;
+  case VP1_MANY: return 0;
+  }
   TyKind t = infer_type(c, v);
   if (t != TY_POLY && sid_kind_ok(c, t)) return 1;
   if ((t == TY_POLY || t == TY_STRING || t == TY_STRBUF) && sid_kinds_ok(cls_fact_kinds(c, v))) return 1;
@@ -44952,8 +44957,11 @@ static int sid_no_collection_kind(TyKind t) {
 }
 static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &v)) {
+  case VP1_NODE: break;
+  case VP1_NIL: return 1;   /* nil, which brings no member */
+  case VP1_MANY: return 0;
+  }
   TyKind t = infer_type(c, v);
   if (sid_no_collection_kind(t)) return 1;
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
@@ -44991,7 +44999,8 @@ static int sid_block_ok(Compiler *c, int blk, int own) {
   int body = nt_ref(nt, blk, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn == 0) return 1;
-  int v = nt_paren_single(nt, bb[bn - 1]);
+  int v = bb[bn - 1], one;
+  if (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &one) == VP1_NODE) v = one;
   if (own && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name"))
     for (int k = 0; block_param_name(c, blk, k); k++)
       if (sp_streq(block_param_name(c, blk, k), nt_str(nt, v, "name"))) return 1;
@@ -45412,8 +45421,11 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
     if (s && s->class_id == set_cid) continue;
     /* (a computed name's arm, as refuse_set_identity_members skips it) */
     if (!spelled && (nt_int(nt, id, "dyn_arm", 0) || (s && s->name && strncmp(s->name, "__bam_", 6) == 0))) continue;
-    int r = an_unparen(nt, nt_ref(nt, id, "receiver"));
-    if (r < 0) {
+    /* a receiver in parentheses holding several statements or none counts
+       as none: following its last statement would refuse programs whose
+       identity Sets answer as CRuby's */
+    int r = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
+    if (r < 0 || nt_kind(nt, r) == NK_ParenthesesNode) {
       if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) return 0;
       continue;
     }
@@ -45464,7 +45476,12 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       if (r == 0 || get) continue;
       int ar = nt_ref(nt, id, "arguments"), argc = 0;
       const int *argv = nt_arr(nt, ar, "arguments", &argc);
-      int v = an_unparen(nt, argv[1]);
+      int v;
+      switch (vp_one(nt, argv[1], VPS_NONE | VP_PARENS_ONLY, &v)) {
+      case VP1_NODE: break;
+      case VP1_NIL: continue;   /* `()` writes nil, no Set */
+      case VP1_MANY: return 0;
+      }
       if (!sid_fresh_set(nt, v) && sid_maybe_set(c, v, set_cid)) return 0;
       if (!sid_alias_use_ok(c, S, id)) return 0;
     }
@@ -45597,8 +45614,9 @@ const char *const g_sid_refusal_msg =
    box, an Integer, a Float or a String. 0 for a refused value. */
 static int sid_value_or_check(Compiler *c, int call, int v) {
   if (sid_value_ok(c, v, 0)) return 1;
-  if (!defer_refusals() || v < 0) return 0;
-  TyKind t = infer_type(c, an_unparen(c->nt, v));
+  int one;
+  if (!defer_refusals() || vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &one) != VP1_NODE) return 0;
+  TyKind t = infer_type(c, one);
   if (t != TY_POLY && t != TY_INT && t != TY_FLOAT && t != TY_STRING && t != TY_STRBUF) return 0;
   nt_node_set_int((NodeTable *)c->nt, v, "idset_check", call + 1);
   g_idset_marks = 1;
