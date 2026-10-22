@@ -10650,7 +10650,20 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
        blockless form stays, an Enumerator of its own (#7198). */
     int crc = nt_ref(nt, id, "receiver");
     if (crc >= 0 && infer_type(c, crc) == TY_STRING) {
+      if (!nt_str(nt, id, "written_name")) nt_node_set_str(nt, id, "written_name", "each_codepoint");
       nt_node_set_str(nt, id, "name", "codepoints");
+      *changed = 1;
+      return 1;
+    }
+  }
+  if (nm && sp_streq(nm, "codepoints") && nt_ref(nt, id, "block") >= 0 &&
+      nt_str(nt, id, "written_name") && sp_streq(nt_str(nt, id, "written_name"), "each_codepoint")) {
+    /* the receiver widened after the walk above was chosen (a String that
+       also comes out of a mixed Array): each_codepoint again, which the
+       boxed receiver has an arm for */
+    int crc = nt_ref(nt, id, "receiver");
+    if (crc >= 0 && infer_type(c, crc) != TY_STRING) {
+      nt_node_set_str(nt, id, "name", "each_codepoint");
       *changed = 1;
       return 1;
     }
