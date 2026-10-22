@@ -20735,17 +20735,23 @@ static int gvar_array_plain_string(Compiler *c, const char *grn) {
   if (!g || (g->type != TY_STR_ARRAY && g->type != TY_POLY_ARRAY)) return -1;
   for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
-    int v = nt_paren_single(nt, nt_ref(nt, comp_vsite_node(c, e), "value"));
-    if (!gvar_site_is(c, e, grn) || v < 0) continue;
+    /* the values written and stored, read through parentheses (vp_one):
+       `$g = (x; [s])` writes the Array literal, whose element is s. The
+       answer is the value as written, parentheses and all, which the
+       refusal hands on as its route's carry. */
+    int w = nt_ref(nt, comp_vsite_node(c, e), "value"), v;
+    if (!gvar_site_is(c, e, grn) || vp_one(nt, w, VPS_NONE | VP_PARENS_ONLY, &v) != VP1_NODE)
+      continue;
     if (nt_kind(nt, v) != NK_ArrayNode) {
-      if (g->type == TY_STR_ARRAY) return v;
+      if (g->type == TY_STR_ARRAY) return w;
       continue;
     }
     int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
     for (int e = 0; e < en; e++) {
-      int l = nt_paren_single(nt, el[e]);
+      int l;
+      if (vp_one(nt, el[e], VPS_NONE | VP_PARENS_ONLY, &l) != VP1_NODE) continue;
       TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
+      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return el[e];
     }
   }
   for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
@@ -20756,9 +20762,10 @@ static int gvar_array_plain_string(Compiler *c, const char *grn) {
     int a = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int k = 0; k < an; k++) {
-      int l = nt_paren_single(nt, av[k]);
+      int l;
+      if (vp_one(nt, av[k], VPS_NONE | VP_PARENS_ONLY, &l) != VP1_NODE) continue;
       TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
+      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return av[k];
     }
   }
   return -1;
@@ -26311,7 +26318,10 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     if (!itn) continue;
     int blk4 = nt_ref(nt, w, "block");
     if (blk4 < 0) continue;
-    int recv4 = nt_ref(nt, w, "receiver");
+    /* the receiver's value: parentheses answer their last statement, so
+       `(x; u).each { |e| e << s }` binds u's elements as `u.each` does */
+    int recv4 = nt_ref(nt, w, "receiver"), rv4;
+    if (vp_one(nt, recv4, VPS_NONE | VP_PARENS_ONLY, &rv4) == VP1_NODE) recv4 = rv4;
     if ((is_with_index_alias(itn)) && recv4 >= 0) {
       int inner = recv4;
       if (nt_kind(nt, inner) == NK_CallNode && nt_str(nt, inner, "enum_each_wrap"))

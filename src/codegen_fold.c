@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* An sp_oint / sp_ofloat expression where the dispatcher wants the node
    plain is unwrapped here (TypeError for nil); an oint consumer takes it
@@ -9004,6 +9005,14 @@ static int arg_bang_on_handle(Compiler *c, int v) {
   const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
   return nm && nm[0] && nm[strlen(nm) - 1] == '!' && strbuf_bang_self_local(c, u);
 }
+/* See codegen_internal.h. */
+void emit_paren_lead(Compiler *c, int v, int tail, Buf *b, int indent) {
+  for (int w = v; w != tail && nt_kind(c->nt, w) == NK_ParenthesesNode;) {
+    int n = 0; const int *bd = nt_arr(c->nt, nt_ref(c->nt, w, "body"), "body", &n);
+    for (int i = 0; i < n - 1; i++) emit_stmt(c, bd[i], b, indent);
+    w = bd[n - 1];
+  }
+}
 static void emit_arg_temp(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   int fresh = repr_handle_apart(c, v, r);
@@ -9031,11 +9040,7 @@ static void emit_arg_temp(Compiler *c, int v) {
      their statements first, once, and their value is the route's. */
   int stail = conversion ? strbuf_srange_tail(c, v) : -1, srange = stail >= 0, tr = -1;
   if (srange) {
-    for (int w = v; w != stail && nt_kind(c->nt, w) == NK_ParenthesesNode;) {
-      int n = 0; const int *bd = nt_arr(c->nt, nt_ref(c->nt, w, "body"), "body", &n);
-      for (int i = 0; i < n - 1; i++) emit_stmt(c, bd[i], g_pre, g_indent);
-      w = bd[n - 1];
-    }
+    emit_paren_lead(c, v, stail, g_pre, g_indent);
     int recv = nt_ref(c->nt, stail, "receiver");
     tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -9047,6 +9052,22 @@ static void emit_arg_temp(Compiler *c, int v) {
     free(rb.p);
     view_bind(recv, "_t%d", tr);
   }
+  /* A String variable's read in parentheses after other statements
+     (`f((x; t))`) is that read once they ran (vp_one): they run here,
+     ahead, and the variable's handle is taken as a bare read's is. Read as
+     the parentheses, a shared slot handed on its bytes. */
+  int rd = v;
+  if (!wshare && !conversion && !fresh && !srange && vk == NK_ParenthesesNode &&
+      (at == TY_STRING || at == TY_STRBUF)) {
+    int u;
+    if (vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &u) == VP1_NODE &&
+        (nt_kind(c->nt, u) == NK_LocalVariableReadNode || nt_kind(c->nt, u) == NK_InstanceVariableReadNode ||
+         repr_static_read_kind(nt_kind(c->nt, u)))) {
+      emit_paren_lead(c, v, u, g_pre, g_indent);
+      rd = u;
+      vk = nt_kind(c->nt, u);
+    }
+  }
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, nt_paren_single(c->nt, v), &hw);
   else if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
@@ -9054,7 +9075,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
-                 strbuf_slot_text(c, v, &sref))) {
+                 strbuf_slot_text(c, rd, &sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref.p, th);
@@ -9095,7 +9116,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     emit_str_expr(c, v, &hb);
     view_pop(c, mark);
   }
-  else emit_expr(c, v, &hb);
+  else emit_expr(c, rd, &hb);
   emit_indent(g_pre, g_indent);
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));

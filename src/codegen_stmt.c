@@ -5063,7 +5063,12 @@ static int strbuf_dup_call(Compiler *c, int v) {
   if (cplan_user(c, v)->dispatch != CP_NONE) return 0;
   return sp_streq(nm, "dup") ? 1 : 2;
 }
+static void emit_strbuf_seq_nil(Compiler *c, int v, Buf *b);
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  /* a parenthesized sequence whose value is nil is the slot's NULL, after
+     its statements, as `nil` is: wrapped as a String, its nil was an
+     integer handed to the new handle */
+  if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
   /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
   { int w = nt_paren_single(c->nt, v);
     if (repr_share_rule(c) && repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
@@ -5368,12 +5373,19 @@ static int paren_tail(const NodeTable *nt, int v) {
   }
   return v;
 }
-/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`)?
-   A String slot takes NULL for it, after the statements before the nil. */
+/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`,
+   `()`)? A String slot takes NULL for it, after the statements before the
+   nil. */
 int strbuf_seq_nil_tail(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  int t = v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode ? paren_tail(nt, v) : -1;
-  return t >= 0 && nt_kind(nt, t) == NK_NilNode;
+  int t;
+  if (v < 0 || nt_kind(nt, v) != NK_ParenthesesNode) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &t)) {
+  case VP1_NODE: return nt_kind(nt, t) == NK_NilNode;
+  case VP1_NIL: return 1;
+  case VP1_MANY: return 0;
+  }
+  return 0;
 }
 /* The slot's nil for sequence v (strbuf_seq_nil_tail): the statements
    before the nil run first, in order, as an expression. */

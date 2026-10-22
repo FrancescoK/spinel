@@ -462,6 +462,8 @@ enum {
   RW_YIELD,          /* a yield boxed by the block of this call site */
   RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
   RW_RAN_FIRST,      /* an argument that already ran: its temp */
+  RW_PAREN_TAIL,     /* parentheses boxed as the handle of the variable
+                        they end in, after their statements */
   RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
@@ -1173,6 +1175,10 @@ int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_stmt(Compiler *c, int id, Buf *b, int indent);
+/* The statements of parentheses v that run before `tail`, the node their
+   value comes from (through nested parentheses: vp_one's answer), into b,
+   in order (codegen_fold.c). */
+void emit_paren_lead(Compiler *c, int v, int tail, Buf *b, int indent);
 void emit_stmts(Compiler *c, int id, Buf *b, int indent);
 void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);

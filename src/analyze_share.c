@@ -6339,8 +6339,9 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
    String with a part to evaluate is built each time: neither is one. */
 int share_frozen_literal(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = nt_paren_single(nt, n);
-  if (n < 0) return 0;
+  /* parentheses are the frozen literal their value is (vp_one), as
+     share_value_fresh reads them: `(x; "lit")` is "lit" */
+  if (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n) != VP1_NODE) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
   if (k == NK_InterpolatedStringNode) return nt_int(nt, n, "fzl", 0) != 0 && interp_is_literal_fold(nt, n);
@@ -6473,10 +6474,10 @@ static int sh_fresh_arm_bad(const VpLeaf *lf, void *ud) {
 }
 /* Is value n a new String or nil: a conditional each of whose arms is one
    (or nil), a rescue modifier whose expression and fallback are, or such a
-   leaf? The arms of the conditional are read through the iterator. `depth`
-   bounds the leaves' own chains of calls, not the shapes. */
+   leaf? The arms of the conditional are read through the iterator, and so
+   are parentheses: `(x; s.dup)` is as new as `s.dup`, and `()` is nil.
+   `depth` bounds the leaves' own chains of calls, not the shapes. */
 int share_value_fresh(Compiler *c, int n, int depth) {
-  n = an_unparen(c->nt, n);
   if (n < 0 || depth > 8) return 0;
   ShFresh f = { c, depth };
   return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);

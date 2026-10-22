@@ -1736,8 +1736,6 @@ const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symb
 int sp_str_mutator(const char *nm, unsigned want);
 /* 1 iff call node `id` is a String method whose value is its receiver. */
 int str_self_call(const NodeTable *nt, int id);
-/* `n` through single-expression parentheses (analyze_util.c). */
-int an_unparen(const NodeTable *nt, int n);
 /* The RegularExpressionNode a Regexp local read at `read` always holds, or -1 (analyze_util.c). */
 int an_regex_local_lit(Compiler *c, int read);
 int fiber_storage_recv(const NodeTable *nt, int recv);

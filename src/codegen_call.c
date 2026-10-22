@@ -9196,6 +9196,14 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
       if (repr_of_slot(c, pv).handle && emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
       if (pt == TY_POLY && pv && (pv->poly_lift & POLY_LIFT_APPENDED) &&
           emit_poly_boxed_shared_arg(c, A, L->arg[a], pa)) return;
+      /* an argument held as its bytes beside the handle it ran as (htmp: a
+         sequence in parentheses ending in a shared String variable) goes
+         over as that handle, boxed, nil as nil: the bytes boxed were a
+         copy, and the arm's changes stayed in it */
+      if (pt == TY_POLY && A->htmp && A->htmp[L->arg[a]] && A->atmp_ty[L->arg[a]] == TY_STRING) {
+        buf_printf(pa, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", A->htmp[L->arg[a]]);
+        return;
+      }
       emit_poly_temp_as(c, pt, pv, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], read_root, pa);
       return;
     }
