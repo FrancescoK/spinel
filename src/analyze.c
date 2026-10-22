@@ -48007,26 +48007,38 @@ static void an_phase_block_inline(Compiler *c) {
 }
 
 /* Is the value of the def `d` used, so that it is the Symbol it names? A
-   statement before its list's last, the program's last statement (its list
-   has no parent) and a class or module body's last when the class's value
-   is not used throw it away; anything else may hand it on. */
+   statement before its list's last, the program's last statement and a
+   class or module body's last when the class's value is not used throw it
+   away; anything else may hand it on. The climb goes through statement
+   lists (vp_climb over the wrappers), and on from a class whose body's
+   value the def is. Parentheses take the value: the emitter renders a
+   parenthesized def as its Symbol (`rv = (def o.m = 1)`, whose write a
+   rewrite holds aside, so the parentheses have no parent node), so the
+   table holds the name. */
 int an_def_value_used(const NodeTable *nt, const int *par, int v) {
-  for (int p; (p = par[v]) >= 0; v = p) {
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, par, v, VPS_NONE, &up);
+    for (int n = v; n != up.node && n >= 0; n = par[n])
+      if (nt_kind(nt, par[n]) == NK_ParenthesesNode) return 1;
+    switch (ended) {
+    case VPU_ROOT:
+    case VPU_DROPPED:
+      return 0;
+    case VPU_ENDED: {
+      NodeKind k = nt_kind(nt, up.parent);
+      if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) &&
+          nt_ref(nt, up.parent, "body") == up.node) {
+        v = up.parent;
+        continue;
+      }
+      return 1;
     }
-    case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      if (nt_ref(nt, p, "body") != v) return 1;
-      break;
     default:
       return 1;
     }
   }
-  return 0;
+  return 1;
 }
 
 /* ---- String methods whose value no call reads (Scope.ret_unread) ----
