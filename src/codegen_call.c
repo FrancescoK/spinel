@@ -17571,8 +17571,9 @@ int class_is_comparable(Compiler *c, int cid) {
     if (comp_comparable_reaches(c, cur)) return 1;
     if (c->classes[cur].parent == cur) break;
   }
+  /* Object's includes reach every class but a BasicObject descendant */
   int oc = comp_class_index(c, "Object");
-  return oc >= 0 && comp_comparable_reaches(c, oc);
+  return oc >= 0 && !class_is_blank_slate(c, cid) && comp_comparable_reaches(c, oc);
 }
 /* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
    one, 0 otherwise. */
