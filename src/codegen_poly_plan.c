@@ -4175,7 +4175,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if (is_strftime && (ps->ncand == 0 || ret == TY_STRING || ret == TY_POLY)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRFTIME, -1, TY_UNKNOWN, PC_SAME);
     char fa[64];
-    if (comp_ntype(c, argv[0]) == TY_POLY) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
     else snprintf(fa, sizeof fa, "%s", strarg);
     if (ret == TY_POLY)
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, %s)); break;", tr, tv, fa);

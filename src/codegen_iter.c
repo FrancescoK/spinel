@@ -1566,7 +1566,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
-    TyKind rt = repr_of(c, id).as_ty;
+    Repr rr = repr_of(c, id);
+    TyKind rt = rr.as_ty;
     if (fwd_yield_proc) g_yield_slot_ty = rt;  /* value-position yield unboxes to this */
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
@@ -1576,7 +1577,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     /* a value-type object is a struct, whose zero is `{0}`, not NULL */
     buf_printf(b, " _t%d = %s;\n", rtag, ro ? oint_nil(rt) : comp_ty_value_obj(c, rt) ? "{0}" : default_value_from_compiler(c, rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
-    int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
+    int sp = g_result_poly; g_result_poly = (rr.kind == RK_BOXED);
     int sv_ro = g_result_oint; g_result_oint = ro;
     int sv_rro = g_ret_oint; g_ret_oint = ro;
     /* g_result_ty is the slot type a tail statement reads to pick its own
@@ -1870,7 +1871,8 @@ static void emit_block_arg_coerced_lv(Compiler *c, int node, LocalVar *lv, TyKin
 int g_yield_want_oint = 0;
 int g_ie_next_oint = 0;
 static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
-  TyKind at = repr_of(c, node).as_ty;
+  Repr ar = repr_of(c, node);
+  TyKind at = ar.as_ty;
   /* an empty `{}` / `[]` stays untyped, and emit_boxed gives it the poly form */
   NodeKind nk = nt_kind(c->nt, node);
   int empty_lit = 0;
@@ -1878,7 +1880,7 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
     nt_arr(c->nt, node, "elements", &empty_lit);
     empty_lit = empty_lit == 0;
   }
-  if (ot == TY_POLY && ((at != TY_POLY && at != TY_UNKNOWN) || empty_lit)) emit_boxed(c, node, b);
+  if (ot == TY_POLY && ((ar.kind != RK_BOXED && at != TY_UNKNOWN) || empty_lit)) emit_boxed(c, node, b);
   /* a literal nil into an Integer or a Float parameter (one
      block_settle_types kept nullable, bs_join_val) is the slot's own nil,
      not the 0 it emits as */
@@ -1893,7 +1895,7 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
      to the box, while a block parameter it feeds keeps its Integer type,
      and `.v.i` read the 0 under the nil tag, so `y(@u) { |a| a }` bound
      0 for a nil @u */
-  else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
+  else if (ar.kind == RK_BOXED && ot != TY_POLY && ot != TY_UNKNOWN) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
     /* a parameter slot holding its nil took the oint above
        (emit_block_arg_coerced_lv); this one is plain: the value, a nil
@@ -4924,7 +4926,8 @@ int iter_value_answers_recv(Compiler *c, int id) {
    both reads take the binding; answers 1 when the caller must pop it. */
 int iter_recv_bind_once(Compiler *c, int node) {
   if (!g_pre || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, node)) return 0;
-  TyKind ot = repr_of(c, node).as_ty;
+  Repr otr = repr_of(c, node);
+  TyKind ot = otr.as_ty;
   if (ot == TY_UNKNOWN) return 0;
   int t = ++g_tmp;
   Buf ob = expr_buf(c, node);
@@ -4933,7 +4936,7 @@ int iter_recv_bind_once(Compiler *c, int node) {
   buf_printf(g_pre, " _t%d = %s;", t, ob.p ? ob.p : "");
   free(ob.p);
   if (comp_ty_value_obj(c, ot)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, ot, t, g_pre); }
-  else if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
+  else if (needs_root(ot)) buf_printf(g_pre, otr.kind == RK_BOXED ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
   /* a String Range is held by value: its two ends are what the walk must
      keep, the binding being read again as the answer after it */
   else if (ot == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, ot, t, g_pre); }
@@ -5000,7 +5003,8 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
     free(wb.p);
     return 1;
   }
-  TyKind rt = repr_of(c, recv).as_ty;
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
   /* A poly receiver is allowed: `each` answers the receiver whatever kind it
      turns out to hold, and the loop below walks it through the poly surface.
      Bails on its own below when the iteration cannot be emitted. */
@@ -5039,7 +5043,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      for arrays, hashes and objects (it asks how a value is RETURNED, not
      whether it is collectable), so this rooted almost nothing. */
   if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
-  else if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
+  else if (needs_root(rt)) buf_printf(b, rr.kind == RK_BOXED ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
   /* a String Range is held by value: its two ends */
   else if (rt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   buf_puts(b, body.p ? body.p : "");
@@ -5051,7 +5055,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
   /* a boxed Enumerator's `each { }` answers its walk's result -- the
      collection an `each` Enumerator was made from -- not the Enumerator */
-  else if (rt == TY_POLY && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "each"))
+  else if (rr.kind == RK_BOXED && nt_str(nt, id, "name") && is_each_name(nt_str(nt, id, "name")))
     buf_printf(b, " sp_poly_each_answer(_t%d); })", ta);
   else buf_printf(b, " _t%d; })", ta);
   if (to) view_unbind(g_n_argov - 1);
@@ -8089,7 +8093,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     if (!is_float) {
       int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0;
       int tr = nt_kind(nt, recv) == NK_IntegerNode ? 0 : step_bind_recv(c, id, recv, "sp_int", emit_expr, sargc, sargv, b, indent);
-      if (comp_ntype(c, sargv[0]) == TY_POLY) {
+      if (repr_of(c, sargv[0]).kind == RK_BOXED) {
         char tvs[32]; tv = ++g_tmp; snprintf(tvs, sizeof tvs, "_t%d", tv);
         emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, sargv[0], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
