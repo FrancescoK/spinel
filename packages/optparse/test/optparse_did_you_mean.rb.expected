@@ -1,0 +1,9 @@
+invalid option: --baa
+Did you mean?  bar
+               baz
+invalid option: --cuu
+Did you mean?  cuz
+invalid option: --zzzz
+ambiguous option: --ba
+Did you mean?  bar
+               baz

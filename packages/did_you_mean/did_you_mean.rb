@@ -2,7 +2,8 @@
 #
 # The spell checker behind "Did you mean?": DidYouMean::SpellChecker picks
 # the words of a dictionary that are close to a misspelled one, and
-# DidYouMean.formatter writes them under a message.
+# DidYouMean.formatter writes them under a message. optparse requires it and
+# uses both for an option it does not know.
 #
 # The suggestions CRuby adds to NameError, NoMethodError, KeyError and
 # LoadError are not here: finding them needs the receiver's methods, the

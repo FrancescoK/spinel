@@ -8,6 +8,7 @@
 # See OptionParser for documentation.
 #
 require 'shellwords'
+require 'did_you_mean'
 
 #--
 # == Developer Documentation (not for RDoc output)
