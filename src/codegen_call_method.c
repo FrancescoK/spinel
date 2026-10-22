@@ -779,10 +779,12 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* <method>.call(args) / [] -> invoke the bound function. A top-level
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, sp_int...) ABI, evaluating recv once. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      is_method_invoke(name)) {
-    int mn = method_recv_node(c, recv);
-    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  CallPlan plan = {0};
+  if (is_method_invoke(name)) plan = cplan_method_call(c, id);
+  if (plan.method_call) {
+    int mn = plan.method_node;
+    int target = plan.mi;
+    if (g_plan_check && target >= 0 && is_call_alias(name)) ucall_observe(c, id, target, c->scopes[target].class_id, 0);
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
     /* A bare `method(:sym)` in an instance method names no receiver but binds
        the enclosing self: it is receiverless in syntax only, so it must take
@@ -1543,6 +1545,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
       is_call_alias(name) &&
       method_expr_is_unbound(c, recv)) {
+    if (g_plan_check) ucall_refused(id);
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
     buf_printf(b, "); sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of UnboundMethod\")[1])); %s; })",
                name, default_value_from_compiler(c, repr_of(c, id).as_ty));
@@ -1554,8 +1557,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      them (emit_bind_call). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc >= 1 &&
       sp_streq(name, "bind_call")) {
-    int mn2 = method_recv_node(c, recv);
-    int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
+    CallPlan plan = cplan_method_call(c, id);
+    int t2 = plan.mi;
     if (t2 >= 0 && c->scopes[t2].class_id >= 0 && !c->scopes[t2].is_cmethod &&
         ty_is_object(comp_ntype(c, argv[0]))) {
       emit_bind_call(c, id, t2, argv, argc, b);

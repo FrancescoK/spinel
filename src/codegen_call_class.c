@@ -5345,11 +5345,15 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
           if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
           if (void3) buf_puts(b, "(");
-          size_t at = b->len;
-          buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
-          int open = emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, at, b);
-          emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
-          buf_puts(b, open ? "); })" : ")");
+          Buf call = {0};
+          buf_printf(&call, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
+          int open = emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, 0, &call);
+          emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, &call);
+          buf_puts(&call, open ? "); })" : ")");
+          Repr rp = repr_of(c, id);
+          emit_coerce_text(c, id, (TyKind)c->scopes[oc_mi3].ret, rp.kind == RK_BOXED ? TY_POLY : want3,
+                           CO_HOLD, call.p, "an Object method result", b);
+          free(call.p);
           if (void3) buf_printf(b, ", %s)", want_repr.kind == RK_BOXED ? "sp_box_nil()" : default_value_from_compiler(c, want3));
           return 1;
         }

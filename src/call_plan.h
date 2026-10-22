@@ -52,6 +52,7 @@ typedef enum {
 
 typedef struct {
   int mi;                  /* the method scope, or -1 */
+  int method_node;         /* bound Method source node, or -1 */
   int send_fallback;       /* boxed send: top-level def if no class arm, or -1 */
   short owner_ci;          /* the class whose chain was searched, or -1 */
   unsigned char via;       /* UC_* */
@@ -63,6 +64,7 @@ typedef struct {
                               a method reached another way (an operator's
                               stand-in, a subclass's override of a reader, a
                               reopen) */
+  unsigned char method_call; /* a Method invocation, even with no source node */
   unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
   const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
   unsigned char rfrom;     /* CP_REFUSE: CplanRefuseFrom */
@@ -70,6 +72,11 @@ typedef struct {
 } CallPlan;
 
 int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
+/* A conversion performed by a helper, separately from the enclosing call. */
+CallPlan cplan_conversion(Compiler *c, int ci, const char *name);
+CallPlan cplan_method_call(Compiler *c, int id);
+CallPlan cplan_send_arm(Compiler *c, int id);
+CallPlan cplan_exception_render(Compiler *c, int id, int ci);
 const CallPlan *cplan_user(Compiler *c, int id);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in

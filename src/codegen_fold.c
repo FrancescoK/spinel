@@ -12767,7 +12767,17 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   CallPlan dpc;
   const CallPlan *dpl = NULL;
   int mi = -1, served = 0;
-  if (g_nd_call_id >= 0) {
+  int conversion_node = g_nd_call_id;
+  const CallPlan *conversion = view_conversion(c, &conversion_node);
+  if (conversion && sp_streq(conversion->delegate, name)) {
+    dpc = *conversion;
+    dpl = &dpc;
+    mi = dpc.mi;
+    if (mi >= 0) defcls = c->scopes[mi].class_id;
+    served = 1;
+    if (g_plan_check) cplan_served("conversion");
+  }
+  else if (g_nd_call_id >= 0) {
     const char *cnm = nt_str(nt, g_nd_call_id, "name");
     if (cnm && sp_streq(cnm, name)) {
       dpc = *cplan_user(c, g_nd_call_id);

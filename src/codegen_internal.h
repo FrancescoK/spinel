@@ -2322,6 +2322,10 @@ void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node);
    saves view_mark() and view_unwind()s back to it after a refusal.
    view_depth() counts the views of nodes open. */
 int view_push(Compiler *c, int id, TyKind t);
+/* A borrowed CallPlan, erased here to avoid a circular header dependency.
+   *node is in/out; -1 matches any open conversion and receives its node. */
+int view_push_conversion(Compiler *c, int node, const void *plan);
+const void *view_conversion(Compiler *c, int *node);
 /* The effective method for this call emission; the node keeps its own name. */
 int view_push_target(Compiler *c, int node, const char *name);
 const char *view_call_name(Compiler *c, int node);
@@ -2611,7 +2615,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt, int start_node,
 int aset_range_held(Compiler *c, TyKind rt, const int *argv);
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b);
 int splice_to_ary_mi(Compiler *c, TyKind rhs_ty);
-TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty, int mi, int ta, Buf *b, Buf *out);
+TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty, int mi, int ta, Buf *b, Buf *out);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
 int scope_has_return(Compiler *c, int scope_idx);

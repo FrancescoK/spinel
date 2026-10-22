@@ -15960,7 +15960,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (tam >= 0) {
       /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
       Buf call; memset(&call, 0, sizeof call);
-      TyKind cty = emit_splice_to_ary_src(c, argv[2], rty2, tam, tv, b, &call);
+      TyKind cty = emit_splice_to_ary_src(c, id, argv[2], rty2, tam, tv, b, &call);
       buf_printf(b, "sp_RbVal _t%d = ", tv);
       emit_boxed_text(c, cty, call.p ? call.p : "", b);
       buf_puts(b, "; ");
@@ -16110,7 +16110,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (tam >= 0) {
         /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
         Buf call; memset(&call, 0, sizeof call);
-        TyKind cty = emit_splice_to_ary_src(c, argv[1], rty1, tam, tv, b, &call);
+        TyKind cty = emit_splice_to_ary_src(c, id, argv[1], rty1, tam, tv, b, &call);
         buf_printf(b, "sp_RbVal _t%d = ", tv);
         emit_boxed_text(c, cty, call.p ? call.p : "", b);
         buf_puts(b, "; ");

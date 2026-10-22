@@ -58,7 +58,7 @@
 
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
-enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6, VK_TARGET = -7 };
+enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6, VK_TARGET = -7, VK_CONVERSION = -8 };
 static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
 static int view_face = -1;   /* the innermost face entry, or -1 */
 static int view_stmt = -1;   /* the innermost statement entry, or -1 */
@@ -262,6 +262,24 @@ static int view_open_mark(int kind, int node, int v, const void *p) {
   view_stack[tok].pre = p;
   return tok;
 }
+/* The helper's own target record is scoped to its conversion emission. */
+int view_push_conversion(Compiler *c, int node, const void *plan) {
+  int tok = view_open_mark(VK_CONVERSION, node, 0, plan);
+  view_stack[tok].c = c;
+  view_nodes++;
+  view_epoch_n++;
+  return tok;
+}
+const void *view_conversion(Compiler *c, int *node) {
+  for (int i = view_sp - 1; i >= 0; i--)
+    if (view_stack[i].kind == VK_CONVERSION && view_stack[i].c == c &&
+        (*node < 0 || view_stack[i].id == *node)) {
+      *node = view_stack[i].id;
+      return view_stack[i].pre;
+    }
+  return NULL;
+}
+
 int view_push_target(Compiler *c, int node, const char *name) {
   int tok = view_open_mark(VK_TARGET, node, 0, name);
   view_stack[tok].c = c;
@@ -297,7 +315,7 @@ static void view_close(int tok) {
   if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
   if (view_stack[tok].kind == VK_FACE) { view_face = view_stack[tok].arm_saved.pd_skip; return; }
   if (view_stack[tok].kind == VK_STMT) { view_stmt = view_stack[tok].saved; return; }
-  if (view_stack[tok].kind != VK_TARGET)
+  if (view_stack[tok].kind != VK_TARGET && view_stack[tok].kind != VK_CONVERSION)
     view_write(view_stack[tok].c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
   view_nodes--;
   view_epoch_n++;

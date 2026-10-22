@@ -159,7 +159,14 @@ static int ucall_respec_ctx(Compiler *c, int id) {
 }
 
 void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
+  const CallPlan *conversion = view_conversion(c, &id);
   if (g_repr_check) repr_channel_call(c, id, mi);
+  if (conversion) {
+    int member = cplan_virtual_member(c, id, conversion, mi);
+    fprintf(stderr, "plan-check: conversion-%s: node %d %s: plan %d, codegen %d\n",
+            member ? "agree" : "conflict", id, conversion->delegate, conversion->mi, mi);
+    return;
+  }
   if (id < 0 || id >= c->node_cap || mi < 0 || mi >= c->nscopes) return;
   if (id >= g_ucobs_cap) {
     int ncap = g_ucobs_cap ? g_ucobs_cap : 1024;
@@ -173,7 +180,10 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (add) o->flags |= UO_ARM;
   /* the resolver: its method, an arm of the switch it plans, or the
      proc-form clone of its method agrees */
-  { const CallPlan *pl = cplan_user(c, id);
+  { CallPlan method = *cplan_user(c, id);
+    if (method.mi < 0) method = cplan_method_call(c, id);
+    if (method.mi < 0) method = cplan_send_arm(c, id);
+    const CallPlan *pl = &method;
     int member = pl->mi >= 0 &&
                  (cplan_virtual_member(c, id, pl, mi) || (add && pl->dispatch >= CP_SWITCH) ||
                   (c->scopes[mi].is_proc_form && scope_proc_form_of(c, pl->mi) == mi));
@@ -249,7 +259,10 @@ static void ucall_resolver_report(Compiler *c) {
     const UcallObs *o = id < g_ucobs_cap ? &g_ucobs[id] : NULL;
     int seen = o && o->seen;
     if (inf->via == UC_NONE && !seen) continue;
-    const CallPlan *pl = cplan_user(c, id);
+    CallPlan method = *cplan_user(c, id);
+    if (method.mi < 0) method = cplan_method_call(c, id);
+    if (method.mi < 0) method = cplan_send_arm(c, id);
+    const CallPlan *pl = &method;
     const char *nm = nt_str(c->nt, id, "name");
     char rs[256], xs[256];
     ucall_scope_name(c, pl->mi, rs, sizeof rs);
