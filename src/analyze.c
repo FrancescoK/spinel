@@ -42457,6 +42457,160 @@ static int desugar_redef_version_calls(Compiler *c) {
   return changed;
 }
 
+/* Marks every node under `id` (iterative: a deep tree has no depth cap). */
+static void mixin_mark_subtree(const NodeTable *nt, int id, unsigned char *mark) {
+  int cap = 256, top = 0, *stk = malloc(sizeof(int) * (size_t)cap);
+  if (!stk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  stk[top++] = id;
+  while (top > 0) {
+    int n = stk[--top];
+    if (n < 0 || n >= nt->count || mark[n]) continue;
+    mark[n] = 1;
+    const SpNode *nd = &nt->nodes[n];
+    int need = top + nd->nr;
+    for (int i = 0; i < nd->na; i++) need += nd->a[i].n;
+    if (need > cap) {
+      while (need > cap) cap *= 2;
+      stk = realloc(stk, sizeof(int) * (size_t)cap);
+      if (!stk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    for (int i = 0; i < nd->nr; i++) stk[top++] = nd->r[i].ref;
+    for (int i = 0; i < nd->na; i++)
+      for (int j = 0; j < nd->a[i].n; j++) stk[top++] = nd->a[i].ids[j];
+  }
+  free(stk);
+}
+
+/* Does `call` (receiverless, in a class body or as `C.m(M)`) mix modules
+   into class cid? Adds them to mods (at most cap), prep[i] set for a
+   prepend. */
+static int mixin_call_mods(Compiler *c, int call, int cid, int *mods, int *prep, int n, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *mn = nt_str(nt, call, "name");
+  if (!mn || !(sp_streq(mn, "include") || sp_streq(mn, "prepend"))) return n;
+  int an = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  for (int a = 0; a < ac && n < cap; a++)
+    if (nt_kind(nt, av[a]) == NK_ConstantReadNode) {
+      int mi = comp_class_index(c, nt_str(nt, av[a], "name"));
+      if (mi >= 0) { prep[n] = sp_streq(mn, "prepend"); mods[n++] = mi; }
+    }
+  return n;
+}
+
+/* The modules top-level statement `st` mixes into a class, as its index:
+   `class C; include M; prepend N; end` or `C.include(M)` / `C.prepend(M)`.
+   Answers how many went into mods (at most cap), with prep[i] set for a
+   prepend, and the class through *cls. */
+static int mixin_statement(Compiler *c, int st, int *cls, int *mods, int *prep, int cap) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  if (nt_kind(nt, st) == NK_ClassNode) {
+    const char *cn = redef_class_name(nt, st);
+    int cid = cn ? comp_class_index(c, cn) : -1;
+    if (cid < 0) return 0;
+    int body = nt_ref(nt, st, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++)
+      if (nt_kind(nt, bb[k]) == NK_CallNode && nt_ref(nt, bb[k], "receiver") < 0)
+        n = mixin_call_mods(c, bb[k], cid, mods, prep, n, cap);
+    *cls = cid;
+  }
+  else if (nt_kind(nt, st) == NK_CallNode) {
+    int r = nt_ref(nt, st, "receiver");
+    int cid = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
+    if (cid < 0) return 0;
+    n = mixin_call_mods(c, st, cid, mods, prep, n, cap);
+    *cls = cid;
+  }
+  return n;
+}
+
+/* A module the program mixes into a class by a top-level statement after
+   one that calls a method on the class's objects (`d.speak; class Dog;
+   prepend Loud; end`) is not there yet when that call runs: the call
+   reaches the method the class had then. Spinel has one method chain per
+   class, the last, so a call that this chain resolves into the module would
+   reach the module's method early. Such a call is refused: one written in a
+   statement ahead of the mixin, and, where one of those statements runs
+   code at all, one in a method body defined ahead of it, which may run
+   there (`def talk(d) = d.speak; talk(d)`). A receiverless call in an
+   instance method is a call on self. */
+static void refuse_mixin_after_calls(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int body = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
+  int n = 0;
+  const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  unsigned char *ahead = NULL;
+  int marked = 0, runs = 0;   /* statements [0, marked) are in `ahead` */
+  for (int j = 1; j < n; j++) {
+    int cid = -1, mods[16], prep[16];
+    int nm = mixin_statement(c, st[j], &cid, mods, prep, 16);
+    if (nm == 0 || is_builtin_reopen_name(c->classes[cid].name)) continue;
+    /* a reopening: the class's first definition comes ahead of the mixin,
+       or no object of it exists to call on yet (`C.include(M)` names a class
+       that is defined already) */
+    int reopen = nt_kind(nt, st[j]) == NK_CallNode;
+    for (int q = 0; q < j && !reopen; q++)
+      reopen = nt_kind(nt, st[q]) == NK_ClassNode && redef_class_name(nt, st[q]) &&
+               sp_streq(redef_class_name(nt, st[q]), c->classes[cid].name);
+    if (!reopen) continue;
+    if (!ahead) {
+      ahead = calloc((size_t)(nt->count ? nt->count : 1), 1);
+      if (!ahead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    for (; marked < j; marked++) {
+      NodeKind qk = nt_kind(nt, st[marked]);
+      if (qk != NK_ClassNode && qk != NK_ModuleNode && qk != NK_DefNode) runs = 1;
+      mixin_mark_subtree(nt, st[marked], ahead);
+    }
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      if (id >= nt->count || !ahead[id]) continue;
+      const char *name = nt_str(nt, id, "name");
+      if (!name) continue;
+      int recv = nt_ref(nt, id, "receiver");
+      Scope *ms = comp_scope_of(c, id);
+      int in_def = ms && ms->def_node >= 0;
+      if (in_def && !runs) continue;
+      /* the classes the receiver can be an object of: its type's, or for a
+         receiverless call in an instance method, self's */
+      TyKind rt = TY_UNKNOWN;
+      if (recv >= 0) rt = comp_ntype(c, recv);
+      else if (in_def && !ms->is_cmethod && ms->class_id >= 0) rt = ty_object(ms->class_id);
+      else continue;
+      int hit = -1;
+      for (int k = 0; k < c->nclasses && hit < 0; k++) {
+        if (k != cid && !is_descendant(c, k, cid)) continue;
+        if (ty_is_object(rt) ? ty_object_class(rt) != k : rt != TY_POLY) continue;
+        int d = -1, mi = comp_method_in_chain(c, k, name, &d);
+        for (int m = 0; m < nm && hit < 0; m++) {
+          int mm = comp_method_in_chain(c, mods[m], name, NULL);
+          if (mm < 0) continue;
+          /* an include changes the call where the chain finds the
+             module's method (the class's copy of it); a prepend, where
+             the chain finds the name at the class or above it, or not
+             at all */
+          if (!prep[m] ? mi >= 0 && c->scopes[mi].def_node == c->scopes[mm].def_node
+                       : mi < 0 || d == cid || is_descendant(c, cid, d))
+            hit = mods[m];
+        }
+      }
+      if (hit < 0) continue;
+      /* the module's own methods run only once it is mixed in */
+      if (in_def && ms->class_id == hit) continue;
+      char msg[600];
+      snprintf(msg, sizeof msg,
+               "a later statement mixes module %s into class %s (include or prepend), after this call, so "
+               "the call would reach the module's method before the module is there. Include or prepend "
+               "the module where the class is defined, ahead of the call.",
+               c->classes[hit].name, c->classes[cid].name);
+      free(ahead);
+      unsupported_feature(c, id, msg);
+    }
+  }
+  free(ahead);
+}
+
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
    constant, a literal, self, `&:sym`, and a lambda or `proc { }` literal
    cannot; anything else (a call, above all) may. */
@@ -53166,6 +53320,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   refuse_string_array_element_mutations(c);
   refuse_string_alias_copies(c);
   refuse_set_identity_members(c);
+  refuse_mixin_after_calls(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
