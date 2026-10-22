@@ -784,6 +784,23 @@ RE_ONE_OBJ = $(patsubst lib/regexp/%.c,build/one/regexp/%.o,$(RE_SRC))
 $(SP_RT_ONE_LIB): $(RE_ONE_OBJ) $(addprefix build/one/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
+# ...and its threaded twin, for a program that uses Thread & co. under the
+# mode (-DSP_ONE_STRING with the mt archive's -DSP_THREADS)
+SP_RT_ONE_MT_LIB = lib/libspinel_rt_one_mt.a
+
+build/one-mt/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) $(ONE_DEF) $(MT_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/one-mt/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(ONE_DEF) $(MT_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+RE_ONE_MT_OBJ = $(patsubst lib/regexp/%.c,build/one-mt/regexp/%.o,$(RE_SRC))
+
+$(SP_RT_ONE_MT_LIB): $(RE_ONE_MT_OBJ) $(addprefix build/one-mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
+	$(AR_DET) ar rcs $@ $^
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
@@ -998,7 +1015,7 @@ wasm-test: $(SPINEL) wasm-rt
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
-regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_ONE_LIB)
+regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_ONE_LIB) $(SP_RT_ONE_MT_LIB)
 
 # ---- In-tree developer tools ----
 

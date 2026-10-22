@@ -523,11 +523,11 @@ static const char *runtime_archive(const char *csrc, int threads, int wasi, int 
     return NULL;
   }
   int one = strstr(csrc, "/* SPINEL_ONE_STRING */") != NULL;
-  if (one && (*cext || threads || wasi)) {
-    fprintf(stderr, "spinel: --string-repr=handle does not link with threads, C extensions or wasm yet\n");
+  if (one && (*cext || wasi)) {
+    fprintf(stderr, "spinel: --string-repr=handle does not link with C extensions or wasm yet\n");
     return NULL;
   }
-  if (one) return "libspinel_rt_one.a";
+  if (one) return threads ? "libspinel_rt_one_mt.a" : "libspinel_rt_one.a";
   return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 
