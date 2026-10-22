@@ -492,7 +492,9 @@ and `defined?(Socket::X)` ask the same table.
 **Class methods.** `Socket.gethostname`, `Socket.getaddrinfo`, `Socket.pair` /
 `.socketpair`, `Socket.new(domain, type, protocol)`,
 `Socket.sockaddr_in(port, host)` / `.pack_sockaddr_in`,
-`Socket.sockaddr_un(path)` / `.pack_sockaddr_un`, `Socket.unpack_sockaddr_in`.
+`Socket.sockaddr_un(path)` / `.pack_sockaddr_un`, `Socket.unpack_sockaddr_in`,
+`Socket.unix(path)` and `Socket.tcp(host, port)` (without a block, a local
+address or options; they answer a `Socket`, as CRuby's do).
 
 **Addrinfo.** `Addrinfo.tcp` / `.udp` / `.ip` / `.unix`, and `#ip_address`,
 `#ip_port`, `#afamily`, `#pfamily`, `#socktype`, `#protocol`, `#unix_path`,
@@ -526,7 +528,8 @@ still works.
 - `SOCKSSocket` does not exist (CRuby only defines it when built with the
   SOCKS library, so a program cannot rely on it either).
 - Missing class methods: `.open` with a block (which closes the socket when
-  the block returns), `.gethostbyname`, `Socket.getservbyname`.
+  the block returns), and `Socket.tcp` / `Socket.unix` with one (both are
+  refused at compile time), `.gethostbyname`, `Socket.getservbyname`.
 - `TCPServer.new` takes no backlog argument (the listen backlog is fixed);
   `TCPSocket.new` has no four-argument local-address form.
 - A class Spinel recognizes but has not implemented reports the missing

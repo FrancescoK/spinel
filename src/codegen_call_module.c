@@ -1658,6 +1658,24 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       if (sp_streq(name, "gethostname") && argc == 0) {
         buf_puts(b, "sp_sock_gethostname()"); return 1;
       }
+      /* Socket.unix(path) / Socket.tcp(host, port): the connection
+         UNIXSocket.new / TCPSocket.new make, as a Socket (#9934). The block
+         form, a local address and the timeout options are not served. */
+      if (sp_streq(name, "unix") || sp_streq(name, "tcp")) {
+        int tcp = sp_streq(name, "tcp");
+        if (argc != (tcp ? 2 : 1) || nt_ref(nt, id, "block") >= 0) {
+          unsupported_feature(c, id, tcp ? "Socket.tcp with a block, a local address or options; "
+                                            "use TCPSocket.new(host, port)"
+                                          : "Socket.unix with a block; use UNIXSocket.new(path)");
+          buf_puts(b, "NULL");
+          return 1;
+        }
+        buf_puts(b, tcp ? "sp_sock_tcp_socket(" : "sp_sock_unix_socket(");
+        emit_str_expr(c, argv[0], b);
+        if (tcp) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
+        buf_puts(b, ")");
+        return 1;
+      }
       /* Socket.pair / .socketpair -> [end0, end1]; the runtime creates both on
          the first call and hands back the second on the next. */
       if ((is_socket_pair_alias(name)) && argc >= 2) {

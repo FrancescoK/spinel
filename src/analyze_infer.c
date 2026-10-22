@@ -4392,6 +4392,8 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Socket") && sp_feature_required("socket")) {
       if (sp_streq(name, "gethostname") && argc == 0) { *out = TY_STRING; return 1; }
+      /* Socket.unix / Socket.tcp: a connected Socket handle (#9934) */
+      if ((sp_streq(name, "unix") && argc == 1) || (sp_streq(name, "tcp") && argc == 2)) { *out = TY_IO; return 1; }
       if ((is_socket_pair_alias(name)) && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
       if (sp_streq(name, "getaddrinfo") && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
       if (sp_streq(name, "tcp_server_sockets") && (argc == 1 || argc == 2) &&
