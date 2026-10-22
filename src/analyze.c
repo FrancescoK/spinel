@@ -52428,10 +52428,11 @@ static void an_phase_value_types(Compiler *c) {
       /* int/float/bool need no GC; string fields are heap pointers but get
          GC-rooted per value-type local (the field slot is a stable root). */
       /* (one String representation: a String ivar is its handle, a pointer
-         as a String's bytes are, and a copy of the struct names the same
-         String, so a change through either shows in both) */
-      if (g_one_string && t == TY_STRBUF) continue;
-      if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING) { scalar = 0; break; }
+         as a String's bytes are; the pass below keeps it by value only when
+         every write gives it a frozen literal) */
+      int one_str = g_one_string && t == TY_STRBUF;
+      if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING && !one_str) { scalar = 0; break; }
+      if (one_str) continue;
       /* an in-place-mutated string ivar (`@s << x` in a method) needs the
          mutation visible through every reference; a by-value struct copy
          would swallow it (#3227 P4) */
@@ -52489,6 +52490,20 @@ static void an_phase_value_types(Compiler *c) {
           c->classes[q].is_value_type = 0;
           c->classes[q].freeze_observed = 1;
         }
+      }
+    }
+    /* (one String representation: a String ivar is by value only when
+       every write gives it a frozen literal, which no name can change) */
+    if (g_one_string && sp_streq(ty, "InstanceVariableWriteNode")) {
+      Scope *s = comp_scope_of(c, id);
+      int q = s ? s->class_id : -1;
+      const char *ivn = nt_str(c->nt, id, "name");
+      int val = nt_ref(c->nt, id, "value");
+      if (q >= 0 && q < c->nclasses && c->classes[q].is_value_type && ivn &&
+          (val < 0 || nt_kind(c->nt, val) != NK_StringNode)) {
+        ClassInfo *qc = &c->classes[q];
+        for (int j = 0; j < qc->nivars; j++)
+          if (sp_streq(qc->ivars[j], ivn) && qc->ivar_types[j] == TY_STRBUF) { qc->is_value_type = 0; break; }
       }
     }
     /* immutable check: an ivar write outside `initialize` defeats value type */
