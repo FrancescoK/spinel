@@ -29176,48 +29176,55 @@ int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kw
   return ta;
 }
 
-/* The (separator, limit, chomp) arguments of sp_File_gets_sep and
-   sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
-   typed Integer is the limit, a `chomp:` keyword the flag, anything else the
-   separator; an absent one is "\n", 0 or 0. Each comes out as its own C
-   expression, for a caller that has to bind them once. `strict` (the block
-   form of each_line) reads only a first argument typed String or nil as the
-   separator and leaves any other alone, as that form always did. */
-void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
+/* The role each argument takes: the separator, the limit, or a lone
+   boxed variable that is either as its value is an Integer or not. With
+   `glone`, a lone Integer that may be nil is set apart the same way: CRuby
+   takes its nil for the separator (read to the end), an Integer for the
+   limit. Without it (the iterators) that argument is the limit. */
+static void gets_arg_roles(Compiler *c, const int *argv, int argc, int strict, int *gsep, int *glim, int *gpoly, int *glone) {
   const NodeTable *nt = c->nt;
-  int gsep = -1, glim = -1, gpoly = -1;
-  Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  *gsep = -1; *glim = -1; *gpoly = -1;
+  if (glone) *glone = -1;
+  int npos = 0;
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) npos++;
   int pos = 0;   /* position among the positional arguments */
   for (int k = 0; k < argc; k++) {
-    const char *kty = nt_type(nt, argv[k]);
-    if (kty && sp_streq(kty, "KeywordHashNode")) {
-      int cv = struct_kwarg_value(c, argv[k], "chomp");
-      emit_kw_flag(c, cv, &gchomp);
-      continue;
-    }
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) continue;
     Repr ar = repr_of(c, argv[k]);
     TyKind at = ar.as_ty;
-    if (at == TY_INT) glim = argv[k];
+    if (at == TY_INT && glone && npos == 1 && node_has_oint_form(c, argv[k])) *glone = argv[k];
+    else if (at == TY_INT) *glim = argv[k];
     /* a lone boxed variable is the limit or the separator as its value is
        an Integer or not (an Integer parameter under --int-overflow=promote) */
-    else if (ar.kind == RK_BOXED && pos == 0 && argc == 1 && nt_kind(nt, argv[k]) == NK_LocalVariableReadNode) gpoly = argv[k];
+    else if (ar.kind == RK_BOXED && pos == 0 && argc == 1 && nt_kind(nt, argv[k]) == NK_LocalVariableReadNode) *gpoly = argv[k];
     /* a second positional argument is the limit, whatever its static type:
        `gets(sep, limit)` forwarded through a splat reads both boxed, and
        taking the second for the separator read to the end */
-    else if (!strict && pos == 1) glim = argv[k];
-    else if (!strict) gsep = argv[k];
-    else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
+    else if (!strict && pos == 1) *glim = argv[k];
+    else if (!strict) *gsep = argv[k];
+    else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) *gsep = argv[k];   /* a nil after it is no limit */
     /* a boxed limit after the separator (an Integer under
        --int-overflow=promote): it was dropped, and the line read whole */
-    else if (pos == 1 && ar.kind == RK_BOXED) glim = argv[k];
+    else if (pos == 1 && ar.kind == RK_BOXED) *glim = argv[k];
     pos++;
   }
+}
+
+/* gets_sep_arg_texts for the roles gets_arg_roles found. `optional` renders
+   the limit as an sp_oint, nil when there is none, so that an explicit 0
+   stays apart from an absent limit (IO#gets/readline). */
+static void gets_sep_arg_texts_impl(Compiler *c, const int *argv, int argc, int gsep, int glim, int gpoly, int strict, int optional, Buf *sep, Buf *lim, Buf *chomp) {
+  const NodeTable *nt = c->nt;
+  Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) emit_kw_flag(c, struct_kwarg_value(c, argv[k], "chomp"), &gchomp);
   if (gpoly >= 0) {
     int tmp; Buf *hb = conv_hold_begin(sep, &tmp);
     Buf *ob = hb ? hb : sep;
     buf_puts(ob, "sp_poly_gets_sep("); emit_expr(c, gpoly, ob); buf_puts(ob, ")");
     if (hb) conv_hold_end(tmp);
-    buf_puts(lim, "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
+    buf_puts(lim, optional ? "sp_poly_gets_olim(" : "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
   }
   else if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
   if (glim >= 0 && repr_of(c, glim).kind == RK_BOXED) {
@@ -29225,15 +29232,44 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     int tl = ++g_tmp;
     buf_printf(lim, "({ sp_RbVal _t%d = ", tl);
     emit_expr(c, glim, lim);
-    buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d); })", tl, tl);
+    if (optional)
+      buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_arg_int_chk(_t%d)); })", tl, tl);
+    else
+      buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d); })", tl, tl);
   }
   else if (glim >= 0) {
     /* the block form never raised for a nil limit, and keeps not raising */
-    if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
+    if (optional && repr_of(c, glim).as_ty == TY_NIL) {
+      buf_puts(lim, "({ (void)("); emit_expr(c, glim, lim); buf_puts(lim, "); sp_oint_nil(); })");
+    }
+    /* a limit after a separator that may be nil (a nilable Integer) is its
+       own sp_oint: nil there is no limit */
+    else if (optional && node_has_oint_form(c, glim))
+      emit_oint_expr(c, glim, TY_INT, lim);
+    else {
+      if (optional) buf_puts(lim, "sp_oint_of(");
+      if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
+      if (optional) buf_puts(lim, ")");
+    }
   }
-  else if (gpoly < 0) buf_puts(lim, "0");
+  else if (gpoly < 0) buf_puts(lim, optional ? "sp_oint_nil()" : "0");
   buf_puts(chomp, gchomp.p ? gchomp.p : "0");
   free(gchomp.p);
+}
+
+/* The (separator, limit, chomp) arguments of sp_File_gets_sep and
+   sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
+   typed Integer is the limit, a `chomp:` keyword the flag, anything else the
+   separator; an absent one is "\n", 0 or 0. Each comes out as its own C
+   expression, for a caller that has to bind them once. `strict` (the block
+   form of each_line) reads only a first argument typed String or nil as the
+   separator and leaves any other alone, as that form always did.
+   The limit is a plain integer, 0 for none, as the iterators that call
+   this take it. */
+void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
+  int gsep, glim, gpoly;
+  gets_arg_roles(c, argv, argc, strict, &gsep, &glim, &gpoly, NULL);
+  gets_sep_arg_texts_impl(c, argv, argc, gsep, glim, gpoly, strict, 0, sep, lim, chomp);
 }
 
 /* Do a line reader's arguments come through a splat or a `**`? Their count
@@ -29244,10 +29280,35 @@ int io_line_args_spread(const NodeTable *nt, const int *argv, int argc) {
   return nt_argv_has_splat(nt, argv, argc) || nt_argv_has_kwsplat(nt, argv, argc);
 }
 
-void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
+/* The sp_File_ reader for gets / readline: the limit pair when the call
+   can pass a limit (an sp_oint, which tells an explicit 0 from none), the
+   plain separator readers otherwise. */
+const char *io_line_reader(const char *name, int has_limit) {
+  if (sp_streq(name, "readline")) return has_limit ? "readline_limit" : "readline_sep";
+  return has_limit ? "gets_limit" : "gets_sep";
+}
+
+/* IO#gets / IO#readline on the handle `r`, `sp_File_<reader>(r, sep,
+   limit, chomp)`, the reader as io_line_reader picks it: an explicit 0
+   limit answers an empty String and reads nothing. readline raises
+   EOFError at end of file (#2817). */
+void emit_io_line_read(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  int gsep, glim, gpoly, glone;
+  gets_arg_roles(c, argv, argc, 0, &gsep, &glim, &gpoly, &glone);
+  int optional = glim >= 0 || gpoly >= 0 || glone >= 0;
   Buf s, l, k; memset(&s, 0, sizeof s); memset(&l, 0, sizeof l); memset(&k, 0, sizeof k);
-  gets_sep_arg_texts(c, argv, argc, 0, &s, &l, &k);
-  buf_printf(b, "%s, %s, %s", s.p, l.p, k.p);
+  gets_sep_arg_texts_impl(c, argv, argc, gsep, glim, gpoly, 0, optional, &s, &l, &k);
+  if (glone >= 0) {
+    /* the lone nilable Integer, read once after the handle: nil is the
+       separator that reads to the end, an Integer the limit */
+    int tr = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_oint _t%d = ", tr, r, tr, tn);
+    emit_oint_expr(c, glone, TY_INT, b);
+    buf_printf(b, "; sp_File_%s(_t%d, _t%d.nil ? NULL : \"\\n\", _t%d, %s); })",
+               io_line_reader(name, 1), tr, tn, tn, k.p);
+  }
+  else
+    buf_printf(b, "sp_File_%s(%s, %s, %s, %s)", io_line_reader(name, optional), r, s.p, l.p, k.p);
   free(s.p); free(l.p); free(k.p);
 }
 

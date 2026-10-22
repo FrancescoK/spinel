@@ -2247,6 +2247,23 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
 sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, sp_bool chomp);
 sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, sp_bool chomp);
 const char *sp_File_readline_sep(sp_File *f, const char *sep, sp_int limit, sp_bool chomp);
+/* gets/readline distinguish an explicit zero from an omitted or nil limit. */
+const char *sp_File_gets_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sep);
+  if (!limit.nil && limit.v == 0) {
+    SP_IO_OPEN(f);
+    char *r = sp_str_alloc(0);
+    r[0] = 0;
+    if (f->bin_flag) sp_str_mark_binary(r);
+    return r;
+  }
+  return sp_File_gets_sep(f, sep, limit.nil ? 0 : limit.v, chomp);
+}
+const char *sp_File_readline_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sep);
+  const char *r = sp_File_gets_limit(f, sep, limit, chomp);
+  if (!r) sp_raise_cls("EOFError", "end of file reached");
+  return r;
+}
+
 const char *sp_File_getc(sp_File *f);
 const char *sp_File_readchar(sp_File *f);
 sp_oint sp_File_getbyte(sp_File *f);
