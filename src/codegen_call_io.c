@@ -1659,11 +1659,15 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   }
   if (bufn) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_str_check_mutable(_t%d.v.s); ", th[2], th[2]);
   int tpr = ++g_tmp;
-  buf_printf(b, "const char *_t%d = %s(_t%d, _t%d, _t%d); ", tpr, io_pread_entry(argc), tio, tfirst, toff);
+  /* a rebound buffer reads through the output-buffer form and is written
+     back before the EOFError, as the typed arm does: the end of the stream
+     leaves it "". Its length 0 then takes no shortcut (sp_pread_check) */
+  buf_printf(b, "const char *_t%d = %s(_t%d, _t%d, _t%d); ", tpr, bufn ? "sp_File_pread_or_nil" : io_pread_entry(argc), tio, tfirst, toff);
   if (bufn) {
     emit_local_ref(c, argv[2], bufn, b);
-    if (bt == TY_STRING) buf_printf(b, " = _t%d; ", tpr);
-    else buf_printf(b, " = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", tpr, tpr);
+    if (bt == TY_STRING) buf_printf(b, " = _t%d ? _t%d : sp_str_empty; ", tpr, tpr);
+    else buf_printf(b, " = sp_box_str(_t%d ? _t%d : sp_str_empty); ", tpr, tpr);
+    buf_printf(b, "if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); ", tpr);
   }
   buf_printf(b, "_t%d; })", tpr);
   return 1;

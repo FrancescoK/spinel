@@ -2011,6 +2011,23 @@ SP_NORETURN void sp_file_raise_errno(const char *op, const char *path) {SP_GC_RO
                sp_sprintf("%s @ %s - %s", strerror(e), op, path ? path : ""));
 }
 
+void sp_pread_check(sp_File *f, sp_int len, sp_bool outbuf) {
+  if (len == 0 && f && !outbuf) return;
+  SP_IO_OPEN(f);
+  const char *m = f->mode;
+  if (m && (m[0] == 'w' || m[0] == 'a')) {
+    for (const char *q = m + 1; *q && *q != ':'; q++)
+      if (*q == '+') return;
+    sp_raise_cls("IOError", "not opened for reading");
+  }
+}
+
+SP_NORETURN void sp_pread_raise_errno(sp_File *f) {
+  int e = errno;
+  if (f->path) sp_file_raise_errno("rb_io_pread", f->path);
+  sp_raise_cls(sp_errno_class_name(e), strerror(e));
+}
+
 sp_bool sp_file_owned(const char *path) {
   struct stat st;
   return path && stat(path, &st) == 0 && st.st_uid == geteuid();
