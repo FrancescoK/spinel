@@ -987,6 +987,11 @@ regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 # A tool that no longer fits the subset breaks the build, which keeps them honest.
 TOOL_NAMES = doctor reduce flatten diff bisect cext-build
 TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
+# A tool links the bundled packages it requires (cext-build: json and tmpdir;
+# spin: tmpdir), so their objects come first. Without them, `make
+# bin/spinel-cext-build` in a fresh tree fails in the link, and so can a
+# parallel `make`.
+TOOL_LINK_OBJS = $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 
 tools: $(TOOL_BINS) bin/spin
 
@@ -1004,14 +1009,14 @@ build/spin_version.rb: build/csrc/spinel_rev.h
 	  echo "SPIN_BUILD_REV = \"$$(sed -n 's/^#define SPINEL_BUILD_REV "\(.*\)"/\1/p' build/csrc/spinel_rev.h)\""; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
-bin/spin: tools/spin.rb tools/spin/toml.rb build/spin_version.rb $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(RBS_EXTRACT_TARGET)
+bin/spin: tools/spin.rb tools/spin/toml.rb build/spin_version.rb $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(RBS_EXTRACT_TARGET) $(TOOL_LINK_OBJS)
 	$(SPINEL) -I build tools/spin.rb -o bin/spin
 	@if [ -n "$(RBS_EXTRACT_TARGET)" ]; then \
 	  cp -f $(RBS_EXTRACT_BIN) bin/spinel_rbs_extract; \
 	  echo "$(RBS_EXTRACT_BIN) -> bin/spinel_rbs_extract"; \
 	fi
 
-bin/spinel-%: tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
+bin/spinel-%: tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(TOOL_LINK_OBJS)
 	@mkdir -p bin
 	$(SPINEL) $< -o $@
 bin/spinel-bisect: tools/bisect_search.rb
