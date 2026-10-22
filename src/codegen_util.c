@@ -7214,7 +7214,7 @@ void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b) {
   ClassInfo *vc = &c->classes[ty_object_class(t)];
   const char *sep = "";
   for (int i = 0; i < vc->nivars; i++)
-    if (vc->ivar_types[i] == TY_STRING) {
+    if (vc->ivar_types[i] == TY_STRING || vc->ivar_types[i] == TY_STRBUF) {
       buf_printf(b, "%sSP_GC_ROOT(_t%d.iv_%s);", sep, tmp, iv_c(vc->ivars[i] + 1));
       sep = " ";
     }

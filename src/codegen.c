@@ -3385,7 +3385,7 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
        field so its referent survives GC. The field slot is a stable root. */
     ClassInfo *vc = &c->classes[ty_object_class(t)];
     for (int i = 0; i < vc->nivars; i++)
-      if (vc->ivar_types[i] == TY_STRING)
+      if (vc->ivar_types[i] == TY_STRING || vc->ivar_types[i] == TY_STRBUF)
         buf_printf(b, "    SP_GC_ROOT(lv_%s.iv_%s);\n", name, iv_c(vc->ivars[i] + 1));
   }
   free(cty.p);

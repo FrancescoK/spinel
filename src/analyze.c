@@ -52427,6 +52427,10 @@ static void an_phase_value_types(Compiler *c) {
       TyKind t = ci->ivar_types[j];
       /* int/float/bool need no GC; string fields are heap pointers but get
          GC-rooted per value-type local (the field slot is a stable root). */
+      /* (one String representation: a String ivar is its handle, a pointer
+         as a String's bytes are, and a copy of the struct names the same
+         String, so a change through either shows in both) */
+      if (g_one_string && t == TY_STRBUF) continue;
       if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING) { scalar = 0; break; }
       /* an in-place-mutated string ivar (`@s << x` in a method) needs the
          mutation visible through every reference; a by-value struct copy

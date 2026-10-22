@@ -2822,7 +2822,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
         else if (ty_is_object(at) && comp_ty_value_obj(c, at)) {
           ClassInfo *vc = &c->classes[ty_object_class(at)];
           for (int i = 0; i < vc->nivars; i++)
-            if (vc->ivar_types[i] == TY_STRING) {
+            if (vc->ivar_types[i] == TY_STRING || vc->ivar_types[i] == TY_STRBUF) {
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "SP_GC_ROOT(_t%d.iv_%s);\n", atmp[k], iv_c(vc->ivars[i] + 1));
             }
