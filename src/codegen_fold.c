@@ -11115,8 +11115,12 @@ typedef struct {
 
 static void arg_bind_begin(Compiler *c, Scope *m, const int *argv, int argc, ArgBind *B) {
   const NodeTable *nt = c->nt;
-  memset(B, 0, sizeof *B);
+  /* the layout is left as it lies: arg_layout sets every field of it when
+     a binding takes it (state 2), and nothing reads it otherwise. Zeroing
+     its keyword plan (1.4 KB) per parameter ask was 4% of a sampled window
+     of a Rails program's share pass. */
   B->argv = argv; B->argc = argc; B->pos_argc = argc; B->kwh = -1; B->splat = -1;
+  B->nsplat = 0; B->state = 0;
   if (!m) return;
   if (nt_argv_kwh(nt, argv, argc) >= 0) { B->kwh = argv[argc - 1]; B->pos_argc--; }
   for (int k = 0; k < B->pos_argc; k++) {
