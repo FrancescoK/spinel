@@ -5511,6 +5511,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(
    ready_error], or nil when the timeout expires first. A nil array stands for
    "watch nothing", so all three nil is just a sleep. */
 sp_File *(*sp_user_to_io_hook)(sp_RbVal) = NULL;
+const char *sp_poly_class_name(sp_RbVal v);   /* lib/sp_poly_cold.c */
 static sp_File *sp_select_io_of(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) return (sp_File *)v.v.p;
   /* A user object that answers #to_io names the handle to wait on -- CRuby
@@ -5519,10 +5520,11 @@ static sp_File *sp_select_io_of(sp_RbVal v) {
     sp_File *f = sp_user_to_io_hook(v);
     if (f) return f;
   }
-  sp_raise_cls("TypeError",
-               sp_sprintf("no implicit conversion of %s into IO",
-                          (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && sp_obj_cls_name_fn)
-                            ? sp_obj_cls_name_fn(v.cls_id) : "nil"));
+  /* CRuby names nil, true and false by themselves, anything else by its class */
+  const char *kind = v.tag == SP_TAG_NIL ? "nil"
+                   : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
+                   : sp_poly_class_name(v);
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into IO", kind));
   return NULL;
 }
 /* A read-set IO stdio has already buffered input for is readable whatever
@@ -6229,7 +6231,6 @@ static int sp_enc_kw_replace(sp_RbVal v) {   /* `invalid: :replace` / `undef: :r
   return v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_sym_name_fn((sp_sym)v.v.i) &&
          !strcmp(sp_sym_name_fn((sp_sym)v.v.i), "replace");
 }
-const char *sp_poly_class_name(sp_RbVal v);   /* lib/sp_poly_cold.c */
 /* A String argument as CRuby's StringValue takes it: a String, a shared
    String's bytes, or a user object's #to_str; anything else is the TypeError */
 static const char *sp_enc_str_arg(sp_RbVal v) {
