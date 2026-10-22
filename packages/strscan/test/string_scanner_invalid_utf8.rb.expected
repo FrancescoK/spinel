@@ -1,0 +1,6 @@
+scan_until: ArgumentError: invalid byte sequence in UTF-8
+scan: ArgumentError: invalid byte sequence in UTF-8
+check: ArgumentError: invalid byte sequence in UTF-8
+str: "a"
+bin: "abc"
+valid: "añb"
