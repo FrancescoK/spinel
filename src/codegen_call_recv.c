@@ -17868,32 +17868,35 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                     " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments\"), sp_box_nil()))",
                  tkeys, tsv, tkeys, tkeys, tsv, tkeys, tkeys);
     }
-    else if (g_poly_builtin_arm && (argc == 1 || argc == 2)) {
-      /* the builtin arm of a dispatch a user class owning `slice` opened: the
-         value is a builtin here, but the `[]` re-entry below would ask that
-         class's `[]` too and find no arm for an Array (#5114) */
-      if (argc == 1) {
-        buf_printf(b, "sp_poly_index_poly(_t%d, ", tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      }
-      else {
-        buf_printf(b, "sp_poly_slice(_t%d, sp_poly_arg_int_chk(", tsv); emit_boxed(c, argv[0], b);
-        buf_puts(b, "), sp_poly_arg_int_chk("); emit_boxed(c, argv[1], b); buf_puts(b, "))");
-      }
-    }
     else if (argc == 1 || argc == 2) {
       /* only a String, a Symbol and an Array have slice: through `[]` nil
-         raised naming `[]` and an Integer answered a bit */
+         raised naming `[]` and an Integer answered a bit. The builtin arm
+         of a dispatch a user class owning `slice` opened is no user class,
+         but any other builtin too (`42.slice(1)`), so it takes the test */
       buf_printf(b, "(_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d) ||"
                     " (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id))) ? ",
                  tsv, tsv, tsv, tsv, tsv);
-      int rmark = g_n_argov;
-      view_bind(recv, "_t%d", tsv);
-      char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]");
-      Buf ib; memset(&ib, 0, sizeof ib); emit_call(c, id, &ib);
-      nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
-      view_unbind(rmark);
-      buf_puts(b, ib.p ? ib.p : "sp_box_nil()");
-      free(ib.p);
+      if (g_poly_builtin_arm) {
+        /* there the `[]` re-entry below would ask that class's `[]` too
+           and find no arm for an Array (#5114) */
+        if (argc == 1) {
+          buf_printf(b, "sp_poly_index_poly(_t%d, ", tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        }
+        else {
+          buf_printf(b, "sp_poly_slice(_t%d, sp_poly_arg_int_chk(", tsv); emit_boxed(c, argv[0], b);
+          buf_puts(b, "), sp_poly_arg_int_chk("); emit_boxed(c, argv[1], b); buf_puts(b, "))");
+        }
+      }
+      else {
+        int rmark = g_n_argov;
+        view_bind(recv, "_t%d", tsv);
+        char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]");
+        Buf ib; memset(&ib, 0, sizeof ib); emit_call(c, id, &ib);
+        nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
+        view_unbind(rmark);
+        buf_puts(b, ib.p ? ib.p : "sp_box_nil()");
+        free(ib.p);
+      }
       buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg_args(\"slice\", _t%d, %d, (sp_RbVal[]){", tsv, argc);
       for (int i = 0; i < argc; i++) {
         char tn[24]; snprintf(tn, sizeof tn, "_t%d", tav[i]);
