@@ -3648,12 +3648,14 @@ sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVa
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = SPL("each");
   return e;
 }
-/* Blockless Dir.foreach: each run reads its own entries, so #to_a and
-   #rewind do not borrow another run's cursor. Path coercion, opening and
-   reading are deferred until the first pull. */
+/* Blockless Dir.foreach and Dir.each_child: each run reads its own entries,
+   so #to_a and #rewind do not borrow another run's cursor. Path coercion,
+   opening and reading are deferred until the first pull. each_child's run
+   leaves out "." and "..". */
 typedef struct {
   sp_RbVal path, encoding;
   const char *(*get_path)(sp_RbVal);
+  int children;
 } sp_DirForeachCap;
 static void sp_dir_foreach_scan(void *p) {
   sp_DirForeachCap *cap = (sp_DirForeachCap *)p;
@@ -3679,6 +3681,7 @@ static void sp_dir_foreach_gen(sp_Fiber *f) {
   const char *name = NULL;
   SP_GC_ROOT_STR(name);
   while ((name = sp_Dir_read(dir)) != NULL) {
+    if (cap->children && (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)) continue;
     if (binary) sp_str_as_binary(name);
     sp_PolyArray_push(names, sp_box_str(name));
   }
@@ -3689,14 +3692,15 @@ static void sp_dir_foreach_gen(sp_Fiber *f) {
 const char *sp_poly_inspect(sp_RbVal v);   /* lib/sp_poly_cold.c */
 const char *sp_poly_to_s(sp_RbVal v);      /* lib/sp_poly_cold.c */
 sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
-                                  const char *(*get_path)(sp_RbVal)) {
+                                  const char *(*get_path)(sp_RbVal), int children) {
   SP_GC_ROOT_RBVAL(path); SP_GC_ROOT_RBVAL(encoding);
   sp_DirForeachCap *cap = (sp_DirForeachCap *)sp_gc_alloc(sizeof *cap, NULL, sp_dir_foreach_scan);
   SP_GC_ROOT(cap);
-  cap->path = path; cap->encoding = encoding; cap->get_path = get_path;
+  cap->path = path; cap->encoding = encoding; cap->get_path = get_path; cap->children = children;
   sp_Enumerator *e = sp_Enumerator_new_gen(sp_dir_foreach_gen, cap, sp_box_nil()); SP_GC_ROOT(e);
-  /* inspects as CRuby's: Dir:foreach("path") or Dir:foreach("path", encoding: NAME) */
-  const char *lbl = sp_str_concat(SPL("foreach("), sp_poly_inspect(path)); SP_GC_ROOT_STR(lbl);
+  /* inspects as CRuby's: Dir:foreach("path") or Dir:foreach("path", encoding: NAME),
+     Dir:each_child(...) likewise */
+  const char *lbl = sp_str_concat(children ? SPL("each_child(") : SPL("foreach("), sp_poly_inspect(path)); SP_GC_ROOT_STR(lbl);
   /* the prefix goes into the rooted slot before to_s may allocate */
   if (encoding.tag != SP_TAG_NIL) {
     lbl = sp_str_concat(lbl, SPL(", encoding: "));

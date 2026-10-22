@@ -755,11 +755,14 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
-    /* Blockless foreach retains its arguments for a lazy generator run. */
-    if (sp_streq(name, "foreach") && nt_ref(nt, id, "block") < 0) {
+    /* Blockless foreach and each_child retain their arguments for a lazy
+       generator run; each_child's leaves out "." and "..". */
+    int children = sp_streq(name, "each_child");
+    if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0) {
       /* a splat's length is only known when it runs: refused, not guessed */
       if (nt_argv_has_splat(nt, argv, argc)) {
-        unsupported_feature(c, id, "Dir.foreach with a splatted argument and no block");
+        unsupported_feature(c, id, children ? "Dir.each_child with a splatted argument and no block"
+                                             : "Dir.foreach with a splatted argument and no block");
         buf_puts(b, "NULL");
         return 1;
       }
@@ -773,7 +776,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "({ sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_dir_foreach_enum(_t%d, ", tp, tp);
         if (ev >= 0) emit_boxed(c, ev, b); else buf_puts(b, "sp_box_nil()");
-        buf_puts(b, ", sp_poly_arg_path); })"); return 1;
+        buf_printf(b, ", sp_poly_arg_path, %d); })", children); return 1;
       }
     }
     if ((is_directory_entries(name)) && argc == 1) {

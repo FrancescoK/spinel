@@ -1435,6 +1435,11 @@ const char *dir_surface_alias(const char *n, int blockless_iter) {
   }
   return NULL;
 }
+/* Dir.foreach and Dir.each_child: without a block each answers an Enumerator
+   over the entries (see sp_dir_foreach_enum). */
+int is_dir_blockless_iter(const char *n) {
+  return dir_surface_alias(n, 1) != NULL;
+}
 
 int is_kernel_module_name(const char *n) { return n && sp_streq(n, "Kernel"); }
 
