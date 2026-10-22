@@ -802,12 +802,11 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     if ((sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir")) && argc >= 1) {
       if (sp_streq(name, "mkdir") && argc == 2) {
-        /* the permission mode is unused on this backend but still validated:
-           Dir.mkdir(path, nil) is CRuby's TypeError, not a created directory */
+        /* Convert the permission mode before creating the directory. */
         int tp = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tp); emit_path_expr(c, argv[0], b);
-        buf_puts(b, "; (void)("); emit_int_expr_conv(c, argv[1], b);
-        buf_printf(b, "); sp_dir_mkdir(_t%d); })", tp);
+        buf_printf(b, "; sp_int _tm%d = ", tp); emit_int_expr_conv(c, argv[1], b);
+        buf_printf(b, "; sp_dir_mkdir_mode(_t%d, _tm%d); })", tp, tp);
         return 1;
       }
       /* the block form's switch and restore, spliced in by desugar_dir_surface,

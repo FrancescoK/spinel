@@ -17945,6 +17945,7 @@ const char *sp_dir_pwd(void);
    Windows _-prefixed variants take a single path argument); each returns
    0 on success, matching CRuby's `Dir.mkdir` etc. */
 sp_int sp_dir_mkdir(const char *path);
+sp_int sp_dir_mkdir_mode(const char *path, sp_int mode);
 sp_int sp_dir_rmdir(const char *path);
 sp_int sp_dir_chdir(const char *path);
 sp_int sp_dir_chdir0(const char *path);  /* the block form's label */
