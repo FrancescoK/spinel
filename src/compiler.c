@@ -2427,6 +2427,21 @@ int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_c
     if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
   return 0;
 }
+/* Whether a strict subclass of class_id answers `name` with a method or a
+   reader of its own chain: a slot typed class_id may hold that subclass,
+   so a call there dispatches at run time (#4023). */
+int comp_subclass_answers(Compiler *c, int class_id, const char *name) {
+  if (class_id < 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == class_id) continue;
+    int anc = 0;
+    for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
+      if (p2 == class_id) { anc = 1; break; }
+    if (anc && (comp_method_in_chain(c, k, name, NULL) >= 0 ||
+                comp_reader_in_chain(c, k, name, NULL))) return 1;
+  }
+  return 0;
+}
 int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   /* `name` is the attribute's base, and an alias of it is the reader's:
      `alias to_s name` defines no `to_s=`, so it is not followed here */

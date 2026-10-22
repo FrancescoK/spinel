@@ -10334,12 +10334,54 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   }
 }
 
+/* The arms of a boxed `when` pattern whose class defines #===: that method
+   with the case subject, ahead of the builtin case equality, which answered
+   the class's #== for it (`when b` matched where Strict#=== said false).
+   Each arm takes the subject as emit_when_user_eq does, boxed or as the
+   type the subject alone gave the parameter; another shape is refused. */
+static void emit_when_boxed_user_arms(Compiler *c, int cond, int t, TyKind pt, int tpw, Buf *b) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].is_native_class) continue;
+    int wdef = -1;
+    int weq = comp_method_in_chain(c, k, "===", &wdef);
+    if (weq < 0 || wdef < 0) continue;
+    Scope *ws = &c->scopes[weq];
+    LocalVar *wp = ws->nparams == 1 ? scope_local(ws, ws->pnames[0]) : NULL;
+    int raw = wp && wp->type == pt && pt != TY_POLY;
+    int ret_ptr = needs_root(ws->ret) && !comp_ty_value_obj(c, ws->ret);
+    if (!wp || (wp->type != TY_POLY && !raw) || ws->rest_idx >= 0 || ws->kwrest_idx >= 0 || ws->blk_param ||
+        (ws->ret != TY_BOOL && ws->ret != TY_POLY && !ret_ptr)) {
+      unsupported_feature(c, cond, "a `when` pattern held boxed whose class's #=== takes or answers "
+                                   "a value this arm cannot pass");
+      return;
+    }
+    buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) ? ", tpw, tpw, k);
+    buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : ret_ptr ? "(NULL != " : "(");
+    emit_method_cname(c, ws, b);
+    buf_printf(b, "((sp_%s *)_t%d.v.p, ", c->classes[wdef].c_name, tpw);
+    if (raw || pt == TY_POLY) buf_printf(b, "_t%d", t);
+    else { char sref[24]; snprintf(sref, sizeof sref, "_t%d", t); emit_boxed_text(c, pt, sref, b); }
+    buf_puts(b, ")) : ");
+  }
+}
+
+static int when_boxed_has_user_arm(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (!c->classes[k].is_native_class && comp_method_in_chain(c, k, "===", NULL) >= 0) return 1;
+  return 0;
+}
+
 static void emit_when_boxed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
   int tpw = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, cond, b);
-  buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
-                " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
+  if (when_boxed_has_user_arm(c)) {
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tpw);
+    emit_when_boxed_user_arms(c, cond, t, pt, tpw, b);
+    buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC", tpw, tpw);
+  }
+  else buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC", tpw, tpw);
+  buf_printf(b, " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw);
   if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
   buf_printf(b, ")) : sp_poly_case_eq_match(_t%d, ", tpw);
   if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);

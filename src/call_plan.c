@@ -274,8 +274,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     /* the operators an object answers through another of its methods:
        `!=` through `==`, the comparisons through `<=>` when Comparable
-       supplies them (class_is_comparable) */
-    const char *via_op = builtin_operator_delegate(name);
+       supplies them (class_is_comparable). Not one a subclass defines
+       itself: the call dispatches at run time (#4023). */
+    const char *via_op = comp_subclass_answers(c, cid, name) ? NULL : builtin_operator_delegate(name);
     if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
     if (dmi < 0 && via_op) {
@@ -797,6 +798,9 @@ TyKind cplan_poly_operator_ret(Compiler *c, int id) {
     found = 1;
     if (c->scopes[mi].ret != TY_BOOL) return TY_POLY;
   }
+  /* the builtin #=== beside them is a Proc's or a Method's call for those
+     receivers, which answers any value (`->(x) { x * 128 } === 2` is 256) */
+  if (found && sp_streq(name, "===")) return TY_POLY;
   return found ? TY_BOOL : TY_UNKNOWN;
 }
 

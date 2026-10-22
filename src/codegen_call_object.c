@@ -2684,7 +2684,11 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
   }
   /* An object that does not define #=== inherits Kernel#===, which delegates
      to #==. Both infer as Bool, so the node's cached type stays right when we
-     re-dispatch under the #== name (#3018). */
+     re-dispatch under the #== name (#3018). Not when a subclass defines
+     #===: the object may be that subclass, and the call dispatches at run
+     time, its other classes answering Kernel#=== (#4023). Delegated here,
+     the subclass's #=== was skipped, and the analysis, which types that
+     dispatch boxed, disagreed with the Bool written. */
   {
     const char *enm = view_call_name(c, id);
     int erecv = nt_ref(nt, id, "receiver");
@@ -2692,7 +2696,8 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
       int eac = 0; call_args(nt, id, &eac);
       TyKind ert = comp_ntype(c, erecv);
       if (eac == 1 && ty_is_object(ert) &&
-          comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0) {
+          comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0 &&
+          !comp_subclass_answers(c, ty_object_class(ert), "===")) {
         if (emit_case_eq_identity(c, id, erecv, b)) return 1;
         if (emit_delegated_equality(c, id, 0, b)) return 1;
         int target = view_push_target(c, id, "==");

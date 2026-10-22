@@ -18157,11 +18157,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly === arg dispatches on the RECEIVER's runtime class, the way CRuby's
      case-equality does: a Regexp matches, a Range covers, a Class tests
      membership. Answering plain equality made every one of them false (#3963). */
+  /* As the builtin arm of a dispatch over classes that define #===, it is
+     Kernel#=== for every other receiver, which reaches an object's #==. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "===")) {
     int has_user = 0;
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
-    if (!has_user) {
+    if (!has_user || g_poly_builtin_arm) {
       buf_puts(b, "sp_poly_case_eq_match(");
       emit_expr(c, recv, b);
       buf_puts(b, ", ");

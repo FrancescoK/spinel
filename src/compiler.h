@@ -1947,6 +1947,8 @@ void comp_descendants_reset(void);
 /* Walk the chain for an attr reader/writer; returns 1 and the owning class. */
 int        comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 int        comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* A strict subclass answers `name` (a method or a reader in its chain). */
+int        comp_subclass_answers(Compiler *c, int class_id, const char *name);
 void       comp_add_reader(ClassInfo *ci, const char *name);
 void       comp_add_writer(ClassInfo *ci, const char *name);
 int        comp_is_reader(ClassInfo *ci, const char *name);

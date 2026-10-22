@@ -1273,18 +1273,9 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        so the call dispatches at run time and its value is that union (#4023).
        The emitter routes the same shape through the poly dispatch. */
     if (comp_method_in_chain(c, cid, name, NULL) < 0 &&
-        !comp_reader_in_chain(c, cid, name, NULL) && !cls->is_native_class) {
-      int sub_answers = 0;
-      for (int k = 0; k < c->nclasses && !sub_answers; k++) {
-        if (k == cid) continue;
-        int anc = 0;
-        for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
-          if (p2 == cid) { anc = 1; break; }
-        if (anc && (comp_method_in_chain(c, k, name, NULL) >= 0 ||
-                    comp_reader_in_chain(c, k, name, NULL))) sub_answers = 1;
-      }
-      if (sub_answers) { *out = TY_POLY; return 1; }
-    }
+        !comp_reader_in_chain(c, cid, name, NULL) && !cls->is_native_class &&
+        comp_subclass_answers(c, cid, name))
+      { *out = TY_POLY; return 1; }
     /* a class's own respond_to? -- or is_a?, instance_of?, == and the rest
        below -- is the call's answer, which the emitter dispatches to: typed
        by what it returns, which need not be true or false (an

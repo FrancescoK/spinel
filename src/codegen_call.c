@@ -22051,17 +22051,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          whose default raises exactly the NoMethodError this site would have. */
       if (recv >= 0 && nm && ty_is_object(grt) && !comp_ty_value_obj(c, grt) &&
           g_n_argov < MAX_ARG_OVERRIDE && g_subdispatch_id != id) {
-        int bcid = ty_object_class(grt);
-        int sub_answers = 0;
-        for (int k = 0; k < c->nclasses && bcid >= 0 && !sub_answers; k++) {
-          if (k == bcid) continue;
-          int anc = 0;
-          for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
-            if (p2 == bcid) { anc = 1; break; }
-          if (anc && (comp_method_in_chain(c, k, nm, NULL) >= 0 ||
-                      comp_reader_in_chain(c, k, nm, NULL))) sub_answers = 1;
-        }
-        if (sub_answers) {
+        if (comp_subclass_answers(c, ty_object_class(grt), nm)) {
           int tsd = ++g_tmp;
           tsd = hold_operand_pre(c, recv, TY_POLY, 1, tsd, 1);
           view_bind(recv, "_t%d", tsd);
