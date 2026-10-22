@@ -45813,7 +45813,7 @@ static void refuse_string_alias_copies(Compiler *c) {
           comp_ntype(c, argv[0]) == TY_NIL && pn && sa_name(c, recv, &from)) {
         SaName param = {0};
         param.kind = NK_LocalVariableReadNode; param.scope = comp_scope_of(c, blk); param.name = pn;
-        if (sa_copy_observable(c, &param, &from, recv))
+        if (!g_one_string && sa_copy_observable(c, &param, &from, recv))
           unsupported_feature(c, u, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
       }
     }

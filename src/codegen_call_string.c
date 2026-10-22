@@ -1185,7 +1185,8 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
-    if (is_line && argc >= 1 && repr_of(c, argv[0]).as_ty == TY_NIL && share_node_shares(c, recv))
+    /* (one-String mode: the receiver's handle is what the block takes) */
+    if (is_line && argc >= 1 && repr_of(c, argv[0]).as_ty == TY_NIL && share_node_shares(c, recv) && !g_one_string)
       unsupported_feature(c, id, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
     int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes");
     int is_cp = sp_streq(name, "codepoints");
@@ -1222,7 +1223,14 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       /* a separator argument splits on it, the way the blockless enumerator
          form already does (#3594) */
       int eline_sep = (argc >= 1 && argv && argv[0] != kwh && lines_sep_ty(c, argv[0])) ? argv[0] : -1;
-      if (eline_sep >= 0) {
+      /* (one-String mode: a nil separator yields the receiver itself, as
+         CRuby does, a String it holds the handle of; none for an empty one) */
+      int eline_whole = g_one_string && eline_sep >= 0 && eline_chomp == 0 &&
+                        repr_of(c, argv[0]).as_ty == TY_NIL;
+      if (eline_whole)
+        buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_new(); if (sp_str_byte_len(_t%d) > 0) sp_StrArray_push(_t%d, _t%d); ",
+                   tl, ts, tl, ts);
+      else if (eline_sep >= 0) {
         buf_printf(b, "sp_StrArray *_t%d = ", tl);
         if (eline_chomp < 0) { emit_kw_flag(c, cv, b); buf_puts(b, " ? "); }
         if (eline_chomp != 0) { buf_printf(b, "sp_str_lines_sep_chomp(_t%d, ", ts); emit_lines_sep(c, eline_sep, b); buf_puts(b, ")"); }
