@@ -12561,6 +12561,17 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
   TyKind ret = repr_of(c, id).as_ty;
   int argsNode = nt_ref(nt, id, "arguments");
+  /* the call's block, built once ahead of the switch for the overrides
+     that take it as a parameter */
+  int want_blk = 0;
+  for (int k = 0; k < c->nclasses && !want_blk; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = cplan_user_in(c, id, k, CPX_ARM)->mi;
+    int am = kmi != base_mi ? dispatch_arm_scope(c, kmi) : -1;
+    want_blk = am >= 0 && arm_takes_blk(&c->scopes[am]);
+  }
+  int blk_node = want_blk ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
+  int blk_tmp = blk_node >= 0 ? emit_blk_proc_tmp(c, blk_node) : -1;
   int rtmp = ++g_tmp;
   /* a read that can be nil (an override answering nil, a field with a nil
      bit, whose read the caller passes as the oint) holds the oint */
@@ -12579,7 +12590,7 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
     if (kmi0 < 0 || kmi0 == base_mi) continue;
     nd_callee(c, g_nd_call_id, kmi0, kd, 1);
     buf_printf(b, " case %d: ", k);
-    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, nt_ref(nt, id, "block"),
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, blk_tmp,
                            ret, ret, rtmp, b);
   }
   buf_printf(b, " default: _t%d = ", rtmp);
