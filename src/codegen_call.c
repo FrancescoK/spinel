@@ -1273,11 +1273,6 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
   refuse_from_plan(c, id, CRF_IO_REOPEN, "refuse-io-reopen");
   for (int i = 0; i < n; i++) {
     if (plain && io_reopen_call_vis(c, ks[i], name, 1, caller) != SP_VIS_PUBLIC) all_public = 0;
-    Scope *km = &c->scopes[comp_method_in_chain(c, ks[i], name, NULL)];
-    if (km->yields || (km->blk_param && km->blk_param[0])) {
-      if (g_plan_check && !g_unsup_probe) fprintf(stderr, "plan-check: cplan-fallback: refuse-io-reopen node %d\n", id);
-      unsupported(c, id, "call");
-    }
   }
   if (n == 1 && all_public && sp_streq(c->classes[ks[0]].name, "IO")) {
     int mi = comp_method_in_chain(c, ks[0], name, NULL);
@@ -9767,37 +9762,11 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          collect, and rooting it is pure cost on the hottest shape there is:
          an AST walker reads `node.left` through exactly this dispatch, and
          paying a root push and pop per read made one twice as slow (#282). */
-      /* how the receiver is held and the switch keyed is the plan's
-         (cplan_poly); the dispatch's own reading, below, is --plan-check's
-         assertion and what a plan for another result type falls back on */
-      /* one resolve for the form and the arms: outside the memo the plan's
-         buffer is the next resolve's */
+      /* The plan supplies receiver holding, switch keys and arms. Copy it:
+         outside the memo its buffer belongs to the next resolve. */
       PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
-      int fserved = pform->ret == ret;
       unsigned form = pform->flags & ~PPF_SEEN;
-      if (g_plan_check || !fserved) {
-      int root_recv = ncall_arm > 0 || is_lengthlike || is_empty || is_pred ||
-                      is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a ||
-                      is_poly_to_h;
-      /* A String mutated in place and then stored is boxed as its
-         shared-mutable handle, which no String arm below reads: the chain
-         built for a name a user class shares answered it with the switch's
-         NoMethodError (#5048). A reading method sees the handle's live
-         string, so it is read through the deref; a mutator, and a question
-         about the object itself rather than its value, keep the handle. */
-      /* Only a name String answers (the face table's String rows, and the
-         length-like and empty? arms above them) builds a String arm, so only
-         those dispatches pay the deref: the hottest one, an attr reader
-         shared by an AST's node classes, never sees a String. */
-      unsigned sface = ty_poly_face_owners(name, argc, nt_ref(nt, id, "block") >= 0, 1, 1);
-      int reads_value = (is_lengthlike || is_empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
-                        !sp_str_mutator(name, SP_MUT_LOCAL);
-      unsigned oform = (root_recv ? PPF_ROOT : 0) | (reads_value ? PPF_DEREF : 0) |
-                       (poly_key_cls0(c, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
-                       (poly_key_prim(c, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
-                       (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
-      form = poly_form_check(id, name, "poly-form0", fserved, form, oform);
-      }
+      if (g_plan_check) cplan_served("poly-form0");
       int root_recv = (form & PPF_ROOT) != 0, reads_value = (form & PPF_DEREF) != 0;
       buf_printf(b, "({ sp_RbVal _t%d = %s", tv, reads_value ? "sp_poly_strbuf_deref(" : "");
       emit_expr(c, recv, b);
@@ -10209,16 +10178,10 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
-      /* the key form is the plan's; the dispatch's own reading asserts it */
+      /* The plan supplies the switch key form. */
       PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
-      int fserved = pform->ret == ret;
       unsigned form = pform->flags & ~PPF_SEEN;
-      if (g_plan_check || !fserved) {
-        unsigned oform = PPF_ROOT | (poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
-                         (poly_key_prim(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
-                         (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
-        form = poly_form_check(id, name, "poly-form-n", fserved, form, oform);
-      }
+      if (g_plan_check) cplan_served("poly-form-n");
       /* a genuine String in a slot whose name a user class owns (#4816) */
       if (kw_pos) emit_poly_str_aset_prearm(c, recv, &ps, &ptemps, b);
       if (kw_pos && !has_splat_arg)
@@ -27621,14 +27584,14 @@ int implicit_self_is_field_read(Compiler *c, int id) {
   return rty != TY_UNKNOWN && rty != TY_STRBUF && !reader_override_arms(c, id, cid, name, rty);
 }
 
-/* the user method a bare call reaches with self of class dispatch_cid, from
-   the call's plan, or -1 */
-int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
+/* The plan for a bare call with self of class dispatch_cid, including its
+   descendant dispatch form when the class's own chain has no method. */
+const CallPlan *implicit_self_plan(Compiler *c, int id, int dispatch_cid) {
   const CallPlan *spl = cplan_user(c, id);
   if (!(spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid))
     spl = cplan_user_in(c, id, dispatch_cid,
                         g_ie_class_id >= 0 ? CPX_IE : g_emitting_class_id >= 0 ? CPX_EMIT : 0);
-  return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
+  return spl;
 }
 
 /* The slot test is separate so repr can classify the marked read without
@@ -27752,15 +27715,11 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
      the node's own plan when it is that class's own lookup, otherwise the
      plan read with that self (an instance_exec self, a body emitted for an
      inheriting class, an instance_eval block whose self codegen keeps).
-     --plan-check holds it against the lookup. */
-  int mi = implicit_self_plan_mi(c, id, dispatch_cid);
-  if (g_plan_check) {
-    cplan_served("implicit-self");
-    int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-    if (omi != mi)
-      fprintf(stderr, "plan-check: cplan-conflict: implicit-self node %d %s: plan %d, lookup %d\n",
-              id, name, mi, omi);
-  }
+     A missing target is checked in the call-plan layer. */
+  const CallPlan *pl = implicit_self_plan(c, id, dispatch_cid);
+  int mi = pl->chain && pl->via == UC_INST && pl->owner_ci == dispatch_cid ? pl->mi : -1;
+  if (g_plan_check) cplan_served("implicit-self");
+  cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self");
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
     int nullable = 0;

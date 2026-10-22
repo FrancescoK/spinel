@@ -63,6 +63,7 @@ ud=$(grep -c ': plan-check: ucall-dynamic:' "$OUT")
 # codegen sites that read the plan: a plan naming another method than the
 # site's own lookup is a conflict; a plan that cannot serve the site falls back
 pc=$(grep -c ': plan-check: cplan-conflict:' "$OUT")
+pm=$(grep -c ': plan-check: cplan-missing:' "$OUT")
 pf=$(grep -c ': plan-check: cplan-fallback:' "$OUT")
 # the resolver's per-program counts, summed
 rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: //' |
@@ -73,17 +74,19 @@ rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: /
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 grep ': plan-check: cplan-conflict:' "$OUT" | head -20
+grep ': plan-check: cplan-missing:' "$OUT" | head -20
 grep ': plan-check: unrecorded:' "$OUT" | head -20
 grep ': plan-check: respecialized:' "$OUT" | head -20
 grep ': plan-check: ucall-respecialized:' "$OUT" | head -20
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
-echo "plan-check: plan readers: $pc conflicts, $pf fallbacks"
+echo "plan-check: plan readers: $pc conflicts, $pf fallbacks, $pm cplan-missing"
 # per site: the calls each took from the plan, and the ones it fell back on
-for site in $(grep ': plan-check: cplan-served: ' "$OUT" | awk '{print $4}' | sort -u); do
+for site in $(grep -E ': plan-check: cplan-(served|fallback|conflict|missing): ' "$OUT" | awk '{print $4}' | sort -u); do
   sv=$(grep ": plan-check: cplan-served: $site " "$OUT" | awk '{ s += $5 } END { print s + 0 }')
   fb=$(grep -c ": plan-check: cplan-fallback: $site " "$OUT")
-  echo "plan-check:   $site: $sv served, $fb fallbacks"
+  cf=$(grep -c ": plan-check: cplan-conflict: $site " "$OUT")
+  echo "plan-check:   $site: $sv served, $fb fallbacks, $cf conflicts"
 done
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 # poly dispatch arms: the switch codegen wrote against the resolver's arms
@@ -147,4 +150,4 @@ for f in $STRICT_UCALL_PROGRAMS; do
 done
 echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$ppm" -eq 0 ] && [ "$ppe" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$pm" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$ppm" -eq 0 ] && [ "$ppe" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]

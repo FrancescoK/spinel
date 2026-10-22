@@ -69,7 +69,9 @@ typedef struct {
   const char *delegate;     /* the protocol method name, before alias resolution */
 } CallPlan;
 
+int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
 const CallPlan *cplan_user(Compiler *c, int id);
+void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
    the analysis, before the memo is codegen's to fill (the nil facts,
    analyze_nil.c): it answers from the types as they stand. The answer
@@ -140,7 +142,8 @@ int cplan_define_method_early(Compiler *c, int id);
    the call resolves as its own (the instance_exec receiver is asked first).
    It is computed afresh and never kept: only cplan_user memoizes. A
    self_ci < 0 is the node's own context, cplan_user. */
-enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4 };
+/* CPX_TARGET reads only the direct chain target under its name view, respecting builtin-only aliases. */
+enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4, CPX_TARGET = 8 };
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
 /* Is the node codegen is at read as itself: no view, no instance_exec scope
    move or class, no inline splice? Only there may a memo per node answer
