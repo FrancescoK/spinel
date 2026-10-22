@@ -1731,6 +1731,12 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             /* literal false/nil: fall through to the plain 1-arg call */
           }
         }
+        /* one String representation: a handle argument's read publishes it
+           to the deep-return channel, which a caller's pickup would take for
+           this new String; the answer clears it, as the method's own body
+           does (sp_strface_unpub) */
+        int nv_unpub = g_one_string && (nv_cstr_ret || nv_bin_ret);
+        if (nv_unpub) buf_puts(b, "sp_strface_unpub(");
         if (nv_cstr_ret) buf_puts(b, "sp_str_dup_external(");
         /* Sequence the call before the sp_ffi_bin_len read: C leaves argument
            evaluation order unspecified, so bind the result to a temp first. */
@@ -1752,6 +1758,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         if (nv_bin_ret)
           buf_printf(b, "; sp_str_as_binary(sp_str_from_bytes(_t%d, (size_t)(sp_ffi_bin_len < 0 ? 0 : sp_ffi_bin_len))); })",
                      nv_bin_tmp);
+        if (nv_unpub) buf_puts(b, ")");
         return 1;
       }
     }
@@ -2075,7 +2082,9 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "sp_box_foreign_ptr((void *)(%s))", call_buf.p);
         }
         else if (is_str_ret) {
-          buf_printf(b, "sp_str_dup_external(%s)", call_buf.p);
+          /* (one representation: the answer clears the channel a handle
+             argument's read published, as a native_func's does) */
+          buf_printf(b, g_one_string ? "sp_strface_unpub(sp_str_dup_external(%s))" : "sp_str_dup_external(%s)", call_buf.p);
         }
         else if (is_binstr_ret) {
           /* Binary-safe: build the String from the exact byte count the callee
@@ -2084,9 +2093,9 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
              leaves argument evaluation order unspecified -- via a temp. Tagged
              BINARY for the reason the `cbinstr` arm above gives. */
           int tp = ++g_tmp;
-          buf_printf(b, "({ const char *_t%d = %s; "
+          buf_printf(b, "({ const char *_t%d = %s; %s"
                         "sp_str_as_binary(sp_str_from_bytes(_t%d, (size_t)(sp_ffi_bin_len < 0 ? 0 : sp_ffi_bin_len))); })",
-                     tp, call_buf.p, tp);
+                     tp, call_buf.p, g_one_string ? "_sp_ret_strbuf = NULL; " : "", tp);
         }
         else {
           /* numeric / bool: cast to sp_int or sp_float */
