@@ -10998,11 +10998,13 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
-    /* sort's block compares two of an index enumerator's [element, index]
-       pairs, not an element and its index, so the two-param chain codegen
-       has no arm for it: it reads the pairs through to_a as the blockless
-       sort does (`a.each.with_index.sort { }`). */
-    if (nt_ref(nt, id, "block") >= 0 && recv_is_index_enum && sp_streq(nm, "sort"))
+    /* The block of sort / min / max / minmax compares two of an index
+       enumerator's [element, index] pairs, not an element and its index, so
+       the two-param chain codegen has no arm for it: it reads the pairs
+       through to_a as the blockless forms do (`a.each.with_index.sort { }`). */
+    if (nt_ref(nt, id, "block") >= 0 && recv_is_index_enum &&
+        (sp_streq(nm, "sort") || sp_streq(nm, "min") || sp_streq(nm, "max") ||
+         sp_streq(nm, "minmax")))
       enum_terminal = 1;
     /* A blockless TERMINAL on an index/slice enumerator delegates through
        to_a too (each_slice(2).count / .to_h): only the block-driving chains
