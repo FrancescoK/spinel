@@ -5212,50 +5212,6 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         }
       }
     }
-    /* bool: dispatch based on value to correct TrueClass/FalseClass impl */
-    if (rt == TY_BOOL) {
-      int tc_ci = comp_class_index(c, "TrueClass");
-      int fc_ci = comp_class_index(c, "FalseClass");
-      int tc_mi = tc_ci >= 0 ? comp_method_in_chain(c, tc_ci, name, NULL) : -1;
-      int fc_mi = fc_ci >= 0 ? comp_method_in_chain(c, fc_ci, name, NULL) : -1;
-      if (tc_mi >= 0 && fc_mi >= 0) {
-        /* both defined: ternary dispatch */
-        if (g_plan_check) { ucall_observe(c, id, tc_mi, tc_ci, 1); ucall_observe(c, id, fc_mi, fc_ci, 1); }
-        int bt = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "int _t%d = ", bt); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-        buf_printf(b, "(_t%d ? sp_TrueClass_%s(_t%d", bt, mc(name), bt);
-        emit_args_filled(c, tc_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_printf(b, ") : sp_FalseClass_%s(_t%d", mc(name), bt);
-        emit_args_filled(c, fc_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_puts(b, "))");
-        return 1;
-      }
-      if (tc_mi >= 0) {
-        /* only TrueClass defined */
-        if (g_plan_check) ucall_observe(c, id, tc_mi, tc_ci, 0);
-        buf_printf(b, "sp_TrueClass_%s(", mc(name));
-        emit_expr(c, recv, b);
-        emit_args_filled(c, tc_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_puts(b, ")");
-        return 1;
-      }
-      if (fc_mi >= 0) {
-        /* only FalseClass defined: ternary still needed */
-        if (g_plan_check) ucall_observe(c, id, fc_mi, fc_ci, 0);
-        int bt = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "int _t%d = ", bt); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-        buf_printf(b, "(_t%d ? (", bt);
-        buf_printf(b, "sp_FalseClass_%s(_t%d", mc(name), bt);
-        emit_args_filled(c, fc_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_puts(b, "), 0) : sp_FalseClass_");
-        buf_printf(b, "%s(_t%d", mc(name), bt);
-        emit_args_filled(c, fc_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_puts(b, "))");
-        return 1;
-      }
-    }
     /* Hash reopening: any hash-typed receiver -> box to sp_RbVal */
     if (ty_is_hash(rt)) {
       int hc_ci = comp_class_index(c, "Hash");

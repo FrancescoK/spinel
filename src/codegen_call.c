@@ -27044,6 +27044,67 @@ int emit_env_args_before(Compiler *c, int id) {
   return saved;
 }
 
+/* One side of a call on a true-or-false receiver held in `_t<tb>`: the
+   class's own method (user side, mi >= 0), or the builtin's arm, as a poly
+   dispatch's builtin arm re-enters the call. Boxed when the call's two
+   sides answer different types. */
+static void emit_bool_side(Compiler *c, int id, int recv, int tb, int mi, int boxed, Buf *b) {
+  Buf nb; memset(&nb, 0, sizeof nb);
+  TyKind t;
+  if (mi >= 0) {
+    if (g_plan_check) ucall_observe(c, id, mi, c->scopes[mi].class_id, 1);
+    emit_method_cname(c, &c->scopes[mi], &nb);
+    buf_printf(&nb, "(_t%d", tb);
+    emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", &nb);
+    buf_puts(&nb, ")");
+    t = c->scopes[mi].ret;
+  }
+  else {
+    t = an_builtin_answer(c, id);
+    int slot = view_bind(recv, "_t%d", tb);
+    int va = view_push_arm(id, g_prbd_skip, 1);
+    int vw = t != TY_UNKNOWN && t != TY_POLY ? view_push(c, id, t) : -1;
+    if (boxed && vw < 0) emit_boxed(c, id, &nb), t = TY_POLY;
+    else emit_call(c, id, &nb);
+    if (vw >= 0) view_pop(c, vw);
+    view_pop(c, va);
+    view_unbind(slot);
+  }
+  if (boxed && t != TY_POLY) emit_boxed_text(c, t, nb.p ? nb.p : "0", b);
+  else buf_puts(b, nb.p ? nb.p : "0");
+  free(nb.p);
+}
+
+/* A call on true or false where TrueClass or FalseClass defines the name
+   itself (the call plan's CP_SWITCH, cplan_bool_sides): the value picks the
+   side, as Ruby's lookup does. A side with no def of its own answers what
+   the builtin answers -- `true <=> true` with only TrueClass#<=> defined
+   calls it for true, and the builtin for false. */
+static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
+  int recv = nt_ref(c->nt, id, "receiver"), tmi, fmi;
+  if (recv < 0 || g_poly_builtin_arm || g_pd_skip == id || nt_ref(c->nt, id, "block") >= 0 ||
+      comp_ntype(c, recv) != TY_BOOL) return 0;
+  const CallPlan *pl = cplan_user(c, id);
+  if (pl->via != UC_REOPEN || pl->dispatch != CP_SWITCH || !cplan_bool_sides(c, id, &tmi, &fmi)) return 0;
+  int boxed = repr_of(c, id).kind == RK_BOXED;
+  int tb = ++g_tmp;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf *sv = g_pre; g_pre = &pre;
+  Buf tv; memset(&tv, 0, sizeof tv);
+  Buf fv; memset(&fv, 0, sizeof fv);
+  emit_bool_side(c, id, recv, tb, tmi, boxed, &tv);
+  Buf fpre; memset(&fpre, 0, sizeof fpre); g_pre = &fpre;
+  emit_bool_side(c, id, recv, tb, fmi, boxed, &fv);
+  g_pre = sv;
+  /* each side's own hoisted lines run inside its branch */
+  buf_printf(b, "({ int _t%d = ", tb);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; _t%d ? ({ %s%s; }) : ({ %s%s; }); })", tb,
+             pre.p ? pre.p : "", tv.p ? tv.p : "0", fpre.p ? fpre.p : "", fv.p ? fv.p : "0");
+  free(pre.p); free(fpre.p); free(tv.p); free(fv.p);
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_call_on_held_self_answer(c, id, b)) return;
   refuse_prepass_at_emit(c, id);
@@ -27076,6 +27137,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       view_pop(c, va);
       return;
     } }
+  if (emit_call_bool_sides(c, id, b)) return;
   /* A call on a receiver that never hands back a value (a method whose
      every path raises): Ruby evaluates the receiver first, it raises, and
      neither the arguments nor the method run. Evaluate it for effect and
