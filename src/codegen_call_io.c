@@ -1157,7 +1157,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          anything else goes on to the IO handle */
       const char *dirfn = NULL;
       if (argc == 0) {
-        if (is_path_reader(name)) dirfn = "sp_Dir_path";
+        if (is_path_reader(name)) dirfn = "sp_Dir_path_copy";
         else if (sp_streq(name, "read")) dirfn = "sp_Dir_read";
         else if (is_io_position(name)) dirfn = "sp_Dir_tell";
         else if (sp_streq(name, "fileno")) dirfn = "sp_Dir_fileno";
@@ -2502,7 +2502,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     const char *dr = drb.p ? drb.p : "NULL";
     if (sp_streq(name, "read") && argc == 0) { buf_printf(b, "sp_Dir_read(%s)", dr); free(drb.p); return 1; }
     if ((is_path_reader(name)) && argc == 0) {
-      buf_printf(b, "sp_Dir_path(%s)", dr); free(drb.p); return 1;
+      buf_printf(b, "sp_Dir_path_copy(%s)", dr); free(drb.p); return 1;
     }
     /* Dir#inspect renders as #<Dir:PATH> (#3250). */
     if (sp_streq(name, "inspect") && argc == 0) {

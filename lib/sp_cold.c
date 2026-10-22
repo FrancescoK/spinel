@@ -3327,6 +3327,13 @@ const char *sp_Dir_read(sp_Dir *d) {
 /* NULL is Ruby nil in the string convention: a Dir from Dir.for_fd has no path,
    and CRuby answers nil for it rather than an empty string (#3365). */
 const char *sp_Dir_path(sp_Dir *d) { return d ? d->path : NULL; }
+/* Ruby Dir#path returns a fresh String; internal value-only readers use the
+   raw getter above. A descriptor-created Dir still has a nil path. */
+const char *sp_Dir_path_copy(sp_Dir *d) {
+  SP_GC_ROOT(d);
+  const char *path = sp_Dir_path(d);
+  return path ? sp_str_dup(path) : NULL;
+}
 /* Object#to_s: #<Dir:0xADDR>; #inspect is the #<Dir:PATH> above. */
 const char *sp_Dir_to_s(sp_Dir *d) {
   return d ? sp_sprintf("#<Dir:0x%016llx>", (unsigned long long)(uintptr_t)d) : SPL("");
