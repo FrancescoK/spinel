@@ -12501,16 +12501,9 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
    reader (of type reader_ty) dispatch on the runtime class: some descendant
    overrides the reader with a def, and the arms agree on the call's type? */
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty) {
-  const NodeTable *nt = c->nt;
-  if (nt_ref(nt, id, "block") >= 0) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  if (p->mi < 0 || p->dispatch < CP_SWITCH) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
-  int any = 0;
-  for (int k = 0; k < c->nclasses && !any; k++) {
-    if (k == cid || !is_descendant(c, k, cid)) continue;
-    int kmi = comp_method_in_chain(c, k, name, NULL);
-    if (kmi >= 0 && kmi != base_mi) any = 1;
-  }
-  if (!any) return 0;
   TyKind ret = repr_of(c, id).as_ty;
   if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
   /* (a shared String slot's read is its copy where the call answers a
@@ -12580,12 +12573,13 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (k == cid || !is_descendant(c, k, cid)) continue;
-    int kd = -1;
-    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    const CallPlan *arm = cplan_user_in(c, id, k, CPX_ARM);
+    int kmi0 = arm->mi;
+    int kd = kmi0 >= 0 ? c->scopes[kmi0].class_id : -1;
     if (kmi0 < 0 || kmi0 == base_mi) continue;
     nd_callee(c, g_nd_call_id, kmi0, kd, 1);
     buf_printf(b, " case %d: ", k);
-    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, -1,
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, nt_ref(nt, id, "block"),
                            ret, ret, rtmp, b);
   }
   buf_printf(b, " default: _t%d = ", rtmp);

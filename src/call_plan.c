@@ -175,9 +175,8 @@ int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
          c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
 }
 /* The existing boxed dispatch candidates also serve literal-name send arms. */
-static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
-  int npc = 0;
-  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p,
+                               const PolyCand *pcs, int npc) {
   for (int i = 0; i < npc; i++) {
     if (c->classes[pcs[i].cls].is_native_class) continue;
     /* a reader candidate written as a method (`def x = @x`) is that method */
@@ -196,12 +195,13 @@ static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
 static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cmeth, CallPlan *p) {
   int nd = 0;
   const int *ds = comp_descendants(c, cid, &nd);
+  int reader = !cmeth && comp_reader_in_chain(c, cid, name, NULL);
   for (int i = 0; i < nd; i++) {
-    int mi = cmeth ? comp_cmethod_in_class(c, ds[i], name)
+    int mi = reader ? comp_method_in_chain(c, ds[i], name, NULL) : cmeth ? comp_cmethod_in_class(c, ds[i], name)
                    : comp_method_in_class(c, ds[i], name);
     if (mi < 0) continue;
     cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
-              cmeth ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+              cmeth || reader ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
     return;
   }
 }
@@ -218,6 +218,14 @@ int cplan_accessor_classes(Compiler *c, int id, int *out, int cap) {
   if (n >= 2)
     for (int i = 0; i < n; i++)
       if (comp_cmethod_in_chain(c, out[i], name, NULL) >= 0) return n;
+  return 0;
+}
+
+/* The name index bounds the native block query before its class scan. */
+int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n) {
+  if (nt_kind(c->nt, nt_ref(c->nt, id, "block")) != NK_BlockNode) return 0;
+  for (int i = 0; i < n; i++)
+    if (pc[i].native && pc[i].mi >= 0 && c->classes[pc[i].cls].instantiated) return 1;
   return 0;
 }
 
@@ -357,7 +365,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int nd = 0;
       const int *ds = comp_descendants(c, cid, &nd);
       for (int i = 0; i < nd; i++) {
-        int kmi = ds[i] != cid ? comp_method_in_class(c, ds[i], name) : -1;
+        int kmi = -1;
+        if (ds[i] != cid) comp_resolve_member(c, ds[i], name, 0, NULL, &kmi);
         if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_SWITCH); return; }
       }
     }
@@ -367,14 +376,30 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       cplan_descendant_call(c, cid, name, 0, p);
     return;
   }
-  if (rt == TY_POLY) { cplan_resolve_poly(c, name, p); return; }
+  if (rt == TY_POLY) {
+    int npc = 0;
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi >= 0) {
+          cplan_set(p, bp->arm[i].mi, bp->arm[i].key, UC_POLY, CP_SWITCH);
+          return;
+        }
+    }
+    cplan_resolve_poly(c, name, p, pcs, npc);
+    return;
+  }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
   /* an IO handle's reopen: the File, IO or socket class that defines it */
   if (rt == TY_IO) {
     int eci = io_reopen_class(c, name);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0) { cplan_set(p, emi, eci, UC_REOPEN, CP_DIRECT); return; }
+    if (emi >= 0) {
+      cplan_set(p, emi, eci, UC_REOPEN, io_reopen_ret_mixed(c, name) ? CP_SWITCH : CP_DIRECT);
+      return;
+    }
   }
   const char *rc = cplan_reopen_class(rt);
   if (rc) {
@@ -475,6 +500,11 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->via == UC_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi == mi || scope_proc_form_of(c, bp->arm[i].mi) == mi) return 1;
+    }
     for (int i = 0; i < npc; i++)
       if (pcs[i].mi == mi || (pcs[i].mi < 0 && comp_method_in_chain(c, pcs[i].cls, name, NULL) == mi))
         return 1;
@@ -485,6 +515,12 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
     return 0;
   }
   if (p->via == UC_REOPEN) {
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
+      int ks[16], nk = io_reopen_defs(c, name, 0, ks, 16);
+      for (int i = 0; i < nk; i++)
+        if (comp_method_in_chain(c, ks[i], name, NULL) == mi) return 1;
+    }
     int xr[8], xn = exc_reopen_definers(c, name, xr, 8);
     for (int i = 0; i < xn; i++)
       if (comp_method_in_chain(c, xr[i], name, NULL) == mi) return 1;
@@ -564,8 +600,12 @@ CallPlan cplan_send_arm(Compiler *c, int id) {
   CallPlan p = *cplan_user_fresh(c, id);
   int recv = nt_ref(c->nt, id, "receiver");
   if (p.mi < 0 && nt_int(c->nt, id, "dyn_arm", 0) &&
-      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode))
-    cplan_resolve_poly(c, nt_str(c->nt, id, "name"), &p);
+      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode)) {
+    int npc = 0;
+    const char *name = nt_str(c->nt, id, "name");
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    cplan_resolve_poly(c, name, &p, pcs, npc);
+  }
   return p;
 }
 
@@ -2462,14 +2502,16 @@ const PolyPlan *cplan_poly_fresh(Compiler *c, int id) {
 const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   static PolyPlan bp;
   free(bp.arm);
-  bp.arm = NULL; bp.n = 0; bp.flags = 0;
+  bp.arm = NULL; bp.n = 0; bp.flags = 0; bp.native_block = 0;
   bp.ntype = bp.ret = comp_ntype(c, id);
   int cap = 0;
   int cand[64];
   int nc = poly_block_dispatch_cands(c, id, cand, 64);
   const char *name = nt_str(c->nt, id, "name");
-  for (int i = 0; i < nc; i++)
+  for (int i = 0; i < nc; i++) {
     cpoly_add(&bp, &cap, PA_USER, cand[i], comp_method_in_chain(c, cand[i], name, NULL), TY_UNKNOWN, PC_VOID);
+    if (c->classes[cand[i]].is_native_class) bp.native_block = 1;
+  }
   if (nc == 0) return &bp;
   /* map!/collect! rewrites a builtin array in place, given a block body */
   int block = nt_ref(c->nt, id, "block");

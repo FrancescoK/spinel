@@ -93,7 +93,9 @@ int poll_scope_on_cycle(Compiler *c, int si) {
     int ns = c->nscopes;
     const NodeTable *nt = c->nt;
     free(g_poll_cyc); g_poll_cyc = calloc((size_t)ns + 1, 1); g_poll_cyc_n = ns;
-    unsigned char *dyn = calloc((size_t)ns + 1, 1);
+    unsigned char *dyn = calloc(((size_t)ns + 1) * 2, 1);
+    if (!dyn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    unsigned char *forwarded = dyn + ns + 1;
     int cap = 1024, ne = 0; int *ef = malloc(cap * sizeof(int)), *et = malloc(cap * sizeof(int));
     NT_FOREACH_KIND(nt, NK_CallNode, n) {
       int from = c->nscope[n];
@@ -109,7 +111,7 @@ int poll_scope_on_cycle(Compiler *c, int si) {
       if (bk >= 0 && nt_kind(nt, bk) != NK_BlockNode) {
         dyn[from] = 1;
         int cn2, f2 = poll_names_of(c, nm, &cn2);
-        for (int k = 0; k < cn2; k++) dyn[g_poll_names[f2 + k].scope] = 1;
+        for (int k = 0; k < cn2; k++) forwarded[g_poll_names[f2 + k].scope] = 1;
         continue;
       }
       /* a literal block runs inside each method of the name that yields: an
@@ -176,7 +178,13 @@ int poll_scope_on_cycle(Compiler *c, int si) {
        callers of one that yields, whose body runs spliced into theirs */
     int *q = malloc(sizeof(int) * (size_t)(ns + 1)), qh = 0, qt = 0;
     unsigned char *seen = calloc((size_t)ns + 1, 1);
-    for (int v = 0; v < ns; v++) if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
+    /* A target handed an unknown proc polls itself. That fact belongs to
+       that invocation, not to another caller's literal block. Real dynamic
+       calls in its body still propagate, and SCC edges still retain cycles. */
+    for (int v = 0; v < ns; v++) {
+      if (forwarded[v]) g_poll_cyc[v] = 1;
+      if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
+    }
     while (qh < qt) {
       int v = q[qh++];
       g_poll_cyc[v] = 1;
