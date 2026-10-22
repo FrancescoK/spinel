@@ -839,14 +839,6 @@ int str_in(const char *s, const char *const *set) {
   for (int i = 0; set[i]; i++) if (sp_streq(s, set[i])) return 1;
   return 0;
 }
-int an_unparen(const NodeTable *nt, int n) {
-  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
-    int pb = nt_ref(nt, n, "body"); int pn = 0;
-    const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    n = pn == 1 ? pd[0] : -1;
-  }
-  return n;
-}
 /* A construct whose VALUE is an empty container. Its type reads UNKNOWN
    because it carries no element type, which is not the same as producing no
    value -- and the two were conflated wherever an expression's type decides
