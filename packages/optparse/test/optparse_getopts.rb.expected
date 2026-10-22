@@ -1,0 +1,6 @@
+{"a" => true, "b" => "x", "c" => false, "long" => "y", "level" => "3", "flag" => false}
+["rest"]
+{"a" => true, "b" => nil, "c" => true}
+{"v" => false, "level" => "1"}
+invalid option: -z
+missing argument: -b

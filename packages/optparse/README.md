@@ -31,11 +31,10 @@ hunks, each in its own commit with the reason:
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
 
 So `ARGV.options`, `ARGV.parse!` and `ARGV.getopts` are not available,
-`OptionParser#getopts` and `OptionParser.getopts` do not work yet, and
-`--version=pkg` prints the program's own version. Everything else the gem's
-documentation shows works as in CRuby, `accept`, Regexp and Range patterns,
-`optparse/date`, `optparse/time`, `optparse/uri` and `optparse/shellwords`
-included.
+and `--version=pkg` prints the program's own version. Everything else the
+gem's documentation shows works as in CRuby, `accept`, Regexp and Range
+patterns, `optparse/date`, `optparse/time`, `optparse/uri` and
+`optparse/shellwords` included.
 
 To update, replace these files with a newer release's `lib/`, carry the hunks
 above over (the commits that made them are the list), and update the commit.
