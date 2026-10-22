@@ -9031,6 +9031,11 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         char row[64], value[256];
         snprintf(row, sizeof row, "_t%d->data[_t%d]", tm, ti);
         if (np == 1) snprintf(value, sizeof value, "%s", row);
+        /* (one-String mode: a match without groups is a String's handle
+           box, an object box too, not the Array of a match with them) */
+        else if (g_one_string)
+          snprintf(value, sizeof value, "%s.tag == SP_TAG_OBJ && %s.cls_id != SP_BUILTIN_STRBUF ? sp_poly_arr_get(%s, %d) : %s",
+                   row, row, row, pj, pj == 0 ? row : "sp_box_nil()");
         else snprintf(value, sizeof value, "%s.tag == SP_TAG_OBJ ? sp_poly_arr_get(%s, %d) : %s",
                       row, row, pj, pj == 0 ? row : "sp_box_nil()");
         emit_indent(g_pre, g_indent + 1);

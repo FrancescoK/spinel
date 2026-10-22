@@ -3964,6 +3964,15 @@ static SP_INLINE const char *sp_slot_str_ck(sp_RbVal v, const char *ivar) {
   sp_slot_store_mismatch(v, ivar, "String");
   return NULL;
 }
+/* ...and into a slot holding a String's handle (the one-String mode's):
+   the handle a box carries, or a new one over the bytes. It may allocate,
+   so it is not among the slot checks that cannot. */
+static SP_INLINE sp_String *sp_slot_strbuf_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) return sp_poly_as_strbuf(v);
+  if (v.tag == SP_TAG_NIL) return NULL;
+  sp_slot_store_mismatch(v, ivar, "String");
+  return NULL;
+}
 static SP_INLINE sp_bool sp_slot_bool_ck(sp_RbVal v, const char *ivar) {
   if (v.tag == SP_TAG_BOOL) return v.v.b;
   sp_slot_store_mismatch(v, ivar, "true or false");

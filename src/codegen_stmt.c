@@ -17066,7 +17066,9 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
            than reading the other kind's bits as its own */
         const char *ck = ivt == TY_INT ? "sp_slot_oint_ck" : ivt == TY_FLOAT ? "sp_slot_ofloat_ck"
                        : ivt == TY_STRING ? "sp_slot_str_ck" : ivt == TY_BOOL ? "sp_slot_bool_ck"
-                       : ivt == TY_SYMBOL ? "sp_slot_sym_ck" : NULL;
+                       : ivt == TY_SYMBOL ? "sp_slot_sym_ck"
+                       /* (one-String mode: a String slot holds the handle) */
+                       : g_one_string && ivt == TY_STRBUF ? "sp_slot_strbuf_ck" : NULL;
         /* an Integer or Float element with its nil: into the field's bit,
            or refused for a plain field */
         if (ck && oint_kind(ivt) && ivar_has_nilbit(c, iv_home_cid, iv_rt)) {
