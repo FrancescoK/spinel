@@ -73,29 +73,6 @@ const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v);
 #define backtrace_symbols(buf, n) ((char **)0)
 #define backtrace(buf, sz) 0
 #endif
-/* The capture. macOS's backtrace() walks frame pointers only within the
-   pthread's own stack, and answers no frame on the stack the top level, a
-   fiber or a green thread runs on (an mmap'd one, sp_main_stack_run): there
-   the unwinder takes the frames, by the unwind info (#9930). glibc's
-   backtrace() unwinds the same way already. */
-#if defined(__APPLE__) && defined(HAVE_EXECINFO_H)
-#include <unwind.h>
-typedef struct { void **buf; int max, n; } sp_bt_walk;
-static _Unwind_Reason_Code sp_bt_walk_frame(struct _Unwind_Context *ctx, void *arg) {
-  sp_bt_walk *w = (sp_bt_walk *)arg;
-  uintptr_t ip = _Unwind_GetIP(ctx);
-  if (!ip || w->n >= w->max) return _URC_END_OF_STACK;
-  w->buf[w->n++] = (void *)ip;
-  return _URC_NO_REASON;
-}
-static SP_UNUSED int sp_bt_capture(void **buf, int max) {
-  sp_bt_walk w = { buf, max, 0 };
-  _Unwind_Backtrace(sp_bt_walk_frame, &w);
-  return w.n;
-}
-#else
-#define sp_bt_capture(buf, max) backtrace(buf, max)
-#endif
 #define SP_BT_AVAILABLE 1
 extern int sp_bt_enabled;          /* set to 1 by debug-build main(); defined in lib/sp_cold.c */
 extern const char *sp_bt_srcfile;  /* toplevel .rb path, set by debug main() */
@@ -16044,7 +16021,7 @@ static sp_StrArray *sp_caller_now(void) {
 #if SP_BT_AVAILABLE
   if (!sp_bt_enabled) return sp_StrArray_new();
   void *buf[256];
-  int n = sp_bt_capture(buf, 256);
+  int n = backtrace(buf, 256);
   return sp_bt_format(buf, n);
 #else
   return sp_StrArray_new();
@@ -16232,7 +16209,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   /* A pass-through, a bare raise, or an ensure resuming its saved exception
      keeps the frames of the raise that made it, as CRuby does. */
-  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = sp_bt_capture(sp_bt_buf, 256);
+  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = backtrace(sp_bt_buf, 256);
 #endif
   sp_bt_keep = 0;
   /* A real exception supersedes any non-local unwind in flight (e.g. raised from
