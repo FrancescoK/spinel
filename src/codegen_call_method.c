@@ -842,7 +842,9 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (tm && bam_binop_wrapper(tm)) {
       LocalVar *rlv = scope_local(tm, "__bam_r");
       bop_ops = bop_min = bop_max = tm->nparams - shift;
-      if (sp_streq(bam_builtin_sym(c, target, ""), "[]") && rlv && (ty_is_array(rlv->type) || rlv->type == TY_STRING)) {
+      /* (a String's handle too: a shared String the Method binds) */
+      if (sp_streq(bam_builtin_sym(c, target, ""), "[]") && rlv &&
+          (ty_is_array(rlv->type) || rlv->type == TY_STRING || rlv->type == TY_STRBUF)) {
         bop_min = 1; bop_max = 2;
       }
     }
