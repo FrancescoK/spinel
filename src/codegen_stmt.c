@@ -295,7 +295,8 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
   TyKind t = tr.as_ty;
   emit_indent(b, indent);
   /* `print n.chr`: write the byte directly. Going through the C-string
-     path would drop a NUL byte (the P4/P6 image benchmarks emit those). */
+     path would drop a NUL byte (the P4/P6 image benchmarks emit those).
+     Outside 0..255, sp_int_chr raises Integer#chr's RangeError. */
   {
     const NodeTable *nt = c->nt;
     const char *aty = nt_type(nt, arg);
@@ -305,9 +306,10 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
       int cargs = nt_ref(nt, arg, "arguments");
       int can = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &can);
       if (crecv >= 0 && can == 0 && comp_ntype(c, crecv) == TY_INT) {
-        buf_puts(b, "putchar((int)((");
+        int t = ++g_tmp;
+        buf_printf(b, "{ sp_int _t%d = ", t);
         emit_expr(c, crecv, b);
-        buf_puts(b, ") & 0xff));\n");
+        buf_printf(b, "; if (_t%d < 0 || _t%d > 255) (void)sp_int_chr(_t%d); putchar((int)_t%d); }\n", t, t, t, t);
         return;
       }
     }
