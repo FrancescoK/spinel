@@ -20145,11 +20145,72 @@ static int call_passes_local(const NodeTable *nt, int u, const char *vn) {
   }
   return 0;
 }
+/* The calls of a scope that hand local (vn, vs) as an argument, by (scope,
+   name), kept while the node table and the scopes hold still, as
+   an_local_array_changed's answers are: the test reads only the calls'
+   arguments. The refusal walk is asked per container local, every round,
+   and each ask read every call of the scope: on a Rails program late in
+   its fixpoint that reading was 6% of a sampled window. The ids live in
+   one pool the entries index by offset. */
+typedef struct { int sidx; const char *name; int off, n; } RcmEntry;
+static RcmEntry *rcm_tab; static int rcm_cap, rcm_n;
+static int *rcm_ids; static int rcm_ids_n, rcm_ids_cap;
+static const NodeTable *rcm_nt; static unsigned rcm_ver, rcm_gen; static int rcm_count, rcm_nscopes = -1;
+static RcmEntry *rcm_slot(int sidx, const char *name) {
+  unsigned h = (sp_strhash(name) ^ ((unsigned)sidx * 2654435761u)) & (unsigned)(rcm_cap - 1);
+  while (rcm_tab[h].name && !(rcm_tab[h].sidx == sidx && sp_streq(rcm_tab[h].name, name))) h = (h + 1) & (unsigned)(rcm_cap - 1);
+  return &rcm_tab[h];
+}
+static RcmEntry *rcm_find(Compiler *c, int sidx, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (rcm_nt != nt || rcm_ver != nt->version || rcm_count != nt->count || rcm_gen != comp_scope_index_gen() || rcm_nscopes != c->nscopes) {
+    free(rcm_tab); rcm_cap = 1024; rcm_n = 0; rcm_ids_n = 0;
+    rcm_tab = calloc((size_t)rcm_cap, sizeof *rcm_tab);
+    if (!rcm_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    rcm_nt = nt; rcm_ver = nt->version; rcm_count = nt->count; rcm_gen = comp_scope_index_gen(); rcm_nscopes = c->nscopes;
+  }
+  if (rcm_n * 2 >= rcm_cap) {
+    RcmEntry *old = rcm_tab; int ocap = rcm_cap;
+    rcm_cap *= 2;
+    rcm_tab = calloc((size_t)rcm_cap, sizeof *rcm_tab);
+    if (!rcm_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) if (old[i].name) *rcm_slot(old[i].sidx, old[i].name) = old[i];
+    free(old);
+  }
+  return rcm_slot(sidx, name);
+}
+/* Those calls, copied out for the caller: the walk under each one may ask
+   for another local's, which can move the pool. */
+static int *rcm_calls(Compiler *c, const char *vn, Scope *vs, int *n) {
+  const NodeTable *nt = c->nt;
+  int sidx = (int)(vs - c->scopes);
+  RcmEntry *e = rcm_find(c, sidx, vn);
+  if (!e->name) {
+    int off = rcm_ids_n;
+    for (int u = comp_scall_first(c, sidx); u >= 0; u = comp_scall_next(c, u)) {
+      if (nt_kind(nt, u) != NK_CallNode || !call_passes_local(nt, u, vn)) continue;
+      if (rcm_ids_n == rcm_ids_cap) {
+        rcm_ids_cap = rcm_ids_cap ? rcm_ids_cap * 2 : 1024;
+        rcm_ids = realloc(rcm_ids, sizeof(int) * (size_t)rcm_ids_cap);
+        if (!rcm_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      rcm_ids[rcm_ids_n++] = u;
+    }
+    e->sidx = sidx; e->name = vn; e->off = off; e->n = rcm_ids_n - off; rcm_n++;
+  }
+  *n = e->n;
+  if (e->n == 0) return NULL;
+  int *out = malloc(sizeof(int) * (size_t)e->n);
+  if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(out, rcm_ids + e->off, sizeof(int) * (size_t)e->n);
+  return out;
+}
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   StoreVals st = {0};
-  for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
-    if (nt_kind(nt, u) != NK_CallNode || !call_passes_local(nt, u, vn)) continue;
+  int nu = 0; int *us = rcm_calls(c, vn, vs, &nu);
+  for (int k = 0; k < nu; k++) {
+    int u = us[k];
     int mi = comp_scope_of(c, u) == vs ? an_call_target_mi(c, u) : -1;
     Scope *m = mi > 0 ? &c->scopes[mi] : NULL;
     for (int j = 0; m && j < m->nparams; j++) {
@@ -20176,6 +20237,7 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
     }
   }
   free(st.v);
+  free(us);
 }
 /* The stores into container local (vn, vs): its own, and for a parameter
    or a block parameter, those of what the caller or the iterator binds it
