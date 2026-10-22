@@ -2231,10 +2231,11 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       TyKind ek = rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT;
       int oread = node_is_oint(c, id);
       /* in range by the loop's own test: the cached element itself -- lifted
-         where the node answers an oint, which an array whose elements are
-         not marked nil-capable never holds (the analysis did not see the
-         loop's bound that the header cache proves) */
-      if (hc_index_in_range(c, recv, argv[0]) && (!oread || !repr_of(c, recv).elem_nil_marked)) {
+         where the node answers an oint, which an array no nil can reach at
+         run time never holds (elem_nil_reach: its own mark, a nil stored
+         through another name of it, or a gap a write past the end left; the
+         analysis did not see the loop's bound that the header cache proves) */
+      if (hc_index_in_range(c, recv, argv[0]) && (!oread || !repr_of(c, recv).elem_nil_reach)) {
         if (oread) buf_printf(b, "%s(", oint_of(ek));
         buf_printf(b, "%s[", hd); emit_int_expr(c, argv[0], b); buf_puts(b, "]");
         if (oread) buf_puts(b, ")");

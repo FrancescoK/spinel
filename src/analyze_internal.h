@@ -303,6 +303,8 @@ TyKind scan_throw_type(Compiler *c, const char *tag);
 TyKind yield_value_type(Compiler *c, int mi);
 /* Tail expressions of the blocks reaching `mi`'s yield (see analyze_util.c). */
 int yield_block_tails(Compiler *c, int mi, int *out, int max);
+/* Set: yield_block_tails answers a literal block's `next v` too. */
+extern int yield_block_tails_next;
 /* The block value reaching `mi` from a child's `super` (see analyze_util.c). */
 TyKind yield_value_type_via_super(Compiler *c, int mi);
 /* Whether a block-passing call hands on its enclosing method's own block

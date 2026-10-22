@@ -35089,7 +35089,7 @@ static int dispatch_answers_nil(Compiler *c, int cid, const char *name, int cmet
 static LocalVar *nullable_elem_local(Compiler *c, int at, const char *nm) {
   Scope *sc = nm ? comp_scope_of(c, at) : NULL;
   LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
-  if (!lv || lv->nullable_int_elem) return NULL;
+  if (!lv || (lv->nullable_int_elem & NIE_MARKED)) return NULL;
   return (lv->type == TY_INT_ARRAY || lv->type == TY_FLOAT_ARRAY) ? lv : NULL;
 }
 
@@ -35426,6 +35426,162 @@ int mutated_array(Compiler *c, int recv) {
   return recv;
 }
 
+/* The values a `yield` answers: the tails of the blocks its method is
+   called with (a `next v` too), every one of them -- a full buffer may have
+   left some out, so it grows until they fit. A malloc'd array (the caller
+   frees it), its length into *np. */
+static int *yield_value_tails(Compiler *c, int y, int *np) {
+  Scope *ys = comp_scope_of(c, y);
+  int ymi = ys ? (int)(ys - c->scopes) : -1;
+  int *out = NULL, n = 0;
+  if (ymi >= 0) {
+    int sv_ybn = yield_block_tails_next; yield_block_tails_next = 1;
+    for (int max = 64;; max *= 2) {
+      out = realloc(out, (size_t)max * sizeof *out);
+      n = yield_block_tails(c, ymi, out, max);
+      if (n < max) break;
+    }
+    yield_block_tails_next = sv_ybn;
+  }
+  *np = n;
+  return out;
+}
+
+/* The nil mark is the array's, not a name's: an int/float array expression
+   `v` denotes the array of a local, an ivar, or the ivar an object call hands
+   out (`k.arr`), and a user method's answer or a `yield`'s value is the array
+   its tail reads (`b = same(a)` reaches what `same` returns: its parameter,
+   and through it a). fn sees each such slot's NIE_ bits (`bits`, with `node`
+   the slot's read) and each expression on the way (`bits` NULL, `node` the
+   expression); `tail` is set past a method's or block's tail. The OR of what
+   fn answers. */
+typedef int (*ElemSlotFn)(Compiler *c, int *bits, int node, int tail, void *ud);
+static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
+  const NodeTable *nt = c->nt;
+  int r = fn(c, NULL, v, tail, ud);
+  int recv = v >= 0 && depth < 8 ? mutated_array(c, v) : -1;
+  if (recv < 0) return r;
+  if (nt_kind(nt, recv) == NK_YieldNode) {
+    int n, *tails = yield_value_tails(c, recv, &n);
+    for (int k = 0; k < n; k++) r |= elem_slots_d(c, tails[k], 1, depth + 1, fn, ud);
+    free(tails);
+    return r;
+  }
+  if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
+    const char *nm = nt_str(nt, recv, "name");
+    Scope *sc = nm ? comp_scope_of(c, recv) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (lv && (lv->type == TY_INT_ARRAY || lv->type == TY_FLOAT_ARRAY))
+      r |= fn(c, &lv->nullable_int_elem, recv, tail, ud);
+    return r;
+  }
+  ClassInfo *ci = NULL; int mi = -1, iv = -1;
+  if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) iv = nullable_elem_ivar(c, recv, &ci);
+  else if (nt_kind(nt, recv) == NK_CallNode) iv = object_call_ivar(c, recv, &ci, &mi);
+  if (iv < 0 && nt_kind(nt, recv) == NK_CallNode) {
+    int tg[CPT_MAX], ntg = cplan_targets(c, recv, tg, CPT_MAX);
+    for (int k = 0; k < ntg; k++) r |= elem_slots_d(c, scope_body_last(c, tg[k]), 1, depth + 1, fn, ud);
+    return r;
+  }
+  if (iv >= 0 && (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY))
+    r |= fn(c, &ci->ivar_nullable_int_elem[iv], recv, tail, ud);
+  return r;
+}
+
+/* Mark the array `v` denotes, through every slot of it: a store marks its
+   own name (NIE_MARKED, which types its reads) and sets NIE_STORED |
+   NIE_REACH, which the slots past a tail get without the typing mark. The
+   other names of the array -- the local a mutation's receiver was assigned
+   from, the argument a parameter was bound to -- are marked through this
+   too (mark_nullable_params_of_call, the alias arms of the fixpoint), or the
+   proved loop read through the unmarked name took the nil for an Integer.
+   1 when a bit was added. */
+static int mark_slot_fn(Compiler *c, int *bits, int node, int tail, void *ud) {
+  (void)c; (void)node;
+  int add = *(const int *)ud & (tail ? ~NIE_MARKED : ~0);
+  if (!bits || (*bits & add) == add) return 0;
+  *bits |= add;
+  return 1;
+}
+static int mark_elem_slot(Compiler *c, int v, int bits) { return elem_slots_d(c, v, 0, 0, mark_slot_fn, &bits); }
+
+/* Can a nil be in the array `v` denotes at run time, through any name of it
+   (NIE_REACH, or the typing mark itself)? */
+static int reach_slot_fn(Compiler *c, int *bits, int node, int tail, void *ud) {
+  (void)tail; (void)ud;
+  return bits ? (*bits & (NIE_MARKED | NIE_REACH)) != 0 : nullable_int_elem_expr(c, node, 0);
+}
+int elem_nil_reach_expr(Compiler *c, int v) { return elem_slots_d(c, v, 0, 0, reach_slot_fn, NULL); }
+
+/* A typed Array whose value lands in a boxed slot -- an element of a mixed
+   literal, a mixed local, ivar or parameter, a push onto a mixed Array -- is
+   the same array behind the box, so a nil a mutation through a boxed
+   receiver stores (`[a, "x"].each { |x| x << h[k] }`) can be in it: each
+   such array, wherever its value comes from (value positions), is marked
+   as one a nil reaches. Only a program with such a mutation marks any
+   (boxed_nil_store), and the mark asks only the proved loop read. */
+typedef struct { Compiler *c; int changed; } BoxMark;
+static int box_mark_leaf(const VpLeaf *leaf, void *ud) {
+  BoxMark *m = (BoxMark *)ud;
+  if (leaf->kind != VPK_EXPR) return 0;
+  TyKind t = infer_type(m->c, leaf->node);
+  if (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY) m->changed |= mark_elem_slot(m->c, leaf->node, NIE_STORED | NIE_REACH);
+  return 0;
+}
+static int mark_boxed_value(Compiler *c, int v) {
+  BoxMark m = { c, 0 };
+  if (v >= 0) for_each_value_position(c->nt, v, VPS_ALL, box_mark_leaf, &m);
+  return m.changed;
+}
+/* Does the program mutate a boxed receiver in a way that can store a nil
+   element (a typed Array behind the box takes it)? Asked once a round of
+   mark_nullable_int_locals, into nie_boxed_store. */
+static int nie_boxed_store;
+static int boxed_nil_store(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && infer_type(c, r) == TY_POLY && nullable_elem_mutation(c, id, 0)) return 1;
+  }
+  return 0;
+}
+static int is_poly_container(TyKind t) {
+  return t == TY_POLY_ARRAY || t == TY_SYM_POLY_HASH || t == TY_STR_POLY_HASH || t == TY_POLY_POLY_HASH;
+}
+/* The boxing places a typed Array's value can reach, for mark_boxed_value. */
+static int mark_boxed_arrays(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (!nie_boxed_store) return 0;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_ArrayNode, id) {
+    if (infer_type(c, id) != TY_POLY_ARRAY) continue;
+    int en = 0; const int *els = nt_arr(nt, id, "elements", &en);
+    for (int k = 0; els && k < en; k++) changed |= mark_boxed_value(c, els[k]);
+  }
+  NT_FOREACH_KIND(nt, NK_HashNode, id) {
+    if (!is_poly_container(infer_type(c, id))) continue;
+    int en = 0; const int *els = nt_arr(nt, id, "elements", &en);
+    for (int k = 0; els && k < en; k++) changed |= mark_boxed_value(c, nt_ref(nt, els[k], "value"));
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    Scope *ws = comp_scope_of(c, id);
+    LocalVar *wl = ws && nt_str(nt, id, "name") ? scope_local(ws, nt_str(nt, id, "name")) : NULL;
+    if (wl && wl->type == TY_POLY) changed |= mark_boxed_value(c, nt_ref(nt, id, "value"));
+  }
+  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, id)
+    if (infer_type(c, id) == TY_POLY) changed |= mark_boxed_value(c, nt_ref(nt, id, "value"));
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    if (!nm || r < 0 || !is_poly_container(infer_type(c, r)) || !(self_mutator_call(nm) || sp_streq(nm, "[]=") || sp_streq(nm, "store")))
+      continue;
+    int ca = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    for (int k = 0; av && k < an; k++) changed |= mark_boxed_value(c, av[k]);
+  }
+  return changed;
+}
+
 /* One level further in: can an element of a container HELD BY `v` be nil?
    `v` is the outer container -- an array of arrays, a hash whose
    values are arrays, or a slot holding one -- so `v[k][j]` reaches the scalar. */
@@ -35478,12 +35634,12 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     Scope *s = comp_scope_of(c, v);
     const char *n = nt_str(nt, v, "name");
     LocalVar *lv = n && s ? scope_local(s, n) : NULL;
-    return lv && lv->nullable_int_elem;
+    return lv && (lv->nullable_int_elem & NIE_MARKED);
   }
   if (nt_kind(nt, v) == NK_InstanceVariableReadNode) {
     ClassInfo *ci = NULL;
     int iv = nullable_elem_ivar(c, v, &ci);
-    return iv >= 0 && ci->ivar_nullable_int_elem[iv];
+    return iv >= 0 && (ci->ivar_nullable_int_elem[iv] & NIE_MARKED);
   }
   /* A conditional's value is one of its arms, as nullable_int_value walks
      them: the array is marked if any arm's array is. An absent arm is a nil,
@@ -35558,7 +35714,7 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
       ClassInfo *ci = NULL; int mi = -1;
       int iv = object_call_ivar(c, v, &ci, &mi);
       if (mi > 0) return nullable_int_elem_expr(c, scope_body_last(c, mi), depth + 1);
-      return iv >= 0 && ci->ivar_nullable_int_elem[iv];
+      return iv >= 0 && (ci->ivar_nullable_int_elem[iv] & NIE_MARKED);
     }
     return 0;
   }
@@ -37572,7 +37728,6 @@ void nn_inference_round(Compiler *c) {
   nn_epoch++;
 }
 
-extern int yield_block_tails_next;   /* analyze_util.c */
 /* a String operand that is never nil: a literal */
 static int nn_str_literal(const NodeTable *nt, int n) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
@@ -38663,9 +38818,21 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
        makes the two differ: --int-overflow=promote boxes `[f(1), f(-1)]`
        once f answers poly, after the copy min_by runs in took its
        parameter's type from it, and the nil element read as an Integer. */
-    if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !p->nullable_int_elem &&
+    if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !(p->nullable_int_elem & NIE_MARKED) &&
         (nullable_int_elem_expr(c, a, 0) || infer_type(c, a) == TY_POLY_ARRAY || infer_type(c, a) == TY_POLY))
-      { p->nullable_int_elem = 1; changed = 1; }
+      { p->nullable_int_elem |= NIE_MARKED; changed = 1; }
+    /* a nil some other name put into the argument's array is in the
+       parameter's: the proved loop read asks (NIE_REACH) */
+    if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !(p->nullable_int_elem & NIE_REACH) &&
+        elem_nil_reach_expr(c, a))
+      { p->nullable_int_elem |= NIE_REACH; changed = 1; }
+    /* ... and the other way: the parameter IS the caller's array, so a nil
+       the method stores into it (`def add(x, k) = x << h[k]`) is in the
+       argument's array too */
+    if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && (p->nullable_int_elem & NIE_STORED))
+      changed |= mark_elem_slot(c, a, NIE_STORED | NIE_REACH);
+    /* a mixed parameter boxes the argument's array (mark_boxed_arrays) */
+    if (p->type == TY_POLY && nie_boxed_store) changed |= mark_boxed_value(c, a);
     if ((p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int) continue;
     /* a strict parameter's nil raises at the call: its slot stays plain */
     if (param_strict(c, mi, k, NULL, NULL)) continue;
@@ -39903,6 +40070,7 @@ static void mark_nullable_int_locals(Compiler *c) {
   for (long round = 0; round < rounds_max; round++) {
     int changed = 0;
     nn_compute(c, (int)round);
+    nie_boxed_store = boxed_nil_store(c);
     /* A method whose own return expression can be nil hands it to every
        caller. Without this, only an --rbs-seeded signature made a method
        nilable, so `def pass(x) = x.p_` silently laundered the nil into a
@@ -40019,10 +40187,17 @@ static void mark_nullable_int_locals(Compiler *c) {
       int v = nt_ref(nt, id, "value");
       if (v < 0) continue;
       LocalVar *lv = nullable_elem_local(c, id, nt_str(nt, id, "name"));
-      if (!lv) continue;
       /* the value is the array itself, however it was built: a literal, an
          alias of another marked local, a chain, a method that returns one */
-      if (nullable_int_elem_expr(c, v, 0)) { lv->nullable_int_elem = 1; changed = 1; }
+      if (lv && nullable_int_elem_expr(c, v, 0)) { lv->nullable_int_elem |= NIE_MARKED; changed = 1; }
+      /* ... and a marked local marks the array it was assigned from
+         (`b = a; b << nil` puts the nil in a) */
+      Scope *ws = comp_scope_of(c, id);
+      LocalVar *wl = ws && nt_str(nt, id, "name") ? scope_local(ws, nt_str(nt, id, "name")) : NULL;
+      if (wl && (wl->type == TY_INT_ARRAY || wl->type == TY_FLOAT_ARRAY)) {
+        if (wl->nullable_int_elem & NIE_STORED) changed |= mark_elem_slot(c, v, NIE_STORED | NIE_REACH);
+        if (!(wl->nullable_int_elem & NIE_REACH) && elem_nil_reach_expr(c, v)) { wl->nullable_int_elem |= NIE_REACH; changed = 1; }
+      }
     }
     /* the same slot written through an ivar */
     NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, id) {
@@ -40030,29 +40205,21 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (v < 0) continue;
       ClassInfo *ci = NULL;
       int iv = nullable_elem_ivar(c, id, &ci);
-      if (iv < 0 || ci->ivar_nullable_int_elem[iv]) continue;
+      if (iv < 0) continue;
       if (ci->ivar_types[iv] != TY_INT_ARRAY && ci->ivar_types[iv] != TY_FLOAT_ARRAY) continue;
-      if (nullable_int_elem_expr(c, v, 0)) { ci->ivar_nullable_int_elem[iv] = 1; changed = 1; }
+      /* (a marked ivar marks the array it was assigned from, as a local does) */
+      if (ci->ivar_nullable_int_elem[iv] & NIE_STORED) changed |= mark_elem_slot(c, v, NIE_STORED | NIE_REACH);
+      if (!(ci->ivar_nullable_int_elem[iv] & NIE_REACH) && elem_nil_reach_expr(c, v)) { ci->ivar_nullable_int_elem[iv] |= NIE_REACH; changed = 1; }
+      if (!(ci->ivar_nullable_int_elem[iv] & NIE_MARKED) && nullable_int_elem_expr(c, v, 0)) { ci->ivar_nullable_int_elem[iv] |= NIE_MARKED; changed = 1; }
     }
     /* A mutation that stores such a value -- or copies in an array that can
        hold one -- marks the array it mutates, whether it names a local, an
        ivar or the ivar an object call hands out (`k.arr << v`, `k.arr[i] = v`). */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      int recv = mutated_array(c, nt_ref(nt, id, "receiver"));
-      if (recv < 0 || !nullable_elem_mutation(c, id, 0)) continue;
-      if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
-        LocalVar *lv = nullable_elem_local(c, recv, nt_str(nt, recv, "name"));
-        if (lv) { lv->nullable_int_elem = 1; changed = 1; }
-        continue;
-      }
-      ClassInfo *ci = NULL; int mi = -1, iv = -1;
-      if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) iv = nullable_elem_ivar(c, recv, &ci);
-      else if (nt_kind(nt, recv) == NK_CallNode) iv = object_call_ivar(c, recv, &ci, &mi);
-      if (iv >= 0 && !ci->ivar_nullable_int_elem[iv] &&
-          (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY)) {
-        ci->ivar_nullable_int_elem[iv] = 1; changed = 1;
-      }
+      int recv = nt_ref(nt, id, "receiver");
+      if (recv >= 0 && nullable_elem_mutation(c, id, 0)) changed |= mark_elem_slot(c, recv, NIE_MARKED | NIE_STORED | NIE_REACH);
     }
+    changed |= mark_boxed_arrays(c);
     /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element
        (elem_block_params). A poly parameter is marked too: the typed
        emitters (map, select, reject, inject, ...) shadow it with the
