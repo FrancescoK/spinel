@@ -9086,6 +9086,47 @@ int infer_inherited_ivars(Compiler *c) {
 /* Does `recv` answer the class variable `cvname`: a read of it, or a
    zero-argument call to a method whose value is that read (`K.h[k] = v`
    through `def self.h = @@h`)? */
+/* The zero-parameter methods whose value is a class-variable read, chained
+   by name (the read's variable per method), kept while the scopes and the
+   nodes stand still. The call-receiver side asked this of every scope per
+   index-write site, for every class variable assigned an empty hash, per
+   round: on a Rails program (119k scopes) the walk was 6% of a window. */
+static ANameHash rcv_names; static int *rcv_first, *rcv_next, rcv_cap;
+static const char **rcv_cv;
+static const Compiler *rcv_c; static const NodeTable *rcv_nt;
+static int rcv_ntc = -1, rcv_nscopes = -1; static unsigned rcv_gen;
+static void rcv_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (rcv_c == c && rcv_nt == nt && rcv_ntc == nt->count && rcv_nscopes == c->nscopes &&
+      rcv_gen == comp_scope_index_gen()) return;
+  anh_free(&rcv_names); memset(&rcv_names, 0, sizeof rcv_names);
+  free(rcv_first); rcv_first = NULL; rcv_cap = 0;
+  size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
+  rcv_next = realloc(rcv_next, sizeof(int) * ns);
+  rcv_cv = realloc(rcv_cv, sizeof(const char *) * ns);
+  if (!rcv_next || !rcv_cv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *s = &c->scopes[mi];
+    rcv_next[mi] = -1; rcv_cv[mi] = NULL;
+    if (!s->name || s->nparams > 0) continue;
+    int last = scope_body_last(c, mi);
+    if (last < 0 || nt_kind(nt, last) != NK_ClassVariableReadNode) continue;
+    const char *rn = nt_str(nt, last, "name");
+    if (!rn) continue;
+    int e = anh_find(&rcv_names, s->name);
+    if (e < 0) {
+      anh_add(&rcv_names, s->name); e = anh_find(&rcv_names, s->name);
+      if (e >= rcv_cap) {
+        rcv_cap = e + 64;
+        rcv_first = realloc(rcv_first, sizeof(int) * (size_t)rcv_cap);
+        if (!rcv_first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      rcv_first[e] = -1;
+    }
+    rcv_cv[mi] = rn; rcv_next[mi] = rcv_first[e]; rcv_first[e] = mi;
+  }
+  rcv_c = c; rcv_nt = nt; rcv_ntc = nt->count; rcv_nscopes = c->nscopes; rcv_gen = comp_scope_index_gen();
+}
 static int recv_is_cvar(Compiler *c, int recv, const char *cvname) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return 0;
@@ -9097,14 +9138,10 @@ static int recv_is_cvar(Compiler *c, int recv, const char *cvname) {
       nt_ref(nt, recv, "block") >= 0) return 0;
   const char *mname = nt_str(nt, recv, "name");
   if (!mname) return 0;
-  for (int mi = 0; mi < c->nscopes; mi++) {
-    Scope *s = &c->scopes[mi];
-    if (!s->name || s->nparams > 0 || !sp_streq(s->name, mname)) continue;
-    int last = scope_body_last(c, mi);
-    if (last < 0 || nt_kind(nt, last) != NK_ClassVariableReadNode) continue;
-    const char *rn = nt_str(nt, last, "name");
-    if (rn && sp_streq(rn, cvname)) return 1;
-  }
+  rcv_build(c);
+  int e = anh_find(&rcv_names, mname);
+  for (int mi = e >= 0 ? rcv_first[e] : -1; mi >= 0; mi = rcv_next[mi])
+    if (sp_streq(rcv_cv[mi], cvname)) return 1;
   return 0;
 }
 
