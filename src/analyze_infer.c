@@ -1825,6 +1825,10 @@ int range_enum_redispatch(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
+  /* a Range reopen's own method of the name is the call's target, as the
+     inference arm for a Range receiver takes it (`class Range; def sum = 0;
+     end`) */
+  if (an_reopen_owner(c, id, "Range") >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   int args = nt_ref(nt, id, "arguments"); int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -1912,6 +1916,9 @@ int hash_enum_redispatch(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
+  /* a Hash reopen's own method of the name is the call's target, not the
+     pair array (`class Hash; def uniq = "mine"; end`) */
+  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   /* blockless pair-order Enumerables: min/max compare the [k, v] pairs */
   if (block < 0 && (is_extrema_family(name)))
@@ -3103,6 +3110,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
             c->scopes[mi].nparams >= 1 && c->scopes[mi].rest_idx < 0) { *out = TY_POLY; return 1; }
       }
     }
+    /* a program's nil? or is_a? answering anything but a bool: the boxed
+       call can reach it, so its answer is that value, as for == above */
+    if (rt == TY_POLY && (sp_streq(name, "nil?") || is_kind_query(name)) &&
+        an_user_ret_disagrees(c, name, TY_BOOL))
+      { *out = TY_POLY; return 1; }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"))
@@ -8164,8 +8176,7 @@ static int chain_has_aliases(Compiler *c, int ci) {
    a.size`), which leaves the block unused, as codegen calls it
    (reopen_override_block_ok). The reopen's method, or -1. */
 static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t); }
-static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
-  const char *cn = ty_is_hash(rt) ? "Hash" : "Array";
+static int reopen_owner_of(Compiler *c, int id, const char *cn, const char *name) {
   /* A block-carrying call of a builtin's name is the reopen's only when it
      does not yield; asked first whether the program reopens the class at
      all, counted again only as the class table grows (a lookup before the
@@ -8174,7 +8185,8 @@ static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *n
     static int ahr_n = -1, ahr_any = 0;
     if (ahr_n != c->nclasses) {
       ahr_n = c->nclasses;
-      ahr_any = comp_class_index(c, "Array") >= 0 || comp_class_index(c, "Hash") >= 0;
+      ahr_any = comp_class_index(c, "Array") >= 0 || comp_class_index(c, "Hash") >= 0 ||
+                comp_class_index(c, "Range") >= 0 || comp_class_index(c, "Symbol") >= 0;
     }
     if (!ahr_any) return -1;
   }
@@ -8185,6 +8197,25 @@ static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *n
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, name)) return -1;
   if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name) && c->scopes[ami].yields) return -1;
   return ami;
+}
+static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
+  return reopen_owner_of(c, id, ty_is_hash(rt) ? "Hash" : "Array", name);
+}
+/* The method the program's reopen of builtin class cn ("Array", "Hash",
+   "Range" or "Symbol") defines itself under call id's name, which the call
+   reaches over the builtin's (a module the reopen includes does not
+   displace the builtin's method). -1 for none, and for a call marked
+   builtin_only. A rewrite that turns the call into another builtin's asks
+   it first. */
+int an_reopen_owner(Compiler *c, int id, const char *cn) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || nt_int(c->nt, id, "builtin_only", 0)) return -1;
+  int mi = reopen_owner_of(c, id, cn, name);
+  /* (a Symbol or Range one; an Array or Hash one keeps the answer the
+     inference arm above gives it) */
+  if (mi >= 0 && c->scopes[mi].is_include_copy && builtin_method_known(cn, name) &&
+      (sp_streq(cn, "Symbol") || sp_streq(cn, "Range"))) return -1;
+  return mi;
 }
 
 static TyKind infer_call_prelude(Compiler *c, int id) {

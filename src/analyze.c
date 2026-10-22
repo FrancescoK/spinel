@@ -9086,6 +9086,10 @@ static int desugar_symbol_string_methods(Compiler *c) {
     if (recv < 0 || infer_type(c, recv) != TY_SYMBOL) continue;
     /* an `at` desugar_array_at rewrote: Symbol has #[] but no #at */
     if (nt_int(nt, id, "was_at", 0)) continue;
+    /* a Symbol reopen's own method of the name is the call's target, which
+       the call plan takes for a Symbol receiver (`class Symbol; def index(x)
+       = 0; end`): the call stays on the Symbol */
+    if (an_reopen_owner(c, id, "Symbol") >= 0) continue;
     /* Symbol#<=> is defined only between Symbols: reading both sides as text
        would make :a <=> "a" answer 0 where Ruby answers nil, so leave a
        non-Symbol operand alone and let codegen emit the nil (#3081). */
@@ -10534,8 +10538,9 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int ha = nt_ref(nt, id, "arguments");
     int hac = 0;
     if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
+    /* (not where a Hash reopen defines its own store) */
     if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
-        ty_is_hash(infer_type(c, hrc))) {
+        ty_is_hash(infer_type(c, hrc)) && an_reopen_owner(c, id, "Hash") < 0) {
       nt_node_set_str(nt, id, "name", "[]=");
       *changed = 1;
     }
@@ -53532,7 +53537,7 @@ static void an_phase_reconcile_check(Compiler *c) {
     if (!snm || !sp_streq(snm, "store") || nt_ref(c->nt, sid, "block") >= 0) continue;
     int src = nt_ref(c->nt, sid, "receiver"), sa = nt_ref(c->nt, sid, "arguments"), sac = 0;
     if (sa >= 0) nt_arr(c->nt, sa, "arguments", &sac);
-    if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)))
+    if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)) && an_reopen_owner(c, sid, "Hash") < 0)
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
