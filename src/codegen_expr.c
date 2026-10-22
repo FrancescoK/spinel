@@ -2622,6 +2622,9 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     else if (wk2 == 2 && civ_is_oint(c, wcid2, wiv2)) emit_oint_expr(c, v, ivt2, b);
     else if (oint_kind(ivt2) && node_may_be_nil(c, v)) refuse_nil_store(c, v, ivt2, "an instance variable write");
     else if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, ptr_array_new_c(ivt2));
+    /* `def initialize = (@a = [X.new])` into a narrowed pointer-array ivar:
+       the literal builds at the slot's kind, as the statement form does */
+    else if (ty_is_ptr_array(ivt2) && emit_ptr_array_build(c, v, ivt2, b)) { }
     else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));
     else if (v_empty_hash2 && ty_is_hash(ivt2)) {
