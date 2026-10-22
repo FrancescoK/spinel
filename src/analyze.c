@@ -13486,6 +13486,42 @@ static void oa_restore_pin(Compiler *c, OAS *sl) {
   else c->scopes[sl->sidx].ret_oa_pin = back;
 }
 
+/* The slots by the name a call on a dynamic receiver reaches them under: an
+   ivar slot by its reader's name, a method's value and parameter slots by
+   the method's. The kill such a call makes read every slot, at every such
+   call; on a Rails program the lowered sends are such calls, and the scan
+   was most of the pass (two fifths of a sampled window). Listed once per
+   pass, after the slots are collected; a name's slots chain from first
+   through next, newest first. */
+typedef struct { ANameHash names; int *first, *next; int cap; } OaByName;
+static OaByName oa_byname_build(Compiler *c, const OAS *sl, int n) {
+  OaByName b; memset(&b, 0, sizeof b);
+  b.next = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!b.next) { fprintf(stderr, "oom\n"); exit(1); }
+  for (int pi = 0; pi < n; pi++) {
+    const char *key = sl[pi].ici >= 0 ? c->classes[sl[pi].ici].ivars[sl[pi].iiv] + 1 : c->scopes[sl[pi].sidx].name;
+    b.next[pi] = -1;
+    if (!key) continue;
+    int e = anh_find(&b.names, key);
+    if (e < 0) {
+      anh_add(&b.names, key); e = anh_find(&b.names, key);
+      if (e >= b.cap) {
+        b.cap = e + 64;
+        b.first = realloc(b.first, sizeof(int) * (size_t)b.cap);
+        if (!b.first) { fprintf(stderr, "oom\n"); exit(1); }
+      }
+      b.first[e] = -1;
+    }
+    b.next[pi] = b.first[e]; b.first[e] = pi;
+  }
+  return b;
+}
+static int oa_byname_first(const OaByName *b, const char *name) {
+  int e = name ? anh_find(&b->names, name) : -1;
+  return e >= 0 ? b->first[e] : -1;
+}
+static void oa_byname_free(OaByName *b) { anh_free(&b->names); free(b->first); free(b->next); }
+
 static int narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -13957,6 +13993,7 @@ static int narrow_object_arrays(Compiler *c) {
   for (int k = 0; k < nwn; k++) free(wn[k]);
   free(wn); free(wcls);
 
+  OaByName oa_bn = oa_byname_build(c, sl, n);
   /* 4. CallNodes: classify slot-as-receiver (supported op + element evidence)
         and slot-as-arg (positional into a resolvable free method -> edge). */
   for (int id = 0; id < nt->count; id++) {
@@ -14094,17 +14131,12 @@ static int narrow_object_arrays(Compiler *c) {
              method at runtime (the poly dispatch arms), passing boxed
              values and expecting a boxed one back; neither a param slot nor
              a return slot reachable that way must narrow. */
-          for (int pi = 0; pi < n; pi++) {
+          for (int pi = oa_byname_first(&oa_bn, name); pi >= 0; pi = oa_bn.next[pi]) {
             if (!sl[pi].alive) continue;
-            if (sl[pi].ici >= 0) {
-              /* a dynamic receiver may be this class: its reader would hand
-                 the unboxed array to a caller expecting the boxed one */
-              if (sp_streq(c->classes[sl[pi].ici].ivars[sl[pi].iiv] + 1, name)) sl[pi].alive = 0;
-              continue;
-            }
+            /* a dynamic receiver may be this class: its reader would hand
+               the unboxed array to a caller expecting the boxed one */
+            if (sl[pi].ici >= 0 || !sl[pi].lv) { sl[pi].alive = 0; continue; }
             Scope *PS = &c->scopes[sl[pi].sidx];
-            if (!PS->name || !sp_streq(PS->name, name)) continue;
-            if (!sl[pi].lv) { sl[pi].alive = 0; continue; }
             for (int pk = 0; pk < PS->nparams; pk++)
               if (PS->pnames[pk] && scope_local(PS, PS->pnames[pk]) == sl[pi].lv)
                 sl[pi].alive = 0;
@@ -14188,6 +14220,7 @@ static int narrow_object_arrays(Compiler *c) {
     }
     arg_layout_free(&L);
   }
+  oa_byname_free(&oa_bn);
 
   /* 5. LocalVariableWriteNode sources: object literal -> evidence; alias to
         another slot -> edge; empty/nil -> neutral; anything else -> kill. */
