@@ -3041,6 +3041,19 @@ int an_bi_generic_splat(Compiler *c, int id) {
   return builtin_recv_arity_span(name, &lo, &hi);
 }
 
+/* Does some class's chain answer `name` as a class method? From the chain
+   memo's by-name list (comp_name_responders) while it can be trusted, class
+   by class otherwise. The stat predicates' ask below walked every class for
+   every boxed call that reached it, whatever its name. */
+static int an_any_class_cmethod(Compiler *c, const char *name) {
+  int n;
+  comp_name_responders(c, name, 1, &n);
+  if (n >= 0) return n > 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return 1;
+  return 0;
+}
+
 /* A boxed receiver or a boxed first operand (infer_call_inner's rules, in their order) */
 static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind *out) {
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
@@ -3911,23 +3924,15 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* a stat's mode and numeric fields, as the TY_IO arms type them, where
          the poly-IO arm emits them: not where a class method may own the
          name or an OpenStruct may carry it */
-      if (argc == 0 && !sp_feature_required("ostruct") && boxed_stat_name(name)) {
-        int cm = 0;
-        for (int k = 0; k < c->nclasses && !cm; k++)
-          if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
-        if (!cm) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
-      }
+      if (argc == 0 && !sp_feature_required("ostruct") && boxed_stat_name(name) && !an_any_class_cmethod(c, name))
+        { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       /* boxed: an Enumerator answers itself, a stream its 0 */
       if (sp_streq(name, "rewind")) { *out = TY_POLY; return 1; }
       /* a stat's predicates, as the TY_IO arms type them, where the poly-IO
          arm emits them (not where a class method may own the name): size?
          is the int-or-nil count */
-      int stat_pred_cm = 0;
-      for (int k = 0; k < c->nclasses && !stat_pred_cm; k++)
-        if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) stat_pred_cm = 1;
-      if (argc == 0 && !stat_pred_cm && sp_streq(name, "size?")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
-      if (argc == 0 && !stat_pred_cm && boxed_stat_pred(name) >= 0)
-        { *out = an_poly_concrete(c, name, TY_BOOL); return 1; }
+      if (argc == 0 && (sp_streq(name, "size?") || boxed_stat_pred(name) >= 0) && !an_any_class_cmethod(c, name))
+        { *out = an_poly_concrete(c, name, sp_streq(name, "size?") ? TY_INT : TY_BOOL); return 1; }
       if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "putc"))
         { *out = an_poly_concrete(c, name, TY_NIL); return 1; }
       /* printf answers the boxed nil the TY_IO arm answers */
