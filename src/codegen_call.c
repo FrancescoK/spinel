@@ -17414,8 +17414,15 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &inner);   /* emits the loop into g_pre, result expr into inner */
   }
   Buf boxed; memset(&boxed, 0, sizeof boxed);
+  /* A desugared block-form foreach (desugar_dir_surface) answers its break
+     value, and nil when the iteration runs out. */
+  int foreach_nil = nt_int(nt, id, "foreach_nil_result", 0);
+  if (foreach_nil && inner.p && inner.p[0])
+    buf_printf(&boxed, "((void)(%s), sp_box_nil())", inner.p);
+  else if (foreach_nil)
+    buf_puts(&boxed, "sp_box_nil()");
   /* a call answering its oint (node_is_oint) boxes with its nil */
-  if (inner.p && inner.p[0] && !stmt_form && !enum_walk && oint_kind(normal_ty) && node_is_oint(c, id))
+  else if (inner.p && inner.p[0] && !stmt_form && !enum_walk && oint_kind(normal_ty) && node_is_oint(c, id))
     buf_printf(&boxed, "%s(%s)", oint_box(normal_ty), inner.p);
   else if (inner.p && inner.p[0]) emit_boxed_text(c, normal_ty, inner.p, &boxed);
   /* --share-strings: a String method given a block that answers its
