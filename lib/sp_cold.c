@@ -30,6 +30,9 @@
 #include <fnmatch.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(__linux__)
+#include <sys/sysmacros.h> /* major/minor for File::Stat's device components */
+#endif
 #include <sys/resource.h>   /* getpriority for Process.getpriority */
 #include <fcntl.h>      /* AT_FDCWD for statx */
 #include <errno.h>
@@ -2937,7 +2940,8 @@ sp_File *sp_io_stat_handle(sp_File *f) {SP_GC_ROOT(f);
 }
 /* One stat(2) field by index, so File::Stat's numeric accessors need one
    runtime entry rather than a dozen. 0=uid 1=gid 2=nlink 3=dev 4=ino
-   5=blksize 6=blocks 7=rdev. nil when the stat itself fails. */
+   5=blksize 6=blocks 7=rdev 8=dev_major 9=dev_minor. nil when the stat
+   itself fails, or for 8 and 9 where the platform has no major/minor. */
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok);
 sp_oint sp_stat_field(sp_File *f, sp_int which) {SP_GC_ROOT(f); int ok = 1; sp_int n = sp_stat_field_n(f, which, &ok); return ok ? sp_oint_of(n) : sp_oint_nil(); }
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
@@ -2957,6 +2961,18 @@ static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
     case 4: return (sp_int)st.st_ino;
     case 5: return (sp_int)st.st_blksize;
     case 6: return (sp_int)st.st_blocks;
+    case 8:
+#if defined(major)
+      return (sp_int)(unsigned int)major(st.st_dev);
+#else
+      *ok = 0; return 0;
+#endif
+    case 9:
+#if defined(minor)
+      return (sp_int)(unsigned int)minor(st.st_dev);
+#else
+      *ok = 0; return 0;
+#endif
     default: return (sp_int)st.st_rdev;
   }
 }
@@ -3015,9 +3031,29 @@ sp_int sp_stat_type_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
     default: return S_ISSOCK(st.st_mode) ? 1 : 0;
   }
 }
+/* Real/effective primary groups and supplementary groups, as CRuby tests them. */
+static sp_bool sp_stat_group_member(gid_t gid) {
+  if (gid == getgid() || gid == getegid()) return 1;
+  int n = getgroups(0, NULL);
+  if (n <= 0) return 0;
+  gid_t *groups = (gid_t *)malloc((size_t)n * sizeof(gid_t));
+  if (!groups) return 0;
+  n = getgroups(n, groups);
+  sp_bool found = 0;
+  for (int i = 0; i < n; i++) if (groups[i] == gid) { found = 1; break; }
+  free(groups);
+  return found;
+}
+static sp_bool sp_stat_executable_real(const struct stat *st) {
+  uid_t uid = getuid();
+  if (uid == 0) return (st->st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+  if (uid == st->st_uid) return (st->st_mode & S_IXUSR) != 0;
+  if (sp_stat_group_member(st->st_gid)) return (st->st_mode & S_IXGRP) != 0;
+  return (st->st_mode & S_IXOTH) != 0;
+}
 /* The mode-derived predicates of File::Stat that no path helper covers. Kinds:
    0=pipe? 1=zero? 2=readable? 3=writable? 4=executable? 5=blockdev?
-   6=chardev? 7=size? (non-zero size, else nil). */
+   6=chardev? 8=executable_real? (7, size?, is sp_stat_size_q). */
 sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
   struct stat st;
   int r;
@@ -3035,6 +3071,7 @@ sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
     case 4: return (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) ? 1 : 0;
     case 5: return S_ISBLK(st.st_mode) ? 1 : 0;
     case 6: return S_ISCHR(st.st_mode) ? 1 : 0;
+    case 8: return sp_stat_executable_real(&st);
     default: return 0;
   }
 }

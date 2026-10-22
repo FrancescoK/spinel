@@ -3895,7 +3895,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       if (argc == 0 && !sp_feature_required("ostruct") &&
           (sp_streq(name, "mode") || sp_streq(name, "uid") || sp_streq(name, "gid") ||
            sp_streq(name, "nlink") || sp_streq(name, "dev") || sp_streq(name, "ino") ||
-           sp_streq(name, "blksize") || sp_streq(name, "blocks") || sp_streq(name, "rdev"))) {
+           sp_streq(name, "blksize") || sp_streq(name, "blocks") || sp_streq(name, "rdev") || sp_streq(name, "dev_major") || sp_streq(name, "dev_minor"))) {
         int cm = 0;
         for (int k = 0; k < c->nclasses && !cm; k++)
           if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
@@ -3911,7 +3911,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) stat_pred_cm = 1;
       if (argc == 0 && !stat_pred_cm && sp_streq(name, "size?")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       if (argc == 0 && !stat_pred_cm && (sp_streq(name, "pipe?") || sp_streq(name, "readable?") ||
-                        sp_streq(name, "writable?") || sp_streq(name, "executable?") ||
+                        sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "executable_real?") ||
                         sp_streq(name, "blockdev?") || sp_streq(name, "chardev?") ||
                         sp_streq(name, "file?") || sp_streq(name, "directory?") ||
                         sp_streq(name, "symlink?") || sp_streq(name, "owned?") ||
