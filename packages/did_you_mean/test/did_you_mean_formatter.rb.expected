@@ -11,3 +11,5 @@ true
  MAYBE BAR OR BAZ?
 
 Did you mean?  bar
+"LOUD: a,b"
+"\nDid you mean?  x"

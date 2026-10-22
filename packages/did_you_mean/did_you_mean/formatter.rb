@@ -13,7 +13,7 @@ module DidYouMean
     def message_for(corrections)
       warn "The instance method #message_for has been deprecated. " \
            "Please use the class method DidYouMean::Formatter.message_for(...) instead."
-      Formatter.message_for(corrections)
+      self.class.message_for(corrections)
     end
   end
 
