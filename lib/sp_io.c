@@ -1710,6 +1710,13 @@ const char *sp_File_readpartial(sp_File *f, sp_int n) {
   return r;
 }
 
+/* readpartial checks its count before the stream, as CRuby does; sysread
+   words a negative count differently and keeps sp_File_readpartial. */
+const char *sp_File_readpartial_checked(sp_File *f, sp_int n) {SP_GC_ROOT(f);
+  if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
+  return sp_File_readpartial(f, n);
+}
+
 const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {SP_GC_ROOT(f);
   if (eof) *eof = 0;
   if (is_recv) sp_sock_nb_prepare(f, "recv_nonblock");

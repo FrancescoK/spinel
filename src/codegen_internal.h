@@ -241,6 +241,7 @@ int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b);
+const char *io_readpartial_entry(const char *name);
 int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
 void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);

@@ -3621,7 +3621,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && kwh < 0 && splat_a < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL, -1, TY_UNKNOWN, PC_SAME);
     int trp = ++g_tmp;
-    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = %s((sp_File *)_t%d.v.p, ", trp, io_readpartial_entry(name), tv);
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_printf(b, "); _t%d = ", tr);

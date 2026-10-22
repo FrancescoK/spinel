@@ -1,3 +1,4 @@
+[ArgumentError, "negative length -1 given"]
 "hello"
 " world"
 EOFError

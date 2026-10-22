@@ -447,6 +447,13 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   buf_puts(b, "; })");
 }
 
+/* The runtime entry a one-argument readpartial or sysread reads through:
+   readpartial checks its length first, as CRuby does (ArgumentError for a
+   negative one); every emitter of the call asks here. */
+const char *io_readpartial_entry(const char *name) {
+  return sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_readpartial";
+}
+
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b) {
   if (!io_read_nonblock_outbuf(c, id)) return 0;
   if (repr_share_rule(c)) emit_io_read_nonblock_buffer(c, id, 0, b);
@@ -1488,7 +1495,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             buf_puts(b, "sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
             buf_printf(b, "const char *_t%d = ", tsp);
           }
-          buf_printf(b, "%s(_t%d, ", argc >= 2 ? "sp_File_readpartial_or_nil" : "sp_File_readpartial", tio2);
+          buf_printf(b, "%s(_t%d, ", argc >= 2 ? "sp_File_readpartial_or_nil" : io_readpartial_entry(name), tio2);
           emit_int_expr(c, argv[0], b);
           buf_puts(b, ")");
           if (argc >= 2) {
@@ -1988,7 +1995,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
         buf_printf(b, "const char *_t%d = ", tsr);
       }
-      buf_printf(b, "%s(%s, ", argc >= 2 ? "sp_File_readpartial_or_nil" : "sp_File_readpartial", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_printf(b, "%s(%s, ", argc >= 2 ? "sp_File_readpartial_or_nil" : io_readpartial_entry(name), r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (argc >= 2) {
         { Buf hr; memset(&hr, 0, sizeof hr);
           /* a buffer that is also appended to is a mutable String handle:
