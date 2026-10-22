@@ -90,3 +90,28 @@ module Named2
   end
 end
 p Named2.pick
+
+# the first arm, chosen when the condition holds
+ENV["SPINEL_TEST_NEVER_SET"] = "1"
+module BareTrue
+  module_function
+
+  if ENV["SPINEL_TEST_NEVER_SET"]
+    def kind = "set"
+  else
+    def kind = "unset"
+  end
+end
+
+module NamedTrue
+  if ENV["SPINEL_TEST_NEVER_SET"]
+    def twice(x) = x * 3
+  else
+    def twice(x) = x * 2
+  end
+  module_function :twice
+end
+ENV.delete("SPINEL_TEST_NEVER_SET")
+
+p BareTrue.kind
+p NamedTrue.twice(21)
