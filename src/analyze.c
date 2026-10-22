@@ -52649,7 +52649,13 @@ static void an_phase_reconcile_check(Compiler *c) {
           if (!comp_reader_in_chain(c, ci3, vnm, &pdc3)) continue;
           char ivn3[300]; snprintf(ivn3, sizeof ivn3, "@%s", comp_resolve_alias(c, pdc3, vnm));
           int ix3 = comp_ivar_index(&c->classes[pdc3], ivn3);
-          if (ix3 >= 0 && c->classes[pdc3].ivar_types[ix3] != lv->type) widen2 = 1;
+          if (ix3 < 0) continue;
+          TyKind it3 = c->classes[pdc3].ivar_types[ix3];
+          /* an instance of a Hash subclass starts with its Hash by value: the
+             local's variant is the one the chain embeds, no other layout */
+          int emb3 = ty_is_object(it3) && comp_ary_is_hash(c, ty_object_class(it3)) &&
+                     comp_ary_kind(c, ty_object_class(it3)) == lv->type;
+          if (it3 != lv->type && !emb3) widen2 = 1;
         }
       }
     }
