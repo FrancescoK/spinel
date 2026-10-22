@@ -48463,6 +48463,7 @@ static void an_phase_class_structure(Compiler *c) {
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
   settle_object_builtin_aliases(c);   /* alias original_dup dup: the builtin's, or an ancestor's */
+  settle_mixin_aliases(c);            /* include A; alias_method :b, :a; include B: A's a */
   rewrite_builtin_alias_self_calls(c, 1);
   /* super into Array, X.new / X[], implicit self, in the class's methods and
      the copies its modules put in (#7449) */
