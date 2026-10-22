@@ -2833,6 +2833,11 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	  { echo "backtrace-test: FAIL (#4310: fewer than 4 frames)"; cat "$$tmp/out"; ok=0; }; \
 	head -2 "$$tmp/out" | tail -1 | grep -q "Feeder#inner" || \
 	  { echo "backtrace-test: FAIL (#4310: the raising frame is not first)"; cat "$$tmp/out"; ok=0; }; \
+	if [ "$$(uname)" = Darwin ]; then \
+	  SPINEL_BT_WALK=1 "$$tmp/bt" > "$$tmp/walk.out" 2>&1; \
+	  cmp -s "$$tmp/out" "$$tmp/walk.out" || \
+	    { echo "backtrace-test: FAIL (#9930: the frame-pointer walk answers other frames)"; cat "$$tmp/walk.out"; ok=0; }; \
+	fi; \
 	$(SPINEL) --debug --no-inline-hot test/backtrace/pass_through_rescue.rb -o "$$tmp/pt" >/dev/null 2>&1 || \
 	  { echo "backtrace-test: FAIL (compile pass_through_rescue)"; ok=0; }; \
 	"$$tmp/pt" > "$$tmp/pt.out" 2>&1; \
@@ -4572,7 +4577,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	awk '/^[a-z].* sp_back\(.*\{$$/,/^}/' "$$tmp/lbp.c" | grep -qE '^ +if .*sp_fin_run_pending\(\), _SP_HCR' || { echo "infer-test: FAIL (a cached loop does not read its headers again after a finalizer runs)"; ok=0; }; \
 	$(SPINEL) test/loop_bounded_index_nested.rb -c --no-line-map -o "$$tmp/lbn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_nested: -c)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_e\]' "$$tmp/lbn.c" && grep -qE '_hcd[0-9]+_[0-9]+\[lv_ie\]' "$$tmp/lbn.c" && grep -qE '_hcd[0-9]+_[0-9]+\[lv_wi\]' "$$tmp/lbn.c" || { echo "infer-test: FAIL (a while nested in a cached loop is not proved by its own i < a.length test)"; ok=0; }; \
-	grep -F 'while (({ if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint(), _SP_HCR' "$$tmp/lbn.c" | grep -qE '\(lv_e < _hcl[0-9]+_[0-9]+\)' || { echo "infer-test: FAIL (a nested loop that reads a[i] untested does not poll ahead of its i < a.length test)"; ok=0; }; \
+	grep -qE 'while \(\(lv_e < _hcl[0-9]+_[0-9]+\)\) \{' "$$tmp/lbn.c" || { echo "infer-test: FAIL (a nested loop proved by its i < a.length test that stores no element polls in its own condition)"; ok=0; }; \
+	$(SPINEL) test/loop_bounded_index_nested_quiet.rb -c --no-line-map -o "$$tmp/lbq.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_nested_quiet: -c)"; ok=0; }; \
+	awk '/^[a-z].* sp_quiet_hist\(.*\{$$/,/^}/' "$$tmp/lbq.c" | grep -qE '^ +if \(SP_UNLIKELY\(SP_SAFEPOINT_POLL\(\)\)\) sp_safepoint\(\), _SP_HCR' || { echo "infer-test: FAIL (the loop enclosing a quiet nested loop does not poll at its back-edge)"; ok=0; }; \
+	grep -F 'while (({ if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint(), _SP_HCR' "$$tmp/lbq.c" | grep -qE '\(lv_se < _hcl[0-9]+_[0-9]+\)' || { echo "infer-test: FAIL (a nested loop that stores an element does not poll ahead of its i < a.length test)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_(o|ob|oi|mi)\]' "$$tmp/lbn.c" && { echo "infer-test: FAIL (a loop read a[i] untested after a nested loop polled, where the array can have shrunk)"; ok=0; }; \
 	$(SPINEL) test/array_new_fill_sized.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_fill_sized: -c)"; ok=0; }; \
 	grep -q 'sp_IntArray_new_fill(' "$$tmp/anf.c" && grep -q 'sp_FloatArray_new_fill(' "$$tmp/anf.c" || { echo "infer-test: FAIL (Array.new(n, v) on an Integer or Float array grows by n pushes instead of allocating n)"; ok=0; }; \

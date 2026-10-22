@@ -1934,7 +1934,7 @@ static int strbuf_srange_unheld_leaf(Compiler *c, int v) { return strbuf_srange_
 static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
   const NodeTable *nt = c->nt;
   int (*leaf)(Compiler *, int) = unheld ? strbuf_srange_unheld_leaf : strbuf_srange_leaf;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(nt, v);
   /* a begin's value is its body's, a rescue's or its else's (an ensure's is
      dropped), as strbuf_begin_arm_leaf takes them; a rescue modifier's is
      its expression's or its fallback's */
@@ -1991,13 +1991,13 @@ static int strbuf_site_tail(Compiler *c) {
     int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1, n = 0;
     const int *bb = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     if (n <= 0) return -1;
-    tail = unwrap_parens(c, bb[n - 1]);
+    tail = nt_paren_single(nt, bb[n - 1]);
     if (nt_kind(nt, tail) != NK_YieldNode) return tail;
   }
   return -1;
 }
 static int strbuf_value_held(Compiler *c, int v) {
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(c->nt, v);
   return v >= 0 && share_node_shares(c, v) && !share_value_fresh(c, v, 0);
 }
 /* Does a `next v` that leaves block body n (not a nested block's, loop's
@@ -2045,7 +2045,7 @@ static int strbuf_user_getter_call(Compiler *c, int v) {
   int mi = cplan_user(c, v)->mi, body = c->scopes[mi].body;
   int last = scope_body_last(c, mi);
   if (last < 0) last = body;   /* (an endless def's body is its expression) */
-  NodeKind lk = last >= 0 ? nt_kind(c->nt, unwrap_parens(c, last)) : NK_NONE;
+  NodeKind lk = last >= 0 ? nt_kind(c->nt, nt_paren_single(c->nt, last)) : NK_NONE;
   return lk == NK_InstanceVariableReadNode || repr_static_read_kind(lk);
 }
 static int strbuf_leaf_is(Compiler *c, int v, int want);
@@ -2055,7 +2055,7 @@ static int strbuf_leaf_unheld(Compiler *c, int v) { return strbuf_leaf_is(c, v, 
 static int strbuf_leaf_is(Compiler *c, int v, int want) {
   const NodeTable *nt = c->nt;
   int (*walk)(Compiler *, int) = want == SLK_HELD ? strbuf_leaf_held : want == SLK_FRESH ? strbuf_leaf_fresh : strbuf_leaf_unheld;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(nt, v);
   if (v < 0) return 0;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_NilNode) return want == SLK_FRESH;
@@ -2151,7 +2151,7 @@ int strbuf_narrowed_box_conversion(Compiler *c, int v) {
    takes as a new handle)? */
 static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   const NodeTable *nt = c->nt;
-  t = unwrap_parens(c, t);
+  t = nt_paren_single(nt, t);
   if (t < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, t);
   if (strbuf_tail_answers_block(c, mi, t, 0) || k == NK_LocalVariableReadNode ||
@@ -2789,17 +2789,17 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
      the route's handle (emit_bang_self_handle) */
-  if (depth < 8 && nt_kind(c->nt, unwrap_parens(c, v)) == NK_CallNode &&
-      strbuf_route_operand(c, nt_ref(c->nt, unwrap_parens(c, v), "receiver")) >= 0 &&
-      strbuf_bang_self_local(c, unwrap_parens(c, v))) return 1;
-  { int cb = unwrap_parens(c, str_alias_chain_base(c, v)), args[32];
-    if (cb != unwrap_parens(c, v) && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) &&
+  if (depth < 8 && nt_kind(c->nt, nt_paren_single(c->nt, v)) == NK_CallNode &&
+      strbuf_route_operand(c, nt_ref(c->nt, nt_paren_single(c->nt, v), "receiver")) >= 0 &&
+      strbuf_bang_self_local(c, nt_paren_single(c->nt, v))) return 1;
+  { int cb = nt_paren_single(c->nt, str_alias_chain_base(c, v)), args[32];
+    if (cb != nt_paren_single(c->nt, v) && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) &&
         strbuf_chain_links(c, v, cb, args) > 0) return 1;
     if (strbuf_chain_over_route(c, v, cb, depth)) return 1;
     int ab = strbuf_append_base(c, v);
-    if (ab != unwrap_parens(c, v) && strbuf_freeze_leaf(c, ab)) return 1; }
+    if (ab != nt_paren_single(c->nt, v) && strbuf_freeze_leaf(c, ab)) return 1; }
   int x = strbuf_route_operand(c, v);
-  if (x == unwrap_parens(c, v)) return 1;
+  if (x == nt_paren_single(c->nt, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
   /* (an operand that is a conditional or a parenthesized sequence with a
      handle arm hands on what it ends in, as emit_strbuf_handle_of takes
@@ -2820,7 +2820,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    (share_plan.c). */
 int strbuf_route_kind(Compiler *c, int v, int *op) {
   const NodeTable *nt = c->nt;
-  int ops[3], u = unwrap_parens(c, v);
+  int ops[3], u = nt_paren_single(nt, v);
   *op = -1;
   if (strbuf_route_clamp(c, v, ops)) return SPK_OPERAND;
   /* (a Hash's default setter stores the handle it is given, a new String
@@ -2844,10 +2844,10 @@ int strbuf_route_kind(Compiler *c, int v, int *op) {
   if (strbuf_bang_leaf(c, v) ||
       (nt_kind(nt, u) == NK_CallNode && strbuf_route_operand(c, nt_ref(nt, u, "receiver")) >= 0 &&
        strbuf_bang_self_local(c, u))) {
-    *op = unwrap_parens(c, nt_ref(nt, u, "receiver"));
+    *op = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
     return SPK_SELF;
   }
-  { int cb = unwrap_parens(c, str_alias_chain_base(c, v)), args[32];
+  { int cb = nt_paren_single(nt, str_alias_chain_base(c, v)), args[32];
     if ((cb != u && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) && strbuf_chain_links(c, v, cb, args) > 0) ||
         strbuf_chain_over_route(c, v, cb, 0)) {
       *op = cb;
@@ -2859,7 +2859,7 @@ int strbuf_route_kind(Compiler *c, int v, int *op) {
   /* then, inject, sum, an ENV store: what the call answers; tap: its
      receiver */
   if (x == u) {
-    if (is_tap_name(nt_str(nt, u, "name"))) { *op = unwrap_parens(c, nt_ref(nt, u, "receiver")); return SPK_OPERAND; }
+    if (is_tap_name(nt_str(nt, u, "name"))) { *op = nt_paren_single(nt, nt_ref(nt, u, "receiver")); return SPK_OPERAND; }
     return SPK_BLOCK_VALUE;
   }
   /* (an operand that hands on the handle, as strbuf_route_carries asks
@@ -3423,7 +3423,7 @@ int strbuf_value_carries(Compiler *c, int v) {
      asked the same way: its receiver is no append, so no chain is walked
      link by link) */
   if (nm && is_append_concat(nm)) {
-    int ar = unwrap_parens(c, nt_ref(c->nt, v, "receiver"));
+    int ar = nt_paren_single(c->nt, nt_ref(c->nt, v, "receiver"));
     const char *an = ar >= 0 && nt_kind(c->nt, ar) == NK_CallNode ? nt_str(c->nt, ar, "name") : NULL;
     if (an && !is_append_concat(an) && strbuf_plain_self_call(c, v)) return 1;
     /* a chain of appends over such a call (`id(s) << x << y`): each link
@@ -3432,7 +3432,7 @@ int strbuf_value_carries(Compiler *c, int v) {
     if (an && is_append_concat(an)) {
       int cur = v;
       while (strbuf_append_link(c, cur)) {
-        int nx = unwrap_parens(c, nt_ref(c->nt, cur, "receiver"));
+        int nx = nt_paren_single(c->nt, nt_ref(c->nt, cur, "receiver"));
         const char *nn = nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode ? nt_str(c->nt, nx, "name") : NULL;
         if (!nn || !is_append_concat(nn)) return nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode && strbuf_value_carries(c, nx);
         cur = nx;
@@ -3458,7 +3458,7 @@ int strbuf_value_kind(Compiler *c, int v, int *op) {
       strbuf_slot_has(c, v))
     return SPK_SLOT;
   const char *nm = k == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
-  int recv = k == NK_CallNode ? unwrap_parens(c, nt_ref(c->nt, v, "receiver")) : -1;
+  int recv = k == NK_CallNode ? nt_paren_single(c->nt, nt_ref(c->nt, v, "receiver")) : -1;
   if (nm && !is_append_concat(nm) && strbuf_plain_self_call(c, v)) { *op = recv; return SPK_SELF; }
   if (nm && is_append_concat(nm)) {
     const char *an = recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode ? nt_str(c->nt, recv, "name") : NULL;
@@ -3467,7 +3467,7 @@ int strbuf_value_kind(Compiler *c, int v, int *op) {
     if (an && is_append_concat(an)) {
       int cur = v;
       while (strbuf_append_link(c, cur)) {
-        int nx = unwrap_parens(c, nt_ref(c->nt, cur, "receiver"));
+        int nx = nt_paren_single(c->nt, nt_ref(c->nt, cur, "receiver"));
         const char *nn = nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode ? nt_str(c->nt, nx, "name") : NULL;
         if (!nn || !is_append_concat(nn)) {
           if (nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode && strbuf_value_carries(c, nx)) { *op = nx; return SPK_SELF; }
@@ -5102,7 +5102,7 @@ static int strbuf_dup_call(Compiler *c, int v) {
 }
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
-  { int w = unwrap_parens(c, v);
+  { int w = nt_paren_single(c->nt, v);
     if (repr_share_rule(c) && repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
         nt_safe_nav(c->nt, w) && is_itself_name(nt_str(c->nt, w, "name")) && call_plain_argc(c, w) == 0 &&
         nt_ref(c->nt, w, "block") < 0 && nt_ref(c->nt, w, "receiver") >= 0 && !user_defines_or_reads(c, "itself")) {
@@ -5113,7 +5113,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
        String (share_plan_self_recv), or for nil a frozen "" (to_s) or
        nil's NoMethodError (to_str) */
     const char *wn = w >= 0 && nt_kind(c->nt, w) == NK_CallNode ? nt_str(c->nt, w, "name") : NULL;
-    int wr = wn ? unwrap_parens(c, nt_ref(c->nt, w, "receiver")) : -1;
+    int wr = wn ? nt_paren_single(c->nt, nt_ref(c->nt, w, "receiver")) : -1;
     if (repr_share_rule(c) && repr_of_slot(c, lv).handle && wr >= 0 && (sp_streq(wn, "to_s") || sp_streq(wn, "to_str")) &&
         !nt_safe_nav(c->nt, w) && call_plain_argc(c, w) == 0 && nt_ref(c->nt, w, "block") < 0 &&
         !user_defines_or_reads(c, wn) && face_str_bang_call(c, wr)) {
@@ -5164,8 +5164,8 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
   /* --share-strings: a held chain's value (strbuf_held_chain) is the handle
      it holds */
-  else if (shared && repr_share_rule(c) && strbuf_held_chain(c, v) && strbuf_bang_self_local(c, unwrap_parens(c, v)) &&
-           emit_bang_self_handle(c, unwrap_parens(c, v), b)) { }
+  else if (shared && repr_share_rule(c) && strbuf_held_chain(c, v) && strbuf_bang_self_local(c, nt_paren_single(c->nt, v)) &&
+           emit_bang_self_handle(c, nt_paren_single(c->nt, v), b)) { }
   /* --share-strings: a String bang on a boxed receiver answers that
      receiver's own box, or nil (emit_boxed_bang_self); the box of a String
      the rule shares holds its handle, which the slot takes */
@@ -12181,6 +12181,21 @@ static int hc_subtree_loops(const NodeTable *nt, int id) {
   }
   return 0;
 }
+/* Does a body the cache took hold an element write (`x[j] = v`)? It is the
+   one node such a body admits that can grow an array (hc_call_ok), and it
+   may grow any array of its kind, since two names can denote one. */
+static int hc_subtree_stores(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  if (nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "[]=")) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (hc_subtree_stores(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (hc_subtree_stores(nt, el[j])) return 1;
+  }
+  return 0;
+}
 static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion *r) {
   const NodeTable *nt = c->nt;
   if (prev < 0 || pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return;
@@ -12530,6 +12545,16 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
      a prelude has no single test to put them ahead of, so it keeps its checks */
   int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || sig_polls());
   if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
+  /* ...and one that another loop of its function encloses leaves its
+     safepoint and finalizer polls to that loop's back-edge: it ends within
+     one pass over an array nothing in it can grow (proved above, in a region
+     that runs no code, with no element write in its body), so a collection
+     or a finalizer waits one such pass at most -- what a runtime call over
+     the same array makes them wait already. An inner poll costs a pass of
+     the loop an atomic load and the header reload behind it. Its signal poll
+     was the enclosing loop's already (#9222). */
+  int quiet = polls_in_cond && (g_uses_threads || g_uses_finalizers) && g_poll_loop_nest > 0 &&
+              !hc_subtree_stores(nt, body);
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
     if (hc_bounded_cond(c, pred, &hcc)) { free(ccond.p); ccond = hcc; }
@@ -12551,7 +12576,9 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   else {
     emit_indent(b, indent);
     buf_puts(b, "while (");
-    if (polls_in_cond) {
+    /* (a quiet loop has none left there; its body takes none either) */
+    int cond_polls = polls_in_cond && !quiet;
+    if (cond_polls) {
       buf_puts(b, "({ ");
       if (g_uses_threads) buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s; ", hc_mark());
       if (g_uses_finalizers)
@@ -12563,7 +12590,7 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
     if (is_until) buf_puts(b, "!(");
     buf_puts(b, ccond.p ? ccond.p : "");
     if (is_until) buf_puts(b, ")");
-    if (polls_in_cond) buf_puts(b, "; })");
+    if (cond_polls) buf_puts(b, "; })");
     buf_puts(b, ") {\n");
     g_loop_polls_in_cond = polls_in_cond;
     g_loop_uncounted = !proved && !(sig_polls() && !is_until && poll_while_counted(c, pred, body));
@@ -23506,22 +23533,25 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         return 1;
       }
       emit_indent(b, indent);
-      /* the receiver read first, as the typed Arrays' store holds it */
+      /* the receiver read first, as the typed Arrays' store holds it: in
+         the prelude, ahead of any statement the index or the value puts
+         there (a block's, a rescue's) */
       NodeKind prk = nt_kind(nt, recv);
       int phold = (prk == NK_InstanceVariableReadNode || prk == NK_GlobalVariableReadNode ||
                    prk == NK_ClassVariableReadNode) &&
                   (subtree_may_reassign_state(c, argv[0]) || subtree_may_reassign_state(c, argv[1]));
       int pth = phold ? ++g_tmp : 0;
       if (phold) {
-        buf_printf(b, "{ sp_PolyArray *_t%d = ", pth); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); ", pth);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = ", pth); emit_expr(c, recv, g_pre);
+        buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", pth);
       }
       buf_puts(b, "sp_PolyArray_set(");
       if (phold) buf_printf(b, "_t%d", pth);
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b);
-      buf_puts(b, phold ? "); }\n" : ");\n");
+      buf_puts(b, ");\n");
       return 1;
     }
     if (is_push_alias(name) && argc >= 1) {

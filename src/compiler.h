@@ -555,6 +555,12 @@ typedef struct {
 
   LocalVar *locals; /* params + body locals */
   int nlocals, clocals;
+  int *lidx;        /* scope_local's index of `locals` by name: open
+                       addressing over the names' hashes, slot + 1 per
+                       entry, 0 empty. NULL until the table is long enough
+                       to want one; dropped by whatever removes a local
+                       (scope_local_intern keeps it over an append) */
+  int lidx_cap;     /* a power of two, at least twice nlocals */
 } Scope;
 
 static inline TyKind scope_set_ret(Scope *s, TyKind t) {
@@ -1209,7 +1215,6 @@ typedef struct {
   unsigned char *vs_kind; /* [vs_count] an entry's site kind (VsKind) */
   int *vs_rparent;      /* [vs_nodes] the call whose receiver a node is, or -1 */
   int *vs_whead, *vs_wnext; /* [vs_nodes] the local writes whose value a node is, in node order */
-  unsigned char *vs_dropped; /* [vs_nodes] a statement the next statement follows */
   int vs_nbuckets, vs_count, vs_cap, vs_nodes, vs_toplevel;
   unsigned vs_version, vs_gen;
   int vs_built;
@@ -1563,14 +1568,14 @@ int comp_vsite_first(Compiler *c, VsKind k, NodeKind kind, const char *name, int
 int comp_vsite_next(const Compiler *c, int e);
 int comp_vsite_node(const Compiler *c, int e);
 int comp_vsite_var(const Compiler *c, int e);
-/* The call whose receiver node `n` is (through parentheses), or -1; and
-   whether it is a statement the next statement follows, so its value is
-   dropped. */
+/* The call whose receiver node `n` is (through parentheses), or -1. */
 int comp_recv_parent(Compiler *c, int n);
 /* The local-variable writes whose value is node n, ascending: for (w =
    comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)). */
 int comp_lwrite_of_value(Compiler *c, int n);
 int comp_lwrite_next(const Compiler *c, int w);
+/* Is node n a statement the next statement follows (through parentheses),
+   so its value is dropped? (analyze_util.c, on vp_climb) */
 int comp_value_dropped(Compiler *c, int n);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);
@@ -1622,6 +1627,8 @@ void why_reset(SlotWhy *w);
 int ty_degraded(TyKind t);   /* poly, or a container of poly */
 extern int g_infer_round;    /* the fixpoint round in progress, for SlotWhy.round */
 LocalVar *scope_local_intern(Scope *s, const char *name);
+void scope_locals_appended(Scope *s);  /* scope_local's index, after an append */
+void scope_locals_removed(Scope *s);   /* ... after a local is taken out of `locals` */
 
 /* Symbol intern table. comp_sym_intern returns the symbol's id. */
 int comp_sym_intern(Compiler *c, const char *name);

@@ -1489,7 +1489,7 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b) {
    of the slot, wrapped, forked a copy a later change through the variable
    missed. Answers 0 when `v` is no such write. */
 int emit_strbuf_write_handle(Compiler *c, int v, Buf *b) {
-  int w = unwrap_parens(c, v);
+  int w = nt_paren_single(c->nt, v);
   if (!repr_write_share(c, w)) return 0;
   /* one a call ran first is the handle emit_arg_temp took then */
   int th = ran_first_handle(v);

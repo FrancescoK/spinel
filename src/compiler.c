@@ -285,10 +285,10 @@ void comp_free(Compiler *c) {
   pivs_facts_free(c);
   strbuf_arg_index_free(c);
   free(c->vs_head); free(c->vs_site); free(c->vs_var); free(c->vs_next); free(c->vs_kind);
-  free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
+  free(c->vs_rparent); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = c->vs_site = c->vs_var = c->vs_next = c->vs_rparent = NULL;
   c->vs_whead = c->vs_wnext = NULL;
-  c->vs_dropped = c->vs_kind = NULL;
+  c->vs_kind = NULL;
   c->vs_count = c->vs_cap = 0;
   c->vs_built = 0;
   free(c->cg_parent);
@@ -325,6 +325,7 @@ void comp_free(Compiler *c) {
     free(sc->name);
     for (int i = 0; i < sc->nlocals; i++) free(sc->locals[i].name);
     free(sc->locals);
+    free(sc->lidx);
     for (int i = 0; i < sc->nparams; i++) free(sc->pnames[i]);
     free(sc->pnames);
     free(sc->pdefault);
@@ -3482,10 +3483,8 @@ static int vsite_is_read(const NodeTable *nt, int n) {
    receiver, `x.to_s << y`) or call any method on it (VS_RECV: the call whose
    receiver it is), one entry per (kind, site), chained by (kind, variable)
    in node order. The refusals asked each of those by walking a
-   node kind per candidate. Beside the chains, two per-node lookups the
-   same walk fills: the call whose receiver a node is (comp_recv_parent),
-   and whether it is a statement the next statement follows
-   (comp_value_dropped). Chains
+   node kind per candidate. Beside the chains, a per-node lookup the same
+   walk fills: the call whose receiver a node is (comp_recv_parent). Chains
    carry hash collisions: callers keep their kind/name/key filters
    (comp_vsite_var is the read or write naming an entry's variable).
    Revalidated against nt->version, the scope index's generation and the
@@ -3516,13 +3515,12 @@ static void vsite_build(Compiler *c, int toplevel) {
   int nb = 16;
   while (nb < n && nb < (1 << 22)) nb <<= 1;
   size_t sz = (size_t)(n > 0 ? n : 1);
-  free(c->vs_head); free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
+  free(c->vs_head); free(c->vs_rparent); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = malloc(sizeof(int) * (size_t)nb);
   c->vs_rparent = malloc(sz * sizeof(int));
-  c->vs_dropped = calloc(sz, 1);
   c->vs_whead = malloc(sz * sizeof(int));
   c->vs_wnext = malloc(sz * sizeof(int));
-  if (!c->vs_head || !c->vs_rparent || !c->vs_dropped || !c->vs_whead || !c->vs_wnext) {
+  if (!c->vs_head || !c->vs_rparent || !c->vs_whead || !c->vs_wnext) {
     fprintf(stderr, "spinel: out of memory\n");
     exit(1);
   }
@@ -3543,13 +3541,6 @@ static void vsite_build(Compiler *c, int toplevel) {
     if (vsite_is_read(nt, u)) vsite_add(c, VS_READ, u, u);
     else if (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode || k == NK_GlobalVariableWriteNode)
       vsite_add(c, VS_WRITE, u, u);
-    else if (k == NK_StatementsNode) {
-      int bn = 0; const int *bb = nt_arr(nt, u, "body", &bn);
-      for (int i = 0; i + 1 < bn; i++) {
-        int v = an_unparen(nt, bb[i]);
-        if (v >= 0 && v < n) c->vs_dropped[v] = 1;
-      }
-    }
     else if (k == NK_CallNode && nt_ref(nt, u, "receiver") >= 0) {
       int r = nt_ref(nt, u, "receiver"), ru = an_unparen(nt, r);
       const char *un = nt_str(nt, u, "name");
@@ -3607,11 +3598,6 @@ int comp_lwrite_of_value(Compiler *c, int n) {
 }
 int comp_lwrite_next(const Compiler *c, int w) {
   return w >= 0 && w < c->vs_nodes ? c->vs_wnext[w] : -1;
-}
-int comp_value_dropped(Compiler *c, int n) {
-  vsite_sync(c);
-  n = an_unparen(c->nt, n);
-  return n >= 0 && n < c->vs_nodes && c->vs_dropped[n];
 }
 
 /* Every node of one kind, chained in node order. The string-promotion passes
@@ -3826,10 +3812,53 @@ int comp_included_method_index(Compiler *c, const char *name, int call_id) {
   return -1;
 }
 
+/* A scope's locals by name. A short table is scanned; a longer one is read
+   through an index of the names' hashes (`lidx`), since the scan compared
+   the asked name with every local's, and the lowered names of a large
+   program share long prefixes (the arms of a computed-name send, the
+   wrappers of a `method(:m)`), so each compare ran far into both: on a
+   Rails program late in its fixpoint the scan was 8% of a sampled window,
+   from a thousand distinct callers. The index holds each local's slot + 1
+   at its hash, probing linearly, and is built by the first ask that wants
+   it; an append adds to it, and the one removal (codegen's escape of a
+   copied argument) drops it. */
+enum { SCOPE_LIDX_MIN = 6 };
+static void scope_lidx_add(Scope *s, int i) {
+  unsigned m = (unsigned)(s->lidx_cap - 1), h = sp_strhash(s->locals[i].name) & m;
+  while (s->lidx[h]) h = (h + 1) & m;
+  s->lidx[h] = i + 1;
+}
+static void scope_lidx_build(Scope *s) {
+  int cap = 16;
+  while (cap < s->nlocals * 2) cap *= 2;
+  if (s->lidx_cap != cap) { free(s->lidx); s->lidx = malloc(sizeof(int) * (size_t)cap); s->lidx_cap = cap; }
+  if (!s->lidx) { s->lidx_cap = 0; return; }
+  memset(s->lidx, 0, sizeof(int) * (size_t)cap);
+  for (int i = 0; i < s->nlocals; i++) scope_lidx_add(s, i);
+}
 LocalVar *scope_local(Scope *s, const char *name) {
+  if (s->nlocals >= SCOPE_LIDX_MIN) {
+    if (!s->lidx || s->nlocals * 2 > s->lidx_cap) scope_lidx_build(s);
+    if (s->lidx) {
+      unsigned m = (unsigned)(s->lidx_cap - 1), h = sp_strhash(name) & m;
+      for (int k; (k = s->lidx[h]) != 0; h = (h + 1) & m)
+        if (sp_streq(s->locals[k - 1].name, name)) return &s->locals[k - 1];
+      return NULL;
+    }
+  }
   for (int i = 0; i < s->nlocals; i++)
     if (sp_streq(s->locals[i].name, name)) return &s->locals[i];
   return NULL;
+}
+/* The index after a local is appended to (kept) or removed from the table
+   (dropped: the slots after it moved). */
+void scope_locals_appended(Scope *s) {
+  if (!s->lidx) return;
+  if (s->nlocals * 2 > s->lidx_cap) { free(s->lidx); s->lidx = NULL; s->lidx_cap = 0; }
+  else scope_lidx_add(s, s->nlocals - 1);
+}
+void scope_locals_removed(Scope *s) {
+  free(s->lidx); s->lidx = NULL; s->lidx_cap = 0;
 }
 
 LocalVar *scope_local_intern(Scope *s, const char *name) {
@@ -3882,6 +3911,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->store_val_src = 0;
   lv->store_elems_src = 0;
   lv->store_rest_src = 0;
+  scope_locals_appended(s);
   return lv;
 }
 

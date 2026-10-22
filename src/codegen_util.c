@@ -3555,7 +3555,7 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
    (emit_str_mut_writeback). */
 int strbuf_held_chain(const Compiler *c, int r) {
   const NodeTable *nt = c->nt;
-  r = unwrap_parens((Compiler *)c, r);
+  r = nt_paren_single(c->nt, r);
   if (!repr_share_rule(c) || r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, r, "name");
   int argc = 0, targets[CPT_MAX];
@@ -6234,12 +6234,6 @@ int kwh_only_spreads(const NodeTable *nt, int kwh) {
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) return 0;
   return 1;
 }
-/* Remains only for the String-route callers being replaced (#9258).
-   New code uses nt_paren_single for syntax or vp_one for the value. */
-int unwrap_parens(Compiler *c, int id) {
-  return nt_paren_single(c->nt, id);
-}
-
 /* Walk a String `<<` chain (`(s << a) << b`) down to its base, peeling
    parens. Fills chain[] outermost-first with each link's argument (at most
    64) and stores the base node in *base. Returns the link count. */

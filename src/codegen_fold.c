@@ -7134,7 +7134,7 @@ int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out) {
   int local = nt_kind(c->nt, node) == NK_LocalVariableWriteNode;
   const char *nm = local ? nt_str(c->nt, node, "name") : NULL;
   LocalVar *lv = nm ? scope_local(comp_scope_of(c, node), nm) : NULL;
-  if (local ? repr_of_slot(c, lv).kind != RK_STRBUF : !repr_write_share(c, unwrap_parens(c, node))) return 0;
+  if (local ? repr_of_slot(c, lv).kind != RK_STRBUF : !repr_write_share(c, nt_paren_single(c->nt, node))) return 0;
   /* a write that ran first is its temp, or the handle emit_arg_temp took
      of a shared one */
   for (int i = g_n_argov - 1; i >= 0; i--)

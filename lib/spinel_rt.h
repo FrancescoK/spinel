@@ -120,6 +120,43 @@ static int sp_bt_n = 0;
 #include "sp_gc.h"
 /* sp_Fiber + the Fiber API; the bodies live in libspinel_rt.a (lib/sp_fiber.c). */
 #include "sp_fiber.h"
+/* The capture of a backtrace (at a raise, and for Kernel#caller). macOS 14's
+   backtrace() on x86_64 answers no frame on a stack other than the
+   pthread's own: the one the top level runs on (sp_main_stack_run), a
+   fiber's, a green thread's (#9930). Where it answers almost none, the
+   frame-pointer chain, which the Darwin ABI keeps on both architectures, is
+   walked by hand, only within the stack the walk starts on, where every
+   frame record is mapped (the unwinder, tried first, walked past the
+   switched stack's first frame on arm64 and faulted). SPINEL_BT_WALK=1
+   takes that walk wherever backtrace() works, so it can be checked there. */
+#if defined(__APPLE__) && defined(HAVE_EXECINFO_H)
+static SP_NOINLINE SP_UNUSED int sp_bt_capture(void **buf, int max) {
+  static int forced = -1;
+  if (forced < 0) { const char *e = getenv("SPINEL_BT_WALK"); forced = e && e[0] == '1'; }
+  int n = forced ? 0 : backtrace(buf, max);
+  if (n > 2) return n;
+  char *fp = (char *)__builtin_frame_address(0), *lo = NULL, *hi = NULL;
+  sp_Fiber *f = sp_fiber_current;
+  if (f && f->stack && fp >= f->stack && fp < f->stack + sp_fiber_guard() + f->stack_size) {
+    lo = f->stack + sp_fiber_guard(); hi = lo + f->stack_size;
+  }
+  else if (sp_thread_stack_lo && fp >= sp_thread_stack_lo && fp < sp_thread_stack_hi) {
+    lo = sp_thread_stack_lo; hi = sp_thread_stack_hi;
+  }
+  if (!lo) return n;
+  n = 0;
+  while (n < max && fp >= lo && fp + 2 * sizeof(void *) <= hi && ((uintptr_t)fp & (sizeof(void *) - 1)) == 0) {
+    void **rec = (void **)fp;
+    if (!rec[1]) break;
+    buf[n++] = rec[1];
+    if ((char *)rec[0] <= fp) break;
+    fp = (char *)rec[0];
+  }
+  return n;
+}
+#else
+#define sp_bt_capture(buf, max) backtrace(buf, max)
+#endif
 /* sp_thread + the cooperative scheduler (Phase 0); bodies in lib/sp_sched.c. */
 #include "sp_sched.h"
 
@@ -16090,7 +16127,7 @@ static sp_StrArray *sp_caller_now(void) {
 #if SP_BT_AVAILABLE
   if (!sp_bt_enabled) return sp_StrArray_new();
   void *buf[256];
-  int n = backtrace(buf, 256);
+  int n = sp_bt_capture(buf, 256);
   return sp_bt_format(buf, n);
 #else
   return sp_StrArray_new();
@@ -16278,7 +16315,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   /* A pass-through, a bare raise, or an ensure resuming its saved exception
      keeps the frames of the raise that made it, as CRuby does. */
-  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = backtrace(sp_bt_buf, 256);
+  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = sp_bt_capture(sp_bt_buf, 256);
 #endif
   sp_bt_keep = 0;
   /* A real exception supersedes any non-local unwind in flight (e.g. raised from

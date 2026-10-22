@@ -42,7 +42,11 @@ is a user guarantee.
   cannot starve its siblings.
   Preemption is taken at **safepoint polls** (loop back-edges): a thread that
   spends a long time inside a single runtime call with no poll yields only when
-  that call returns. The preemption signal is `SIGURG`, overridable with
+  that call returns. A loop nested in another that counts `i` up to
+  `a.length` over an array it stores no element of, and runs no other code,
+  polls at the enclosing loop's back-edge instead of its own, so it yields up
+  to one pass over that array late, as a runtime call over the array would.
+  The preemption signal is `SIGURG`, overridable with
   `SPINEL_PREEMPT_SIGNAL`.
 - **The single-threaded archive is unchanged.** A program that never uses
   `Thread` compiles and runs byte-identically to before; none of the scheduler

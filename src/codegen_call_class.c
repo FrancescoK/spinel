@@ -1636,6 +1636,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
         if (sp_streq(esc->locals[k].name, svn)) {
           memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
           esc->nlocals--;
+          scope_locals_removed(esc);
           comp_ty_edits++;
           break;
         }

@@ -165,6 +165,8 @@ void sp_main_stack_run(void (*body)(void));
    fault just below `lo` is this stack growing past its end. Recorded per
    thread when the handler is armed. */
 extern SP_TLS char *sp_thread_stack_lo;
+/* the PROT_NONE bytes below a fiber's usable stack, at f->stack */
+size_t sp_fiber_guard(void);
 extern SP_TLS char *sp_thread_stack_hi;
 
 #endif

@@ -230,7 +230,7 @@ static int str_route_names_handle(Compiler *c, int v) {
   int up = 0, ops[3];
   int named = strbuf_self_route_slot(c, v, &up, &ref);
   free(ref.p);
-  int w = unwrap_parens(c, v);
+  int w = nt_paren_single(c->nt, v);
   int empty_self = w >= 0 && nt_kind(c->nt, w) == NK_CallNode && nt_str(c->nt, w, "name") &&
                    bop_share_named(TY_STRING, nt_str(c->nt, w, "name")) == BSH_EMPTY_SELF && strbuf_value_route(c, w);
   return empty_self || named || strbuf_assign_route(c, v) ||
@@ -293,7 +293,7 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
     int x = repr_string_conversion_operand(c, ev);
     if (x < 0) x = kernel_string_operand(c, ev);
     if (x < 0) break;
-    ev = unwrap_parens(c, x);
+    ev = nt_paren_single(nt, x);
   }
   sf->cty = TY_POLY;
   if (form != SPF_HANDLE) { }
@@ -645,7 +645,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
        pickup could take a handle an earlier call left there. A read into a
        buffer (strbuf_io_outbuf) is the builtin that does: it answers the
        buffer's handle through sp_strbuf_read_pub, which publishes it */
-    int u = unwrap_parens(c, node), tg[CPT_MAX];
+    int u = nt_paren_single(c->nt, node), tg[CPT_MAX];
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
         nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
         (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0 || kernel_string_operand(c, u) >= 0) &&

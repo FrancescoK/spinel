@@ -124,7 +124,7 @@ static int share_plan_self_recv(Compiler *c, int v) {
   int nb = strbuf_narrowed_box_conversion(c, v);
   if (nb >= 0) return nb;
   const char *nm = nt_str(nt, v, "name");
-  int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
+  int r = nt_paren_single(nt, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
   int any_recv = nm && ((sp_streq(nm, "itself") && call_plain_argc(c, v) == 0 && nt_ref(nt, v, "block") < 0) ||
                         (is_tap_name(nm) && nt_ref(nt, v, "block") >= 0));
   if (!nm || r < 0 || (c->ntype[r] != TY_STRING && c->ntype[r] != TY_STRBUF && !(any_recv && c->ntype[r] == TY_POLY)))
@@ -202,7 +202,7 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   if (share_frozen_string(c, v)) return SPK_FROZEN;
   /* (a chain whose base is held as its handle where a mutator takes it,
      strbuf_held_chain: that held handle, SPK_SELF with no operand) */
-  if (strbuf_held_chain(c, an_unparen(nt, v))) return SPK_SELF;
+  if (strbuf_held_chain(c, nt_paren_single(nt, v))) return SPK_SELF;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *op = rv; return SPK_SELF; }
   if (face_str_bang_call(c, v)) { *op = nt_ref(nt, v, "receiver"); return SPK_BANG_BOX; }
@@ -215,7 +215,7 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
   /* (a call whose answer the C picks up after it, the handle its targets
      publish: that pickup, whatever route the call is besides) */
-  { int u = an_unparen(nt, v);
+  { int u = nt_paren_single(nt, v);
     if (u >= 0 && nt_kind(nt, u) == NK_CallNode && strbuf_call_picks_up(c, u)) return SPK_PUBLISHED; }
   int k = unlifted ? share_node_carry_kind_unlifted(c, v, op) : share_node_carry_kind(c, v, op);
   if (k != SPK_NONE) return k;
@@ -396,7 +396,7 @@ static int share_plan_tail_renders(Compiler *c, int a) {
    value no block gives (sum, an ENV store) is the route's own. */
 static int share_plan_block_ok(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+  int u = nt_paren_single(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 1;
   int body = nt_ref(nt, blk, "body");
   /* (the block's tail is read where the block is spliced in, under the
@@ -544,7 +544,7 @@ static int share_plan_recv_answers_by_targets(Compiler *c, int u, const char *na
    pickup would then read as this target's answer). */
 int share_plan_literal_pickup_clean(Compiler *c, int v, int mi) {
   const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, v);
+  int u = nt_paren_single(nt, v);
   if (u < 0 || nt_kind(nt, u) != NK_CallNode) return 0;
   int recv = nt_ref(nt, u, "receiver");
   const char *nm = nt_str(nt, u, "name");
@@ -569,7 +569,7 @@ int share_plan_targets_cover(Compiler *c, int u) {
    what the call hands on is the object. See share.h. */
 int share_plan_call_answers_literal(Compiler *c, int v) {
   if (!repr_share_rule(c)) return 0;
-  int u = an_unparen(c->nt, v);
+  int u = nt_paren_single(c->nt, v);
   if (u < 0 || nt_kind(c->nt, u) != NK_CallNode || nt_ref(c->nt, u, "block") >= 0) return 0;
   int tg[CPT_MAX], n = cplan_targets(c, u, tg, CPT_MAX);
   const char *nm = nt_str(c->nt, u, "name");
@@ -628,7 +628,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
      up after the call, only if every target publishes it on each path
      (strbuf_pickup_published); else the pickup falls back to a new one */
   case SPK_PUBLISHED: {
-    int u = an_unparen(c->nt, v);
+    int u = nt_paren_single(c->nt, v);
     return !(u >= 0 && nt_kind(c->nt, u) == NK_CallNode && strbuf_call_picks_up(c, u)) || strbuf_pickup_published(c, u);
   }
   case SPK_OPERAND: {
@@ -820,7 +820,7 @@ static int share_plan_fresh_handle(Compiler *c, int v, int role) {
   if (taken == SPT_BOXED)
     return nt_kind(c->nt, v) == NK_ParenthesesNode && share_plan_role_need(c, v, SPR_BOX, SPN_NEW) == SPN_NEW;
   if (taken == SPT_RECV) return 0;
-  int u = an_unparen(c->nt, v), op, k;
+  int u = nt_paren_single(c->nt, v), op, k;
   if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && (strbuf_call_picks_up(c, u) || repr_boxed_to_s_operand(c, u) >= 0))
     return 1;
   k = share_node_carry_kind(c, v, &op);
@@ -836,7 +836,7 @@ static int share_plan_emits_handle_kind(Compiler *c, int e) {
   for (int depth = 0; depth < 16; depth++) {
     int o, k = share_plan_producer(c, e, &o);
     if (k == SPK_SEQUENCE && o >= 0) { e = o; continue; }
-    int u = an_unparen(c->nt, e);
+    int u = nt_paren_single(c->nt, e);
     const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
     /* (a call answering its receiver gives it as the handle unless it
        changes it in place; inject answers its block's text) */
@@ -1036,8 +1036,8 @@ static void share_plan_role_mark(Compiler *c, int n, int role) {
    literals splatted in it (`a, b = *[s, t]`) -- stores into its targets. */
 static void share_plan_masgn_stores(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v >= 0 && nt_kind(nt, v) == NK_SplatNode) v = an_unparen(nt, nt_ref(nt, v, "expression"));
+  v = nt_paren_single(nt, v);
+  if (v >= 0 && nt_kind(nt, v) == NK_SplatNode) v = nt_paren_single(nt, nt_ref(nt, v, "expression"));
   if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return;
   int en = 0;
   const int *el = nt_arr(nt, v, "elements", &en);
