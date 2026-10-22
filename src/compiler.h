@@ -1844,6 +1844,11 @@ int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int
    name for each; at every boxed comparison site, every round, that was a
    third of a Rails program's re-narrow round (1,299 classes). */
 const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n);
+/* Whether some class's chain answers `name` with a reader
+   (comp_reader_in_chain), kept per name while the reader and alias tables
+   and the class shape stand still. A retargeted send on a boxed receiver
+   asked it class by class at every resolution of its plan. */
+int        comp_name_reader_any(Compiler *c, const char *name);
 /* does class_id's chain define the method call id names, and does the call reach it? A call
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */
