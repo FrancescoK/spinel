@@ -86,7 +86,8 @@ for site in $(grep -E ': plan-check: cplan-(served|fallback|conflict|missing): '
   sv=$(grep ": plan-check: cplan-served: $site " "$OUT" | awk '{ s += $5 } END { print s + 0 }')
   fb=$(grep -c ": plan-check: cplan-fallback: $site " "$OUT")
   cf=$(grep -c ": plan-check: cplan-conflict: $site " "$OUT")
-  echo "plan-check:   $site: $sv served, $fb fallbacks, $cf conflicts"
+  ms=$(grep -c ": plan-check: cplan-missing: $site " "$OUT")
+  echo "plan-check:   $site: $sv served, $fb fallbacks, $cf conflicts, $ms missing"
 done
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 # poly dispatch arms: the switch codegen wrote against the resolver's arms
