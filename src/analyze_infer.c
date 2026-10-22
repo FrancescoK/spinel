@@ -5503,24 +5503,37 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
    any class, and resolving the name's aliases in every class per call grew
    with the classes times the calls. */
 static ANameHash g_sga_names, g_sga_aliases;
-static const Compiler *g_sga_c;
-static unsigned g_sga_gen;
-static long g_sga_n = -1;
+/* ... and the names already asked, with their answers by entry: the walk
+   past the sets resolved the name's alias in every class and asked each
+   whether it is a builtin's reopening, per call, and on a Rails program
+   (1,299 classes) that was 9% of a window late in the fixpoint. The answer
+   reads the accessor and alias lists, the chain (the aliases hop up it) and
+   the required features (a socket class is a builtin once socket is
+   loaded), so the sets and the answers go with any of them. */
+static ANameHash g_sga_asked;
+static signed char *g_sga_ans; static int g_sga_ans_cap;
+static const Compiler *g_sga_c; static const NodeTable *g_sga_nt;   /* the asked names are its strings */
+static unsigned g_sga_gen, g_sga_shape;
+static long g_sga_n = -1; static int g_sga_socket = -1;
 static void sga_index(Compiler *c) {
   /* the lists only grow: their total length says whether one did */
   long n = c->nclasses;
   for (int k = 0; k < c->nclasses; k++)
     n += c->classes[k].nsg_readers + c->classes[k].nsg_writers + c->classes[k].naliases;
-  if (g_sga_c == c && g_sga_gen == comp_table_gen && g_sga_n == n) return;
+  int sock = sp_feature_required("socket");
+  if (g_sga_c == c && g_sga_nt == c->nt && g_sga_gen == comp_table_gen && g_sga_n == n &&
+      g_sga_shape == comp_class_shape_gen() && g_sga_socket == sock) return;
   anh_free(&g_sga_names); memset(&g_sga_names, 0, sizeof g_sga_names);
   anh_free(&g_sga_aliases); memset(&g_sga_aliases, 0, sizeof g_sga_aliases);
+  anh_free(&g_sga_asked); memset(&g_sga_asked, 0, sizeof g_sga_asked);
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     for (int j = 0; j < ci->nsg_readers; j++) if (!anh_has(&g_sga_names, ci->sg_readers[j])) anh_add(&g_sga_names, ci->sg_readers[j]);
     for (int j = 0; j < ci->nsg_writers; j++) if (!anh_has(&g_sga_names, ci->sg_writers[j])) anh_add(&g_sga_names, ci->sg_writers[j]);
     for (int j = 0; j < ci->naliases; j++) if (!anh_has(&g_sga_aliases, ci->alias_new[j])) anh_add(&g_sga_aliases, ci->alias_new[j]);
   }
-  g_sga_c = c; g_sga_gen = comp_table_gen; g_sga_n = n;
+  g_sga_c = c; g_sga_nt = c->nt; g_sga_gen = comp_table_gen; g_sga_n = n;
+  g_sga_shape = comp_class_shape_gen(); g_sga_socket = sock;
 }
 /* Does some class have a `class << self` accessor `name` (`x`, or `x=` with
    one argument)? */
@@ -5531,13 +5544,23 @@ static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
   /* no class holds the name, nor an alias that may stand for one */
   sga_index(c);
   if (!anh_has(&g_sga_names, setter ? base : name) && !anh_has(&g_sga_aliases, name)) return 0;
-  for (int k = 0; k < c->nclasses; k++) {
+  int e = anh_find(&g_sga_asked, name);
+  if (e >= 0) return g_sga_ans[e];
+  int ans = 0;
+  for (int k = 0; k < c->nclasses && !ans; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     const char *rn = comp_resolve_cm_alias_at(c, k, name, NULL);
     if (setter ? comp_sg_writer_reached(c, k, name, base, sizeof base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
-      return 1;
+      ans = 1;
   }
-  return 0;
+  anh_add(&g_sga_asked, name); e = anh_find(&g_sga_asked, name);
+  if (e >= g_sga_ans_cap) {
+    g_sga_ans_cap = e + 256;
+    g_sga_ans = realloc(g_sga_ans, (size_t)g_sga_ans_cap);
+    if (!g_sga_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_sga_ans[e] = (signed char)ans;
+  return ans;
 }
 
 
