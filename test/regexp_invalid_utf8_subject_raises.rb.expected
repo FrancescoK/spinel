@@ -1,0 +1,34 @@
+=~: ArgumentError: invalid byte sequence in UTF-8
+re=~: ArgumentError: invalid byte sequence in UTF-8
+match: ArgumentError: invalid byte sequence in UTF-8
+match_pos: ArgumentError: invalid byte sequence in UTF-8
+match?: ArgumentError: invalid byte sequence in UTF-8
+re.match?: ArgumentError: invalid byte sequence in UTF-8
+scan: ArgumentError: invalid byte sequence in UTF-8
+scan_groups: ArgumentError: invalid byte sequence in UTF-8
+gsub: ArgumentError: invalid byte sequence in UTF-8
+gsub_block: ArgumentError: invalid byte sequence in UTF-8
+gsub_hash: ArgumentError: invalid byte sequence in UTF-8
+sub: ArgumentError: invalid byte sequence in UTF-8
+sub_hash: ArgumentError: invalid byte sequence in UTF-8
+split: ArgumentError: invalid byte sequence in UTF-8
+index: ArgumentError: invalid byte sequence in UTF-8
+index_pos: ArgumentError: invalid byte sequence in UTF-8
+rindex: ArgumentError: invalid byte sequence in UTF-8
+byteindex: ArgumentError: invalid byte sequence in UTF-8
+partition: ArgumentError: invalid byte sequence in UTF-8
+rpartition: ArgumentError: invalid byte sequence in UTF-8
+start_with: ArgumentError: invalid byte sequence in UTF-8
+slice: ArgumentError: invalid byte sequence in UTF-8
+slice!: ArgumentError: invalid byte sequence in UTF-8
+aset: ArgumentError: invalid byte sequence in UTF-8
+gsub_str: "a\xFFx c"
+index_str: 2
+bin: ["b"]
+valid: ["l", "l"]
+case: ArgumentError: invalid byte sequence in UTF-8
+3
+after_length: ArgumentError: invalid byte sequence in UTF-8
+5
+valid_after_length: 3
+forced_binary: 2

@@ -77,6 +77,8 @@ const char *sp_re_last_paren_match(void);
 void sp_re_set_captures(const char *str, int *caps, int ncaps);
 extern int sp_re_track_last;   /* gsub / sub / scan record `$~` (sp_re.c) */
 void sp_re_clear_last_match(void);
+/* ArgumentError for a UTF-8 subject that is not valid UTF-8, as CRuby's search */
+void sp_re_check_subject(const char *str);
 void sp_re_set_last_match(const mrb_regexp_pattern *pat, const char *str, const int *caps, int n);
 void sp_re_set_lit_match(const char *str, sp_int beg, sp_int end);
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str);

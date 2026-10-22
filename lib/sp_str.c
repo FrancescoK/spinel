@@ -593,8 +593,11 @@ sp_int sp_str_length(const char*s){
   size_t bl = sp_str_byte_len(s);
   sp_int n = sp_str_count_units(s, bl);
   /* the walk just told us: char count == byte count means every byte is
-     below 0x80, so remember it in the header and never walk (or probe) again */
-  if ((size_t)n == bl) sp_str_mark_ascii7(s);
+     below 0x80, so remember it in the header and never walk (or probe) again
+     -- or that an invalid byte made it count bytes, which is not 7-bit: a
+     search would then skip the check it owes such a String
+     (sp_re_check_subject) */
+  if ((size_t)n == bl && sp_str_ascii_only(s)) sp_str_mark_ascii7(s);
   /* Evict the cheapest entry to recompute, not the oldest: a scan over one long
      subject allocates a stream of short strings, and measuring those pushed the
      subject out of its bucket over and over -- each miss another walk of the
