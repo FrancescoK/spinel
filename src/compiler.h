@@ -1197,7 +1197,6 @@ typedef struct {
   unsigned char *vs_kind; /* [vs_count] an entry's site kind (VsKind) */
   int *vs_rparent;      /* [vs_nodes] the call whose receiver a node is, or -1 */
   int *vs_whead, *vs_wnext; /* [vs_nodes] the local writes whose value a node is, in node order */
-  unsigned char *vs_dropped; /* [vs_nodes] a statement the next statement follows */
   int vs_nbuckets, vs_count, vs_cap, vs_nodes, vs_toplevel;
   unsigned vs_version, vs_gen;
   int vs_built;
@@ -1550,14 +1549,14 @@ int comp_vsite_first(Compiler *c, VsKind k, NodeKind kind, const char *name, int
 int comp_vsite_next(const Compiler *c, int e);
 int comp_vsite_node(const Compiler *c, int e);
 int comp_vsite_var(const Compiler *c, int e);
-/* The call whose receiver node `n` is (through parentheses), or -1; and
-   whether it is a statement the next statement follows, so its value is
-   dropped. */
+/* The call whose receiver node `n` is (through parentheses), or -1. */
 int comp_recv_parent(Compiler *c, int n);
 /* The local-variable writes whose value is node n, ascending: for (w =
    comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)). */
 int comp_lwrite_of_value(Compiler *c, int n);
 int comp_lwrite_next(const Compiler *c, int w);
+/* Is node n a statement the next statement follows (through parentheses),
+   so its value is dropped? (analyze_util.c, on vp_climb) */
 int comp_value_dropped(Compiler *c, int n);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);

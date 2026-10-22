@@ -4203,6 +4203,16 @@ const int *comp_parent_map(Compiler *c) {
   return c->cg_parent;
 }
 
+/* Is node n a statement the next statement follows, so that its value is
+   thrown away? Climbs from n through parentheses and statement lists
+   (vp_climb over the wrappers alone) to a statement before its list's last.
+   A conditional's arm, a loop's body and the like end the climb: the
+   callers that ask for those use an_value_dropped. */
+int comp_value_dropped(Compiler *c, int n) {
+  VpUp up;
+  return n >= 0 && n < c->nt->count && vp_climb(c->nt, comp_parent_map(c), n, VPS_NONE, &up) == VPU_DROPPED;
+}
+
 /* Is the value of method m only ever taken where a call node reads it, and
    its type free to be the form? A method the runtime or a protocol calls
    (deconstruct, to_s, an extension entry, a proc form) has it taken where no
