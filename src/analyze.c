@@ -19358,7 +19358,9 @@ static unsigned sb_store_hash(const char *nm, Scope *sc) {
   for (; *nm; nm++) { h ^= (unsigned char)*nm; h *= 16777619u; }
   return h;
 }
+static void svc_clear(void);
 static void sb_store_clear(void) {
+  svc_clear();
   for (int b = 0; b < SB_STORE_BUCKETS; b++) {
     for (SbStoreEnt *e = sb_store_tab[b]; e; ) { SbStoreEnt *nx = e->next; free(e->ids); free(e); e = nx; }
     sb_store_tab[b] = NULL;
@@ -19399,6 +19401,47 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
   for (SbStoreEnt *e = sb_store_tab[sb_store_hash(nm, sc) % SB_STORE_BUCKETS]; e; e = e->next)
     if (e->sc == sc && sp_streq(e->name, nm)) { *n = e->n; return e->ids; }
   *n = 0; return NULL;
+}
+/* The values each indexed store stores, kept beside the index (and dropped
+   with it): a container's stores are walked once per outermost walk that
+   reaches the container, the walk memo being dropped between, and every
+   walk read each store's name, receiver and arguments over again -- on a
+   Rails program 9% of a sampled window of the share pass. A write of a
+   call's value is not kept: the collecting iterator's tail it may store
+   goes with the call's plan, which moves as the pass promotes. */
+static int *svc_off, *svc_n, *svc_pool, svc_cap, svc_pool_n, svc_pool_cap;
+static void svc_clear(void) {
+  free(svc_off); free(svc_n); svc_off = svc_n = NULL; svc_cap = 0; svc_pool_n = 0;
+}
+static int sb_store_values(Compiler *c, int w, const char *contn, Scope *conts, StoreVals *sv) {
+  const NodeTable *nt = c->nt;
+  if (w >= svc_cap) {
+    int cap = nt->count > w + 1 ? nt->count : w + 1;
+    svc_off = realloc(svc_off, sizeof(int) * (size_t)cap);
+    svc_n = realloc(svc_n, sizeof(int) * (size_t)cap);
+    if (!svc_off || !svc_n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = svc_cap; i < cap; i++) svc_off[i] = -2;
+    svc_cap = cap;
+  }
+  if (svc_off[w] >= 0) {
+    sv->n = 0;
+    for (int i = 0; i < svc_n[w]; i++) store_vals_add(sv, svc_pool[svc_off[w] + i]);
+    return sv->n;
+  }
+  int n = strbuf_container_store_values(c, w, contn, conts, 1, sv);
+  if (svc_off[w] == -1) return n;
+  if (nt_kind(nt, w) == NK_LocalVariableWriteNode) {
+    int val = nt_ref(nt, w, "value");
+    if (val >= 0 && nt_kind(nt, val) == NK_CallNode) { svc_off[w] = -1; return n; }
+  }
+  if (svc_pool_n + n > svc_pool_cap) {
+    svc_pool_cap = (svc_pool_n + n) * 2 + 256;
+    svc_pool = realloc(svc_pool, sizeof(int) * (size_t)svc_pool_cap);
+    if (!svc_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  svc_off[w] = svc_pool_n; svc_n[w] = n;
+  for (int i = 0; i < n; i++) svc_pool[svc_pool_n++] = sv->v[i];
+  return n;
 }
 static int strbuf_demand_value_leaves(Compiler *c, int node, int depth);
 /* One value stored into a container whose elements are mutated through it:
@@ -19906,7 +19949,7 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
     const int *sns0 = sb_store_nodes(c, contn, conts, &nsn);
     StoreVals stores = {0};
     for (int si = 0; si < nsn; si++) {
-      int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, &stores);
+      int nst = sb_store_values(c, sns0[si], contn, conts, &stores);
       for (int e3 = 0; e3 < nst; e3++)
         changed |= strbuf_store_leaf(c, stores.v[e3], depth, mode);
       /* the strings sit a level in (`h.each { |k, vs| vs.each(&:strip!) }`)
