@@ -1743,7 +1743,15 @@ static void cf_share_kind_rule(CF *f, int sh, int v, int recv_el, const int *pos
       if (sh == BSH_MERGE) { cf_share(f, recv_el, pos[i]); cf_share(f, v, pos[i]); }
       else cf_store(f, recv_el, pos[i]);
     }
-    if (sh == BSH_MERGE) { cf_add_set(f, v, cf_bv_set(f)); cf_share(f, v, recv_el); }
+    if (sh == BSH_MERGE) {
+      cf_add_set(f, v, cf_bv_set(f)); cf_share(f, v, recv_el);
+      /* concat, update, merge! and replace put the arguments' elements
+         into the receiver's own objects, not only into the answer's
+         (`a.concat([B.new]); a[0]` is a B) */
+      int t = cf_entry(f, -(v + 2), "#mg");
+      for (int i = 0; i < npos; i++) cf_load(f, pos[i], t);
+      cf_store(f, recv_el, t);
+    }
     break;
   case BSH_ELEM: case BSH_ITER_FIND:
     cf_load(f, recv_el, v); cf_add_set(f, v, cf_bv_set(f));
