@@ -526,6 +526,23 @@ def case106
 end
 run("a yield's ninth argument") { case106 }
 
+def give_splat(a) = yield(*Array.new(0, 0), a)
+def sum107(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 2
+    e += 1
+  end
+  s
+end
+def case107
+  a = [1, 2]
+  give_splat(a) { |m| m << H[7] }
+  sum107(a)
+end
+run("a yield's argument past a splat") { case107 }
+
 # a block's array a method keeps in an ivar, written through the ivar's reader
 def ksum(fl)
   s = 0

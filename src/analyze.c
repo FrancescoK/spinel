@@ -40325,15 +40325,32 @@ static int mark_block_param_arrays(Compiler *c) {
       int blk = nt_ref(nt, sites[si], "block");
       if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
       Scope *bsc = comp_scope_of(c, blk);
-      for (int pk = 0; pk < yan; pk++) {
-        if (nt_kind(nt, yav[pk]) == NK_SplatNode) break;
+      /* past a splat (`yield(*xs, a)`) a parameter can be bound to any of
+         the arguments from it on */
+      int sp = -1;
+      for (int k = 0; k < yan && sp < 0; k++) if (nt_kind(nt, yav[k]) == NK_SplatNode) sp = k;
+      for (int pk = 0; ; pk++) {
         const char *pnm = block_param_name(c, blk, pk);
-        LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
-        /* a mixed parameter boxes the argument's array (mark_boxed_arrays) */
-        if (plv && plv->type == TY_POLY && nie_boxed_store) changed |= mark_boxed_value(c, yav[pk]);
-        if (!plv || (plv->type != TY_INT_ARRAY && plv->type != TY_FLOAT_ARRAY)) continue;
-        if (plv->nullable_int_elem & NIE_STORED) changed |= mark_elem_slot(c, yav[pk], NIE_STORED | NIE_REACH);
-        if (!(plv->nullable_int_elem & NIE_REACH) && elem_nil_reach_expr(c, yav[pk])) { plv->nullable_int_elem |= NIE_REACH; changed = 1; }
+        if (!pnm) break;
+        LocalVar *plv = bsc ? scope_local(bsc, pnm) : NULL;
+        int typed = plv && (plv->type == TY_INT_ARRAY || plv->type == TY_FLOAT_ARRAY);
+        int lo = sp >= 0 && pk >= sp ? sp : pk, hi = sp >= 0 && pk >= sp ? yan : pk + 1;
+        for (int k = lo; plv && k < hi && k < yan; k++) {
+          int av = yav[k];
+          if (nt_kind(nt, av) == NK_SplatNode) {
+            /* an element of the splatted array is bound: an array of
+               numbers holds none of an array, anything else may */
+            TyKind st = infer_type(c, nt_ref(nt, av, "expression")), et = ty_array_elem(st);
+            int scalars = ty_is_array(st) && (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL);
+            if (typed && !scalars && !nie_gave_up) { nie_gave_up = 1; changed = 1; }
+            continue;
+          }
+          /* a mixed parameter boxes the argument's array (mark_boxed_arrays) */
+          if (plv->type == TY_POLY && nie_boxed_store) changed |= mark_boxed_value(c, av);
+          if (!typed) continue;
+          if (plv->nullable_int_elem & NIE_STORED) changed |= mark_elem_slot(c, av, NIE_STORED | NIE_REACH);
+          if (!(plv->nullable_int_elem & NIE_REACH) && elem_nil_reach_expr(c, av)) { plv->nullable_int_elem |= NIE_REACH; changed = 1; }
+        }
       }
     }
     free(sites);

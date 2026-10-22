@@ -23,5 +23,6 @@
 ["a recursive call's block", NoMethodError]
 ["one of many yield sites", NoMethodError]
 ["a yield's ninth argument", NoMethodError]
+["a yield's argument past a splat", NoMethodError]
 ["a block's array kept by its method", NoMethodError]
 ["untouched", 30]
