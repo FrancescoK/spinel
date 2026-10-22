@@ -59,7 +59,7 @@ void sp_fiber_stack_hint(size_t bytes) {
   if (!sp_fiber_stack_from_env && bytes) sp_fiber_stack_size = bytes;
 }
 
-static size_t sp_fiber_guard(void) {
+size_t sp_fiber_guard(void) {
   static size_t g = 0;
   if (!g) {
     long p = sysconf(_SC_PAGESIZE);

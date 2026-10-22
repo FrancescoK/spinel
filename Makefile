@@ -2811,6 +2811,11 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	  { echo "backtrace-test: FAIL (#4310: fewer than 4 frames)"; cat "$$tmp/out"; ok=0; }; \
 	head -2 "$$tmp/out" | tail -1 | grep -q "Feeder#inner" || \
 	  { echo "backtrace-test: FAIL (#4310: the raising frame is not first)"; cat "$$tmp/out"; ok=0; }; \
+	if [ "$$(uname)" = Darwin ]; then \
+	  SPINEL_BT_WALK=1 "$$tmp/bt" > "$$tmp/walk.out" 2>&1; \
+	  cmp -s "$$tmp/out" "$$tmp/walk.out" || \
+	    { echo "backtrace-test: FAIL (#9930: the frame-pointer walk answers other frames)"; cat "$$tmp/walk.out"; ok=0; }; \
+	fi; \
 	$(SPINEL) --debug --no-inline-hot test/backtrace/pass_through_rescue.rb -o "$$tmp/pt" >/dev/null 2>&1 || \
 	  { echo "backtrace-test: FAIL (compile pass_through_rescue)"; ok=0; }; \
 	"$$tmp/pt" > "$$tmp/pt.out" 2>&1; \
