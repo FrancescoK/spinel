@@ -16242,6 +16242,64 @@ static int sc_walk(NodeTable *nt, int node, const char *cls) {
   return changed;
 }
 
+/* Is the value of node id taken? Climbs through the places a value is
+   passed on (vp_climb, over AN_DROP_CLIMB: an arm of a conditional, a case
+   or a begin, `||`, `&&`, a rescue modifier, parentheses). Thrown away: a
+   statement before its list's last, the program's last statement, a class
+   or module body's last, a loop's body, a begin's body beside an else and
+   an ensure clause. Anything else takes it: a method's, a block's or a
+   lambda's value, a write, an argument, a receiver. */
+static int sc_value_taken(const NodeTable *nt, const int *parent, int id) {
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, parent, id, AN_DROP_CLIMB, &up);
+  /* (a node no parent holds, or parentheses none does, a value a rewrite
+     holds aside, keep the form they had: taken) */
+  if (ended == VPU_ROOT) return up.node == id || nt_kind(nt, up.node) == NK_ParenthesesNode;
+  if (ended == VPU_DROPPED) return 0;
+  if (ended != VPU_ENDED) return 1;
+  if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 0;
+  NodeKind k = nt_kind(nt, up.parent);
+  const char *ty = nt_type(nt, up.parent);
+  if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) &&
+      nt_ref(nt, up.parent, "body") == up.node) return 0;
+  return !(ty && sp_streq(ty, "ProgramNode"));
+}
+
+/* Is the value of node id taken where it stands: anything but a statement,
+   or the last statement of a method, a block, a lambda or parentheses? */
+static int sc_value_taken_at_once(const NodeTable *nt, const int *parent, int id) {
+  int par = parent[id];
+  if (par < 0 || nt_kind(nt, par) != NK_StatementsNode) return 1;
+  int pn = 0; const int *pb = nt_arr(nt, par, "body", &pn);
+  int owner = parent[par];
+  NodeKind ok = owner >= 0 ? nt_kind(nt, owner) : NK_NilNode;
+  return pn > 0 && pb[pn - 1] == id &&
+         (ok == NK_DefNode || ok == NK_ParenthesesNode || ok == NK_BlockNode || ok == NK_LambdaNode);
+}
+
+/* Is X of the `class << X` at node id a class or a module: a `self` in a
+   class, module or singleton class body or in a class method (`def self.m`)
+   of one, or a constant a class or module definition of the program names? */
+static int sc_recv_is_class(const NodeTable *nt, const int *parent, int id, int ex) {
+  if (nt_kind(nt, ex) != NK_SelfNode) {
+    const char *xn = nt_str(nt, ex, "name");
+    for (int h = 0; xn && h < 2; h++)
+      NT_FOREACH_KIND(nt, h ? NK_ModuleNode : NK_ClassNode, d) {
+        const char *dn = nt_str(nt, nt_ref(nt, d, "constant_path"), "name");
+        if (dn && sp_streq(dn, xn)) return 1;
+      }
+    return 0;
+  }
+  for (int p = parent[id], hops = 0; p >= 0 && hops < nt->count; p = parent[p], hops++) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 1;
+    if (k == NK_DefNode && nt_kind(nt, nt_ref(nt, p, "receiver")) != NK_SelfNode) return 0;
+    /* a block can rebind self (define_method, instance_eval): not known to be the class */
+    if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  }
+  return 0;
+}
+
 /* `class << X; ...; self; end` whose value is used (`sc = class << self;
    self; end`): the body as a statement, then `X.singleton_class`, in
    parentheses. Its last self is that value, which the rest of the body
@@ -16250,19 +16308,15 @@ static int sc_value_form(NodeTable *nt, const int *parent, int id) {
   int body = nt_ref(nt, id, "body"), bn = 0;
   const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1 || nt_kind(nt, bb[bn - 1]) != NK_SelfNode) return 0;
-  int par = parent[id];
-  if (par >= 0 && nt_kind(nt, par) == NK_StatementsNode) {
-    int pn = 0; const int *pb = nt_arr(nt, par, "body", &pn);
-    int owner = parent[par];
-    /* a statement whose value nothing takes: only the last of a method, a
-       block or parentheses is taken */
-    NodeKind ok = owner >= 0 ? nt_kind(nt, owner) : NK_NilNode;
-    if (pn == 0 || pb[pn - 1] != id ||
-        (ok != NK_DefNode && ok != NK_ParenthesesNode && ok != NK_BlockNode && ok != NK_LambdaNode)) return 0;
-  }
   int ex = nt_ref(nt, id, "expression");
   NodeKind ek = ex >= 0 ? nt_kind(nt, ex) : NK_NilNode;
   if (ek != NK_SelfNode && ek != NK_ConstantReadNode && ek != NK_ConstantPathNode) return 0;
+  /* `X.singleton_class` is refused where X is the main object or no class
+     (Object#singleton_class), so a value no use takes would turn a program
+     that compiles into a refusal: only a class or module is
+     followed through the arms, any other X is taken where it stands */
+  if (sc_recv_is_class(nt, parent, id, ex) ? !sc_value_taken(nt, parent, id)
+                                           : !sc_value_taken_at_once(nt, parent, id)) return 0;
   int recv = nt_clone_subtree(nt, ex);
   int sc = fwd_new_node_like(nt, id, "SingletonClassNode");
   int nbody = fwd_new_node_like(nt, id, "StatementsNode");
