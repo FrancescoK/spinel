@@ -9134,6 +9134,10 @@ static int emit_poly_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa) 
     buf_printf(pa, "_t%d", A->htmp[k]);
     return 1;
   }
+  /* a temp that holds the handle is the String the argument read, before
+     anything the arm runs (a default that assigns the variable, `b =
+     drop!`) can change the slot */
+  if (g_one_string && at == TY_STRBUF) { buf_printf(pa, "_t%d", A->atmp[k]); return 1; }
   int an = A->argv[k];
   NodeKind ak = nt_kind(c->nt, an);
   Buf sref; memset(&sref, 0, sizeof sref);
