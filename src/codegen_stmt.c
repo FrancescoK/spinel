@@ -13791,6 +13791,13 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
+        /* (one-String mode: a String of either face, `return (@iv || x)`,
+           into the bytes the funnel holds) */
+        else if (g_one_string && g_ret_type == TY_STRING) {
+          buf_puts(b, "SP_STR_B(");
+          emit_tail_value(c, a[0], b);
+          buf_puts(b, ")");
+        }
         else {
           /* a subclass through an ancestor-typed slot, as the flat return
              casts it (#3418, #8204) */
