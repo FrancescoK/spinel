@@ -475,6 +475,12 @@ size_t sp_gc_mk_promo_bytes = 0;
    0xfa -> 0xf8, reset by the list sweep that frees or promotes it). */
 void sp_gc_mark_str(const char *s) {
   sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
+#ifdef SP_ONE_STRING
+  /* a String born inside its handle (sp_str_alloc_born) lives as the
+     handle's GC object */
+  { void *o = SP_STR_BORN_LINK(h);
+    if (o && (char *)o + sizeof(struct sp_String_s) == (char *)h) { sp_gc_mark(o); return; } }
+#endif
   if (sp_slab_owns(h)) {
     int wy;
     /* SPINEL_GC_VERIFY: a string slot the sweep has freed is nobody's to

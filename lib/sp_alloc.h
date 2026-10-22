@@ -280,7 +280,52 @@ void sp_alloc_report_tag(void *scan, const char *name);
    is bounded at 1GB rather than 2. Every reader of `size` masks. */
 #define SP_STR_SIZE_MASK   0x3FFFFFFFu
 
+#ifdef SP_ONE_STRING
+/* One representation, U2 (string-u2-design.md): a heap String is born inside
+   the handle that will hold it, one GC object laid out as an inline handle
+   ([sp_gc_hdr][sp_String][sp_str_hdr][0xfe][bytes][NUL]). To the builtins
+   it is an ordinary fresh heap string (marker 0xfe, the length in the
+   header); its header's link names the handle in front of it, the mark
+   follows that link (sp_gc_mark_str), and a slot that takes the String
+   adopts the handle (sp_String_adopt) instead of copying the bytes. */
+void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+static inline char *sp_str_alloc_born(size_t len, int nogc) {
+  size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
+  struct sp_String_s *r = (struct sp_String_s *)(nogc ? sp_gc_alloc_nogc : sp_gc_alloc)(sizeof(struct sp_String_s) + total, NULL, NULL);
+  sp_str_hdr *h = (sp_str_hdr *)(void *)(r + 1);
+  h->next = (sp_str_hdr *)(void *)r;
+  h->size = (uint32_t)total;
+  h->len = (uint32_t)len;
+  h->hash = 0;
+  char *body = (char *)(h + 1);
+  body[0] = (char)0xfe;
+  body[1 + len] = 0;
+  r->data = body + 1; r->len = (int64_t)len; r->cap = (int64_t)len; r->binary = 0; r->chilled = 0;
+  if (sp_alloc_report_on) sp_alloc_report_str(len);
+  return body + 1;
+}
+/* A heap String the runtime keeps and answers again (`$1`, MatchData#string,
+   File#path, an exception's stored message, ...): a slot that takes it must
+   copy it, as every slot did before U2, or a change through the slot's
+   handle would show in what the runtime keeps. Bit 1 of the header's link
+   to the handle it was born in says so; sp_str_born_owner then answers no
+   handle, and the mark masks it (SP_STR_BORN_LINK). */
+static inline const char *sp_str_retained(const char *s) {
+  if (s && (((const unsigned char *)s)[-1] | 0x04) == 0xfe) {
+    sp_str_hdr *h = ((sp_str_hdr *)(void *)(s - 1)) - 1;
+    char *o = (char *)SP_STR_BORN_LINK(h);
+    if (o && o + sizeof(struct sp_String_s) == (char *)h) h->next = (sp_str_hdr *)(void *)((uintptr_t)o | SP_STR_BORN_KEPT);
+  }
+  return s;
+}
+#else
+#define sp_str_retained(s) (s)
+#endif
 static inline char *sp_str_alloc(size_t len) {
+#ifdef SP_ONE_STRING
+  return sp_str_alloc_born(len, 0);
+#endif
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
   sp_str_hdr *h;
   /* String-heap pressure drives its own collection (see sp_str_heap_bytes).
@@ -357,6 +402,9 @@ static inline char *sp_str_alloc(size_t len) {
    copies through here. The heap simply runs a little past the threshold; the
    next ordinary allocation collects. */
 static inline char *sp_str_alloc_nogc(size_t len) {
+#ifdef SP_ONE_STRING
+  return sp_str_alloc_born(len, 1);
+#endif
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
   sp_str_hdr *h = (sp_str_hdr *)sp_slab_alloc_str(total);
   h->size = (uint32_t)total;
@@ -1062,7 +1110,7 @@ static inline void sp_str_check_mutable(const char *s) {
 #ifdef SP_ONE_STRING
 const char *sp_str_keep_copy(const char *s);
 static inline const char *sp_str_keep(const char *s) {
-  return s && ((const unsigned char *)s)[-1] == 0xfd && !sp_str_fd_owner_frozen(s) ? sp_str_keep_copy(s) : s;
+  return s && ((const unsigned char *)s)[-1] == 0xfd && !sp_str_fd_owner_frozen(s) ? sp_str_keep_copy(s) : sp_str_retained(s);
 }
 #else
 #define sp_str_keep(s) (s)

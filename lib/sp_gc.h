@@ -727,6 +727,14 @@ static inline void sp_mark_string(const char *s) {
     void *owner = (void *)(((const sp_str_hdr *)(s - 1)) - 1)->next;
     if (owner) sp_gc_mark(owner);
   }
+#ifdef SP_ONE_STRING
+  /* one representation: a String born inside its handle and frozen by
+     .freeze (0xf1) lives as the handle's GC object too */
+  else if ((unsigned char)s[-1] == 0xf1) {
+    void *o = SP_STR_BORN_LINK(((const sp_str_hdr *)(s - 1)) - 1);
+    if (o && (const char *)o + sizeof(struct sp_String_s) == (const char *)(((const sp_str_hdr *)(s - 1)) - 1)) sp_gc_mark(o);
+  }
+#endif
   /* No frozen (0xf1) branch here: this is inlined into optcarrot's GC mark and
      is layout-sensitive. A live frozen heap string is kept immortal by
      sp_str_sweep instead (#1449). */
@@ -753,6 +761,13 @@ static inline void sp_mark_rbval_scratch(sp_RbVal v) {
   const void *h = NULL;
   if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME)) { if (v.v.s && ((unsigned char)v.v.s[-1] | 0x04) == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
   else if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) || v.tag == SP_TAG_BIGINT) { if (v.v.p) h = (const char *)v.v.p - sizeof(sp_gc_hdr); }
+#ifdef SP_ONE_STRING
+  /* (a String born inside its handle: the handle's GC object is the slot) */
+  if (h && v.tag != SP_TAG_OBJ && v.tag != SP_TAG_BIGINT) {
+    const void *o = SP_STR_BORN_LINK((const sp_str_hdr *)h);
+    if (o && (const char *)o + sizeof(struct sp_String_s) == (const char *)h) h = (const char *)o - sizeof(sp_gc_hdr);
+  }
+#endif
   if (h && sp_slab_owns(h) && !sp_slab_is_live(h)) return;
   sp_mark_rbval(v);
 }

@@ -2828,7 +2828,7 @@ sp_File *sp_File_open_perm(const char *path, const char *mode, sp_oint perm) {SP
                  : (acc == O_WRONLY) ? ((fl & O_APPEND) ? "a" : "w")
                  : ((fl & O_APPEND) ? "a+" : (m[0] == 'w') ? "w+" : "r+");
   sp_File *f = sp_io_fdopen(fd, fm);
-  f->path = path;
+  f->path = sp_str_retained(path);
   f->mode = m;
   f->is_file = 1;
   return f;
@@ -2845,7 +2845,7 @@ sp_File *sp_file_stat_handle(const char *path) {SP_GC_ROOT_STR(path);
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
   SP_GC_ROOT(f);   /* the sprintf below allocates, and nothing else holds the fresh handle */
   f->fp = NULL;
-  f->path = sp_sprintf("%s", path ? path : "");
+  f->path = sp_str_retained(sp_sprintf("%s", path ? path : ""));
   sp_gc_wb((void *)f);   /* the sprintf can promote the rooted handle */
   f->mode = (&("\xff" "stat")[1]);
   f->lineno = 0;
@@ -2860,7 +2860,7 @@ sp_File *sp_file_lstat_handle(const char *path) {SP_GC_ROOT_STR(path);
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
   SP_GC_ROOT(f);
   f->fp = NULL;
-  f->path = sp_sprintf("%s", path ? path : "");
+  f->path = sp_str_retained(sp_sprintf("%s", path ? path : ""));
   sp_gc_wb((void *)f);   /* the sprintf can promote the rooted handle */
   f->mode = (&("\xff" "lstat")[1]);
   f->lineno = 0;
@@ -3248,7 +3248,7 @@ sp_Dir *sp_Dir_new(const char *path) {SP_GC_ROOT_STR(path);
   d->dp = dp;
   d->path = NULL;   /* set below: the sprintf may GC, and the scan reads path */
   SP_GC_ROOT(d);
-  d->path = sp_sprintf("%s", path ? path : "");
+  d->path = sp_str_retained(sp_sprintf("%s", path ? path : ""));
   sp_gc_wb((void *)d);   /* the sprintf can promote the rooted handle */
   return d;
 }
@@ -4265,6 +4265,18 @@ static void sp_gc_stat_str_cb(void *hdr, void *arg) {
   struct sp_gc_stat_str_acc *a = (struct sp_gc_stat_str_acc *)arg;
   *a->b += ((sp_str_hdr *)hdr)->size & SP_STR_SIZE_MASK; (*a->c)++;
 }
+#ifdef SP_ONE_STRING
+void sp_slab_each_object(int young, int old, void (*fn)(void *hdr, void *arg), void *arg);
+static void sp_gc_stat_one_str_cb(void *hdr, void *arg) {
+  struct sp_gc_stat_str_acc *a = (struct sp_gc_stat_str_acc *)arg;
+  char *o = (char *)hdr + sizeof(sp_gc_hdr);
+  sp_str_hdr *sh = (sp_str_hdr *)(void *)(o + sizeof(struct sp_String_s));
+  if ((char *)SP_STR_BORN_LINK(sh) != o) return;
+  unsigned char m = ((unsigned char *)(sh + 1))[0];
+  if (m != 0xfe && m != 0xfa && m != 0xf1 && m != 0xfd) return;
+  *a->b += ((sp_gc_hdr *)hdr)->size; (*a->c)++;
+}
+#endif
 sp_StrIntHash*sp_gc_stat(void){
   /* The string heap (sp_str_heap) is malloc'd separately and deliberately
      excluded from sp_gc_bytes (see sp_str_alloc). Surface its footprint so
@@ -4279,7 +4291,13 @@ sp_StrIntHash*sp_gc_stat(void){
      generation (a racy read against the allocating workers, benign for an
      introspection stat), then the lists of the strings too large for it */
   { struct sp_gc_stat_str_acc acc = { &str_bytes, &str_count };
-    sp_slab_each_string(1, 1, sp_gc_stat_str_cb, &acc); }
+    sp_slab_each_string(1, 1, sp_gc_stat_str_cb, &acc);
+#ifdef SP_ONE_STRING
+    /* one representation: a String lives in its handle's GC object, the
+       bytes inside it (sp_str_alloc_born, sp_String_new_inline_len) */
+    sp_slab_each_object(1, 1, sp_gc_stat_one_str_cb, &acc);
+#endif
+  }
 #ifdef SP_THREADS
   /* Per-worker lists (see sp_alloc.h): each has a single pusher, and only the
      head moves, so a snapshot walk reaches fully-linked nodes -- at worst it
@@ -4621,7 +4639,7 @@ int sp_argf_ensure(void) {
   const char *fn = SP_SEB(fne);
   sp_argf_obj.started = 1;
   if (!fn) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
-  sp_argf_obj.fname = fn;   /* marked with the ARGV globals */
+  sp_argf_obj.fname = sp_str_retained(fn);   /* marked with the ARGV globals */
   if (fn[0] == '-' && fn[1] == 0) { sp_argf_obj.cur = stdin; return 1; }
   FILE *f = fopen(fn, "r");
   if (!f) sp_file_raise_errno("rb_sysopen", fn);
@@ -4770,7 +4788,8 @@ static sp_StrRange sp_srange_held(sp_StrRange r) {
   return r;
 }
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
-  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; r.sym = 0; r.hf = NULL; r.hl = NULL; return r;
+  /* (the Range keeps its endpoints and answers them again: sp_str_retained) */
+  sp_StrRange r; r.first = sp_str_retained(f); r.last = sp_str_retained(l); r.excl = e; r.unfrozen = 0; r.sym = 0; r.hf = NULL; r.hl = NULL; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
   r = sp_srange_held(r);
@@ -5879,10 +5898,10 @@ sp_Addrinfo *sp_addrinfo_new(const char *ip, sp_int port, sp_int stype, sp_int i
      takes the barrier after the allocation it stores: one barrier after
      both was cleared by the second's collection, which freed the first */
   const char *s = sp_sprintf("%s", ip ? ip : "");
-  sp_gc_wb((void *)a); a->ip = s;
+  sp_gc_wb((void *)a); a->ip = sp_str_retained(s);
   int v6 = !is_unix && ip && strchr(ip, ':') != NULL;
   s = sp_sprintf("%s", is_unix ? "AF_UNIX" : v6 ? "AF_INET6" : "AF_INET");
-  sp_gc_wb((void *)a); a->afname = s;
+  sp_gc_wb((void *)a); a->afname = sp_str_retained(s);
   a->afamily = is_unix ? AF_UNIX : v6 ? AF_INET6 : AF_INET;
   a->port = port;
   a->socktype = stype;

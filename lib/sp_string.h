@@ -225,6 +225,29 @@ const char*sp_sym_to_s_chilled(sp_sym id);
    constructor below: its frame (six saved registers and the stack guard)
    cost a literal's store about 45 instructions (`@e = "c"` in a by-value
    object's initialize, bm_object_new_init). */
+#ifdef SP_ONE_STRING
+/* U2 (string-u2-design.md): the handle a heap String was born inside
+   (sp_str_alloc_born), or NULL for one that was not: the header's link names
+   the handle right in front of it */
+static inline sp_String*sp_str_born_owner(const char*s){
+  const sp_str_hdr*h=((const sp_str_hdr*)(s-1))-1;
+  sp_String*o=(sp_String*)(void*)h->next;
+  return o&&(const char*)(o+1)==(const char*)h?o:NULL;
+}
+/* A slot takes such a String: its handle becomes the String, over the bytes
+   where they are (the length and the binary tag from the header, a frozen
+   mark into the handle's), and the bytes become its payload (0xfd). No
+   allocation and no copy: what wrapping a builtin's answer cost. */
+static inline sp_String*sp_String_adopt(const char*s,sp_String*o){
+  sp_str_hdr*h=((sp_str_hdr*)(s-1))-1;
+  unsigned char mk=((const unsigned char*)s)[-1];
+  o->len=(int64_t)h->len;
+  o->binary=(h->size&SP_STR_SIZE_BINARY)!=0;
+  if(mk!=0xfe)sp_String_freeze(o);
+  ((unsigned char*)s)[-1]=0xfd;
+  return o;
+}
+#endif
 #if defined(SP_SHARE_STRING_LITERALS) || defined(SP_ONE_STRING)
 static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s);
 static inline sp_String*sp_String_new_shared(const char*s){
@@ -232,6 +255,7 @@ static inline sp_String*sp_String_new_shared(const char*s){
   unsigned char mk=((const unsigned char*)s)[-1];
 #ifdef SP_ONE_STRING
   if(mk==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
+  if(mk==0xfe||mk==0xfa||mk==0xf1){sp_String*o=sp_str_born_owner(s);if(o)return sp_String_adopt(s,o);}
 #endif
   if(mk==0xf1){sp_StringLiteral*l=sp_String_literal_slot(s);if(l){sp_String*lh=SP_ATOMIC_LOAD(&l->value,__ATOMIC_ACQUIRE);if(lh)return lh;}}
   return sp_String_new_shared_make(s);

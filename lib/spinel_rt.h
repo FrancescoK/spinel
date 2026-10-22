@@ -16962,7 +16962,7 @@ static const char *sp_syserr_super(sp_Exception *self, sp_int argc, const sp_RbV
   SP_GC_ROOT(self);
   const char *m = sp_syserr_msg_a(self->cls_name, argc, av);
   sp_gc_wb((void *)self);
-  self->msg = m;
+  self->msg = sp_str_retained(m);
   self->xkey = sp_box_nil();
   sp_exc_syserr_init(self);
   return m;

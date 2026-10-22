@@ -2358,7 +2358,7 @@ sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_R
   SP_ATOMIC_STORE(&f->fp, nf, __ATOMIC_RELAXED);
   SP_ATOMIC_STORE(&f->closed, 0, __ATOMIC_RELAXED);
   if (reserved) SP_ATOMIC_STORE(&f->uses, 0, __ATOMIC_RELEASE);
-  f->path = path;
+  f->path = sp_str_retained(path);
   /* a mode given replaces the handle's, as CRuby's does: an earlier
      #binmode or #set_encoding no longer decides what a read answers */
   if (mode && mode[0]) { f->bin_flag = 0; f->ext_enc = 0; }

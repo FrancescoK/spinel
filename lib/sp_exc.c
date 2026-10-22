@@ -225,12 +225,12 @@ static const char *sp_exc_msg_copy(const char *m) {
     /* a frozen String's message is frozen (0xfa: a frozen heap String that
        is collected) */
     if (sp_cmsg_frozen(m)) ((unsigned char *)r)[-1] = 0xfa;
-    return r;
+    return sp_str_retained(r);
   }
   size_t n = strlen(m);
   char *r = sp_str_alloc(n);
   memcpy(r, m, n);
-  return r;
+  return sp_str_retained(r);   /* (the exception keeps it: #message answers it again) */
 }
 /* A raise's frozen message, counted (sp_exc_msg_given) and with no NUL in
    it, as plain text that is frozen (0xfa): what sp_raise_cls carries in

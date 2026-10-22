@@ -258,6 +258,11 @@ typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); voi
    `hash` caches sp_str_hash for heap/heap-frozen keys; 0 == not yet
    computed, invalidated to 0 on any in-place mutation (setbyte/set_len). */
 typedef struct sp_str_hdr { struct sp_str_hdr *next; uint32_t size; uint32_t len; uint64_t hash; } sp_str_hdr;
+/* One String representation, U2 (sp_str_alloc_born): a heap String's link
+   to the handle it was born in, bit 1 set when the runtime keeps the String
+   (sp_str_retained) */
+#define SP_STR_BORN_KEPT ((uintptr_t)2)
+#define SP_STR_BORN_LINK(h) ((void *)((uintptr_t)(h)->next & ~SP_STR_BORN_KEPT))
 
 /* ---- Typed arrays ---- */
 #define SP_STRARR_INLINE 4

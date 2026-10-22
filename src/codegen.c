@@ -21329,12 +21329,17 @@ char *codegen_program(const NodeTable *nt) {
   if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
   /* The ARGV copy loop only matters if the program reads ARGV / ARGF / $*. */
   if (g_uses_argv)
-    buf_puts(body, "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
+    /* (one String representation: the runtime keeps ARGV's and $0's Strings,
+       so a slot that takes one copies it, sp_str_retained) */
+    buf_puts(body, g_one_string
+      ? "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_retained(sp_str_dup_external(argv[_ai + 1])); }\n"
+      : "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
   if (g_uses_program_name)
     /* argv[0] lives in the process's argument block, not the string heap, so it
      carries no marker byte -- and `$0` is an ordinary Ruby String the caller
      roots. Copy it in. */
-    buf_puts(body, "    sp_program_name = _sp_main_argc > 0 ? sp_str_dup_external(_sp_main_argv[0]) : sp_str_empty;\n");
+    buf_puts(body, g_one_string ? "    sp_program_name = _sp_main_argc > 0 ? sp_str_retained(sp_str_dup_external(_sp_main_argv[0])) : sp_str_empty;\n"
+                                : "    sp_program_name = _sp_main_argc > 0 ? sp_str_dup_external(_sp_main_argv[0]) : sp_str_empty;\n");
   /* Enable the backtrace substrate (Exception#backtrace, Kernel#caller) in
      debug builds only: --debug compiles at -O0 with non-inlined methods, so
      the captured frames demangle to Class#method. Optimized/release builds

@@ -162,7 +162,7 @@ void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(s
       char *buf = sp_str_alloc_raw(len+1);
       memcpy(buf, str+caps[i*2], len); buf[len] = 0;
       sp_str_set_len(buf, (size_t)len);
-      sp_re_captures[i] = buf;
+      sp_re_captures[i] = sp_str_retained(buf);
     }
   }
   /* Populate the symbolic back-references from caps[0]/[1] (the whole
@@ -178,7 +178,7 @@ void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(s
     memcpy(m, str + caps[0], mlen); m[mlen] = 0;
     sp_str_set_len(m, (size_t)mlen);
     sp_str_set_len(m, (size_t)mlen);
-    sp_re_match_str = m;
+    sp_re_match_str = sp_str_retained(m);
     sp_re_pp_span[0] = caps[0]; sp_re_pp_span[1] = caps[1];
   }
 }
@@ -226,7 +226,7 @@ const char *sp_re_pre_match(void) {
   memcpy(pre, sp_re_last_str, n); pre[n] = 0;
   sp_str_set_len(pre, (size_t)n);
   sp_str_set_len(pre, (size_t)n);
-  sp_re_match_pre = pre;
+  sp_re_match_pre = sp_str_retained(pre);
   return pre;
 }
 
@@ -239,7 +239,7 @@ const char *sp_re_post_match(void) {
   memcpy(post, sp_re_last_str + sp_re_pp_span[1], n); post[n] = 0;
   sp_str_set_len(post, (size_t)n);
   sp_str_set_len(post, (size_t)n);
-  sp_re_match_post = post;
+  sp_re_match_post = sp_str_retained(post);
   return post;
 }
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
