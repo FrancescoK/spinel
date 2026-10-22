@@ -855,7 +855,7 @@ int an_unparen(const NodeTable *nt, int n) {
    the value unified to the handler's Integer and the array pointer went into
    an sp_int slot (#3495, #3496). */
 int node_is_empty_container(const NodeTable *nt, int node) {
-  node = an_unparen(nt, node);   /* `([])` is as empty as `[]` */
+  node = nt_paren_single(nt, node);   /* `([])` is as empty as `[]` */
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
@@ -1884,7 +1884,7 @@ int scope_body_value(Compiler *c, int mi) {
    other body. */
 const char *an_memo_reader_ivar(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
-  int last = an_unparen(nt, scope_body_last(c, mi));
+  int last = nt_paren_single(nt, scope_body_last(c, mi));
   if (last < 0 || nt_kind(nt, last) != NK_InstanceVariableOrWriteNode) return NULL;
   return nt_str(nt, last, "name");
 }
@@ -2788,7 +2788,7 @@ int an_user_defines_method(Compiler *c, const char *name) {
 
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int n = an_unparen(nt, node);
+  int n = nt_paren_single(nt, node);
   if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
     Scope *sc = comp_scope_of(c, n);
     int mi = sc ? (int)(sc - c->scopes) : -1;
