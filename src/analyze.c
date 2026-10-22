@@ -34675,8 +34675,8 @@ int file_stat_nil_call(Compiler *c, int v) {
   }
   /* `size` on a boxed value: a Range of non-numbers answers nil (sp_poly_size) */
   if (sp_streq(nm, "size") && argc == 0 && infer_type(c, rc) == TY_POLY) return 1;
-  static const char *const F[] = { "uid", "gid", "nlink", "dev", "dev_major", "dev_minor", "ino", "blksize", "blocks", "rdev", "size?", NULL };
-  if (argc != 0 || !str_in(nm, F)) return 0;
+  /* a stat's numeric fields and size?, each of which can read nil */
+  if (argc != 0 || (stat_field_slot(nm) < 0 && !sp_streq(nm, "size?"))) return 0;
   TyKind rt = infer_type(c, rc);
   if (rt == TY_IO) return 1;
   if (rt != TY_POLY) return 0;

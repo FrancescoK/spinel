@@ -256,9 +256,6 @@ int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr)
 int attr_writer_named(Compiler *c, int cls, const char *name);
 int boxed_desc_control_arity(const char *name, int argc);
 int boxed_printf_list_ok(Compiler *c, const int *argv, int argc);
-int boxed_stat_name(const char *name);
-int boxed_stat_pred(const char *name);
-extern const char *const boxed_stat_sfield[];
 int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc);
 int class_method_named(Compiler *c, const char *name);
 void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b);
