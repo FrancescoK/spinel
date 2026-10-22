@@ -691,14 +691,8 @@ void arm_texts_flush(ArmText *a, int n, Buf *b) {
   free(body); free(len); free(lead); free(next); free(tail); free(tab);
 }
 
-/* The user-class arms of a zero-argument poly dispatch
-   (emit_poly_method_dispatch): one `case` per class a boxed receiver can be
-   at run time -- its method (or proc form), a reader, a native binding, an
-   arity refusal -- as the dispatch's plan lists them (cplan_poly). A plan
-   made for another result type than the dispatch's own (none is) falls
-   back on the class-by-class decision, which --plan-check also holds the
-   plan against. */
-/* The fallback described above is retired: the plan alone supplies arms. */
+/* Emit the zero-argument poly plan's user-class arms: a method or proc
+   form, reader, native binding or arity refusal for each runtime class. */
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
                           int blk_tmp0, const PolyPlan *p, Buf *b) {
   /* the class arms, copied: an arm's emission may resolve another plan */

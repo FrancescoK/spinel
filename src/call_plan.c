@@ -89,8 +89,8 @@ static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
 }
 
 /* A super's parent-chain target, past inherited copies of the same
-   extended definition. Used by resolution and its completeness assertion. */
-static int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name) {
+   extended definition. Shared by resolution, inference, inline splicing and the miss check. */
+int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name) {
   int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, name, NULL)
                                        : comp_method_in_chain(c, par, name, NULL);
   /* An extended module's method is one entry in the class's ancestry, and
@@ -1613,12 +1613,8 @@ int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
          comp_resolve_member(c, cid, name, 0, NULL, NULL) == SP_MEMBER_NONE;
 }
 
-/* The arms emit_poly_user_arms0 writes, class by class, in its order. */
-/* The arm class k takes in a zero-argument poly dispatch, decided class by
-   class as the dispatch did before the plan (cplan_poly) took it over:
-   --plan-check's assertion, and the arms of a dispatch the plan cannot
-   serve. 0 for none. */
-/* The emitter now reads these arms alone. */
+/* The user-class arms of a zero-argument poly dispatch, in emission order.
+   The plan supplies each class's method, reader, native binding or refusal. */
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
   int cap = 0;
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
@@ -2210,12 +2206,8 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
 }
 
 /* How a zero-argument dispatch holds and keys its receiver, and the type
-   its arms answer into (an OpenStruct member read makes an untyped call
-   poly), as emit_poly_method_dispatch decides them. */
-/* The receiver form a poly dispatch takes: the plan's (form) when the
-   plan answers the dispatch's result type (served), else the dispatch's
-   own reading (oform); --plan-check holds the two against each other. */
-/* The alternate reading described above is retired; emission reads these flags. */
+   its arms answer into. An OpenStruct member read makes an untyped call
+   poly; emission reads these flags and the adjusted result type. */
 static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, PolySpecials0 *out) {
   PolySpecials0 ps;
   poly_specials0(c, id, name, &ps);

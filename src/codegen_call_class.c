@@ -5365,12 +5365,9 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       dispatch_cid = -1;
     if (dispatch_cid >= 0) {
       if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return 1;
-      /* the method is the call's plan for self of dispatch_cid
-         (implicit_self_plan_mi); --plan-check holds it against the lookup */
-      const CallPlan *pl = cplan_user(c, id);
-      if (!(pl->chain && pl->via == UC_INST && pl->owner_ci == dispatch_cid))
-        pl = cplan_user_in(c, id, dispatch_cid, 0);
-      int mi = pl->mi;
+      /* The contextual plan supplies both the target and dispatch form. */
+      const CallPlan *pl = implicit_self_plan(c, id, dispatch_cid);
+      int mi = pl->chain && pl->via == UC_INST && pl->owner_ci == dispatch_cid ? pl->mi : -1;
       if (g_plan_check) cplan_served("implicit-self-late");
       cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self-late");
       /* Template-method pattern: a base-class method calls an abstract method

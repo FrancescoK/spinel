@@ -11150,8 +11150,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
-    int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
-                           : comp_method_in_chain(c, p, uname, NULL);
+    int mi = cplan_super_chain_mi(c, s, p, uname);
     /* a subclass of a native class (#9269): super reaches the native
        class's constructor (initialize) or binding */
     if (mi < 0 && !s->is_cmethod && uname && c->classes[s->class_id].nsub_root > 0) {

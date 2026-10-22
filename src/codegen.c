@@ -14329,8 +14329,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
                                       : comp_method_in_class(c, s->class_id, shadow))
             : p < 0 ? -1
-            : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &odef)
-                            : comp_method_in_chain(c, p, s->name, &odef);
+            : cplan_super_chain_mi(c, s, p, s->name);
+    if (!shadow && omi >= 0) odef = c->scopes[omi].class_id;
     if (mi < 0) {
       if (g_plan_check && omi >= 0)
         fprintf(stderr, "plan-check: cplan-fallback: super-inline node %d %s\n", id, s->name);
@@ -14734,11 +14734,8 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
 }
 
 /* emit_super's target from the super's plan (call_plan.c) when the plan was
-   looked up in `owner` (the shadow's class, or the parent's chain), or -1.
-   The form's own lookup runs when this gives -1, and under --plan-check,
-   where super_plan_check holds the two against each other (`what` names the
-   form). */
-/* The alternate lookup above is retired; a miss is only checked, never filled. */
+   resolved in owner (the shadow's class, or the parent's chain), or -1.
+   A miss selects the existing builtin or error rendering. */
 static int super_plan_mi(Compiler *c, int id, int owner) {
   const CallPlan *spl = cplan_user(c, id);
   return spl->via == UC_SUPER && spl->mi >= 0 && owner >= 0 && spl->owner_ci == owner ? spl->mi : -1;
@@ -14814,8 +14811,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
      method's chain is taken below, in the class-method form). */
   const char *shadow = s->is_cmethod ? NULL : comp_super_shadow(c, s);
   if (shadow) {
-    /* the shadow's method in this class: the plan's, or the latest scope of
-       the shadow's name here */
+    /* The plan's target for the generated shadow in this class. */
     int smi = super_plan_mi(c, id, s->class_id);
     if (smi >= 0 && !(c->scopes[smi].class_id == s->class_id && c->scopes[smi].name &&
                       sp_streq(c->scopes[smi].name, shadow)))

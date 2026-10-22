@@ -12326,17 +12326,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    /* the method is the call's plan (call_plan.c) when the plan is the
-       receiver class's own lookup of the name; otherwise, and under
-       --plan-check as the assertion, the arm looks it up itself */
+    /* Resolve through the plan for this receiver and emitted name.
+       Aliases that captured a builtin have no user target in this context. */
     const CallPlan *opl = cplan_user(c, id);
     if (!sp_streq(name, nt_str(nt, id, "name")) ||
         !(opl->chain && opl->via == UC_INST && opl->owner_ci == cid))
       opl = cplan_user_in(c, id, cid, CPX_TARGET);
     int mi = opl->mi;
     if (g_plan_check && mi >= 0) cplan_served("object-call");
-    /* a call an alias captured the builtin for (builtin_only) runs the
-       builtin, past the class's own method of the name */
     cplan_check_missing(c, id, mi, cid, name, 0, "object-call");
     /* a demand-marked read through a simple hand-written reader
        (`def body = @body`) hands out the ivar HANDLE via a field access:

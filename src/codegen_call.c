@@ -9743,12 +9743,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          collect, and rooting it is pure cost on the hottest shape there is:
          an AST walker reads `node.left` through exactly this dispatch, and
          paying a root push and pop per read made one twice as slow (#282). */
-      /* how the receiver is held and the switch keyed is the plan's
-         (cplan_poly); the dispatch's own reading, below, is --plan-check's
-         assertion and what a plan for another result type falls back on */
-      /* one resolve for the form and the arms: outside the memo the plan's
-         buffer is the next resolve's */
-      /* The alternate reading above is retired; only the planned form is read. */
+      /* The plan supplies receiver holding, switch keys and arms. Copy it:
+         outside the memo its buffer belongs to the next resolve. */
       PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
       unsigned form = pform->flags & ~PPF_SEEN;
       if (g_plan_check) cplan_served("poly-form0");
@@ -10163,8 +10159,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
-      /* the key form is the plan's; the dispatch's own reading asserts it */
-      /* The alternate reading above is retired; only the planned form is read. */
+      /* The plan supplies the switch key form. */
       PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
       unsigned form = pform->flags & ~PPF_SEEN;
       if (g_plan_check) cplan_served("poly-form-n");
@@ -27575,14 +27570,14 @@ int implicit_self_is_field_read(Compiler *c, int id) {
   return rty != TY_UNKNOWN && rty != TY_STRBUF && !reader_override_arms(c, id, cid, name, rty);
 }
 
-/* the user method a bare call reaches with self of class dispatch_cid, from
-   the call's plan, or -1 */
-int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
+/* The plan for a bare call with self of class dispatch_cid, including its
+   descendant dispatch form when the class's own chain has no method. */
+const CallPlan *implicit_self_plan(Compiler *c, int id, int dispatch_cid) {
   const CallPlan *spl = cplan_user(c, id);
   if (!(spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid))
     spl = cplan_user_in(c, id, dispatch_cid,
                         g_ie_class_id >= 0 ? CPX_IE : g_emitting_class_id >= 0 ? CPX_EMIT : 0);
-  return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
+  return spl;
 }
 
 /* The slot test is separate so repr can classify the marked read without
@@ -27706,8 +27701,9 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
      the node's own plan when it is that class's own lookup, otherwise the
      plan read with that self (an instance_exec self, a body emitted for an
      inheriting class, an instance_eval block whose self codegen keeps).
-     --plan-check holds it against the lookup. */
-  int mi = implicit_self_plan_mi(c, id, dispatch_cid);
+     A missing target is checked in the call-plan layer. */
+  const CallPlan *pl = implicit_self_plan(c, id, dispatch_cid);
+  int mi = pl->chain && pl->via == UC_INST && pl->owner_ci == dispatch_cid ? pl->mi : -1;
   if (g_plan_check) cplan_served("implicit-self");
   cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self");
   if (mi >= 0) {

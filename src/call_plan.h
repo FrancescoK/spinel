@@ -69,6 +69,7 @@ typedef struct {
   const char *delegate;     /* the protocol method name, before alias resolution */
 } CallPlan;
 
+int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
 const CallPlan *cplan_user(Compiler *c, int id);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in

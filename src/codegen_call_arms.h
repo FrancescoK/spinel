@@ -324,7 +324,7 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
 int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b);
 void emit_reopen_self_arg(Compiler *c, int id, int mi, Buf *b);
 int str_fresh_value(Compiler *c, int n);
-int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid);
+const CallPlan *implicit_self_plan(Compiler *c, int id, int dispatch_cid);
 
 int emit_send_blind(Compiler *c, int id, Buf *b);
 
