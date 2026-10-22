@@ -18925,9 +18925,10 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
     e->source = arr; e->meth = SPL("each");
     return e;
   }
-  /* ...and an endless String Range streams by succ the same way */
+  /* ...and an endless String Range streams by succ the same way (its end as
+     the handle it keeps reads it, SP_SRANGE_OF: a shared end is only there) */
   if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
-      !((sp_StrRange *)arr.v.p)->last)
+      !SP_SRANGE_OF(arr.v.p).last)
     return sp_srange_endless_enum(arr, 1);
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -19375,7 +19376,7 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
   }
   /* ...and so is an endless String Range, which streams by succ */
   if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
-      !((sp_StrRange *)arr.v.p)->last) {
+      !SP_SRANGE_OF(arr.v.p).last) {
     sp_Enumerator *r = sp_Enumerator_with_index(sp_Enumerator_new_from(arr), off);
     r->meth = SPL("each_with_index");
     return r;
