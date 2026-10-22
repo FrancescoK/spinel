@@ -434,7 +434,7 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   int line = (int)nt_int(nt, id, "node_line", 0);
   if (line) nt_node_set_int(nt, call, "node_line", line);
   /* the store a Struct's `[]=` makes is this call (masgn_struct_store) */
-  if (k == NK_IndexTargetNode) nt_node_set_int(nt, tgt, "aset_ev", call + 1);
+  nt_node_set_int(nt, tgt, "aset_ev", call + 1);
   return 1;
 }
 int desugar_masgn_store_evidence(Compiler *c) {
@@ -1299,9 +1299,7 @@ static void kr_self_calls(NodeTable *nt, int node, const char *const *names, int
     for (int i = 0; nm && i < nn; i++)
       if (sp_streq(nm, names[i])) {
         int sn = nt_new_node(nt, "SelfNode");
-        if (sn >= 0) {
-          nt_set_self_receiver(nt, node, sn);
-        }
+        if (sn >= 0) nt_set_self_receiver(nt, node, sn);
         break;
       }
   }
@@ -7142,12 +7140,12 @@ int desugar_main_self_call(Compiler *c) {
     }
     /* Kind identifies main; Prism supplies the private-call permission.
        Reflected calls retain their own visibility policy at emission. */
-    if (!nt_ignore_visibility(nt, id) && !nt_str(nt, id, "send_blind") &&
-        !nt_str(nt, id, "vis_enforce")) continue;
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     if (nt_safe_nav(nt, id)) continue;
     if (!self_is_main(c, recv) || nt_int(nt, recv, "ie_self", 0)) continue;
     if (comp_method_index(c, name) < 0) continue;   /* no top-level def */
+    if (!nt_ignore_visibility(nt, id) && !nt_str(nt, id, "send_blind") &&
+        !nt_str(nt, id, "vis_enforce") && !cplan_has_method_missing(c, id, -1, 0)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
     changed = 1;
   }
@@ -8229,7 +8227,7 @@ static int fwd_bam_lambda_count(Compiler *c, int ex) {
 /* `recv.name(arg)` (no argument for -1), for the forwards built below */
 static int fwd_new_call(NodeTable *nt, int recv, const char *name, int arg) {
   int call = nt_new_node(nt, "CallNode");
-  nt_set_ignore_visibility(nt, call, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+  nt_set_ignore_visibility(nt, call, recv < 0);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", name);
   int args = -1;
@@ -16296,6 +16294,7 @@ static int sc_value_form(NodeTable *nt, const int *parent, int id) {
   int sc = fwd_new_node_like(nt, id, "SingletonClassNode");
   int nbody = fwd_new_node_like(nt, id, "StatementsNode");
   int call = fwd_new_call(nt, recv, "singleton_class", -1);
+  nt_set_ignore_visibility(nt, call, ek == NK_SelfNode);
   int stmts = fwd_new_node_like(nt, id, "StatementsNode");
   if (recv < 0 || sc < 0 || nbody < 0 || call < 0 || stmts < 0) return 0;
   nt_node_set_arr(nt, nbody, "body", bb, bn - 1);
@@ -18195,6 +18194,7 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     int me = fwd_new_node_like(nt, like, "SelfNode");
     nt_node_set_str(nt, nm, "name", "name");
     nt_node_set_ref(nt, nm, "receiver", me);
+    nt_set_ignore_visibility(nt, nm, 1);
     nt_node_set_arr(nt, est, "body", &nm, 1);
     nt_node_set_ref(nt, es, "statements", est);
     int parts[3] = { str_node_like(nt, like, "uninitialized constant "), es, str_node_like(nt, like, tail) };
@@ -20084,6 +20084,7 @@ static void biv_self_call(NodeTable *nt, int id, const char *name, const char *i
   long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
   nt_node_reset(nt, id, "CallNode");
   nt_node_set_str(nt, id, "name", nb);
+  nt_set_ignore_visibility(nt, id, 1);
   nt_set_self_receiver(nt, id, self);
   nt_node_set_ref(nt, id, "arguments", args);
   nt_node_set_ref(nt, id, "block", -1);
@@ -20566,12 +20567,12 @@ static int ix_pure(const NodeTable *nt, int n) {
     default: return 0;
   }
 }
-static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int a1) {
+static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int a1, int may_private) {
   int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) return -1;
   int aa[2]; int n = 0; aa[n++] = a0; if (a1 >= 0) aa[n++] = a1;
   nt_node_set_arr(nt, na, "arguments", aa, n);
   int call = nt_new_node(nt, "CallNode"); if (call < 0) return -1;
-  nt_set_ignore_visibility(nt, call, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+  nt_set_ignore_visibility(nt, call, may_private);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", name);
   nt_node_set_ref(nt, call, "arguments", na);
@@ -20799,15 +20800,15 @@ int desugar_index_assign_user_recv(Compiler *c) {
     }
     int recv2 = nt_clone_subtree(nt, recv), key2 = nt_clone_subtree(nt, key);
     if (recv2 < 0 || key2 < 0) continue;
-    int read = ix_index_call(nt, "[]", recv, key, -1);
+    int read = ix_index_call(nt, "[]", recv, key, -1, nt_ignore_visibility(nt, id));
     if (read < 0) continue;
     /* a held key makes id `(k = key; <the rewrite>)`, the rewrite a node of its own */
     int tgt = kw >= 0 ? nt_new_node(nt, "CallNode") : id;
     if (tgt < 0) continue;
     if (op) {
       /* r[k] = (r[k] op v) */
-      int opc = ix_index_call(nt, op, read, v, -1);
-      int store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, opc)) : -1;
+      int opc = ix_index_call(nt, op, read, v, -1, 0);
+      int store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, opc, nt_ignore_visibility(nt, id))) : -1;
       if (store < 0) continue;
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, tgt, "CallNode");
@@ -20819,7 +20820,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
       nt_node_set_ref(nt, tgt, "block", -1);
     }
     else {
-      int store = ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, v));
+      int store = ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, v, nt_ignore_visibility(nt, id)));
       if (store < 0) continue;
       nt_node_reset(nt, tgt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, tgt, "left", read);
@@ -20849,9 +20850,9 @@ int desugar_index_assign_user_recv(Compiler *c) {
    receiver evaluates without effect, so the node becomes what Ruby defines:
      Klass.a op= v   ->  Klass.a = Klass.a op v
      Klass.a ||= v   ->  Klass.a || (Klass.a = v)     (&&= likewise) */
-static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg) {
+static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg, int may_private) {
   int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
-  nt_set_ignore_visibility(nt, cl, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+  nt_set_ignore_visibility(nt, cl, may_private);
   nt_node_set_ref(nt, cl, "receiver", recv); nt_node_set_str(nt, cl, "name", name);
   if (name_is_plain_setter(name)) nt_set_attr_write(nt, cl, 1);
   if (arg >= 0) {
@@ -20961,12 +20962,10 @@ int desugar_const_attr_op_assign(Compiler *c) {
     const char *op = is_op ? nt_str(nt, id, "binary_operator") : NULL;
     if (is_op && !op) continue;
     int recv2 = nt_clone_subtree(nt, recv); if (recv2 < 0) continue;
-    int read = ca_attr_call(nt, recv, rn, -1); if (read < 0) continue;
-    nt_set_ignore_visibility(nt, read, nt_ignore_visibility(nt, id));
+    int read = ca_attr_call(nt, recv, rn, -1, nt_ignore_visibility(nt, id)); if (read < 0) continue;
     if (op) {
-      int opc = ca_attr_call(nt, read, op, v); if (opc < 0) continue;
-      int store = ca_attr_call(nt, recv2, wn, opc); if (store < 0) continue;
-      nt_set_ignore_visibility(nt, store, nt_ignore_visibility(nt, id));
+      int opc = ca_attr_call(nt, read, op, v, 0); if (opc < 0) continue;
+      int store = ca_attr_call(nt, recv2, wn, opc, nt_ignore_visibility(nt, id)); if (store < 0) continue;
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, id, "CallNode");
       nt_set_ignore_visibility(nt, id, nt_ignore_visibility(nt, store));
@@ -20975,8 +20974,7 @@ int desugar_const_attr_op_assign(Compiler *c) {
       nt_node_set_ref(nt, id, "arguments", na); nt_node_set_ref(nt, id, "block", -1);
     }
     else {
-      int store = ca_attr_call(nt, recv2, wn, v); if (store < 0) continue;
-      nt_set_ignore_visibility(nt, store, nt_ignore_visibility(nt, id));
+      int store = ca_attr_call(nt, recv2, wn, v, nt_ignore_visibility(nt, id)); if (store < 0) continue;
       nt_node_reset(nt, id, is_or ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, id, "left", read); nt_node_set_ref(nt, id, "right", store);
     }
@@ -21080,7 +21078,7 @@ int desugar_reopened_op_write(Compiler *c) {
       if (rd < 0) continue;
       nt_node_set_str(nt, rd, "name", nt_str(nt, id, "name"));
       if (k == NK_LocalVariableOperatorWriteNode) nt_node_set_int(nt, rd, "depth", nt_int(nt, id, "depth", 0));
-      int call = ca_attr_call(nt, rd, op, v);
+      int call = ca_attr_call(nt, rd, op, v, 0);
       if (call < 0) continue;
       nt_node_set_type(nt, id, vars[f].write);
       nt_node_set_ref(nt, id, "value", call);
@@ -21098,9 +21096,9 @@ int desugar_reopened_op_write(Compiler *c) {
       ow_twice(c, nt, id, recv, 'r', pre, &npre, &r1, &r2);
       ow_twice(c, nt, id, key, 'k', pre, &npre, &k1, &k2);
       if (r1 < 0 || r2 < 0 || k1 < 0 || k2 < 0) continue;
-      int read = ix_index_call(nt, "[]", r1, k1, -1);
-      int opc = read >= 0 ? ix_index_call(nt, op, read, v, -1) : -1;
-      store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", r2, k2, opc)) : -1;
+      int read = ix_index_call(nt, "[]", r1, k1, -1, nt_ignore_visibility(nt, id));
+      int opc = read >= 0 ? ix_index_call(nt, op, read, v, -1, 0) : -1;
+      store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", r2, k2, opc, nt_ignore_visibility(nt, id))) : -1;
     }
     else {
       const char *an = nt_str(nt, id, "name");
@@ -21110,9 +21108,9 @@ int desugar_reopened_op_write(Compiler *c) {
       wn = setter_name_of(an);
       ow_twice(c, nt, id, recv, 'r', pre, &npre, &r1, &r2);
       if (r1 < 0 || r2 < 0) continue;
-      int read = ca_attr_call(nt, r1, rn, -1);
-      int opc = read >= 0 ? ca_attr_call(nt, read, op, v) : -1;
-      store = opc >= 0 ? ca_attr_call(nt, r2, wn, opc) : -1;
+      int read = ca_attr_call(nt, r1, rn, -1, nt_ignore_visibility(nt, id));
+      int opc = read >= 0 ? ca_attr_call(nt, read, op, v, 0) : -1;
+      store = opc >= 0 ? ca_attr_call(nt, r2, wn, opc, nt_ignore_visibility(nt, id)) : -1;
     }
     if (store < 0) continue;
     pre[npre++] = store;

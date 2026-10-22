@@ -10904,6 +10904,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap = nt_new_node(nt, "CallNode");
       if (selfn < 0 || wrap < 0) continue;
       nt_node_set_str(nt, wrap, "name", "__enum_to_a");
+      nt_set_ignore_visibility(nt, wrap, 1);
       nt_set_self_receiver(nt, wrap, selfn);
       nt_node_set_ref(nt, wrap, "arguments", -1);
       nt_node_set_ref(nt, wrap, "block", -1);
@@ -43623,11 +43624,12 @@ static void arysub_set_call(Compiler *c, int id, int recv, const char *name, int
   NodeTable *nt = (NodeTable *)c->nt;
   long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
   char *nm = strdup(name);
+  int may_private = nt_ignore_visibility(nt, id) || recv < 0;
   nt_node_reset(nt, id, "CallNode");
   if (ln) nt_node_set_int(nt, id, "node_line", ln);
   if (fl) nt_node_set_int(nt, id, "node_file", fl);
   nt_node_set_ref(nt, id, "receiver", recv);
-  nt_set_ignore_visibility(nt, id, recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+  nt_set_ignore_visibility(nt, id, may_private);
   nt_node_set_str(nt, id, "name", nm);
   nt_node_set_ref(nt, id, "arguments", args);
   nt_node_set_ref(nt, id, "block", blk);
@@ -43706,6 +43708,7 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
     int an_call = arysub_builtin_call(c, at, bn, "new", an ? args : -1, blk);
     if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
   }
+  nt_set_ignore_visibility((NodeTable *)c->nt, n, 1);
   free(mn);
 }
 
@@ -43730,7 +43733,7 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
      receiver */
   if (sp_streq(mname, "initialize_copy")) {
     int self = arysub_node(c, "SelfNode", id);
-    if (self >= 0) { arysub_set_call(c, id, self, "itself", -1, -1); }
+    if (self >= 0) { arysub_set_call(c, id, self, "itself", -1, -1); nt_set_ignore_visibility((NodeTable *)c->nt, id, 1); }
     return;
   }
   if (!init && !comp_arysub_builtin_name(c, s->class_id, mname)) return;
