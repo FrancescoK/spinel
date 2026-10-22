@@ -24,6 +24,7 @@ hunks, each in its own commit with the reason:
 | `version`, `release` | `defined?(@version) && @version` | `@version` | `defined?` answered nil for an ivar set only by `attr_writer` |
 | `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | refused under `--share-strings` |
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
+| top of the file | nothing: CRuby loads did_you_mean before the program | `require 'did_you_mean'` | an invalid or ambiguous option names the switches it could have meant |
 | `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
 | `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [String.new(sopts.join(', '))]` | the String is changed in place through the Array: refused under `--share-strings`, and in the default build the change is lost once the program uses `Set` |
 | `Switch#compsys` | `desc.join("")` | `desc.join("").dup` | refused under `--share-strings`: the String is handed on and could change in place |
