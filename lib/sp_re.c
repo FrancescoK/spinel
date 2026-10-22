@@ -158,7 +158,7 @@ void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(s
       char *buf = sp_str_alloc_raw(len+1);
       memcpy(buf, str+caps[i*2], len); buf[len] = 0;
       sp_str_set_len(buf, (size_t)len);
-      sp_re_captures[i] = buf;
+      sp_re_captures[i] = sp_str_bin_like(str, buf);
     }
   }
   /* Populate the symbolic back-references from caps[0]/[1] (the whole
@@ -174,7 +174,7 @@ void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(s
     memcpy(m, str + caps[0], mlen); m[mlen] = 0;
     sp_str_set_len(m, (size_t)mlen);
     sp_str_set_len(m, (size_t)mlen);
-    sp_re_match_str = m;
+    sp_re_match_str = sp_str_bin_like(str, m);
     sp_re_pp_span[0] = caps[0]; sp_re_pp_span[1] = caps[1];
   }
 }
@@ -222,7 +222,7 @@ const char *sp_re_pre_match(void) {
   memcpy(pre, sp_re_last_str, n); pre[n] = 0;
   sp_str_set_len(pre, (size_t)n);
   sp_str_set_len(pre, (size_t)n);
-  sp_re_match_pre = pre;
+  sp_re_match_pre = sp_str_bin_like(sp_re_last_str, pre);
   return pre;
 }
 
@@ -235,7 +235,7 @@ const char *sp_re_post_match(void) {
   memcpy(post, sp_re_last_str + sp_re_pp_span[1], n); post[n] = 0;
   sp_str_set_len(post, (size_t)n);
   sp_str_set_len(post, (size_t)n);
-  sp_re_match_post = post;
+  sp_re_match_post = sp_str_bin_like(sp_re_last_str, post);
   return post;
 }
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
@@ -398,17 +398,17 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   char *before = sp_str_alloc_raw(ms + 1);
   memcpy(before, str, ms); before[ms] = 0;
   sp_str_set_len(before, (size_t)ms);
-  sp_StrArray_push(r, before);
+  sp_StrArray_push(r, sp_str_bin_like(str, before));
   int mlen = (int)(me - ms);
   char *mid = sp_str_alloc_raw(mlen + 1);
   memcpy(mid, str + ms, mlen); mid[mlen] = 0;
   sp_str_set_len(mid, (size_t)mlen);
-  sp_StrArray_push(r, mid);
+  sp_StrArray_push(r, sp_str_bin_like(str, mid));
   int alen = (int)(slen - me);
   char *after = sp_str_alloc_raw(alen + 1);
   memcpy(after, str + me, alen); after[alen] = 0;
   sp_str_set_len(after, (size_t)alen);
-  sp_StrArray_push(r, after);
+  sp_StrArray_push(r, sp_str_bin_like(str, after));
   return r;
 }
 sp_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str) {
@@ -739,7 +739,7 @@ else {
   char *res = sp_str_alloc(olen);
   memcpy(res, out, olen);
   free(out);
-  return res;
+  return sp_str_bin_like(str, res);
 }
 const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep) {SP_GC_ROOT_STR(str);SP_GC_ROOT_STR(rep);if(!str)sp_nil_recv("sub");
   int64_t slen = (int64_t)sp_str_byte_len(str); size_t rlen = sp_str_byte_len(rep);
@@ -763,7 +763,7 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   char *res = sp_str_alloc(olen);
   memcpy(res, out, olen);
   free(out);
-  return res;
+  return sp_str_bin_like(str, res);
 }
 sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT_STR(str);
@@ -779,7 +779,7 @@ sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
     int len = caps[1] - caps[0];
     char *m = sp_str_alloc_raw(len+1); memcpy(m, str+caps[0], len); m[len] = 0;
     sp_str_set_len(m, (size_t)len);
-    sp_StrArray_push(arr, m);
+    sp_StrArray_push(arr, sp_str_bin_like(str, m));
     pos = caps[1]; if (caps[0] == caps[1]) pos++;
   }
   if (sp_re_track_last) sp_re_set_last_match(pat, str, lastcaps, lastn);
@@ -1066,7 +1066,7 @@ sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
       memcpy(m, str + caps[0], len);
       m[len] = 0;
       sp_str_set_len(m, (size_t)len);
-      sp_PolyArray_push(arr, sp_box_str(m));
+      sp_PolyArray_push(arr, sp_box_str(sp_str_bin_like(str, m)));
     }
 else {
       sp_PolyArray *row = sp_PolyArray_new();
@@ -1078,7 +1078,7 @@ else {
           memcpy(gm, str + caps[gi * 2], glen);
           gm[glen] = 0;
           sp_str_set_len(gm, (size_t)glen);
-          sp_PolyArray_push(row, sp_box_str(gm));
+          sp_PolyArray_push(row, sp_box_str(sp_str_bin_like(str, gm)));
         }
 else {
           sp_PolyArray_push(row, sp_box_nil());
@@ -1118,7 +1118,7 @@ sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) {
       memcpy(buf, str + start, len);
       buf[len] = 0;
       sp_str_set_len(buf, (size_t)len);
-      sp_PolyArray_push(arr, sp_box_str(buf));
+      sp_PolyArray_push(arr, sp_box_str(sp_str_bin_like(str, buf)));
     }
 else {
       sp_PolyArray_push(arr, sp_box_nil());
@@ -1253,7 +1253,7 @@ const char *sp_MatchData_aref(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
   memcpy(b, m->source + s, len);
   b[len] = 0;
   sp_str_set_len(b, (size_t)len);
-  return b;
+  return sp_str_bin_like(m->source, b);
 }
 /* group by name (`md[:name]` / `md["name"]`): resolve the name to its capture
    group via the pattern, then return that group's substring (NULL if the name
@@ -1455,22 +1455,22 @@ sp_PolyArray *sp_MatchData_to_a(sp_MatchData *m) { return sp_md_groups_from(m, 0
 const char *sp_MatchData_pre_match(sp_MatchData *m) {SP_GC_ROOT(m);
   if (!m) return sp_str_empty;
   int e = m->caps[0];
-  if (e <= 0) return sp_str_empty;
+  if (e <= 0) return sp_str_is_binary(m->source) ? sp_str_empty_binary() : sp_str_empty;
   char *b = sp_str_alloc((size_t)e);
   memcpy(b, m->source, e); b[e] = 0;
   sp_str_set_len(b, (size_t)e);
-  return b;
+  return sp_str_bin_like(m->source, b);
 }
 const char *sp_MatchData_post_match(sp_MatchData *m) {SP_GC_ROOT(m);
   if (!m) return sp_str_empty;
   int s = m->caps[1];
   size_t sl = sp_str_byte_len(m->source);
-  if (s < 0 || (size_t)s >= sl) return sp_str_empty;
+  if (s < 0 || (size_t)s >= sl) return sp_str_is_binary(m->source) ? sp_str_empty_binary() : sp_str_empty;
   size_t len = sl - (size_t)s;
   char *b = sp_str_alloc(len);
   memcpy(b, m->source + s, len); b[len] = 0;
   sp_str_set_len(b, len);
-  return b;
+  return sp_str_bin_like(m->source, b);
 }
 void sp_re_default_error_handler(const char *msg) {SP_GC_ROOT_STR(msg);
   /* msg points at the regex compiler's stack buffer. sp_raise_cls stores

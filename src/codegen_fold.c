@@ -1941,6 +1941,10 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d += _t%d; }\n", tpos, tme);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  /* the result of a binary subject is binary, as CRuby's gsub and the
+     non-block form's (sp_re_gsub) */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (sp_str_is_binary(_t%d) && !_t%d->binary) { _t%d->binary = 1; sp_fd_publish(_t%d); }\n", ts, tout, tout, tout);
   buf_printf(b, "_t%d->data", tout);
   if (tsm) g_sub_bang_tm = tsm;
   return 1;
