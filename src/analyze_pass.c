@@ -15253,6 +15253,10 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
   /* array.each_cons(n) / each_slice(n) { |a, b, ...| } -- a single param
      binds the n-element sub-array; multiple params destructure elements.
      Also handles |(a, b)| destructuring: leaves bind to element type. */
+  /* a boxed receiver's windows are slices of the poly Array its dispatch
+     materializes (sp_poly_enum_recv_arr), whatever another caller typed
+     the receiver as in an earlier round (#9933) */
+  if (is_each_window(name) && rt == TY_POLY) rt = TY_POLY_ARRAY;
   if ((is_each_window(name)) && ty_is_array(rt)) {
     Scope *es = comp_scope_of(c, block);
     int np = 0; while (block_param_name(c, block, np)) np++;

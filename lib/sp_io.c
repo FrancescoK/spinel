@@ -1057,6 +1057,20 @@ sp_File *sp_sock_unix_connect(const char *path) {SP_GC_ROOT_STR(path);
   if (fd < 0) sp_file_raise_errno("connect", path ? path : "");
   return sp_io_fdopen_sock(fd, SPL("unix"));
 }
+/* Socket.unix(path) and Socket.tcp(host, port), CRuby's convenience
+   constructors: the same connection as UNIXSocket.new and TCPSocket.new,
+   answered as a Socket, the class these return (#9934) */
+sp_File *sp_sock_unix_socket(const char *path) {SP_GC_ROOT_STR(path);
+  sp_File *f = sp_sock_unix_connect(path);
+  f->mode = SPL("socket");
+  return f;
+}
+sp_File *sp_sock_tcp_socket(const char *host, sp_int port) {SP_GC_ROOT_STR(host);
+  extern int sp_net_connect(const char *host, int port);
+  sp_File *f = sp_io_fdopen_sock(sp_net_connect(host, (int)port), SPL("tcp"));
+  f->mode = SPL("socket");
+  return f;
+}
 
 /* BasicSocket#do_not_reverse_lookup and its writer: a socket's own, so a
    File or a pipe answers NoMethodError, as CRuby does */
