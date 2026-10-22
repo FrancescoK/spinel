@@ -48125,53 +48125,54 @@ static int ur_block_dropped(Compiler *c, const UrCtx *u, int call) {
   if (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto")) return rt == TY_INT;
   return ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE;
 }
+/* The edges ur_value_use climbs: the arms of an if, unless and case (and so
+   their else and when clauses), the right of `&&` and both sides of `||`
+   (its left is tested, so a node there is read: VpUp.reach), and a begin
+   with no rescue clause, else or ensure. A begin with an ensure alone also
+   answers its body; the climb goes on from it by hand. */
+enum { UR_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC | VPS_BEGIN_PLAIN };
+
 /* How the value of node v is taken: 0 dropped, 1 read, 2 + d handed on as
    the value of def d (its body's tail). nref counts each node's parents: a
-   node the desugaring shares between two places is read. */
+   node the desugaring shares between two places is read. The climb
+   (vp_climb, over UR_CLIMB) ends at a statement before its list's last
+   (dropped), a loop's body (dropped) or its condition, an ensure clause
+   (dropped), a def's body, the block of a builtin iterator that drops its
+   value, or anything else, which reads it. */
 static int ur_value_use(Compiler *c, const UrCtx *u, int v) {
   const NodeTable *nt = c->nt;
   const int *par = u->par;
-  for (int d = 0; d < 4096; d++) {
-    if (u->nref[v] > 1) return 1;
-    int p = par[v];
-    if (p < 0) return 1;
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, par, v, UR_CLIMB, &up);
+    for (int n = v;; n = par[n]) {
+      if (u->nref[n] > 1) return 1;
+      if (n == up.node) break;
     }
-    case NK_ParenthesesNode: case NK_ElseNode:
-      break;
-    case NK_IfNode: case NK_UnlessNode: case NK_CaseNode:
-      if (nt_ref(nt, p, "predicate") == v) return 1;
-      break;
-    case NK_AndNode: case NK_OrNode:
-      if (nt_ref(nt, p, "right") != v) return 1;
-      break;
+    if (up.reach) return 1;
+    if (ended == VPU_DROPPED) return 0;
+    if (ended != VPU_ENDED) return 1;
+    int p = up.parent;
+    switch (nt_kind(nt, p)) {
     case NK_WhileNode: case NK_UntilNode:
-      return nt_ref(nt, p, "predicate") == v;
+      return nt_ref(nt, p, "predicate") == up.node;
     case NK_BeginNode:
-      if (nt_ref(nt, p, "statements") != v || nt_ref(nt, p, "rescue_clause") >= 0 ||
+      if (nt_ref(nt, p, "statements") != up.node || nt_ref(nt, p, "rescue_clause") >= 0 ||
           nt_ref(nt, p, "else_clause") >= 0) return 1;
-      break;
+      v = p;
+      continue;
     case NK_DefNode:
-      return nt_ref(nt, p, "body") == v ? 2 + p : 1;
+      return nt_ref(nt, p, "body") == up.node ? 2 + p : 1;
     case NK_BlockNode: {
-      int call = par[p];
-      return !(nt_ref(nt, p, "body") == v && call >= 0 && nt_kind(nt, call) == NK_CallNode &&
-               nt_ref(nt, call, "block") == p && ur_block_dropped(c, u, call));
+      int call = vp_up_block_call(nt, par, &up);
+      return !(call >= 0 && nt_ref(nt, call, "block") == p && ur_block_dropped(c, u, call));
     }
     default: {
       /* kinds the node table names by type only */
       const char *ty = nt_type(nt, p);
-      if (ty && sp_streq(ty, "EnsureNode")) return 0;
-      if (!ty || !sp_streq(ty, "WhenNode") || nt_ref(nt, p, "statements") != v) return 1;
-      break;
+      return !(ty && sp_streq(ty, "EnsureNode"));
     }
     }
-    v = p;
   }
   return 1;
 }
