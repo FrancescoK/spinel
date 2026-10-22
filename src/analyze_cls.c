@@ -2658,6 +2658,15 @@ static void cf_call(CF *f, int v) {
        a call on a value it reaches has the member read beside the classes'
        methods */
     if (v >= 0 && key && sp_streq(key, "OpenStruct") && sp_streq(nm, "new")) cf_add_set(f, v, cf_os_set(f));
+    /* a builtin class's new that holds what it is handed (its
+       BOP_CLASS_NEW row): Hash.new(x)'s default and Array.new(n, x)'s fill
+       value are elements of the new value (`Hash.new(B.new)[:k]` is a B) */
+    if (v >= 0 && key && sp_streq(nm, "new")) {
+      int sh = bop_share_named(BOP_CLASS_NEW, key);
+      int at = sh == BSH_NEW_DEFAULT ? 0 : sh == BSH_NEW_FILL ? 1 : -1;
+      NodeKind ak = at >= 0 && at < argc ? nt_kind(nt, argv[at]) : NK_SplatNode;
+      if (ak != NK_SplatNode && ak != NK_BlockArgumentNode && ak != NK_KeywordHashNode) cf_store(f, v, argv[at]);
+    }
     cf_builtin_rule(f, v, ce, argv, argc, blk, nm);
     return;
   }
