@@ -1300,6 +1300,13 @@ static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
   sp_str_mark_binary(buf);   /* pread answers ASCII-8BIT, as CRuby */
   return buf;
 }
+/* IO#pread(len, offset) without an output buffer: a negative length is
+   CRuby's ArgumentError, raised before the stream is checked (a closed handle
+   says the same). The forms with a buffer keep sp_File_pread's clamp. */
+static inline const char *sp_File_pread_checked(sp_File *f, sp_int len, sp_int off) {
+  if (len < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
+  return sp_File_pread(f, len, off);
+}
 /* IO#pread answering NULL at EOF instead of raising, for the same reason as
    sp_File_readpartial_or_nil. */
 static inline const char *sp_File_pread_or_nil(sp_File *f, sp_int len, sp_int off) {
