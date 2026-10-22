@@ -10511,11 +10511,32 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         emit_int_expr(c, avS[0], b);
         buf_printf(b, "; sp_int _v%d = ", tH);
         emit_int_expr(c, avS[1], b);
+        /* (one representation: the handle's own payload is written in
+           place, sp_String_setbyte) */
+        if (g_one_string) {
+          buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                        " sp_String_setbyte(_t%d, _i%d, _v%d); })", tH, tH, tH, tH, tH);
+          return 1;
+        }
         buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                       " const char *_p%d = sp_String_cstr(_t%d);"
                       " const char *_q%d = sp_str_setbyte_cow(_p%d, _i%d, _v%d);"
                       " if (_q%d != _p%d) sp_String_set_bin(_t%d, _q%d); _v%d; })",
                    tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH);
+        return 1;
+      }
+      /* (one representation: the index, then the value, as the call runs
+         them, and the frozen check after them; the handle's own payload
+         is written in place, sp_String_setbyte) */
+      if (haveB && g_one_string) {
+        int tH = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); sp_int _i%d = ", tH, srefB.p, tH);
+        free(srefB.p);
+        emit_int_expr(c, avS[0], b);
+        buf_printf(b, "; sp_int _v%d = ", tH);
+        emit_int_expr(c, avS[1], b);
+        buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                      " sp_String_setbyte(_t%d, _i%d, _v%d); })", tH, tH, tH, tH, tH);
         return 1;
       }
       if (haveB) {

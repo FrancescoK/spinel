@@ -34,6 +34,29 @@ sp_StrStrHash *sp_env_clear(void);
 sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace);
 sp_StrIntHash*sp_gc_stat(void);
 const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v);
+#ifdef SP_ONE_STRING
+/* String#setbyte on a handle (the caller has raised for a frozen one), in
+   place and inline where the handle owns its payload (0xfd) and the index
+   is in it. A byte below 0x80 written into a String a scan proved 7-bit
+   leaves it 7-bit, with the character count it had; any other byte forgets
+   both (sp_str_lcache_drop), as a change through sp_fd_publish does.
+   Anything else -- a range error, a payload the handle does not own --
+   takes sp_str_setbyte_cow's route. Answers the value. */
+static inline sp_int sp_String_setbyte(sp_String *s, sp_int i, sp_int v) {
+  char *d = s->data;
+  sp_int n = s->len, j = i < 0 ? i + n : i;
+  if (SP_LIKELY(((const unsigned char *)d)[-1] == 0xfd && j >= 0 && j < n)) {
+    sp_str_hdr *h = (sp_str_hdr *)sp_fd_base(d);
+    if (!((h->size & SP_STR_SIZE_ASCII7) && (unsigned char)v < 0x80)) sp_str_lcache_drop(d);
+    h->hash = 0;
+    d[j] = (char)(v & 0xff);
+    return v;
+  }
+  const char *q = sp_str_setbyte_cow(d, i, v);
+  if (q != d) sp_String_set_bin(s, q);
+  return v;
+}
+#endif
 #include "sp_random.h"  /* shared Kernel-level PRNG stream (lib/sp_random.c) */
 
 #include <stdio.h>
