@@ -2040,6 +2040,11 @@ static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
    prepend shadow (named `__prep_N_m`), are left to the full resolution. */
 static int *yvt_nm_head = NULL, *yvt_nm_next = NULL, *yvt_always = NULL;
 static int yvt_nb = 0, yvt_always_n = 0;
+/* the alias-named entries by the names their alias may stand for: name t's
+   are yvt_tg_ii[yvt_tg_off[t] .. yvt_tg_off[t + 1]), ascending (yvt_tg_build) */
+static ANameHash yvt_tg_names;
+static int *yvt_tg_off = NULL, *yvt_tg_ii = NULL, yvt_tg_nn = 0;
+static void yvt_tg_build(Compiler *c);
 static unsigned char *yvt_alias_name = NULL;   /* per yvt_ids entry: its name is an alias somewhere */
 static unsigned char *yvt_fwd = NULL;          /* per yvt_ids entry: yvt_call_forwards_block */
 static int yvt_name_is_alias(Compiler *c, const char *cn) {
@@ -2111,35 +2116,143 @@ static void yvt_build(Compiler *c) {
     yvt_nm_next[ii] = yvt_nm_head[b]; yvt_nm_head[b] = ii;
   }
   for (int ii = 0; ii < yvt_n; ii++)
-    if (!nt_str(nt, yvt_ids[ii], "name") || (yvt_alias_name && yvt_alias_name[ii]))
-      yvt_always[yvt_always_n++] = ii;
+    if (!nt_str(nt, yvt_ids[ii], "name")) yvt_always[yvt_always_n++] = ii;
+  yvt_tg_build(c);
+}
+/* The alias-named entries, by the names their alias may stand for: the
+   alias tables' edges (new -> old, every class's, as the chain resolution
+   hops them) followed from the entry's name to every name they reach. Such
+   an entry was on the always-list, walked by every yielding method per
+   ask; on a Rails program most block calls are named like some alias
+   (each, map, call ...), so the list was most of the entries, and walking
+   it was 12% of a sampled window. An entry named like an alias of no
+   method's name resolves to that method along no path: the lookup matches
+   names, and only an alias edge changes the name it matches. */
+static void yvt_tg_build(Compiler *c) {
+  anh_free(&yvt_tg_names); memset(&yvt_tg_names, 0, sizeof yvt_tg_names);
+  free(yvt_tg_off); free(yvt_tg_ii); yvt_tg_off = NULL; yvt_tg_ii = NULL; yvt_tg_nn = 0;
+  const NodeTable *nt = c->nt;
+  /* the edges, chained by their new name */
+  ANameHash en; memset(&en, 0, sizeof en);
+  int *ehead = NULL, *enext = NULL, ne = 0, ecap = 0, hcap = 0;
+  const char **eold = NULL;
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++) {
+      const char *a = c->classes[k].alias_new[i], *o = c->classes[k].alias_old[i];
+      if (!a || !o) continue;
+      int e = anh_find(&en, a);
+      if (e < 0) { anh_add(&en, a); e = anh_find(&en, a); }
+      if (e >= hcap) {
+        int nc = e + 64;
+        ehead = realloc(ehead, sizeof(int) * (size_t)nc);
+        if (!ehead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int j = hcap; j < nc; j++) ehead[j] = -1;
+        hcap = nc;
+      }
+      if (ne == ecap) {
+        ecap = ecap ? ecap * 2 : 64;
+        enext = realloc(enext, sizeof(int) * (size_t)ecap);
+        eold = realloc(eold, sizeof(const char *) * (size_t)ecap);
+        if (!enext || !eold) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      enext[ne] = ehead[e]; eold[ne] = o; ehead[e] = ne; ne++;
+    }
+  /* each alias-named call name's closure, once: the target name ids it
+     reaches (its own name excluded: that chain the entry is on already) */
+  ANameHash yn; memset(&yn, 0, sizeof yn);
+  int *yoff = NULL, *ylen = NULL, ycap = 0, *tpool = NULL, tn = 0, tcap = 0;
+  int *pair_t = NULL, *pair_ii = NULL, np = 0, pcap = 0;
+  for (int ii = 0; ii < yvt_n; ii++) {
+    if (!yvt_alias_name || !yvt_alias_name[ii]) continue;
+    const char *cn = nt_str(nt, yvt_ids[ii], "name");
+    if (!cn) continue;
+    int y = anh_find(&yn, cn);
+    if (y < 0) {
+      anh_add(&yn, cn); y = anh_find(&yn, cn);
+      if (y >= ycap) {
+        int nc = y + 64;
+        yoff = realloc(yoff, sizeof(int) * (size_t)nc); ylen = realloc(ylen, sizeof(int) * (size_t)nc);
+        if (!yoff || !ylen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        ycap = nc;
+      }
+      yoff[y] = tn; ylen[y] = 0;
+      /* breadth-first over the edges; `seen` holds the names reached */
+      ANameHash seen; memset(&seen, 0, sizeof seen);
+      const char **q = NULL; int qn = 0, qcap = 0, qh = 0;
+      anh_add(&seen, cn);
+      q = realloc(q, sizeof(const char *) * 16); qcap = 16; q[qn++] = cn;
+      while (qh < qn) {
+        const char *nm = q[qh++];
+        int e = anh_find(&en, nm);
+        for (int j = e >= 0 ? ehead[e] : -1; j >= 0; j = enext[j]) {
+          if (anh_has(&seen, eold[j])) continue;
+          anh_add(&seen, eold[j]);
+          if (qn == qcap) { qcap *= 2; q = realloc(q, sizeof(const char *) * (size_t)qcap); if (!q) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+          q[qn++] = eold[j];
+          int t = anh_find(&yvt_tg_names, eold[j]);
+          if (t < 0) { anh_add(&yvt_tg_names, eold[j]); t = anh_find(&yvt_tg_names, eold[j]); }
+          if (t >= yvt_tg_nn) yvt_tg_nn = t + 1;
+          if (tn == tcap) { tcap = tcap ? tcap * 2 : 64; tpool = realloc(tpool, sizeof(int) * (size_t)tcap); if (!tpool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+          tpool[tn++] = t; ylen[y]++;
+        }
+      }
+      free(q); anh_free(&seen);
+    }
+    for (int j = 0; j < ylen[y]; j++) {
+      if (np == pcap) {
+        pcap = pcap ? pcap * 2 : 256;
+        pair_t = realloc(pair_t, sizeof(int) * (size_t)pcap); pair_ii = realloc(pair_ii, sizeof(int) * (size_t)pcap);
+        if (!pair_t || !pair_ii) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      pair_t[np] = tpool[yoff[y] + j]; pair_ii[np] = ii; np++;
+    }
+  }
+  /* the pairs by target name, each name's entries ascending (they were
+     met ascending): counting sort */
+  yvt_tg_off = calloc((size_t)yvt_tg_nn + 1, sizeof(int));
+  yvt_tg_ii = malloc(sizeof(int) * (size_t)(np > 0 ? np : 1));
+  if (!yvt_tg_off || !yvt_tg_ii) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int p = 0; p < np; p++) yvt_tg_off[pair_t[p] + 1]++;
+  for (int t = 0; t < yvt_tg_nn; t++) yvt_tg_off[t + 1] += yvt_tg_off[t];
+  int *fill = malloc(sizeof(int) * (size_t)(yvt_tg_nn > 0 ? yvt_tg_nn : 1));
+  if (!fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int t = 0; t < yvt_tg_nn; t++) fill[t] = yvt_tg_off[t];
+  for (int p = 0; p < np; p++) yvt_tg_ii[fill[pair_t[p]]++] = pair_ii[p];
+  free(fill); free(pair_t); free(pair_ii); free(tpool); free(yoff); free(ylen); anh_free(&yn);
+  free(ehead); free(enext); free(eold); anh_free(&en);
 }
 /* The entries that may reach `mi`, ascending: its name's chain, `new`'s for
-   an initialize, and the always-list, merged. A method with no name, or a
-   prepend shadow, takes every entry (see yvt_may_reach). */
-typedef struct { int s[3]; int ai; int all; int next_all; int last; } YvtIt;
+   an initialize, the alias-named entries whose alias may stand for its
+   name, and the always-list, merged. A method with no name, or a prepend
+   shadow, takes every entry (see yvt_may_reach). */
+typedef struct { int s[3]; int ai; int tp, te; int all; int next_all; int last; } YvtIt;
 static void yvt_it_init(Compiler *c, YvtIt *it, int mi) {
   const char *mn = c->scopes[mi].name;
   it->all = !mn || strncmp(mn, "__prep_", 7) == 0 || !yvt_nm_head;
-  it->next_all = 0; it->last = -1; it->ai = 0;
+  it->next_all = 0; it->last = -1; it->ai = 0; it->tp = it->te = 0;
   it->s[0] = it->s[1] = -1;
   if (it->all) return;
   it->s[0] = yvt_nm_head[sp_strhash(mn) % (unsigned)yvt_nb];
   if (sp_streq(mn, "initialize")) it->s[1] = yvt_nm_head[sp_strhash("new") % (unsigned)yvt_nb];
+  int t = yvt_tg_off ? anh_find(&yvt_tg_names, mn) : -1;
+  if (t >= 0 && t < yvt_tg_nn) { it->tp = yvt_tg_off[t]; it->te = yvt_tg_off[t + 1]; }
 }
 static int yvt_it_next(YvtIt *it) {
   if (it->all) return it->next_all < yvt_n ? it->next_all++ : -1;
   for (;;) {
     int a = it->s[0], b = it->s[1];
     int c3 = it->ai < yvt_always_n ? yvt_always[it->ai] : -1;
+    int d = it->tp < it->te ? yvt_tg_ii[it->tp] : -1;
     int m = -1;
     if (a >= 0) m = a;
     if (b >= 0 && (m < 0 || b < m)) m = b;
     if (c3 >= 0 && (m < 0 || c3 < m)) m = c3;
+    if (d >= 0 && (m < 0 || d < m)) m = d;
     if (m < 0) return -1;
     if (a == m) it->s[0] = yvt_nm_next[a];
     if (b == m) it->s[1] = yvt_nm_next[b];
     if (c3 == m) it->ai++;
+    if (d == m) it->tp++;
     if (m > it->last) { it->last = m; return m; }
   }
 }
