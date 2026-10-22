@@ -828,7 +828,6 @@ static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, in
 }
 
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit) {SP_GC_ROOT_STR(str);if(!str)sp_nil_recv("split");
-  sp_re_check_subject(str);
   /* every field is a new String, so the array is held across each field's
      allocation: unrooted, a collection there freed it with the fields
      already pushed */
@@ -836,11 +835,13 @@ sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int 
   SP_GC_ROOT(arr);
   int64_t slen = (int64_t)sp_str_byte_len(str);
 
-  /* limit == 1: the whole string is the single field; "" splits to []. */
+  /* limit == 1: the whole string is the single field; "" splits to [].
+     No search runs, so an invalid String is not refused, as CRuby's is not */
   if (limit == 1) {
     if (slen > 0) split_push_slice(arr, str, 0, slen);
     return arr;
   }
+  sp_re_check_subject(str);
 
   int64_t field_start = 0, search_pos = 0, count = 0;
   int caps[64];

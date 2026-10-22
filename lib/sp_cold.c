@@ -4299,10 +4299,13 @@ const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v) {SP_GC_ROOT_ST
     if (m == 0xfe || m == 0xfc) {
       (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
       (((sp_str_hdr *)(s - 1)) - 1)->size &= ~SP_STR_SIZE_ASCII7;  /* and the 7-bit answer */
+      /* and the character count: an invalid byte changes it, and the
+         count is what tells valid UTF-8 (sp_str_check_valid) */
+      sp_str_lcache_drop(s);
       ((char *)s)[i] = (char)(v & 0xff);
       return s;
     }
-    if (m == 0xfd) { ((char *)s)[i] = (char)(v & 0xff); return s; }
+    if (m == 0xfd) { sp_str_lcache_drop(s); ((char *)s)[i] = (char)(v & 0xff); return s; }
   }
   char *r = sp_str_alloc((size_t)n);
   memcpy(r, s, (size_t)n);
