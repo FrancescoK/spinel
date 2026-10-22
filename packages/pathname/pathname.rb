@@ -402,8 +402,8 @@ class Pathname
 
   # ---- mutation ----
 
-  def mkdir
-    Dir.mkdir(@path)
+  def mkdir(mode = 0o777)
+    Dir.mkdir(@path, mode)
   end
 
   def rmdir
