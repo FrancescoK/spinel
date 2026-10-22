@@ -1921,6 +1921,14 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                  bytes; nil is FFI's NULL, anything else a TypeError (#5679) */
               buf_puts(&call_buf, "sp_poly_arg_str_or_null("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")");
             }
+            /* (one-String mode: a variable's String is its handle, and C is
+               handed its live buffer only where no Ruby code can run during
+               the call (mark_native_str_operands, strbuf_read_raw); a
+               callback or a trap could grow the String and free the buffer,
+               so elsewhere C reads a copy, as the default mode's read is) */
+            else if (g_one_string && !c->strbuf_read_raw[argv[ai]] && strbuf_slot_has(c, argv[ai])) {
+              buf_puts(&call_buf, "sp_str_dup(SP_STR_B("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
             else {
               /* An UNKNOWN argument lowers to the gate's raise token, an
                  sp_RbVal -- it cannot land raw in a const char* slot
