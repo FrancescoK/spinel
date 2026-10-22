@@ -279,7 +279,14 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
   SP_EXC_ONE_OWNER(msg)
   if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
-  if (fz && e->msg) ((unsigned char *)e->msg)[-1] = 0xfa;
+  if (fz && e->msg) {
+    ((unsigned char *)e->msg)[-1] = 0xfa;
+#ifdef SP_ONE_STRING
+    /* sp_exc_new gave the copy, unmarked then, a handle of its own; a
+       frozen message keeps none, and #message makes it frozen */
+    if (!_one_h) e->msg_h = NULL;
+#endif
+  }
   sp_exc_one_attach(e, (sp_String *)_one_h);
   if (sp_user_exc_parent_fn) {
     const char *par = sp_user_exc_parent_fn(cls);
