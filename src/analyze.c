@@ -39868,6 +39868,26 @@ static void mark_nullable_int_locals(Compiler *c) {
         plv->nullable_int = 1; changed = 1;
       }
     }
+    /* `h.fetch(k) { |key| }`: a missing key is handed to the block, so a key
+       that can be nil reaches it as nil (the typed slot unwrapped it with a
+       TypeError) */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *fnm = nt_str(nt, id, "name");
+      int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+      if (!fnm || !sp_streq(fnm, "fetch") || blk < 0 || recv < 0 || nt_kind(nt, blk) != NK_BlockNode ||
+          !ty_is_hash(infer_type(c, recv)))
+        continue;
+      int fa = nt_ref(nt, id, "arguments"), fn = 0;
+      const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+      /* (a boxed key can hold nil too: --int-overflow=promote boxes every
+         Integer local) */
+      if (fn != 1 || !(nullable_int_value(c, fv[0]) || infer_type(c, fv[0]) == TY_POLY)) continue;
+      Scope *bsc = comp_scope_of(c, blk);
+      const char *pnm = block_param_name(c, blk, 0);
+      LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+      if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
+      plv->nullable_int = 1; changed = 1;
+    }
     /* a nil value stored into a typed Integer-valued Hash, and the walks that
        bind it (D3b-ii) */
     if (mark_hash_nil_values(c)) changed = 1;
