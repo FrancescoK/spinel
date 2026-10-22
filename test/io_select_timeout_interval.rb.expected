@@ -1,0 +1,32 @@
+[TypeError, "can't convert String into time interval"]
+[TypeError, "can't convert String into time interval"]
+[TypeError, "can't convert String into time interval"]
+[TypeError, "can't convert String into time interval"]
+[TypeError, "can't convert Symbol into time interval"]
+[TypeError, "can't convert TrueClass into time interval"]
+[TypeError, "can't convert FalseClass into time interval"]
+[TypeError, "can't convert Array into time interval"]
+[TypeError, "can't convert Hash into time interval"]
+[TypeError, "can't convert Object into time interval"]
+[TypeError, "can't convert String into time interval"]
+[TypeError, "can't convert Symbol into time interval"]
+1
+2
+3
+4
+[TypeError, "can't convert String into time interval"]
+true
+true
+true
+true
+true
+nil
+nil
+true
+true
+true
+true
+true
+true
+true
+nil
