@@ -82,6 +82,16 @@ typedef struct {
                           `node` is then the rule's subject (the default) or -1 */
 } SlotWhy;
 
+/* The bits of nullable_int_elem / ivar_nullable_int_elem. NIE_MARKED types
+   the elements read out (an oint where it is set). NIE_REACH: a nil can be in
+   the array at run time through some other name of it -- a store through a
+   parameter it was passed as, a local assigned from it, what a method
+   answered, or a gap a write past the end left -- which the mark of this
+   name does not see; the loop read hc_index_in_range proves in range asks
+   it (repr elem_nil_reach) before it reads the element untested. NIE_STORED:
+   such a nil can be stored THROUGH this name, so the names it was assigned
+   or bound from reach it too (mark_elem_slot). */
+enum { NIE_MARKED = 1, NIE_STORED = 2, NIE_REACH = 4 };
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */
   SP_TY_FIELD TyKind type; /* inferred type, written by lv_set_type */
@@ -170,7 +180,8 @@ typedef struct {
   int nullable_int_elem; /* the same, one level in: an int/float ARRAY local
                        some element of which can be nil (its nil bit), so
                        reading an element or binding a block parameter from
-                       it carries the nil out (#3505) */
+                       it carries the nil out (#3505): NIE_MARKED. The other
+                       NIE_ bits say where a nil can come from at run time. */
   int bounded_counter; /* (codegen, lazily) 1: an Integer local that only ever
                           takes a small literal or `+= / -= <small literal>`
                           inside iterator blocks over containers (never a

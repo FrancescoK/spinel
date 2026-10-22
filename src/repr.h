@@ -95,6 +95,11 @@ typedef struct {
                              all), as against a value-less void. A flag
                              beside the kind, not a kind of its own, so no
                              switch on the kind changes */
+  unsigned elem_nil_reach:1; /* an Integer or Float Array a nil can be in at
+                             run time through any name of it, its mark's or
+                             another's (NIE_REACH): the loop read
+                             hc_index_in_range proves in range reads the
+                             element untested only where this is clear */
   unsigned elem_nil_marked:1; /* an Array the analysis saw a nil stored
                              into. An Integer or Float one
                              (nullable_int_elem): its elements can be nil
