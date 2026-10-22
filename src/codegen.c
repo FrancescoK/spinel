@@ -16386,7 +16386,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_RbVal sp_arysub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled);\n");
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
-  buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
+  buf_puts(b, "static inline void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
   if (program_has_arysub(c)) {
     buf_puts(b, "static int sp_bsub_cls_of(sp_RbVal v);\n");
     buf_puts(b, "static void *sp_bsub_unbox(sp_RbVal v, int cls, const char *want);\n");
@@ -19047,12 +19047,22 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
   buf_puts(b, "static int sp_class_le_ids(int a,int b){return sp_class_is_ancestor((sp_Class){b},(sp_Class){a});}\n");
   buf_puts(b, "static int sp_class_gt(sp_Class a,sp_Class b){return sp_class_lt(b,a);}\n");
   buf_puts(b, "static int sp_class_ge(sp_Class a,sp_Class b){return sp_class_le(b,a);}\n");
-  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437). */
-  buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
+  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437).
+     A value of exactly the wanted class -- every read of a one-class Hash's
+     or poly slot's boxed object -- is answered inline by its tag and class
+     id; only nil, a subclass instance or a wrong value takes the chain walk
+     (sp_class_le, a call per step) and the raise. Without the inline path
+     `h[k].n` on a String-keyed Hash of one class spent a quarter of its
+     instructions in the call (~48 of ~228 per read), and in a split build
+     (csplit.c) the whole check was a call into another part. */
+  buf_puts(b, "static SP_NOINLINE SP_COLD void *sp_poly_unbox_cls_slow(sp_RbVal v, int cls, const char *want){\n"
                "  if(v.tag==SP_TAG_NIL)return NULL;\n"
                "  if(v.tag==SP_TAG_OBJ&&sp_class_le((sp_Class){v.cls_id},(sp_Class){cls}))return v.v.p;\n"
                "  sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %s (expected %s)\", sp_poly_class_name(v), want));\n"
                "  return NULL;\n}\n");
+  buf_puts(b, "static inline void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
+               "  if(SP_LIKELY(v.tag==SP_TAG_OBJ&&v.cls_id==cls))return v.v.p;\n"
+               "  return sp_poly_unbox_cls_slow(v, cls, want);\n}\n");
   emit_arysub_machinery(c, b);
   emit_cls_visible_fn(c, b);
   /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
