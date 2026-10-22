@@ -40219,7 +40219,7 @@ static int mark_block_param_arrays(Compiler *c) {
       int blk = nt_ref(nt, sites[si], "block");
       if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
       Scope *bsc = comp_scope_of(c, blk);
-      for (int pk = 0; pk < yan && pk < 8; pk++) {
+      for (int pk = 0; pk < yan; pk++) {
         if (nt_kind(nt, yav[pk]) == NK_SplatNode) break;
         const char *pnm = block_param_name(c, blk, pk);
         LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;

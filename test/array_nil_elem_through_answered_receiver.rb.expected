@@ -22,5 +22,6 @@
 ["then with a rescue", NoMethodError]
 ["a recursive call's block", NoMethodError]
 ["one of many yield sites", NoMethodError]
+["a yield's ninth argument", NoMethodError]
 ["a block's array kept by its method", NoMethodError]
 ["untouched", 30]
