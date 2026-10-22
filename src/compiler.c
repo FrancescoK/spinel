@@ -2469,7 +2469,20 @@ static int mixin_reaches(Compiler *c, int k, int comparable, int depth) {
 }
 static int mixin_level_walk(Compiler *c, int k, const char *name, int own_enum, int comparable, int depth) {
   ClassInfo *ci = &c->classes[k];
-  if (comparable ? ci->cmp_prepended : ci->enum_prepended) return 2;   /* in front of the class's own */
+  /* A prepended module's method precedes its includes. Its transplanted
+     scope records the module whose own lookup supplies that order. */
+  if (comparable && ci->cmp_prepended == 2) {
+    int mi = comp_method_in_class(c, k, name);
+    if (mi >= 0 && c->scopes[mi].is_prepend_copy && depth < c->nclasses) {
+      int m = c->scopes[mi].origin_module_ci - 1;
+      if (m >= 0 && m != k) {
+        int r = mixin_level_walk(c, m, name, own_enum, comparable, depth + 1);
+        if (r) return r;
+      }
+    }
+    return 2;
+  }
+  if (comparable ? ci->cmp_prepended == 1 : ci->enum_prepended) return 2;   /* in front of the class's own */
   if (mixin_level_answers(c, k, name)) return 1;
   int pos = comparable ? ci->cmp_inc_at : ci->enum_inc_at;
   int at = own_enum && pos ? pos - 1 : -1;

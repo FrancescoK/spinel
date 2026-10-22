@@ -43,6 +43,21 @@ end
 class LookupReopenedAfter
   include LookupEquality
 end
+# A prepended module's own equality precedes the Comparable it includes.
+module LookupPrependedEquality
+  include Comparable
+  def ==(other) = true
+end
+class LookupModulePrepended
+  prepend LookupPrependedEquality
+end
+module LookupPrependedComparable
+  include Comparable
+end
+class LookupModuleOnlyPrepended
+  prepend LookupPrependedComparable
+  def ==(other) = true
+end
 xs = [LookupChild.new, LookupChild.new,
       LookupPrepended.new, LookupPrepended.new,
       LookupBefore.new, LookupBefore.new,
@@ -50,9 +65,12 @@ xs = [LookupChild.new, LookupChild.new,
       LookupReopenedChild.new, LookupReopenedChild.new,
       LookupReopenedPrepended.new, LookupReopenedPrepended.new,
       LookupReopenedBefore.new, LookupReopenedBefore.new,
-      LookupReopenedAfter.new, LookupReopenedAfter.new, 1]
+      LookupReopenedAfter.new, LookupReopenedAfter.new,
+      LookupModulePrepended.new, LookupModulePrepended.new,
+      LookupModuleOnlyPrepended.new, LookupModuleOnlyPrepended.new, 1]
 [[0, 1], [2, 3], [4, 5], [6, 7],
- [8, 9], [10, 11], [12, 13], [14, 15]].each do |i, j|
+ [8, 9], [10, 11], [12, 13], [14, 15], [16, 17], [18, 19]].each do |i, j|
+  p(xs[i] <=> xs[j])
   begin
     p(xs[i] <= xs[j])
   rescue ArgumentError => e

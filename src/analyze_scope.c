@@ -7064,7 +7064,6 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     /* `include A, B` includes B first, so A ends up in front (as extend) */
     for (int j = an - 1; j >= 0; j--) {
       NodeKind ak = nt_kind(nt, args[j]);
-      const char *aty = nt_type(nt, args[j]);
       const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       /* `M = ::M` beside the include: a constant that merely ALIASES the
@@ -7080,8 +7079,9 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         if (al) mod_id = comp_class_index(c, al);
       }
       if (is_prepend_name(nm)) {
-        if (is_comparable_module_name(mname) || comp_comparable_reaches(c, mod_id))
-          c->classes[ci].cmp_prepended = 1;
+        if (is_comparable_module_name(mname)) c->classes[ci].cmp_prepended = 1;
+        else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
+          c->classes[ci].cmp_prepended = 2;
         if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
         continue;
       }
@@ -7098,7 +7098,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
            what `rescue IO::WaitReadable` compares against, since the module
            match is by name. Silently dropping these left the include with no
            effect at all (#1054, read_nonblock). */
-        if (aty && sp_streq(aty, "ConstantPathNode") && mname) {
+        if (ak == NK_ConstantPathNode && mname) {
           char segs[8][64]; int nseg = 0;
           int qpar = nt_ref(nt, args[j], "parent");
           while (qpar >= 0 && nseg < 8) {

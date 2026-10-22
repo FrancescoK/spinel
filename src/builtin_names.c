@@ -1243,8 +1243,8 @@ int is_comparable_builtin_name(const char *n) {
    below Comparable is shadowed by its recursive, false equality answer.
    String and Time instances use their builtin representation and comparator. */
 BuiltinDefaultCmp builtin_default_cmp(int family) {
-  if (family == -102 || family == -107) return BDC_BUILTIN;
-  if (family == -113) return BDC_IDENTITY;
+  if (family == builtin_class_id("String") || family == builtin_class_id("Time")) return BDC_BUILTIN;
+  if (family == builtin_class_id("Numeric")) return BDC_IDENTITY;
   return BDC_EQUAL;
 }
 

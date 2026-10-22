@@ -18,3 +18,17 @@ p a.map { |x| x * 2 }
 b = Plain.new
 b << 3
 p b.map
+
+# A module doing prepend Enumerable puts Enumerable ahead of its own map.
+module ModulePrependedEnumerable
+  prepend Enumerable
+  def map = :own_map
+end
+class ModulePrependedCollection
+  include ModulePrependedEnumerable
+  def each
+    yield 1
+    yield 2
+  end
+end
+p ModulePrependedCollection.new.map { |x| x * 2 }
