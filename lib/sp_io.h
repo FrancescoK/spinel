@@ -290,6 +290,24 @@ void sp_file_rename(const char *from, const char *to);
    the older File sites (readlink, symlink, mkfifo ...) pass the syscall's
    name. An errno with no class here raises SystemCallError. */
 SP_NORETURN void sp_file_raise_errno(const char *op, const char *path);
+/* A failed IO#pread raises the errno's class: "<strerror> @ rb_io_pread -
+   <path>" for a handle with a path, the bare strerror for one without (a
+   pipe, an IO.new descriptor), as CRuby words it. */
+SP_NORETURN void sp_pread_raise_errno(sp_File *f);
+/* What IO#pread checks before its pread(2), in CRuby's order: a length of 0
+   answers "" before anything else, even on a closed handle; then a closed
+   handle is IOError "closed stream", and one whose mode does not read (a
+   "w" or "a" mode without "+": a File opened to write, a pipe's write end,
+   STDOUT) IOError "not opened for reading". pread(2) on such a handle fails
+   with EBADF, which CRuby never shows. A negative length takes the checks
+   too and then reads 0 bytes: "" on a readable handle, where CRuby raises
+   ArgumentError first. The output-buffer form (`outbuf`) takes no
+   shortcut at length 0, whose "" would empty the buffer in every case: it
+   goes on to the checks and the syscall, so a bad offset, a write-only or
+   a closed handle raises and leaves the buffer as it was, and a good
+   offset answers "", which its caller writes over the buffer. CRuby
+   answers the buffer unchanged in each case. */
+void sp_pread_check(sp_File *f, sp_int len, sp_bool outbuf);
 /* A nil path (a NULL string at run time) is CRuby's TypeError, raised before
    any syscall sees it; the multi-path File.delete checks every path first. */
 void sp_file_path_check(const char *path);

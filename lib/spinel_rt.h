@@ -1328,11 +1328,11 @@ const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n);
 /* IO#pread(len, offset): read without moving the file position. Inline
    because it allocates from this TU's string heap (#3038). */
 static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
-  SP_IO_OPEN(f);
+  sp_pread_check(f, len, 0);
   if (len < 0) len = 0;
   char *buf = (char *)sp_str_alloc((size_t)len);
-  ssize_t got = pread(fileno(f->fp), buf, (size_t)len, (off_t)off);
-  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  ssize_t got = len ? pread(fileno(f->fp), buf, (size_t)len, (off_t)off) : 0;
+  if (got < 0) sp_pread_raise_errno(f);
   if (got == 0 && len > 0) sp_raise_cls("EOFError", "end of file reached");
   buf[got] = '\0';
   sp_str_set_len(buf, (size_t)got);
@@ -1349,11 +1349,11 @@ static inline const char *sp_File_pread_checked(sp_File *f, sp_int len, sp_int o
 /* IO#pread answering NULL at EOF instead of raising, for the same reason as
    sp_File_readpartial_or_nil. */
 static inline const char *sp_File_pread_or_nil(sp_File *f, sp_int len, sp_int off) {
-  SP_IO_OPEN(f);
+  sp_pread_check(f, len, 1);
   if (len < 0) len = 0;
   char *buf = (char *)sp_str_alloc((size_t)len);
   ssize_t got = pread(fileno(f->fp), buf, (size_t)len, (off_t)off);
-  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  if (got < 0) sp_pread_raise_errno(f);
   if (got == 0 && len > 0) return NULL;
   buf[got] = '\0';
   sp_str_set_len(buf, (size_t)got);
