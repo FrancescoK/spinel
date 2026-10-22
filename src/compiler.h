@@ -811,6 +811,12 @@ typedef struct {
                           fixpoint): a construction site of this class sits in
                           reachable code, or nothing can tell. Read only by the
                           poly-receiver return-type union, for native classes. */
+  int ctor_site;       /* a construction of this class (`.new`, `.allocate`, a
+                          bare `new` in its class method, `raise Cls`) sits in
+                          reachable code, or nothing can tell: what the census
+                          saw before a native or Struct class is held live
+                          regardless. Read for a native class's Ruby-side defs
+                          (comp_native_binding_class). */
   int instantiated;    /* a value with this exact cls_id can come into existence
                           somewhere: `.new`/`.allocate`/`raise Cls`/Struct, or a
                           Marshal.load that can mint any class. When clear, no

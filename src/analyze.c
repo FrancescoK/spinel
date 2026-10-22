@@ -975,8 +975,7 @@ void compute_instantiated(Compiler *c, int early) {
      and handed back boxed through a :any binding, with no `.new` in the
      program for this census to see, and a class it left uninstantiated had
      its arms dropped from every poly dispatch (#4504). */
-  for (int k = 0; k < c->nclasses; k++)
-    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+  /* (forced after the scan, which records what it saw in ctor_site first) */
   for (int id = 0; id < nt->count && !disable; id++) {
     /* super in a reachable `self.new` constructs the receiving class: this
        one, or a descendant inheriting the method */
@@ -1079,6 +1078,10 @@ void compute_instantiated(Compiler *c, int early) {
         if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) continue; }
       c->classes[k].instantiated = 1;
     }
+  for (int k = 0; k < c->nclasses; k++) {
+    c->classes[k].ctor_site = c->classes[k].instantiated;
+    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+  }
   for (int k = 0; k < c->nclasses; k++) c->classes[k].ctor_reachable = c->classes[k].instantiated;
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
 }
