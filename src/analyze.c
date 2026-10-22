@@ -15213,17 +15213,25 @@ static void narrow_nil_guard_locals(Compiler *c) {
 
 static void narrow_nil_guard_params(Compiler *c) {
   const NodeTable *nt = c->nt;
+  /* the names more than one definition of the program carries, read once:
+     asked per method by a walk of every method, this was a square of the
+     method count (the post-fixpoint phase of a Rails program, 119k scopes
+     after lowering, spent its minutes here) */
+  ANameHash seen, dupn; memset(&seen, 0, sizeof seen); memset(&dupn, 0, sizeof dupn);
+  for (int sj = 0; sj < c->nscopes; sj++) {
+    const char *nm = c->scopes[sj].name;
+    if (c->scopes[sj].def_node < 0 || !nm) continue;
+    if (anh_has(&seen, nm)) { if (!anh_has(&dupn, nm)) anh_add(&dupn, nm); }
+    else anh_add(&seen, nm);
+  }
+  anh_free(&seen);
   for (int si = 0; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->def_node < 0 || s->nparams <= 0 || !s->name) continue;
     /* one definition of this name program-wide: the argument collection below
        is name-matched (like param inference itself), so a same-named sibling
        method would blend unrelated call sites */
-    int dup = 0;
-    for (int sj = 0; sj < c->nscopes && !dup; sj++)
-      if (sj != si && c->scopes[sj].def_node >= 0 && c->scopes[sj].name &&
-          sp_streq(c->scopes[sj].name, s->name)) dup = 1;
-    if (dup) continue;
+    if (anh_has(&dupn, s->name)) continue;
     int body = nt_ref(nt, s->def_node, "body");
     int bn = 0;
     const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -15271,6 +15279,7 @@ static void narrow_nil_guard_params(Compiler *c) {
       for (int j = g + 1; j < bn; j++) nng_mark_reads(c, bb[j], s, pn, t);
     }
   }
+  anh_free(&dupn);
 }
 
 /* An empty `[]` infers TY_UNKNOWN so `x = []; x << 1` can back-fill from the
