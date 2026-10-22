@@ -1712,7 +1712,11 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         return 1;
       }
       buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup");
-      emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      /* (one-String mode: a receiver of either face, `(v || TEXT).dup`) */
+      if (g_one_string) buf_puts(b, "SP_STR_B(");
+      emit_expr(c, recv, b);
+      buf_puts(b, g_one_string ? "))" : ")");
+      return 1;
     }
   }
 
@@ -2009,14 +2013,18 @@ static int sn_args_run_late(Compiler *c, int id, int recv) {
        read, which runs none unless it changes a String itself) */
     chg |= operand_may_change_string(c, argv[i]) || (!(nd && i == 0) && subtree_may_run_proc(c, argv[i]));
   }
-  if (!chg) return 0;
   NodeKind k = nt_kind(nt, recv);
-  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
-      k == NK_GlobalVariableReadNode) {
+  int var = k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
+            k == NK_GlobalVariableReadNode;
+  /* (one-String mode: a variable's String is read through its slot, so an
+     argument that assigns the variable is asked about too, changing no
+     String) */
+  if (!chg && !(g_one_string && var && argc > 0)) return 0;
+  if (var) {
     const char *vn = nt_str(nt, recv, "name");
     int plain = 1, wrote = 0;
     for (int i = 0; i < argc && plain; i++) plain = sn_runs_no_code(c, argv[i], k, vn, &wrote);
-    if (plain) return 1;
+    if (plain) return chg || !g_one_string ? 1 : 0;
     /* (one-String mode: the variable holds the handle, which the guard
        holds in turn: the call reads its String after the arguments, on the
        String the variable had, as 2 does for a call's handle) */

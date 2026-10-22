@@ -4261,12 +4261,11 @@ static int str_bang_chain_var(Compiler *c, int recv) {
    view: the payload's owner takes the new bytes, and _t<tn> becomes its
    view, the receiver the mutator answers (sp_strface_write_through). */
 static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, const char *rtext, Buf *b) {
-  /* (one-String mode: the variable's String is its handle, changed in
-     place) */
-  if (lvw && g_one_string) {
-    buf_puts(b, "sp_String_set_bin(SP_STR_HDL(");
-    emit_expr(c, recv, b);
-    buf_printf(b, "), _t%d); ", tn);
+  /* (one-String mode: a variable an emitter holds in a temp, ahead of
+     arguments that run code, is that temp, no lvalue: its String, the
+     handle, is changed in place) */
+  if (lvw && g_one_string && ran_first_handle(recv) >= 0) {
+    buf_printf(b, "sp_String_set_bin(_t%d, _t%d); ", ran_first_handle(recv), tn);
     return 1;
   }
   if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return 0; }
@@ -4275,12 +4274,10 @@ static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, const 
   if (base < 0) return 0;
   /* (one-String mode: a variable an emitter holds in a temp, ahead of
      arguments that run code, is written through that temp's handle) */
-  if (g_one_string)
-    for (int i = g_n_argov - 1; i >= 0; i--)
-      if (g_argov_node[i] == base) {
-        buf_printf(b, "sp_String_set_bin(SP_STR_HDL(%s), _t%d); ", g_argov_text[i], tn);
-        return 1;
-      }
+  if (g_one_string && ran_first_handle(base) >= 0) {
+    buf_printf(b, "sp_String_set_bin(_t%d, _t%d); ", ran_first_handle(base), tn);
+    return 1;
+  }
   Buf sref; memset(&sref, 0, sizeof sref);
   if (strbuf_slot_text(c, base, &sref)) {
     buf_printf(b, "sp_String_set_bin(%s, _t%d); ", sref.p, tn);
@@ -10429,7 +10426,9 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (rt == TY_STRING && g_pre && pre_names_tmp(g_pre, g_pre_mark, g_tmpid)) {
         /* the body's prelude reads the held temp: declare it there */
         Buf hd; memset(&hd, 0, sizeof hd);
-        buf_printf(&hd, "const char *_t%d = (%s); SP_GC_ROOT(_t%d);", g_tmpid, rs.p ? rs.p : "", g_tmpid);
+        /* (one-String mode: the receiver's text may be a held handle) */
+        buf_printf(&hd, g_one_string ? "const char *_t%d = SP_STR_B(%s); SP_GC_ROOT(_t%d);" : "const char *_t%d = (%s); SP_GC_ROOT(_t%d);",
+                   g_tmpid, rs.p ? rs.p : "", g_tmpid);
         if (!g_noguard) buf_printf(&hd, " if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", g_tmpid, name);
         buf_puts(&hd, "\n");
         buf_insert_at(g_pre, g_pre_mark, hd.p);
@@ -10437,7 +10436,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_puts(b, "({ ");
       }
       else if (rt == TY_STRING) {
-        buf_printf(b, "({ const char *_t%d = (%s); ", g_tmpid, rs.p ? rs.p : "");
+        buf_printf(b, g_one_string ? "({ const char *_t%d = SP_STR_B(%s); " : "({ const char *_t%d = (%s); ", g_tmpid, rs.p ? rs.p : "");
         if (g_root) buf_printf(b, "SP_GC_ROOT(_t%d); ", g_tmpid);
         if (!g_noguard) buf_printf(b, "if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", g_tmpid, name);
       }
