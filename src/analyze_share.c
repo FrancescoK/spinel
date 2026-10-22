@@ -2646,7 +2646,7 @@ static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char
    other node. */
 int share_exact_new_class(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n < 0 || nt_kind(nt, n) != NK_CallNode || !sp_streq(nt_str(nt, n, "name"), "new")) return -1;
   int r = nt_ref(nt, n, "receiver");
   if (r < 0 || (nt_kind(nt, r) != NK_ConstantReadNode && nt_kind(nt, r) != NK_ConstantPathNode)) return -1;
@@ -3217,7 +3217,7 @@ static int sh_assign_call(const Compiler *c, int n) {
    (`<<`, `concat`, `freeze`) over one? */
 static int sh_assign_chain(const Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n < 0 || depth > 8) return 0;
   if (sh_assign_call(c, n)) return 1;
   if (nt_kind(nt, n) != NK_CallNode || !nt_str(nt, n, "name") || nt_ref(nt, n, "block") >= 0) return 0;
@@ -5171,7 +5171,7 @@ static void sh_mark_local_lambdas(ShareFacts *F, Compiler *c) {
       int idx = sh_local_idx(c, off, n);
       if (idx < 0) continue;
       if (writes[w] == NK_LocalVariableReadNode) { cnt[idx]++; continue; }
-      int v = writes[w] == NK_LocalVariableWriteNode ? an_unparen(nt, nt_ref(nt, n, "value")) : -1;
+      int v = writes[w] == NK_LocalVariableWriteNode ? nt_paren_single(nt, nt_ref(nt, n, "value")) : -1;
       cand[idx] = cand[idx] == -1 && v >= 0 && nt_kind(nt, v) == NK_LambdaNode ? v : -2;
     }
   /* each read must be the receiver of a call of the lambda */
@@ -6322,7 +6322,7 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
    String with a part to evaluate is built each time: neither is one. */
 int share_frozen_literal(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
@@ -6339,7 +6339,7 @@ int share_frozen_literal(Compiler *c, int n) {
    whatever its receiver (`+RUBY_ENGINE.freeze`, `+s.freeze`)? */
 static int sh_uplus_copies(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, n);
+  int u = nt_paren_single(nt, n);
   /* (a call every target of which answers a String literal, frozen:
      share_plan_call_answers_literal) */
   if (share_plan_call_answers_literal(c, u)) return 1;
@@ -6350,7 +6350,7 @@ static int sh_uplus_copies(Compiler *c, int n) {
 }
 int share_frozen_string(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, n);
+  int u = nt_paren_single(nt, n);
   if (u >= 0 && nt_kind(nt, u) == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, u, "name");
     return is_engine_string_const(nm) && !comp_const(c, nm);
@@ -6707,7 +6707,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
   if (repr_call_returns_handle((Compiler *)c, n)) return SPK_PUBLISHED;
   /* freeze answers its receiver: it hands on the handle where its receiver
      does, and a new String's freeze is a String no other name holds */
-  int u = an_unparen(c->nt, n);
+  int u = nt_paren_single(c->nt, n);
   if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_freeze_name(nt_str(c->nt, u, "name")) &&
       call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0 &&
       cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
@@ -6858,7 +6858,7 @@ int share_assign_shares(const Compiler *c, int n) {
 int share_assign_unjoined(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (!F || n < 0 || n >= F->nnodes || !sh_assign_call(c, n)) return 0;
   int args = nt_ref(nt, n, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
