@@ -26,8 +26,11 @@ typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); sp_int a
 /* arity: the count this accumulator realizes at -- Proc#curry(n)'s n, else
    the target's required-parameter count (CRuby's min arity, so a variadic
    base realizes on its first call). Carried here so a curry that travels
-   through a container or an untyped slot still knows when it is done. */
-typedef struct { sp_Proc *target; sp_int arity; sp_int nargs; sp_RbVal args[16]; } sp_Curry;
+   through a container or an untyped slot still knows when it is done.
+   args holds nargs values: each application allocates the next accumulator
+   one slot wider, so a curry of any count keeps every argument (a fixed 16
+   dropped the 17th on, and the call then bound nil past the 16th). */
+typedef struct { sp_Proc *target; sp_int arity; sp_int nargs; sp_RbVal args[]; } sp_Curry;
 
 sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);   /* defined in the generated TU */
 /* The proc calling convention's boxed side channel: how many arguments it
@@ -63,7 +66,6 @@ void sp_curry_scan(void *p);
 sp_Curry *sp_curry_new(sp_Proc *p);
 sp_Curry *sp_curry_new_n(sp_Proc *p, sp_int n, sp_int max);
 sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg);
-void sp_curry_publish_args(sp_Curry *c);
 
 /* ---- BoundMethod (Method object): sp_bound_method_new is hot in
    optcarrot (69 uses), so it stays static inline here -- pure textual
