@@ -20,3 +20,9 @@ p s[/(b)/, 1].encoding
 t = "héllo wörld"
 p t.scan(/\S+/).map(&:encoding)
 p t.match(/(\S+)/)[1].encoding
+# a substitution through a Hash, and the empty fields of a partition that
+# finds nothing, are in the subject's encoding too
+p s.gsub(/b/, "b" => "x").encoding
+p s.sub(/b/, "b" => "x").encoding
+p s.partition(/z/).map(&:encoding)
+p s.rpartition(/z/).map(&:encoding)

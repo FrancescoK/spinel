@@ -8671,10 +8671,10 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
                   " if (sp_re_match(_t%d, _t%d) >= 0) {"
                   " sp_StrArray_push(_t%d, sp_re_pre_match()); sp_StrArray_push(_t%d, sp_re_match_str);"
                   " sp_StrArray_push(_t%d, sp_re_post_match()); }\nelse {"
-                  " sp_StrArray_push(_t%d, sp_str_dup(_t%d)); sp_StrArray_push(_t%d, sp_str_dup(sp_str_empty));"
-                  " sp_StrArray_push(_t%d, sp_str_dup(sp_str_empty)); }"
+                  " sp_StrArray_push(_t%d, sp_str_dup(_t%d)); sp_StrArray_push(_t%d, sp_str_empty_like(_t%d));"
+                  " sp_StrArray_push(_t%d, sp_str_empty_like(_t%d)); }"
                   " _t%d; })",
-               tr, tr, tp, ts, tr, tr, tr, tr, ts, tr, tr, tr);
+               tr, tr, tp, ts, tr, tr, tr, tr, ts, tr, ts, tr, ts, tr);
   }
   else if (sp_streq(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
     buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);

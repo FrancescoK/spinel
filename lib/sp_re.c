@@ -408,8 +408,8 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT(r);
   if (ms < 0) {
     /* new Strings, as CRuby's: not the receiver, nor one shared "" */
-    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
-    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
+    sp_StrArray_push(r, sp_str_empty_like(str));
+    sp_StrArray_push(r, sp_str_empty_like(str));
     sp_StrArray_push(r, sp_str_dup(str));
     return r;
   }

@@ -5975,7 +5975,7 @@ else {
   char *res = sp_str_alloc(olen);
   memcpy(res, out, olen);
   if (out != out_sb) free(out);
-  return res;
+  return sp_str_bin_like(str, res);   /* in the subject's encoding, as sp_re_gsub's */
 }
 const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   return re_gsub_hash(pat, str, h, NULL);
@@ -6018,7 +6018,7 @@ static const char *re_sub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrS
   out[total] = 0;
   sp_str_set_len(out, total);
   if (kbuf != keybuf) free(kbuf);
-  return out;
+  return sp_str_bin_like(str, out);   /* in the subject's encoding, as sp_re_sub's */
 }
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   return re_sub_hash(pat, str, h, NULL);
