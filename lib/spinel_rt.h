@@ -1279,6 +1279,9 @@ sp_oint sp_File_getbyte(sp_File *f);   /* IO#getbyte: nil at EOF */
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 /* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
 const char *sp_File_readpartial(sp_File *f, sp_int n);
+/* IO#readpartial(n) without a buffer: a negative n is ArgumentError, raised
+   before the stream is checked; sysread keeps sp_File_readpartial. */
+const char *sp_File_readpartial_checked(sp_File *f, sp_int n);
 /* The same read answering NULL at EOF instead of raising: a boxed output
    buffer is emptied before the EOFError (the codegen's output-buffer path). */
 const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n);
