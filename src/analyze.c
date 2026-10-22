@@ -13957,7 +13957,14 @@ static int narrow_object_arrays(Compiler *c) {
                           sp_streq(name, "clear") || sp_streq(name, "delete_at"))) {
           sl[S].removes = 1;
           if (sp_streq(name, "clear") && !(id < nc && value_ok[id])) sl[S].alive = 0;
-          if (sp_streq(name, "delete_at") && infer_type(c, argv[0]) != TY_INT) sl[S].alive = 0;
+          /* (a boxed index too, which the emitter takes as an Integer the way
+             every index is taken: --int-overflow=promote boxes the Integer
+             locals after the fixpoint and runs the pass again, and a slot
+             that fell back to the box there left the removals already typed
+             as an element, whose nil then had no check) */
+          if (sp_streq(name, "delete_at") && infer_type(c, argv[0]) != TY_INT &&
+              infer_type(c, argv[0]) != TY_POLY)
+            sl[S].alive = 0;
         }
         else if (name && sp_streq(name, "[]=") && argc == 2) {
           /* a range-keyed []= is a splice, which the obj-array representation
