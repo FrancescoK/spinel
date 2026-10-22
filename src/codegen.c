@@ -19839,9 +19839,11 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        read the pool's address before the move still finds its Symbol's name
        there, and the heap blocks left behind sum to less than the one in use. */
     /* The pool is found by name through sp_dsym_ix, an open-addressing index
-       beside it: element 0 is the mask, and each slot after it holds a name's
-       hash in its high half and its pool index + 1 in its low half (0 is
-       empty). Scanning the pool made String#to_sym linear in the number of
+       beside it: element 0 is the mask, and each slot after it is two words,
+       its name's pool index + 1 (0 is empty) and the name's hash. The slot
+       is published by a release store of the index word, after its hash is
+       written; a 32-bit word, which a 32-bit target stores atomically without
+       libatomic (a 64-bit entry did not link there). Scanning the pool made String#to_sym linear in the number of
        Symbols a program had made. The index is kept at most half full; when
        an entry would pass that, a new index twice the size is built from the
        old one and its address stored in sp_dsym_ix. The mask travels inside
@@ -19885,26 +19887,26 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
                   "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
                   "%s;sp_dyn_cap=nc;}\n",
                oom_raise, mt ? "SP_ATOMIC_STORE(&sp_dyn_syms,np,__ATOMIC_RELEASE)" : "sp_dyn_syms=np");
-    buf_puts(b, "static uint64_t sp_dsym_ix0[1+64]={63}; static uint64_t *sp_dsym_ix=sp_dsym_ix0;\n");
+    buf_puts(b, "static uint32_t sp_dsym_ix0[1+2*64]={63}; static uint32_t *sp_dsym_ix=sp_dsym_ix0;\n");
     buf_printf(b, "static SP_NOINLINE SP_COLD void sp_dsym_ix_grow(void){"
-                  "uint64_t *o=sp_dsym_ix;uint32_t om=(uint32_t)o[0],nm=om*2u+1u;"
-                  "uint64_t *nx=(uint64_t *)calloc((size_t)nm+2u,sizeof(uint64_t));"
+                  "uint32_t *o=sp_dsym_ix;uint32_t om=o[0],nm=om*2u+1u;"
+                  "uint32_t *nx=(uint32_t *)calloc(1u+2u*((size_t)nm+1u),sizeof(uint32_t));"
                   "if(!nx)%s"
                   "nx[0]=nm;"
-                  "for(uint32_t i=1;i<=om+1u;i++){uint64_t e=o[i];if(e){uint32_t j=(uint32_t)(e>>32)&nm;while(nx[1+j])j=(j+1)&nm;nx[1+j]=e;}}"
+                  "for(uint32_t i=0;i<=om;i++){uint32_t d=o[1+2*i];if(d){uint32_t hh=o[2+2*i],j=hh&nm;while(nx[1+2*j])j=(j+1)&nm;nx[2+2*j]=hh;nx[1+2*j]=d;}}"
                   "SP_DSYM_ST(&sp_dsym_ix,nx);%s}\n",
                oom_raise, mt ? "" : "if(o!=sp_dsym_ix0)free(o);");
     /* Called with the lock held (or without Threads): the index it writes is
        the current one, and only a writer stores into it. */
     buf_puts(b, "static void sp_dsym_ix_put(int id,uint32_t h){"
-                "uint64_t *ix=sp_dsym_ix;uint32_t m=(uint32_t)ix[0],i=h&m;"
-                "while(ix[1+i])i=(i+1)&m;"
-                "SP_DSYM_ST(&ix[1+i],((uint64_t)h<<32)|(uint64_t)(uint32_t)(id+1));}\n");
+                "uint32_t *ix=sp_dsym_ix;uint32_t m=ix[0],i=h&m;"
+                "while(ix[1+2*i])i=(i+1)&m;"
+                "ix[2+2*i]=h;SP_DSYM_ST(&ix[1+2*i],(uint32_t)(id+1));}\n");
     /* The pool index of the name s[0,n) whose hash is h, or -1. */
     buf_puts(b, "static inline int sp_dsym_find(const char *s,size_t n,uint32_t h){"
-                "uint64_t *ix=SP_DSYM_LD(&sp_dsym_ix);uint32_t m=(uint32_t)ix[0],i=h&m;"
-                "for(;;){uint64_t e=SP_DSYM_LD(&ix[1+i]);if(!e)return -1;"
-                "if((uint32_t)(e>>32)==h){int id=(int)(uint32_t)e-1;const char*_c=SP_DSYM_LD(&sp_dyn_syms)[id];"
+                "uint32_t *ix=SP_DSYM_LD(&sp_dsym_ix);uint32_t m=ix[0],i=h&m;"
+                "for(;;){uint32_t d=SP_DSYM_LD(&ix[1+2*i]);if(!d)return -1;"
+                "if(ix[2+2*i]==h){int id=(int)d-1;const char*_c=SP_DSYM_LD(&sp_dyn_syms)[id];"
                 "if(sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return id;}"
                 "i=(i+1)&m;}}\n");
     /* Those entries are string-heap strings (sp_str_dup_external) held only by
