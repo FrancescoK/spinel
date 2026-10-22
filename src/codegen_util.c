@@ -4297,7 +4297,7 @@ static int const_recv_held(Compiler *c, int id) {
   return par >= 0 && !subtree_is_pure_read(c, par) ? par : -1;
 }
 static void emit_const_recv_class(Compiler *c, int par, Buf *b) {
-  if (comp_ntype(c, par) == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par, b); buf_puts(b, ")"); }
+  if (repr_of(c, par).kind == RK_BOXED) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par, b); buf_puts(b, ")"); }
   else emit_expr(c, par, b);
 }
 void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
@@ -4764,7 +4764,7 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
        its text is the raise with a boxed nil behind it: into a slot of
        another kind it answers that slot's zero, as a bare raise does (#9879) */
     if (nt_kind(c->nt, node) == NK_CallNode && slot != TY_POLY && slot != TY_UNKNOWN &&
-        (comp_ntype(c, node) == TY_UNKNOWN || comp_ntype(c, node) == TY_POLY)) {
+        (comp_ntype(c, node) == TY_UNKNOWN || repr_of(c, node).kind == RK_BOXED)) {
       Buf t; memset(&t, 0, sizeof t);
       emit_expr(c, node, &t);
       const char *tx = t.p ? t.p : "";
@@ -5168,7 +5168,7 @@ void emit_elem_store_value(Compiler *c, const char *k, int node, Buf *b) {
   /* a boxed value is checked against the element's kind: nil is the kind's
      nil, anything else foreign is refused (sp_poly_elem_i / _f, #4481) */
   Repr sr = node >= 0 ? repr_of(c, node) : (Repr){0};
-  if (node >= 0 && (sr.kind == RK_BOXED || sr.as_ty == TY_POLY)) {
+  if (node >= 0 && sr.kind == RK_BOXED) {
     buf_puts(b, et == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_i("); emit_boxed(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -7630,7 +7630,7 @@ void emit_ivar_value_nilbit(Compiler *c, int cid, int iv, const char *obj, int v
     /* a boxed value into a slot an --rbs seed pins: the seed's assertion
        (nil passes) before the narrowing, as the plain slot's write has it */
     const char *ivn = c->classes[cid].ivars[iv];
-    if ((r.kind == RK_BOXED || r.as_ty == TY_POLY) && ivn && class_ivar_pinned(&c->classes[cid], ivn)) {
+    if (r.kind == RK_BOXED && ivn && class_ivar_pinned(&c->classes[cid], ivn)) {
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, v, &rb);
       Buf ck; memset(&ck, 0, sizeof ck);
       emit_rbs_checked_text(c, t, ivn, rb.p ? rb.p : "sp_box_nil()", &ck);
@@ -7833,7 +7833,7 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
   }
   /* a boxed value, or an untyped one (the gate's raising token): unboxed
      with its nil */
-  if (r.kind == RK_BOXED || vt == TY_POLY || vt == TY_UNKNOWN) {
+  if (r.kind == RK_BOXED || vt == TY_UNKNOWN) {
     Buf ub; memset(&ub, 0, sizeof ub);
     emit_expr(c, node, &ub);
     const char *ut = ub.p ? ub.p : "sp_box_nil()";
