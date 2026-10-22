@@ -35636,11 +35636,58 @@ static int elem_slots_jumps(Compiler *c, int blk, NodeKind k, int depth, ElemSlo
   free(jv);
   return r;
 }
+/* What one outermost walk has already walked, by value and tail. The walk
+   reaches the same value along many paths -- each arm of a value of several
+   arms, each target of a call, each tail of a yield, a method's tail through
+   every call of it -- and walked it again in full from each, within its
+   depth budget: on a Rails-sized program the boxed-array marking of one
+   round did not end (an hour inside one walk, where the program's analysis
+   took two minutes before #9960's review fixes let the walk follow calls,
+   jumps and yields). A value walked again, no shallower than before,
+   answers what it answered: its marks are made, and the asking walk's
+   answer is the same; one still being walked is a cycle, adding nothing.
+   The entries are dropped when the outermost walk returns. */
+typedef struct { int v, tail, depth, res, done; unsigned gen; } EsSeen;
+static EsSeen *es_seen; static int es_seen_cap, es_seen_n, es_nest; static unsigned es_gen = 1;
+static EsSeen *es_slot(int v, int tail) {
+  if (es_seen_n * 2 >= es_seen_cap) {
+    int oc = es_seen_cap; EsSeen *old = es_seen;
+    es_seen_cap = oc ? oc * 2 : 1024;
+    es_seen = calloc((size_t)es_seen_cap, sizeof *es_seen);
+    if (!es_seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < oc; i++)
+      if (old[i].gen == es_gen) *es_slot(old[i].v, old[i].tail) = old[i];
+    free(old);
+  }
+  unsigned h = ((unsigned)v * 2654435761u + (unsigned)tail * 40503u) & (unsigned)(es_seen_cap - 1);
+  while (es_seen[h].gen == es_gen && !(es_seen[h].v == v && es_seen[h].tail == tail))
+    h = (h + 1) & (unsigned)(es_seen_cap - 1);
+  return &es_seen[h];
+}
+static int elem_slots_walk(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud);
 static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
-  const NodeTable *nt = c->nt;
   int r = fn(c, NULL, v, tail, ud);
   if (v < 0) return r;
   if (depth >= 16) return r | fn(c, NULL, ELEM_SLOT_UNKNOWN, tail, ud);
+  EsSeen *s = es_slot(v, tail);
+  if (s->gen == es_gen) {
+    if (s->depth <= depth) return r | (s->done ? s->res : 0);
+    s->depth = depth; s->done = 0;
+  }
+  else { s->gen = es_gen; s->v = v; s->tail = tail; s->depth = depth; s->res = 0; s->done = 0; es_seen_n++; }
+  es_nest++;
+  int w = elem_slots_walk(c, v, tail, depth, fn, ud);
+  es_nest--;
+  if (es_nest == 0) {
+    es_seen_n = 0;
+    if (++es_gen == 0) { memset(es_seen, 0, sizeof *es_seen * (size_t)es_seen_cap); es_gen = 1; }
+  }
+  else { s = es_slot(v, tail); s->res = w; s->done = 1; }   /* found again: the table may have grown */
+  return r | w;
+}
+static int elem_slots_walk(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
+  const NodeTable *nt = c->nt;
+  int r = 0;
   /* `next v` / `break v` hand on v */
   if (nt_kind(nt, v) == NK_NextNode || nt_kind(nt, v) == NK_BreakNode) {
     int ja = nt_ref(nt, v, "arguments"), jn = 0;
