@@ -2788,8 +2788,9 @@ int an_user_defines_method(Compiler *c, const char *name) {
 
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int n = nt_paren_single(nt, node);
-  if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
+  /* the value parentheses answer: `(x; yield)` is the yield's */
+  int n;
+  if (vp_one(nt, node, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NODE && nt_kind(nt, n) == NK_YieldNode) {
     Scope *sc = comp_scope_of(c, n);
     int mi = sc ? (int)(sc - c->scopes) : -1;
     if (mi >= 0 && yield_value_diverges(c, mi)) return TY_POLY;
