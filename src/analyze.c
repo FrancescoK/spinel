@@ -45151,47 +45151,35 @@ static int sid_fresh_set(const NodeTable *nt, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") &&
          sp_streq(nt_str(nt, r, "name"), "Set");
 }
+/* The edges sid_tail_owner climbs: the arms of an if, unless, case and
+   case/in, and a begin's body (beside an else too), its rescue clauses and
+   its else; not its ensure. */
+enum { SID_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
+
 /* The method or block whose value node n is, or -1: n is the last
    statement of its body, or of an arm of a conditional, a case or a begin
-   (its body, a rescue, its else; not its ensure) that is in turn. -2 when
-   the climb meets a statement that is not the last of its statements: its
-   value is dropped there (`if a then x.m end; more`). */
+   that is in turn (vp_climb, over SID_CLIMB). -2 when the climb meets a
+   statement that is not the last of its statements: its value is dropped
+   there (`if a then x.m end; more`). */
 static int sid_tail_owner(Compiler *c, const int *parent, int n) {
   const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 64; d++) {
-    int p = parent[n];
-    if (p < 0) {
-      /* a body no node links (one a rewrite moved): its method's, by its
-         scope */
-      Scope *s = comp_scope_of(c, n);
-      return s && s->body == n && s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? s->def_node : -1;
-    }
-    NodeKind pk = nt_kind(nt, p);
-    if (pk == NK_DefNode || pk == NK_BlockNode) return nt_ref(nt, p, "body") == n ? p : -1;
-    if (pk == NK_StatementsNode) {
-      int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
-      if (bn == 0) return -1;
-      if (bb[bn - 1] != n) {
-        for (int i = 0; i + 1 < bn; i++) if (bb[i] == n) return -2;
-        return -1;
-      }
-    }
-    else if (pk == NK_IfNode || pk == NK_UnlessNode) {
-      if (nt_ref(nt, p, "predicate") == n) return -1;
-    }
-    else if (pk == NK_BeginNode) {
-      if (nt_ref(nt, p, "ensure_clause") == n) return -1;
-    }
-    else if (pk == NK_CaseNode || pk == NK_CaseMatchNode) {
-      if (nt_ref(nt, p, "predicate") == n) return -1;
-    }
-    else if (pk == NK_InNode || pk == NK_RescueNode || (nt_type(nt, p) && sp_streq(nt_type(nt, p), "WhenNode"))) {
-      if (nt_ref(nt, p, "statements") != n && nt_ref(nt, p, "subsequent") != n) return -1;
-    }
-    else if (pk != NK_ParenthesesNode && pk != NK_ElseNode) return -1;
-    n = p;
+  VpUp up;
+  switch (vp_climb(nt, parent, n, SID_CLIMB, &up)) {
+  case VPU_DROPPED:
+    return -2;
+  case VPU_ROOT: {
+    /* a body no node links (one a rewrite moved): its method's, by its
+       scope */
+    Scope *s = comp_scope_of(c, up.node);
+    return s && s->body == up.node && s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? s->def_node : -1;
   }
-  return -1;
+  case VPU_ENDED: {
+    NodeKind pk = nt_kind(nt, up.parent);
+    return (pk == NK_DefNode || pk == NK_BlockNode) && nt_ref(nt, up.parent, "body") == up.node ? up.parent : -1;
+  }
+  default:
+    return -1;
+  }
 }
 /* Is a Set's call named nm one that answers the Set or another Set that
    may compare by identity? */
