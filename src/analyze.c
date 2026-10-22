@@ -42702,6 +42702,25 @@ static int mixin_statement(Compiler *c, int st, int *cls, int *mods, int *prep, 
   return n;
 }
 
+/* Does a module mixed into class k (or a class it descends from) by a
+   top-level statement ahead of statement j already find the method def
+   node `def` for `name`? Then a later include of a module whose chain finds
+   the same method changes no call on k's objects (`class A; include M2; end`
+   ... `class A; include M3; end`, where M3 includes M2, and both reach M1's
+   method). */
+static int mixin_earlier_reaches(Compiler *c, const int *st, int j, int k, const char *name, int def) {
+  for (int q = 0; q < j; q++) {
+    int cq = -1, mods[16], prep[16];
+    int nq = mixin_statement(c, st[q], &cq, mods, prep, 16);
+    if (nq == 0 || (cq != k && !is_descendant(c, k, cq))) continue;
+    for (int m = 0; m < nq; m++) {
+      int mm = comp_method_in_chain(c, mods[m], name, NULL);
+      if (mm >= 0 && c->scopes[mm].def_node == def) return 1;
+    }
+  }
+  return 0;
+}
+
 /* A module the program mixes into a class by a top-level statement after
    one that calls a method on the class's objects (`d.speak; class Dog;
    prepend Loud; end`) is not there yet when that call runs: the call
@@ -42766,7 +42785,8 @@ static void refuse_mixin_after_calls(Compiler *c) {
              module's method (the class's copy of it); a prepend, where
              the chain finds the name at the class or above it, or not
              at all */
-          if (!prep[m] ? mi >= 0 && c->scopes[mi].def_node == c->scopes[mm].def_node
+          if (!prep[m] ? mi >= 0 && c->scopes[mi].def_node == c->scopes[mm].def_node &&
+                         !mixin_earlier_reaches(c, st, j, k, name, c->scopes[mm].def_node)
                        : mi < 0 || d == cid || is_descendant(c, cid, d))
             hit = mods[m];
         }
