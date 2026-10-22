@@ -156,6 +156,7 @@ size_t sp_utf8_byte_offset(const char*s,sp_int char_idx);
 uint32_t*sp_utf8_decode_all(const char*s,size_t*out_n);
 uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n);
 uint32_t*sp_utf8_decode_charset_n(const char*s,size_t bl,size_t*out_n);
+void sp_str_check_valid(const char*s);
 void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep);
 const char*sp_str_undump(const char*s);
 const char*sp_str_succ_impl(const char*s);

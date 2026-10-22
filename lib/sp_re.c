@@ -247,11 +247,7 @@ const char *sp_re_post_match(void) {
    time the same String is searched. Each search checks once at its start, not
    per step: the loops that call the engine again from later positions
    (sp_re_match_at/_next) check at 0. */
-void sp_re_check_subject(const char *str) {
-  if (!str || sp_str_is_binary(str) || sp_str_is_ascii7(str)) return;
-  if ((size_t)sp_str_length(str) != sp_str_byte_len(str) || sp_str_ascii_only(str)) return;
-  sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
-}
+void sp_re_check_subject(const char *str) { sp_str_check_valid(str); }
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
   sp_re_check_subject(str);
   if (!str) return -1;
