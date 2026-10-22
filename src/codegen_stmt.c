@@ -23287,8 +23287,22 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         return 1;
       }
       emit_indent(b, indent);
-      buf_puts(b, "sp_PolyArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ");\n");
+      /* the receiver read first, as the typed Arrays' store holds it */
+      NodeKind prk = nt_kind(nt, recv);
+      int phold = (prk == NK_InstanceVariableReadNode || prk == NK_GlobalVariableReadNode ||
+                   prk == NK_ClassVariableReadNode) &&
+                  (subtree_may_reassign_state(c, argv[0]) || subtree_may_reassign_state(c, argv[1]));
+      int pth = phold ? ++g_tmp : 0;
+      if (phold) {
+        buf_printf(b, "{ sp_PolyArray *_t%d = ", pth); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", pth);
+      }
+      buf_puts(b, "sp_PolyArray_set(");
+      if (phold) buf_printf(b, "_t%d", pth);
+      else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b);
+      buf_puts(b, phold ? "); }\n" : ");\n");
       return 1;
     }
     if (is_push_alias(name) && argc >= 1) {
