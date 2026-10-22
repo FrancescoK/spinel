@@ -8640,7 +8640,7 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
     /* the raising length names length: size on a String that can be nil
        raises under its own name */
     else if (!recv_never_nil(c, recv) && is_length_spelling(name)) buf_printf(b, "sp_str_length(sp_nil_recv_named(%s, \"%s\"))", r, name);
-    else buf_printf(b, "sp_str_length_m(%s)", r);
+    else buf_printf(b, "sp_str_length_m%s(%s)", g_one_string ? "i" : "", r);
   }
   else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);
   else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase%s(%s)", case_map_suffix(c, argc, argv), r);

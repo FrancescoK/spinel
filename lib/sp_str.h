@@ -159,6 +159,17 @@ const char*sp_str_b(const char*s);
    carry Ruby receiver semantics at method call sites. */
 SP_NORETURN SP_COLD void sp_nil_recv(const char *meth);
 sp_int sp_str_length_m(const char *s);
+#ifdef SP_ONE_STRING
+/* String#length answered inline for a String whose header knows its width
+   (binary, or 7-bit once a scan proved it): a String is a handle in this
+   mode, so a loop bound on one is measured on every test, where the default
+   build reads it once ahead of the loop (bm_template: 5M calls) */
+static inline sp_int sp_str_length_mi(const char *s) {
+  size_t fb;
+  if (s && sp_str_fixed_width(s, &fb)) return (sp_int)fb;
+  return sp_str_length_m(s);
+}
+#endif
 sp_int sp_str_bytesize_m(const char *s);
 sp_bool sp_str_empty_p(const char *s);
 const char *sp_str_plus(const char *a, const char *b);
