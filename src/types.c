@@ -694,6 +694,10 @@ TyKind ty_unify(TyKind a, TyKind b) {
      stay poly. */
   if (a == TY_NIL && b == TY_STRING) return b;
   if (b == TY_NIL && a == TY_STRING) return a;
+  /* (one-String mode: the handle every String slot holds is nil as NULL,
+     as the bytes are) */
+  if (g_one_string && a == TY_NIL && b == TY_STRBUF) return b;
+  if (g_one_string && b == TY_NIL && a == TY_STRBUF) return a;
   /* An Integer or a Float that also sees nil stays a (nullable) scalar: the
      slot's nil rides beside the value (sp_oint / sp_ofloat), which the
      search misses already leave there, and every consumer that can carry

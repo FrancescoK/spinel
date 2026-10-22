@@ -7860,9 +7860,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* A nil arg narrows against an object param (NULL encodes nil), and
        against a String, Integer or Float one, whose slots carry nil the same
        way (NULL, the nil flag of an sp_oint / sp_ofloat: ty_unify's nil joins). Any
-       other non-object param widens to poly. */
+       other non-object param widens to poly. (One-String mode: the handle a
+       String param holds is nil as NULL too.) */
     if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type) &&
-        p->type != TY_STRING && p->type != TY_INT && p->type != TY_FLOAT) at = TY_POLY;
+        p->type != TY_STRING && p->type != TY_INT && p->type != TY_FLOAT &&
+        !(g_one_string && p->type == TY_STRBUF)) at = TY_POLY;
     /* Two array parameters meet as the poly ARRAY, not the poly SCALAR: a
        param typed as one array kind at one call site and a different array
        kind at another is still a container, so its array methods (pop, <<)

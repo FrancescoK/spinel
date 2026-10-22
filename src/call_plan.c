@@ -2804,7 +2804,9 @@ int cplan_nil(Compiler *c, int id) {
      after it has converted the argument, and the argument's TypeError came
      first where CRuby raises NoMethodError, having run the arguments. (A
      mutator writes back into the slot the head would hold.) */
-  int conv = rt == TY_STRING && !an_str_mutator_name(nm) && cplan_nil_arg_converts(c, id);
+  /* (one-String mode: every String slot is the handle, TY_STRBUF) */
+  int conv = (rt == TY_STRING || (g_one_string && rt == TY_STRBUF)) && !an_str_mutator_name(nm) &&
+             cplan_nil_arg_converts(c, id);
   /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
   int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt, nm);
@@ -2827,7 +2829,7 @@ int cplan_nil(Compiler *c, int id) {
      (one-String mode: an ivar's is its slot's, held by the head as a
      local's is; every ivar String is the handle there, where the
      default mode tests one the plan leaves untested in its arms) */
-  else if (rr.kind == RK_STRBUF && !(g_one_string && ivar_tested)) return CN_NONE;
+  else if (rr.kind == RK_STRBUF && !(g_one_string && (ivar_tested || conv))) return CN_NONE;
   /* a nil the program writes (an element of an Array it stores one into
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
