@@ -311,6 +311,7 @@ typedef struct PolyPlan_s {
                            the receiver's type and the candidates' fields,
                            which change with the tables, not with the node */
   unsigned flags;       /* PPF_* */
+  int native_block;     /* a block plan contains a native Ruby user arm */
   int full;             /* every arm, not only the class arms (cplan_poly_arms) */
   int n;
   PolyArm *arm;
@@ -338,6 +339,8 @@ void cplan_poly_free(PolyPlan *p);
    each candidate class's method spliced with the block, and its default.
    Computed afresh: the same node may take this dispatch or the method
    dispatch. */
+/* The name index bounds a query for a native Ruby literal-block target. */
+int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n);
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method

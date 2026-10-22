@@ -3827,8 +3827,16 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
      falls through to the loud unsupported error, not a silent empty body. */
   {
     int np = 0; while (block_param_name(c, block, np)) np++;
-    if (np != 1 || block_rest_marker(c, block) || block_opt_name(c, block, 0) ||
-        block_post_name(c, block, 0)) return 0;
+    /* A native Ruby target also takes a plain block that binds no values. */
+    if (np == 0) {
+      int npc = 0;
+      const PolyCand *pc = comp_poly_candidates(c, name, &npc);
+      if (!cplan_native_block_possible(c, id, pc, npc)) return 0;
+      if (block_rest_marker(c, block) || block_opt_name(c, block, 0) ||
+          block_post_name(c, block, 0)) return 0;
+    }
+    else if (np != 1 || block_rest_marker(c, block) || block_opt_name(c, block, 0) ||
+             block_post_name(c, block, 0)) return 0;
   }
   /* candidate user classes: instantiated, define m, and m yields or forwards a
      block (a plain method wouldn't consume the block anyway) */
@@ -3888,14 +3896,17 @@ static int builtin_arm_raises_name(const char *text, const char *name) {
   return 0;
 }
 
-int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
+static int emit_poly_recv_block_dispatch_x(Compiler *c, int id, Buf *b, int indent, int result) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
   if (g_prbd_skip == id) return 0;
   int cand[64];
-  int nc = poly_block_dispatch_cands(c, id, cand, 64);
+  const PolyPlan *plan = cplan_poly_block(c, id);
+  int nc = 0;
+  for (int i = 0; i < plan->n; i++)
+    if (plan->arm[i].kind == PA_USER && nc < 64) cand[nc++] = plan->arm[i].key;
   if (nc == 0) return 0;
   int trecv = ++g_tmp;
   /* Build the whole switch into a scratch buffer first. `emit_inline_call`
@@ -3934,7 +3945,10 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     g_inline_recv_class = k;
     int v = view_push(c, recv, ty_object(k));  /* so the inline entry classifies the receiver */
     size_t before = sw.len;
-    int armed = emit_inline_call(c, id, &sw, indent + 1);
+    int rv = result >= 0 ? view_push(c, id, TY_POLY) : -1;
+    if (result >= 0) buf_printf(&sw, "_t%d = ", result);
+    int armed = emit_inline_call_x(c, id, &sw, indent + 1, result >= 0);
+    if (result >= 0) { buf_puts(&sw, ";\n"); view_pop(c, rv); }
     int empty = !armed || sw.len == before;
     g_inline_recv_expr = sv_expr;
     g_inline_recv_class = sv_class;
@@ -4130,31 +4144,31 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   return 1;
 }
 
+int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
+  return emit_poly_recv_block_dispatch_x(c, id, b, indent, -1);
+}
+
 /* The same dispatch where the call's value is used (`def f(io) =
    io.each_line { }`), for a name a native class defines in Ruby
    (StringIO#each_line): its arms come from no binding, so the value-position
    poly dispatch had none. Those iterators answer their receiver, so the
    switch runs as a statement over the evaluated receiver, which is the
-   value. */
+   value. User arms instead retain their planned method's actual answer,
+   including a program's reopened native method with a different result. */
 int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || repr_of(c, id).kind != RK_BOXED ||
       repr_of(c, recv).kind != RK_BOXED || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
-  if (!sp_streq(name, "each_line") && !sp_streq(name, "each_char") && !sp_streq(name, "each_byte"))
-    return 0;
-  int native = 0;
-  for (int k = 0; k < c->nclasses && !native; k++)
-    if (c->classes[k].is_native_class && c->classes[k].instantiated &&
-        comp_method_in_chain(c, k, name, NULL) >= 0) native = 1;
-  if (!native) return 0;
+  const PolyPlan *plan = cplan_poly_block(c, id);
+  if (!plan->native_block) return 0;
   int tr = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_boxed(c, recv, &rb);
   Buf sb; memset(&sb, 0, sizeof sb);
   int slot = view_bind(recv, "_t%d", tr);
-  int ok = emit_poly_recv_block_dispatch(c, id, &sb, 1);
+  int ok = emit_poly_recv_block_dispatch_x(c, id, &sb, 1, tr);
   view_unbind(g_n_argov - 1);
   if (ok && sb.p)
     buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n%s _t%d; })",

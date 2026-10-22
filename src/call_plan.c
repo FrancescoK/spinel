@@ -175,9 +175,8 @@ int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
          c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
 }
 /* The existing boxed dispatch candidates also serve literal-name send arms. */
-static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
-  int npc = 0;
-  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p,
+                               const PolyCand *pcs, int npc) {
   for (int i = 0; i < npc; i++) {
     if (c->classes[pcs[i].cls].is_native_class) continue;
     /* a reader candidate written as a method (`def x = @x`) is that method */
@@ -218,6 +217,14 @@ int cplan_accessor_classes(Compiler *c, int id, int *out, int cap) {
   if (n >= 2)
     for (int i = 0; i < n; i++)
       if (comp_cmethod_in_chain(c, out[i], name, NULL) >= 0) return n;
+  return 0;
+}
+
+/* The name index bounds the native block query before its class scan. */
+int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n) {
+  if (nt_kind(c->nt, nt_ref(c->nt, id, "block")) != NK_BlockNode) return 0;
+  for (int i = 0; i < n; i++)
+    if (pc[i].native && pc[i].mi >= 0 && c->classes[pc[i].cls].instantiated) return 1;
   return 0;
 }
 
@@ -367,7 +374,20 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       cplan_descendant_call(c, cid, name, 0, p);
     return;
   }
-  if (rt == TY_POLY) { cplan_resolve_poly(c, name, p); return; }
+  if (rt == TY_POLY) {
+    int npc = 0;
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi >= 0) {
+          cplan_set(p, bp->arm[i].mi, bp->arm[i].key, UC_POLY, CP_SWITCH);
+          return;
+        }
+    }
+    cplan_resolve_poly(c, name, p, pcs, npc);
+    return;
+  }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
   /* an IO handle's reopen: the File, IO or socket class that defines it */
@@ -475,6 +495,11 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->via == UC_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi == mi || scope_proc_form_of(c, bp->arm[i].mi) == mi) return 1;
+    }
     for (int i = 0; i < npc; i++)
       if (pcs[i].mi == mi || (pcs[i].mi < 0 && comp_method_in_chain(c, pcs[i].cls, name, NULL) == mi))
         return 1;
@@ -564,8 +589,12 @@ CallPlan cplan_send_arm(Compiler *c, int id) {
   CallPlan p = *cplan_user_fresh(c, id);
   int recv = nt_ref(c->nt, id, "receiver");
   if (p.mi < 0 && nt_int(c->nt, id, "dyn_arm", 0) &&
-      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode))
-    cplan_resolve_poly(c, nt_str(c->nt, id, "name"), &p);
+      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode)) {
+    int npc = 0;
+    const char *name = nt_str(c->nt, id, "name");
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    cplan_resolve_poly(c, name, &p, pcs, npc);
+  }
   return p;
 }
 
@@ -2462,14 +2491,16 @@ const PolyPlan *cplan_poly_fresh(Compiler *c, int id) {
 const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   static PolyPlan bp;
   free(bp.arm);
-  bp.arm = NULL; bp.n = 0; bp.flags = 0;
+  bp.arm = NULL; bp.n = 0; bp.flags = 0; bp.native_block = 0;
   bp.ntype = bp.ret = comp_ntype(c, id);
   int cap = 0;
   int cand[64];
   int nc = poly_block_dispatch_cands(c, id, cand, 64);
   const char *name = nt_str(c->nt, id, "name");
-  for (int i = 0; i < nc; i++)
+  for (int i = 0; i < nc; i++) {
     cpoly_add(&bp, &cap, PA_USER, cand[i], comp_method_in_chain(c, cand[i], name, NULL), TY_UNKNOWN, PC_VOID);
+    if (c->classes[cand[i]].is_native_class) bp.native_block = 1;
+  }
   if (nc == 0) return &bp;
   /* map!/collect! rewrites a builtin array in place, given a block body */
   int block = nt_ref(c->nt, id, "block");
