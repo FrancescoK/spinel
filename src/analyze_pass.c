@@ -15777,8 +15777,11 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
            there is genuinely untypable. */
         if (rt0 == TY_UNKNOWN && g_infer_optimistic) return changed | 2;
         int found = -1, ndef = 0;
-        for (int k = 0; k < c->nclasses; k++) {
-          int km = comp_method_in_chain(c, k, name, NULL);
+        /* (the classes whose chain answers the name, or every class while
+           the chain memo cannot be trusted) */
+        int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+        for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+          int km = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
           if (km < 0) continue;
           Scope *ks = &c->scopes[km];
           int forwards = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
