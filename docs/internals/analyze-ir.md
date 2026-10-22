@@ -13,43 +13,54 @@ binary**, sharing one in-memory state object:
 analyzer and code generator are the same process and share heap state;
 nothing is serialized between them.
 
-> **Historical note.** The retired Ruby self-host ran `spinel_analyze`
-> and `spinel_codegen` as *separate* binaries that communicated through a
-> text `.ir` file (`SPINEL-IR v1`, with `INT` / `STR` / `SA` / `IA` / `T`
-> / `NM` / `SN` / `ST` records). That file no longer exists. The C
-> rewrite folded both stages into one binary, so the `.ir` round-trip,
-> its percent-encoding, and the four-way bootstrap fixpoint it backed are
-> all gone. `src/compiler.h` keeps the lineage explicit: *"its field set
-> corresponds to the legacy .ir dump."*
+The contract is that analysis decides what each value is and what each
+call does, and codegen prints it. (Which runtime helpers and tables a
+program needs is the exception: codegen's scan passes recompute that just
+before emission, under "Program tables" below.) Analysis fills the tables
+below and, from them, the layers that answer codegen's questions: `repr_of` for how a value is laid out, the call plan and the
+builtin-op rows for what a call does, the class facts for which classes
+a value can hold. [architecture.md](architecture.md) lists every layer,
+its entry points, and how a change that bypasses one looks in a diff.
+The tables are what those layers are built from; an emitter that reads
+a table to decide for itself is the old way.
+
+> **Historical note.** The retired Ruby self-host ran analysis and
+> codegen as separate binaries joined by a text `.ir` file. The C rewrite
+> folded both into one binary; `src/compiler.h` notes that `Compiler`'s
+> field set corresponds to the legacy `.ir` dump.
 
 ## The shared object: `Compiler`
 
-`src/compiler.h` defines `Compiler` -- the modern equivalent of the old
-`.ir`. Everything analysis derives and codegen consumes is a field on it.
-The pieces that cross the analyze → codegen boundary:
+`src/compiler.h` defines `Compiler`. Everything analysis derives is a
+field on it, or in a layer built on it:
 
 ### Per-node arrays (indexed by AST node id)
 
 | Field            | Meaning                                                          |
 |------------------|------------------------------------------------------------------|
-| `ntype[id]`      | Inferred `TyKind` for the node. Read via `comp_ntype(c, id)`, the type cache codegen consults instead of re-inferring. |
+| `ntype[id]`      | Inferred `TyKind` for the node, read via `comp_ntype(c, id)` and written only through `comp_set_ntype`. |
 | `nscope[id]`     | Owning scope index (`comp_scope_of`).                            |
 | `node_cbody[id]` | Enclosing class/module-body class id, or -1.                     |
 
-`comp_ntype` is the contract codegen relies on most: `infer_type`
-(`src/analyze*.c`) fills `ntype[]` during analysis, and codegen reads it
-back as the static type of every expression. (`TY_STRBUF`, a codegen-only
-mutable-string storage refinement, is normalized to `TY_STRING` on read;
-codegen consults the raw scope-local type where the distinction matters.)
+`infer_type` (`src/analyze*.c`) fills `ntype[]` during analysis: the
+Ruby type each expression settled on. It is an input to the layers, not
+a decision codegen should make from. How the value is laid out is
+`repr_of`'s answer, and which emitter, builtin, method or arm a call
+takes is the call plan's and the builtin-op rows'. Codegen still reads
+`comp_ntype` in many places; those reads move to the layers as each
+emitter is converted, and a new one is a finding unless the type is
+itself the data, such as a class name in a diagnostic.
+(`comp_ntype` also normalizes `TY_STRBUF` to `TY_STRING`; that storage
+refinement goes away with the String work in #9258.)
 
 ### Scopes and locals
 
 `scopes[]` holds one `Scope` per `def` / class method / lambda / block
 body plus the top-level scope (`scopes[0]`). Each `Scope` carries its
 parameter list, inferred return type (`ret`), yield/block metadata, and a
-`LocalVar[]` of params + body locals with their inferred `type`. Codegen
-emits C function signatures, local declarations, and call dispatch
-straight from these.
+`LocalVar[]` of params + body locals with their inferred `type`. The
+representation of each local is `repr_of_slot`'s answer (`repr_of_ivar`,
+`repr_of_cvar` and `repr_of_ret` for ivars, cvars and return values).
 
 ### Program tables
 
@@ -69,39 +80,65 @@ scan passes (`scan_prologue_features`, `program_needs_class_machinery`,
 
 ## What analyze does
 
-`analyze_program(c)` registers the program's declarations, then runs type
-inference to a fixpoint and fills the per-node type cache. Conceptually:
+`analyze_program(c)` (`src/analyze.c`) runs a fixed sequence of phases,
+each named in an `AN_PHASE` line, so `--timing` reports them one by one:
 
-1. **Collect** -- walk the AST registering classes, modules, methods,
-   constants, ivars, globals, and FFI declarations into the tables above
-   (`walk_scope` and friends in `src/analyze_scope.c`).
-2. **Infer to fixpoint** -- iterate the inference passes
-   (`src/analyze_infer.c`, `src/analyze_pass.c`): return types, ivar
-   types from writers, parameter types narrowed from bodies, poly
-   locals/params, hash/array variant selection, bigint loop promotion,
-   etc. The loop repeats until the derived types stop changing.
-3. **Finalize** -- post-fixpoint refinements (value-type detection,
-   nullable re-narrowing, live-method marking) and then fill `ntype[]`
-   for every reachable node so codegen reads cached types.
+1. **Collect.** Desugaring and the class structure register classes,
+   modules, methods, constants, ivars, globals and FFI declarations into
+   the tables above, then blocks are inlined and the pre-fixpoint passes
+   run.
+2. **Class facts.** `an_cls_facts` decides once which classes each value
+   can hold, from the program's shape; the fixpoint's binding of a boxed
+   receiver's call reads it.
+3. **Infer to a fixpoint.** The inference passes (`src/analyze_infer*.c`,
+   `src/analyze_pass.c`) repeat until no type changes:
+   [fixpoint-convergence.md](fixpoint-convergence.md) covers the round
+   count and the cap.
+4. **Settle.** The post-fixpoint phases (procs, method backstops, late
+   widening, storage, value types) and reachability.
+5. **Seal.** `repr_seal` makes the representation flags final; after it
+   `repr_of` is a pure read. Analysis then types once each block body
+   that codegen emits per poly arm (`an_arm_facts`).
 
-Because the two phases share memory, codegen can also call `infer_type`
-directly for the few nodes whose type is context-dependent at emit time
-(block-body expressions whose iterator-derived param types are not
-pre-cached, `super` arms that need the current class). The cache covers
-the overwhelming majority; these are the deliberate exceptions.
+The call plan is resolved per call node on request (`cplan_user`), from
+the settled facts. It is memoized only while the node is read as itself:
+under a view, a moved scope, an `instance_exec` class or an inline
+splice, it is resolved fresh and not kept.
+
+A new pass is a new phase in that sequence, not a loop appended to
+another one.
+
+Codegen still calls back into inference in a few places (`infer_type`,
+`infer_call`, `an_builtin_answer`) where analysis has not handed over
+the type it needs. Each one is a fact a layer should carry; they are being retired,
+and a new one is the old way.
 
 ## Adding analysis state
 
-Add a field to the relevant struct in `src/compiler.h` (`Compiler`,
-`Scope`, `ClassInfo`, …), populate it in the analysis pass that derives
-it, and read it in codegen. There is no serializer to update, no encoding
-to round-trip, and no IR fixpoint to keep stable -- the value is just a
-struct field both phases see. Verify with `make check` (test) plus
-`make optcarrot` / `make bench` when the change touches type inference
-(see [the gates](../README.md)).
+First find the layer that owns the fact in
+[architecture.md](architecture.md). It is usually a row, the call plan,
+`Repr`, a value-position walker or a name predicate, not a new field
+codegen reads directly. When the fact does need new state:
+
+- put it on the struct it describes in `src/compiler.h` (`Compiler`,
+  `Scope`, `ClassInfo`, …) or in the pass's own context, not in a `g_*`
+  global;
+- write the tables `infer_type` reads only through their setters
+  (`comp_set_ntype`, `lv_set_type`, `ivar_set_type`, …), which
+  `make ty-setter-check` enforces;
+- derive it in a phase of `analyze_program`;
+- have the layer that owns the question answer from it, so codegen asks
+  the layer.
+
+A fact that holds for one emission only (one poly arm, one re-entry) is
+a view, not analysis state ([architecture.md](architecture.md), "Views").
+
+Verify with `make gate`; see [the README](../README.md).
 
 ## See also
 
+- [architecture.md](architecture.md) -- the layers codegen asks, their
+  entry points and their verifiers.
 - [docs/AST.md](AST.md) -- the `NodeTable` the analyzer and code generator
   both read, and its `--dump-ast` text form.
 - `src/compiler.h` -- the `Compiler` / `Scope` / `ClassInfo` structs and

@@ -1119,28 +1119,34 @@ static int cmc_slot_idx(Compiler *c, const char *name, int is_cm) {
     free(on); free(ocm); free(oa); free(orp); free(onr);
     cmc_epoch++;
   }
-  /* The last ask's slot: a pass asking every class about one name asks
+  /* The last asks' slots: a pass asking every class about one name asks
      it once per class (1,299 times on a Rails program), each a hash and
      a probe of the table, and the name is the same string each time. The
      slot's own name is compared too, so a string reused at the address
-     answers from the table. */
-  static const char *last_name; static int last_cm, last_j; static unsigned last_epoch;
-  if (last_name == name && last_cm == is_cm && last_epoch == cmc_epoch && cmc_name[last_j] && sp_streq(cmc_name[last_j], name))
-    return last_j;
+     answers from the table. Four of them: the passes that ask every
+     class ask two or three keys per class (the instance method, the
+     class method, a reader, a writer's name), and one entry missed every
+     time between them. */
+  enum { CMC_LAST = 4 };
+  static struct { const char *name; int cm, j; unsigned epoch; } last[CMC_LAST];
+  static int last_at;
+  for (int i = 0; i < CMC_LAST; i++)
+    if (last[i].name == name && last[i].cm == is_cm && last[i].epoch == cmc_epoch && cmc_name[last[i].j] && sp_streq(cmc_name[last[i].j], name))
+      return last[i].j;
   unsigned j = (sp_strhash(name) ^ (unsigned)is_cm) & (unsigned)(cmc_cap - 1);
   while (cmc_name[j]) {
-    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) {
-      last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
-      return (int)j;
-    }
+    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) break;
     j = (j + 1) & (unsigned)(cmc_cap - 1);
   }
-  int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
-  cmc_name[j] = strdup(name);
-  if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
-  cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_resp[j] = NULL; cmc_nresp[j] = -1; cmc_n++;
-  last_name = name; last_cm = is_cm; last_j = (int)j; last_epoch = cmc_epoch;
+  if (!cmc_name[j]) {
+    int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
+    cmc_name[j] = strdup(name);
+    if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
+    cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_resp[j] = NULL; cmc_nresp[j] = -1; cmc_n++;
+  }
+  last[last_at].name = name; last[last_at].cm = is_cm; last[last_at].j = (int)j; last[last_at].epoch = cmc_epoch;
+  last_at = (last_at + 1) % CMC_LAST;
   return (int)j;
 }
 /* The answers for (name, is_cm), two ints per class (-2 while unasked), or
@@ -2298,7 +2304,8 @@ int comp_native_method_find(Compiler *c, int class_id, const char *name, int arg
    answers it first. -1 for an arm of the program's methods. */
 int comp_native_binding_class(Compiler *c, int k, const char *name) {
   if (k < 0 || k >= c->nclasses) return -1;
-  if (c->classes[k].is_native_class) return k;
+  if (c->classes[k].is_native_class)
+    return comp_method_in_chain(c, k, name, NULL) >= 0 ? -1 : k;
   int r = comp_native_answer_class(c, k, name);
   return r >= 0 && comp_native_method_find(c, r, name, 0, 0) >= 0 ? r : -1;
 }
@@ -2319,14 +2326,10 @@ int comp_native_answer_class(Compiler *c, int cid, const char *name) {
 }
 
 /* Whether class `k` contributes a poly-dispatch arm for instance calls of
-   `name`. A native class contributes only through its declared BINDINGS
-   (#4504): a Ruby-side def on it (IO::Buffer#values, StringIO#each_line) is
-   reachable through a typed receiver alone and gets no arm in the cls_id
-   switch -- so a candidate counter that tallied those stood the builtin
-   arms down for every poly receiver, and merely loading IO::Buffer turned
-   `h.values` on a poly Hash into NoMethodError. Every "does any user class
-   define this name" loop that feeds the poly dispatch asks through here so
-   the analyzer, the emitters, and the switch count the same arms. */
+   `name`. Native bindings and Ruby-side definitions use the same owner
+   decision as arm emission: an explicit Ruby override must also receive
+   the native class's boxed objects. Every candidate counter asks here so
+   inference, builtin gates and emitted switches count the same arms. */
 int comp_poly_arm_defines(Compiler *c, int k, const char *name) {
   int nk = comp_native_binding_class(c, k, name);
   if (nk >= 0)
@@ -2424,6 +2427,21 @@ int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_c
     if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
   return 0;
 }
+/* Whether a strict subclass of class_id answers `name` with a method or a
+   reader of its own chain: a slot typed class_id may hold that subclass,
+   so a call there dispatches at run time (#4023). */
+int comp_subclass_answers(Compiler *c, int class_id, const char *name) {
+  if (class_id < 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == class_id) continue;
+    int anc = 0;
+    for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
+      if (p2 == class_id) { anc = 1; break; }
+    if (anc && (comp_method_in_chain(c, k, name, NULL) >= 0 ||
+                comp_reader_in_chain(c, k, name, NULL))) return 1;
+  }
+  return 0;
+}
 int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   /* `name` is the attribute's base, and an alias of it is the reader's:
      `alias to_s name` defines no `to_s=`, so it is not followed here */
@@ -2435,7 +2453,7 @@ int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_c
 /* Whether the program answers `name` at one level of the lookup, class or
    module k itself: a def of its own (not a copy an include made), a reader
    its own body declared, or an alias. */
-static int enum_level_answers(Compiler *c, int k, const char *name) {
+static int mixin_level_answers(Compiler *c, int k, const char *name) {
   ClassInfo *ci = &c->classes[k];
   int mi = comp_method_in_class(c, k, name);
   if (mi >= 0 && (!c->scopes[mi].is_include_copy || c->scopes[mi].is_prepend_copy)) return 1;
@@ -2450,63 +2468,90 @@ static int enum_level_answers(Compiler *c, int k, const char *name) {
    `own_enum` is whether the Enumerable k brings, its own include or that of
    a module it includes, counts: it does not where a superclass has it among
    its ancestors already (the include is then a no-op). */
+/* The same positions and walker also answer Comparable membership and equality
+   precedence; neither query reconstructs includes from the node table. */
 /* Whether Enumerable is among the ancestors class or module k brings: it
    includes (or prepends) it, or includes a module that does. */
-static int enum_reaches(Compiler *c, int k, int depth) {
+static int mixin_reaches(Compiler *c, int k, int comparable, int depth) {
   ClassInfo *ci = &c->classes[k];
-  if (ci->enum_inc_at || ci->enum_prepended) return 1;
-  for (int j = 0; j < ci->nincluded_mods && depth < 16; j++) {
+  if (comparable ? (ci->cmp_inc_at || ci->cmp_prepended) :
+                   (ci->enum_inc_at || ci->enum_prepended)) return 1;
+  for (int j = 0; j < ci->nincluded_mods && depth < (comparable ? c->nclasses : 16); j++) {
     int m = ci->included_mods[j];
-    if (m >= 0 && m < c->nclasses && m != k && enum_reaches(c, m, depth + 1)) return 1;
+    if (m >= 0 && m < c->nclasses && m != k && mixin_reaches(c, m, comparable, depth + 1)) return 1;
   }
   return 0;
 }
-static int enum_level_walk(Compiler *c, int k, const char *name, int own_enum, int depth) {
+static int mixin_level_walk(Compiler *c, int k, const char *name, int own_enum, int comparable, int depth) {
   ClassInfo *ci = &c->classes[k];
-  if (ci->enum_prepended) return 2;   /* in front of the class's own */
-  if (enum_level_answers(c, k, name)) return 1;
-  int at = own_enum && ci->enum_inc_at ? ci->enum_inc_at - 1 : -1;
+  /* A prepended module's method precedes its includes. Its transplanted
+     scope records the module whose own lookup supplies that order. */
+  if (comparable && ci->cmp_prepended == 2) {
+    int mi = comp_method_in_class(c, k, name);
+    if (mi >= 0 && c->scopes[mi].is_prepend_copy && depth < c->nclasses) {
+      int m = c->scopes[mi].origin_module_ci - 1;
+      if (m >= 0 && m != k) {
+        int r = mixin_level_walk(c, m, name, own_enum, comparable, depth + 1);
+        if (r) return r;
+      }
+    }
+    return 2;
+  }
+  if (comparable ? ci->cmp_prepended == 1 : ci->enum_prepended) return 2;   /* in front of the class's own */
+  if (mixin_level_answers(c, k, name)) return 1;
+  int pos = comparable ? ci->cmp_inc_at : ci->enum_inc_at;
+  int at = own_enum && pos ? pos - 1 : -1;
   for (int j = ci->nincluded_mods - 1; ; j--) {
     if (at >= 0 && j == at - 1) return 2;
     if (j < 0) return 0;
     int m = ci->included_mods[j];
-    if (m < 0 || m >= c->nclasses || m == k || depth >= 16) continue;
-    int r = enum_level_walk(c, m, name, own_enum, depth + 1);
+    if (m < 0 || m >= c->nclasses || m == k || depth >= (comparable ? c->nclasses : 16)) continue;
+    int r = mixin_level_walk(c, m, name, own_enum, comparable, depth + 1);
     if (r) return r;
   }
 }
-int comp_enum_answers_first(Compiler *c, int cid, const char *name) {
+static int mixin_answers_first(Compiler *c, int cid, const char *name, int comparable) {
   /* what master answers: the program's method or reader anywhere in the chain */
   int master = comp_method_in_chain(c, cid, name, NULL) < 0 && !comp_reader_in_chain(c, cid, name, NULL);
   if (cid < 0 || cid >= c->nclasses || !name) return master;
   /* a name Enumerable does not have (each, join, index ...): the program's alone */
-  if (core_method_vis("Enumerable", name, 0) <= 0) return master;
+  if (core_method_vis(comparable ? "Comparable" : "Enumerable", name, 0) <= 0) return master;
   /* the topmost class that has Enumerable among its ancestors, by an include
      of its own or of a module: below it the include is a no-op. A Struct, an Array or a native class has Enumerable of its
      own, at a place the includes do not show: master's answer there. */
   int top = -1, n = 0;
   for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
     ClassInfo *ci = &c->classes[k];
-    if (ci->is_struct || ci->is_native_class || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0) {
+    if (!comparable && (ci->is_struct || ci->is_native_class || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0)) {
       /* only a prepended Enumerable is placed: in front of the class it is
          prepended to, behind the ones below it */
       for (int j = cid, g = 0; g < 256; j = c->classes[j].parent, g++) {
         if (c->classes[j].enum_prepended) return 1;
-        if (enum_level_answers(c, j, name)) return 0;
+        if (mixin_level_answers(c, j, name)) return 0;
         if (j == k || c->classes[j].parent < 0) break;
       }
       return master;
     }
-    if (enum_reaches(c, k, 0)) top = k;
+    if (mixin_reaches(c, k, comparable, 0)) top = k;
     if (k == ci->parent) break;
   }
   n = 0;
   for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
-    int r = enum_level_walk(c, k, name, k == top, 0);
+    int r = mixin_level_walk(c, k, name, k == top, comparable, 0);
     if (r) return r == 2;
     if (k == c->classes[k].parent) break;
   }
   return master;
+}
+
+int comp_enum_answers_first(Compiler *c, int cid, const char *name) {
+  return mixin_answers_first(c, cid, name, 0);
+}
+int comp_comparable_answers_first(Compiler *c, int cid, const char *name) {
+  return mixin_answers_first(c, cid, name, 1);
+}
+int comp_comparable_reaches(Compiler *c, int cid) {
+  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1, 0);
 }
 
 /* ---- Poly-dispatch candidates by method name ----

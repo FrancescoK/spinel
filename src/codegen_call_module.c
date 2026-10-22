@@ -172,6 +172,20 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_size_q("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "pipe?") && argc == 1) {
+      /* an IO value is tested by its descriptor, as CRuby's rb_stat does once
+         #to_io has given it one (an object with #to_io is not converted here) */
+      TyKind pt = comp_ntype(c, argv[0]);
+      if (pt == TY_IO) {
+        buf_puts(b, "sp_file_pipe_io("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+      }
+      if (pt == TY_POLY || yield_site_type(c, argv[0]) == TY_POLY) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                      " ? sp_file_pipe_io((sp_File *)_t%d.v.p) : sp_file_pipe(sp_poly_arg_path(_t%d)); })",
+                   tv, tv, tv, tv, tv);
+        return 1;
+      }
       buf_puts(b, "sp_file_pipe("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "identical?") && argc == 2) {
@@ -535,7 +549,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *frn = fp ? rename_local(fp) : NULL;
       int bbody = nt_ref(nt, block, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      TyKind res = repr_of(c, id).as_ty;
+      Repr rr = repr_of(c, id);
+      TyKind res = rr.as_ty;
       int rv = ++g_tmp, tf = ++g_tmp;
       int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
       buf_puts(b, "({ ");
@@ -563,12 +578,12 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         snprintf(result, sizeof result, "_t%d", rv);
         if (scalar) {
           emit_ctype(c, res, b); buf_printf(b, " %s = ", result);
-          buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res));
+          buf_puts(b, rr.kind == RK_BOXED ? "sp_box_nil()" : default_value_from_compiler(c, res));
           buf_puts(b, "; ");
           emit_gc_root_tmp_refs(c, res, rv, b);
         }
         g_ie_next_var = g_loop_break_var = scalar ? result : NULL;
-        g_ie_res_poly = res == TY_POLY; g_ie_next_ty = res; g_ie_next_oint = 0;
+        g_ie_res_poly = rr.kind == RK_BOXED; g_ie_next_ty = res; g_ie_next_oint = 0;
         g_brk_ser_var = NULL;
         g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
         g_loop_ensure_base = g_ensure_depth;
@@ -577,7 +592,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
       if (bn > 0) {
-        TyKind lty = repr_of(c, bb[bn-1]).as_ty;
+        Repr ltyr = repr_of(c, bb[bn-1]);
+        TyKind lty = ltyr.as_ty;
         /* Emit last stmt as expression when it has a usable non-void value.
            For void/nil/unknown side-effecting calls (e.g. f.print), emit_stmt
            handles g_pre correctly; then synthesize a return value. */
@@ -594,7 +610,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           Buf fval; memset(&fval, 0, sizeof fval);
           Buf *sv_fp = g_pre; int sv_fi = g_indent;
           g_pre = &fpre; g_indent = 0;
-          if (res == TY_POLY && lty != TY_POLY) emit_boxed(c, bb[bn-1], &fval);
+          if (rr.kind == RK_BOXED && ltyr.kind != RK_BOXED) emit_boxed(c, bb[bn-1], &fval);
           else emit_expr(c, bb[bn-1], &fval);
           g_pre = sv_fp; g_indent = sv_fi;
           if (fpre.p) buf_puts(b, fpre.p);
@@ -608,7 +624,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_stmt(c, bb[bn-1], b, 0);
           if (scalar && !wrap) {
             emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
-            if (res == TY_POLY) buf_puts(b, "sp_box_nil()");
+            if (rr.kind == RK_BOXED) buf_puts(b, "sp_box_nil()");
             else buf_puts(b, default_value_from_compiler(c, res));
             buf_puts(b, "; ");
           }
@@ -627,7 +643,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          block (`File.open(p, "a") { |f| }`) in a poly-returning method emitted
          an int where an sp_RbVal was expected (#3385). */
       if (scalar && bn > 0) buf_printf(b, "_t%d; })", rv);
-      else if (scalar && res == TY_POLY) buf_puts(b, "sp_box_nil(); })");
+      else if (scalar && rr.kind == RK_BOXED) buf_puts(b, "sp_box_nil(); })");
       else if (scalar) { buf_puts(b, default_value_from_compiler(c, res)); buf_puts(b, "; })"); }
       else buf_puts(b, "0; })");
       return 1;
@@ -663,7 +679,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *dpn = dp0 ? rename_local(dp0) : NULL;
       int dbody = nt_ref(nt, dblk, "body");
       int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
-      TyKind dres = repr_of(c, id).as_ty;
+      Repr dresr = repr_of(c, id);
+      TyKind dres = dresr.as_ty;
       int dscalar = is_scalar_ret(dres) && dres != TY_VOID && dres != TY_NIL && dres != TY_UNKNOWN;
       int td = ++g_tmp, tdv = ++g_tmp;
       buf_puts(b, "({ ");
@@ -673,7 +690,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
       if (dbn > 0 && dscalar) {
         emit_ctype(c, dres, b); buf_printf(b, " _t%d = ", tdv);
-        if (dres == TY_POLY && repr_of(c, dbb[dbn - 1]).kind != RK_BOXED) emit_boxed(c, dbb[dbn - 1], b);
+        if (dresr.kind == RK_BOXED && repr_of(c, dbb[dbn - 1]).kind != RK_BOXED) emit_boxed(c, dbb[dbn - 1], b);
         else emit_expr(c, dbb[dbn - 1], b);
         buf_puts(b, "; ");
       }
@@ -740,6 +757,30 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+    /* Blockless foreach and each_child retain their arguments for a lazy
+       generator run; each_child's leaves out "." and "..". */
+    int children = sp_streq(name, "each_child");
+    if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0) {
+      /* a splat's length is only known when it runs: refused, not guessed */
+      if (nt_argv_has_splat(nt, argv, argc)) {
+        unsupported_feature(c, id, children ? "Dir.each_child with a splatted argument and no block"
+                                             : "Dir.foreach with a splatted argument and no block");
+        buf_puts(b, "NULL");
+        return 1;
+      }
+      int ev = -1;
+      if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
+        int en = 0; (void)nt_arr(nt, argv[1], "elements", &en);
+        if (en == 1) ev = kwh_lookup(nt, argv[1], "encoding");
+      }
+      if (argc == 1 || (argc == 2 && ev >= 0)) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_dir_foreach_enum(_t%d, ", tp, tp);
+        if (ev >= 0) emit_boxed(c, ev, b); else buf_puts(b, "sp_box_nil()");
+        buf_printf(b, ", sp_poly_arg_path, %d); })", children); return 1;
+      }
     }
     if ((is_directory_entries(name)) && argc == 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
@@ -813,7 +854,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       return 1;
     }
     if (sp_streq(name, "at") && argc == 1) {
-      TyKind at = comp_ntype(c, argv[0]);
+      Repr ar = repr_of(c, argv[0]);
+      TyKind at = ar.as_ty;
       if (at == TY_TIME) { emit_expr(c, argv[0], b); return 1; }  /* value copy */
       if (at == TY_RATIONAL) {
         int tr = ++g_tmp;
@@ -835,7 +877,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          numeric) reaches sp_time_at_int's sp_int slot: coerce it. A boxed
          float is understood by sp_poly_to_f, so route poly through the float
          ctor (which also accepts an integral value). */
-      if (at == TY_POLY) {
+      if (ar.kind == RK_BOXED) {
         buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_expr(c, argv[0], b);
         buf_puts(b, "))");
         return 1;
@@ -868,7 +910,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         struct_kwarg_value(c, argv[argc - 1], "in") >= 0) {
       int inv = struct_kwarg_value(c, argv[argc - 1], "in");
       int ts = ++g_tmp;
-      TyKind st = comp_ntype(c, argv[0]);
+      Repr sr = repr_of(c, argv[0]);
+      TyKind st = sr.as_ty;
       buf_printf(b, "({ sp_Time _t%d = ", ts);
       if (st == TY_TIME) emit_expr(c, argv[0], b);
       else if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -877,7 +920,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "({ sp_Rational _t%d = ", trq); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_time_at_div(_t%d.num, _t%d.den); })", trq, trq);
       }
-      else if (st == TY_POLY || st == TY_UNKNOWN) {
+      else if (sr.kind == RK_BOXED || st == TY_UNKNOWN) {
         buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
       }
       else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -929,11 +972,12 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "at") && argc == 2 &&
         !(nt_type(nt, argv[1]) && (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
                                    sp_streq(nt_type(nt, argv[1]), "HashNode")))) {
-      TyKind st = repr_of(c, argv[0]).as_ty;
+      Repr st_repr = repr_of(c, argv[0]);
+      TyKind st = st_repr.as_ty;
       int ts = ++g_tmp;
       buf_printf(b, "({ sp_Time _t%d = ", ts);
       if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (st == TY_POLY || st == TY_UNKNOWN) { buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
+      else if (st_repr.kind == RK_BOXED || st == TY_UNKNOWN) { buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
       else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, "; _t%d = sp_time_add_nsec(_t%d, (int64_t)(", ts, ts);
       TyKind ut = repr_of(c, argv[1]).as_ty;
@@ -973,7 +1017,7 @@ int emit_marshal_value_call(Compiler *c, int id, Buf *b) {
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
   TyKind rt = comp_ntype(c, recv);
   if ((rt != TY_POLY && rt != TY_CLASS) || nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
-  if (repr_of(c, id).as_ty != TY_POLY || recv_user_defines(c, name)) return 0;
+  if (repr_of(c, id).kind != RK_BOXED || recv_user_defines(c, name)) return 0;
   int tr = ++g_tmp, ta = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", tr);
   emit_boxed(c, recv, b);
@@ -987,6 +1031,60 @@ int emit_marshal_value_call(Compiler *c, int id, Buf *b) {
   if (dump) buf_printf(b, "sp_box_str(sp_marshal_dump(_t%d)); })", ta);
   else buf_printf(b, "const char *_s%d = sp_poly_arg_str_chk(_t%d); "
                      "sp_marshal_load(_s%d, (sp_int)sp_str_byte_len(_s%d)); })", ta, ta, ta, ta);
+  return 1;
+}
+
+/* IO.select(read, write, error, timeout), and Kernel#select, which is the
+   same call. Arrays of boxed values and literal nils go straight to
+   sp_io_select; any other array argument (an untyped empty [] is an Integer
+   array) goes through its box, each argument rooted while the rest are
+   evaluated and converted (an Array, else CRuby's "wrong argument type";
+   select takes no #to_ary).
+   A nil array watches nothing; a literal nil timeout waits. */
+static int io_select_arg_direct(Compiler *c, int node) {
+  return nt_kind(c->nt, node) == NK_NilNode || repr_of(c, node).as_ty == TY_POLY_ARRAY;
+}
+int emit_io_select(Compiler *c, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int direct = 1;
+  for (int k = 0; k < 3 && k < argc; k++)
+    if (!io_select_arg_direct(c, argv[k])) direct = 0;
+  if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode && comp_ntype(c, argv[3]) == TY_NIL) direct = 0;
+  if (direct) {
+    buf_puts(b, "sp_io_select(");
+    for (int k = 0; k < 3; k++) {
+      if (k) buf_puts(b, ", ");
+      if (k >= argc || nt_kind(nt, argv[k]) == NK_NilNode) buf_puts(b, "NULL");
+      else emit_expr(c, argv[k], b);
+    }
+    buf_puts(b, ", ");
+    if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode) emit_float_expr(c, argv[3], b);
+    else buf_puts(b, "-1.0");
+    buf_puts(b, ")");
+    return 1;
+  }
+  int vals[3], arrays[3];
+  buf_puts(b, "({ ");
+  for (int k = 0; k < 3; k++) {
+    vals[k] = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = ", vals[k]);
+    if (k < argc) emit_boxed(c, argv[k], b); else buf_puts(b, "sp_box_nil()");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", vals[k]);
+  }
+  int timeout = ++g_tmp;
+  buf_printf(b, "double _t%d = ", timeout);
+  if (argc >= 4 && comp_ntype(c, argv[3]) != TY_NIL) emit_float_expr(c, argv[3], b);
+  else if (argc >= 4) { buf_puts(b, "((void)("); emit_expr(c, argv[3], b); buf_puts(b, "), -1.0)"); }
+  else buf_puts(b, "-1.0");
+  buf_puts(b, "; ");
+  for (int k = 0; k < 3; k++) {
+    arrays[k] = ++g_tmp;
+    buf_printf(b, "sp_PolyArray *_t%d = _t%d.tag == SP_TAG_NIL ? NULL : "
+                  "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) ? sp_poly_to_poly_array(_t%d) : "
+                  "(sp_bm_arg_mismatch(_t%d, \"Array\"), (sp_PolyArray *)NULL); SP_GC_ROOT(_t%d); ",
+               arrays[k], vals[k], vals[k], vals[k], vals[k], vals[k], arrays[k]);
+  }
+  buf_printf(b, "sp_io_select(_t%d, _t%d, _t%d, _t%d); })", arrays[0], arrays[1], arrays[2], timeout);
   return 1;
 }
 
@@ -1672,21 +1770,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
       /* IO.select(read, write, error, timeout): a nil array watches nothing */
-      if (sp_streq(name, "select") && argc >= 1 && argc <= 4) {
-        buf_puts(b, "sp_io_select(");
-        for (int k = 0; k < 3; k++) {
-          if (k) buf_puts(b, ", ");
-          if (k >= argc || (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "NilNode")))
-            buf_puts(b, "NULL");
-          else emit_expr(c, argv[k], b);
-        }
-        buf_puts(b, ", ");
-        if (argc >= 4 && !(nt_type(nt, argv[3]) && sp_streq(nt_type(nt, argv[3]), "NilNode")))
-          emit_float_expr(c, argv[3], b);
-        else buf_puts(b, "-1.0");
-        buf_puts(b, ")");
-        return 1;
-      }
+      if (sp_streq(name, "select") && argc >= 1 && argc <= 4) return emit_io_select(c, argc, argv, b);
       if (sp_streq(name, "copy_stream") && argc == 2) {
         /* IO.copy_stream(src, dst): read the whole source, write it to the dest,
            returning the byte count. sp_io_copy_stream takes two path strings, so
@@ -2172,8 +2256,9 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                              repr_of(c, argv[0]).kind == RK_BOXED)) {
         Buf rv; memset(&rv, 0, sizeof rv);
         buf_puts(&rv, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, argv[0], &rv); buf_puts(&rv, ", 0)");
-        TyKind rk = repr_of(c, id).as_ty;
-        if (rk == TY_POLY || rk == TY_UNKNOWN) buf_puts(b, rv.p);
+        Repr rkr = repr_of(c, id);
+        TyKind rk = rkr.as_ty;
+        if (rkr.kind == RK_BOXED || rk == TY_UNKNOWN) buf_puts(b, rv.p);
         else emit_unbox_text(c, rk, rv.p, b);
         free(rv.p);
       }

@@ -10,6 +10,7 @@
    "declined". */
 #include "analyze_internal.h"
 #include "builtin_ops.h"
+#include "call_plan.h"
 #include "share.h"
 #include <stdio.h>
 #include <string.h>
@@ -1273,17 +1274,14 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        so the call dispatches at run time and its value is that union (#4023).
        The emitter routes the same shape through the poly dispatch. */
     if (comp_method_in_chain(c, cid, name, NULL) < 0 &&
-        !comp_reader_in_chain(c, cid, name, NULL) && !cls->is_native_class) {
-      int sub_answers = 0;
-      for (int k = 0; k < c->nclasses && !sub_answers; k++) {
-        if (k == cid) continue;
-        int anc = 0;
-        for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
-          if (p2 == cid) { anc = 1; break; }
-        if (anc && (comp_method_in_chain(c, k, name, NULL) >= 0 ||
-                    comp_reader_in_chain(c, k, name, NULL))) sub_answers = 1;
+        !comp_reader_in_chain(c, cid, name, NULL) && !cls->is_native_class &&
+        comp_subclass_answers(c, cid, name)) {
+      /* Runtime-name send arms on boxed self may include classes the descendant plan excludes. */
+      if (g_plan_check && !nt_int(nt, id, "dyn_arm", 0)) {
+        const CallPlan *p = cplan_user_fresh(c, id);
+        if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
       }
-      if (sub_answers) { *out = TY_POLY; return 1; }
+      *out = TY_POLY; return 1;
     }
     /* a class's own respond_to? -- or is_a?, instance_of?, == and the rest
        below -- is the call's answer, which the emitter dispatches to: typed
@@ -1914,7 +1912,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      type, which was the point. */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "empty?") && argc == 0 &&
       nt_ref(nt, id, "block") < 0)
-    { *out = an_user_ret_disagrees(c, name, TY_BOOL) ? TY_POLY : TY_BOOL; return 1; }
+    { *out = an_user_ret_disagrees(c, name, TY_BOOL) || cls_fact_may_ostruct(c, recv) ? TY_POLY : TY_BOOL; return 1; }
   /* poly.merge(other) { |k, old, new| } -- a Hash reached through a container.
      The conflict-block form builds the same general boxed-key/value hash the
      blockless one does; without a type it stayed unresolved. */
@@ -1966,7 +1964,9 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* exception accessors on a poly receiver (an exception rescued into a
      union-typed local) delegate at runtime; message and its renderings are
      Strings, the rest carry boxed values (#3120, #3122). */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+  int kw_only = sp_streq(name, "detailed_message") && argc == 1 &&
+                nt_kind(nt, argv[0]) == NK_KeywordHashNode;
+  if (recv >= 0 && rt == TY_POLY && (argc == 0 || kw_only) && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") || sp_streq(name, "error_code") ||
@@ -2081,6 +2081,13 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       !an_user_recv_defines_method(c, name) && sp_feature_required("ostruct") &&
       name[0] && name[strlen(name) - 1] != '?' && name[strlen(name) - 1] != '!' &&
       !poly_builtin_zero_arg_name(name))
+    { *out = TY_POLY; return 1; }
+  /* ... and so are size, length, count and empty?, which an OpenStruct does
+     not define, where one can reach the receiver (cls_fact_may_ostruct): the
+     member, or nil, joins what the classes' methods and the containers
+     answer. Elsewhere they keep the Integer the others give. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      ostruct_member_name(name) && cls_fact_may_ostruct(c, recv))
     { *out = TY_POLY; return 1; }
 
   /* #clear on a poly value returns the (emptied) receiver, itself poly. */

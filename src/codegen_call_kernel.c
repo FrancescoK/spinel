@@ -70,6 +70,12 @@ static int emit_kconv_obj_nil(Compiler *c, int arg, int ci, const char *m1, cons
 }
 
 int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  /* Kernel's private select is IO.select, after user methods (Kernel.select
+     reaches here bare: desugar_kernel_recv drops the receiver). */
+  if (recv < 0 && sp_streq(name, "select") && argc >= 1 && argc <= 4 &&
+      !bare_call_class_owned(c, id))
+    return emit_io_select(c, argc, argv, b);
+
   /* __dir__ -> the source file's directory (compile-time literal, mirroring
      the legacy generator). */
   if (recv < 0 && sp_streq(name, "__dir__") && argc == 0) {
@@ -359,15 +365,16 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          held it). */
       /* Under --int-overflow=promote the call answers a box (a Float past
          sp_int is a Bignum), and the guard boxes its answer the same way. */
-      TyKind rt9 = repr_of(c, id).as_ty;
-      if ((at == TY_INT || at == TY_FLOAT) && (rt9 == TY_INT || rt9 == TY_POLY) &&
+      Repr result = repr_of(c, id);
+      TyKind rt9 = result.as_ty;
+      if ((at == TY_INT || at == TY_FLOAT) && (rt9 == TY_INT || result.kind == RK_BOXED) &&
           call_returns_nullable_int(c, av[0])) {
         char ref[24];
         buf_puts(b, "({ "); emit_sentinel_bind(c, at, av[0], ref, sizeof ref, b);
         buf_puts(b, "if (!"); emit_slot_truthy(at, ref, b);
         buf_puts(b, ") sp_raise_cls(\"TypeError\", \"can't convert nil into Integer\"); ");
-        if (at == TY_INT) buf_printf(b, rt9 == TY_POLY ? "sp_box_int(%s.v); })" : "%s.v; })", ref);
-        else buf_printf(b, rt9 == TY_POLY ? "sp_poly_flo_domain_ck(%s.v); sp_box_f_to_int(%s.v); })"
+        if (at == TY_INT) buf_printf(b, result.kind == RK_BOXED ? "sp_box_int(%s.v); })" : "%s.v; })", ref);
+        else buf_printf(b, result.kind == RK_BOXED ? "sp_poly_flo_domain_ck(%s.v); sp_box_f_to_int(%s.v); })"
                                           : "sp_poly_flo_domain_ck(%s.v); sp_float_fit_i(%s.v); })", ref, ref);
       }
       else if (at == TY_STRING && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
@@ -601,7 +608,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "Hash") && ac == 1) {
       /* Kernel#Hash: nil or [] -> {}, a Hash is returned as-is, anything else is
          a TypeError (unlike Array, no per-element wrapping). */
-      TyKind at = comp_ntype(c, av[0]);
+      Repr ar = repr_of(c, av[0]);
+      TyKind at = ar.as_ty;
       int empty_arr_lit = 0;
       if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ArrayNode")) {
         int _en = 0; nt_arr(nt, av[0], "elements", &_en);
@@ -632,7 +640,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
         buf_puts(b, "), sp_PolyPolyHash_new())");
       }
-      else if (at == TY_POLY) { buf_puts(b, "sp_kernel_hash("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (ar.kind == RK_BOXED) { buf_puts(b, "sp_kernel_hash("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "((void)sp_kernel_hash("); emit_boxed(c, av[0], b); buf_puts(b, "), sp_PolyPolyHash_new())"); }
       return 1;
     }
@@ -800,14 +808,15 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Kernel")))) {
     /* a bare sleep, and sleep(nil), sleep until Thread#wakeup */
     if (argc == 0) { buf_puts(b, "(sp_sleep_forever(), (sp_int)0)"); return 1; }
-    TyKind st = comp_ntype(c, argv[0]);
+    Repr sr = repr_of(c, argv[0]);
+    TyKind st = sr.as_ty;
     if (st == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_sleep_forever(), (sp_int)0)");
       return 1;
     }
     buf_puts(b, "((void)sp_sleep(");
     if (st == TY_INT) { buf_puts(b, "(double)"); emit_expr(c, argv[0], b); }
-    else if (st == TY_POLY) {   /* a boxed nil sleeps until #wakeup, as a literal nil does */
+    else if (sr.kind == RK_BOXED) {   /* a boxed nil sleeps until #wakeup, as a literal nil does */
       int tn = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_expr(c, argv[0], b);
       buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_sleep_forever(), 0.0) : sp_poly_time_interval(_t%d); })", tn, tn);
@@ -1005,14 +1014,16 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int left = nt_ref(c->nt, rid, "left");
       int right = nt_ref(c->nt, rid, "right");
       int excl = nt_range_excl(c->nt, rid);
-      TyKind lty = left >= 0 ? repr_of(c, left).as_ty : TY_UNKNOWN;
-      TyKind rty = right >= 0 ? repr_of(c, right).as_ty : TY_UNKNOWN;
+      Repr ltyr = repr_of(c, left >= 0 ? left : -1);
+      TyKind lty = left >= 0 ? ltyr.as_ty : TY_UNKNOWN;
+      Repr rtyr = repr_of(c, right >= 0 ? right : -1);
+      TyKind rty = right >= 0 ? rtyr.as_ty : TY_UNKNOWN;
       /* A boxed endpoint (a value out of a poly slot; under
          --int-overflow=promote every Integer local and method answer)
          is read through the checked unbox, which raises CRuby's TypeError
          for a non-Integer, where the gate refused the program (#4766). */
       if (left >= 0 && right >= 0 &&
-          (lty == TY_INT || lty == TY_POLY) && (rty == TY_INT || rty == TY_POLY)) {
+          (lty == TY_INT || ltyr.kind == RK_BOXED) && (rty == TY_INT || rtyr.kind == RK_BOXED)) {
         /* Evaluate left and right into temps in source order so a
            side-effecting endpoint (e.g. caller(foo()..bar())) runs each
            call exactly once, left before right. */

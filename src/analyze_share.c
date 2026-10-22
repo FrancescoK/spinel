@@ -3200,6 +3200,7 @@ static int sh_iter_drops_block(Compiler *c, int n, TyKind rt) {
 }
 
 static int sh_builtin_fresh(Compiler *c, int call, int ostruct);
+static int sh_reader_beside_override(Compiler *c, int n, int recv, TyKind rt, const char *name);
 /* Under --share-strings, is call n an attribute assignment (`obj.x = v`,
    call_is_setter_assign) of one plain value? Its value is the right-hand
    side whatever the writer returns, and the object the writer was handed,
@@ -3670,7 +3671,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* ... and so may it be of a class whose attr reader of the name answers
        (an attr_accessor beside another class's def reader): the dispatch's
        reader arm answers the String its field holds (#9814) */
-    else if (argc == 0 && (rt == TY_POLY || rt == TY_UNKNOWN)) {
+    /* ... or of a class whose own chain has the reader a descendant's
+       method overrides (the plan's switch, #9926), self's included: the
+       reader arm answers its field's String for that class */
+    else if (argc == 0 && (rt == TY_POLY || rt == TY_UNKNOWN || sh_reader_beside_override(c, n, recv, rt, name))) {
       int writer = 0, iv = sh_attr_ivars(F, c, name, n, &writer);
       if (iv >= 0 && !writer) r = sh_join(F, r, iv);
     }
@@ -5678,6 +5682,18 @@ int share_method_reaching_blocks(const Compiler *c, int mi, int *out, int cap) {
     }
   }
   return n;
+}
+/* Does call n's receiver class (self's for a receiverless call in an
+   instance method) answer name with an attr reader of its chain, which a
+   descendant's method overrides? */
+static int sh_reader_beside_override(Compiler *c, int n, int recv, TyKind rt, const char *name) {
+  int cid = -1;
+  if (recv < 0) {
+    Scope *s = comp_scope_of(c, n);
+    if (s && !s->is_cmethod) cid = s->class_id;
+  }
+  else if (ty_is_object(rt)) cid = ty_object_class(rt);
+  return cid >= 0 && comp_reader_in_chain(c, cid, name, NULL);
 }
 /* Native classes can appear in comp_poly_candidates as placeholders even
    when they have no binding. Skip only those empty native rows; preserve

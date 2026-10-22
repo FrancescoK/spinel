@@ -30,6 +30,9 @@
 #include <fnmatch.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(__linux__)
+#include <sys/sysmacros.h> /* major/minor for File::Stat's device components */
+#endif
 #include <sys/resource.h>   /* getpriority for Process.getpriority */
 #include <fcntl.h>      /* AT_FDCWD for statx */
 #include <errno.h>
@@ -2571,6 +2574,16 @@ sp_bool sp_file_pipe(const char *path) {
   struct stat st;
   return stat(path ? path : "", &st) == 0 && S_ISFIFO(st.st_mode);
 }
+/* An IO operand is tested by its descriptor even if its path has gone. */
+static int sp_stat_handle_p(sp_File *f);
+sp_bool sp_file_pipe_io(sp_File *io) {SP_GC_ROOT(io);
+  if (!io) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  if (sp_stat_handle_p(io))
+    sp_raise_cls("TypeError", "no implicit conversion of File::Stat into String");
+  SP_IO_OPEN(io);
+  struct stat st;
+  return fstat(fileno(io->fp), &st) == 0 && S_ISFIFO(st.st_mode);
+}
 sp_bool sp_file_identical(const char *a, const char *b) {
   struct stat sa, sb;
   if (stat(a ? a : "", &sa) != 0 || stat(b ? b : "", &sb) != 0) return 0;
@@ -2935,7 +2948,8 @@ sp_File *sp_io_stat_handle(sp_File *f) {SP_GC_ROOT(f);
 }
 /* One stat(2) field by index, so File::Stat's numeric accessors need one
    runtime entry rather than a dozen. 0=uid 1=gid 2=nlink 3=dev 4=ino
-   5=blksize 6=blocks 7=rdev. nil when the stat itself fails. */
+   5=blksize 6=blocks 7=rdev 8=dev_major 9=dev_minor. nil when the stat
+   itself fails, or for 8 and 9 where the platform has no major/minor. */
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok);
 sp_oint sp_stat_field(sp_File *f, sp_int which) {SP_GC_ROOT(f); int ok = 1; sp_int n = sp_stat_field_n(f, which, &ok); return ok ? sp_oint_of(n) : sp_oint_nil(); }
 static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
@@ -2955,6 +2969,18 @@ static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
     case 4: return (sp_int)st.st_ino;
     case 5: return (sp_int)st.st_blksize;
     case 6: return (sp_int)st.st_blocks;
+    case 8:
+#if defined(major)
+      return (sp_int)(unsigned int)major(st.st_dev);
+#else
+      *ok = 0; return 0;
+#endif
+    case 9:
+#if defined(minor)
+      return (sp_int)(unsigned int)minor(st.st_dev);
+#else
+      *ok = 0; return 0;
+#endif
     default: return (sp_int)st.st_rdev;
   }
 }
@@ -3013,9 +3039,29 @@ sp_int sp_stat_type_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
     default: return S_ISSOCK(st.st_mode) ? 1 : 0;
   }
 }
+/* Real/effective primary groups and supplementary groups, as CRuby tests them. */
+static sp_bool sp_stat_group_member(gid_t gid) {
+  if (gid == getgid() || gid == getegid()) return 1;
+  int n = getgroups(0, NULL);
+  if (n <= 0) return 0;
+  gid_t *groups = (gid_t *)malloc((size_t)n * sizeof(gid_t));
+  if (!groups) return 0;
+  n = getgroups(n, groups);
+  sp_bool found = 0;
+  for (int i = 0; i < n; i++) if (groups[i] == gid) { found = 1; break; }
+  free(groups);
+  return found;
+}
+static sp_bool sp_stat_executable_real(const struct stat *st) {
+  uid_t uid = getuid();
+  if (uid == 0) return (st->st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+  if (uid == st->st_uid) return (st->st_mode & S_IXUSR) != 0;
+  if (sp_stat_group_member(st->st_gid)) return (st->st_mode & S_IXGRP) != 0;
+  return (st->st_mode & S_IXOTH) != 0;
+}
 /* The mode-derived predicates of File::Stat that no path helper covers. Kinds:
    0=pipe? 1=zero? 2=readable? 3=writable? 4=executable? 5=blockdev?
-   6=chardev? 7=size? (non-zero size, else nil). */
+   6=chardev? 8=executable_real? (7, size?, is sp_stat_size_q). */
 sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
   struct stat st;
   int r;
@@ -3033,6 +3079,7 @@ sp_int sp_stat_pred(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
     case 4: return (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) ? 1 : 0;
     case 5: return S_ISBLK(st.st_mode) ? 1 : 0;
     case 6: return S_ISCHR(st.st_mode) ? 1 : 0;
+    case 8: return sp_stat_executable_real(&st);
     default: return 0;
   }
 }
@@ -3649,6 +3696,67 @@ sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVa
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = SPL("each");
   return e;
+}
+/* Blockless Dir.foreach and Dir.each_child: each run reads its own entries,
+   so #to_a and #rewind do not borrow another run's cursor. Path coercion,
+   opening and reading are deferred until the first pull. each_child's run
+   leaves out "." and "..". */
+typedef struct {
+  sp_RbVal path, encoding;
+  const char *(*get_path)(sp_RbVal);
+  int children;
+} sp_DirForeachCap;
+static void sp_dir_foreach_scan(void *p) {
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)p;
+  sp_mark_rbval(cap->path); sp_mark_rbval(cap->encoding);
+}
+static void sp_dir_foreach_gen(sp_Fiber *f) {
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)f->user_data;
+  SP_GC_ROOT(cap);
+  const char *path = cap->get_path(cap->path);
+  SP_GC_ROOT_STR(path);
+  if (!path) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  int binary = 0;
+  if (cap->encoding.tag != SP_TAG_NIL) {
+    sp_RbVal enc = sp_encoding_find(cap->encoding);
+    binary = enc.tag == SP_TAG_ENCODING && enc.v.s && strcmp(enc.v.s, "ASCII-8BIT") == 0;
+  }
+  /* The entries are read and the directory closed on the first pull, so a
+     run the consumer stops early (first, take, a break) holds no descriptor. */
+  sp_Dir *dir = sp_Dir_new(path);
+  SP_GC_ROOT(dir);
+  sp_PolyArray *names = sp_PolyArray_new();
+  SP_GC_ROOT(names);
+  const char *name = NULL;
+  SP_GC_ROOT_STR(name);
+  while ((name = sp_Dir_read(dir)) != NULL) {
+    if (cap->children && (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)) continue;
+    if (binary) sp_str_as_binary(name);
+    sp_PolyArray_push(names, sp_box_str(name));
+  }
+  sp_Dir_close(dir);
+  for (sp_int i = 0; i < names->len; i++) sp_Fiber_yield(names->data[i]);
+  f->yielded_value = sp_box_nil();
+}
+const char *sp_poly_inspect(sp_RbVal v);   /* lib/sp_poly_cold.c */
+const char *sp_poly_to_s(sp_RbVal v);      /* lib/sp_poly_cold.c */
+sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
+                                  const char *(*get_path)(sp_RbVal), int children) {
+  SP_GC_ROOT_RBVAL(path); SP_GC_ROOT_RBVAL(encoding);
+  sp_DirForeachCap *cap = (sp_DirForeachCap *)sp_gc_alloc(sizeof *cap, NULL, sp_dir_foreach_scan);
+  SP_GC_ROOT(cap);
+  cap->path = path; cap->encoding = encoding; cap->get_path = get_path; cap->children = children;
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_dir_foreach_gen, cap, sp_box_nil()); SP_GC_ROOT(e);
+  /* inspects as CRuby's: Dir:foreach("path") or Dir:foreach("path", encoding: NAME),
+     Dir:each_child(...) likewise */
+  const char *lbl = sp_str_concat(children ? SPL("each_child(") : SPL("foreach("), sp_poly_inspect(path)); SP_GC_ROOT_STR(lbl);
+  /* the prefix goes into the rooted slot before to_s may allocate */
+  if (encoding.tag != SP_TAG_NIL) {
+    lbl = sp_str_concat(lbl, SPL(", encoding: "));
+    lbl = sp_str_concat(lbl, sp_poly_to_s(encoding));
+  }
+  lbl = sp_str_concat(lbl, SPL(")"));
+  return sp_enum_with_src(e, sp_box_class_name(SPL("Dir")), lbl);
 }
 /* Blockless Kernel#loop: an infinite Enumerator that yields nil forever (#3236).
    The generator is internal; only sp_loop_enum is exposed (spinel_rt.h). */

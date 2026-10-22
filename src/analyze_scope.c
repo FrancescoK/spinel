@@ -1748,10 +1748,168 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   walk_scope_in(c, id, scope_idx, class_id, -1, 0);
 }
 
+static void mf_mark(Compiler *c, int mi) {
+  c->scopes[mi].is_cmethod = 1;
+  c->scopes[mi].is_module_function = 1;
+}
+
+/* Length of the base name of a conditional def's arm (`m#__cond2` -> 1),
+   or -1 when `nm` is not an arm. desugar_conditional_defs names them. */
+static int mf_arm_base_len(const char *nm) {
+  const char *p = nm ? strstr(nm, "#__cond") : NULL;
+  return p ? (int)(p - nm) : -1;
+}
+
+/* Is `s` a bare `name` call (no receiver, no arguments)? */
+static int mf_bare_call(const NodeTable *nt, int s, const char *name) {
+  if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, s, "name");
+  return nm && sp_streq(nm, name) && nt_ref(nt, s, "arguments") < 0;
+}
+
+/* Is def `d` an arm of `base` (its first `len` bytes)? */
+static int mf_arm_of(const NodeTable *nt, int d, const char *base, int len) {
+  if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, d, "name");
+  return mf_arm_base_len(nm) == len && !strncmp(nm, base, (size_t)len);
+}
+
+/* The branch after `node` in an if/elsif/else or unless/else chain. */
+static int mf_next_branch(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_IfNode) return nt_ref(nt, node, "subsequent");
+  if (k == NK_UnlessNode) return nt_ref(nt, node, "else_clause");
+  return -1;
+}
+
+/* Does code at `node` call `__callee__`? An arm's would answer its
+   `m#__condN`, so such arms stay refused. */
+static int mf_uses_callee(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  const char *nm = nt_kind(nt, node) == NK_CallNode ? nt_str(nt, node, "name") : NULL;
+  if (nm && sp_streq(nm, "__callee__")) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (mf_uses_callee(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) if (mf_uses_callee(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* Does every branch of the chain at `node`, else included, define an arm
+   of `base`, none using __callee__? Then one of them always runs. */
+static int mf_chain_covers(const NodeTable *nt, int node, const char *base, int len) {
+  for (; node >= 0; node = mf_next_branch(nt, node)) {
+    int st = nt_ref(nt, node, "statements"), n = 0, hit = 0;
+    const int *b = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+    for (int i = 0; i < n; i++) {
+      if (!mf_arm_of(nt, b[i], base, len)) continue;
+      if (mf_uses_callee(nt, b[i])) return 0;
+      hit = 1;
+    }
+    if (!hit) return 0;
+    if (nt_kind(nt, node) == NK_ElseNode) return 1;
+  }
+  return 0;
+}
+
+/* The module ModuleNode `dn` opens, or -1. */
+static int mf_module_of(Compiler *c, int dn) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].def_node == dn) return k;
+  /* a ModuleNode names its module through constant_path, not a "name" */
+  int cp = nt_ref(nt, dn, "constant_path");
+  const char *mnm = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, dn, "name");
+  return mnm ? comp_class_index(c, mnm) : -1;
+}
+
+/* Does module body code at `node` (not the defs, classes and modules in
+   it) do what the arms' marking does not follow: change a visibility,
+   alias, undef or define a method (an accessor, or a def of `base`, its
+   first `len` bytes, nested in other code), reach or list one by name, or
+   call `base` at all? */
+static int mf_body_blocks(const NodeTable *nt, int node, const char *base, int len) {
+  static const char *const names[] = { "public", "private", "protected", "private_class_method",
+    "public_class_method", "alias_method", "remove_method", "undef_method", "define_method",
+    "send", "__send__", "public_send", "instance_eval", "class_eval", "module_eval",
+    "method", "instance_method", "respond_to?", "methods", "singleton_methods",
+    "public_methods", "instance_methods", "public_instance_methods", "method_defined?",
+    "public_method_defined?", "private_method_defined?", "attr", "attr_reader", "attr_writer",
+    "attr_accessor", NULL };
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode) {
+    const char *dn = nt_ref(nt, node, "receiver") < 0 ? nt_str(nt, node, "name") : NULL;
+    return dn && (int)strlen(dn) == len && !strncmp(dn, base, (size_t)len);
+  }
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_AliasMethodNode || k == NK_UndefNode) return 1;
+  const char *nm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  if (nm && (int)strlen(nm) == len && !strncmp(nm, base, (size_t)len)) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (mf_body_blocks(nt, nt_ref_at(nt, node, i), base, len)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) if (mf_body_blocks(nt, ids[j], base, len)) return 1;
+  }
+  return 0;
+}
+
+/* mf_body_blocks over the statements of every body of module `ci`,
+   reopenings included. A def that is itself a body statement is the
+   method as written (the dispatcher among them), not one to block on. */
+static int mf_module_blocks(Compiler *c, int ci, const char *base, int len) {
+  const NodeTable *nt = c->nt;
+  for (int dn = 0; dn < nt->count; dn++) {
+    if (nt_kind(nt, dn) != NK_ModuleNode || mf_module_of(c, dn) != ci) continue;
+    int body = nt_ref(nt, dn, "body"), n = 0;
+    const int *b = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, b[i]) != NK_DefNode && mf_body_blocks(nt, b[i], base, len)) return 1;
+  }
+  return 0;
+}
+
+/* A def chosen under a run-time condition is lowered to a dispatcher `m`
+   and arms `m#__cond1`, `m#__cond2`, ... that stay inside the `if`. When
+   body statement `node` is an if/else chain module_function covers and
+   every branch defines `m`, mark its arms (`only`: just those of that
+   name) so `M.m` reaches them, unless the module's body code could change
+   the answer (mf_body_blocks). Other shapes stay refused, as before. */
+static void mf_mark_cond_arms(Compiler *c, int ci, int node, const char *only) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_IfNode && k != NK_UnlessNode) return;
+  int st = nt_ref(nt, node, "statements"), n = 0;
+  const int *b = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+  for (int i = 0; i < n; i++) {
+    const char *nm = nt_kind(nt, b[i]) == NK_DefNode ? nt_str(nt, b[i], "name") : NULL;
+    int len = mf_arm_base_len(nm);
+    if (len < 0 || !mf_arm_of(nt, b[i], nm, len)) continue;
+    if (only && ((int)strlen(only) != len || strncmp(nm, only, (size_t)len))) continue;
+    if (!mf_chain_covers(nt, node, nm, len) || mf_module_blocks(c, ci, nm, len)) continue;
+    for (int br = node; br >= 0; br = mf_next_branch(nt, br)) {
+      int bs = nt_ref(nt, br, "statements"), bn = 0;
+      const int *bb = bs >= 0 ? nt_arr(nt, bs, "body", &bn) : NULL;
+      for (int j = 0; j < bn; j++) {
+        if (!mf_arm_of(nt, bb[j], nm, len)) continue;
+        for (int mi = 0; mi < c->nscopes; mi++)
+          if (c->scopes[mi].def_node == bb[j] && c->scopes[mi].class_id == ci) mf_mark(c, mi);
+      }
+    }
+  }
+}
+
 /* A `module_function` call of module `ci`'s body: bare, it turns on the mode
    for the defs that follow; `module_function :m1, :m2` (or a def) marks the
-   named methods. 1 when `s` is one. */
-static int mf_call_apply(Compiler *c, int ci, int s, int *in_mf) {
+   named methods, with the arms of theirs in `prev`, the `nprev` body
+   statements before the call. 1 when `s` is one. */
+static int mf_call_apply(Compiler *c, int ci, int s, int *in_mf, const int *prev, int nprev) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, s, "name");
@@ -1769,11 +1927,10 @@ static int mf_call_apply(Compiler *c, int ci, int s, int *in_mf) {
     if (!aval) continue;
     for (int mi = 0; mi < c->nscopes; mi++) {
       if (c->scopes[mi].class_id == ci && !c->scopes[mi].is_cmethod &&
-          c->scopes[mi].name && sp_streq(c->scopes[mi].name, aval)) {
-        c->scopes[mi].is_cmethod = 1;
-        c->scopes[mi].is_module_function = 1;
-      }
+          c->scopes[mi].name && sp_streq(c->scopes[mi].name, aval))
+        mf_mark(c, mi);
     }
+    for (int pi = 0; pi < nprev; pi++) mf_mark_cond_arms(c, ci, prev[pi], aval);
   }
   return 1;
 }
@@ -1792,14 +1949,14 @@ static void mf_apply_nested(Compiler *c, int ci, int node, int *in_mf) {
   for (int i = 0; i < nr; i++) {
     int ch = nt_ref_at(nt, node, i);
     if (ch < 0) continue;
-    mf_call_apply(c, ci, ch, in_mf);
+    mf_call_apply(c, ci, ch, in_mf, NULL, 0);
     mf_apply_nested(c, ci, ch, in_mf);
   }
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
     for (int j = 0; j < m; j++) {
-      mf_call_apply(c, ci, ids[j], in_mf);
+      mf_call_apply(c, ci, ids[j], in_mf, NULL, 0);
       mf_apply_nested(c, ci, ids[j], in_mf);
     }
   }
@@ -1817,20 +1974,13 @@ void register_module_functions(Compiler *c) {
      `M.helper(x)` then had no callee and refused to compile (#3969). */
   for (int dn = 0; dn < nt->count; dn++) {
     if (nt_kind(nt, dn) != NK_ModuleNode) continue;
-    int ci = -1;
-    for (int k = 0; k < c->nclasses && ci < 0; k++) if (c->classes[k].def_node == dn) ci = k;
-    if (ci < 0) {
-      /* a ModuleNode names its module through constant_path, not a "name" */
-      int cp = nt_ref(nt, dn, "constant_path");
-      const char *mnm = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, dn, "name");
-      ci = mnm ? comp_class_index(c, mnm) : -1;
-    }
+    int ci = mf_module_of(c, dn);
     if (ci < 0) continue;
     int body = nt_ref(nt, dn, "body");
     if (body < 0) continue;
     int bn = 0;
     const int *stmts = nt_arr(nt, body, "body", &bn);
-    int in_module_function = 0;
+    int in_module_function = 0, arms_mf = 0;
     /* `extend self` is the other spelling of module_function, and unlike it
        the placement carries no meaning: it makes EVERY method of the module
        callable on the module itself, wherever in the body it sits. So scan
@@ -1853,16 +2003,19 @@ void register_module_functions(Compiler *c) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
-      if (mf_call_apply(c, ci, s, &in_module_function)) continue;
+      /* arms take only a bare module_function of this body, earlier; the
+         in_module_function flag keeps its own rules for plain defs */
+      if (mf_bare_call(nt, s, "module_function")) arms_mf = 1;
+      if (mf_call_apply(c, ci, s, &in_module_function, stmts, k)) continue;
       /* `x = module_function def m`, `p(module_function :m)` */
       mf_apply_nested(c, ci, s, &in_module_function);
+      if (arms_mf) mf_mark_cond_arms(c, ci, s, NULL);
       if (sp_streq(sty, "DefNode") && in_module_function) {
         const char *mname = nt_str(nt, s, "name");
         if (!mname) continue;
         for (int mi = 0; mi < c->nscopes; mi++) {
           if (c->scopes[mi].def_node == s) {
-            c->scopes[mi].is_cmethod = 1;
-            c->scopes[mi].is_module_function = 1;
+            mf_mark(c, mi);
             break;
           }
         }
@@ -6892,22 +7045,26 @@ else {
 
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
+  int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
+  NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
+  if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
+      is_comparable_builtin_name(nt_str(nt, sc, "name")))
+    c->classes[ci].cmp_inc_at = 1;
   int n = 0;
   const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    if (!sty || !sp_streq(sty, "CallNode")) continue;
+    if (nt_kind(nt, s) != NK_CallNode) continue;
     const char *nm = nt_str(nt, s, "name");
-    if (!nm || !sp_streq(nm, "include")) continue;
+    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm))) continue;
     if (nt_ref(nt, s, "receiver") >= 0) continue;
     int anode = nt_ref(nt, s, "arguments");
     int an = 0;
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     /* `include A, B` includes B first, so A ends up in front (as extend) */
     for (int j = an - 1; j >= 0; j--) {
-      const char *aty = nt_type(nt, args[j]);
-      const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
+      NodeKind ak = nt_kind(nt, args[j]);
+      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       /* `M = ::M` beside the include: a constant that merely ALIASES the
          module names it just as well, and the collision qualifier rewrites
@@ -6921,9 +7078,18 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         const char *al = resolve_class_alias(c, mname);
         if (al) mod_id = comp_class_index(c, al);
       }
+      if (is_prepend_name(nm)) {
+        if (is_comparable_module_name(mname)) c->classes[ci].cmp_prepended = 1;
+        else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
+          c->classes[ci].cmp_prepended = 2;
+        if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
+        continue;
+      }
+      if (is_comparable_module_name(mname) && !c->classes[ci].cmp_inc_at)
+        c->classes[ci].cmp_inc_at = c->classes[ci].nincluded_mods + 1;
       /* where Enumerable sits among the includes (a later include goes in
          front): after the program's modules included so far */
-      if (mname && !c->classes[ci].enum_inc_at && sp_streq(mname, "Enumerable"))
+      if (!c->classes[ci].enum_inc_at && is_enumerable_module_name(mname))
         c->classes[ci].enum_inc_at = c->classes[ci].nincluded_mods + 1;
       if (mod_id < 0) {
         /* A module with no class of its own -- a builtin named through its
@@ -6932,7 +7098,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
            what `rescue IO::WaitReadable` compares against, since the module
            match is by name. Silently dropping these left the include with no
            effect at all (#1054, read_nonblock). */
-        if (aty && sp_streq(aty, "ConstantPathNode") && mname) {
+        if (ak == NK_ConstantPathNode && mname) {
           char segs[8][64]; int nseg = 0;
           int qpar = nt_ref(nt, args[j], "parent");
           while (qpar >= 0 && nseg < 8) {
@@ -6983,29 +7149,35 @@ void process_include_body(Compiler *c, int ci, int body_node) {
    (including reopenings) and transplant M's instance methods into the
    class so they are reachable via comp_method_in_chain. */
 /* The class indices a body's `include` statements name (the ones that resolve
-   to a class of the program), for the ordering below. */
-static int body_included_mods(Compiler *c, int body_node, int *out, int cap) {
+   to a class of the program), for the ordering below. Prepends also wait
+   for their modules so Comparable membership sees every reopening.
+   Read readiness directly: a bounded list missed later include arguments. */
+static int body_mixin_dependencies_ready(Compiler *c, int ci, int body_node, const int *remaining) {
   const NodeTable *nt = c->nt;
-  int n = 0, cnt = 0;
+  int n = 0;
   const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
-  for (int k = 0; k < n && cnt < cap; k++) {
+  for (int k = 0; k < n; k++) {
     int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    if (!sty || !sp_streq(sty, "CallNode")) continue;
+    if (nt_kind(nt, s) != NK_CallNode) continue;
     const char *nm = nt_str(nt, s, "name");
-    if (!nm || !sp_streq(nm, "include") || nt_ref(nt, s, "receiver") >= 0) continue;
+    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm)) ||
+        nt_ref(nt, s, "receiver") >= 0) continue;
     int anode = nt_ref(nt, s, "arguments");
     int an = 0;
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    for (int j = 0; j < an && cnt < cap; j++) {
-      const char *aty = nt_type(nt, args[j]);
-      const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode")))
+    for (int j = 0; j < an; j++) {
+      NodeKind ak = nt_kind(nt, args[j]);
+      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode)
                           ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
-      if (mod_id >= 0) out[cnt++] = mod_id;
+      if (mod_id < 0 && mname) {
+        const char *al = resolve_class_alias(c, mname);
+        if (al) mod_id = comp_class_index(c, al);
+      }
+      if (mod_id >= 0 && mod_id != ci && remaining[mod_id] > 0) return 0;
     }
   }
-  return cnt;
+  return 1;
 }
 
 void register_includes(Compiler *c) {
@@ -7033,10 +7205,7 @@ void register_includes(Compiler *c) {
       /* this class's earlier bodies first (the definition before a reopening) */
       for (int b2 = 0; b2 < b && ready; b2++)
         if (!done[b2] && bci[b2] == bci[b]) ready = 0;
-      int mods[64];
-      int nm = ready ? body_included_mods(c, bnode[b], mods, 64) : 0;
-      for (int m = 0; m < nm && ready; m++)
-        if (mods[m] != bci[b] && remaining[mods[m]] > 0) ready = 0;
+      if (ready) ready = body_mixin_dependencies_ready(c, bci[b], bnode[b], remaining);
       if (!ready) continue;
       process_include_body(c, bci[b], bnode[b]);
       done[b] = 1; remaining[bci[b]]--; left--; progress = 1;
@@ -8464,11 +8633,9 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      for (int j = 0; j < an; j++) {
+      /* prepend A, B has A first in the ancestor chain: install B first. */
+      for (int j = an - 1; j >= 0; j--) {
         int mod_id = mixin_arg_class(c, args[j]);
-        NodeKind pk = nt_kind(nt, args[j]);
-        if ((pk == NK_ConstantReadNode || pk == NK_ConstantPathNode) && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))
-          c->classes[ci].enum_prepended = 1;
         if (mod_id < 0) continue;
         /* its readers answer in front of the class's own, as its methods do */
         for (int r = 0; r < c->classes[mod_id].nreaders; r++) {

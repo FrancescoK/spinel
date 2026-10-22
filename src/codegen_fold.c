@@ -56,7 +56,7 @@ static int bv_next_boxed_walk(Compiler *c, int n, int depth) {
   if (k == NK_NextNode) {
     int args = nt_ref(nt, n, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an == 1 && (repr_of(c, av[0]).kind == RK_BOXED || repr_of(c, av[0]).as_ty == TY_POLY)) return 1;
+    if (an == 1 && repr_of(c, av[0]).kind == RK_BOXED) return 1;
   }
   int nr = nt_num_refs(nt, n);
   for (int i = 0; i < nr; i++) if (bv_next_boxed_walk(c, nt_ref_at(nt, n, i), depth + 1)) return 1;
@@ -3271,7 +3271,7 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   }
   int is_float = (rt == TY_FLOAT) || comp_ntype(c, sv[0]) == TY_FLOAT ||
                  (sc >= 2 && comp_ntype(c, sv[1]) == TY_FLOAT);
-  if (rt == TY_INT && !is_float && comp_ntype(c, sv[0]) == TY_POLY) return emit_step_boxed_limit(c, recv, sv, sc, b);
+  if (rt == TY_INT && !is_float && repr_of(c, sv[0]).kind == RK_BOXED) return emit_step_boxed_limit(c, recv, sv, sc, b);
   int tr = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
   if (!is_float) {
     buf_printf(b, "({ sp_int _t%d = ", tl);
@@ -3389,7 +3389,8 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       /* the fold accumulates boxed; unbox to the call's inferred scalar type
          so `c = [].reduce(5, :+)` lands in an sp_int slot (#2365) */
       {
-        TyKind want = repr_of(c, id).as_ty;
+        Repr wr = repr_of(c, id);
+        TyKind want = wr.as_ty;
         char accs[24]; snprintf(accs, sizeof accs, "_t%d", tacc);
         /* no initial value and an empty receiver: nil, as the oint's nil */
         if (init_node < 0 && want == TY_INT) {
@@ -3398,7 +3399,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
         else if (init_node < 0 && want == TY_FLOAT) {
           oint_open(c, id, TY_FLOAT, b); buf_printf(b, "sp_poly_as_float_or_nil(%s)", accs); oint_close(c, id, b);
         }
-        else if (want != TY_POLY && want != TY_UNKNOWN && is_scalar_ret(want))
+        else if (wr.kind != RK_BOXED && want != TY_UNKNOWN && is_scalar_ret(want))
           emit_unbox_text(c, want, accs, b);
         else
           buf_puts(b, accs);
@@ -3600,7 +3601,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (ren == 0) {
       int rargs = nt_ref(nt, id, "arguments");
       int rac = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &rac) : NULL;
-      TyKind selfty = repr_of(c, id).as_ty;
+      Repr selftyr = repr_of(c, id);
+      TyKind selfty = selftyr.as_ty;
       int has_init = rac >= 1 && rav &&
                      !(nt_type(nt, rav[0]) && sp_streq(nt_type(nt, rav[0]), "SymbolNode"));
       if (has_init) {
@@ -3621,7 +3623,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
           buf_puts(b, "sp_PolyArray_new()");
         else if (seed_empty && ty_is_array(selfty) && array_kind(selfty))
           buf_printf(b, "sp_%sArray_new()", array_kind(selfty));
-        else if (selfty == TY_POLY) emit_boxed(c, rav[0], b);
+        else if (selftyr.kind == RK_BOXED) emit_boxed(c, rav[0], b);
         else emit_expr(c, rav[0], b);
       }
       else if (oint_kind(selfty)) { oint_open(c, id, selfty, b); buf_puts(b, oint_nil(selfty)); oint_close(c, id, b); }
@@ -3699,14 +3701,15 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      array accumulator never numeric-promotes (the pre-shadow body may have
      typed `a << x` as an int shift). */
   if (!ty_is_array(acc_ty) && !ty_is_hash(acc_ty)) {
-    TyKind bt = comp_ntype(c, bb[bn - 1]);
+    Repr br = repr_of(c, bb[bn - 1]);
+    TyKind bt = br.as_ty;
     if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt);
     /* Folding a POLY element array: the block's value is boxed, and the
        seed's slot cannot take it back -- a numeric seed would truncate
        (#2982), an object or value-type seed cannot hold an sp_RbVal at all
        (#2886, served by sp_user_binop_hook). Keep the accumulator boxed. */
     else if (acc_ty != TY_POLY && init >= 0 && et == TY_POLY &&
-             (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
+             (br.kind == RK_BOXED || ty_is_object(bt) || bt == TY_RATIONAL ||
               bt == TY_COMPLEX || bt == TY_BIGINT))
       acc_ty = TY_POLY;
     /* Even over a concretely-typed (int/float) element array, a block whose
@@ -3715,7 +3718,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
        fold back into a scalar numeric accumulator slot -- keep the
        accumulator boxed (#3220, #3308). */
     else if (acc_ty != TY_POLY && init >= 0 && ty_is_numeric(acc_ty) &&
-             (bt == TY_RATIONAL || bt == TY_COMPLEX || bt == TY_POLY ||
+             (bt == TY_RATIONAL || bt == TY_COMPLEX || br.kind == RK_BOXED ||
               bt == TY_BIGINT))
       acc_ty = TY_POLY;
     /* With no seed the accumulator starts at the first element and kept that
@@ -3725,7 +3728,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
        (#3831). Codegen runs after inference settles, so an unknown body type
        here means genuinely unresolved, not not-yet-inferred. */
     else if (acc_ty != TY_POLY && init < 0 && ty_is_numeric(acc_ty) &&
-             (bt == TY_POLY || bt == TY_UNKNOWN))
+             (br.kind == RK_BOXED || bt == TY_UNKNOWN))
       acc_ty = TY_POLY;
   }
   /* A hash/array/object seed whose block body evaluates to a boxed poly value
@@ -7649,7 +7652,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
        the method */
     if (pt == TY_POLY && idx == 0 && m->pnames[0] && sp_streq(m->pnames[0], "__self") && m->name &&
         (!strncmp(m->name, "__int_", 6) || !strncmp(m->name, "__flt_", 6) || !strncmp(m->name, "__cmp_", 6)) &&
-        (comp_ntype(c, provided) == TY_POLY || node_may_be_nil(c, provided))) {
+        (repr_of(c, provided).kind == RK_BOXED || node_may_be_nil(c, provided))) {
       const char *rn = m->name + 6;
       size_t rl = strlen(rn);
       while (rl > 0 && rn[rl - 1] >= '0' && rn[rl - 1] <= '9') rl--;
@@ -9224,8 +9227,9 @@ int head_held_temp(Compiler *c, int node) {
   if (node < 0 || !repr_of(c, node).head_held) return -1;
   /* the head roots a boxed temp and a heap pointer (needs_root), not the
      Strings a by-value kind carries: such a temp holds nothing for an arm */
-  TyKind t = comp_ntype(c, node);
-  if (t != TY_POLY && !needs_root(t) && ty_gc_holds_refs(c, t)) return -1;
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (tr.kind != RK_BOXED && !needs_root(t) && ty_gc_holds_refs(c, t)) return -1;
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
     int h, n = 0;
@@ -9245,8 +9249,9 @@ int head_held_read(Compiler *c, int node, const char *text) {
 
 /* See codegen_internal.h. */
 int ran_first_read(Compiler *c, int node, const char *text) {
-  TyKind t = repr_of(c, node).as_ty;
-  if (!text || !(needs_root(t) || t == TY_POLY)) return -1;
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (!text || !(needs_root(t) || tr.kind == RK_BOXED)) return -1;
   return ran_first_temp(node, 0, text, NULL);
 }
 
@@ -11779,8 +11784,7 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
   for (int j = 0; kwh < 0 && j < m->nparams && j < 16 && j < L->n; j++)
     if (L->from[j] == ARG_NODE && L->arg[j] >= 0 && L->arg[j] < pos_argc &&
         param_strict(c, mi, j, NULL, NULL) &&
-        (node_has_oint_form(c, argv[L->arg[j]]) || repr_of(c, argv[L->arg[j]]).kind == RK_BOXED ||
-         comp_ntype(c, argv[L->arg[j]]) == TY_POLY)) sj[sn++] = j;
+        (node_has_oint_form(c, argv[L->arg[j]]) || repr_of(c, argv[L->arg[j]]).kind == RK_BOXED)) sj[sn++] = j;
   if (sn == 0) return;
   /* the checks in the callee's order */
   for (int a = 1; a < sn; a++)
@@ -11796,9 +11800,10 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     for (int i = 0; i < pos_argc; i++) {
       int v = argv[i], strict = -1;
       for (int q = 0; q < sn; q++) if (L->arg[sj[q]] == i) strict = sj[q];
-      TyKind vt = comp_ntype(c, v);
+      Repr r = repr_of(c, v);
+      TyKind vt = r.as_ty;
       /* a boxed argument is held as the parameter's oint: unboxed, its nil kept */
-      if (strict >= 0 && !oint_kind(vt)) { LocalVar *pl = scope_local(m, m->pnames[strict]); vt = pl ? pl->type : TY_INT; }
+      if (strict >= 0 && r.kind != RK_OPT) { LocalVar *pl = scope_local(m, m->pnames[strict]); vt = pl ? pl->type : TY_INT; }
       int t = ++g_tmp; held[i] = t;
       Buf vb; memset(&vb, 0, sizeof vb);
       Buf *sv = g_pre; g_pre = pre;
@@ -11808,7 +11813,7 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
       if (strict >= 0) buf_printf(pre, "%s _t%d = %s;\n", oint_ctype(vt), t, vb.p ? vb.p : oint_nil(vt));
       else {
         buf_printf(pre, "__typeof__(%s) _t%d = %s;", vb.p ? vb.p : "0", t, vb.p ? vb.p : "0");
-        if (vt == TY_POLY) buf_printf(pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+        if (r.kind == RK_BOXED) buf_printf(pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
         else if (vt == TY_STRING) buf_printf(pre, " SP_GC_ROOT_STR(_t%d);", t);
         else if (comp_ty_value_obj(c, vt)) { buf_puts(pre, " "); emit_gc_root_tmp_refs(c, vt, t, pre); }
         else if (needs_root(vt)) buf_printf(pre, " SP_GC_ROOT(_t%d);", t);
@@ -11823,7 +11828,8 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     const char *what = NULL;
     int kd = param_strict(c, mi, sj[q], &what, NULL);
     LocalVar *pl = scope_local(m, m->pnames[sj[q]]);
-    TyKind vt = oint_kind(comp_ntype(c, v)) ? comp_ntype(c, v) : (pl ? pl->type : TY_INT);
+    Repr r = repr_of(c, v);
+    TyKind vt = oint_kind(r.as_ty) ? r.as_ty : (pl ? pl->type : TY_INT);
     const char *fn = kd == 1 ? (vt == TY_FLOAT ? "sp_ofloat_val" : "sp_oint_val")
                              : (vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in");
     if (held[i] >= 0) {
@@ -12612,16 +12618,9 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
    reader (of type reader_ty) dispatch on the runtime class: some descendant
    overrides the reader with a def, and the arms agree on the call's type? */
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty) {
-  const NodeTable *nt = c->nt;
-  if (nt_ref(nt, id, "block") >= 0) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  if (p->mi < 0 || p->dispatch < CP_SWITCH) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
-  int any = 0;
-  for (int k = 0; k < c->nclasses && !any; k++) {
-    if (k == cid || !is_descendant(c, k, cid)) continue;
-    int kmi = comp_method_in_chain(c, k, name, NULL);
-    if (kmi >= 0 && kmi != base_mi) any = 1;
-  }
-  if (!any) return 0;
   TyKind ret = repr_of(c, id).as_ty;
   if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
   /* (a shared String slot's read is its copy where the call answers a
@@ -12691,12 +12690,13 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (k == cid || !is_descendant(c, k, cid)) continue;
-    int kd = -1;
-    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    const CallPlan *arm = cplan_user_in(c, id, k, CPX_ARM);
+    int kmi0 = arm->mi;
+    int kd = kmi0 >= 0 ? c->scopes[kmi0].class_id : -1;
     if (kmi0 < 0 || kmi0 == base_mi) continue;
     nd_callee(c, g_nd_call_id, kmi0, kd, 1);
     buf_printf(b, " case %d: ", k);
-    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, -1,
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, nt_ref(nt, id, "block"),
                            ret, ret, rtmp, b);
   }
   buf_printf(b, " default: _t%d = ", rtmp);
@@ -12878,7 +12878,17 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   CallPlan dpc;
   const CallPlan *dpl = NULL;
   int mi = -1, served = 0;
-  if (g_nd_call_id >= 0) {
+  int conversion_node = g_nd_call_id;
+  const CallPlan *conversion = view_conversion(c, &conversion_node);
+  if (conversion && sp_streq(conversion->delegate, name)) {
+    dpc = *conversion;
+    dpl = &dpc;
+    mi = dpc.mi;
+    if (mi >= 0) defcls = c->scopes[mi].class_id;
+    served = 1;
+    if (g_plan_check) cplan_served("conversion");
+  }
+  else if (g_nd_call_id >= 0) {
     const char *cnm = nt_str(nt, g_nd_call_id, "name");
     if (cnm && sp_streq(cnm, name)) {
       dpc = *cplan_user(c, g_nd_call_id);

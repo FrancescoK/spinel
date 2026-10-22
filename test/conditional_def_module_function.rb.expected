@@ -1,0 +1,13 @@
+true
+false
+"unset"
+"unset true"
+42
+10
+NoMethodError
+"10-20-30"
+2
+20
+[:pick, 2]
+"set"
+63

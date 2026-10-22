@@ -96,7 +96,7 @@ int emit_op_mutex_sleep(Compiler *c, const BopCtx *x, Buf *b) {
 /* The mutex a wait takes: a boxed one (a value an initialize took through a
    dynamic `klass.new(*args)`, say) is unboxed, raising for anything else */
 static void emit_condvar_mutex_arg(Compiler *c, int arg, Buf *b) {
-  if (repr_of(c, arg).as_ty == TY_POLY) {
+  if (repr_of(c, arg).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_as_mutex("); emit_boxed(c, arg, b); buf_puts(b, ", \"wait\")");
   }
   else emit_expr(c, arg, b);
@@ -136,7 +136,7 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
     else {
       int m = ++g_tmp;
       buf_printf(b, "; sp_mutex *_m%d = ", m); emit_condvar_mutex_arg(c, argv[0], b);
-      if (tr.as_ty == TY_POLY || tr.untyped) {
+      if (tr.kind == RK_BOXED || tr.untyped) {
         int timeout = ++g_tmp;
         buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);
         buf_printf(b, "; _timeout%d.tag == SP_TAG_NIL ? sp_CondVar_wait(_t%d, _m%d) "
@@ -305,7 +305,8 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     int blk = nt_ref(nt, id, "block");
     int bdy = nt_ref(nt, blk, "body");
     int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
-    TyKind res = repr_of(c, id).as_ty;
+    Repr rr = repr_of(c, id);
+    TyKind res = rr.as_ty;
     int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
     int rv = ++g_tmp;
     /* A real Mutex#synchronize takes the lock around the block and releases it
@@ -326,7 +327,8 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        whenever the static type could not see the Mutex (campfire's fragment
        cache shards, a hash corrupted under concurrent writes). The check
        raises CRuby's NoMethodError for a value that is not a Mutex. */
-    TyKind rty = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
+    Repr rtyr = repr_of(c, recv >= 0 ? recv : -1);
+    TyKind rty = recv >= 0 ? rtyr.as_ty : TY_UNKNOWN;
     int is_mx = recv >= 0 && (rty == TY_MUTEX || rty == TY_POLY) && g_ensure_depth < MAX_ENSURE_DEPTH;
     int mtmp = 0, eid = 0, has_retval = 0;
     buf_puts(b, "({ ");
@@ -337,7 +339,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       mtmp = ++g_tmp; eid = ++g_tmp;
       has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
       buf_printf(b, "sp_mutex *_t%d = ", mtmp);
-      if (rty == TY_POLY) { buf_puts(b, "sp_poly_mutex_recv("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
+      if (rtyr.kind == RK_BOXED) { buf_puts(b, "sp_poly_mutex_recv("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_puts(b, "; ");
       /* a Mutex nothing else names (`Mutex.new.synchronize { }`, one out of
@@ -382,12 +384,13 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       snprintf(dest, sizeof dest, "_t%d", dv);
       Buf *sv_pre = g_pre; int sv_ind = g_indent;
       g_pre = b; g_indent = 0;
-      emit_block_value_into(c, blk, dest, !scalar || res == TY_POLY, 0);
+      emit_block_value_into(c, blk, dest, !scalar || rr.kind == RK_BOXED, 0);
       g_pre = sv_pre; g_indent = sv_ind;
     }
     for (int k = 0; !via_next && k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
     if (bbn > 0 && !via_next) {
-      TyKind lty = repr_of(c, bbb[bbn-1]).as_ty;
+      Repr ltyr = repr_of(c, bbb[bbn-1]);
+      TyKind lty = ltyr.as_ty;
       const char *lnty = nt_type(nt, bbb[bbn-1]);
       int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
       int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));
@@ -404,7 +407,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         Buf tval; memset(&tval, 0, sizeof tval);
         Buf *sv_pre = g_pre; int sv_ind = g_indent;
         g_pre = &tpre; g_indent = 0;
-        if (res == TY_POLY && lty != TY_POLY) emit_boxed(c, bbb[bbn-1], &tval);
+        if (rr.kind == RK_BOXED && ltyr.kind != RK_BOXED) emit_boxed(c, bbb[bbn-1], &tval);
         else emit_expr(c, bbb[bbn-1], &tval);
         g_pre = sv_pre; g_indent = sv_ind;
         if (tpre.p) buf_puts(b, tpre.p);

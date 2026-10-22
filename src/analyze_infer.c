@@ -2861,13 +2861,14 @@ static TyKind an_user_operator_ret(Compiler *c, int id, int mi, int ci) {
   return (TyKind)c->scopes[mi].ret;
 }
 
-/* A block's break widens the answer without changing the call's target. */
-static TyKind an_break_call_ret(Compiler *c, int id) {
+/* A block's break widens the answer without changing the call's target.
+   Other fixed-result shortcuts retain their planned targets the same way. */
+static TyKind an_planned_call_ret(Compiler *c, int id, TyKind ret) {
   if (g_plan_check && !an_builtin_only && !an_pure_reads && id != an_pinned_node) {
     const CallPlan *p = cplan_user_fresh(c, id);
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
   }
-  return TY_POLY;
+  return ret;
 }
 
 static void an_user_union_record(Compiler *c, int id, int recv, TyKind rt) {
@@ -3895,7 +3896,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       if (argc == 0 && !sp_feature_required("ostruct") &&
           (sp_streq(name, "mode") || sp_streq(name, "uid") || sp_streq(name, "gid") ||
            sp_streq(name, "nlink") || sp_streq(name, "dev") || sp_streq(name, "ino") ||
-           sp_streq(name, "blksize") || sp_streq(name, "blocks") || sp_streq(name, "rdev"))) {
+           sp_streq(name, "blksize") || sp_streq(name, "blocks") || sp_streq(name, "rdev") || sp_streq(name, "dev_major") || sp_streq(name, "dev_minor"))) {
         int cm = 0;
         for (int k = 0; k < c->nclasses && !cm; k++)
           if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
@@ -3911,7 +3912,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) stat_pred_cm = 1;
       if (argc == 0 && !stat_pred_cm && sp_streq(name, "size?")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       if (argc == 0 && !stat_pred_cm && (sp_streq(name, "pipe?") || sp_streq(name, "readable?") ||
-                        sp_streq(name, "writable?") || sp_streq(name, "executable?") ||
+                        sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "executable_real?") ||
                         sp_streq(name, "blockdev?") || sp_streq(name, "chardev?") ||
                         sp_streq(name, "file?") || sp_streq(name, "directory?") ||
                         sp_streq(name, "symlink?") || sp_streq(name, "owned?") ||
@@ -4310,6 +4311,9 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       { *out = TY_BOOL; return 1; }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+      if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0 &&
+          (an_builtin_only || !cplan_const_user(c, id, "Dir", 1)))
+        { *out = TY_ENUMERATOR; return 1; }
       if (sp_streq(name, "pwd") || sp_streq(name, "home")) { *out = TY_STRING; return 1; }
       if (sp_streq(name, "glob") || sp_streq(name, "entries") || sp_streq(name, "children")) { *out = TY_STR_ARRAY; return 1; }
       if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
@@ -5752,7 +5756,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
+  if (recv >= 0 && argc == 0 && is_class_query(name)) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0 && rt != TY_POLY) { *out = an_user_call(c, id, p->mi, p->via, p->owner_ci); return 1; }
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
     /* empty container literal receivers coerce like everywhere else */
     if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
       const char *rty0 = nt_type(nt, recv);
@@ -5958,13 +5965,22 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
               TyKind kr = (TyKind)c->scopes[kmi].ret;
               if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
             }
+            if (g_plan_check && nt_ref(nt, id, "block") >= 0) {
+              const CallPlan *p = cplan_user_fresh(c, id);
+              if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+            }
             { *out = rt2; return 1; }
           }
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */
-      if (self->is_cmethod && sp_streq(name, "new"))
-        { *out = ty_object(self->class_id); return 1; }
+      if (self->is_cmethod && is_new_name(name)) {
+        if (g_plan_check) {
+          const CallPlan *p = cplan_user_fresh(c, id);
+          if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+        }
+        *out = ty_object(self->class_id); return 1;
+      }
       /* a class method's self is the class: of the instance methods on its
          chain only Object's and Module's are its own (comp_self_call_mi) */
       int mi = self->is_cmethod ? comp_class_self_inst_mi(c, self->class_id, name)
@@ -5995,6 +6011,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
           int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
                                      : comp_method_in_class(c, k, name);
           if (dmi < 0) continue;
+          if (!found) an_user_call_record(c, id, dmi, self->is_cmethod ? UC_CMETH : UC_INST, self->class_id);
           r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
           found = 1;
         }
@@ -6180,6 +6197,9 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       { *out = TY_POLY; return 1; }
     }
     if (sp_streq(name, "srand")) { *out = TY_INT; return 1; }
+    /* Kernel#select answers ready descriptor arrays, or nil on timeout. */
+    if (sp_streq(name, "select") && argc >= 1 && argc <= 4 &&
+        !an_bare_call_class_owned(c, id)) { *out = TY_POLY; return 1; }
     if (sp_streq(name, "sleep") && argc <= 1) { *out = TY_INT; return 1; }
     if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
       { *out = TY_STRING; return 1; }   /* ARGF's next line, or nil */
@@ -6365,7 +6385,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = TY_POLY; return 1; }
+        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_call_ret(c, id, TY_POLY); return 1; }
         if (oc_mi >= 0 && !cplan_reopen_runs_builtin(c, id, oc_mi)) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
       }
     }
@@ -6504,9 +6524,12 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
       (is_call_alias(name) ||
        (sp_streq(name, "===") && argc >= 1) ||
        (sp_streq(name, "bind_call") && argc >= 1))) {
-    int mn = method_recv_node(c, recv);
-    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-    if (mi >= 0) { *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1; }
+    CallPlan p = cplan_method_call(c, id);
+    int mi = p.mi;
+    if (mi >= 0) {
+      if (g_plan_check) an_user_call_record(c, id, mi, p.via, p.owner_ci);
+      *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1;
+    }
     /* Unresolved target -- a Method that arrived through a parameter or a
        slot, or a typed-array adapter (`<array>.method(:op)`) with no target
        scope. The value is whatever the target answers, boxed by the return
@@ -6997,6 +7020,11 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
     if (is_push_alias(name)) { *out = rt; return 1; }
     if (is_len_alias(name) && argc == 0) { *out = TY_INT; return 1; }
     if (sp_streq(name, "empty?") && argc == 0) { *out = TY_BOOL; return 1; }
+    /* the removals: an element (NULL-encoded nil when there is none), and
+       clear the array */
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    if (sp_streq(name, "delete_at") && argc == 1) { *out = ty_object(ecls); return 1; }
+    if (sp_streq(name, "clear") && argc == 0) { *out = rt; return 1; }
     /* no-block comparisons (admitted by the narrowing pass only for element
        classes with `<=>`): sort keeps the array type, min/max yield an
        element (NULL-encoded nil when empty). */
@@ -8201,6 +8229,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
       id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
 
+  if (!an_builtin_only && is_ivar_reflection_name(nt_str(c->nt, id, "name"))) {
+    CallPlan p = cplan_send_arm(c, id);
+    if (p.mi >= 0 && p.dispatch == CP_DIRECT)
+      return an_user_call(c, id, p.mi, p.via, p.owner_ci);
+  }
   return TY_UNKNOWN;
 }
 
@@ -8292,6 +8325,43 @@ static TyKind infer_hash_default_proc(Compiler *c, int id, TyKind rt) {
   const BuiltinOp *op = an_bop_find(c, id, bop_family_of(rt), "default_proc", 0,
                                     nt_ref(c->nt, id, "block") >= 0);
   return op ? bop_result(op, rt) : TY_PROC;
+}
+
+static int infer_accessor_call(Compiler *c, int id, int recv, const char *name, TyKind *out) {
+  /* `Module.accessor.cmethod(...)` where the singleton accessor statically
+     folds to a constant: dispatch as that constant's class method. This has to
+     come BEFORE anything that decides by the receiver's type, because the
+     receiver -- a `class << self; attr_reader` read -- types poly (its slot
+     holds a class value), and every rule that answers a poly receiver answers
+     poly. It sat below them, and was never reached: the emitter, which asks
+     the same fold, devirtualized the call to the class method's C function
+     while the site expected an sp_RbVal, and clang refused the seam (#4426).
+     The hand-written `def self.adapter; @adapter; end` never had the problem
+     because that reader is a class method with a typed return, not a slot. */
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode) {
+    int fold_ci = comp_sg_reader_const(c, recv);
+    if (fold_ci >= 0) {
+      int mi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
+      if (mi >= 0) { *out = an_user_call(c, id, mi, UC_CMETH, fold_ci); return 1; }
+    }
+    /* Stage-2: accessor holds one of several constants; unify their cmethod returns. */
+    CallPlan ap = *cplan_user_fresh(c, id);
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      TyKind r = TY_UNKNOWN;
+      for (int k = 0; k < ncand; k++) {
+        int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
+        if (mi >= 0) r = ty_unify(r, method_call_ret(c, mi, id));
+      }
+      if (r != TY_UNKNOWN) {
+        an_user_call_record(c, id, ap.mi, ap.via, ap.owner_ci);
+        *out = r; return 1;
+      }
+    }
+  }
+
+  return 0;
 }
 
 static TyKind infer_call_inner(Compiler *c, int id) {
@@ -8452,34 +8522,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (ty_is_object(crt)) return crt;
   }
 
-  /* `Module.accessor.cmethod(...)` where the singleton accessor statically
-     folds to a constant: dispatch as that constant's class method. This has to
-     come BEFORE anything that decides by the receiver's type, because the
-     receiver -- a `class << self; attr_reader` read -- types poly (its slot
-     holds a class value), and every rule that answers a poly receiver answers
-     poly. It sat below them, and was never reached: the emitter, which asks
-     the same fold, devirtualized the call to the class method's C function
-     while the site expected an sp_RbVal, and clang refused the seam (#4426).
-     The hand-written `def self.adapter; @adapter; end` never had the problem
-     because that reader is a class method with a typed return, not a slot. */
-  if (recv >= 0) {
-    int fold_ci = comp_sg_reader_const(c, recv);
-    if (fold_ci >= 0) {
-      int mi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
-      if (mi >= 0) return an_user_call(c, id, mi, UC_CMETH, fold_ci);
-    }
-    /* Stage-2: accessor holds one of several constants; unify their cmethod returns. */
-    int cand[32];
-    int ncand = comp_sg_reader_candidates(c, recv, cand, 32);
-    if (ncand >= 2) {
-      TyKind r = TY_UNKNOWN;
-      for (int k = 0; k < ncand; k++) {
-        int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
-        if (mi >= 0) r = ty_unify(r, method_call_ret(c, mi, id));
-      }
-      if (r != TY_UNKNOWN) return r;
-    }
-  }
+  TyKind accessor_ret;
+  if (infer_accessor_call(c, id, recv, name, &accessor_ret)) return accessor_ret;
 
   /* The universal predicates and conversions the poly runtime answers as a RAW
      C scalar. The emitters have always known this; the TYPE did not say it, so
@@ -8597,7 +8641,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && argc == 0 && (is_copy_alias(name)) &&
       infer_type(c, recv) == TY_POLY) {
     if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) comp_set_poly_builtin_ty(c, id, TY_POLY);
-    return TY_POLY;
+    return an_planned_call_ret(c, id, TY_POLY);
   }
 
   /* `!`, `!=` and `==` are ordinary methods a class may override, so the
@@ -8626,7 +8670,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
      result type for the inner emission. */
-  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_break_call_ret(c, id);
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return an_planned_call_ret(c, id, TY_POLY);
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (g_plan_check) an_user_union_record(c, id, recv, rt);
@@ -8678,7 +8722,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
+    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return an_planned_call_ret(c, id, TY_POLY);
     /* a kind no reopening serves gets the builtin's answer: boxed when the
        two answer different types */
     if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
@@ -9090,8 +9134,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Kernel#puts / #print return nil; typed so the value form composes. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_text_print(name)) &&
-      nt_ref(nt, id, "block") < 0)
-    return TY_NIL;
+      nt_ref(nt, id, "block") < 0) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    return p->mi >= 0 ? an_user_call(c, id, p->mi, p->via, p->owner_ci) : TY_NIL;
+  }
   /* a warn's messages rendered as one String, for $stderr's own write
      (desugar_std_stream_bare_warn) */
   if (recv < 0 && sp_streq(name, "warn") && nt_int(nt, id, "warn_text", 0)) return TY_STRING;
@@ -11152,8 +11198,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
-    int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
-                           : comp_method_in_chain(c, p, uname, NULL);
+    int mi = cplan_super_chain_mi(c, s, p, uname);
     /* a subclass of a native class (#9269): super reaches the native
        class's constructor (initialize) or binding */
     if (mi < 0 && !s->is_cmethod && uname && c->classes[s->class_id].nsub_root > 0) {

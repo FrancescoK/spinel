@@ -487,6 +487,12 @@ static inline void sp_PtrArray_push(sp_PtrArray*a,void*v){sp_gc_wb((void*)a); if
 /* Array#pop on a `<X>_ptr_array`. Returns NULL when empty (matches CRuby's
    nil for typed-element arrays since the slot can't carry nil). #520. */
 static inline void *sp_PtrArray_pop(sp_PtrArray*a){sp_gc_wb((void*)a); if(!a||a->len==0)return NULL;return a->data[--a->len];}
+/* Array#shift and Array#clear on an object array, the partners of pop and
+   delete_at: NULL for an empty array's nil. A frozen array is never narrowed
+   to one (freeze is not an op the narrowing admits), so there is no frozen
+   test. */
+static inline void *sp_PtrArray_shift(sp_PtrArray*a){sp_gc_wb((void*)a); if(!a||a->len==0)return NULL;void*v=a->data[0];memmove(a->data,a->data+1,(size_t)(--a->len)*sizeof(void*));return v;}
+static inline sp_PtrArray *sp_PtrArray_clear(sp_PtrArray*a){sp_gc_wb((void*)a); if(a)a->len=0;return a;}
 /* A pointer array boxed by reference (#4486): its elements are what the stamp
    says (sp_box_ptr_array_k), so an element read boxes a row as the typed
    array it is and an object as its own class, and a store takes exactly that

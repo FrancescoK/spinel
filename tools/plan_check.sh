@@ -52,6 +52,8 @@ rm -rf "$PARTS"
 nc=$(grep -c ': plan-check: conflict:' "$OUT")
 nu=$(grep -c ': plan-check: unrecorded:' "$OUT")
 nr=$(grep -c ': plan-check: respecialized:' "$OUT")
+cv=$(grep -c ': plan-check: conversion-conflict:' "$OUT")
+cva=$(grep -c ': plan-check: conversion-agree:' "$OUT")
 uc=$(grep -c ': plan-check: ucall-conflict:' "$OUT")
 ur=$(grep -c ': plan-check: ucall-respecialized:' "$OUT")
 uv=$(grep -c ': plan-check: ucall-virtual:' "$OUT")
@@ -63,6 +65,7 @@ ud=$(grep -c ': plan-check: ucall-dynamic:' "$OUT")
 # codegen sites that read the plan: a plan naming another method than the
 # site's own lookup is a conflict; a plan that cannot serve the site falls back
 pc=$(grep -c ': plan-check: cplan-conflict:' "$OUT")
+pm=$(grep -c ': plan-check: cplan-missing:' "$OUT")
 pf=$(grep -c ': plan-check: cplan-fallback:' "$OUT")
 # the resolver's per-program counts, summed
 rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: //' |
@@ -73,18 +76,22 @@ rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: /
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 grep ': plan-check: cplan-conflict:' "$OUT" | head -20
+grep ': plan-check: cplan-missing:' "$OUT" | head -20
 grep ': plan-check: unrecorded:' "$OUT" | head -20
 grep ': plan-check: respecialized:' "$OUT" | head -20
 grep ': plan-check: ucall-respecialized:' "$OUT" | head -20
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
-echo "plan-check: plan readers: $pc conflicts, $pf fallbacks"
+echo "plan-check: plan readers: $pc conflicts, $pf fallbacks, $pm cplan-missing"
 # per site: the calls each took from the plan, and the ones it fell back on
-for site in $(grep ': plan-check: cplan-served: ' "$OUT" | awk '{print $4}' | sort -u); do
+for site in $(grep -E ': plan-check: cplan-(served|fallback|conflict|missing): ' "$OUT" | awk '{print $4}' | sort -u); do
   sv=$(grep ": plan-check: cplan-served: $site " "$OUT" | awk '{ s += $5 } END { print s + 0 }')
   fb=$(grep -c ": plan-check: cplan-fallback: $site " "$OUT")
-  echo "plan-check:   $site: $sv served, $fb fallbacks"
+  cf=$(grep -c ": plan-check: cplan-conflict: $site " "$OUT")
+  ms=$(grep -c ": plan-check: cplan-missing: $site " "$OUT")
+  echo "plan-check:   $site: $sv served, $fb fallbacks, $cf conflicts, $ms missing"
 done
+echo "plan-check: conversions: $cva agree, $cv conflicts"
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 # poly dispatch arms: the switch codegen wrote against the resolver's arms
 psum=$(grep ': plan-check: poly-arms: ' "$OUT" | sed 's/.*poly-arms: //' |
@@ -133,9 +140,12 @@ for f in $STRICT_PROGRAMS; do
   fi
 done
 # Emission trials must preserve the inferred user target of the real call.
-STRICT_UCALL_PROGRAMS="test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb test/call_plan_reader_target.rb test/call_plan_break_target.rb
+STRICT_UCALL_PROGRAMS="test/call_plan_reflection_override.rb test/call_plan_literal_send.rb test/call_plan_conversion.rb test/call_plan_pinned_target.rb test/call_plan_class_target.rb test/call_plan_operator_target.rb test/call_plan_comparison_target.rb test/call_plan_reader_target.rb test/call_plan_break_target.rb
  test/call_plan_delegated_protocol.rb test/call_plan_builtin_object.rb test/call_plan_poly_operator_override.rb
  test/poly_dispatch_builtin_enum_arm.rb
+ test/call_plan_descendant_targets.rb test/call_plan_descendant_string.rb
+ test/call_plan_misc_targets.rb test/call_plan_native_block_value.rb
+ test/call_plan_reader_block_override.rb test/call_plan_rebound_output.rb
  test/devirt_call_return_box.rb test/obj_class_cmethod_subclass_self.rb"
 for f in $STRICT_UCALL_PROGRAMS; do
   if ! grep -q "^$f: plan-check: " "$OUT" ||
@@ -145,6 +155,11 @@ for f in $STRICT_UCALL_PROGRAMS; do
     sc=$((sc + 1))
   fi
 done
+# The conversion fixture must exercise its separate helper record too.
+if ! grep -q '^test/call_plan_conversion.rb: plan-check: conversion-agree:' "$OUT"; then
+  echo "plan-check: strict conversion program lost its helper record"
+  sc=$((sc + 1))
+fi
 echo "plan-check: strict programs: $sc failures"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$ppm" -eq 0 ] && [ "$ppe" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]
+[ "$cv" -eq 0 ] && [ "$nc" -eq 0 ] && [ "$nu" -eq 0 ] && [ "$nr" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$ur" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$pm" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$ppm" -eq 0 ] && [ "$ppe" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ] && [ "$sc" -eq 0 ]

@@ -52,6 +52,7 @@ typedef enum {
 
 typedef struct {
   int mi;                  /* the method scope, or -1 */
+  int method_node;         /* bound Method source node, or -1 */
   int send_fallback;       /* boxed send: top-level def if no class arm, or -1 */
   short owner_ci;          /* the class whose chain was searched, or -1 */
   unsigned char via;       /* UC_* */
@@ -63,13 +64,22 @@ typedef struct {
                               a method reached another way (an operator's
                               stand-in, a subclass's override of a reader, a
                               reopen) */
+  unsigned char method_call; /* a Method invocation, even with no source node */
   unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
   const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
   unsigned char rfrom;     /* CP_REFUSE: CplanRefuseFrom */
   const char *delegate;     /* the protocol method name, before alias resolution */
 } CallPlan;
 
+int cplan_accessor_classes(Compiler *c, int id, int *out, int cap);
+int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
+/* A conversion performed by a helper, separately from the enclosing call. */
+CallPlan cplan_conversion(Compiler *c, int ci, const char *name);
+CallPlan cplan_method_call(Compiler *c, int id);
+CallPlan cplan_send_arm(Compiler *c, int id);
+CallPlan cplan_exception_render(Compiler *c, int id, int ci);
 const CallPlan *cplan_user(Compiler *c, int id);
+void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
    the analysis, before the memo is codegen's to fill (the nil facts,
    analyze_nil.c): it answers from the types as they stand. The answer
@@ -140,7 +150,8 @@ int cplan_define_method_early(Compiler *c, int id);
    the call resolves as its own (the instance_exec receiver is asked first).
    It is computed afresh and never kept: only cplan_user memoizes. A
    self_ci < 0 is the node's own context, cplan_user. */
-enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4 };
+/* CPX_TARGET reads only the direct chain target under its name view, respecting builtin-only aliases. */
+enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4, CPX_TARGET = 8 };
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
 /* Is the node codegen is at read as itself: no view, no instance_exec scope
    move or class, no inline splice? Only there may a memo per node answer
@@ -300,6 +311,7 @@ typedef struct PolyPlan_s {
                            the receiver's type and the candidates' fields,
                            which change with the tables, not with the node */
   unsigned flags;       /* PPF_* */
+  int native_block;     /* a block plan contains a native Ruby user arm */
   int full;             /* every arm, not only the class arms (cplan_poly_arms) */
   int n;
   PolyArm *arm;
@@ -327,11 +339,16 @@ void cplan_poly_free(PolyPlan *p);
    each candidate class's method spliced with the block, and its default.
    Computed afresh: the same node may take this dispatch or the method
    dispatch. */
+/* The name index bounds a query for a native Ruby literal-block target. */
+int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n);
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */
+int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk);
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
+int cplan_visibility_class(Compiler *c, int id, int ci);
+int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod);
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name);
 TyKind cplan_poly_arg_storage(Compiler *c, int id);
 /* The re-entry of a call on an object whose static class cannot answer the

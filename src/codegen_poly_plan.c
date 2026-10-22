@@ -197,119 +197,6 @@ void pa_report(void) {
           g_pa_trial_dropped);
 }
 
-static int plan_slot_oint(Compiler *c, int id, TyKind ret);
-/* The arm class k takes in a zero-argument poly dispatch, decided class by
-   class as the dispatch did before the plan (cplan_poly) took it over:
-   --plan-check's assertion, and the arms of a dispatch the plan cannot
-   serve. 0 for none. */
-static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc, TyKind ret, int k,
-                                 PolyArm *a) {
-  const NodeTable *nt = c->nt;
-  memset(a, 0, sizeof *a);
-  a->key = (short)k; a->mi = -1; a->def = -1; a->vty = TY_UNKNOWN; a->conv = PC_SAME;
-  /* A never-instantiated class can't be this poly value's runtime class,
-     so drop its arm (method or reader); the referenced symbol then DCEs
-     as an unreferenced static (#1608). A primitive reopen's instances
-     exist without any constructor, so it keeps its arm (#4219). */
-  if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) return 0;
-  /* native (C-backed) class arm: dispatch a declared no-arg method to its
-     C symbol on the cast receiver, coercing the result into the slot. */
-  int nk = comp_native_binding_class(c, k, name);
-  if (nk >= 0) {
-    int nmi = comp_native_method_find(c, nk, name, 0, 0);
-    /* only a binding that takes no argument: the lookup falls back to
-       any arity, and StringScanner#peek(len) beside two user `peek`s
-       got an arm calling it with none, which C refused (#5359). A
-       receiver of that class then lands in the default arm. */
-    if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
-      TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
-      a->kind = PA_NATIVE; a->vty = (unsigned char)mret;
-      a->conv = mret == TY_NIL ? PC_VOID
-              : ret == TY_POLY && mret != TY_POLY ? PC_BOX
-              : ret != TY_POLY && mret == TY_POLY ? PC_UNBOX : PC_SAME;
-      return 1;
-    }
-    /* one that needs arguments is CRuby's ArgumentError for this call */
-    if (nmi >= 0 && c->native_methods[nmi].nargs > 0 && c->classes[k].instantiated) {
-      a->kind = PA_ARITY; a->conv = PC_VOID;
-      return 1;
-    }
-    return 0;
-  }
-  int defcls = -1;
-  int mi = comp_method_in_chain(c, k, name, &defcls);
-  /* an exception class with no method of its own for the name takes
-     the builtin reopening's (`class Exception; def brief`) */
-  if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
-    int xd = exc_arm_definer(c, k, name);
-    if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
-  }
-  /* A Struct's synthesized each or each_pair, called with no block on a
-     boxed receiver: the typed receiver answers an Enumerator over the
-     members (its blockless each is redirected through __enum_to_a, its
-     each_pair through to_h), and the synthesized method, which yields,
-     raised LocalJumpError when this arm called it with no block. The
-     each Enumerator is built over the member array the generated
-     per-class dispatch answers, the each_pair one over the member hash
-     the to_h hook answers, so it yields [name, value] pairs. Not for a
-     Data class, which has neither name in CRuby. */
-  if (mi >= 0 && c->classes[k].is_struct && !c->classes[k].is_data &&
-      g_gen_obj_struct_values && ret == TY_POLY && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 &&
-      nt_str(nt, c->scopes[mi].def_node, "synth") &&
-      (is_each_or_pair(name))) {
-    a->kind = PA_SYNTH_ENUM; a->mi = mi; a->vty = TY_ENUMERATOR;
-    return 1;
-  }
-  /* Skip a method with no standalone definition to call: DCE-pruned (its
-     params stayed TY_UNKNOWN so it was marked unreachable) or inlined at
-     call sites because it yields. Emitting a `case` arm that calls the
-     absent `sp_Class_method` symbol dangles at link (issue #1583). The
-     class can never be the receiver of this poly value anyway. */
-  /* A yielding candidate has a proc form emitted for exactly this
-     dispatch (#3399); it is as callable as any other symbol here. */
-  { char zexp[600]; int rdc0 = -1;
-    if (poly_arm_refuses_none(c, mi, zexp, sizeof zexp) &&
-        !comp_reader_in_chain(c, k, name, &rdc0)) {
-      a->kind = PA_ARITY; a->mi = mi; a->conv = PC_VOID;
-      return 1;
-    } }
-  if (mi >= 0 && c->scopes[mi].nrequired == 0 &&
-      comp_resolve_member(c, k, name, 0, NULL, NULL) != SP_MEMBER_ATTR &&
-      (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
-      !(c->classes[defcls].name && sp_streq(c->classes[defcls].name, "Class"))) {
-    /* A proc form is a separately inferred clone, so its own return type
-       is the one to read -- not the original's, which an inlined-only
-       method never needed (#3399). */
-    int pfi9 = scope_proc_form_of(c, mi);
-    Scope *ms = &c->scopes[pfi9 >= 0 ? pfi9 : mi];
-    TyKind cret9 = ms->ret;
-    TyKind slotty = is_scalar_ret(ret) ? ret : TY_INT;
-    a->kind = pfi9 >= 0 ? PA_PROC_FORM : PA_USER; a->mi = mi; a->def = (short)defcls;
-    a->vty = (unsigned char)cret9;
-    a->conv = method_is_void(ms) ? PC_VOID
-            : ret == TY_POLY && cret9 != TY_POLY ? PC_BOX
-            : ret != TY_POLY && cret9 == TY_POLY ? PC_UNBOX
-            : (slotty == TY_INT || slotty == TY_FLOAT) && cret9 == TY_BIGINT ? PC_NUM : PC_SAME;
-    return 1;
-  }
-  int rdcls = -1;
-  if (comp_reader_in_chain(c, k, name, &rdcls)) {
-    const char *rn3 = comp_resolve_alias(c, k, name);
-    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn3);
-    int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
-    TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
-    a->kind = PA_READER; a->def = (short)rdcls; a->vty = (unsigned char)ivt;
-    int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
-    a->conv = nilbit && (ret == TY_POLY || plan_slot_oint(c, id, ret)) ? PC_BOX_OR_NIL
-            : ret == TY_POLY && ivt != TY_POLY ? PC_BOX
-            : ret != TY_POLY && ivt == TY_POLY ? PC_UNBOX
-            : ivt == TY_STRBUF && ret == TY_STRING ? PC_COPY : PC_SAME;
-    return 1;
-  }
-  return 0;
-}
-
 /* A user arm boxes the String its return facts describe. A shared return
    publishes its handle; a fresh return needs its own handle only when the
    call's value is shared. The nil and fresh tails use the same handover as
@@ -805,37 +692,16 @@ void arm_texts_flush(ArmText *a, int n, Buf *b) {
   free(body); free(len); free(lead); free(next); free(tail); free(tab);
 }
 
-/* The user-class arms of a zero-argument poly dispatch
-   (emit_poly_method_dispatch): one `case` per class a boxed receiver can be
-   at run time -- its method (or proc form), a reader, a native binding, an
-   arity refusal -- as the dispatch's plan lists them (cplan_poly). A plan
-   made for another result type than the dispatch's own (none is) falls
-   back on the class-by-class decision, which --plan-check also holds the
-   plan against. */
+/* Emit the zero-argument poly plan's user-class arms: a method or proc
+   form, reader, native binding or arity refusal for each runtime class. */
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
                           int blk_tmp0, const PolyPlan *p, Buf *b) {
-  int served = p->ret == ret;
   /* the class arms, copied: an arm's emission may resolve another plan */
   PolyArm *arms = malloc(sizeof *arms * (size_t)(p->n > 0 ? p->n : 1));
   int n = 0;
-  if (served)
-    for (int i = 0; i < p->n; i++)
-      if (p->arm[i].key >= 0 && p->arm[i].key < c->nclasses) arms[n++] = p->arm[i];
-  if (g_plan_check || !served) {
-    PolyArm *old = malloc(sizeof *old * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
-    int nold = 0;
-    for (int k = 0; k < c->nclasses; k++)
-      if (!cls_fact_excludes(c, nt_ref(c->nt, id, "receiver"), k) &&   /* as the plan leaves them out (#8530) */
-          poly_user_arm0_decide(c, id, name, argc, ret, k, &old[nold])) nold++;
-    if (served) poly_arms_assert(c, id, "poly-user0", arms, n, old, nold);
-    else {
-      if (g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: poly-user0 node %d %s\n", id, name);
-      free(arms);
-      arms = old; n = nold; old = NULL;
-    }
-    free(old);
-  }
-  if (g_plan_check && served) cplan_served("poly-user0");
+  for (int i = 0; i < p->n; i++)
+    if (p->arm[i].key >= 0 && p->arm[i].key < c->nclasses) arms[n++] = p->arm[i];
+  if (g_plan_check) cplan_served("poly-user0");
   ArmText *at = calloc((size_t)(n > 0 ? n : 1), sizeof *at);
   for (int i = 0; i < n; i++) {
     if (at) at[i].k = arms[i].key;
@@ -1613,6 +1479,13 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
                    !is_lengthlike && !is_empty && !is_pred &&
                    !poly_builtin_zero_arg_name(name) &&
                    sp_feature_required("ostruct");
+  /* size, length, count and empty?, which an OpenStruct does not define,
+     read its member too where one can reach the receiver
+     (cls_fact_may_ostruct): the containers' arms read 0 for it, and a
+     class's own size took the rest */
+  if (argc == 0 && nt_ref(nt, id, "block") < 0 && ostruct_member_name(name) &&
+      cls_fact_may_ostruct(c, nt_ref(nt, id, "receiver")))
+    is_ostruct = 1;
   /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
      both are builtins/native classes with no user arm, so without this
      pre-arm the call was silently dropped. */
@@ -3760,7 +3633,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && kwh < 0 && splat_a < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL, -1, TY_UNKNOWN, PC_SAME);
     int trp = ++g_tmp;
-    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = %s((sp_File *)_t%d.v.p, ", trp, io_readpartial_entry(name), tv);
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_printf(b, "); _t%d = ", tr);
@@ -3774,7 +3647,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 2 && kwh < 0 && splat_a < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL_BUF, -1, TY_UNKNOWN, PC_SAME);
     int trp = ++g_tmp;
-    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    /* (readpartial checks its length as the one-argument form does;
+       sysread with a buffer is CRuby's Errno::EFAULT, which this is not) */
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = %s((sp_File *)_t%d.v.p, ", trp,
+               sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_readpartial", tv);
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_puts(b, "); ");
@@ -4148,7 +4024,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                     " _t%d = %s_ui%d > 0%s; break; }",
                  tv, name, tv, tv, ab5.p ? ab5.p : "sp_box_nil()", tr, ibo, tv, ibc);
       free(ab5.p); }
+    /* an Integer or a Float that can be nil is held boxed (the dispatch's
+       argument temps): the arms take it as promote's boxed argument */
     TyKind at = comp_ntype(c, argv[0]);
+    if (oint_kind(at) && atmp_ty[0] == TY_POLY) at = TY_POLY;
     switch (at) {
     case TY_INT:
       buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
@@ -4311,7 +4190,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if (is_strftime && (ps->ncand == 0 || ret == TY_STRING || ret == TY_POLY)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRFTIME, -1, TY_UNKNOWN, PC_SAME);
     char fa[64];
-    if (comp_ntype(c, argv[0]) == TY_POLY) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
     else snprintf(fa, sizeof fa, "%s", strarg);
     if (ret == TY_POLY)
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, %s)); break;", tr, tv, fa);
@@ -4991,21 +4870,4 @@ int poly_redispatch_kind(Compiler *c, int id, const char *name, int argc) {
                   (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
                    sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")));
   return ret_recv ? 2 : 1;
-}
-
-/* The receiver form a poly dispatch takes: the plan's (form) when the
-   plan answers the dispatch's result type (served), else the dispatch's
-   own reading (oform); --plan-check holds the two against each other. */
-unsigned poly_form_check(int id, const char *name, const char *site, int served, unsigned form, unsigned oform) {
-  if (!served) {
-    if (g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: %s node %d %s\n", site, id, name);
-    return oform;
-  }
-  if (g_plan_check) {
-    cplan_served(site);
-    if (form != oform)
-      fprintf(stderr, "plan-check: cplan-conflict: %s node %d %s: plan %#x, read %#x\n", site, id, name,
-              form, oform);
-  }
-  return form;
 }

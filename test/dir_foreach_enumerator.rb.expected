@@ -1,0 +1,9 @@
+Enumerator
+nil
+[".", "..", "a"]
+"#<Enumerator: Dir:foreach(\"D\")>"
+[#<Encoding:BINARY (ASCII-8BIT)>]
+"#<Enumerator: Dir:foreach(\"D\", encoding: ASCII-8BIT)>"
+"#<Enumerator: Dir:foreach(\"D\", encoding: 1)>"
+1
+Errno::ENOENT

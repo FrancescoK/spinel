@@ -7,9 +7,12 @@
 #
 # The class-method forms (`OpenSSL::Digest::SHA256.hexdigest(data)`) and the
 # object (`OpenSSL::Digest.new("SHA256")`, `OpenSSL::Digest::SHA256.new`)
-# with update / << / digest / hexdigest / reset / digest_length / name. The
-# object buffers what it is given and hashes it whole when asked, over the
-# same one-shot functions: the runtime's hashes have no streaming state.
+# with update / << / digest / hexdigest / base64digest and their `!` forms /
+# reset / digest_length / length / size / name / new / file / to_s / inspect /
+# ==, and the class methods with the algorithm first
+# (`OpenSSL::Digest.hexdigest("SHA256", data)`). The object keeps the hash
+# state between updates (a binary String of about a hundred bytes), not what
+# it is given.
 module OpenSSL
   # CRuby's base for everything in this namespace; SSLError and DigestError
   # both descend from it, so `rescue OpenSSL::OpenSSLError` catches either.
@@ -24,6 +27,15 @@ module OpenSSL
     native_func :sha1_bin,        [:string],          :cbinstr, "sp_crypto_sha1_bin"
     native_func :md5_hex,         [:string],          :cstring, "sp_crypto_md5_hex"
     native_func :md5_bin,         [:string],          :cbinstr, "sp_crypto_md5_bin"
+    native_func :sha256_b64,      [:string],          :cstring, "sp_crypto_sha256_b64"
+    native_func :sha1_b64,        [:string],          :cstring, "sp_crypto_sha1_b64"
+    native_func :md5_b64,         [:string],          :cstring, "sp_crypto_md5_b64"
+    native_func :sha256_update,   [:string, :string], :cbinstr, "sp_crypto_sha256_update"
+    native_func :sha256_final,    [:string],          :cbinstr, "sp_crypto_sha256_final"
+    native_func :sha1_update,     [:string, :string], :cbinstr, "sp_crypto_sha1_update"
+    native_func :sha1_final,      [:string],          :cbinstr, "sp_crypto_sha1_final"
+    native_func :md5_update,      [:string, :string], :cbinstr, "sp_crypto_md5_update"
+    native_func :md5_final,       [:string],          :cbinstr, "sp_crypto_md5_final"
     native_func :hmac_sha256_hex, [:string, :string], :cstring, "sp_crypto_hmac_sha256_hex"
     native_func :hmac_sha1_hex,   [:string, :string], :cstring, "sp_crypto_hmac_sha1_hex"
     native_func :hmac_sha256_bin, [:string, :string], :cbinstr, "sp_crypto_hmac_sha256_bin"
@@ -59,11 +71,36 @@ module OpenSSL
       end
     end
 
+    # The class-method forms name the algorithm first, except file, which
+    # takes the path first; each subclass answers them for its own algorithm.
+    def self.digest(name, data)       = new(name).digest(data)
+    def self.hexdigest(name, data)    = new(name).hexdigest(data)
+    def self.base64digest(name, data) = new(name).base64digest(data)
+    def self.file(path, name)         = new(name).file(path)
+
+    # The hash state after `data`, and the raw digest of a state, under the
+    # algorithm #initialize keeps in @name. An empty state is a fresh hash.
+    def self.step(name, state, data)
+      case name
+      when "SHA256" then Crypto.sha256_update(state, data)
+      when "SHA1"   then Crypto.sha1_update(state, data)
+      else Crypto.md5_update(state, data)
+      end
+    end
+
+    def self.finish(name, state)
+      case name
+      when "SHA256" then Crypto.sha256_final(state)
+      when "SHA1"   then Crypto.sha1_final(state)
+      else Crypto.md5_final(state)
+      end
+    end
+
     def initialize(name, data = nil)
       @name = name.to_s.upcase
       Digest.length_of(@name)
-      @buf = String.new(encoding: Encoding::BINARY)
-      @buf << data if data
+      @state = String.new(encoding: Encoding::BINARY)
+      update(data) if data
     end
 
     def name = @name
@@ -71,41 +108,86 @@ module OpenSSL
     def block_length = 64
 
     def update(data)
-      @buf << data
+      @state = Digest.step(@name, @state, data)
       self
     end
     alias << update
 
     def reset
-      @buf = String.new(encoding: Encoding::BINARY)
+      @state = String.new(encoding: Encoding::BINARY)
       self
     end
 
+    # With `data`, the digest of `data` alone, and the object is reset.
     def digest(data = nil)
-      return Digest.raw(@name, data) if data
-      Digest.raw(@name, @buf)
+      return Digest.finish(@name, @state) unless data
+      reset
+      Digest.raw(@name, data)
     end
 
     def hexdigest(data = nil) = digest(data).unpack1("H*")
+    def base64digest(data = nil) = [digest(data)].pack("m0")
+
+    # The `!` forms answer the digest and reset the object.
+    def digest!
+      value = digest
+      reset
+      value
+    end
+
+    def hexdigest! = digest!.unpack1("H*")
+    def base64digest! = [digest!].pack("m0")
+
+    alias length digest_length
+    alias size digest_length
+
+    # A fresh object for the same algorithm.
+    def new = clone.reset
+
+    def to_s = hexdigest
+    def inspect = "#<#{self.class.name}: #{hexdigest}>"
+
+    # Another digest object compares by its digest, anything with to_str by
+    # the hex digest, and the rest is not equal.
+    def ==(other)
+      return digest == other.digest if other.is_a?(Digest)
+      other.respond_to?(:to_str) && hexdigest == other.to_str
+    end
+
+    # The file is read 16 KiB at a time, so its size does not count.
+    def file(name)
+      File.open(name.respond_to?(:to_path) ? name.to_path : name, "rb") do |f|
+        while (chunk = f.read(16_384))
+          update(chunk)
+        end
+      end
+      self
+    end
 
     class SHA256 < Digest
       def initialize(data = nil) = super("SHA256", data)
-      def self.hexdigest(data) = Crypto.sha256_hex(data)
-      def self.digest(data)    = Crypto.sha256_bin(data)
+      def self.hexdigest(data)    = Crypto.sha256_hex(data)
+      def self.digest(data)       = Crypto.sha256_bin(data)
+      def self.base64digest(data) = Crypto.sha256_b64(data)
+      def self.file(name)         = new.file(name)
     end
 
     class SHA1 < Digest
       def initialize(data = nil) = super("SHA1", data)
-      def self.hexdigest(data) = Crypto.sha1_hex(data)
-      def self.digest(data)    = Crypto.sha1_bin(data)
+      def self.hexdigest(data)    = Crypto.sha1_hex(data)
+      def self.digest(data)       = Crypto.sha1_bin(data)
+      def self.base64digest(data) = Crypto.sha1_b64(data)
+      def self.file(name)         = new.file(name)
     end
 
     # A legacy hash, carried because Active Storage's direct upload checks a
     # blob by its MD5 (#4631). Not for new designs.
     class MD5 < Digest
       def initialize(data = nil) = super("MD5", data)
-      def self.hexdigest(data) = Crypto.md5_hex(data)
-      def self.digest(data)    = Crypto.md5_bin(data)
+      def self.hexdigest(data)    = Crypto.md5_hex(data)
+      def self.digest(data)       = Crypto.md5_bin(data)
+      def self.base64digest(data) = Crypto.md5_b64(data)
+      def self.file(name)         = new.file(name)
     end
   end
 

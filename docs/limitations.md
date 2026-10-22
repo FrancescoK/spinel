@@ -126,13 +126,16 @@ what it gets against its `cert_store`, which is empty unless one is given
 `VERIFY_PEER` before it is set, where CRuby's reads nil. `set_params` reads
 `verify_mode` and `verify_hostname` from its params and no other key, and
 answers the context, where CRuby's answers the params.
-`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
-object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
-`hexdigest`, `digest_length`), `OpenSSL::HMAC` (the algorithm by name or as
+`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms, also
+with the algorithm named, and the object: `OpenSSL::Digest.new("SHA256")`,
+`update` / `<<`, `digest` / `hexdigest` / `base64digest` and their `!` forms,
+`digest_length` / `length` / `size`, `new`, `to_s` / `inspect` / `==`, and
+`file` from a path, a File or a Tempfile; not `OpenSSL::Digest.digests`, the
+list of libssl's algorithms), `OpenSSL::HMAC` (the algorithm by name or as
 a Digest), `OpenSSL::KDF.hkdf` /
 `pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
-own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
-input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
+own crypto rather than libssl, and no HMAC-MD5; the digest object keeps the
+hash state between updates, not its input. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
 each described in its file under `packages/openssl/openssl/`.
 `OpenSSL::PKey.read` reads EC keys, private (SEC1 or PKCS#8) or public, from
 PEM or DER into a `PKey::EC`, and RSA keys (PKCS#1 or PKCS#8) into a
@@ -458,6 +461,11 @@ still missing, so `ancestors` diverges past `IO`.)
 the whole IO surface a handle carries (`#gets`, `#read`, `#readpartial`,
 `#write`, `#puts`, `#print`, `#flush`, `#close`, `#closed?`, `#eof?`,
 `#fileno`, `#each_line`, the `IO#wait_*` readiness family, `IO.select`).
+`Kernel#select` (bare `select`, `Kernel.select`, or `::Kernel.select`) uses
+`IO.select`'s readiness implementation for one to four positional arguments,
+including nil or omitted descriptor arrays and a timeout written as nil or
+omitted. A nil timeout held in a variable or a defaulted parameter can raise
+TypeError, as `IO.select` does.
 `#addr` / `#peeraddr` return CRuby's numeric 4-element form. `#accept` parks
 cooperatively on the green-thread scheduler, so a thread-per-connection server
 does not stall its siblings, and socket writes bypass stdio (`#sync` is true,
@@ -571,6 +579,19 @@ still works.
   `&proc` is refused in both builds: the builtin emitter cannot invoke it while
   preserving its returned String's identity. Use a literal block. Literal blocks,
   symbol-to-proc forms that desugar to one, and user-owned methods still compile.
+
+- **`File.pipe?` with an object that defines `#to_io`** -- an IO or File value,
+  typed or boxed, is tested by its descriptor, but an object answering `#to_io`
+  is not converted: typed, it is refused at compile time; boxed, it raises
+  TypeError. The other FileTest predicates take no IO operand at all.
+
+- **`Dir.foreach` and `Dir.each_child` without a block** -- the Enumerator
+  reads the directory's entries on its first pull and closes it then, so an
+  entry removed between pulls is still listed. A splatted argument is refused
+  at compile time (with a block it fails to build).
+
+- **`File::Stat#rdev_major` and `#rdev_minor`** -- refused at compile time
+  ("unsupported call") on a typed File::Stat; a boxed one raises NoMethodError.
 
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
   including `delete`, `clear`, and `[]=` on a Hash read from a mixed container,

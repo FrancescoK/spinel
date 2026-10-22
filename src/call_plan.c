@@ -30,6 +30,8 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 }
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
+  p->method_node = -1;
+  p->method_call = 0;
   p->send_fallback = -1;
   p->delegate = NULL;
   p->mi = mi; p->owner_ci = (short)owner;
@@ -88,6 +90,23 @@ static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
   if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_SWITCH : CP_DIRECT);
 }
 
+/* A super's parent-chain target, past inherited copies of the same
+   extended definition. Shared by resolution, inference, inline splicing and the miss check. */
+int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name) {
+  int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, name, NULL)
+                                       : comp_method_in_chain(c, par, name, NULL);
+  /* An extended module's method is one entry in the class's ancestry, and
+     `super` inside it goes past the module. Copied into each class that
+     inherits the extend, the parent's copy is that same definition, not a
+     superclass method: skip such copies (Thor's ClassMethods#method_added
+     called on a Thor subclass reaches Module#method_added). */
+  while (s->is_cmethod && mi >= 0 && c->scopes[mi].def_node == s->def_node && s->def_node >= 0) {
+    int up = c->classes[c->scopes[mi].class_id].parent;
+    mi = up >= 0 ? comp_cmethod_in_chain(c, up, name, NULL) : -1;
+  }
+  return mi;
+}
+
 static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   Scope *s = comp_scope_of(c, id);
   if (!s || s->class_id < 0 || !s->name) return;
@@ -101,11 +120,11 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   int par = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, par, s->name, s->is_cmethod);
   if (!uname) return;
-  int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, uname, NULL)
-                                       : comp_method_in_chain(c, par, uname, NULL);
+  int mi = cplan_super_chain_mi(c, s, par, uname);
   if (mi >= 0) cplan_set(p, mi, par, UC_SUPER, CP_DIRECT);
   else if (s->is_cmethod &&
-           builtin_super_cmethod_known(c->classes[s->class_id].name, uname)) {
+           builtin_super_cmethod_known(c->classes[s->class_id].name, uname) &&
+           (par < 0 || comp_cmethod_in_chain(c, par, uname, NULL) < 0)) {
     cplan_set(p, -1, s->class_id, UC_SUPER, CP_REFUSE);
     p->rkind = CR_FEATURE; p->rfrom = CRF_LIMIT;
     p->msg = "super to an inherited builtin singleton method is not supported; see docs/limitations.md";
@@ -155,6 +174,61 @@ int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   return c->share_strings && mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
          c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
 }
+/* The existing boxed dispatch candidates also serve literal-name send arms. */
+static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p,
+                               const PolyCand *pcs, int npc) {
+  for (int i = 0; i < npc; i++) {
+    if (c->classes[pcs[i].cls].is_native_class) continue;
+    /* a reader candidate written as a method (`def x = @x`) is that method */
+    int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
+    if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
+  }
+  /* a boxed class value: the dispatch's class-method arms */
+  int ncc = 0;
+  const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+  for (int i = 0; i < ncc; i++)
+    if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_SWITCH); return; }
+  return;
+}
+
+/* A missing base implementation still dispatches to the existing descendants. */
+static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cmeth, CallPlan *p) {
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  int reader = !cmeth && comp_reader_in_chain(c, cid, name, NULL);
+  for (int i = 0; i < nd; i++) {
+    int mi = reader ? comp_method_in_chain(c, ds[i], name, NULL) : cmeth ? comp_cmethod_in_class(c, ds[i], name)
+                   : comp_method_in_class(c, ds[i], name);
+    if (mi < 0) continue;
+    cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
+              cmeth || reader ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+    return;
+  }
+}
+
+/* The finite singleton-accessor union, using the resolver's precedence. */
+int cplan_accessor_classes(Compiler *c, int id, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_int(nt, id, "builtin_only", 0)) return 0;
+  int ci = comp_sg_reader_const(c, recv);
+  if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 0;
+  int n = comp_sg_reader_candidates(c, recv, out, cap);
+  if (n >= 2)
+    for (int i = 0; i < n; i++)
+      if (comp_cmethod_in_chain(c, out[i], name, NULL) >= 0) return n;
+  return 0;
+}
+
+/* The name index bounds the native block query before its class scan. */
+int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n) {
+  if (nt_kind(c->nt, nt_ref(c->nt, id, "block")) != NK_BlockNode) return 0;
+  for (int i = 0; i < n; i++)
+    if (pc[i].native && pc[i].mi >= 0 && c->classes[pc[i].cls].instantiated) return 1;
+  return 0;
+}
+
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -166,6 +240,17 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int fold_ci = comp_sg_reader_const(c, recv);
     int fmi = fold_ci >= 0 ? comp_cmethod_in_chain(c, fold_ci, name, NULL) : -1;
     if (fmi >= 0) { cplan_set(p, fmi, fold_ci, UC_CMETH, CP_DIRECT); return; }
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++) {
+        int mi = comp_cmethod_in_chain(c, cand[i], name, NULL);
+        if (mi >= 0) {
+          cplan_set(p, mi, cand[i], UC_CMETH, CP_SWITCH);
+          return;
+        }
+      }
+    }
   }
   /* a retargeted `x.send(:m)` reaching a top-level def the receiver does
      not own itself */
@@ -211,6 +296,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     /* outside a class method, self reaches a program's own Object method */
     Scope *self = comp_scope_of(c, id);
     if (!(self && self->is_cmethod)) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && self && self->class_id >= 0)
+      cplan_descendant_call(c, self->class_id, name, self->is_cmethod, p);
     return;
   }
   const char *rty = nt_type(nt, recv);
@@ -257,8 +344,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     /* the operators an object answers through another of its methods:
        `!=` through `==`, the comparisons through `<=>` when Comparable
-       supplies them (class_is_comparable) */
-    const char *via_op = builtin_operator_delegate(name);
+       supplies them (class_is_comparable). Not one a subclass defines
+       itself: the call dispatches at run time (#4023). */
+    const char *via_op = comp_subclass_answers(c, cid, name) ? NULL : builtin_operator_delegate(name);
     if (via_op && sp_streq(via_op, "<=>") && !class_is_comparable(c, cid)) via_op = NULL;
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
     if (dmi < 0 && via_op) {
@@ -277,28 +365,29 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int nd = 0;
       const int *ds = comp_descendants(c, cid, &nd);
       for (int i = 0; i < nd; i++) {
-        int kmi = ds[i] != cid ? comp_method_in_class(c, ds[i], name) : -1;
+        int kmi = -1;
+        if (ds[i] != cid) comp_resolve_member(c, ds[i], name, 0, NULL, &kmi);
         if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_SWITCH); return; }
       }
     }
     if (class_is_exc_subclass(c, cid)) cplan_exc_reopen(c, name, p);
     if (p->mi < 0) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && !comp_reader_in_chain(c, cid, name, NULL) && !c->classes[cid].is_native_class)
+      cplan_descendant_call(c, cid, name, 0, p);
     return;
   }
   if (rt == TY_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    for (int i = 0; i < npc; i++) {
-      if (c->classes[pcs[i].cls].is_native_class) continue;
-      /* a reader candidate written as a method (`def x = @x`) is that method */
-      int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
-      if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi >= 0) {
+          cplan_set(p, bp->arm[i].mi, bp->arm[i].key, UC_POLY, CP_SWITCH);
+          return;
+        }
     }
-    /* a boxed class value: the dispatch's class-method arms */
-    int ncc = 0;
-    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
-    for (int i = 0; i < ncc; i++)
-      if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_SWITCH); return; }
+    cplan_resolve_poly(c, name, p, pcs, npc);
     return;
   }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
@@ -307,7 +396,10 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   if (rt == TY_IO) {
     int eci = io_reopen_class(c, name);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
-    if (emi >= 0) { cplan_set(p, emi, eci, UC_REOPEN, CP_DIRECT); return; }
+    if (emi >= 0) {
+      cplan_set(p, emi, eci, UC_REOPEN, io_reopen_ret_mixed(c, name) ? CP_SWITCH : CP_DIRECT);
+      return;
+    }
   }
   const char *rc = cplan_reopen_class(rt);
   if (rc) {
@@ -389,6 +481,15 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->dispatch < CP_SWITCH) return 0;
   const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
+  if (p->via == UC_CMETH) {
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++)
+        if (comp_cmethod_in_chain(c, cand[i], name, NULL) == mi) return 1;
+      return 0;
+    }
+  }
   if (p->by_name) {
     int ncc = 0;
     const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
@@ -399,6 +500,11 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->via == UC_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    if (cplan_native_block_possible(c, id, pcs, npc)) {
+      const PolyPlan *bp = cplan_poly_block(c, id);
+      for (int i = 0; i < bp->n; i++)
+        if (bp->arm[i].mi == mi || scope_proc_form_of(c, bp->arm[i].mi) == mi) return 1;
+    }
     for (int i = 0; i < npc; i++)
       if (pcs[i].mi == mi || (pcs[i].mi < 0 && comp_method_in_chain(c, pcs[i].cls, name, NULL) == mi))
         return 1;
@@ -409,6 +515,12 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
     return 0;
   }
   if (p->via == UC_REOPEN) {
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
+      int ks[16], nk = io_reopen_defs(c, name, 0, ks, 16);
+      for (int i = 0; i < nk; i++)
+        if (comp_method_in_chain(c, ks[i], name, NULL) == mi) return 1;
+    }
     int xr[8], xn = exc_reopen_definers(c, name, xr, 8);
     for (int i = 0; i < xn; i++)
       if (comp_method_in_chain(c, xr[i], name, NULL) == mi) return 1;
@@ -445,10 +557,98 @@ void cplan_served_report(void) {
     fprintf(stderr, "plan-check: cplan-served: %s %d\n", g_cp_site[i], g_cp_site_n[i]);
 }
 
+/* A plan-only reader must not lose a user target. This assertion belongs
+   with resolution, and never supplies an emission target on a miss. */
+void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site) {
+  if (!g_plan_check || mi >= 0 || ci < 0 || !name || nt_int(c->nt, id, "builtin_only", 0)) return;
+  int own = cmeth ? comp_cmethod_in_chain(c, ci, name, NULL) : comp_method_in_chain(c, ci, name, NULL);
+  NodeKind k = nt_kind(c->nt, id);
+  if (cmeth && (k == NK_SuperNode || k == NK_ForwardingSuperNode)) {
+    Scope *sc = comp_scope_of(c, id);
+    if (sc && !comp_super_shadow(c, sc)) own = cplan_super_chain_mi(c, sc, ci, name);
+  }
+  if (own >= 0)
+    fprintf(stderr, "plan-check: cplan-missing: %s node %d %s: chain %d\n", site, id, name, own);
+}
+
 /* the node is read as itself: nothing re-types or re-scopes it */
 int cplan_plain_ctx(void) {
   return view_depth() == 0 && comp_scope_move_depth() == 0 && g_ie_class_id < 0 &&
          inline_splice_depth() == 0;
+}
+
+/* A bound Method already carries its target. Its arguments are bound by
+   the Method adapter, not by the generic call-target argument walk. */
+CallPlan cplan_method_call(Compiler *c, int id) {
+  CallPlan p;
+  cplan_set(&p, -1, -1, UC_NONE, CP_NONE);
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_METHOD || !(is_method_invoke(nt_str(c->nt, id, "name")) || is_bind_call(nt_str(c->nt, id, "name")))) return p;
+  an_pure_read_begin();
+  int mn = method_recv_node(c, recv);
+  int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  an_pure_read_end();
+  if (mi >= 0) cplan_set(&p, mi, c->scopes[mi].class_id, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, CP_DIRECT);
+  p.method_node = mn;
+  p.method_call = 1;
+  return p;
+}
+
+/* A literal-name arm emitted on boxed self uses the existing boxed
+   candidates. Its record must not admit new arms to the outer send. */
+CallPlan cplan_send_arm(Compiler *c, int id) {
+  CallPlan p = *cplan_user_fresh(c, id);
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (p.mi < 0 && nt_int(c->nt, id, "dyn_arm", 0) &&
+      (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode)) {
+    int npc = 0;
+    const char *name = nt_str(c->nt, id, "name");
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    cplan_resolve_poly(c, name, &p, pcs, npc);
+  }
+  return p;
+}
+
+CallPlan cplan_conversion(Compiler *c, int ci, const char *name) {
+  CallPlan p;
+  int mi = comp_method_in_chain(c, ci, name, NULL);
+  cplan_set(&p, mi, ci, UC_INST, cplan_dispatch_form(c, ci, name, mi >= 0));
+  p.chain = 1;
+  p.delegate = name;
+  return p;
+}
+
+CallPlan cplan_exception_render(Compiler *c, int id, int xcm) {
+  const char *name = nt_str(c->nt, id, "name");
+  int own = is_message_name(name) ? -1 : comp_method_in_chain(c, xcm, name, NULL);
+  /* #message is #to_s unless the class overrides #message itself: an
+     override answering something other than a String cannot ride the
+     const char * helper, so call it directly (#3868) */
+  if (own < 0 && is_message_name(name)) {
+    int mi8 = comp_method_in_chain(c, xcm, "message", NULL);
+    if (mi8 < 0) mi8 = comp_method_in_chain(c, xcm, "to_s", NULL);
+    if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
+        (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
+      own = mi8;
+  }
+  /* a subclass overriding a String #to_s is picked at run time by the
+     cls_name-keyed dispatcher below */
+  if (own >= 0 && is_to_s_name(name) && (TyKind)c->scopes[own].ret == TY_STRING) {
+    int sub_str = 0, sub_other = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k == xcm || !is_descendant(c, k, xcm)) continue;
+      int ko = comp_method_in_class(c, k, "to_s");
+      if (ko < 0) continue;
+      if ((TyKind)c->scopes[ko].ret == TY_STRING) sub_str = 1;
+      else sub_other = 1;
+    }
+    if (sub_str && !sub_other) own = -1;
+  }
+  CallPlan p;
+  cplan_set(&p, own, own >= 0 ? c->scopes[own].class_id : -1, UC_INST, own >= 0 ? CP_DIRECT : CP_NONE);
+  p.chain = 1;
+  p.delegate = own >= 0 && is_message_name(name) && is_to_s_name(c->scopes[own].name) ? "to_s" : NULL;
+  return p;
 }
 
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
@@ -457,13 +657,16 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   cplan_set(&ctx, -1, -1, UC_NONE, CP_NONE);
   if (id < 0 || id >= c->node_cap || self_ci >= c->nclasses || nt_kind(c->nt, id) != NK_CallNode)
     return &ctx;
-  const char *name = nt_str(c->nt, id, "name");
+  if ((flags & CPX_TARGET) && nt_int(c->nt, id, "builtin_only", 0)) return &ctx;
+  const char *name = flags & CPX_TARGET ? view_call_name(c, id) : nt_str(c->nt, id, "name");
   int mi = name ? comp_method_in_chain(c, self_ci, name, NULL) : -1;
   if (mi >= 0) {
-    cplan_set(&ctx, mi, self_ci, UC_INST, cplan_dispatch_form(c, self_ci, name, 1));
+    int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, self_ci, name, 1);
+    cplan_set(&ctx, mi, self_ci, UC_INST, form);
     ctx.chain = 1;
     return &ctx;
   }
+  if (flags & CPX_TARGET) return &ctx;
   /* a miss is no method, but a dispatch on the class still has a form: a
      method only descendants define takes the switch */
   if (!(flags & CPX_IE) && name) {
@@ -763,6 +966,9 @@ TyKind cplan_poly_operator_ret(Compiler *c, int id) {
     found = 1;
     if (c->scopes[mi].ret != TY_BOOL) return TY_POLY;
   }
+  /* the builtin #=== beside them is a Proc's or a Method's call for those
+     receivers, which answers any value (`->(x) { x * 128 } === 2` is 256) */
+  if (found && sp_streq(name, "===")) return TY_POLY;
   return found ? TY_BOOL : TY_UNKNOWN;
 }
 
@@ -1579,30 +1785,53 @@ int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
          comp_resolve_member(c, cid, name, 0, NULL, NULL) == SP_MEMBER_NONE;
 }
 
-/* The arms emit_poly_user_arms0 writes, class by class, in its order. */
+/* The user-class arms of a zero-argument poly dispatch, in emission order.
+   The plan supplies each class's method, reader, native binding or refusal. */
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
   int cap = 0;
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
   int nks = cpoly_arm_classes(c, id, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
+    /* A never-instantiated class can't be this poly value's runtime class,
+       so drop its arm (method or reader); the referenced symbol then DCEs
+       as an unreferenced static (#1608). A primitive reopen's instances
+       exist without any constructor, so it keeps its arm (#4219). */
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
+    /* native (C-backed) class arm: dispatch a declared no-arg method to its
+       C symbol on the cast receiver, coercing the result into the slot. */
     if (comp_native_binding_class(c, k, name) >= 0) {
       int nmi = comp_native_method_find(c, k, name, 0, 0);
+      /* only a binding that takes no argument: the lookup falls back to
+         any arity, and StringScanner#peek(len) beside two user `peek`s
+         got an arm calling it with none, which C refused (#5359). A
+         receiver of that class then lands in the default arm. */
       if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
         TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
         cpoly_add(p, &cap, PA_NATIVE, k, -1, mret, mret == TY_NIL ? PC_VOID : cpoly_conv(ret, mret));
       }
+      /* one that needs arguments is CRuby's ArgumentError for this call */
       else if (nmi >= 0 && c->native_methods[nmi].nargs > 0 && c->classes[k].instantiated)
         cpoly_add(p, &cap, PA_ARITY, k, -1, TY_UNKNOWN, PC_VOID);
       continue;
     }
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, name, &defcls);
+    /* an exception class with no method of its own for the name takes
+       the builtin reopening's (`class Exception; def brief`) */
     if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
       int xd = exc_arm_definer(c, k, name);
       if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
     }
+    /* A Struct's synthesized each or each_pair, called with no block on a
+       boxed receiver: the typed receiver answers an Enumerator over the
+       members (its blockless each is redirected through __enum_to_a, its
+       each_pair through to_h), and the synthesized method, which yields,
+       raised LocalJumpError when this arm called it with no block. The
+       each Enumerator is built over the member array the generated
+       per-class dispatch answers, the each_pair one over the member hash
+       the to_h hook answers, so it yields [name, value] pairs. Not for a
+       Data class, which has neither name in CRuby. */
     if (mi >= 0 && c->classes[k].is_struct && !c->classes[k].is_data && g_gen_obj_struct_values &&
         ret == TY_POLY && nt_ref(c->nt, id, "block") < 0 &&
         nt_str(c->nt, c->scopes[mi].def_node, "synth") &&
@@ -1610,6 +1839,13 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       cpoly_add(p, &cap, PA_SYNTH_ENUM, k, mi, TY_ENUMERATOR, PC_SAME);
       continue;
     }
+    /* Skip a method with no standalone definition to call: DCE-pruned (its
+       params stayed TY_UNKNOWN so it was marked unreachable) or inlined at
+       call sites because it yields. Emitting a `case` arm that calls the
+       absent `sp_Class_method` symbol dangles at link (issue #1583). The
+       class can never be the receiver of this poly value anyway. */
+    /* A yielding candidate has a proc form emitted for exactly this
+       dispatch (#3399); it is as callable as any other symbol here. */
     { char zexp[600]; int rdc0 = -1;
       if (poly_arm_refuses_none(c, mi, zexp, sizeof zexp) && !comp_reader_in_chain(c, k, name, &rdc0)) {
         cpoly_add(p, &cap, PA_ARITY, k, mi, TY_UNKNOWN, PC_VOID);
@@ -1621,6 +1857,9 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
         comp_resolve_member(c, k, name, 0, NULL, NULL) != SP_MEMBER_ATTR &&
         (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
         !(c->classes[defcls].name && sp_streq(c->classes[defcls].name, "Class"))) {
+      /* A proc form is a separately inferred clone, so its own return type
+         is the one to read -- not the original's, which an inlined-only
+         method never needed (#3399). */
       int pfi = scope_proc_form_of(c, mi);
       Scope *ms = &c->scopes[pfi >= 0 ? pfi : mi];
       TyKind cret = ms->ret;
@@ -2139,8 +2378,8 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
 }
 
 /* How a zero-argument dispatch holds and keys its receiver, and the type
-   its arms answer into (an OpenStruct member read makes an untyped call
-   poly), as emit_poly_method_dispatch decides them. */
+   its arms answer into. An OpenStruct member read makes an untyped call
+   poly; emission reads these flags and the adjusted result type. */
 static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, PolySpecials0 *out) {
   PolySpecials0 ps;
   poly_specials0(c, id, name, &ps);
@@ -2148,6 +2387,16 @@ static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, Pol
   if (ps.ostruct && (p->ret == TY_UNKNOWN || p->ret == TY_VOID || p->ret == TY_NIL)) p->ret = TY_POLY;
   int root = ps.ncall_arm > 0 || ps.lengthlike || ps.empty || ps.pred || ps.class_named ||
              ps.class_reflect || ps.ostruct || ps.io_rewind || ps.poly_to_a || ps.poly_to_h;
+  /* A String mutated in place and then stored is boxed as its
+     shared-mutable handle, which no String arm below reads: the chain
+     built for a name a user class shares answered it with the switch's
+     NoMethodError (#5048). A reading method sees the handle's live
+     string, so it is read through the deref; a mutator, and a question
+     about the object itself rather than its value, keep the handle. */
+  /* Only a name String answers (the face table's String rows, and the
+     length-like and empty? arms above them) builds a String arm, so only
+     those dispatches pay the deref: the hottest one, an attr reader
+     shared by an AST's node classes, never sees a String. */
   unsigned sface = ty_poly_face_owners(name, 0, nt_ref(c->nt, id, "block") >= 0, 1, 1);
   int deref = (ps.lengthlike || ps.empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
               !sp_str_mutator(name, SP_MUT_LOCAL);
@@ -2253,14 +2502,16 @@ const PolyPlan *cplan_poly_fresh(Compiler *c, int id) {
 const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   static PolyPlan bp;
   free(bp.arm);
-  bp.arm = NULL; bp.n = 0; bp.flags = 0;
+  bp.arm = NULL; bp.n = 0; bp.flags = 0; bp.native_block = 0;
   bp.ntype = bp.ret = comp_ntype(c, id);
   int cap = 0;
   int cand[64];
   int nc = poly_block_dispatch_cands(c, id, cand, 64);
   const char *name = nt_str(c->nt, id, "name");
-  for (int i = 0; i < nc; i++)
+  for (int i = 0; i < nc; i++) {
     cpoly_add(&bp, &cap, PA_USER, cand[i], comp_method_in_chain(c, cand[i], name, NULL), TY_UNKNOWN, PC_VOID);
+    if (c->classes[cand[i]].is_native_class) bp.native_block = 1;
+  }
   if (nc == 0) return &bp;
   /* map!/collect! rewrites a builtin array in place, given a block body */
   int block = nt_ref(c->nt, id, "block");
@@ -2276,18 +2527,75 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   return &bp;
 }
 
+/* A layout class need not be self's actual class. Use the existing flow
+   bound, or a class with no descendants; otherwise retain legacy calls.
+   Without a supplied class, the evidence-call emitter needs its existing
+   layout class proved exact, rather than a different actual class. */
+int cplan_visibility_class(Compiler *c, int id, int ci) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int layout_only = ci < 0;
+  if (layout_only && recv >= 0) {
+    TyKind rt = comp_ntype(c, recv);
+    if (ty_is_object(rt)) ci = ty_object_class(rt);
+  }
+  const ClsSet *s = cls_fact_node(c, recv);
+  if (s && !s->bv && s->n == 1 && cls_fact_bounded(c, s->cls[0]))
+    return layout_only && s->cls[0] != ci ? -1 : s->cls[0];
+  int n = 0;
+  if (ci >= 0 && cls_fact_bounded(c, ci)) comp_descendants(c, ci, &n);
+  return ci >= 0 && cls_fact_bounded(c, ci) && n == 0 ? ci : -1;
+}
+
+/* Missing hooks are not dispatched yet. New visibility checks retain the
+   old self-call behaviour when the existing method table defines a hook. */
+int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod) {
+  if (ci < 0 && !cmethod) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && !s->is_cmethod) ci = s->class_id;
+    if (ci < 0 && !self_is_main(c, id)) return 0;
+  }
+  if (ci >= 0 && (cmethod ? comp_cmethod_in_chain(c, ci, "method_missing", NULL)
+                          : comp_method_in_chain(c, ci, "method_missing", NULL)) >= 0) return 1;
+  if (!cmethod && ci >= 0 && class_is_blank_slate(c, ci)) return 0;
+  /* Object's methods include top-level defs; main has no user class entry. */
+  int obj = comp_class_index(c, "Object");
+  return (obj >= 0 && comp_method_in_chain(c, obj, "method_missing", NULL) >= 0) ||
+         comp_method_index(c, "method_missing") >= 0;
+}
+
 /* Whether the boxed class arm calls the method rather than raising for
-   its visibility. Explicit self may call private methods too. */
+   its visibility. Explicit self may call private methods too.
+   The class-body self stamp identifies the caller of a protected call. */
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
-  if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode) return 1;
+  if (nt_ignore_visibility(c->nt, id)) return 1;
   int owner = -1;
   int vis = comp_cmethod_vis_declared(c, ci, name, &owner);
-  if (vis == SP_VIS_PROTECTED) {
+  if (vis == SP_VIS_PROTECTED && !nt_str(c->nt, id, "vis_enforce")) {
+    if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode ||
+        nt_int(c->nt, id, "self_call", 0)) return 1;
     Scope *s = comp_scope_of(c, id);
     int caller = s && s->is_cmethod ? s->class_id : -1;
     if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) return 1;
   }
+  if (vis != SP_VIS_PUBLIC && !nt_str(c->nt, id, "vis_enforce") &&
+      (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode || nt_int(c->nt, id, "self_call", 0)) &&
+      cplan_has_method_missing(c, id, ci, 1)) return 1;
   return vis == SP_VIS_PUBLIC;
+}
+
+/* The class method a value of class k answers `nm` with in a boxed
+   class-method dispatch (cplan_poly_cmeth, and emit_unresolved_call's), or -1
+   when it has no arm there. A yielding class
+   method has no symbol of its own; its proc-form clone is the arm, taking
+   the block as a proc (#3399), through *pfk. */
+int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk) {
+  int mi = comp_cmethod_in_chain(c, k, nm, dc);
+  if (mi < 0) return -1;
+  int pf = scope_proc_form_of(c, mi);
+  if (pf >= 0 && !proc_form_live(c, pf)) pf = -1;
+  if (!scope_has_callable_symbol(c, mi) && pf < 0) return -1;
+  if (pfk) *pfk = pf;
+  return mi;
 }
 
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
@@ -2302,11 +2610,9 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   call_args(c->nt, id, &argc);
   for (int k = 0; k < c->nclasses; k++) {
     if (cls_sg_accessor_first(c, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
-    int mi = comp_cmethod_in_chain(c, k, name, NULL);
+    int pf = -1;
+    int mi = cplan_cmethod_arm(c, k, name, NULL, &pf);
     if (mi < 0) continue;
-    int pf = scope_proc_form_of(c, mi);
-    if (pf >= 0 && !proc_form_live(c, pf)) pf = -1;
-    if (!scope_has_callable_symbol(c, mi) && pf < 0) continue;
     TyKind mret = c->scopes[pf >= 0 ? pf : mi].ret;
     cpoly_add(&cp, &cap, pf >= 0 ? PA_PROC_FORM : PA_USER, k, mi, mret, mret == TY_POLY ? PC_SAME : PC_BOX);
   }
@@ -2420,7 +2726,8 @@ static int cplan_nil_user_method(Compiler *c, const char *name) {
 }
 
 int cplan_nil_written(int why) {
-  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL;
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL ||
+         why == NFW_TAKEN;
 }
 
 /* The name call id was written as: an alias of a reader is renamed to the
@@ -2555,4 +2862,3 @@ int cplan_nil(Compiler *c, int id) {
     return CN_NONE;
   return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
 }
-

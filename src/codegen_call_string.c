@@ -96,7 +96,7 @@ static void emit_match_block_body(Compiler *c, const int *body, int n, int tr, B
    the call itself is typed boxed (a receiver known only at run time, whose
    slot took the box), as the value's other readers take it. */
 static void emit_matchdata_as_call(Compiler *c, int id, const char *md, Buf *b) {
-  if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_MATCHDATA, md ? md : "NULL", b);
+  if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_MATCHDATA, md ? md : "NULL", b);
   else buf_puts(b, md ? md : "NULL");
 }
 

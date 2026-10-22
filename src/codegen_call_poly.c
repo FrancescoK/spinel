@@ -68,14 +68,25 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         Buf cb9; memset(&cb9, 0, sizeof cb9);
         /* a value that is no collection is the call's NoMethodError
            (sp_poly_enum_chk): nil.take(1) and its siblings answered [] */
-        buf_printf(&cb9, "%s(sp_poly_enum_chk(", pn9);
+        /* A count that can be nil, or a boxed one, is converted after that
+           check, which goes into a temp first: beside it in the helper's
+           arguments, the C compiler may convert first (x86-64 gcc does), and
+           nil's TypeError came ahead of the NoMethodError */
+        int late9 = argc == 1 && (node_has_oint_form(c, argv[0]) || repr_of(c, argv[0]).kind == RK_BOXED);
+        int tk9 = late9 ? ++g_tmp : -1;
+        if (late9) buf_printf(&cb9, "({ sp_RbVal _t%d = ", tk9);
+        else buf_printf(&cb9, "%s(", pn9);
+        buf_puts(&cb9, "sp_poly_enum_chk(");
         { Buf rb9; memset(&rb9, 0, sizeof rb9); emit_expr(c, recv, &rb9);
           buf_puts(&cb9, rb9.p ? rb9.p : "sp_box_nil()"); free(rb9.p); }
         buf_printf(&cb9, ", \"%s\")", name);
+        /* (rooted: for a user Enumerable the check answers a new Array, and
+           converting the count may run the program's to_int) */
+        if (late9) buf_printf(&cb9, "; SP_GC_ROOT_RBVAL(_t%d); %s(_t%d", tk9, pn9, tk9);
         if (argc == 1) { Buf nb9; memset(&nb9, 0, sizeof nb9); emit_int_expr(c, argv[0], &nb9);
                          buf_puts(&cb9, ", "); buf_puts(&cb9, nb9.p ? nb9.p : "0"); free(nb9.p); }
         else if (!sp_streq(name, "shuffle")) buf_puts(&cb9, ", 1");   /* rotate's default count */
-        buf_puts(&cb9, ")");
+        buf_puts(&cb9, late9 ? "); })" : ")");
         /* the helpers answer a boxed poly array; a slot typed as the array
            itself takes the pointer out of the box */
         emit_unbox_text(c, repr_of(c, id).as_ty, cb9.p ? cb9.p : "sp_box_nil()", b);

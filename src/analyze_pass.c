@@ -11733,7 +11733,7 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
       if (sn < 0) return 0;
       comp_grow_node_arrays(c);
       c->nscope[sn] = c->nscope[root];
-      nt_node_set_ref(nt, root, "receiver", sn);
+      nt_set_self_receiver(nt, root, sn);
       changed = 1;
     }
     if (nm && (is_instance_eval_family(nm))) skip = nt_ref(nt, root, "block");
@@ -12812,8 +12812,11 @@ int desugar_dir_surface(Compiler *c) {
       for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
       changed = 1; continue;
     }
-    /* blockless foreach/each_child still enumerate */
-    alias = dir_surface_alias(nm, 1);
+    /* a foreach/each_child given &b becomes entries/children (an Array, as
+       on master); one with no block at all answers its own Enumerator
+       (emit_call_file_dir_time_arms) */
+    alias = is_dir_blockless_iter(nm) && blk < 0
+            ? NULL : dir_surface_alias(nm, 1);
     if (alias) {
       nt_node_set_str(nt, id, "name", alias);
       nt_node_set_int(nt, id, "builtin_only", 1); changed = 1; continue;
@@ -13738,6 +13741,7 @@ static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
   free(av);
   nt_node_set_str(nt, call, "name", nmbuf);
   nt_node_set_ref(nt, call, "receiver", recv);
+  nt_set_ignore_visibility(nt, call, nt_ignore_visibility(nt, tgt));
   nt_node_set_ref(nt, call, "arguments", an);
   nt_node_set_ref(nt, call, "block", -1);
   return call;

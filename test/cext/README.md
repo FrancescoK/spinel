@@ -15,6 +15,11 @@ shifts so negative immediate encoding has no signed-shift undefined behaviour.
 Symbols are static IDs; the later source scanner must restrict computed method
 IDs before enabling extension dispatch.
 
+`ruby.h` brings in what CRuby's does for every extension: `_GNU_SOURCE` /
+`_DARWIN_C_SOURCE` ahead of any system header (so a `-std=c11` build still
+declares `clock_gettime` and `getpid`), `<stdbool.h>`, `<time.h>`,
+`<sys/types.h>`, `<unistd.h>` and `rb_pid_t`.
+
 The encoding and thread headers currently declare no operations. `rb_io_t`
 contains only `fd` and `mode`; obtaining it from a Ruby IO belongs to the IO API
 stage. Unsupported layout access emits a compiler error on GCC and Clang;

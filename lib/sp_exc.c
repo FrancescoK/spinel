@@ -100,6 +100,11 @@ int sp_exc_nearest_cls(const char *raised, const char *const *targets, int n) {
    NoMethodError elsewhere, matching per-class method definitions. */
 SP_COLD void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc) {SP_GC_ROOT(e);
   if (e && sp_exc_cls_matches(e->cls_name, cls)) return;
+  /* Preserve the failed call's receiver and empty argument list before
+     formatting/raising allocates. The staged values are GC roots. */
+  sp_exc_stage_recv(sp_box_nullable_obj(e, SP_BUILTIN_EXCEPTION));
+  sp_pending_exc_key = sp_box_poly_array(sp_PolyArray_new());
+  sp_pending_exc_flags |= 2;
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method '%s' for %s", acc,
                           e ? sp_sprintf("an instance of %s", e->cls_name) : "nil"));
@@ -1229,6 +1234,44 @@ const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
   char *r = sp_str_alloc_nogc(first + 2 + lc + 1 + tail);
   memcpy(r, msg, first); memcpy(r + first, " (", 2); memcpy(r + first + 2, cn, lc); r[first + 2 + lc] = ')';
   if (tail) memcpy(r + first + 2 + lc + 1, msg + first, tail);
+  return r;
+}
+/* CRuby bolds message lines and underlines the class on the first line.
+   Counted copies preserve embedded NULs and existing escape sequences. */
+const char *sp_exc_detailed_highlight(volatile sp_Exception *ve, const char *msg) {
+  sp_Exception *e = (sp_Exception *)ve; SP_GC_ROOT(e); SP_GC_ROOT_STR(msg);
+  const char *cn = sp_exc_cls_display(e && e->cls_name ? e->cls_name : "RuntimeError");
+  /* rooted: an unnamed class prints as a String the display builds, and
+     the copies below allocate before it is read */
+  SP_GC_ROOT_STR(cn);
+  size_t lm = sp_str_byte_len(msg);
+  if (!lm) return sp_exc_cat(3, SPL("\033[1;4m"),
+      !strcmp(cn, "RuntimeError") ? SPL("unhandled exception") : cn, SPL("\033[m"));
+  sp_String *s = sp_String_new("\033[1m"); SP_GC_ROOT(s);
+  const char *nl = memchr(msg, '\n', lm);
+  size_t first = nl ? (size_t)(nl - msg) : lm;
+  sp_String_append_n(s, msg, first);
+  /* an unnamed Class.new class leaves the first line's bold open, as CRuby does */
+  if (!sp_exc_cls_unnamed(cn)) {
+    sp_String_append(s, " (\033[1;4m"); sp_String_append(s, cn);
+    sp_String_append(s, "\033[m\033[1m)\033[m");
+  }
+  size_t pos = first + 1;
+  if (nl && pos < lm) {
+    sp_String_append(s, "\n");
+    while (pos < lm) {
+      nl = memchr(msg + pos, '\n', lm - pos);
+      size_t n = nl ? (size_t)(nl - msg - pos) : lm - pos;
+      if (n) {
+        sp_String_append(s, "\033[1m"); sp_String_append_n(s, msg + pos, n);
+        sp_String_append(s, "\033[m");
+      }
+      if (nl) sp_String_append(s, "\n");
+      pos += n + 1;
+    }
+  }
+  char *r = sp_str_alloc_nogc((size_t)s->len);
+  memcpy(r, s->data, (size_t)s->len);
   return r;
 }
 const char *sp_exc_inspect(void *p) {

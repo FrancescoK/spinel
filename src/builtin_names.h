@@ -309,6 +309,13 @@ int is_string_read_only_method(const char *name);
 int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+int is_include_name(const char *n);
+int is_prepend_name(const char *n);
+int is_comparable_module_name(const char *n);
+int is_enumerable_module_name(const char *n);
+int is_comparable_builtin_name(const char *n);
+typedef enum { BDC_BUILTIN, BDC_IDENTITY, BDC_EQUAL } BuiltinDefaultCmp;
+BuiltinDefaultCmp builtin_default_cmp(int family);
 int builtin_comparable_owns(const char *cls, const char *name); /* Comparable's, on a class including it */
 int builtin_comparable_arity(const char *name);
 int builtin_numeric_owns(const char *cls, const char *name); /* Numeric's, on Integer or Float */
@@ -362,6 +369,7 @@ int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
 
 const char *dir_surface_alias(const char *n, int blockless_iter);
+int is_dir_blockless_iter(const char *n);  /* foreach each_child: an Enumerator without a block */
 
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
@@ -405,4 +413,18 @@ int is_first_name(const char *n);             /* first */
 
 const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
 const char *builtin_operator_delegate(const char *name);
+int is_mul_op(const char *n); /* * */
+int is_pow_op(const char *n); /* ** */
+int is_minus_op(const char *n); /* - */
+int is_clone_name(const char *n); /* clone */
+int is_cover_name(const char *n); /* cover? */
+int is_flatten_name(const char *n); /* flatten */
+int is_hash_name(const char *n); /* hash */
+int is_puts_name(const char *n); /* puts */
+int is_to_f_name(const char *n); /* to_f */
+int is_to_i_name(const char *n); /* to_i */
+int is_intersect_name(const char *n); /* intersect? */
+/* size, length, count, empty?: names the containers answer and an
+   OpenStruct does not define, so its member (or nil) answers them */
+int ostruct_member_name(const char *n);
 #endif

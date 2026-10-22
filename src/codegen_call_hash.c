@@ -196,14 +196,15 @@ int emit_op_hash_aref(Compiler *c, const BopCtx *x, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  TyKind arg_kt = comp_ntype(c, argv[0]);
+  Repr arg_ktr = repr_of(c, argv[0]);
+  TyKind arg_kt = arg_ktr.as_ty;
   TyKind hash_kt = ty_hash_key(rt);
   /* key type mismatch: sym key on str-keyed hash (or vice versa) -- the key
      can never exist in the hash, so always return the hash's default
      value. A Symbol on a String-keyed hash was excepted here and
      coerced to its name; that was an older Hash.new{} model (#4531). */
   if (hash_kt != TY_POLY && hash_kt != TY_UNKNOWN &&
-      arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
+      arg_ktr.kind != RK_BOXED && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
       !(hash_kt == TY_STRING && arg_kt == TY_STRBUF) &&
       !hash_nil_key_stored(c, argv[0], hash_kt)) {
     TyKind vt = ty_hash_val(rt);
@@ -388,15 +389,31 @@ int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b) {
     if (kt == TY_STRING) buf_puts(b, "_hk = sp_poly_strbuf_deref(_hk); _hk.tag == SP_TAG_STR ? _hk.v.s : (const char *)0; })");
     else buf_puts(b, "_hk.tag == SP_TAG_SYM ? (sp_sym)_hk.v.i : (sp_sym)-1; })");
   }
-  else {
-    buf_printf(b, "; %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[0], kt, b);
+  /* ...and on an Integer-keyed table, a key that may be nil or another
+     class goes through the _okey ops (hash_okey_form), where it misses as
+     CRuby's lookup does: converted, a nil key raised TypeError where
+     CRuby's KeyError names it */
+  else if (hash_okey_form(c, argv[0], kt) && repr_of(c, argv[0]).kind == RK_BOXED) {
+    tb = ++g_tmp;
+    buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_oint _t%d = ", tb, tk);
+    char tbn[32]; snprintf(tbn, sizeof tbn, "_t%d", tb);
+    emit_opw_okey_read(tbn, b);
   }
-  buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_%s(_t%d, _t%d) : (",
-             hn, th, tk, hn, vo ? "vget" : "get", th, tk);
+  else {
+    buf_printf(b, "; %s _t%d = ", hash_key_ctype(c, argv[0], kt), tk); emit_hash_key_o(c, argv[0], kt, b);
+  }
+  const char *ks = hash_okey_sfx(c, argv[0], kt);
+  if (vo && ks[0])
+    buf_printf(b, "; sp_%sHash_has_key_okey(_t%d, _t%d) ? sp_%sHash_vget(_t%d, _t%d.v) : (", hn, th, tk, hn, th, tk);
+  else
+    buf_printf(b, "; sp_%sHash_has_key%s(_t%d, _t%d) ? sp_%sHash_%s%s(_t%d, _t%d) : (",
+               hn, ks, th, tk, hn, vo ? "vget" : "get", vo ? "" : ks, th, tk);
   buf_puts(b, "sp_exc_stage_recv(");
   emit_boxed_text(c, rt, htmp, b);
   buf_puts(b, "), sp_raise_key_not_found(");
   if (tb >= 0) buf_printf(b, "_t%d", tb);
+  else if (ks[0]) buf_printf(b, "%s(_t%d)", oint_box(kt), tk);
   else emit_boxed_text(c, kt, keytmp, b);
   buf_printf(b, "), %s); })", miss_v);
   return 1;
@@ -1179,10 +1196,11 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);
     if (dn >= 0) {
-      TyKind dt = repr_of(c, dn).as_ty;
+      Repr dtr = repr_of(c, dn);
+      TyKind dt = dtr.as_ty;
       int t = ++g_tmp;
       buf_puts(b, "({ ");
-      emit_ctype(c, dt, b);
+      emit_ctype(c, dtr.kind == RK_BOXED ? TY_POLY : dt, b);
       buf_printf(b, " _t%d = ", t);
       emit_expr(c, dn, b);
       buf_puts(b, "; ");
@@ -1193,7 +1211,7 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
           char dv[24]; snprintf(dv, sizeof dv, "_t%d", t);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", ta);
-          if (dt == TY_POLY) buf_puts(b, dv); else emit_boxed_text(c, dt, dv, b);
+          if (dtr.kind == RK_BOXED) buf_puts(b, dv); else emit_boxed_text(c, dt, dv, b);
           buf_puts(b, "); ");
         }
         buf_printf(b, "_t%d; })", ta);

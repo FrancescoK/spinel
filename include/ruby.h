@@ -2,9 +2,26 @@
 #ifndef SPINEL_RUBY_H
 #define SPINEL_RUBY_H
 
+/* What CRuby's ruby.h brings in for every extension, ahead of any system
+   header as its config.h does: the GNU / Darwin feature macros, so a
+   -std=c11 build still declares clock_gettime and getpid, and <time.h>,
+   <unistd.h>, bool and rb_pid_t (sqlite3 keeps a struct timespec deadline
+   and the pid that opened the database) */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <limits.h>
+#include <stdbool.h>
+#include <time.h>
+#include <sys/types.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +30,7 @@ extern "C" {
 typedef uintptr_t VALUE;
 typedef uintptr_t ID;
 typedef intptr_t SIGNED_VALUE;
+typedef pid_t rb_pid_t;
 
 #define Qfalse ((VALUE)0x00)
 #define Qnil   ((VALUE)0x08)

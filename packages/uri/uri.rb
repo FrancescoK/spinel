@@ -272,9 +272,13 @@ module URI
       h = args.nil? ? kw : args
       comps = component
       if h.is_a?(Array) && h.size == comps.size - 1
+        # built in its own Hash: stored into h, which also holds the
+        # caller's kw, the []= took a receiver that may be any Struct, and
+        # a String component was refused as a Struct member's (#9258)
         a = h
-        h = {}
-        comps[1..-1].each_with_index { |c, i| h[c] = a[i] }
+        built = {}
+        comps[1..-1].each_with_index { |c, i| built[c] = a[i] }
+        h = built
       elsif h.is_a?(Hash)
         h = h.dup
       else

@@ -1282,6 +1282,10 @@ sp_oint sp_File_getbyte(sp_File *f);   /* IO#getbyte: nil at EOF */
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 /* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
 const char *sp_File_readpartial(sp_File *f, sp_int n);
+/* IO#readpartial(n) and #sysread(n) without a buffer: a negative n is
+   ArgumentError, raised before the stream is checked, each in CRuby's words */
+const char *sp_File_readpartial_checked(sp_File *f, sp_int n);
+const char *sp_File_sysread_checked(sp_File *f, sp_int n);
 /* The same read answering NULL at EOF instead of raising: a boxed output
    buffer is emptied before the EOFError (the codegen's output-buffer path). */
 const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n);
@@ -2149,7 +2153,8 @@ static sp_bool sp_io_in_lists(const char *m, const char *const *both,
 }
 static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   static const char *const statm[] = { "blksize", "blockdev?", "blocks", "chardev?",
-    "dev", "directory?", "executable?", "file?", "gid", "grpowned?", "ino", "mode",
+    "dev", "dev_major", "dev_minor", "directory?", "executable?", "executable_real?",
+    "file?", "gid", "grpowned?", "ino", "mode",
     "nlink", "owned?", "pipe?", "rdev", "readable?", "setgid?", "setuid?", "size",
     "size?", "socket?", "sticky?", "symlink?", "uid", "writable?", "zero?", NULL };
   static const char *const statm_t[] = { "atime", "birthtime", "ctime", "ftype",
@@ -4963,6 +4968,12 @@ static sp_bool sp_poly_io_is_stat(sp_RbVal v) {
   sp_File *f = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO ? (sp_File *)v.v.p : NULL;
   return f && f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0);
 }
+/* New Stat-only accessors must not leak through the shared TY_IO handle type. */
+static SP_INLINE sp_File *sp_stat_extended_recv(sp_File *f, const char *name) {
+  sp_RbVal v = sp_box_obj(f, SP_BUILTIN_IO);
+  if (!sp_poly_io_is_stat(v)) sp_raise_poly_nomethod(name, v);
+  return f;
+}
 static sp_bool sp_poly_io_owns(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p && ((sp_File *)v.v.p)->is_file;
 }
@@ -6201,6 +6212,7 @@ static sp_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, sp_bool *comparable);
    result clears *comparable, which the callers turn into an ArgumentError. */
 typedef sp_int (*sp_obj_cmp_fn)(sp_RbVal a, sp_RbVal b, sp_bool *comparable);
 static sp_obj_cmp_fn sp_obj_cmp_hook = NULL;
+static sp_bool (*sp_obj_comparable_hook)(int cls_id) = NULL;
 #define SP_IS_BUILTIN_ARRAY(id) ((id) == SP_BUILTIN_INT_ARRAY || (id) == SP_BUILTIN_STR_ARRAY || \
                                  (id) == SP_BUILTIN_FLT_ARRAY || (id) == SP_BUILTIN_POLY_ARRAY)
 /* A String compared with a user object that answers #to_str: CRuby's
@@ -6309,6 +6321,10 @@ static SP_INLINE sp_oint sp_poly_spaceship_body(sp_RbVal a, sp_RbVal b) {
   if (a.tag == b.tag &&
       (a.tag == SP_TAG_NIL || (a.tag == SP_TAG_BOOL && a.v.b == b.v.b)))
     return sp_oint_of(0);
+  /* A Comparable program object's default was already answered by the hook:
+     retrying equality repeats it or bypasses Numeric's identity rule. */
+  if (sp_poly_is_user_obj(a) && sp_obj_comparable_hook &&
+      sp_obj_comparable_hook(a.cls_id)) return sp_oint_nil();
   /* the default Object#<=> answers 0 when the operands are ==, nil otherwise
      -- so an object compared with itself is 0, not nil (#3017) */
   if (sp_poly_rb_equal(a, b)) return sp_oint_of(0);
@@ -6357,9 +6373,13 @@ SP_NORETURN SP_COLD static void sp_poly_nil_nomethod(const char *op) {
 #define SP_POLY_NIL_RECV(OP) do { if (SP_UNLIKELY(sp_poly_recv_nil(a))) sp_poly_nil_nomethod(OP); } while (0)
 /* The same test where the emitter, not a helper, owns the comparison --
    `between?` renders as two sp_poly_cmp_ck calls, and only the call site
-   knows which method was written. */
+   knows which method was written. A program object without Comparable
+   raises NoMethodError here too, before the spaceship comparison. */
 static void sp_poly_recv_ck(sp_RbVal v, const char *op) {
   if (SP_UNLIKELY(sp_poly_recv_nil(v))) sp_poly_nil_nomethod(op);
+  if (sp_poly_is_user_obj(v)) {
+    if (!sp_obj_comparable_hook || !sp_obj_comparable_hook(v.cls_id)) sp_raise_nomethod(sp_nomethod_msg(op, v));
+  }
 }
 /* Module#< / <= / > / >= on a boxed class: ordered by the class graph, and a
    non-class operand raises as CRuby does. Two unrelated classes answer nil
@@ -6373,10 +6393,10 @@ static int sp_poly_class_ord(sp_RbVal a, sp_RbVal b, sp_int *r) {
   return 1;
 }
 #define SP_POLY_CLASS_CMP(REL) do { sp_int _r = 0; int _k = sp_poly_class_ord(a, b, &_r); if (_k) return _k > 0 && _r REL 0; } while (0)
-static sp_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<"); SP_POLY_CLASS_CMP(<); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i < b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<"); SP_POLY_COERCE_CMP("<"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
-static sp_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<="); SP_POLY_CLASS_CMP(<=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i <= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<="); SP_POLY_COERCE_CMP("<="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
-static sp_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">"); SP_POLY_CLASS_CMP(>); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i > b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">"); SP_POLY_COERCE_CMP(">"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
-static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_POLY_CLASS_CMP(>=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i >= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">="); SP_POLY_COERCE_CMP(">="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
+static sp_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<"); SP_POLY_CLASS_CMP(<); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i < b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<"); sp_poly_recv_ck(a, "<"); SP_POLY_COERCE_CMP("<"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
+static sp_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<="); SP_POLY_CLASS_CMP(<=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i <= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<="); sp_poly_recv_ck(a, "<="); SP_POLY_COERCE_CMP("<="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
+static sp_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">"); SP_POLY_CLASS_CMP(>); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i > b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">"); sp_poly_recv_ck(a, ">"); SP_POLY_COERCE_CMP(">"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
+static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_POLY_CLASS_CMP(>=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i >= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">="); sp_poly_recv_ck(a, ">="); SP_POLY_COERCE_CMP(">="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
 /* `a < b` etc. where a user class's operator may answer a non-bool (ruby-vips'
    Image#> builds an image): the user method's own value, else the builtin
    comparison boxed. */
@@ -17061,6 +17081,22 @@ static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_box_sym(sp_sym_intern(v.v.s));
   return v;
 }
+/* Builtin detailed_message's option validation precedes message rendering. */
+static sp_Exception *sp_exc_detailed_receiver(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id)))
+    return (sp_Exception *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg("detailed_message", v));
+  return NULL;
+}
+static sp_bool sp_exc_highlight_check(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return FALSE;
+  if (v.tag == SP_TAG_BOOL) return v.v.b;
+  SP_GC_ROOT_RBVAL(v);
+  const char *text = sp_poly_inspect(v); SP_GC_ROOT_STR(text);
+  sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as highlight: %s", text));
+  return FALSE;
+}
 static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   /* a user exception subclass boxes under its own class id; its object is
      an sp_Exception all the same */
@@ -17088,6 +17124,16 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
      logger gem's Formatter asks `if msg.backtrace` of a poly message */
   if (!strcmp(which, "backtrace")) return e->backtrace ? sp_box_str_array(e->backtrace) : sp_box_nil();
   return sp_box_nil();
+}
+/* A missing accessor is a failed zero-argument Ruby call, with the same
+   receiver wording and NoMethodError metadata as ordinary dispatch. */
+static sp_RbVal sp_poly_exc_acc_m(sp_RbVal v, const char *which) {
+  if (!(v.tag == SP_TAG_OBJ && v.v.p &&
+        (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id)))) {
+    SP_GC_ROOT_RBVAL(v);
+    return sp_raise_nomethod(sp_nomethod_msg_args(which, v, 0, NULL));
+  }
+  return sp_poly_exc_acc(v, which);
 }
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "LocalJumpError", "reason");
@@ -17752,6 +17798,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind);
 sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, double timeout);
 sp_oint sp_file_size_q(const char *path);   /* File.size?: nil when missing or empty */
 sp_bool sp_file_pipe(const char *path);
+sp_bool sp_file_pipe_io(sp_File *io);
 sp_bool sp_file_identical(const char *a, const char *b);
 const char *sp_file_realpath(const char *path);
 sp_bool sp_file_absolute_path_p(const char *path);
@@ -18925,6 +18972,9 @@ sp_Enumerator *sp_loop_enum(void);
    one streams by succ, a bounded one's step members are materialized. */
 sp_Enumerator *sp_srange_endless_enum(sp_RbVal box, sp_int step);
 sp_Enumerator *sp_srange_stepped_enum(sp_RbVal src, sp_int n, const char *label);
+/* Blockless Dir.foreach, or Dir.each_child when children is set (sp_cold.c). */
+sp_Enumerator *sp_dir_foreach_enum(sp_RbVal path, sp_RbVal encoding,
+                                  const char *(*get_path)(sp_RbVal), int children);
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   /* The receiver is the caller's temporary -- `(11..55).each` passes it straight
      in, unreachable from anywhere else -- and BOTH arms below allocate before

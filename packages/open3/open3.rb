@@ -18,7 +18,11 @@ module Open3
     if args.size == 1 && args[0].is_a?(String) && args[0].match?(/[\s*?{}\[\]<>()~&|\\$;'`"\n#=%]/)
       args = ["/bin/sh", "-c", args[0]]
     end
-    dir = Dir.mktmpdir("spinel_open3")
+    # A private copy of the path: the String Dir.mktmpdir answers is shared
+    # with every other caller's, so where a program changes one in place
+    # the route that hands this one on was refused (#9258). Only the path
+    # is read here.
+    dir = Dir.mktmpdir("spinel_open3").dup
     outf = File.join(dir, "out")
     errf = File.join(dir, "err")
     inf = stdin_data ? File.join(dir, "in") : nil

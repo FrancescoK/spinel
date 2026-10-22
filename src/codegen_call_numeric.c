@@ -591,14 +591,15 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
 /* Is the receiver of a times / upto / downto form held as an sp_int, or boxed
    (an Integer parameter under promote mode)? */
 static int int_or_boxed_operand(Compiler *c, int node) {
-  TyKind t = repr_of(c, node).as_ty;
-  return t == TY_INT || t == TY_POLY;
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  return t == TY_INT || tr.kind == RK_BOXED;
 }
 
 /* Is a limit a boxed or Bignum value, which the step forms read by its kind? */
 static int boxed_or_big_operand(Compiler *c, int node) {
   Repr r = repr_of(c, node);
-  return r.as_ty == TY_POLY || r.big;
+  return r.kind == RK_BOXED || r.big;
 }
 
 /* the Integer and Range iterators in expression position: range.step(n) { }, times / upto / downto / step with a block (answering the receiver), and the blockless forms that answer a Range */
@@ -719,6 +720,33 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   return 0;
 }
 
+/* Float#rationalize(eps), shared by the typed route (emit_op_float_rationalize)
+   and a nullable Float's: CRuby reads eps.abs. An epsilon of a number kind,
+   or boxed, converts; any other raises NoMethodError for #abs (a user
+   object's own abs is not called), not a conversion's TypeError. */
+int rationalize_eps_is_number(TyKind et) {
+  return et == TY_RATIONAL || et == TY_COMPLEX || et == TY_INT || et == TY_FLOAT ||
+         et == TY_BIGINT || et == TY_POLY || et == TY_UNKNOWN;
+}
+void emit_rationalize_eps_raise(Compiler *c, int arg, Buf *b) {
+  buf_puts(b, "sp_raise_nomethod(sp_nomethod_msg(\"abs\", ");
+  emit_boxed(c, arg, b);
+  buf_puts(b, "));");
+}
+/* The epsilon as the float sp_float_rationalize takes. emit_float_expr casts
+   a Rational with (sp_float)(<struct>), which the C compiler rejects, so a
+   Rational goes through sp_rational_to_f (#3224). */
+void emit_rationalize_eps_float(Compiler *c, int arg, TyKind et, Buf *b) {
+  if (et == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else if (et == TY_COMPLEX) { buf_puts(b, "sp_complex_abs("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else if (et == TY_POLY || et == TY_UNKNOWN) {
+    int t = ++g_tmp;
+    buf_puts(b, "({ "); t = hold_operand(c, arg, TY_POLY, 1, t, 1, " ", b);
+    buf_printf(b, "sp_poly_to_f_with_rational(sp_poly_abs(_t%d)); })", t);
+  }
+  else emit_float_expr(c, arg, b);
+}
+
 int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
@@ -731,28 +759,15 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   else emit_expr(c, x->recv, &rf);
   if (x->rt == TY_RATIONAL) buf_puts(&rf, ")");
   const char *r = rf.p ? rf.p : "";
-  /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
-     casts a Rational arg with (sp_float)(<struct>), which the C compiler
-     rejects; convert it through sp_rational_to_f instead (#3224). */
   TyKind et = repr_of(c, arg).as_ty;
-  /* an epsilon that is no number: CRuby asks it for its #abs, which
-     it does not answer -- NoMethodError, not a conversion's TypeError */
-  if (et != TY_RATIONAL && et != TY_COMPLEX && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&
-      et != TY_UNKNOWN) {
-    buf_printf(b, "({ (void)(%s); sp_raise_nomethod(sp_nomethod_msg(\"abs\", ", r);
-    emit_boxed(c, arg, b);
-    buf_puts(b, ")); sp_float_rationalize0(0.0); })");
+  if (!rationalize_eps_is_number(et)) {
+    buf_printf(b, "({ (void)(%s); ", r);
+    emit_rationalize_eps_raise(c, arg, b);
+    buf_puts(b, " sp_float_rationalize0(0.0); })");
   }
   else {
     buf_printf(b, "sp_float_rationalize(%s, ", r);
-    if (et == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-    else if (et == TY_COMPLEX) { buf_puts(b, "sp_complex_abs("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-    else if (et == TY_POLY || et == TY_UNKNOWN) {
-      int t = ++g_tmp;
-      buf_puts(b, "({ "); t = hold_operand(c, arg, TY_POLY, 1, t, 1, " ", b);
-      buf_printf(b, "sp_poly_to_f_with_rational(sp_poly_abs(_t%d)); })", t);
-    }
-    else emit_float_expr(c, arg, b);
+    emit_rationalize_eps_float(c, arg, et, b);
     buf_puts(b, ")");
   }
   free(rf.p);

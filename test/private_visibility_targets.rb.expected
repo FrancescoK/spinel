@@ -1,0 +1,24 @@
+[2, 3]
+private method 'v=' called for an instance of PrivateVisibilityTargets
+private method '[]=' called for an instance of PrivateVisibilityTargets
+private method '[]=' called for an instance of PrivateVisibilityTargets
+7
+protected method 'protected_value' called for an instance of PrivateVisibilityTargets
+private method 'v=' called for an instance of PrivateVisibilityTargets
+8
+protected method 'reopened_protected' called for an instance of PrivateVisibilityTargets
+private method 'visibility_main_private' called for main
+12
+11
+private method 'visibility_main_private' called for an instance of ExplicitVisibilityHelperTarget
+21
+21
+22
+23
+24
+1
+private method 'v=' called for an instance of LocalVisibilityTarget
+0
+3
+25
+26

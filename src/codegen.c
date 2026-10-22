@@ -93,7 +93,9 @@ int poll_scope_on_cycle(Compiler *c, int si) {
     int ns = c->nscopes;
     const NodeTable *nt = c->nt;
     free(g_poll_cyc); g_poll_cyc = calloc((size_t)ns + 1, 1); g_poll_cyc_n = ns;
-    unsigned char *dyn = calloc((size_t)ns + 1, 1);
+    unsigned char *dyn = calloc(((size_t)ns + 1) * 2, 1);
+    if (!dyn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    unsigned char *forwarded = dyn + ns + 1;
     int cap = 1024, ne = 0; int *ef = malloc(cap * sizeof(int)), *et = malloc(cap * sizeof(int));
     NT_FOREACH_KIND(nt, NK_CallNode, n) {
       int from = c->nscope[n];
@@ -109,7 +111,7 @@ int poll_scope_on_cycle(Compiler *c, int si) {
       if (bk >= 0 && nt_kind(nt, bk) != NK_BlockNode) {
         dyn[from] = 1;
         int cn2, f2 = poll_names_of(c, nm, &cn2);
-        for (int k = 0; k < cn2; k++) dyn[g_poll_names[f2 + k].scope] = 1;
+        for (int k = 0; k < cn2; k++) forwarded[g_poll_names[f2 + k].scope] = 1;
         continue;
       }
       /* a literal block runs inside each method of the name that yields: an
@@ -176,7 +178,13 @@ int poll_scope_on_cycle(Compiler *c, int si) {
        callers of one that yields, whose body runs spliced into theirs */
     int *q = malloc(sizeof(int) * (size_t)(ns + 1)), qh = 0, qt = 0;
     unsigned char *seen = calloc((size_t)ns + 1, 1);
-    for (int v = 0; v < ns; v++) if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
+    /* A target handed an unknown proc polls itself. That fact belongs to
+       that invocation, not to another caller's literal block. Real dynamic
+       calls in its body still propagate, and SCC edges still retain cycles. */
+    for (int v = 0; v < ns; v++) {
+      if (forwarded[v]) g_poll_cyc[v] = 1;
+      if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
+    }
     while (qh < qt) {
       int v = q[qh++];
       g_poll_cyc[v] = 1;
@@ -1315,11 +1323,11 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      (emit_int_expr_nilable, strict == 0) keep their looseness, and a Range
      endpoint is a nilable slot for exactly this reason: `s[ix..]` with a nil
      ix is a beginless Range in CRuby, not an error. */
-  if (strict == 1 && comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (strict == 1 && repr_opt_kind(c, node) == TY_INT) {
     emit_oint_unwrap_ck(c, node, TY_INT, NULL, b);
     return;
   }
-  if (strict && comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (strict && repr_opt_kind(c, node) == TY_INT) {
     buf_printf(b, "%s(", strict == 3 ? "sp_oint_arg_offt" : strict == 2 ? "sp_oint_arg_of" : "sp_oint_arg");
     emit_oint_expr(c, node, TY_INT, b);
     buf_puts(b, ")");
@@ -1330,7 +1338,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   /* a boxed value (an Integer under --int-overflow=promote): an Integer
      argument's checked conversion, its TypeError for any other class */
   int unboxed = tmp.p && !strncmp(tmp.p, "sp_poly_arg_int_chk(", 20);
-  if (comp_ntype(c, node) == TY_POLY && !unboxed)
+  if (repr_of(c, node).kind == RK_BOXED && !unboxed)
     buf_printf(b, "sp_poly_arg_int_chk(%s)", tmp.p ? tmp.p : "sp_box_nil()");
   /* ...which an arm's operand override already read as the Integer it
      checked, or its view as the Integer it unboxed */
@@ -1463,7 +1471,7 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
     buf_puts(b, "((void)("); emit_expr(c, node, b); buf_printf(b, "), (sp_int)(%s))", none);
     return;
   }
-  if (comp_ntype(c, node) == TY_INT && node_has_oint_form(c, node)) {
+  if (repr_opt_kind(c, node) == TY_INT) {
     int tn = ++g_tmp;
     buf_printf(b, "({ sp_oint _t%d = ", tn);
     emit_oint_expr(c, node, TY_INT, b);
@@ -1472,7 +1480,7 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
   }
   /* a boxed endpoint (an Integer local under --int-overflow=promote): its
      nil is the absent bound, anything else converts strictly */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     int tn = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tn);
     emit_expr(c, node, b);
@@ -1611,9 +1619,10 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
    for nil, true, false and a Symbol and its class name otherwise -- not the
    conversion slot's "can't convert X into Float". */
 void emit_float_coerce_expr(Compiler *c, int node, Buf *b) {
-  TyKind t = comp_ntype(c, node);
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
   /* a boxed value: the runtime asks the same of its class */
-  if (t == TY_POLY) {
+  if (tr.kind == RK_BOXED) {
     buf_puts(b, "sp_poly_float_operand(");
     emit_boxed(c, node, b);
     buf_puts(b, ")");
@@ -5073,7 +5082,7 @@ static int sg_parent_answers_as_object(Compiler *c, int par, const char *n) {
   int eqs = sp_streq(n, "==") || sp_streq(n, "!=") || sp_streq(n, "===");
   if (eqs && !sp_streq(n, "==") && !sg_parent_answers_as_object(c, par, "==")) return 0;
   if (comp_method_in_chain(c, par, n, NULL) >= 0 || comp_reader_in_chain(c, par, n, NULL) ||
-      class_implicit_responds(c, par, n) || (eqs && class_mixes_in(c, par, "Comparable", 0)))
+      class_implicit_responds(c, par, n) || (eqs && class_is_comparable(c, par)))
     return 0;
   for (int p = par, d = 0; p >= 0 && d <= c->nclasses; d++) {
     ClassInfo *k = &c->classes[p];
@@ -14329,14 +14338,19 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* the target is the super's plan (call_plan.c) when it was looked up where
      this splice looks: the shadow's class, or the parent's chain under this
      method's own name. The plan asks the chain for the user name
-     (comp_super_name), which a proc-form clone's, a prepend's or an
-     include's copy does not carry: the splice looks those up by the copy's
-     name and leaves them to emit_super. Those, and under --plan-check as the
-     assertion, take the lookup. */
+     (comp_super_name), which a proc-form clone's does not carry: the splice
+     looks that up by the clone's name and leaves it to emit_super. A
+     prepend's or an include's copy is the method it copies, looked up under
+     that method's name: under the copy's name it missed, and emit_super's
+     call form, written inside an inlined body, called the parent's plain
+     function, which a yielding parent does not have, and dropped the block
+     (`super { |v| yield v + 1 }` in a class that prepends). Those, and
+     under --plan-check as the assertion, take the lookup. */
   const CallPlan *spl = cplan_user(c, id);
+  const char *own = comp_prep_user_name(s->name);
   int mi = -1;
   if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
-      (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, s->name)))) {
+      (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, own)))) {
     mi = spl->mi;
     if (!shadow) defcls = c->scopes[mi].class_id;
   }
@@ -14346,8 +14360,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
                                       : comp_method_in_class(c, s->class_id, shadow))
             : p < 0 ? -1
-            : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &odef)
-                            : comp_method_in_chain(c, p, s->name, &odef);
+            : cplan_super_chain_mi(c, s, p, own);
+    if (!shadow && omi >= 0) odef = c->scopes[omi].class_id;
     if (mi < 0) {
       if (g_plan_check && omi >= 0)
         fprintf(stderr, "plan-check: cplan-fallback: super-inline node %d %s\n", id, s->name);
@@ -14443,12 +14457,24 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_param_name = m->blk_param;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
+  const char *saved_ypr_fb = g_yield_proc_ref_fallback, *saved_ypr_fb2 = g_yield_proc_ref_fallback2;
+  TyKind saved_yslot_fb = g_yield_slot_ty_fallback, saved_yslot_fb2 = g_yield_slot_ty_fallback2;
   /* an explicit `&proc` or `&nil` replaces a lowered caller's own block */
   int saved_low = g_current_scope_is_lowered;
   if (explicit_block_arg) g_current_scope_is_lowered = 0;
   if (fwd_yield_proc || explicit_block_arg) {
     g_yield_proc_ref = fwd_yield_proc;
     g_yield_slot_ty = as_expr ? repr_of(c, id).as_ty : TY_UNKNOWN;
+  }
+  /* The super's literal block replaces a proc the overriding method was
+     given (`m(&pr)`): the parent's yields run the block, and the block's own
+     yields, the overriding method's, run the proc, as an inlined call with a
+     literal block hands it over. Left set, the parent's yields called the
+     proc and skipped the block (`super { |v| yield v + 1 }` yielded 1). */
+  else if (block >= 0 && block != saved_block) {
+    g_yield_proc_ref_fallback2 = saved_ypr_fb; g_yield_slot_ty_fallback2 = saved_yslot_fb;
+    g_yield_proc_ref_fallback = saved_ypr; g_yield_slot_ty_fallback = saved_yslot;
+    g_yield_proc_ref = NULL;
   }
 
   if (as_expr) buf_puts(b, "({\n");
@@ -14581,6 +14607,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_rescue_base = saved_bbres; g_brk_rescue_base = saved_bres;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_yield_proc_ref = saved_ypr; g_yield_slot_ty = saved_yslot;
+  g_yield_proc_ref_fallback = saved_ypr_fb; g_yield_slot_ty_fallback = saved_yslot_fb;
+  g_yield_proc_ref_fallback2 = saved_ypr_fb2; g_yield_slot_ty_fallback2 = saved_yslot_fb2;
   g_current_scope_is_lowered = saved_low;
   free(fwd_pb.p);
   return 1;
@@ -14751,23 +14779,11 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
 }
 
 /* emit_super's target from the super's plan (call_plan.c) when the plan was
-   looked up in `owner` (the shadow's class, or the parent's chain), or -1.
-   The form's own lookup runs when this gives -1, and under --plan-check,
-   where super_plan_check holds the two against each other (`what` names the
-   form). */
+   resolved in owner (the shadow's class, or the parent's chain), or -1.
+   A miss selects the existing builtin or error rendering. */
 static int super_plan_mi(Compiler *c, int id, int owner) {
   const CallPlan *spl = cplan_user(c, id);
   return spl->via == UC_SUPER && spl->mi >= 0 && owner >= 0 && spl->owner_ci == owner ? spl->mi : -1;
-}
-
-static void super_plan_check(int id, const char *what, const char *name, int served, int mi, int dcls,
-                             int omi, int odef) {
-  if (!served) {
-    if (omi >= 0) fprintf(stderr, "plan-check: cplan-fallback: super node %d %s (%s)\n", id, name, what);
-  }
-  else if (omi != mi || odef != dcls)
-    fprintf(stderr, "plan-check: cplan-conflict: super node %d %s (%s): plan %d/%d, lookup %d/%d\n",
-            id, name, what, mi, dcls, omi, odef);
 }
 
 /* self, boxed, in a method of class `cls`: a builtin's reopening holds it
@@ -14801,10 +14817,11 @@ static int super_member_nilbit(Compiler *c, ClassInfo *cls, int a, int v, Buf *b
   int scid = (int)(cls - c->classes);
   TyKind ivt = cls->ivar_types[a];
   if (!oint_kind(ivt) || !ivar_has_nilbit(c, scid, a) || v < 0) return 0;
-  TyKind vt = comp_ntype(c, v);
-  if (vt != ivt && vt != TY_POLY && vt != TY_NIL) return 0;
+  Repr vr = repr_of(c, v);
+  TyKind vt = vr.as_ty;
+  if (vt != ivt && vr.kind != RK_BOXED && vt != TY_NIL) return 0;
   Buf ob; memset(&ob, 0, sizeof ob);
-  if (vt == TY_POLY) { buf_printf(&ob, "%s(", oint_unbox(ivt)); emit_expr(c, v, &ob); buf_puts(&ob, ")"); }
+  if (vr.kind == RK_BOXED) { buf_printf(&ob, "%s(", oint_unbox(ivt)); emit_expr(c, v, &ob); buf_puts(&ob, ")"); }
   else emit_oint_expr(c, v, ivt, &ob);
   char pfx[160]; snprintf(pfx, sizeof pfx, "%s->", g_self);
   emit_ivar_text_nilbit(c, scid, a, pfx, ob.p ? ob.p : oint_nil(ivt), b);
@@ -14840,24 +14857,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
      method's chain is taken below, in the class-method form). */
   const char *shadow = s->is_cmethod ? NULL : comp_super_shadow(c, s);
   if (shadow) {
-    /* the shadow's method in this class: the plan's, or the latest scope of
-       the shadow's name here */
+    /* The plan's target for the generated shadow in this class. */
     int smi = super_plan_mi(c, id, s->class_id);
     if (smi >= 0 && !(c->scopes[smi].class_id == s->class_id && c->scopes[smi].name &&
                       sp_streq(c->scopes[smi].name, shadow)))
       smi = -1;
     int served = smi >= 0;
     if (g_plan_check && served) cplan_served("super");
-    if (g_plan_check || !served) {
-      int omi = -1;
-      for (int k = c->nscopes - 1; k >= 1; k--) {
-        Scope *sc = &c->scopes[k];
-        if (sc->class_id == s->class_id && sc->name && sp_streq(sc->name, shadow))
-          { omi = k; break; }
-      }
-      if (g_plan_check) super_plan_check(id, "shadow", shadow, served, smi, 0, omi, 0);
-      if (!served) smi = omi;
-    }
+    cplan_check_missing(c, id, smi, s->class_id, shadow, 0, "super");
     if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
     if (repr_self_handle(c, smi) || repr_self_handle(c, (int)(s - c->scopes))) {
       buf_printf(b, "sp_%s_%s(", c->classes[s->class_id].c_name, mc(shadow));
@@ -14900,26 +14907,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
     int served = cmi >= 0;
     if (served) cdef = cshadow ? s->class_id : c->scopes[cmi].class_id;
     if (g_plan_check && served) cplan_served("super");
-    if (g_plan_check || !served) {
-      int odef = -1, omi;
-      if (cshadow) {
-        omi = comp_cmethod_in_class(c, s->class_id, cshadow);
-        odef = s->class_id;
-      }
-      else omi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &odef) : -1;
-      if (g_plan_check) super_plan_check(id, "class method", uname, served, cmi, cdef, omi, odef);
-      if (!served) { cmi = omi; cdef = odef; }
-    }
+    cplan_check_missing(c, id, cmi, cshadow ? s->class_id : p, cshadow ? cshadow : uname, 1, "super");
     if (cshadow) uname = cshadow;
-    /* An extended module's method is one entry in the class's ancestry, and
-       `super` inside it goes past the module. Copied into each class that
-       inherits the extend, the parent's copy is that same definition, not a
-       superclass method: skip such copies (Thor's ClassMethods#method_added
-       called on a Thor subclass reaches Module#method_added). */
-    while (!cshadow && cmi >= 0 && cdef >= 0 && c->scopes[cmi].def_node == s->def_node && s->def_node >= 0) {
-      int up = c->classes[cdef].parent;
-      cmi = up >= 0 ? comp_cmethod_in_chain(c, up, uname, &cdef) : -1;
-    }
     /* Module's and Class's own hooks are no-ops answering nil: `super` from a
        program's method_added (Thor's), inherited, included, ... reaches them
        when no ancestor of the program defines one */
@@ -14930,8 +14919,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int hook = 0;
       for (int h = 0; HOOKS[h] && !hook; h++) hook = sp_streq(uname, HOOKS[h]);
       if (hook) {
-        TyKind ht = repr_of(c, id).as_ty;
-        if (ht == TY_POLY) buf_puts(b, "sp_box_nil()");
+        Repr hr = repr_of(c, id);
+        TyKind ht = hr.as_ty;
+        if (hr.kind == RK_BOXED) buf_puts(b, "sp_box_nil()");
         else buf_printf(b, "(%s)", raise_tail_value_c(c, ht));
         return;
       }
@@ -14955,8 +14945,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_printf(b, " if (_t%d.cls_id == %d) sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, NULL})));",
                    tc, par, ta, k);
       }
-      TyKind st = repr_of(c, id).as_ty;
-      if (st == TY_POLY) buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
+      Repr sr = repr_of(c, id);
+      if (sr.kind == RK_BOXED) buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
       else buf_printf(b, " _t%d; })", ta);
       return;
     }
@@ -14994,12 +14984,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   int served = mi >= 0;
   if (served) defcls = c->scopes[mi].class_id;
   if (g_plan_check && served) cplan_served("super");
-  if (g_plan_check || !served) {
-    int odef = -1;
-    int omi = p >= 0 ? comp_method_in_chain(c, p, uname, &odef) : -1;
-    if (g_plan_check) super_plan_check(id, "instance", uname ? uname : "?", served, mi, defcls, omi, odef);
-    if (!served) { mi = omi; defcls = odef; }
-  }
+  cplan_check_missing(c, id, mi, p, uname, 0, "super");
   if (g_plan_check && mi >= 0) ucall_observe(c, id, mi, defcls, 0);
   /* a subclass of a native class (#9269): super reaches the native class's
      constructor, as its in-place twin on self, or its binding on self */
@@ -15473,8 +15458,39 @@ void emit_super(Compiler *c, int id, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* The class at the root of the program's superclass chain. */
+static int class_chain_root(Compiler *c, int cid) {
+  while (cid >= 0 && c->classes[cid].parent >= 0) cid = c->classes[cid].parent;
+  return cid;
+}
+
+/* A reopened builtin at the root supplies its own comparator, rather than
+   its superclass's. Other callers of class_builtin_parent still ask for
+   the superclass above that root, independently of comparison lookup. */
+static BuiltinDefaultCmp class_default_cmp(Compiler *c, int cid) {
+  int root = class_chain_root(c, cid);
+  int family = root >= 0 && is_builtin_reopen(c->classes[root].name)
+    ? builtin_class_id(c->classes[root].name) : class_builtin_parent(c, root);
+  return builtin_default_cmp(family);
+}
+
+/* Only classes that include Comparable need a runtime fact: the missing
+   callback already answers false for every other program object. */
+static void emit_obj_comparable_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static sp_bool sp_obj_comparable_dispatch(int cls_id) {\n  switch (cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].instantiated && !is_builtin_reopen(c->classes[k].name) &&
+        class_default_cmp(c, k) != BDC_BUILTIN &&
+        class_is_comparable(c, k))
+      buf_printf(b, "    case %d: return TRUE;\n", k);
+  }
+  buf_puts(b, "    default: return FALSE;\n  }\n}\n");
+}
+
 /* Generate sp_obj_cmp_dispatch: a cls_id switch calling each instantiated
-   Comparable class's user `<=>`, reporting a nil result as not-comparable.
+   class's user `<=>`, reporting a nil result as not-comparable.
+   Comparable classes without a user `<=>` use their builtin family's default:
+   identity, or Object's identity-or-program-`==` comparison.
    Installed as sp_obj_cmp_hook so the runtime comparator (no-block
    sort/min/max/clamp) can order user objects. Only object- and poly-typed
    operands are handled; an exotic operand type omits its arm and falls through
@@ -15493,10 +15509,20 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       else if (sp_streq(c->classes[k].name, "Range")) { bcase = "SP_BUILTIN_RANGE"; bself = "*(sp_Range *)a.v.p"; }
       else continue;
     }
-    else if (!c->classes[k].instantiated) continue;
+    else if (!c->classes[k].instantiated ||
+             class_default_cmp(c, k) == BDC_BUILTIN) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "<=>", &defcls);
-    if (mi < 0) continue;
+    if (mi < 0) {
+      if (!bcase && class_is_comparable(c, k)) {
+        int eq = class_default_cmp(c, k) == BDC_EQUAL &&
+                 !comp_comparable_answers_first(c, k, "==") &&
+                 comp_method_in_chain(c, k, "==", NULL) >= 0;
+        buf_printf(b, "    case %d: *comparable = %s(a, b); return 0;\n",
+                   k, eq ? "sp_poly_rb_equal" : "sp_poly_equal");
+      }
+      continue;
+    }
     if (bcase && defcls != k) continue;
     Scope *m = &c->scopes[mi];
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
@@ -16336,6 +16362,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
   }
   if (g_has_user_cmp)
     buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable);\n");
+  if (c->gen_comparable)
+    buf_puts(b, "static sp_bool sp_obj_comparable_dispatch(int cls_id);\n");
   if (g_has_user_binop)
     buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled);\n");
   if (program_has_user_eql(c))
@@ -16448,6 +16476,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
   buf_puts(b, "  sp_stack_guard_init();\n");
   if (g_has_user_cmp)
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
+  if (c->gen_comparable)
+    buf_puts(b, "  sp_obj_comparable_hook = sp_obj_comparable_dispatch;\n");
   if (g_has_user_binop)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_user_binop_hook, sp_user_binop_dispatch);\n");
   if (program_has_user_eql(c))
@@ -17559,8 +17589,7 @@ const char *class_builtin_superclass_name(Compiler *c, int i) {
 /* The builtin class above the whole user chain of `cid`: walk the user
    superclasses to the root and answer that root's builtin superclass. */
 int class_builtin_parent(Compiler *c, int cid) {
-  int k = cid;
-  while (k >= 0 && c->classes[k].parent >= 0) k = c->classes[k].parent;
+  int k = class_chain_root(c, cid);
   return k >= 0 ? class_builtin_superclass(c, k) : -116;
 }
 
@@ -20503,6 +20532,25 @@ static void emit_ext_at_exit_arming(Buf *body) {
   buf_puts(&g_procs, "static void _sp_ext_at_exit(void) { sp_at_exit_run(0); }\n");
   buf_puts(body, "  atexit(_sp_ext_at_exit);\n");
 }
+static void prepare_obj_cmp_dispatch(Compiler *c) {
+  /* An instantiated class that can reach a `<=>` (its own or an ancestor's)
+     needs the cmp-hook so the runtime comparator can order its instances
+     (no-block sort/min/max/clamp and the checked object comparisons). The
+     chain walk matters: a subclass may inherit `<=>` from a base class that
+     is itself never instantiated. */
+  g_has_user_cmp = 0;
+  c->gen_comparable = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    /* a reopened Time or Range is instantiated by the runtime itself */
+    const char *kn = c->classes[k].name;
+    int breopen = kn && is_builtin_reopen(kn) && is_range_or_time_class(kn);
+    if (!c->classes[k].instantiated && !breopen) continue;
+    if (!breopen && class_default_cmp(c, k) == BDC_BUILTIN) continue;
+    if (!breopen && class_is_comparable(c, k)) c->gen_comparable = 1;
+    if (comp_method_in_chain(c, k, "<=>", NULL) >= 0 || c->gen_comparable) g_has_user_cmp = 1;
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -21007,19 +21055,7 @@ char *codegen_program(const NodeTable *nt) {
     }
     free(mk.p);
   }
-  /* An instantiated class that can reach a `<=>` (its own or an ancestor's)
-     needs the cmp-hook so the runtime comparator can order its instances
-     (no-block sort/min/max/clamp and the checked object comparisons). The
-     chain walk matters: a subclass may inherit `<=>` from a base class that
-     is itself never instantiated. */
-  g_has_user_cmp = 0;
-  for (int k = 0; k < c->nclasses; k++) {
-    /* a reopened Time or Range is instantiated by the runtime itself */
-    const char *kn = c->classes[k].name;
-    int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
-    if (!c->classes[k].instantiated && !breopen) continue;
-    if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
-  }
+  prepare_obj_cmp_dispatch(c);
   g_has_user_binop = 0;
   {
     static const char *const uops[] = {
@@ -21034,7 +21070,7 @@ char *codegen_program(const NodeTable *nt) {
       /* a reopened Time or Range is instantiated by the runtime itself, and
          its operators reach boxed values through the table too */
       const char *kn = c->classes[k].name;
-      int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
+      int breopen = kn && is_builtin_reopen(kn) && is_range_or_time_class(kn);
       if (!c->classes[k].instantiated && !breopen) continue;
       for (int u = 0; uops[u]; u++)
         if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
@@ -21185,6 +21221,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
+  if (c->gen_comparable) emit_obj_comparable_dispatch(c, body);
   if (g_has_user_binop) emit_user_binop_dispatch(c, body);
   if (program_has_user_eql(c)) emit_user_eql_dispatch(c, body);
   if (g_has_user_aset) emit_user_aset_dispatch(c, body);

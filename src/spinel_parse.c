@@ -507,6 +507,7 @@ static pm_node_t *sp_made_call(pm_node_t *recv, pm_constant_id_t name, pm_node_t
   c->receiver = recv;
   c->name = name;
   if (vcall) c->base.flags |= PM_CALL_NODE_FLAGS_VARIABLE_CALL;
+  if (!recv || PM_NODE_TYPE(recv) == PM_SELF_NODE) c->base.flags |= PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY;
   if (arg) {
     c->arguments = sp_made(PM_ARGUMENTS_NODE, sizeof *c->arguments, at);
     sp_append(&c->arguments->arguments, arg);
@@ -924,11 +925,20 @@ static void flatten_parameter(int id, pm_node_t *node) {
    `recv.name=(v)` and `recv[i] = v`, which `recv.send(:name=, v)` is not
    (nt_attr_write); and a bare identifier (no receiver/parens/args), a
    variable-or-method read whose unresolved form is CRuby's NameError, not
-   NoMethodError (vcall). */
+   NoMethodError (vcall). Private calls use Prism's receiverless or literal
+   self permission (nt_ignore_visibility). */
 static void emit_call_flags(int id, const pm_node_t *node) {
+  if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY)) emit_int(id, "ignore_visibility", 1);
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) emit_int(id, "safe_nav", 1);
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE)) emit_int(id, "attr_write", 1);
   if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) emit_int(id, "vcall", 1);
+}
+static void emit_index_write_fields(int id, const pm_node_t *node, pm_node_t *receiver,
+                                    pm_arguments_node_t *arguments, pm_node_t *value) {
+  emit_ref(id, "receiver", receiver);
+  emit_ref(id, "arguments", (pm_node_t *)arguments);
+  emit_ref(id, "value", value);
+  emit_call_flags(id, node);
 }
 static int flatten_node(pm_node_t *node) {
   if (!node) return -1;
@@ -1250,6 +1260,7 @@ static int flatten_node(pm_node_t *node) {
     N("CallTargetNode");
     NAME("name", n->name);
     R("receiver", n->receiver);
+    emit_call_flags(id, node);
     break;
   }
   case PM_CONSTANT_TARGET_NODE: {
@@ -1332,30 +1343,25 @@ static int flatten_node(pm_node_t *node) {
     pm_index_operator_write_node_t *n = (pm_index_operator_write_node_t *)node;
     N("IndexOperatorWriteNode");
     NAME("binary_operator", n->binary_operator);
-    R("receiver", n->receiver);
-    R("arguments", n->arguments);
-    R("value", n->value);
+    emit_index_write_fields(id, node, n->receiver, n->arguments, n->value);
     break;
   }
   case PM_INDEX_AND_WRITE_NODE: {
     pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
     N("IndexAndWriteNode");
-    R("receiver", n->receiver);
-    R("arguments", n->arguments);
-    R("value", n->value);
+    emit_index_write_fields(id, node, n->receiver, n->arguments, n->value);
     break;
   }
   case PM_INDEX_OR_WRITE_NODE: {
     pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
     N("IndexOrWriteNode");
-    R("receiver", n->receiver);
-    R("arguments", n->arguments);
-    R("value", n->value);
+    emit_index_write_fields(id, node, n->receiver, n->arguments, n->value);
     break;
   }
   case PM_INDEX_TARGET_NODE: {
     pm_index_target_node_t *n = (pm_index_target_node_t *)node;
     N("IndexTargetNode");
+    /* CRuby refuses private []= on masgn and for targets, even on self. */
     R("receiver", n->receiver);
     R("arguments", n->arguments);
     break;
@@ -1367,7 +1373,7 @@ static int flatten_node(pm_node_t *node) {
     NAME("name", n->read_name);
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
+    emit_call_flags(id, node);
     break;
   }
   case PM_CALL_AND_WRITE_NODE: {
@@ -1376,7 +1382,7 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     NAME("name", n->read_name);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
+    emit_call_flags(id, node);
     break;
   }
   case PM_CALL_OR_WRITE_NODE: {
@@ -1385,7 +1391,7 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     NAME("name", n->read_name);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
+    emit_call_flags(id, node);
     break;
   }
   case PM_GLOBAL_VARIABLE_WRITE_NODE: {
