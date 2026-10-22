@@ -1519,14 +1519,15 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
 sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src) {SP_GC_ROOT_RBVAL(recv);SP_GC_ROOT_RBVAL(src);
   if (recv.tag != SP_TAG_OBJ) return recv;
   /* String#replace on a shared-mutable handle: swap the buffer contents in
-     place, from a plain string box or another handle (#3227). */
+     place, from a plain string box or another handle (#3227). The receiver
+     takes the source's encoding as well, as CRuby's replace does. */
   if (recv.cls_id == SP_BUILTIN_STRBUF) {
     sp_String *m = (sp_String *)recv.v.p;
     const char *s2 = NULL;
     if (src.tag == SP_TAG_STR) s2 = src.v.s;
     else if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_STRBUF)
       s2 = sp_String_cstr((sp_String *)src.v.p);
-    if (s2) sp_String_set_bin(m, s2);
+    if (s2) sp_String_set_bin_enc(m, s2);
     return recv;
   }
   if (src.tag != SP_TAG_OBJ) return recv;
