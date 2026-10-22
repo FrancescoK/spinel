@@ -2516,8 +2516,11 @@ int cplan_nil(Compiler *c, int id) {
     Repr sr = repr_of_slot(c, lv);
     if (!lv || !(sr.kind == RK_STRBUF || (sr.kind == RK_PTR && sr.as_ty == rt))) return CN_NONE;
   }
-  /* a shared String's handle a call renders is not bound like a value */
-  else if (rr.kind == RK_STRBUF) return CN_NONE;
+  /* a shared String's handle a call renders is not bound like a value
+     (one-String mode: an ivar's is its slot's, held by the head as a
+     local's is; every ivar String is the handle there, where the
+     default mode tests one the plan leaves untested in its arms) */
+  else if (rr.kind == RK_STRBUF && !(g_one_string && ivar_tested)) return CN_NONE;
   /* a nil the program writes (an element of an Array it stores one into
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
