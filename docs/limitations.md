@@ -126,10 +126,12 @@ what it gets against its `cert_store`, which is empty unless one is given
 `VERIFY_PEER` before it is set, where CRuby's reads nil. `set_params` reads
 `verify_mode` and `verify_hostname` from its params and no other key, and
 answers the context, where CRuby's answers the params.
-`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
-object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
-`hexdigest`, `digest_length`, and `file` from a path, a File or a
-Tempfile), `OpenSSL::HMAC` (the algorithm by name or as
+`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms, also
+with the algorithm named, and the object: `OpenSSL::Digest.new("SHA256")`,
+`update` / `<<`, `digest` / `hexdigest` / `base64digest` and their `!` forms,
+`digest_length` / `length` / `size`, `new`, `to_s` / `inspect` / `==`, and
+`file` from a path, a File or a Tempfile; not `OpenSSL::Digest.digests`, the
+list of libssl's algorithms), `OpenSSL::HMAC` (the algorithm by name or as
 a Digest), `OpenSSL::KDF.hkdf` /
 `pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
 own crypto rather than libssl, and no HMAC-MD5; the digest object keeps the
