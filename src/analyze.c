@@ -45383,7 +45383,7 @@ static int sid_is_alias(Compiler *c, SidSources *S, int v) {
 }
 /* Is Set allocation a (`Set.new(...)`, `Set[...]`) one an identity Set
    starts from: the receiver of a compare_by_identity, or a value written
-   to a place S holds one in? */
+   to a place S holds one in, by an assignment or by reflection? */
 static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   const NodeTable *nt = c->nt;
   int n = a, p = S->parent[n];
@@ -45398,8 +45398,18 @@ static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   if (pk == NK_LocalVariableWriteNode && pn) {
     const Scope *s = comp_scope_of(c, p);
     for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], pn)) return 1;
+    return 0;
   }
-  return 0;
+  /* the value of an instance_variable_set that reaches a place, which
+     sid_sources follows as such a write: through parentheses, their last
+     statement's (`instance_variable_set(:@s, (x += 1; Set[a]))`) */
+  VpUp up;
+  if (vp_climb(nt, S->parent, a, VPS_NONE | VP_PARENS_ONLY, &up) != VPU_ENDED) return 0;
+  int q = S->parent[up.parent], get = 0, argc = 0;
+  if (q < 0 || nt_ref(nt, q, "arguments") != up.parent || sid_reflect_reaches_place(nt, S, q, &get) != 1 || get)
+    return 0;
+  const int *argv = nt_arr(nt, up.parent, "arguments", &argc);
+  return argc == 2 && argv[1] == up.node;
 }
 /* Follow the compare_by_identity calls (asked) to their places. 0 when
    one of them, or a read of a place, cannot be followed. */
@@ -45453,8 +45463,10 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
      one of the places', or one no literal names. A read answers the Set
      where it may be a place's, and is followed as a read of a place below
      (sid_is_alias): `instance_variables.map { |v| instance_variable_get(v)
-     .inspect }` uses it as no Set. A write may put any Set there, so one
-     whose value may be a Set is not followed. */
+     .inspect }` uses it as no Set. A write is followed as a write of the
+     place is below: a Set made there (`Set.new`, `Set[...]`) or no Set,
+     whose own value, the Set, is used as an alias may be; one whose value
+     may be another Set is not followed. */
   if (S->nivars > 0) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int get = 0, r = sid_reflect_reaches_place(nt, S, id, &get);
@@ -45463,7 +45475,8 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       int ar = nt_ref(nt, id, "arguments"), argc = 0;
       const int *argv = nt_arr(nt, ar, "arguments", &argc);
       int v = an_unparen(nt, argv[1]);
-      if (sid_fresh_set(nt, v) || sid_maybe_set(c, v, set_cid)) return 0;
+      if (!sid_fresh_set(nt, v) && sid_maybe_set(c, v, set_cid)) return 0;
+      if (!sid_alias_use_ok(c, S, id)) return 0;
     }
   }
   /* every write of a place holds a Set made there (or no Set) */
