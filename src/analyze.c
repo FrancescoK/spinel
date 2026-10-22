@@ -16189,6 +16189,24 @@ static int ekh_memo_literal(Compiler *c, int n, int depth) {
   }
   return -1;
 }
+/* The empty Hash literals a key operation's receiver takes its value from,
+   through a conditional or parentheses (`(c ? {} : {})[k] = v`): each one
+   is the receiver the way a bare `{}` is. Answers how many went into lits,
+   or 0 when some value comes from anything else. */
+typedef struct { const NodeTable *nt; int *lits; int n, cap; } EkhLits;
+static int ekh_lit_leaf(const VpLeaf *lf, void *ud) {
+  EkhLits *a = ud;
+  int en = -1;
+  if (lf->kind == VPK_EXPR && nt_kind(a->nt, lf->node) == NK_HashNode) nt_arr(a->nt, lf->node, "elements", &en);
+  if (en != 0 || a->n >= a->cap) return 1;
+  a->lits[a->n++] = lf->node;
+  return 0;
+}
+static int ekh_value_literals(const NodeTable *nt, int recv, int *lits, int cap) {
+  EkhLits a = { nt, lits, 0, cap };
+  if (for_each_value_position(nt, recv, VPS_IF | VPS_UNLESS | VPS_CASE, ekh_lit_leaf, &a)) return 0;
+  return a.n;
+}
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -16266,12 +16284,21 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
       if (lit >= 0) recv = lit; }
     NodeKind rk = nt_kind(nt, recv);
     int direct = (rk == NK_HashNode || rk == NK_KeywordHashNode);
+    /* (the empty literals a conditional receiver's arms are, #9971) */
+    int lits[8], nlits = 0;
     if (direct) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en != 0) continue;
       if (ty_is_hash(c->hash_want[recv])) continue;   /* an earlier context won */
+      lits[nlits++] = recv;
     }
-    else if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) continue;
+    else if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) {
+      nlits = ekh_value_literals(nt, recv, lits, 8);
+      int open = 0;
+      for (int l = 0; l < nlits; l++) if (lits[l] < c->node_cap && !ty_is_hash(c->hash_want[lits[l]])) open = 1;
+      if (!open) continue;
+      direct = 1;
+    }
     int anode = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     if (an < 1) continue;
@@ -16346,14 +16373,18 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
     }
     if (!ty_is_hash(want)) continue;
     if (direct) {
-      if (c->hash_want[recv] != want) { comp_set_hash_want(c, recv, want); changed = 1; }
-      /* A KEY operation is stronger evidence than the bare-receiver default:
-         the literal was marked as one when it reached a block-taking method
-         (`{}.tap { |h| h[k] }`), and that mark answers STR_POLY ahead of the
-         want below, so an Array key still went into a const char * slot
-         (#4026). */
-      if (c->empty_hash_recv && recv < c->node_cap && c->empty_hash_recv[recv] &&
-          want != TY_STR_POLY_HASH) { comp_set_empty_hash_recv(c, recv, 0); changed = 1; }
+      for (int l = 0; l < nlits; l++) {
+        int lit = lits[l];
+        if (lit >= c->node_cap) continue;
+        if (c->hash_want[lit] != want) { comp_set_hash_want(c, lit, want); changed = 1; }
+        /* A KEY operation is stronger evidence than the bare-receiver default:
+           the literal was marked as one when it reached a block-taking method
+           (`{}.tap { |h| h[k] }`), and that mark answers STR_POLY ahead of the
+           want below, so an Array key still went into a const char * slot
+           (#4026). */
+        if (c->empty_hash_recv && c->empty_hash_recv[lit] &&
+            want != TY_STR_POLY_HASH) { comp_set_empty_hash_recv(c, lit, 0); changed = 1; }
+      }
       continue;
     }
     /* `@h = {}` in initialize, indexed with a typed key elsewhere in the same
