@@ -12403,6 +12403,40 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            methods, or an object such a method answers. The read then
            dispatches on the runtime class, as a receiverless call to the
            reader does, and the receiver is evaluated once. */
+        /* --share-strings: the read as the handle (a demand, or the read
+           marked as the handle) or as a box, of a String slot a
+           descendant's def overrides: each arm's handle, as a receiverless
+           read takes it (emit_reader_override_handle). Read as the slot's
+           handle alone the override was skipped (`[self.h]` answered the
+           field), and as its copy the String lost its identity. */
+        if (repr_share_rule(c) && !comp_ty_value_obj(c, rt)) {
+          char hivn[300]; snprintf(hivn, sizeof hivn, "@%s", rn2);
+          int hk = rdc >= 0 ? rdc : cid;
+          int hiv = comp_ivar_index(&c->classes[hk], hivn);
+          Repr hrp = repr_of(c, id);
+          int hboxed = hrp.as_ty == TY_POLY;
+          if (hiv >= 0 && c->classes[hk].ivar_types[hiv] == TY_STRBUF && (hrp.handle || hrp.demand || hboxed) &&
+              reader_override_handle_arms(c, id, cid, name, hboxed)) {
+            const char *hrt = nt_type(nt, recv);
+            int hsimple = hrt && (sp_streq(hrt, "LocalVariableReadNode") ||
+                                  sp_streq(hrt, "InstanceVariableReadNode") || sp_streq(hrt, "SelfNode"));
+            int ht = hsimple ? -1 : ++g_tmp;
+            Buf hs; memset(&hs, 0, sizeof hs);
+            if (hsimple) hs = expr_buf(c, recv);
+            else buf_printf(&hs, "_t%d", ht);
+            Buf hr; memset(&hr, 0, sizeof hr);
+            buf_printf(&hr, "(%s)->iv_%s", hs.p, iv_c(rn2));
+            if (!hsimple) {
+              buf_puts(b, "({ "); emit_ctype(c, rt, b);
+              buf_printf(b, " _t%d = ", ht); emit_expr(c, recv, b);
+              buf_printf(b, "; SP_GC_ROOT(_t%d); ", ht);
+            }
+            emit_reader_override_handle(c, id, cid, name, hs.p, hr.p, hboxed, b);
+            if (!hsimple) buf_puts(b, "; })");
+            free(hs.p); free(hr.p);
+            return 1;
+          }
+        }
         TyKind ovty = comp_ty_value_obj(c, rt) ? TY_UNKNOWN : reader_override_ty(c, id, cid, name);
         if (ovty != TY_UNKNOWN) {
           const char *ovrt = nt_type(nt, recv);

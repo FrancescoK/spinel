@@ -10280,6 +10280,14 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   /* a parameter the case subject alone typed (infer_block_params) takes it
      as it is */
   int raw = wp && wp->type == pt && pt != TY_POLY;
+  /* (one representation: a String subject goes to a String parameter of
+     the other face through SP_STR_HDL / SP_STR_B) */
+  const char *face = NULL;
+  if (g_one_string && wp && !raw && (pt == TY_STRING || pt == TY_STRBUF) &&
+      (wp->type == TY_STRING || wp->type == TY_STRBUF)) {
+    face = wp->type == TY_STRBUF ? "SP_STR_HDL" : "SP_STR_B";
+    raw = 1;
+  }
   /* an answer that is an object or nil (`x.size > 2 ? x : nil`) is true
      when it is not nil */
   int ret_ptr = needs_root(ws->ret) && !comp_ty_value_obj(c, ws->ret);
@@ -10297,7 +10305,8 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   if (via_eq) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void *)_t%d) || ", ts, ts, ta);
   buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : ret_ptr ? "(NULL != " : "(");
   emit_method_cname(c, ws, b);
-  if (raw) buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, t, ts);
+  if (face) buf_printf(b, "(_t%d, %s(_t%d))) : _t%d.tag == SP_TAG_NIL; })", ta, face, t, ts);
+  else if (raw) buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, t, ts);
   else buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
   return 1;
 }
@@ -22378,8 +22387,12 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
+    /* (one-String mode: only a receiver made afresh; any other call can
+       answer a String something else holds -- an element, a field) */
+    const char *clr_rn = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") ? nt_str(nt, recv, "name") : NULL;
     if (!assignable && sp_streq(name, "clear") && argc == 0 &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+        (!g_one_string || (clr_rn && (sp_streq(clr_rn, "+@") || sp_streq(clr_rn, "dup") || sp_streq(clr_rn, "new"))))) {
       /* clear on an unnamed mutable receiver ((+"abc").clear): the temp's
          mutation is unobservable, so evaluate the receiver (a frozen value
          still raises, as CRuby) and yield a fresh unfrozen empty */

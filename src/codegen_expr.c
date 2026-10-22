@@ -5932,6 +5932,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         emit_slot_nil_test(c, vt, tc2, is_or2, b);
         buf_puts(b, ") { ");
         emit_guarded_slot_assign(c, iv, tc2, b);
+        /* (one-String mode: the String stored is the answer's own -- a new
+           one gets its handle first, and the view of it is both what the
+           Hash takes, its owner, and what the expression answers) */
+        if (ONE_HV_O(hn)[0]) buf_printf(b, "; _t%d = SP_STR_B(SP_STR_HDL(_t%d))", tc2, tc2);
         buf_printf(b, "; sp_%sHash_set(_t%d, %s, %s_t%d%s); } _t%d; })", hn, ta2, sk, ONE_HV_O(hn), tc2, ONE_HV_C(hn), tc2);
       }
     }

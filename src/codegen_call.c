@@ -28317,8 +28317,14 @@ void emit_adapter_arg_static(Compiler *c, int node, char kind, Buf *out) {
 /* Emit a boxed runtime value as one typed-array adapter argument. */
 void emit_adapter_arg_boxed(const char *v, char kind, Buf *out) {
   if (kind == 's') {
-    buf_printf(out, "({ sp_RbVal _ade = %s; if (_ade.tag != SP_TAG_STR)"
-                    " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)_ade.v.s; })", v);
+    /* (one-String mode: a String arrives as its handle's box, whose bytes
+       face is the adapter's argument; the view keeps its identity) */
+    if (g_one_string)
+      buf_printf(out, "({ sp_RbVal _ade = sp_poly_strbuf_deref(%s); if (_ade.tag != SP_TAG_STR)"
+                      " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)_ade.v.s; })", v);
+    else
+      buf_printf(out, "({ sp_RbVal _ade = %s; if (_ade.tag != SP_TAG_STR)"
+                      " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)_ade.v.s; })", v);
   }
   else if (kind == 'v') {
     buf_printf(out, "({ sp_RbVal _ade = %s; if (_ade.tag != SP_TAG_INT)"

@@ -6100,11 +6100,20 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
   int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
   buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
   emit_expr(c, v, b);
-  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
-                " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
-                " SP_BUILTIN_STRBUF)); _t%d; })",
-             ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
+  /* (one-String mode: a nil Array stays nil -- `s&.split(",")` -- where
+     the loop built an empty one) */
+  if (g_one_string)
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = _t%d ? sp_PolyArray_new() : NULL; SP_GC_ROOT(_t%d);"
+                  " for (sp_int _t%d = 0; _t%d && _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                  " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
+                  " SP_BUILTIN_STRBUF)); _t%d; })",
+               ta, tp, ta, tp, ti, ta, ti, ta, ti, tp, ta, ti, tp);
+  else
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                  " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
+                  " SP_BUILTIN_STRBUF)); _t%d; })",
+               ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
 }
 /* An iterator's receiver n: a fresh String Array whose elements the rule
    shares (share_node_fresh_elems)? Then it is consumed as the PolyArray of

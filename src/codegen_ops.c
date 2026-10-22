@@ -123,10 +123,18 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
   for (const char *p = tmpl; *p; p++) {
     const char *tk = p[0] == '$' && p[1] ? strchr(tnames, p[1]) : NULL;
     if (p[0] == '$' && p[1] == 'r') {
-      if (!r && x->rtext) { r = strdup(x->rtext); buf_puts(b, r); }
+      /* (one-String mode: a String row's receiver is its bytes face,
+         whichever face its text has -- an `a || b` of handles) */
+      int rface = g_one_string && x->rt == TY_STRING;
+      if (!r && x->rtext) {
+        if (rface) { Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "SP_STR_B(%s)", x->rtext); r = fb.p; }
+        else r = strdup(x->rtext);
+        buf_puts(b, r);
+      }
       else if (!r) {
         size_t mark = b->len;
-        emit_expr(c, x->recv, b);
+        if (rface) emit_expr_face(c, x->recv, TY_STRING, b);
+        else emit_expr(c, x->recv, b);
         r = strndup(b->p ? b->p + mark : "", b->len - mark);
       }
       else buf_puts(b, r);

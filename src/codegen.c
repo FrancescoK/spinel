@@ -11643,9 +11643,12 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     { char insiv[64]; snprintf(insiv, sizeof insiv, "@%s", "inspect");
       int insidx = comp_ivar_index(ci, insiv);
       if (comp_method_in_chain(c, cid, "inspect", NULL) < 0 &&
-          insidx >= 0 && ci->ivar_types[insidx] == TY_STRING &&
+          insidx >= 0 && (ci->ivar_types[insidx] == TY_STRING ||
+                          (g_one_string && ci->ivar_types[insidx] == TY_STRBUF)) &&
           comp_resolve_member(c, cid, "inspect", 0, NULL, NULL) == SP_MEMBER_ATTR) {
-        buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) { return self->iv_inspect; }\n",
+        /* (one-String mode: the member is the handle, answered as its bytes face) */
+        buf_printf(b, g_one_string ? "static const char *sp_%s_inspect(sp_%s *self) { return SP_STR_B(self->iv_inspect); }\n"
+                                   : "static const char *sp_%s_inspect(sp_%s *self) { return self->iv_inspect; }\n",
                    ci->name, ci->name);
       }
       else if (comp_method_in_chain(c, cid, "inspect", NULL) < 0) {
@@ -11725,9 +11728,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          the direct call goes through the reader arm (#4190). */
       char tosiv[64]; snprintf(tosiv, sizeof tosiv, "@%s", "to_s");
       int tosidx = comp_ivar_index(ci, tosiv);
-      if (tosidx >= 0 && ci->ivar_types[tosidx] == TY_STRING &&
+      if (tosidx >= 0 && (ci->ivar_types[tosidx] == TY_STRING ||
+                          (g_one_string && ci->ivar_types[tosidx] == TY_STRBUF)) &&
           comp_resolve_member(c, cid, "to_s", 0, NULL, NULL) == SP_MEMBER_ATTR)
-        buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return self->iv_to_s; }\n",
+        buf_printf(b, g_one_string ? "static const char *sp_%s_to_s(sp_%s *self) { return SP_STR_B(self->iv_to_s); }\n"
+                                   : "static const char *sp_%s_to_s(sp_%s *self) { return self->iv_to_s; }\n",
                    ci->name, ci->name);
       else
         buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return sp_%s_inspect(self); }\n",
