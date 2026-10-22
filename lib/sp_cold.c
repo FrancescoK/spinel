@@ -2315,6 +2315,7 @@ sp_bool sp_file_zero(const char *path);
 const char *sp_file_dirname(const char *path);
 const char *sp_dir_pwd(void);
 sp_int sp_dir_mkdir(const char *path);
+sp_int sp_dir_mkdir_mode(const char *path, sp_int mode);
 sp_int sp_dir_rmdir(const char *path);
 sp_int sp_dir_chdir(const char *path);
 const char *sp_dir_home(void);
@@ -3237,9 +3238,14 @@ const char *sp_dir_pwd(void) {
    CRuby's labels; its block-form chdir says dir_chdir0 where this wrapper
    says chdir_path in both forms. A nil path (a NULL string at run time) is
    CRuby's TypeError, as it is for File.size and the time readers above. */
-sp_int sp_dir_mkdir(const char *path) {SP_GC_ROOT_STR(path);
+sp_int sp_dir_mkdir(const char *path) {
+  return sp_dir_mkdir_mode(path, 0777);
+}
+/* Dir.mkdir(path, mode): the requested permissions, filtered by the
+   process umask as the platform mkdir does. */
+sp_int sp_dir_mkdir_mode(const char *path, sp_int mode) {SP_GC_ROOT_STR(path);
   sp_file_path_check(path);
-  if (mkdir(path, 0777) != 0) sp_file_raise_errno("dir_s_mkdir", path);
+  if (mkdir(path, (mode_t)mode) != 0) sp_file_raise_errno("dir_s_mkdir", path);
   return 0;
 }
 sp_int sp_dir_rmdir(const char *path) {SP_GC_ROOT_STR(path);
