@@ -36245,8 +36245,10 @@ static int struct_member_slot(Compiler *c, int cid, const char *name, ClassInfo 
    - a flag set together with the variable's non-nil writes (`found = true`
      beside `lo = x`, every nil written to lo beside `found = false`): under
      `if found`, lo is non-nil (nn_corr);
-   - an index read `a[i]` inside `while i < a.size` with i >= 0, of an array
-     no write can leave a hole in or a nil (nn_slot_nilfree).
+   - an index read `a[i]` inside `while i < a.size` with i >= 0 (or
+     `while i < n` after `n = a.size`), of an Integer or Float array no nil
+     can be in at run time (the static nil mark, elem_nil_reach_expr). A
+     builtin that can only grow an array (nn_growth_call) keeps the bound.
 
    The walk follows statement lists in evaluation order (Spinel has no CFG):
    a condition yields the facts of its truthy and its falsy arm, and arms meet
@@ -36261,11 +36263,16 @@ static int struct_member_slot(Compiler *c, int cid, const char *name, ClassInfo 
 
 /* `i < a.size`: i a local, a an array slot (nn_slot_of) */
 typedef struct { LocalVar *i; int slot; } NNRel;
+/* `n = a.size`: n is no more than the length of the array in slot, while
+   neither is written and no call that can shrink an array has run (a
+   growth-only builtin keeps it: nn_growth_call) */
+typedef struct { LocalVar *n; int slot; } NNLen;
 typedef struct {
   int bot;                 /* unreachable: every fact holds */
   int n; LocalVar *v[NN_MAXF];         /* locals known non-nil */
   int nn; LocalVar *nonneg[NN_MAXF];   /* integer locals known >= 0 */
   int nr; NNRel r[NN_MAXR];
+  int nl; NNLen len[NN_MAXR];         /* `n = a.size` locals */
   int ni; int iv[NN_MAXF];             /* self's ivars (nn_ivar) known non-nil */
 } NNF;
 
@@ -36607,6 +36614,7 @@ static void nn_killiv(NNF *f, int iv) {
 }
 static void nn_kill_rel_slot(NNF *f, int slot) {
   for (int i = 0; i < f->nr; ) { if (f->r[i].slot == slot) f->r[i] = f->r[--f->nr]; else i++; }
+  for (int i = 0; i < f->nl; ) { if (f->len[i].slot == slot) f->len[i] = f->len[--f->nl]; else i++; }
 }
 static void nn_kill(NNF *f, LocalVar *lv) {
   if (f->bot) return;
@@ -36615,6 +36623,9 @@ static void nn_kill(NNF *f, LocalVar *lv) {
   int k = nn_var(lv);
   for (int i = 0; i < f->nr; ) {
     if (f->r[i].i == lv || (k >= 0 && f->r[i].slot == 2 * k)) f->r[i] = f->r[--f->nr]; else i++;
+  }
+  for (int i = 0; i < f->nl; ) {
+    if (f->len[i].n == lv || (k >= 0 && f->len[i].slot == 2 * k)) f->len[i] = f->len[--f->nl]; else i++;
   }
 }
 static void nn_meet(NNF *a, const NNF *b) {
@@ -36627,6 +36638,11 @@ static void nn_meet(NNF *a, const NNF *b) {
     int keep = 0;
     for (int j = 0; j < b->nr; j++) if (b->r[j].i == a->r[i].i && b->r[j].slot == a->r[i].slot) keep = 1;
     if (!keep) a->r[i] = a->r[--a->nr]; else i++;
+  }
+  for (int i = 0; i < a->nl; ) {
+    int keep = 0;
+    for (int j = 0; j < b->nl; j++) if (b->len[j].n == a->len[i].n && b->len[j].slot == a->len[i].slot) keep = 1;
+    if (!keep) a->len[i] = a->len[--a->nl]; else i++;
   }
 }
 
@@ -36655,7 +36671,7 @@ static void nn_call_kill(NNF *f, int ctx, int pure) {
   if (pure) return;
   /* the call may shrink an array, write a local through a closure, or run
      a method that writes one of self's ivars */
-  f->nr = 0; f->ni = 0;
+  f->nr = 0; f->nl = 0; f->ni = 0;
   for (int i = 0; i < f->nn; ) {
     int k = nn_var(f->nonneg[i]);
     if (k < 0 || nn_vars[k].allw_ctx != ctx || nn_vars[k].owner != ctx) f->nonneg[i] = f->nonneg[--f->nn]; else i++;
@@ -36678,6 +36694,24 @@ static int nn_int_array(TyKind t) {
 static int nn_name_in(const char *nm, const char *const *set) {
   if (!nm) return 0;
   return str_in(nm, set);
+}
+
+static int nn_array_reopened;    /* the program reopens Array: its builtins may run its code */
+/* A builtin call on an Integer or Float array that can only grow it --
+   `<<` / push / append, a one-index `[]=` -- and runs none of the
+   program's code: an `i < a.size` or `n = a.size` known before it still
+   holds after it, whichever array it grows, and it writes no local. */
+static int nn_growth_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || nn_array_reopened || nt_ref(nt, id, "block") >= 0 ||
+      !nn_int_array(comp_ntype(c, recv))) return 0;
+  int ca = nt_ref(nt, id, "arguments"); int an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
+  if (is_push_alias(nm)) return an >= 1;
+  return sp_streq(nm, "[]=") && an == 2 && comp_ntype(c, av[0]) == TY_INT;
 }
 
 /* A call that cannot run Ruby code or change an array's length: an
@@ -36785,9 +36819,21 @@ static int nn_nonnil_value(Compiler *c, int v) {
   return v >= 0 && nn_numeric(comp_ntype(c, v)) && !nullable_int_value(c, v);
 }
 
+/* `a.size` (or `.length`) on an Integer or Float array slot: the slot, or -1 */
+static int nn_size_slot(Compiler *c, int sz) {
+  const NodeTable *nt = c->nt;
+  if (sz < 0 || nt_kind(nt, sz) != NK_CallNode) return -1;
+  const char *sn = nt_str(nt, sz, "name");
+  int arr = nt_ref(nt, sz, "receiver");
+  if (!sn || arr < 0 || !is_len_alias(sn) ||
+      nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return -1;
+  if (!nn_int_array(comp_ntype(c, arr))) return -1;
+  return nn_slot_of(c, arr);
+}
+
 /* `i < a.size` (or `a.size > i`, `.length`) on an Integer or Float array
-   slot: the relation, or 0 */
-static int nn_rel_of(Compiler *c, int cond, NNRel *out) {
+   slot, or `i < n` where f knows `n = a.size`: the relation, or 0 */
+static int nn_rel_of(Compiler *c, int cond, const NNF *f, NNRel *out) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, cond) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, cond, "name");
@@ -36799,13 +36845,12 @@ static int nn_rel_of(Compiler *c, int cond, NNRel *out) {
   if (sp_streq(nm, "<")) { lhs = recv; sz = av[0]; }
   else if (sp_streq(nm, ">")) { lhs = av[0]; sz = recv; }
   else return 0;
-  if (nt_kind(nt, lhs) != NK_LocalVariableReadNode || nt_kind(nt, sz) != NK_CallNode) return 0;
-  const char *sn = nt_str(nt, sz, "name");
-  int arr = nt_ref(nt, sz, "receiver");
-  if (!sn || arr < 0 || !is_len_alias(sn) ||
-      nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return 0;
-  if (!nn_int_array(comp_ntype(c, arr))) return 0;
-  int slot = nn_slot_of(c, arr);
+  if (nt_kind(nt, lhs) != NK_LocalVariableReadNode) return 0;
+  int slot = nn_size_slot(c, sz);
+  if (slot < 0 && nt_kind(nt, sz) == NK_LocalVariableReadNode && !f->bot) {
+    LocalVar *n = nn_local_of(c, sz);
+    for (int i = 0; n && i < f->nl; i++) if (f->len[i].n == n) { slot = f->len[i].slot; break; }
+  }
   LocalVar *iv = nn_local_of(c, lhs);
   if (slot < 0 || !iv) return 0;
   out->i = iv; out->slot = slot;
@@ -36904,7 +36949,7 @@ static void nn_cond(Compiler *c, int id, const NNF *in, NNF *t, NNF *e, int ctx)
       return;
     }
     NNRel r;
-    if (nn_rel_of(c, id, &r)) {
+    if (nn_rel_of(c, id, in, &r)) {
       *t = *in; nn_visit(c, id, t, ctx);
       *e = *t;
       if (!t->bot && nn_hasnn(t, r.i) && t->nr < NN_MAXR) t->r[t->nr++] = r;
@@ -37036,6 +37081,11 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     nn_write_kill(f, lv, 0);
     if (nn_nonnil_value(c, v)) nn_add(f, lv);
     if (nn_nonneg_lit(c, v)) nn_addnn(f, lv);
+    /* `n = a.size` */
+    int ls = nn_size_slot(c, v);
+    if (ls >= 0 && ls != 2 * nn_var(lv) && !f->bot && f->nl < NN_MAXR) {
+      f->len[f->nl].n = lv; f->len[f->nl].slot = ls; f->nl++;
+    }
     return;
   }
   case NK_LocalVariableOperatorWriteNode: {
@@ -37147,7 +37197,7 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     }
     else if (blk >= 0) nn_visit_children_generic(c, blk, f, ctx);
     nn_operands_nonnil(c, id, f, ctx, amark);
-    if (!nn_pure_call(c, id)) { nn_call_kill(f, ctx, 0); nn_logpush(NN_LOG_CALL, NULL, -1, 0); }
+    if (!nn_pure_call(c, id) && !nn_growth_call(c, id)) { nn_call_kill(f, ctx, 0); nn_logpush(NN_LOG_CALL, NULL, -1, 0); }
     else nn_used(c, id, f, ctx, amark);
     /* Kernel's raise, exit and abort do not come back */
     const char *nm = nt_str(nt, id, "name");
@@ -37181,7 +37231,7 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     /* control flow the walk does not follow: nothing survives it */
     if (k == NK_BeginNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_ForNode ||
         k == NK_RescueModifierNode) {
-      f->n = 0; f->nr = 0; f->nn = 0; f->ni = 0;
+      f->n = 0; f->nr = 0; f->nl = 0; f->nn = 0; f->ni = 0;
     }
     /* an ivar written other than by `@x = v` (`@x op= v`, `||=`, a
        multiple-assignment target): what was known of it is gone */
@@ -37708,7 +37758,7 @@ static void nn_structure(Compiler *c) {
   }
   /* reflection that reads or writes an ivar by name, or an Array reopened by
      the program, leaves no ivar slot to reason about */
-  nn_no_ivar_slots = nn_no_local_slots = comp_class_index(c, "Array") >= 0;
+  nn_no_ivar_slots = nn_no_local_slots = nn_array_reopened = comp_class_index(c, "Array") >= 0;
   /* ... and a reopened Integer, Float or class above them can give `<` or
      `+` a method that takes a nil (nn_operands_nonnil) */
   static const char *const reopen[] = { "NilClass", "Integer", "Float", "Numeric", "Comparable",
@@ -37779,11 +37829,14 @@ static void nn_facts(Compiler *c) {
     nn_nlog = 0;
     nn_visit(c, nn_roots[i], &f, -1);
   }
-  /* an in-bounds read of a nil-free array reads an element that is one */
+  /* an in-bounds read of a nil-free array reads an element that is one. A
+     candidate's array is an Integer or Float one (nn_rel_of), whose
+     nil-freeness the static nil mark answers for every name of it, a
+     parameter's and an ivar's too: no nil, and no gap a write past the
+     end left, can be in it at run time (elem_nil_reach_expr) */
   for (int id = 0; id < nn_cap; id++) {
     if (!nn_cand[id]) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (nn_slot_nilfree(c, nn_cand[id] - 1) && !nullable_int_elem_expr(c, recv, 0)) nn_inb[id] = 1;
+    if (!elem_nil_reach_expr(c, nt_ref(nt, id, "receiver"))) nn_inb[id] = 1;
   }
 }
 
