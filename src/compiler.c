@@ -325,6 +325,7 @@ void comp_free(Compiler *c) {
     free(sc->name);
     for (int i = 0; i < sc->nlocals; i++) free(sc->locals[i].name);
     free(sc->locals);
+    free(sc->lidx);
     for (int i = 0; i < sc->nparams; i++) free(sc->pnames[i]);
     free(sc->pnames);
     free(sc->pdefault);
@@ -3811,10 +3812,53 @@ int comp_included_method_index(Compiler *c, const char *name, int call_id) {
   return -1;
 }
 
+/* A scope's locals by name. A short table is scanned; a longer one is read
+   through an index of the names' hashes (`lidx`), since the scan compared
+   the asked name with every local's, and the lowered names of a large
+   program share long prefixes (the arms of a computed-name send, the
+   wrappers of a `method(:m)`), so each compare ran far into both: on a
+   Rails program late in its fixpoint the scan was 8% of a sampled window,
+   from a thousand distinct callers. The index holds each local's slot + 1
+   at its hash, probing linearly, and is built by the first ask that wants
+   it; an append adds to it, and the one removal (codegen's escape of a
+   copied argument) drops it. */
+enum { SCOPE_LIDX_MIN = 6 };
+static void scope_lidx_add(Scope *s, int i) {
+  unsigned m = (unsigned)(s->lidx_cap - 1), h = sp_strhash(s->locals[i].name) & m;
+  while (s->lidx[h]) h = (h + 1) & m;
+  s->lidx[h] = i + 1;
+}
+static void scope_lidx_build(Scope *s) {
+  int cap = 16;
+  while (cap < s->nlocals * 2) cap *= 2;
+  if (s->lidx_cap != cap) { free(s->lidx); s->lidx = malloc(sizeof(int) * (size_t)cap); s->lidx_cap = cap; }
+  if (!s->lidx) { s->lidx_cap = 0; return; }
+  memset(s->lidx, 0, sizeof(int) * (size_t)cap);
+  for (int i = 0; i < s->nlocals; i++) scope_lidx_add(s, i);
+}
 LocalVar *scope_local(Scope *s, const char *name) {
+  if (s->nlocals >= SCOPE_LIDX_MIN) {
+    if (!s->lidx || s->nlocals * 2 > s->lidx_cap) scope_lidx_build(s);
+    if (s->lidx) {
+      unsigned m = (unsigned)(s->lidx_cap - 1), h = sp_strhash(name) & m;
+      for (int k; (k = s->lidx[h]) != 0; h = (h + 1) & m)
+        if (sp_streq(s->locals[k - 1].name, name)) return &s->locals[k - 1];
+      return NULL;
+    }
+  }
   for (int i = 0; i < s->nlocals; i++)
     if (sp_streq(s->locals[i].name, name)) return &s->locals[i];
   return NULL;
+}
+/* The index after a local is appended to (kept) or removed from the table
+   (dropped: the slots after it moved). */
+void scope_locals_appended(Scope *s) {
+  if (!s->lidx) return;
+  if (s->nlocals * 2 > s->lidx_cap) { free(s->lidx); s->lidx = NULL; s->lidx_cap = 0; }
+  else scope_lidx_add(s, s->nlocals - 1);
+}
+void scope_locals_removed(Scope *s) {
+  free(s->lidx); s->lidx = NULL; s->lidx_cap = 0;
 }
 
 LocalVar *scope_local_intern(Scope *s, const char *name) {
@@ -3867,6 +3911,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->store_val_src = 0;
   lv->store_elems_src = 0;
   lv->store_rest_src = 0;
+  scope_locals_appended(s);
   return lv;
 }
 

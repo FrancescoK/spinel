@@ -555,6 +555,12 @@ typedef struct {
 
   LocalVar *locals; /* params + body locals */
   int nlocals, clocals;
+  int *lidx;        /* scope_local's index of `locals` by name: open
+                       addressing over the names' hashes, slot + 1 per
+                       entry, 0 empty. NULL until the table is long enough
+                       to want one; dropped by whatever removes a local
+                       (scope_local_intern keeps it over an append) */
+  int lidx_cap;     /* a power of two, at least twice nlocals */
 } Scope;
 
 static inline TyKind scope_set_ret(Scope *s, TyKind t) {
@@ -1621,6 +1627,8 @@ void why_reset(SlotWhy *w);
 int ty_degraded(TyKind t);   /* poly, or a container of poly */
 extern int g_infer_round;    /* the fixpoint round in progress, for SlotWhy.round */
 LocalVar *scope_local_intern(Scope *s, const char *name);
+void scope_locals_appended(Scope *s);  /* scope_local's index, after an append */
+void scope_locals_removed(Scope *s);   /* ... after a local is taken out of `locals` */
 
 /* Symbol intern table. comp_sym_intern returns the symbol's id. */
 int comp_sym_intern(Compiler *c, const char *name);
