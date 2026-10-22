@@ -220,7 +220,26 @@ static inline void sp_String_append_bin(sp_String*s,const char*t){
 SP_COLD void sp_String_chill(sp_String*r,const char*s);
 int sp_String_chilled_now(sp_String*h);
 const char*sp_sym_to_s_chilled(sp_sym id);
+/* With literal slots, the handle a literal or a live payload already has is
+   found inline, and only a String that needs a new handle calls the
+   constructor below: its frame (six saved registers and the stack guard)
+   cost a literal's store about 45 instructions (`@e = "c"` in a by-value
+   object's initialize, bm_object_new_init). */
+#if defined(SP_SHARE_STRING_LITERALS) || defined(SP_ONE_STRING)
+static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s);
 static inline sp_String*sp_String_new_shared(const char*s){
+  if(!s)return NULL;
+  unsigned char mk=((const unsigned char*)s)[-1];
+#ifdef SP_ONE_STRING
+  if(mk==0xfd){sp_String*o=(sp_String*)(void*)((sp_str_hdr*)sp_fd_base(s))->next;if(o)return o;}
+#endif
+  if(mk==0xf1){sp_StringLiteral*l=sp_String_literal_slot(s);if(l){sp_String*lh=SP_ATOMIC_LOAD(&l->value,__ATOMIC_ACQUIRE);if(lh)return lh;}}
+  return sp_String_new_shared_make(s);
+}
+static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s){
+#else
+static inline sp_String*sp_String_new_shared(const char*s){
+#endif
   if(!s)return NULL;   /* nil into a shared-string slot stays nil (a nullable String, #4567) */
 #ifdef SP_ONE_STRING
   /* one representation: the bytes of a live payload are the handle its
