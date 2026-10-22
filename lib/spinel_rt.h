@@ -1303,6 +1303,8 @@ static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
 /* IO#gets with separator / limit / chomp (#2809, #2810, #2820). sep NULL
    reads to EOF; limit <= 0 means unlimited. NULL at EOF. */
 const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool chomp);
+const char *sp_File_gets_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp);
+const char *sp_File_readline_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp);
 /* IO#readlines with separator / chomp (#2820) */
 sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, sp_bool chomp);
 sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, sp_bool chomp);
@@ -3670,6 +3672,7 @@ static SP_INLINE const char *sp_poly_sep_str(sp_RbVal v) {
    default separator, anything else the separator with no limit */
 static SP_INLINE const char *sp_poly_gets_sep(sp_RbVal v) { return v.tag == SP_TAG_INT ? "\n" : sp_poly_sep_str(v); }
 static SP_INLINE sp_int sp_poly_gets_lim(sp_RbVal v) { return v.tag == SP_TAG_INT ? v.v.i : 0; }
+static SP_INLINE sp_oint sp_poly_gets_olim(sp_RbVal v) { return v.tag == SP_TAG_INT ? sp_oint_of(v.v.i) : sp_oint_nil(); }
 /* The object half of the check below, split out and kept off the inlined path
    for the reason sp_poly_arg_str_obj is: the object case is the rare one.
 
@@ -4090,6 +4093,14 @@ static SP_NOINLINE sp_bool sp_io_line_args(sp_PolyArray *a, const char **sep, sp
     if (*lim < 0) *lim = 0;
   }
   return 0;
+}
+
+/* gets / readline's form of sp_io_line_args: the limit as an sp_oint,
+   nil for none, so an explicit 0 (CRuby's "" without reading) stays apart */
+static SP_UNUSED sp_oint sp_io_gets_args(sp_PolyArray *a, const char **sep) {
+  sp_int lim = 0;
+  if (sp_io_line_args(a, sep, &lim, NULL)) return sp_oint_of(0);
+  return lim > 0 ? sp_oint_of(lim) : sp_oint_nil();
 }
 
 /* A boxed value where a Float is wanted, by Kernel#Float's rules: a real
