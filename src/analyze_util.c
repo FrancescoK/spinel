@@ -2146,7 +2146,40 @@ static int yvt_it_next(YvtIt *it) {
 /* Which method does block-passing call site `cid` reach? Shared by
    yield_value_type and yield_block_tails so the two agree on what counts as a
    call site of a given method. */
+static int yvt_callee_index_scan(Compiler *c, int cid);
+/* Each site's callee, kept as long as infer_type's memo keeps the types it
+   was resolved from (infer_memo_edits), and only while that memo is in use.
+   A yielding method's value asks the callee of every block call that may
+   reach it -- those of its name, and every one whose name is an alias
+   somewhere (yvt_may_reach) -- so on a Rails program, where the common
+   names are aliases in some class, each ask resolved thousands of sites,
+   and the asks of a round resolved the same site over and over: the
+   resolution was 10% of a sampled window late in the fixpoint. */
+static int *yci_ans; static unsigned *yci_stamp; static int yci_cap;
+static unsigned yci_gen = 1; static unsigned long yci_edits = (unsigned long)-1;
 static int yvt_callee_index(Compiler *c, int cid) {
+  if (cid < 0 || !infer_memo_usable()) return yvt_callee_index_scan(c, cid);
+  unsigned long edits = infer_memo_edits(c);
+  if (edits != yci_edits || cid >= yci_cap) {
+    if (cid >= yci_cap) {
+      int cap = c->nt->count > cid + 1 ? c->nt->count : cid + 1;
+      free(yci_ans); free(yci_stamp);
+      yci_ans = malloc(sizeof(int) * (size_t)cap);
+      yci_stamp = calloc((size_t)cap, sizeof(unsigned));
+      if (!yci_ans || !yci_stamp) { free(yci_ans); free(yci_stamp); yci_ans = NULL; yci_stamp = NULL; yci_cap = 0; return yvt_callee_index_scan(c, cid); }
+      yci_cap = cap;
+    }
+    yci_edits = edits;
+    if (++yci_gen == 0) { memset(yci_stamp, 0, sizeof(unsigned) * (size_t)yci_cap); yci_gen = 1; }
+  }
+  if (yci_stamp[cid] == yci_gen) return yci_ans[cid];
+  int rmi = yvt_callee_index_scan(c, cid);
+  /* the scan's inferences may have moved the memo on (a type found, a
+     local interned): an answer from before that is not kept */
+  if (infer_memo_edits(c) == yci_edits) { yci_ans[cid] = rmi; yci_stamp[cid] = yci_gen; }
+  return rmi;
+}
+static int yvt_callee_index_scan(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
   int crecv = nt_ref(nt, cid, "receiver");
@@ -2225,12 +2258,15 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
       sp_streq(comp_prep_user_name(m->name), "initialize") && ctor_site_on_cycle(c, cid, mi))
     return 0;
   if (yvt_callee_index(c, cid) == mi) return 1;
+  /* the rest is a `new` reaching an initialize: the method's side first,
+     before the site's fields are read (every site asks this of every
+     yielding method) */
+  const char *mn = c->scopes[mi].name;
+  if (!mn || !sp_streq(mn, "initialize") || !c->scopes[mi].yields) return 0;
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
-  const char *mn = c->scopes[mi].name;
   int crecv = nt_ref(nt, cid, "receiver");
-  if (!cn || !sp_streq(cn, "new") || crecv < 0 || !mn || !sp_streq(mn, "initialize") ||
-      !c->scopes[mi].yields || nt_ref(nt, cid, "block") < 0) return 0;
+  if (!cn || !sp_streq(cn, "new") || crecv < 0 || nt_ref(nt, cid, "block") < 0) return 0;
   NodeKind rk = nt_kind(nt, crecv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
   TyKind rt = infer_type(c, crecv);

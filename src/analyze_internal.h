@@ -451,6 +451,8 @@ void seed_unsupplied_nil_defaults(Compiler *c);
 int infer_container_flow(Compiler *c);
 void an_cls_facts(Compiler *c);   /* analyze_cls.c (#8530) */
 int an_builtin_only_p(void);
+unsigned long infer_memo_edits(const Compiler *c); /* what infer_type's memo is keyed by */
+int infer_memo_usable(void);                       /* ... and whether it is in use */
 TyKind an_builtin_answer(Compiler *c, int id);
 /* the kind of a value of class self_cls: a reopened builtin's own (Time -> TY_TIME),
    else the object */
