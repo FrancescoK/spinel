@@ -2258,12 +2258,15 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
       sp_streq(comp_prep_user_name(m->name), "initialize") && ctor_site_on_cycle(c, cid, mi))
     return 0;
   if (yvt_callee_index(c, cid) == mi) return 1;
+  /* the rest is a `new` reaching an initialize: the method's side first,
+     before the site's fields are read (every site asks this of every
+     yielding method) */
+  const char *mn = c->scopes[mi].name;
+  if (!mn || !sp_streq(mn, "initialize") || !c->scopes[mi].yields) return 0;
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
-  const char *mn = c->scopes[mi].name;
   int crecv = nt_ref(nt, cid, "receiver");
-  if (!cn || !sp_streq(cn, "new") || crecv < 0 || !mn || !sp_streq(mn, "initialize") ||
-      !c->scopes[mi].yields || nt_ref(nt, cid, "block") < 0) return 0;
+  if (!cn || !sp_streq(cn, "new") || crecv < 0 || nt_ref(nt, cid, "block") < 0) return 0;
   NodeKind rk = nt_kind(nt, crecv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
   TyKind rt = infer_type(c, crecv);
