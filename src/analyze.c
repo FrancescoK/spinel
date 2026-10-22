@@ -16992,6 +16992,57 @@ int an_scopes_named_next(Compiler *c, const char *nm, int s) {
   return -1;
 }
 
+/* The scopes sharing scope s's def_node (its copies: a transplanted module
+   method's body, once per includer), ascending: the first, and the next
+   after s (-1 at the end). Frozen, from a table built once per scope-index
+   epoch, as the by-name lists are; else the scan. The share facts asked
+   every scope for a copied self call's twins, at every such call, every
+   build. */
+static int *an_sdn_next, *an_sdn_first_of, an_sdn_stamp_n = -1;
+static unsigned an_sdn_stamp_gen;
+static void an_sdn_build(Compiler *c) {
+  int n = c->nscopes > 0 ? c->nscopes : 1;
+  free(an_sdn_next); free(an_sdn_first_of);
+  an_sdn_next = malloc(sizeof(int) * (size_t)n);
+  an_sdn_first_of = malloc(sizeof(int) * (size_t)n);
+  unsigned cap = 16;
+  while (cap < 2u * (unsigned)n) cap *= 2;
+  int *tab = malloc(sizeof(int) * (size_t)cap);   /* the last scope seen of each def_node */
+  if (!an_sdn_next || !an_sdn_first_of || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (unsigned i = 0; i < cap; i++) tab[i] = -1;
+  for (int i = 0; i < c->nscopes; i++) {
+    an_sdn_next[i] = -1; an_sdn_first_of[i] = i;
+    int d = c->scopes[i].def_node;
+    if (d < 0) continue;
+    unsigned h = ((unsigned)d * 2654435761u) & (cap - 1);
+    while (tab[h] >= 0 && c->scopes[tab[h]].def_node != d) h = (h + 1) & (cap - 1);
+    if (tab[h] >= 0) { an_sdn_next[tab[h]] = i; an_sdn_first_of[i] = an_sdn_first_of[tab[h]]; }
+    tab[h] = i;
+  }
+  free(tab);
+  an_sdn_stamp_n = c->nscopes; an_sdn_stamp_gen = comp_scope_index_gen();
+}
+int an_scopes_same_def_first(Compiler *c, int s) {
+  if (s < 0 || s >= c->nscopes || c->scopes[s].def_node < 0) return -1;
+  if (comp_scope_index_is_frozen()) {
+    if (an_sdn_stamp_n != c->nscopes || an_sdn_stamp_gen != comp_scope_index_gen()) an_sdn_build(c);
+    return an_sdn_first_of[s];
+  }
+  for (int i = 0; i < c->nscopes; i++)
+    if (c->scopes[i].def_node == c->scopes[s].def_node) return i;
+  return -1;
+}
+int an_scopes_same_def_next(Compiler *c, int s) {
+  if (s < 0 || s >= c->nscopes || c->scopes[s].def_node < 0) return -1;
+  if (comp_scope_index_is_frozen()) {
+    if (an_sdn_stamp_n != c->nscopes || an_sdn_stamp_gen != comp_scope_index_gen()) an_sdn_build(c);
+    return an_sdn_next[s];
+  }
+  for (int i = s + 1; i < c->nscopes; i++)
+    if (c->scopes[i].def_node == c->scopes[s].def_node) return i;
+  return -1;
+}
+
 /* Unique method scope index by name across the program, or -1 (absent or
    defined more than once). Scope 0 is the top level (name NULL). */
 static int an_unique_scope_by_name(Compiler *c, const char *nm) {
@@ -19862,6 +19913,8 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
    each parameter it followed, and a large program's walk spent its time in
    that scan. Collected up front: the walk can rebuild the by-name lists. */
 static int an_alias_name(Compiler *c, const char *nm);
+static int an_alias_by_old_first(Compiler *c, const char *nm);
+static int *ao_next; static const char **ao_new;
 static int sb_int_cmp(const void *a, const void *b) {
   int x = *(const int *)a, y = *(const int *)b;
   return (x > y) - (x < y);
@@ -19882,18 +19935,18 @@ int *an_scope_call_candidates(Compiler *c, Scope *m, int *n) {
      name, from its new name to its old (comp_resolve_alias_ex), so only a
      name whose chain of old names reaches the method's can call it. Every
      alias name of the program was a candidate before, and each method asked
-     every call on all of them through its receiver's classes. */
-  for (int grew = 1; grew; ) {
-    grew = 0;
-    for (int k = 0; k < c->nclasses; k++)
-      for (int a = 0; a < c->classes[k].naliases; a++) {
-        const char *an = c->classes[k].alias_new[a], *ao = c->classes[k].alias_old[a];
-        if (!an || !ao || anh_has(&seen, an) || !anh_has(&seen, ao)) continue;
-        anh_add(&seen, an);
-        all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
-        grew = 1;
-      }
-  }
+     every call on all of them through its receiver's classes. The names
+     found are walked in turn (`all` grows under the walk), each through the
+     aliases of that old name: reading every class's aliases per step, for
+     every method the pass walked back from, was 4% of a Rails program's
+     share pass. */
+  for (int i = 0; i < nnames; i++)
+    for (int e = an_alias_by_old_first(c, all[i]); e >= 0; e = ao_next[e]) {
+      const char *an = ao_new[e];
+      if (anh_has(&seen, an)) continue;
+      anh_add(&seen, an);
+      all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
+    }
   for (int i = 0; i < nnames; i++)
     for (int u = an_calls_named_first(c, all[i]); u >= 0; u = an_calls_named_next(u)) {
       if (cnt == cap) {
@@ -26714,6 +26767,41 @@ static int an_alias_first(Compiler *c, const char *nm) {
 /* Is `nm` a name some class aliases a method under? */
 static int an_alias_name(Compiler *c, const char *nm) { return an_alias_first(c, nm) >= 0; }
 
+/* The aliases of a method named `nm` (their old name), in class order: the
+   first entry, or -1, then ao_next[e]; ao_new[e] is the entry's new name.
+   The by-old-name twin of the list above, with its stamps, for the walk
+   that follows a method's name to the names that call it. */
+static int an_alias_by_old_first(Compiler *c, const char *nm) {
+  static ANameHash names;
+  static int *first, *last, stamp_nc = -1;
+  static unsigned stamp_gen;
+  if (stamp_nc != c->nclasses || stamp_gen != comp_table_gen) {
+    anh_free(&names); memset(&names, 0, sizeof names);
+    free(first); free(last); free(ao_next); free(ao_new);
+    first = last = ao_next = NULL; ao_new = NULL;
+    int ne = 0, cap = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      for (int a = 0; a < c->classes[k].naliases; a++) {
+        const char *an = c->classes[k].alias_new[a], *ao = c->classes[k].alias_old[a];
+        if (!an || !ao) continue;
+        int h = anh_find(&names, ao);
+        if (ne == cap) {
+          cap = cap ? cap * 2 : 64;
+          first = realloc(first, sizeof(int) * (size_t)cap); last = realloc(last, sizeof(int) * (size_t)cap);
+          ao_next = realloc(ao_next, sizeof(int) * (size_t)cap); ao_new = realloc(ao_new, sizeof *ao_new * (size_t)cap);
+          if (!first || !last || !ao_next || !ao_new) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        ao_next[ne] = -1; ao_new[ne] = an;
+        if (h >= 0) { ao_next[last[h]] = ne; last[h] = ne; }
+        else { h = names.n; anh_add(&names, ao); first[h] = last[h] = ne; }
+        ne++;
+      }
+    stamp_nc = c->nclasses; stamp_gen = comp_table_gen;
+  }
+  int h = nm && names.n > 0 ? anh_find(&names, nm) : -1;
+  return h >= 0 ? first[h] : -1;
+}
+
 /* The scopes a call on name `un`, defined by more than one method or reached
    under an alias, can reach.
    Resolved the way the binders resolve it: a class method on a constant
@@ -26747,10 +26835,13 @@ static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
   return 1;
 }
 
-static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallTargets *t) {
+static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallTargets *t, int ae) {
   const NodeTable *nt = c->nt;
   int first = an_any_scope_by_name(c, un);
-  int aliased = an_alias_name(c, un);
+  /* `ae`: the first class aliasing a method under the name (an_alias_first),
+     resolved by the caller, which has asked it already: a hash of the name
+     each, and a candidate walk asks this for every call of a name */
+  int aliased = ae >= 0;
   if (first < 0 && !aliased) return;
   int rc = nt_ref(nt, u, "receiver");
   NodeKind rk = rc >= 0 ? nt_kind(nt, rc) : NK_SelfNode;
@@ -26796,7 +26887,7 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
   else
     for (int k = first; k >= 0 && t->want < 0; k = an_same_name_next(c, k)) act_add(t, k);
   /* and every method a class aliases under the name */
-  for (int e = aliased ? an_alias_first(c, un) : -1; e >= 0; e = al_next[e]) {
+  for (int e = ae; e >= 0; e = al_next[e]) {
     act_add(t, comp_method_in_chain(c, al_cls[e], un, NULL));
     act_add(t, comp_cmethod_in_chain(c, al_cls[e], un, NULL));
   }
@@ -26833,9 +26924,11 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
      (#5957) reaching `Rooms.show_into` beside a `Users.show_into` -- never
      pulled the caller's local into the handle, and the call handed it a
      fresh copy that took every append (#6065). */
-  if ((byname < 0 || an_alias_name(c, un)) && !sp_streq(un, "new"))
-    an_call_targets_nonunique(c, u, un, t);
-  if (!sp_streq(un, "new")) return;
+  if (!sp_streq(un, "new")) {
+    int ae = an_alias_first(c, un);
+    if (byname < 0 || ae >= 0) an_call_targets_nonunique(c, u, un, t, ae);
+    return;
+  }
   int rc = nt_ref(nt, u, "receiver");
   if (rc < 0 || nt_kind(nt, rc) != NK_ConstantReadNode) return;
   const char *cn = nt_str(nt, rc, "name");
@@ -27479,7 +27572,7 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   if (!un) return 0;
   int is_new = sp_streq(un, "new"), named = sp_streq(un, m2->name);
   /* only an alias reaches a scope under another name */
-  int aliased = !is_new && an_alias_name(c, un);
+  int ae = is_new ? -1 : an_alias_first(c, un), aliased = ae >= 0;
   int byname = named ? an_unique_scope_by_name(c, un) : -1;
   if (named && byname == mi2 &&
       cplan_user_fresh(c, u)->mi == mi2 &&
@@ -27488,7 +27581,7 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
      itself resolves to, as an_call_targets_of lists them */
   if (!is_new && ((named && byname < 0) || aliased)) {
     ACallTargets tg = { NULL, 0, 0, mi2, 0 };
-    an_call_targets_nonunique(c, u, un, &tg);
+    an_call_targets_nonunique(c, u, un, &tg, ae);
     if (tg.hit) return 1;
   }
   if (!sp_streq(un, "new") || !sp_streq(m2->name, "initialize")) return 0;
