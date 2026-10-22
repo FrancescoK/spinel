@@ -2514,7 +2514,8 @@ static int cplan_nil_user_method(Compiler *c, const char *name) {
 }
 
 int cplan_nil_written(int why) {
-  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL;
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL ||
+         why == NFW_TAKEN;
 }
 
 /* The name call id was written as: an alias of a reader is renamed to the

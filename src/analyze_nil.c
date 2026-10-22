@@ -842,6 +842,11 @@ static int nf_call(NF *f, int v) {
   if (r >= 0 && (rt == TY_STRING || rt == TY_STRBUF || (rt == TY_POLY && c->ntype[v] == TY_STRING)) &&
       ty_str_typed_bang_flags(nm) && !(ty_str_typed_bang_flags(nm) & PF_STR_SELF))
     return NFW_NIL;
+  /* a removal from an object Array: a queue or a stack the program empties,
+     whose nil a call on the element then meets */
+  if (r >= 0 && ty_is_obj_array(rt) &&
+      (sp_streq(nm, "pop") || sp_streq(nm, "shift") || sp_streq(nm, "delete_at")))
+    return NFW_TAKEN;
   /* an element read that can miss, a pick that finds nothing */
   if (r >= 0 && nf_container(rt)) {
     static const char *const picks[] = { "find", "detect", "first", "last", "min", "max", "min_by",
@@ -897,7 +902,7 @@ static int nf_elem_tracked(TyKind t) {
 /* a nil the program writes, as cplan_nil reads one */
 static int nf_written_nil(int why) {
   return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET ||
-         why == NFW_ELEM_NIL;
+         why == NFW_ELEM_NIL || why == NFW_TAKEN;
 }
 
 /* An ivar's element flag sits on the topmost class of the family that
@@ -2000,7 +2005,7 @@ int nil_fact_why(const Compiler *c, int node) {
 }
 
 const char *nil_fact_why_name(int why) {
-  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem-nil", "elem",
+  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem-nil", "taken", "elem",
     "global", "ivar", "caller", "opaque", "guarded" };
   return why >= 0 && why < (int)(sizeof names / sizeof *names) ? names[why] : "?";
 }
