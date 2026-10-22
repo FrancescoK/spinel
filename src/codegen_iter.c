@@ -3817,6 +3817,14 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
         TyKind rrt = rr >= 0 ? comp_ntype(c, rr) : TY_UNKNOWN;
         if (!ty_is_array(rrt) && !ty_is_hash(rrt) && rrt != TY_POLY_ARRAY) ok = 0;
       }
+      /* A String's own iterators take any call's poly answer as well
+         (`x.to_s.each_byte { }` where a user to_s answers it): the default
+         arm below serves the String, and the ordinary poly dispatch has no
+         String arm for a call with a block. The receiver is read once, into
+         the switch's temp. */
+      if (!ok && (sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+                  sp_streq(name, "each_line") || sp_streq(name, "each_grapheme_cluster")))
+        ok = 1;
       if (!ok) return 0;
     }
     else return 0;
