@@ -649,7 +649,7 @@ class OptionParser
 
     def add_banner(to)  # :nodoc:
       unless @short or @long
-        s = desc.join.dup
+        s = desc.join
         to << " [" + s + "]..." unless s.empty?
       end
       to
@@ -925,9 +925,8 @@ class OptionParser
     # block is given. If it isn't found, nil is returned.
     #
     def search(id, key)
-      if list = (id == :atype ? atype : id == :short ? short : long)
-        return nil unless list.key?(key)
-        val = list[key]
+      if list = __send__(id)
+        val = list.fetch(key) {return nil}
         block_given? ? yield(val) : val
       end
     end
@@ -1135,7 +1134,7 @@ XXX
   # method.
   #
   def self.with(*args, &block)
-    opts = self.new(*args)
+    opts = new(*args)
     opts.instance_eval(&block)
     opts
   end
@@ -1490,12 +1489,8 @@ XXX
       end
 
       # anything others
-      if o.is_a?(Method)
-        block = notwice(o, block, 'block')
-        next
-      end
       case o
-      when Proc
+      when Proc, Method
         block = notwice(o, block, 'block')
       when Array, Hash
         if Array === o
@@ -1784,7 +1779,7 @@ XXX
             raise InvalidOption, arg if has_arg and !eq and arg == "-#{opt}"
           end
           begin
-            argv.unshift(opt.dup) if opt and (!rest or (opt = opt.sub(/\A-*/, '-')) != '-')
+            argv.unshift(opt) if opt and (!rest or (opt = opt.sub(/\A-*/, '-')) != '-')
             val = callback!(cb, 1, val) if cb
             callback!(setter, 2, sw.switch_name, val) if setter
           rescue ParseError
@@ -2191,7 +2186,6 @@ XXX
   %w[- no false].each {|el| yesno[el] = false}
   %w[+ yes true].each {|el| yesno[el] = true}
   yesno['nil'] = false          # should be nil?
-  yesno[:nil] = false; yesno.delete(:nil)   # Spinel: lets every CompletingHash take Symbol keys
   accept(TrueClass, yesno) {|arg, val| val == nil or val}
   #
   # Similar to TrueClass, but defaults to false.
