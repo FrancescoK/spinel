@@ -12717,6 +12717,8 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
         return r.nil ? sp_box_nil() : key;
       }
       case SP_BUILTIN_STR_ARRAY: {
+        /* (a shared String's handle box is that String) */
+        key = sp_poly_strbuf_deref(key);
         if (key.tag != SP_TAG_STR) return sp_box_nil();
         sp_strelem r = sp_StrArray_delete_e((sp_StrArray *)recv.v.p, SP_SEF(key.v.s));
         return r ? SP_SEBOX(r) : sp_box_nil();
