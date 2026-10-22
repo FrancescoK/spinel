@@ -17558,13 +17558,12 @@ int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
    CRuby; sort, min and max call its `<=>` either way. */
 int class_is_comparable(Compiler *c, int cid) {
   if (cid < 0 || cid >= c->nclasses) return 0;
-  if (class_mixes_in(c, cid, "Comparable", 0)) return 1;
-  static const char *const CMP[] = { "String", "Numeric", "Integer", "Float", "Rational",
-                                     "Complex", "Time", NULL };
-  int bp = class_builtin_parent(c, cid);
-  for (int i = 0; CMP[i]; i++) if (bp == builtin_class_id(CMP[i])) return 1;
+  for (int cur = cid; cur >= 0; cur = c->classes[cur].parent) {
+    if (comp_comparable_reaches(c, cur)) return 1;
+    if (c->classes[cur].parent == cur) break;
+  }
   int oc = comp_class_index(c, "Object");
-  return oc >= 0 && oc != cid && class_mixes_in(c, oc, "Comparable", 0);
+  return oc >= 0 && comp_comparable_reaches(c, oc);
 }
 /* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
    one, 0 otherwise. */
@@ -17595,7 +17594,7 @@ int class_implicit_responds(Compiler *c, int cid, const char *qm) {
       (class_struct_kind(c, cid) == 1 || class_mixes_in(c, cid, "Enumerable", 0))) return 1;
   if (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 &&
       name_is_comparable_module_method(qm) &&
-      class_mixes_in(c, cid, "Comparable", 0)) return 1;
+      class_is_comparable(c, cid)) return 1;
   int sk = class_struct_kind(c, cid);
   if (!sk) return 0;
   if (sp_streq(qm, "members") || sp_streq(qm, "to_h") ||
@@ -17772,7 +17771,7 @@ static void refl_object_methods(Compiler *c, int cid, int pub, int prot, int sin
   const char *const *core[4] = {
     sk == 1 ? structm : sk == 2 ? datam : NULL,
     sk == 1 || class_mixes_in(c, cid, "Enumerable", 0) ? enumm : NULL,
-    class_mixes_in(c, cid, "Comparable", 0) ? cmpm : NULL,
+    class_is_comparable(c, cid) ? cmpm : NULL,
     objm };
   for (int t = 0; t < 4; t++)
     for (int i = 0; core[t] && core[t][i]; i++) refl_note(r, core[t][i], pub);

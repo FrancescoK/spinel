@@ -6178,6 +6178,7 @@ static sp_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, sp_bool *comparable);
    result clears *comparable, which the callers turn into an ArgumentError. */
 typedef sp_int (*sp_obj_cmp_fn)(sp_RbVal a, sp_RbVal b, sp_bool *comparable);
 static sp_obj_cmp_fn sp_obj_cmp_hook = NULL;
+static sp_bool (*sp_obj_comparable_hook)(int cls_id) = NULL;
 #define SP_IS_BUILTIN_ARRAY(id) ((id) == SP_BUILTIN_INT_ARRAY || (id) == SP_BUILTIN_STR_ARRAY || \
                                  (id) == SP_BUILTIN_FLT_ARRAY || (id) == SP_BUILTIN_POLY_ARRAY)
 /* A String compared with a user object that answers #to_str: CRuby's
@@ -6286,6 +6287,10 @@ static SP_INLINE sp_oint sp_poly_spaceship_body(sp_RbVal a, sp_RbVal b) {
   if (a.tag == b.tag &&
       (a.tag == SP_TAG_NIL || (a.tag == SP_TAG_BOOL && a.v.b == b.v.b)))
     return sp_oint_of(0);
+  /* A Comparable program object's default was already answered by the hook:
+     retrying equality repeats it or bypasses Numeric's identity rule. */
+  if (sp_poly_is_user_obj(a) && sp_obj_comparable_hook &&
+      sp_obj_comparable_hook(a.cls_id)) return sp_oint_nil();
   /* the default Object#<=> answers 0 when the operands are ==, nil otherwise
      -- so an object compared with itself is 0, not nil (#3017) */
   if (sp_poly_rb_equal(a, b)) return sp_oint_of(0);
@@ -6334,9 +6339,13 @@ SP_NORETURN SP_COLD static void sp_poly_nil_nomethod(const char *op) {
 #define SP_POLY_NIL_RECV(OP) do { if (SP_UNLIKELY(sp_poly_recv_nil(a))) sp_poly_nil_nomethod(OP); } while (0)
 /* The same test where the emitter, not a helper, owns the comparison --
    `between?` renders as two sp_poly_cmp_ck calls, and only the call site
-   knows which method was written. */
+   knows which method was written. A program object without Comparable
+   raises NoMethodError here too, before the spaceship comparison. */
 static void sp_poly_recv_ck(sp_RbVal v, const char *op) {
   if (SP_UNLIKELY(sp_poly_recv_nil(v))) sp_poly_nil_nomethod(op);
+  if (sp_poly_is_user_obj(v)) {
+    if (!sp_obj_comparable_hook || !sp_obj_comparable_hook(v.cls_id)) sp_raise_nomethod(sp_nomethod_msg(op, v));
+  }
 }
 /* Module#< / <= / > / >= on a boxed class: ordered by the class graph, and a
    non-class operand raises as CRuby does. Two unrelated classes answer nil
@@ -6350,10 +6359,10 @@ static int sp_poly_class_ord(sp_RbVal a, sp_RbVal b, sp_int *r) {
   return 1;
 }
 #define SP_POLY_CLASS_CMP(REL) do { sp_int _r = 0; int _k = sp_poly_class_ord(a, b, &_r); if (_k) return _k > 0 && _r REL 0; } while (0)
-static sp_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<"); SP_POLY_CLASS_CMP(<); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i < b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<"); SP_POLY_COERCE_CMP("<"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
-static sp_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<="); SP_POLY_CLASS_CMP(<=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i <= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<="); SP_POLY_COERCE_CMP("<="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
-static sp_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">"); SP_POLY_CLASS_CMP(>); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i > b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">"); SP_POLY_COERCE_CMP(">"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
-static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_POLY_CLASS_CMP(>=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i >= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">="); SP_POLY_COERCE_CMP(">="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
+static sp_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<"); SP_POLY_CLASS_CMP(<); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i < b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<"); sp_poly_recv_ck(a, "<"); SP_POLY_COERCE_CMP("<"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
+static sp_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<="); SP_POLY_CLASS_CMP(<=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i <= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<="); sp_poly_recv_ck(a, "<="); SP_POLY_COERCE_CMP("<="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
+static sp_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">"); SP_POLY_CLASS_CMP(>); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i > b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">"); sp_poly_recv_ck(a, ">"); SP_POLY_COERCE_CMP(">"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
+static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_POLY_CLASS_CMP(>=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i >= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">="); sp_poly_recv_ck(a, ">="); SP_POLY_COERCE_CMP(">="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
 /* `a < b` etc. where a user class's operator may answer a non-bool (ruby-vips'
    Image#> builds an image): the user method's own value, else the builtin
    comparison boxed. */

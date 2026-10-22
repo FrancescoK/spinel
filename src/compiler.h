@@ -843,6 +843,10 @@ typedef struct {
      before it (a later include goes in front in Ruby's lookup). Set where
      the includes are processed (process_include_body). */
   int enum_inc_at;
+  int cmp_inc_at;       /* Comparable uses the same include order facts;
+                          1 also marks a builtin Comparable superclass. */
+  int cmp_prepended;    /* 1: direct prepend Comparable; 2: a prepended module
+                          reaches it, behind that module's own methods. */
   int enum_prepended;   /* its bodies `prepend Enumerable`: in front of the class itself */
   /* The attr_reader / attr_accessor names this class's own bodies declare,
      as against readers[], which also holds those a module it includes and a
@@ -1305,6 +1309,7 @@ typedef struct {
      and installs the conversion bridge (sp_obj_conv_sw) only then, so a
      program that never converts an object carries no extra dispatch. */
   int uses_kconv;
+  int gen_comparable; /* program needs the boxed Comparable membership callback */
   /* the program has a `**` operand and defines #to_hash: the bridge carries
      the #to_hash row a boxed operand converts through (sp_kw_splat_conv). */
   int uses_kw_to_hash;
@@ -1958,6 +1963,8 @@ int        comp_is_own_reader(ClassInfo *ci, const char *name);
    #each, is Enumerable's: no method or reader of the program's comes before
    Enumerable in Ruby's lookup order. 0 when the program's answers first. */
 int        comp_enum_answers_first(Compiler *c, int cid, const char *name);
+int        comp_comparable_answers_first(Compiler *c, int cid, const char *name);
+int        comp_comparable_reaches(Compiler *c, int cid);
 int        core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int        comp_is_writer(ClassInfo *ci, const char *name);
 int        name_is_plain_setter(const char *name);
