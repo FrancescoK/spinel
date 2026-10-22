@@ -4657,8 +4657,14 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
   else if (is_pfirstn) {
     char nx[64]; snprintf(nx, sizeof nx, "_t%d", atmp[0]);
     char gen[256];
-    snprintf(gen, sizeof gen, "sp_poly_%s_n(_t%d, %s)",
-             sp_streq(name, "first") ? "first" : "last", tv,
+    /* a value that is no collection is the call's NoMethodError, as on the
+       route without a user class (sp_poly_enum_chk): "hello".first(1)
+       answered [] (last's helper asks itself) */
+    char rv[64];
+    if (sp_streq(name, "first")) snprintf(rv, sizeof rv, "sp_poly_enum_chk(_t%d, \"first\")", tv);
+    else snprintf(rv, sizeof rv, "_t%d", tv);
+    snprintf(gen, sizeof gen, "sp_poly_%s_n(%s, %s)",
+             sp_streq(name, "first") ? "first" : "last", rv,
              atmp_ty[0] == TY_POLY ? ({ static char cx[80]; snprintf(cx, sizeof cx, "sp_poly_arg_int_chk(%s)", nx); cx; }) : nx);
     if (ret == TY_POLY) {
       buf_printf(b, " default: _t%d = %s; break;", tr, gen);

@@ -1,0 +1,33 @@
+"e"
+"he"
+first: NoMethodError first
+2
+[1, 2]
+[1, 2]
+slice: NoMethodError slice
+slice2: NoMethodError
+first: NoMethodError first
+"y"
+"sy"
+first: NoMethodError first
+{}
+{}
+[[:a, 1], [:b, 2]]
+slice: NoMethodError slice
+slice2: NoMethodError
+first: NoMethodError first
+slice: NoMethodError slice
+slice2: NoMethodError
+first: NoMethodError first
+"foo1"
+slice2: ArgumentError
+"foo-first"
+slice: NoMethodError slice
+slice2: NoMethodError
+[1, 2]
+slice: NoMethodError slice
+slice2: NoMethodError
+[7, 8]
+slice: NoMethodError slice
+slice2: NoMethodError
+first: NoMethodError first
