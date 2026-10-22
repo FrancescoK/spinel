@@ -23715,10 +23715,17 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        them (see emit_call). Whether it DOES convert is only known once the
        arm has emitted, so this is a candidacy test; with a lone observable
        operand the rewrite is kept below only when the call converted. */
+    /* (a receiver of a user class is called, never converted: Ruby converts
+       arguments only. Counted, a lone such receiver -- `E.new.on_click { }`
+       -- sent every call on it through the trial, which converted nothing
+       and was taken back after the call's block had been emitted into its
+       own proc function: a second, dead copy of every block written on such
+       a receiver) */
     TyKind ot = comp_ntype(c, operand[i]);
     if (ot == TY_POLY || (ty_is_object(ot) && ty_object_class(ot) >= 0 &&
                           ty_object_class(ot) < c->nclasses &&
-                          !c->classes[ty_object_class(ot)].is_native_class))
+                          !c->classes[ty_object_class(ot)].is_native_class &&
+                          !(recv >= 0 && i == 0)))
       converts = 1;
     /* an operand the nil arm's head ran (VR_HEAD_HELD) reads as its temp:
        it runs nothing here, and bound again it was copied into a second
