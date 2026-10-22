@@ -1098,6 +1098,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (rty && sp_streq(rty, "ArrayNode")) {
         for (int ai = 0; ai < argc; ai++) {
           TyKind at = infer_type(c, argv[ai]);
+          /* (one-String mode: a String Array holds a handle as it holds
+             the bytes) */
+          if (g_one_string && elem_t == TY_STRING && at == TY_STRBUF) continue;
           if (at != TY_UNKNOWN && at != elem_t) { *out = TY_POLY_ARRAY; return 1; }
         }
       }

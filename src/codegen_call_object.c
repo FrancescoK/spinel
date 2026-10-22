@@ -2017,6 +2017,10 @@ static int sn_args_run_late(Compiler *c, int id, int recv) {
     int plain = 1, wrote = 0;
     for (int i = 0; i < argc && plain; i++) plain = sn_runs_no_code(c, argv[i], k, vn, &wrote);
     if (plain) return 1;
+    /* (one-String mode: the variable holds the handle, which the guard
+       holds in turn: the call reads its String after the arguments, on the
+       String the variable had, as 2 does for a call's handle) */
+    if (g_one_string) return 2;
     /* (an assignment the arguments make themselves leaves the call on the
        String it had) */
     return nd && !wrote ? 3 : 0;
@@ -2310,7 +2314,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           /* the handle the receiver publishes, run once here and read
              after the arguments */
           Buf hb; memset(&hb, 0, sizeof hb);
-          if (emit_strbuf_route(c, recv, &hb)) {
+          int routed = emit_strbuf_route(c, recv, &hb);
+          if (!routed && g_one_string) { emit_strbuf_handle_of(c, nt_paren_single(c->nt, recv), &hb); routed = 1; }
+          if (routed) {
             tsh = ++g_tmp;
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), tsh, hb.p, tsh);
@@ -2431,7 +2437,10 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(g_pre, "if (!(%s)) {\n", nilt);
           buf_puts(g_pre, preb2.p);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "  _snr%d = (%s);\n", rsv, vbs.p ? vbs.p : "");
+          /* (one-String mode: the handle slot takes the call's String in
+             either face) */
+          buf_printf(g_pre, g_one_string && ret2 == TY_STRBUF ? "  _snr%d = SP_STR_HDL(%s);\n" : "  _snr%d = (%s);\n",
+                     rsv, vbs.p ? vbs.p : "");
           emit_indent(g_pre, g_indent);
           buf_puts(g_pre, "}\n");
           buf_printf(b, "_snr%d", rsv);

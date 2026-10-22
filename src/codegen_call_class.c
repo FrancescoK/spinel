@@ -725,9 +725,16 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
     if (cs_qm) {
       LocalVar *cv = comp_const(c, cs_qm);
-      if (cv && cv->type != TY_UNKNOWN && repr_of(c, argv[1]).as_ty == cv->type) {
-        buf_printf(b, "(cst_%s = ", cs_qm);
+      TyKind cs_vt = repr_of(c, argv[1]).as_ty;
+      /* (one-String mode: a String of the other face, through SP_STR_HDL /
+         SP_STR_B) */
+      const char *cs_face = !g_one_string || !cv ? NULL
+                          : cv->type == TY_STRBUF && cs_vt == TY_STRING ? "SP_STR_HDL("
+                          : cv->type == TY_STRING && cs_vt == TY_STRBUF ? "SP_STR_B(" : NULL;
+      if (cv && cv->type != TY_UNKNOWN && (cs_vt == cv->type || cs_face)) {
+        buf_printf(b, "(cst_%s = %s", cs_qm, cs_face ? cs_face : "");
         emit_expr(c, argv[1], b);
+        if (cs_face) buf_puts(b, ")");
         if (const_has_flag(cv)) buf_printf(b, ", cst_%s__set = 1", cs_qm);
         buf_printf(b, ", cst_%s)", cs_qm);
         return 1;

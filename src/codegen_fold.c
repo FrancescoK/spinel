@@ -457,6 +457,9 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
   TyKind bnt = ie_block_break_next_ty(c, body);
   if (bnt != TY_UNKNOWN) bret = (bret == TY_UNKNOWN) ? bnt : ty_unify(bret, bnt);
   if (bret == TY_UNKNOWN) bret = (ns1 ? p1_actual : p0_actual);
+  /* (one-String mode: the block's String value is emitted in the bytes
+     face, which the collecting Array takes) */
+  if (g_one_string && bret == TY_STRBUF) bret = TY_STRING;
   /* Collect the block's value next-aware into a temp: a tail or interior
      `next <v>` assigns the temp and falls through to the caller's collection
      rather than dropping the entry as a bare continue would. */
@@ -1400,6 +1403,8 @@ static void flatmap_coerce_from_poly(TyKind dst, int oint, const char *src, Buf 
   /* a String / Symbol param unboxes the field directly (matching emit_unbox_text);
      without this a `const char *`/`sp_sym` slot took a raw sp_RbVal (#2929) */
   case TY_STRING: buf_printf(out, "sp_poly_unbox_s(%s)", src); break;
+  /* (a String handle's, as ty_traits' unbox) */
+  case TY_STRBUF: buf_printf(out, "sp_poly_as_strbuf(%s)", src); break;
   case TY_SYMBOL: buf_printf(out, "(sp_sym)(%s).v.i", src); break;
   default: buf_puts(out, src); break;  /* poly (or other): pass through */
   }
@@ -7384,6 +7389,32 @@ int ran_first_handle(int node) {
   return -1;
 }
 
+/* A default expression evaluates in the CALLEE's context: a `self` inside
+   it (e.g. `def self.f(rel = Wrap.new(self))`) is the callee's class, not
+   whatever `self` the caller happens to have (#2443). Only the class-method
+   case is representable at the call site (the Class object is a constant);
+   an instance-method default referencing self keeps the caller's g_self,
+   correct for the common same-class implicit-self call. The caller saves
+   g_self, g_self_deref and g_emitting_class_id and puts them back. */
+static void dflt_self_enter(Scope *m, int dv, char *selfb, size_t cap) {
+  /* an inlined class method's default already runs on the class it was
+     called on, which may inherit it (emit_inlined_default) */
+  if (dv >= 0 && m->class_id >= 0 && m->is_cmethod && g_inl_dflt_on_recv != m) {
+    snprintf(selfb, cap, "((sp_Class){%d})", m->class_id);
+    g_self = selfb;
+  }
+  /* A constructor's default runs on the object being built, which exists by
+     the time this is emitted (the ctor allocates first, then initializes).
+     Its receiverless calls are that class's methods too: emitted with the
+     caller's class, `N.new` from another class's method could not find the
+     helper a recursive default calls, and refused the call or raised
+     NoMethodError at run time. */
+  else if (dv >= 0 && g_ctor_self && m->name && sp_streq(m->name, "initialize")) {
+    g_self = g_ctor_self;
+    g_self_deref = g_ctor_self_deref ? g_ctor_self_deref : "->";
+    g_emitting_class_id = m->class_id;
+  }
+}
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
@@ -7521,8 +7552,14 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
        (`v = (@s = +"s")`) binds that handle */
     if (dvP >= 0 && emit_strbuf_write_handle(c, dvP, out)) return;
     buf_printf(out, "%s(", strbuf_new_func(c, dvP));
+    /* (in the callee's context, as below) */
+    const char *svs = g_self, *svd = g_self_deref;
+    int sve = g_emitting_class_id;
+    char dself[32];
+    dflt_self_enter(m, dvP, dself, sizeof dself);
     if (dvP >= 0) emit_str_expr(c, dvP, out);
     else buf_puts(out, "(&(\"\\xff\")[1])");
+    g_self = svs; g_self_deref = svd; g_emitting_class_id = sve;
     buf_puts(out, ")");
     return;
   }
@@ -7935,32 +7972,11 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   }
   int dv = m->pdefault[idx];
   const char *dty = dv >= 0 ? nt_type(c->nt, dv) : NULL;
-  /* A default expression evaluates in the CALLEE's context: a `self` inside
-     it (e.g. `def self.f(rel = Wrap.new(self))`) is the callee's class, not
-     whatever `self` the caller happens to have (#2443). Only the class-method
-     case is representable at the call site (the Class object is a constant);
-     an instance-method default referencing self keeps the caller's g_self,
-     correct for the common same-class implicit-self call. */
+  /* (in the callee's context: dflt_self_enter) */
   const char *sv_self_dv = g_self, *sv_deref_dv = g_self_deref;
   int sv_emcls_dv = g_emitting_class_id;
   char dv_self9[32];
-  /* an inlined class method's default already runs on the class it was
-     called on, which may inherit it (emit_inlined_default) */
-  if (dv >= 0 && m->class_id >= 0 && m->is_cmethod && g_inl_dflt_on_recv != m) {
-    snprintf(dv_self9, sizeof dv_self9, "((sp_Class){%d})", m->class_id);
-    g_self = dv_self9;
-  }
-  /* A constructor's default runs on the object being built, which exists by
-     the time this is emitted (the ctor allocates first, then initializes).
-     Its receiverless calls are that class's methods too: emitted with the
-     caller's class, `N.new` from another class's method could not find the
-     helper a recursive default calls, and refused the call or raised
-     NoMethodError at run time. */
-  else if (dv >= 0 && g_ctor_self && m->name && sp_streq(m->name, "initialize")) {
-    g_self = g_ctor_self;
-    g_self_deref = g_ctor_self_deref ? g_ctor_self_deref : "->";
-    g_emitting_class_id = m->class_id;
-  }
+  dflt_self_enter(m, dv, dv_self9, sizeof dv_self9);
   if (dv < 0) {
     /* A missing required arg pads the slot with a zero-ish compat value so
        codegen completes (a compile-time warning already flagged the call).

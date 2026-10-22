@@ -11215,9 +11215,12 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
-  buf_printf(b, "_cr%d = ", cr);
+  /* (one-String mode: a handle result takes the arm's String in either
+     face) */
+  int hdl = g_one_string && rt == TY_STRBUF && n > 0;
+  buf_printf(b, hdl ? "_cr%d = SP_STR_HDL(" : "_cr%d = ", cr);
   buf_puts(b, val.p ? val.p : "");
-  buf_puts(b, "; ");
+  buf_puts(b, hdl ? "); " : "; ");
   free(pre.p); free(val.p);
 }
 
@@ -21739,10 +21742,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        slot as its view, which the slot's root keeps alive) */
     int one_tail_b = g_one_string && !want_poly && tail_slot_ty == TY_STRING;
     int one_unpub = one_tail_b && !g_result_var && one_tail_fresh(c, id);
+    /* (...and in a handle slot as its handle) */
+    int one_tail_h = g_one_string && !want_poly && tail_slot_ty == TY_STRBUF;
     if (one_unpub) buf_puts(b, "sp_strface_unpub(");
     if (one_tail_b) buf_puts(b, "SP_STR_B(");
+    if (one_tail_h) buf_puts(b, "SP_STR_HDL(");
     emit_tail_value(c, id, b);
-    if (one_tail_b) buf_puts(b, ")");
+    if (one_tail_b || one_tail_h) buf_puts(b, ")");
     if (one_unpub) buf_puts(b, ")");
   }
   buf_puts(b, ";\n");
@@ -24596,7 +24602,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       buf_puts(b, ") ");
       int open = 0, oset = 0;
       char *rhs = iow_guarded_hash_rhs(c, v, rt, b, &open, &oset);
-      buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s)", hn, oset ? "oset" : "set", ta, sk, rhs);
+      /* (one-String mode: a String-valued Hash takes the value's bytes face) */
+      buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s%s%s)", hn, oset ? "oset" : "set", ta, sk, ONE_HV_O(hn), rhs, ONE_HV_C(hn));
       iow_guard_close(rhs, open, b);
     }
     buf_puts(b, "; }\n");
@@ -24634,6 +24641,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
         emit_typed_sink_text(c, v, rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT,
                              rhs[0] ? rhs : (rt == TY_INT_ARRAY ? "0" : "0.0"), b);
+      /* (one-String mode: a String Array takes the value's bytes face) */
+      else if (g_one_string && rt == TY_STR_ARRAY) buf_printf(b, "SP_STR_B(%s)", rhs);
       else buf_puts(b, rhs);
     }
     buf_puts(b, ")");

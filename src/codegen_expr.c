@@ -1798,6 +1798,9 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     if (ro && !wo && want == TY_POLY && rdt != TY_POLY) buf_printf(b, "%s(_t%d)", oint_box(rdt), tv);
     else if (rdt == want) buf_puts(b, sv);
     else if (want == TY_POLY) emit_boxed_text(c, rdt, sv, b);
+    /* (one-String mode: the other face of the same String) */
+    else if (g_one_string && rdt == TY_STRBUF && want == TY_STRING) buf_printf(b, "SP_STR_B(%s)", sv);
+    else if (g_one_string && rdt == TY_STRING && want == TY_STRBUF) buf_printf(b, "SP_STR_HDL(%s)", sv);
     /* nil-preserving: the reader can answer nil, and this arm is exactly the
        one taken when it did (`&&=` on a nil attribute). Plain unboxing lands
        on the payload under the tag -- 0 for an int slot, where nil is
@@ -5931,11 +5934,19 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_puts(b, " if (");
         emit_slot_nil_test(c, vt, tc2, is_or2, b);
         buf_puts(b, ") { ");
-        emit_guarded_slot_assign(c, iv, tc2, b);
         /* (one-String mode: the String stored is the answer's own -- a new
            one gets its handle first, and the view of it is both what the
-           Hash takes, its owner, and what the expression answers) */
-        if (ONE_HV_O(hn)[0]) buf_printf(b, "; _t%d = SP_STR_B(SP_STR_HDL(_t%d))", tc2, tc2);
+           Hash takes, its owner, and what the expression answers; the value
+           is taken in either face) */
+        if (ONE_HV_O(hn)[0]) {
+          Buf rvb; memset(&rvb, 0, sizeof rvb);
+          Buf *svp = g_pre; g_pre = b;
+          emit_expr(c, iv, &rvb);
+          g_pre = svp;
+          buf_printf(b, "_t%d = SP_STR_B(SP_STR_HDL(%s))", tc2, rvb.p ? rvb.p : "NULL");
+          free(rvb.p);
+        }
+        else emit_guarded_slot_assign(c, iv, tc2, b);
         buf_printf(b, "; sp_%sHash_set(_t%d, %s, %s_t%d%s); } _t%d; })", hn, ta2, sk, ONE_HV_O(hn), tc2, ONE_HV_C(hn), tc2);
       }
     }

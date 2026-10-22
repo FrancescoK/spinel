@@ -4261,10 +4261,26 @@ static int str_bang_chain_var(Compiler *c, int recv) {
    view: the payload's owner takes the new bytes, and _t<tn> becomes its
    view, the receiver the mutator answers (sp_strface_write_through). */
 static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, const char *rtext, Buf *b) {
+  /* (one-String mode: the variable's String is its handle, changed in
+     place) */
+  if (lvw && g_one_string) {
+    buf_puts(b, "sp_String_set_bin(SP_STR_HDL(");
+    emit_expr(c, recv, b);
+    buf_printf(b, "), _t%d); ", tn);
+    return 1;
+  }
   if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return 0; }
   int base = str_bang_chain_var(c, recv);
   if (base < 0 && g_one_string && rtext) buf_printf(b, "_t%d = sp_strface_write_through(%s, _t%d); ", tn, rtext, tn);
   if (base < 0) return 0;
+  /* (one-String mode: a variable an emitter holds in a temp, ahead of
+     arguments that run code, is written through that temp's handle) */
+  if (g_one_string)
+    for (int i = g_n_argov - 1; i >= 0; i--)
+      if (g_argov_node[i] == base) {
+        buf_printf(b, "sp_String_set_bin(SP_STR_HDL(%s), _t%d); ", g_argov_text[i], tn);
+        return 1;
+      }
   Buf sref; memset(&sref, 0, sizeof sref);
   if (strbuf_slot_text(c, base, &sref)) {
     buf_printf(b, "sp_String_set_bin(%s, _t%d); ", sref.p, tn);

@@ -3994,6 +3994,11 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     if (b) buf_printf(b, "_t%d", ran_first_read_handle(recv));
     return 1;
   }
+  /* (one-String mode: a variable an emitter bound to a temp, the String a
+     guard read ahead of arguments that may assign the variable, reads as
+     that temp, not as its slot again) */
+  if (g_one_string && recv >= 0)
+    for (int i = g_n_argov - 1; i >= 0; i--) if (g_argov_node[i] == recv) return 0;
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_buf(c, &h, b);
   /* a demand-marked reader call typed as the handle (external reader
