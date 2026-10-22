@@ -2771,6 +2771,12 @@ int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
          (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS | BOPF_SELF_EXACT | BOPF_COPY_CLASS);
 }
 
+int bop_answers_recv(TyKind rt, const char *name, int argc, int has_block) {
+  if (bop_answers_self(rt, name, argc, has_block) & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_EXACT)) return 1;
+  const IterRow *r = has_block ? iter_row_of(rt, name, argc) : NULL;
+  return r && (r->answer == IA_RECV || r->answer == IA_BLOCKVALS_INPLACE);
+}
+
 int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block) {
   return (bop_call_flags(rt, name, argc, has_block) & BOPF_ARGS_BUILTIN) != 0;
 }
@@ -3689,6 +3695,17 @@ const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip) {
     return r;
   }
   return NULL;
+}
+
+const IterRow *iter_row_of(TyKind rt, const char *name, int argc) {
+  const IterRow *r = iter_row(BOP_ANY_RECV, name, argc, 0);
+  if (r || !name) return r;
+  TyKind fam = ty_is_hash(rt) ? BOP_ANY_HASH
+             : ty_is_array(rt) || ty_is_obj_array(rt) ? BOP_ANY_ARRAY
+             : rt == TY_INT || rt == TY_FLOAT || rt == TY_STRING || rt == TY_RANGE ||
+               rt == TY_FLOAT_RANGE ? rt
+             : TY_UNKNOWN;
+  return fam == TY_UNKNOWN ? NULL : iter_row(fam, name, argc, 0);
 }
 
 /* Whether no value a step yields is one the receiver holds: a new String,
