@@ -2502,7 +2502,8 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
        from a gathered Array of plain Strings: no value there was pulled
        into the handle (`yield(*[a[0]])`), so the block would append to
        a copy */
-    if (repr_of_slot(c, bl).kind == RK_STRBUF && et == TY_STRING)
+    /* (one-String mode: an element of a String Array is the handle) */
+    if (repr_of_slot(c, bl).kind == RK_STRBUF && et == TY_STRING && !g_one_string)
       unsupported_feature(c, site,
                           "a String is passed through a splat into a yield to a block parameter the block "
                           "appends to, from a value that is not a String variable: the block would append "
