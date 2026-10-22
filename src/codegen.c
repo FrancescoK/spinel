@@ -14312,14 +14312,19 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* the target is the super's plan (call_plan.c) when it was looked up where
      this splice looks: the shadow's class, or the parent's chain under this
      method's own name. The plan asks the chain for the user name
-     (comp_super_name), which a proc-form clone's, a prepend's or an
-     include's copy does not carry: the splice looks those up by the copy's
-     name and leaves them to emit_super. Those, and under --plan-check as the
-     assertion, take the lookup. */
+     (comp_super_name), which a proc-form clone's does not carry: the splice
+     looks that up by the clone's name and leaves it to emit_super. A
+     prepend's or an include's copy is the method it copies, looked up under
+     that method's name: under the copy's name it missed, and emit_super's
+     call form, written inside an inlined body, called the parent's plain
+     function, which a yielding parent does not have, and dropped the block
+     (`super { |v| yield v + 1 }` in a class that prepends). Those, and
+     under --plan-check as the assertion, take the lookup. */
   const CallPlan *spl = cplan_user(c, id);
+  const char *own = comp_prep_user_name(s->name);
   int mi = -1;
   if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
-      (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, s->name)))) {
+      (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, own)))) {
     mi = spl->mi;
     if (!shadow) defcls = c->scopes[mi].class_id;
   }
@@ -14329,7 +14334,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
                                       : comp_method_in_class(c, s->class_id, shadow))
             : p < 0 ? -1
-            : cplan_super_chain_mi(c, s, p, s->name);
+            : cplan_super_chain_mi(c, s, p, own);
     if (!shadow && omi >= 0) odef = c->scopes[omi].class_id;
     if (mi < 0) {
       if (g_plan_check && omi >= 0)
@@ -14426,12 +14431,24 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_param_name = m->blk_param;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
+  const char *saved_ypr_fb = g_yield_proc_ref_fallback, *saved_ypr_fb2 = g_yield_proc_ref_fallback2;
+  TyKind saved_yslot_fb = g_yield_slot_ty_fallback, saved_yslot_fb2 = g_yield_slot_ty_fallback2;
   /* an explicit `&proc` or `&nil` replaces a lowered caller's own block */
   int saved_low = g_current_scope_is_lowered;
   if (explicit_block_arg) g_current_scope_is_lowered = 0;
   if (fwd_yield_proc || explicit_block_arg) {
     g_yield_proc_ref = fwd_yield_proc;
     g_yield_slot_ty = as_expr ? repr_of(c, id).as_ty : TY_UNKNOWN;
+  }
+  /* The super's literal block replaces a proc the overriding method was
+     given (`m(&pr)`): the parent's yields run the block, and the block's own
+     yields, the overriding method's, run the proc, as an inlined call with a
+     literal block hands it over. Left set, the parent's yields called the
+     proc and skipped the block (`super { |v| yield v + 1 }` yielded 1). */
+  else if (block >= 0 && block != saved_block) {
+    g_yield_proc_ref_fallback2 = saved_ypr_fb; g_yield_slot_ty_fallback2 = saved_yslot_fb;
+    g_yield_proc_ref_fallback = saved_ypr; g_yield_slot_ty_fallback = saved_yslot;
+    g_yield_proc_ref = NULL;
   }
 
   if (as_expr) buf_puts(b, "({\n");
@@ -14564,6 +14581,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_rescue_base = saved_bbres; g_brk_rescue_base = saved_bres;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_yield_proc_ref = saved_ypr; g_yield_slot_ty = saved_yslot;
+  g_yield_proc_ref_fallback = saved_ypr_fb; g_yield_slot_ty_fallback = saved_yslot_fb;
+  g_yield_proc_ref_fallback2 = saved_ypr_fb2; g_yield_slot_ty_fallback2 = saved_yslot_fb2;
   g_current_scope_is_lowered = saved_low;
   free(fwd_pb.p);
   return 1;
