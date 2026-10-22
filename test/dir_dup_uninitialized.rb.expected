@@ -1,0 +1,7 @@
+[false, nil, Dir]
+[IOError, "closed directory"]
+[false, nil]
+nil
+"."
+false
+nil

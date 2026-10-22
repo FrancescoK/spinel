@@ -3265,6 +3265,14 @@ const char *sp_dir_home(void) {
 }
 void sp_Dir_fin(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->dp) { closedir(d->dp); d->dp = NULL; } }
 void sp_Dir_scan(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->path) sp_mark_string(d->path); }
+/* Object#dup allocates an uninitialized Dir; it does not copy the stream. */
+sp_Dir *sp_dir_dup_handle(sp_Dir *source) {
+  (void)source;
+  sp_Dir *copy = (sp_Dir *)sp_gc_alloc(sizeof(sp_Dir), sp_Dir_fin, sp_Dir_scan);
+  copy->dp = NULL;
+  copy->path = NULL;
+  return copy;
+}
 sp_Dir *sp_Dir_new(const char *path) {SP_GC_ROOT_STR(path);
   DIR *dp = opendir(path ? path : "");
   if (!dp)

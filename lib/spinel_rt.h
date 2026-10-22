@@ -17986,6 +17986,7 @@ sp_StrArray *sp_dir_entries_enc(const char *path, int children, sp_RbVal enc);
 void sp_Dir_fin(void *p);
 void sp_Dir_scan(void *p);
 sp_Dir *sp_Dir_new(const char *path);
+sp_Dir *sp_dir_dup_handle(sp_Dir *source);
 sp_Dir *sp_Dir_for_fd(sp_int fd);
 sp_StrArray *sp_Dir_entries_h(sp_Dir *d, sp_int children);
 sp_int sp_Dir_fchdir(sp_int fd);
