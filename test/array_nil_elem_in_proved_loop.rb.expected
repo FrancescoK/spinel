@@ -16,5 +16,6 @@
 ["boxed by a mixed parameter", NoMethodError]
 ["boxed by a Hash value", NoMethodError]
 ["boxed by a mixed ivar", NoMethodError]
+["one of many blocks", NoMethodError]
 ["Float parameter", NoMethodError]
 ["untouched", 45]

@@ -35272,15 +35272,24 @@ int mutated_array(Compiler *c, int recv) {
 }
 
 /* The values a `yield` answers: the tails of the blocks its method is
-   called with (a `next v` too), into out; how many. */
-static int yield_value_tails(Compiler *c, int y, int *out, int max) {
+   called with (a `next v` too), every one of them -- a full buffer may have
+   left some out, so it grows until they fit. A malloc'd array (the caller
+   frees it), its length into *np. */
+static int *yield_value_tails(Compiler *c, int y, int *np) {
   Scope *ys = comp_scope_of(c, y);
   int ymi = ys ? (int)(ys - c->scopes) : -1;
-  if (ymi < 0) return 0;
-  int sv_ybn = yield_block_tails_next; yield_block_tails_next = 1;
-  int n = yield_block_tails(c, ymi, out, max);
-  yield_block_tails_next = sv_ybn;
-  return n;
+  int *out = NULL, n = 0;
+  if (ymi >= 0) {
+    int sv_ybn = yield_block_tails_next; yield_block_tails_next = 1;
+    for (int max = 64;; max *= 2) {
+      out = realloc(out, (size_t)max * sizeof *out);
+      n = yield_block_tails(c, ymi, out, max);
+      if (n < max) break;
+    }
+    yield_block_tails_next = sv_ybn;
+  }
+  *np = n;
+  return out;
 }
 
 /* The nil mark is the array's, not a name's: an int/float array expression
@@ -35298,8 +35307,9 @@ static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, 
   int recv = v >= 0 && depth < 8 ? mutated_array(c, v) : -1;
   if (recv < 0) return r;
   if (nt_kind(nt, recv) == NK_YieldNode) {
-    int tails[64], n = yield_value_tails(c, recv, tails, 64);
+    int n, *tails = yield_value_tails(c, recv, &n);
     for (int k = 0; k < n; k++) r |= elem_slots_d(c, tails[k], 1, depth + 1, fn, ud);
+    free(tails);
     return r;
   }
   if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {

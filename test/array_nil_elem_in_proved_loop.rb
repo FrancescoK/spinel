@@ -355,6 +355,93 @@ def case17
 end
 run("boxed by a mixed ivar") { case17 }
 
+# the block whose answer carries the nil is one of more than 64 a method
+# yields to: every block's tail is asked, not the first 64
+def give = yield
+def many_sum(fl)
+  s = 0
+  e = 0
+  while e < fl.length
+    s += fl[e] * 3
+    e += 1
+  end
+  s
+end
+give { [0] }
+give { [1] }
+give { [2] }
+give { [3] }
+give { [4] }
+give { [5] }
+give { [6] }
+give { [7] }
+give { [8] }
+give { [9] }
+give { [10] }
+give { [11] }
+give { [12] }
+give { [13] }
+give { [14] }
+give { [15] }
+give { [16] }
+give { [17] }
+give { [18] }
+give { [19] }
+give { [20] }
+give { [21] }
+give { [22] }
+give { [23] }
+give { [24] }
+give { [25] }
+give { [26] }
+give { [27] }
+give { [28] }
+give { [29] }
+give { [30] }
+give { [31] }
+give { [32] }
+give { [33] }
+give { [34] }
+give { [35] }
+give { [36] }
+give { [37] }
+give { [38] }
+give { [39] }
+give { [40] }
+give { [41] }
+give { [42] }
+give { [43] }
+give { [44] }
+give { [45] }
+give { [46] }
+give { [47] }
+give { [48] }
+give { [49] }
+give { [50] }
+give { [51] }
+give { [52] }
+give { [53] }
+give { [54] }
+give { [55] }
+give { [56] }
+give { [57] }
+give { [58] }
+give { [59] }
+give { [60] }
+give { [61] }
+give { [62] }
+give { [63] }
+give { [64] }
+give { [65] }
+give { [66] }
+give { [67] }
+give { [68] }
+def many_case
+  a = give { b = [1, 2]; add(b, 7); b }
+  many_sum(a)
+end
+run("one of many blocks") { many_case }
+
 def fsum(fl)
   s = 0.0
   e = 0
