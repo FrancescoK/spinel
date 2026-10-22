@@ -40215,6 +40215,8 @@ static int mark_block_param_arrays(Compiler *c) {
       ns = yield_block_calls(c, ymi, sites, max);
       if (ns < max) break;
     }
+    /* a list not known to be complete: every array counts as one a nil can reach */
+    if (ns < 0) { if (!nie_gave_up) { nie_gave_up = 1; changed = 1; } ns = 0; }
     for (int si = 0; si < ns; si++) {
       int blk = nt_ref(nt, sites[si], "block");
       if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;

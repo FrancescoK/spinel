@@ -2548,13 +2548,16 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
 }
 /* The calls whose literal block reaches `mi`'s yield, as yield_block_tails
    finds them (a forwarded block delegating to the enclosing method's
-   calls), into out; how many. A proc handed in (`m(&pr)`) has no literal
-   block whose parameters the yield binds, and is left out. */
+   calls), into out; how many, or -1 when a chain of forwarded blocks runs
+   past the walk's depth (the list is then not known to be complete). A
+   method already on the walk is being listed by the frame that holds it.
+   A proc handed in (`m(&pr)`) has no literal block whose parameters the
+   yield binds, and is left out. */
 int yield_block_calls(Compiler *c, int mi, int *out, int max) {
   if (max <= 0) return 0;
   for (int i = 0; i < g_yvt_depth; i++)
     if (g_yvt_mi[i] == mi) return 0;
-  if (g_yvt_depth >= MAX_YVT_DEPTH) return 0;
+  if (g_yvt_depth >= MAX_YVT_DEPTH) return -1;
   g_yvt_mi[g_yvt_depth++] = mi;
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -2570,7 +2573,9 @@ int yield_block_calls(Compiler *c, int mi, int *out, int max) {
       if ((int)(comp_scope_of(c, cid) - c->scopes) == mi || !call_forwards_own_block(c, cid)) continue;
       Scope *encl = comp_scope_of(c, cid);
       int emi = encl ? (int)(encl - c->scopes) : -1;
-      if (emi >= 0 && emi != mi) n += yield_block_calls(c, emi, out + n, max - n);
+      int k = emi >= 0 && emi != mi ? yield_block_calls(c, emi, out + n, max - n) : 0;
+      if (k < 0) { g_yvt_depth--; return -1; }
+      n += k;
       continue;
     }
     /* a recursive call with a literal block reaches the yield too */
