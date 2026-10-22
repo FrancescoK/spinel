@@ -45453,8 +45453,10 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
      one of the places', or one no literal names. A read answers the Set
      where it may be a place's, and is followed as a read of a place below
      (sid_is_alias): `instance_variables.map { |v| instance_variable_get(v)
-     .inspect }` uses it as no Set. A write may put any Set there, so one
-     whose value may be a Set is not followed. */
+     .inspect }` uses it as no Set. A write is followed as a write of the
+     place is below: a Set made there (`Set.new`, `Set[...]`) or no Set,
+     whose own value, the Set, is used as an alias may be; one whose value
+     may be another Set is not followed. */
   if (S->nivars > 0) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int get = 0, r = sid_reflect_reaches_place(nt, S, id, &get);
@@ -45463,7 +45465,8 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       int ar = nt_ref(nt, id, "arguments"), argc = 0;
       const int *argv = nt_arr(nt, ar, "arguments", &argc);
       int v = an_unparen(nt, argv[1]);
-      if (sid_fresh_set(nt, v) || sid_maybe_set(c, v, set_cid)) return 0;
+      if (!sid_fresh_set(nt, v) && sid_maybe_set(c, v, set_cid)) return 0;
+      if (!sid_alias_use_ok(c, S, id)) return 0;
     }
   }
   /* every write of a place holds a Set made there (or no Set) */
