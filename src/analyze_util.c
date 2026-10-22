@@ -2546,6 +2546,38 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
   g_yvt_depth--;
   return n;
 }
+/* The calls whose literal block reaches `mi`'s yield, as yield_block_tails
+   finds them (a forwarded block delegating to the enclosing method's
+   calls), into out; how many. A proc handed in (`m(&pr)`) has no literal
+   block whose parameters the yield binds, and is left out. */
+int yield_block_calls(Compiler *c, int mi, int *out, int max) {
+  if (max <= 0) return 0;
+  for (int i = 0; i < g_yvt_depth; i++)
+    if (g_yvt_mi[i] == mi) return 0;
+  if (g_yvt_depth >= MAX_YVT_DEPTH) return 0;
+  g_yvt_mi[g_yvt_depth++] = mi;
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
+  YvtIt yit; yvt_it_init(c, &yit, mi);
+  for (int ii; n < max && (ii = yvt_it_next(&yit)) >= 0; ) {
+    int cid = yvt_ids[ii];
+    if (!yvt_may_reach(c, ii, mi)) continue;
+    int fwd_args = yvt_fwd ? yvt_fwd[ii] : yvt_call_forwards_block(nt, cid);
+    if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
+    if (!yvt_reaches(c, cid, mi)) continue;
+    if (fwd_args || nt_call_has_block_arg(nt, cid)) {
+      if (!call_forwards_own_block(c, cid)) continue;
+      Scope *encl = comp_scope_of(c, cid);
+      int emi = encl ? (int)(encl - c->scopes) : -1;
+      if (emi >= 0 && emi != mi) n += yield_block_calls(c, emi, out + n, max - n);
+      continue;
+    }
+    out[n++] = cid;
+  }
+  g_yvt_depth--;
+  return n;
+}
 /* The block value that reaches `mi` from BELOW: a child method whose `super`
    lands on mi forwards its own caller's block down. Only the middle link of a
    super chain needs this -- its own call sites are all `super`, so the site

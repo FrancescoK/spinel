@@ -410,6 +410,12 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
    flags sit on the unguarded rows, the ones a lookup without the
    arguments' kinds finds. */
 int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
+/* Whether that call's value is its receiver itself, or nil (a bang that
+   changed nothing): a BOPF_SELF, BOPF_SELF_OR_NIL or BOPF_SELF_EXACT row,
+   or, given a block, an iterator row (iter_row_of) answering IA_RECV or
+   IA_BLOCKVALS_INPLACE (each, tap, map!). The value is then another name
+   of the receiver's object, not a copy of it. */
+int bop_answers_recv(TyKind rt, const char *name, int argc, int has_block);
 /* Whether that call reads its arguments of the receiver's builtin class as
    that builtin (BOPF_ARGS_BUILTIN), looked up as bop_answers_self does. */
 int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
@@ -597,6 +603,10 @@ typedef struct IterRow {
 /* The first row of family fam for `name` that takes argc arguments (any
    count when argc < 0) and carries none of the flags in `skip`, or NULL. */
 const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip);
+/* The iterator row a call with a block reads on a receiver of kind rt:
+   any receiver's (tap, then, each_with_object), else its family's (an
+   Array's, a Hash's, a Range's, ...), or NULL. */
+const IterRow *iter_row_of(TyKind rt, const char *name, int argc);
 /* Does the iterator `name` of family fam, given argc arguments, keep none of
    the values its block answers? It answers its receiver, some of its
    elements or the memo it was handed (each_with_object), and at most tests

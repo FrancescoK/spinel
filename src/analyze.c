@@ -35409,8 +35409,11 @@ static int nullable_elem_mutation(Compiler *c, int call, int depth) {
   return 0;
 }
 
-/* The array a mutation lands in, past the mutators chained before it
-   (`(a << 1) << v`, `a.push(1).push(v)`), each of which answers its receiver. */
+/* The array a mutation lands in, past the calls chained before it that
+   answer their receiver: the mutators (`(a << 1) << v`, `a.push(1).push(v)`)
+   and every builtin whose row says so (bop_answers_recv: `a.each { }`,
+   `a.tap { }`, `a.sort!`, `a.map! { }`), whose value is that array under
+   another name. */
 int mutated_array(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   for (int d = 0; d < 8; d++) {
@@ -35418,12 +35421,34 @@ int mutated_array(Compiler *c, int recv) {
     int one;
     if (vp_one(nt, recv, VPS_NONE, &one) != VP1_NODE) return -1;
     recv = one;
-    if (nt_kind(nt, recv) != NK_CallNode || !self_mutator_call(nt_str(nt, recv, "name")) ||
-        nt_ref(nt, recv, "receiver") < 0)
+    if (nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "receiver") < 0) break;
+    const char *rn = nt_str(nt, recv, "name");
+    int rr = nt_ref(nt, recv, "receiver");
+    int ra = nt_ref(nt, recv, "arguments"), ran = 0;
+    if (ra >= 0) nt_arr(nt, ra, "arguments", &ran);
+    if (!self_mutator_call(rn) && !bop_answers_recv(infer_type(c, rr), rn, ran, nt_ref(nt, recv, "block") >= 0))
       break;
-    recv = nt_ref(nt, recv, "receiver");
+    recv = rr;
   }
   return recv;
+}
+
+/* The node whose array the k-th parameter of call's block is, by its
+   iterator row: the receiver (YS_RECV: `a.tap { |x| }`, `then`) or the one
+   argument (YS_MEMO given one: `each_with_object(b) { |e, m| }`,
+   `inject(b)`), so a nil stored through the parameter is in that array;
+   -1 for an element, an index, or no row. */
+static int block_param_alias(Compiler *c, int call, int k) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver"), blk = nt_ref(nt, call, "block");
+  if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  int a = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  const IterRow *r = iter_row_of(infer_type(c, recv), nt_str(nt, call, "name"), an);
+  if (!r || k >= r->nyield) return -1;
+  if (r->yield[k] == YS_RECV) return recv;
+  if (r->yield[k] == YS_MEMO && an == 1) return av[0];
+  return -1;
 }
 
 /* The values a `yield` answers: the tails of the blocks its method is
@@ -35458,10 +35483,37 @@ static int *yield_value_tails(Compiler *c, int y, int *np) {
    expression); `tail` is set past a method's or block's tail. The OR of what
    fn answers. */
 typedef int (*ElemSlotFn)(Compiler *c, int *bits, int node, int tail, void *ud);
+/* What fn is handed for a value whose arms the walk gave up on (a chain
+   past the value-position budget): a question answers yes to it. */
+#define ELEM_SLOT_UNKNOWN (-2)
+static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud);
+/* Each value an expression of several arms can be (an if's arms, a
+   begin's body and rescue) is a name of the array; for a method's answer
+   (call >= 0), `self` is the call's receiver. */
+typedef struct { Compiler *c; int call, tail, depth; ElemSlotFn fn; void *ud; int r; } SlotArms;
+static int slot_arm(const VpLeaf *leaf, void *ud) {
+  SlotArms *a = (SlotArms *)ud;
+  if (leaf->kind == VPK_GAVE_UP) a->r |= a->fn(a->c, NULL, ELEM_SLOT_UNKNOWN, a->tail, a->ud);
+  if (leaf->kind != VPK_EXPR) return 0;
+  int v = leaf->node;
+  if (a->call >= 0 && nt_kind(a->c->nt, v) == NK_SelfNode) v = nt_ref(a->c->nt, a->call, "receiver");
+  if (v >= 0) a->r |= elem_slots_d(a->c, v, a->tail, a->depth + 1, a->fn, a->ud);
+  return 0;
+}
+static int elem_slots_arms(Compiler *c, int v, int call, int tail, int depth, ElemSlotFn fn, void *ud) {
+  SlotArms a = { c, call, tail, depth, fn, ud, 0 };
+  if (v >= 0) for_each_value_position(c->nt, v, VPS_ALL, slot_arm, &a);
+  return a.r;
+}
 static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
   const NodeTable *nt = c->nt;
   int r = fn(c, NULL, v, tail, ud);
-  int recv = v >= 0 && depth < 8 ? mutated_array(c, v) : -1;
+  if (v < 0 || depth >= 8) return r;
+  /* a value of several arms is each arm's array (`x = c ? a : b`) */
+  int one;
+  if (vp_one(nt, v, VPS_NONE, &one) == VP1_NODE && vp_one(nt, one, VPS_ALL, &one) == VP1_MANY)
+    return r | elem_slots_arms(c, v, -1, tail, depth, fn, ud);
+  int recv = mutated_array(c, v);
   if (recv < 0) return r;
   if (nt_kind(nt, recv) == NK_YieldNode) {
     int n, *tails = yield_value_tails(c, recv, &n);
@@ -35477,12 +35529,28 @@ static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, 
       r |= fn(c, &lv->nullable_int_elem, recv, tail, ud);
     return r;
   }
+  /* a builtin iterator that answers its block's value (`a.then { |x| x }`)
+     or its memo (`each_with_object(b) { }`, `inject(b) { }`): the array is
+     the block's tail's, or the argument's */
+  int vblk = nt_kind(nt, recv) == NK_CallNode ? nt_ref(nt, recv, "block") : -1;
+  if (vblk >= 0 && nt_kind(nt, vblk) == NK_BlockNode && nt_ref(nt, recv, "receiver") >= 0) {
+    int va = nt_ref(nt, recv, "arguments"), van = 0;
+    const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &van) : NULL;
+    const IterRow *ir = iter_row_of(infer_type(c, nt_ref(nt, recv, "receiver")), nt_str(nt, recv, "name"), van);
+    if (ir && (ir->answer == IA_BLOCKVAL || ir->answer == IA_MEMO)) {
+      if (ir->answer == IA_MEMO && van == 1) r |= elem_slots_d(c, vav[0], 1, depth + 1, fn, ud);
+      int bb = nt_ref(nt, vblk, "body"), bn = 0;
+      const int *bs = bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? nt_arr(nt, bb, "body", &bn) : NULL;
+      if (bs && bn > 0) r |= elem_slots_d(c, bs[bn - 1], 1, depth + 1, fn, ud);
+      return r;
+    }
+  }
   ClassInfo *ci = NULL; int mi = -1, iv = -1;
   if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) iv = nullable_elem_ivar(c, recv, &ci);
   else if (nt_kind(nt, recv) == NK_CallNode) iv = object_call_ivar(c, recv, &ci, &mi);
   if (iv < 0 && nt_kind(nt, recv) == NK_CallNode) {
     int tg[CPT_MAX], ntg = cplan_targets(c, recv, tg, CPT_MAX);
-    for (int k = 0; k < ntg; k++) r |= elem_slots_d(c, scope_body_last(c, tg[k]), 1, depth + 1, fn, ud);
+    for (int k = 0; k < ntg; k++) r |= elem_slots_arms(c, scope_body_last(c, tg[k]), recv, 1, depth, fn, ud);
     return r;
   }
   /* (an ivar's bits are a byte: fn sees them as an int, written back) */
@@ -35515,6 +35583,7 @@ static int mark_elem_slot(Compiler *c, int v, int bits) { return elem_slots_d(c,
    (NIE_REACH, or the typing mark itself)? */
 static int reach_slot_fn(Compiler *c, int *bits, int node, int tail, void *ud) {
   (void)tail; (void)ud;
+  if (node == ELEM_SLOT_UNKNOWN) return 1;
   return bits ? (*bits & (NIE_MARKED | NIE_REACH)) != 0 : nullable_int_elem_expr(c, node, 0);
 }
 int elem_nil_reach_expr(Compiler *c, int v) { return elem_slots_d(c, v, 0, 0, reach_slot_fn, NULL); }
@@ -35526,19 +35595,28 @@ int elem_nil_reach_expr(Compiler *c, int v) { return elem_slots_d(c, v, 0, 0, re
    such array, wherever its value comes from (value positions), is marked
    as one a nil reaches. Only a program with such a mutation marks any
    (boxed_nil_store), and the mark asks only the proved loop read. */
-typedef struct { Compiler *c; int changed; } BoxMark;
+typedef struct { Compiler *c; int changed, depth; } BoxMark;
+static int mark_boxed_value_d(Compiler *c, int v, int depth);
 static int box_mark_leaf(const VpLeaf *leaf, void *ud) {
   BoxMark *m = (BoxMark *)ud;
   if (leaf->kind != VPK_EXPR) return 0;
+  /* a `yield` boxes what its blocks answer (`def each = (@got = yield)`) */
+  if (nt_kind(m->c->nt, leaf->node) == NK_YieldNode && m->depth < 8) {
+    int n, *tails = yield_value_tails(m->c, leaf->node, &n);
+    for (int k = 0; k < n; k++) m->changed |= mark_boxed_value_d(m->c, tails[k], m->depth + 1);
+    free(tails);
+    return 0;
+  }
   TyKind t = infer_type(m->c, leaf->node);
   if (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY) m->changed |= mark_elem_slot(m->c, leaf->node, NIE_STORED | NIE_REACH);
   return 0;
 }
-static int mark_boxed_value(Compiler *c, int v) {
-  BoxMark m = { c, 0 };
+static int mark_boxed_value_d(Compiler *c, int v, int depth) {
+  BoxMark m = { c, 0, depth };
   if (v >= 0) for_each_value_position(c->nt, v, VPS_ALL, box_mark_leaf, &m);
   return m.changed;
 }
+static int mark_boxed_value(Compiler *c, int v) { return mark_boxed_value_d(c, v, 0); }
 /* Does the program mutate a boxed receiver in a way that can store a nil
    element (a typed Array behind the box takes it)? Asked once a round of
    mark_nullable_int_locals, into nie_boxed_store. */
@@ -40241,6 +40319,47 @@ static void mark_nullable_int_locals(Compiler *c) {
         if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT && plv->type != TY_POLY) ||
             plv->nullable_int) continue;
         plv->nullable_int = 1; changed = 1;
+      }
+    }
+    /* `a.tap { |x| x << v }`, `each_with_object(b) { |e, m| m[i] = v }`: the
+       block parameter IS the receiver or the argument (block_param_alias),
+       another name of that array, as a local assigned from it is */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      int blk = nt_ref(nt, id, "block");
+      if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      Scope *bsc = comp_scope_of(c, blk);
+      for (int pk = 0; pk < 3; pk++) {
+        int src = block_param_alias(c, id, pk);
+        const char *pnm = src >= 0 ? block_param_name(c, blk, pk) : NULL;
+        LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+        if (!plv || (plv->type != TY_INT_ARRAY && plv->type != TY_FLOAT_ARRAY)) continue;
+        if (plv->nullable_int_elem & NIE_STORED) changed |= mark_elem_slot(c, src, NIE_STORED | NIE_REACH);
+        if (!(plv->nullable_int_elem & NIE_REACH) && elem_nil_reach_expr(c, src)) { plv->nullable_int_elem |= NIE_REACH; changed = 1; }
+      }
+    }
+    /* `def give(a) = yield(a)` with `give(b) { |m| m << v }`: a block
+       parameter bound by a yield's argument is that argument's array */
+    NT_FOREACH_KIND(nt, NK_YieldNode, y) {
+      Scope *ys = comp_scope_of(c, y);
+      int ymi = ys ? (int)(ys - c->scopes) : -1;
+      int ya = nt_ref(nt, y, "arguments"), yan = 0;
+      const int *yav = ya >= 0 ? nt_arr(nt, ya, "arguments", &yan) : NULL;
+      int sites[64];
+      int ns = ymi > 0 && yan > 0 ? yield_block_calls(c, ymi, sites, 64) : 0;
+      for (int si = 0; si < ns; si++) {
+        int blk = nt_ref(nt, sites[si], "block");
+        if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+        Scope *bsc = comp_scope_of(c, blk);
+        for (int pk = 0; pk < yan && pk < 8; pk++) {
+          if (nt_kind(nt, yav[pk]) == NK_SplatNode) break;
+          const char *pnm = block_param_name(c, blk, pk);
+          LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+          /* a mixed parameter boxes the argument's array (mark_boxed_arrays) */
+          if (plv && plv->type == TY_POLY && nie_boxed_store) changed |= mark_boxed_value(c, yav[pk]);
+          if (!plv || (plv->type != TY_INT_ARRAY && plv->type != TY_FLOAT_ARRAY)) continue;
+          if (plv->nullable_int_elem & NIE_STORED) changed |= mark_elem_slot(c, yav[pk], NIE_STORED | NIE_REACH);
+          if (!(plv->nullable_int_elem & NIE_REACH) && elem_nil_reach_expr(c, yav[pk])) { plv->nullable_int_elem |= NIE_REACH; changed = 1; }
+        }
       }
     }
     /* `a.zip(b) { |x, y| }`: x is an element of a, y one of b */
