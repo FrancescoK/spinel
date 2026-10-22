@@ -49,6 +49,8 @@ sp_Time sp_time_parse(const char *s);
 sp_Time sp_time_s_httpdate(const char *s);
 sp_Time sp_time_s_rfc2822(const char *s);
 sp_Time sp_time_s_xmlschema(const char *s);
+/* one of the three above, handed a Symbol's name */
+sp_Time sp_time_s_parse_sym(sp_Time (*parse)(const char *), const char *name);
 /* and Time.parse, for the numeric ISO 8601 forms */
 sp_Time sp_time_s_parse(const char *s);
 sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s);
