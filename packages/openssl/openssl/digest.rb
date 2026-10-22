@@ -105,9 +105,11 @@ module OpenSSL
       self
     end
 
+    # With `data`, the digest of `data` alone, and the object is reset.
     def digest(data = nil)
-      return Digest.raw(@name, data) if data
-      Digest.finish(@name, @state)
+      return Digest.finish(@name, @state) unless data
+      reset
+      Digest.raw(@name, data)
     end
 
     def hexdigest(data = nil) = digest(data).unpack1("H*")
