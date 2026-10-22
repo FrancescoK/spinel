@@ -3283,12 +3283,26 @@ static inline sp_RbVal sp_poly_strbuf_lift(sp_RbVal v) {
    itself: its own box (the shared handle's, where it has one); anything
    else answers its to_s String (sp_poly_to_s), boxed. */
 static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v);
+/* to_s of an instance of a String subclass is a new String of its bytes,
+   not the instance, as CRuby's String#to_s: a later dup or class then
+   answers String. A plain handle is not one (sp_bsub_cls_fn). */
+static inline int sp_poly_is_str_subclass(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p &&
+         sp_bsub_cls_fn && sp_bsub_cls_fn(v) >= 0;
+}
+/* ...and the handle a String box's to_s answers: its own, or that new
+   String's for a subclass instance */
+static inline sp_String *sp_poly_to_s_strbuf(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_String_new_fresh(sp_String_cstr((sp_String *)v.v.p));
+  return (sp_String *)v.v.p;
+}
 /* --share-strings: to_s of a shared String handle that may be nil (NULL)
    as a box: the handle's own box, or nil's "" */
 static inline sp_RbVal sp_strbuf_to_s_box(sp_String *h) {
   return h ? sp_box_nullable_obj(h, SP_BUILTIN_STRBUF) : sp_box_str(sp_str_frozen_empty);
 }
 static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_box_str_new(sp_str_dup(sp_String_cstr((sp_String *)v.v.p)));
   if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
   return sp_box_str_new(sp_poly_to_s(v));
 }
@@ -3297,6 +3311,7 @@ static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
    sp_poly_to_s_box does, anything else its to_s boxed as bytes, with no
    handle made around it */
 static inline sp_RbVal sp_poly_to_s_box_plain(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_box_str(sp_str_dup(sp_String_cstr((sp_String *)v.v.p)));
   if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
   return sp_box_str(sp_poly_to_s(v));
 }
