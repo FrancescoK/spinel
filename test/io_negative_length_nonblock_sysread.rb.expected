@@ -1,0 +1,11 @@
+[ArgumentError, "negative length -1 given"]
+[ArgumentError, "negative length -1 given"]
+[ArgumentError, "negative length -2 given"]
+[ArgumentError, "negative string size (or size too big)"]
+[ArgumentError, "negative length -3 given"]
+[ArgumentError, "negative length -3 given"]
+"a"
+"b"
+[ArgumentError, "negative length -4 given"]
+[ArgumentError, "negative length -5 given"]
+[ArgumentError, "negative string size (or size too big)"]

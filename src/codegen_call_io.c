@@ -448,10 +448,11 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
 }
 
 /* The runtime entry a one-argument readpartial or sysread reads through:
-   readpartial checks its length first, as CRuby does (ArgumentError for a
-   negative one); every emitter of the call asks here. */
+   each checks its length first, as CRuby does (ArgumentError for a
+   negative one, in that method's words); every emitter of the call asks
+   here. */
 const char *io_readpartial_entry(const char *name) {
-  return sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_readpartial";
+  return sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_sysread_checked";
 }
 
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b) {

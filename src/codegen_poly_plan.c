@@ -3635,7 +3635,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 2 && kwh < 0 && splat_a < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL_BUF, -1, TY_UNKNOWN, PC_SAME);
     int trp = ++g_tmp;
-    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    /* (readpartial checks its length as the one-argument form does;
+       sysread with a buffer is CRuby's Errno::EFAULT, which this is not) */
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = %s((sp_File *)_t%d.v.p, ", trp,
+               sp_streq(name, "readpartial") ? "sp_File_readpartial_checked" : "sp_File_readpartial", tv);
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_puts(b, "); ");

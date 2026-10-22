@@ -1711,13 +1711,23 @@ const char *sp_File_readpartial(sp_File *f, sp_int n) {
 }
 
 /* readpartial checks its count before the stream, as CRuby does; sysread
-   words a negative count differently and keeps sp_File_readpartial. */
+   words a negative count as the String it cannot make. */
 const char *sp_File_readpartial_checked(sp_File *f, sp_int n) {SP_GC_ROOT(f);
   if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
   return sp_File_readpartial(f, n);
 }
 
+const char *sp_File_sysread_checked(sp_File *f, sp_int n) {SP_GC_ROOT(f);
+  if (n < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
+  return sp_File_readpartial(f, n);
+}
+
 const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {SP_GC_ROOT(f);
+  /* a negative count is an ArgumentError ahead of the stream, with or
+     without `exception: false`, as CRuby's; it answered "" */
+  if (len < 0)
+    sp_raise_cls("ArgumentError", is_recv ? "negative string size (or size too big)"
+                                          : sp_sprintf("negative length %lld given", (long long)len));
   if (eof) *eof = 0;
   if (is_recv) sp_sock_nb_prepare(f, "recv_nonblock");
   else SP_IO_OPEN(f);
