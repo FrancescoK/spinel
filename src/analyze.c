@@ -45723,7 +45723,7 @@ static int sid_is_alias(Compiler *c, SidSources *S, int v) {
 }
 /* Is Set allocation a (`Set.new(...)`, `Set[...]`) one an identity Set
    starts from: the receiver of a compare_by_identity, or a value written
-   to a place S holds one in? */
+   to a place S holds one in, by an assignment or by reflection? */
 static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   const NodeTable *nt = c->nt;
   int n = a, p = S->parent[n];
@@ -45738,8 +45738,18 @@ static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   if (pk == NK_LocalVariableWriteNode && pn) {
     const Scope *s = comp_scope_of(c, p);
     for (int i = 0; i < S->nlocals; i++) if (S->lscopes[i] == s && sp_streq(S->locals[i], pn)) return 1;
+    return 0;
   }
-  return 0;
+  /* the value of an instance_variable_set that reaches a place, which
+     sid_sources follows as such a write: through parentheses, their last
+     statement's (`instance_variable_set(:@s, (x += 1; Set[a]))`) */
+  VpUp up;
+  if (vp_climb(nt, S->parent, a, VPS_NONE | VP_PARENS_ONLY, &up) != VPU_ENDED) return 0;
+  int q = S->parent[up.parent], get = 0, argc = 0;
+  if (q < 0 || nt_ref(nt, q, "arguments") != up.parent || sid_reflect_reaches_place(nt, S, q, &get) != 1 || get)
+    return 0;
+  const int *argv = nt_arr(nt, up.parent, "arguments", &argc);
+  return argc == 2 && argv[1] == up.node;
 }
 /* Follow the compare_by_identity calls (asked) to their places. 0 when
    one of them, or a read of a place, cannot be followed. */

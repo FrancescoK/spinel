@@ -2,7 +2,9 @@
 # into the place that held it by reflection, `instance_variable_set(:@s,
 # Set.new)`, `Set[...]`, or the same in parentheses after another
 # statement: the place then holds a Set made there, as after `@s =
-# Set.new`, and other Sets of the program keep their String members.
+# Set.new`, and other Sets of the program keep their String members. The
+# new Set's own members are judged as an assigned one's are: Symbols keep
+# their identity.
 require "set"
 
 class H
@@ -14,7 +16,7 @@ h = H.new
 x = 0
 h.instance_variable_set(:@s, Set.new)
 p h.s.size, h.s.compare_by_identity?
-h.instance_variable_set(:@s, Set[1, 2])
+h.instance_variable_set(:@s, Set[:a, :b])
 p h.s.size
 h.instance_variable_set(:@s, (x += 1; Set.new))
 p h.s.compare_by_identity?, x
