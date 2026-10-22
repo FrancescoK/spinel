@@ -1911,11 +1911,16 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
      memo (inject), the block's value (then), an argument (p, clamp). Only
      the stores put an argument into the receiver. */
   int kinds[4], nk = bop_share_kinds(nm, kinds, 4), known = nk > 0;
-  int pos[64], npos = 0;
+  int pos[64], npos = 0, spl = -1;
   for (int i = 0; i < argc && npos < 64; i++) {
     NodeKind k = nt_kind(nt, argv[i]);
     if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
-    pos[npos++] = k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
+    if (k != NK_SplatNode) { pos[npos++] = argv[i]; continue; }
+    /* a splat's arguments are the elements of the Array it spreads
+       (`a.push(*[B.new])` stores a B, `a.concat(*[[B.new]])` a B's
+       container), one slot for every splat of the call */
+    if (spl < 0) { spl = cf_entry(f, -(v + 2), "#sp"); pos[npos++] = spl; }
+    cf_load(f, nt_ref(nt, argv[i], "expression"), spl);
   }
   int has_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   for (int i = 0; i < nk && known; i++) cf_share_kind_rule(f, kinds[i], v, recv_el, pos, npos, blk, has_blk, &known);
