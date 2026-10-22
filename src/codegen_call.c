@@ -1267,7 +1267,9 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
      (emit_poly_vis_precheck); send and self calls reach any */
   int plain = nt_str(nt, id, "vis_enforce") != NULL ||
               (!nt_str(nt, id, "send_blind") && !nt_int(nt, id, "dyn_arm", 0) &&
-               nt_kind(nt, recv) != NK_SelfNode);
+               !nt_ignore_visibility(nt, id));
+  if (!nt_str(nt, id, "vis_enforce") && nt_kind(nt, recv) == NK_SelfNode &&
+      cplan_visibility_class(c, id, -1) < 0) plain = 0;
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
   int all_public = 1;
@@ -20942,19 +20944,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
    visibility `class << self` / `private_class_method` recorded. A protected
    class method admits a caller whose self is that class or a subclass, that
    is, a class method of one. */
-static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *vnm, int plain, Buf *b) {
+static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *vnm, Buf *b) {
   const NodeTable *nt = c->nt;
   int cid = class_recv_static_ci(c, vrecv);
   if (cid < 0) cid = self_class_static_ci(c, vrecv);
-  if (cid < 0 || cid >= c->nclasses) return 0;
-  int owner = -1;
-  int vis = comp_cmethod_vis_declared(c, cid, vnm, &owner);
-  if (vis == SP_VIS_PROTECTED && plain) {
-    Scope *cs = comp_scope_of(c, id);
-    int caller = (cs && cs->is_cmethod) ? cs->class_id : -1;
-    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
-  }
-  if (vis == SP_VIS_PUBLIC) return 0;
+  if (cid < 0 || cid >= c->nclasses || cplan_cmethod_visible(c, id, cid, vnm)) return 0;
+  int vis = comp_cmethod_vis_declared(c, cid, vnm, NULL);
   const char *vrn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
   int is_mod = nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode;
   buf_puts(b, "(");
@@ -21044,6 +21039,9 @@ static int caller_includes_module(Compiler *c, int k, int mod) {
 int method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm) {
   int owner = -1;
   int vis = comp_method_vis_declared(c, vcid, vnm, &owner);
+  /* A self receiver is the caller, including inside a rebound block. */
+  if (vis == SP_VIS_PROTECTED && nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode &&
+      !nt_str(c->nt, id, "vis_enforce")) return SP_VIS_PUBLIC;
   if (vis == SP_VIS_PROTECTED) {
     /* the caller's self must be an instance of the declaring class: that
        class itself or a descendant */
@@ -21103,11 +21101,9 @@ static int builtin_reopen_vis_class(Compiler *c, TyKind rt, const char *name) {
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
-  const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
   int stamped = nt_str(nt, id, "vis_enforce") != NULL;
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
-              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode")) &&
-              !nt_int(nt, id, "self_call", 0);  /* a class body's own call, given its class as receiver */
+              !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);  /* the class-body desugar keeps permission when it gives the call its class */
   if (!stamped && !plain) return 0;
   const char *vnm = call_shown_name(nt, id);
   int vcid = -1;
@@ -21115,17 +21111,25 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
     TyKind vrt = comp_ntype(c, vrecv);
     if (ty_is_object(vrt)) vcid = ty_object_class(vrt);
     else vcid = builtin_reopen_vis_class(c, vrt, vnm);
-    if (plain && emit_object_reopen_vis_refusal(c, id, vrecv, vrt, vcid, vnm, b)) return 1;
+    if (plain && nt_kind(nt, vrecv) == NK_SelfNode) {
+      if (!self_is_main(c, id)) {
+        vcid = cplan_visibility_class(c, id, vcid);
+        if (vcid < 0) return 0;
+      }
+    }
+    if (plain && nt_kind(nt, vrecv) != NK_SelfNode && !nt_int(nt, id, "self_call", 0) &&
+        emit_object_reopen_vis_refusal(c, id, vrecv, vrt, vcid, vnm, b)) return 1;
   }
   else {
     Scope *vs = comp_scope_of(c, id);
     if (vs && vs->class_id >= 0 && !vs->is_cmethod) vcid = vs->class_id;
   }
-  int top_priv = stamped && vnm && comp_method_index(c, vnm) >= 0 && !name_is_synth_method(c, vnm) &&
+  if (plain && nt_kind(nt, vrecv) == NK_SelfNode && cplan_has_method_missing(c, id, vcid, 0)) return 0;
+  int top_priv = (stamped || (plain && self_is_main(c, id) && nt_kind(nt, vrecv) == NK_SelfNode)) && vnm && comp_method_index(c, vnm) >= 0 && !name_is_synth_method(c, vnm) &&
                  strncmp(vnm, "__enum_", 7) != 0 &&
                  (vrecv < 0 ? self_is_main(c, id) : !send_blind_recv_owns(c, vrecv, comp_ntype(c, vrecv), vnm));
-  int at_main = top_priv && vrecv < 0;
-  if (vnm && vcid < 0 && vrecv >= 0) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, plain, b);
+  int at_main = top_priv && (vrecv < 0 || plain);
+  if (vnm && vcid < 0 && vrecv >= 0 && !at_main) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, b);
   if (!vnm || (vcid < 0 && !at_main)) return 0;
   int vis = top_priv ? SP_VIS_PRIVATE
           : plain ? method_vis_for_caller(c, id, vcid, vnm)
@@ -21173,10 +21177,9 @@ static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
-  const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
   int stamped = nt_str(nt, id, "vis_enforce") != NULL;
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
-              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode"));
+              !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);
   if (!stamped && !plain) return;
   const char *vnm = call_shown_name(nt, id);
   if (!vnm) return;
@@ -21184,6 +21187,7 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || c->classes[k].is_native_class) continue;
+    if (plain && nt_kind(nt, vrecv) == NK_SelfNode && cplan_has_method_missing(c, id, k, 0)) continue;
     if (comp_method_in_chain(c, k, vnm, NULL) < 0) {
       /* a generated reader has no method entry, but the switch has its arm
          (`[lobby].first.members`), so its visibility and an `undef` of it
@@ -21223,6 +21227,7 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
       buf_puts(b, "); } ");
     }
   }
+  if (plain && nt_kind(nt, vrecv) == NK_SelfNode) return;
   /* a boxed IO handle, by the reopening its kind picks */
   int ks[16], n = io_reopen_defs(c, vnm, 0, ks, 16);
   for (int i = 0; i < n; i++) {

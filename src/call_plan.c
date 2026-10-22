@@ -2432,17 +2432,59 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   return &bp;
 }
 
+/* A layout class need not be self's actual class. Use the existing flow
+   bound, or a class with no descendants; otherwise retain legacy calls.
+   Without a supplied class, the evidence-call emitter needs its existing
+   layout class proved exact, rather than a different actual class. */
+int cplan_visibility_class(Compiler *c, int id, int ci) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int layout_only = ci < 0;
+  if (layout_only && recv >= 0) {
+    TyKind rt = comp_ntype(c, recv);
+    if (ty_is_object(rt)) ci = ty_object_class(rt);
+  }
+  const ClsSet *s = cls_fact_node(c, recv);
+  if (s && !s->bv && s->n == 1 && cls_fact_bounded(c, s->cls[0]))
+    return layout_only && s->cls[0] != ci ? -1 : s->cls[0];
+  int n = 0;
+  if (ci >= 0 && cls_fact_bounded(c, ci)) comp_descendants(c, ci, &n);
+  return ci >= 0 && cls_fact_bounded(c, ci) && n == 0 ? ci : -1;
+}
+
+/* Missing hooks are not dispatched yet. New visibility checks retain the
+   old self-call behaviour when the existing method table defines a hook. */
+int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod) {
+  if (ci < 0 && !cmethod) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && !s->is_cmethod) ci = s->class_id;
+    if (ci < 0 && !self_is_main(c, id)) return 0;
+  }
+  if (ci >= 0 && (cmethod ? comp_cmethod_in_chain(c, ci, "method_missing", NULL)
+                          : comp_method_in_chain(c, ci, "method_missing", NULL)) >= 0) return 1;
+  if (!cmethod && ci >= 0 && class_is_blank_slate(c, ci)) return 0;
+  /* Object's methods include top-level defs; main has no user class entry. */
+  int obj = comp_class_index(c, "Object");
+  return (obj >= 0 && comp_method_in_chain(c, obj, "method_missing", NULL) >= 0) ||
+         comp_method_index(c, "method_missing") >= 0;
+}
+
 /* Whether the boxed class arm calls the method rather than raising for
-   its visibility. Explicit self may call private methods too. */
+   its visibility. Explicit self may call private methods too.
+   The class-body self stamp identifies the caller of a protected call. */
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name) {
-  if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode) return 1;
+  if (nt_ignore_visibility(c->nt, id)) return 1;
   int owner = -1;
   int vis = comp_cmethod_vis_declared(c, ci, name, &owner);
-  if (vis == SP_VIS_PROTECTED) {
+  if (vis == SP_VIS_PROTECTED && !nt_str(c->nt, id, "vis_enforce")) {
+    if (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode ||
+        nt_int(c->nt, id, "self_call", 0)) return 1;
     Scope *s = comp_scope_of(c, id);
     int caller = s && s->is_cmethod ? s->class_id : -1;
     if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) return 1;
   }
+  if (vis != SP_VIS_PUBLIC && !nt_str(c->nt, id, "vis_enforce") &&
+      (nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode || nt_int(c->nt, id, "self_call", 0)) &&
+      cplan_has_method_missing(c, id, ci, 1)) return 1;
   return vis == SP_VIS_PUBLIC;
 }
 
@@ -2722,4 +2764,3 @@ int cplan_nil(Compiler *c, int id) {
     return CN_NONE;
   return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
 }
-

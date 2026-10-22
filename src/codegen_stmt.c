@@ -15789,17 +15789,23 @@ static TyKind masgn_slot_type(Compiler *c, int id, int tgt) {
    the analysis): the store is its evidence call `recv[key] = value`
    (desugar_masgn_store_evidence), emitted as the single `[]=` is, with the
    receiver and key read from their hoisted temps and the value from its
-   element. A nil element is the boxed nil. */
-static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
-                              int recv_tmp, int key_tmp, int indent, Buf *b) {
+   element. A nil element is the boxed nil.
+   The same evidence call checks any target's visibility before its store. */
+static int masgn_call_store(Compiler *c, int tgt, const char *val, TyKind vt,
+                              int recv_tmp, int key_tmp, int indent, int vis_only, Buf *b) {
   const NodeTable *nt = c->nt;
   int call = (int)nt_int(nt, tgt, "aset_ev", 0) - 1;
-  if (!nt_int(nt, tgt, "struct_aset", 0) || call < 0) return 0;
+  if ((!vis_only && !nt_int(nt, tgt, "struct_aset", 0)) || call < 0) return 0;
   int recv = nt_ref(nt, call, "receiver"), args = nt_ref(nt, call, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   /* `[]=` with its key, or the member's writer a literal key on a receiver
      typed as the Struct was rewritten to (`t[:x]` -> `t.x =`) */
   if (recv < 0 || an < 1 || an > 2) return 0;
+  if (vis_only) {
+    if (nt_ignore_visibility(nt, call)) return 0;
+    int ci = cplan_visibility_class(c, call, -1);
+    if (ci < 0 || cplan_has_method_missing(c, call, ci, 0)) return 0;
+  }
   int vn = av[an - 1];
   int boxed = !val || vt == TY_NIL || vt == TY_VOID || vt == TY_UNKNOWN;
   int vr = view_push(c, recv, comp_ntype(c, recv) == TY_UNKNOWN ? TY_POLY : comp_ntype(c, recv));
@@ -15808,15 +15814,17 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
   int kb = an == 2 && key_tmp >= 0 ? view_bind(av[0], "_t%d", key_tmp) : -1;
   int vv = view_push(c, vn, boxed ? TY_POLY : vt);
   int vb = view_bind(vn, "%s", boxed ? "sp_box_nil()" : val);
-  emit_indent(b, indent);
-  emit_expr(c, call, b);
-  buf_puts(b, ";\n");
+  Buf out; memset(&out, 0, sizeof out);
+  int handled = !vis_only || emit_vis_refusal(c, call, &out);
+  if (!vis_only) emit_expr(c, call, &out);
+  if (handled) { emit_indent(b, indent); buf_puts(b, out.p); buf_puts(b, ";\n"); }
+  free(out.p);
   view_unbind(vb); view_pop(c, vv);
   if (kb >= 0) view_unbind(kb);
   if (kv >= 0) view_pop(c, kv);
   if (rb >= 0) view_unbind(rb);
   view_pop(c, vr);
-  return 1;
+  return handled;
 }
 /* The temps the targets' hoisted receivers and indexes live in, by target
    node (masgn_hoist_targets fills them; -1 where a target keeps its parts in
@@ -15926,6 +15934,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
   /* a target the statement hoisted (masgn_hoist_targets): the splat's, a
      right's and a nested one's receiver is read from its temp as a left's */
   if (recv_tmp < 0 && key_tmp < 0) masgn_target_tmps(mt, tgt, &recv_tmp, &key_tmp);
+  if (masgn_call_store(c, tgt, val, vt, recv_tmp, key_tmp, indent, 1, b)) return 1;
   if (sp_streq(ty, "InstanceVariableTargetNode") && nm) {
     char lhs[320]; int cid = -1;
     if (!masgn_ivar_home(c, id, nm, lhs, sizeof lhs, &cid)) return 1;
@@ -15983,7 +15992,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     return 1;
   }
   if (sp_streq(ty, "IndexTargetNode")) {
-    if (masgn_struct_store(c, tgt, val, vt, recv_tmp, key_tmp, indent, b)) return 1;
+    if (masgn_call_store(c, tgt, val, vt, recv_tmp, key_tmp, indent, 0, b)) return 1;
     int recv = nt_ref(nt, tgt, "receiver");
     int args = nt_ref(nt, tgt, "arguments"), argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -17612,6 +17621,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   /* assign lefts */
   for (int i = 0; i < ln; i++) {
     const char *lty = nt_type(nt, lefts[i]);
+    char assigned[32]; snprintf(assigned, sizeof assigned, "_t%d", i < en ? tmps[i] : 0);
+    if (masgn_call_store(c, lefts[i], i < en ? assigned : NULL, i < en ? tmpts[i] : TY_NIL,
+                         ttr[i], ttk[i], indent, 1, b)) continue;
     if (i >= en) {
       if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
         emit_indent(b, indent);

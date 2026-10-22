@@ -343,6 +343,8 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id);
    of the name, or its proc form. Computed afresh. */
 int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk);
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
+int cplan_visibility_class(Compiler *c, int id, int ci);
+int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod);
 int cplan_cmethod_visible(Compiler *c, int id, int ci, const char *name);
 TyKind cplan_poly_arg_storage(Compiler *c, int id);
 /* The re-entry of a call on an object whose static class cannot answer the

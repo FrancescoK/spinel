@@ -3165,7 +3165,8 @@ static void cf_node(CF *f, int v) {
     if (!nm) { cf_all(f, v); return; }
     /* a class body's `m` / `self.m`, which the body desugar sends to the
        class: in a block run under another self it is that self
-       (ie_rself_cmethod_call) */
+       (ie_rself_cmethod_call). The self_call marker is receiver identity,
+       not private-call permission (nt_ignore_visibility). */
     if (f->par && v < f->nnodes && f->par[v] >= 0 && nt_kind(nt, f->par[v]) == NK_CallNode &&
         nt_ref(nt, f->par[v], "receiver") == v && nt_int(nt, f->par[v], "self_call", 0) && cf_in_exec_block(f, v)) {
       cf_all(f, v);

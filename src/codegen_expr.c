@@ -1659,9 +1659,9 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
      before anything else, the writer only when the assignment runs. Two
      attr halves go the field-store way unless one of them must raise. */
   char wn[300]; snprintf(wn, sizeof wn, "%s=", attr);
-  int self_recv = nt_kind(nt, recv) == NK_SelfNode;
-  int rvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, attr);
-  int wvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, wn);
+  int may_private = nt_ignore_visibility(nt, id);
+  int rvis = may_private ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, attr);
+  int wvis = may_private ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, wn);
   /* No reader at all -- no method, no attribute, no method_missing to
      answer it -- is the reader call's NoMethodError, raised before the
      value runs. The field-store way below has no ivar to store into. */
