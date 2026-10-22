@@ -45236,47 +45236,35 @@ static int sid_fresh_set(const NodeTable *nt, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") &&
          sp_streq(nt_str(nt, r, "name"), "Set");
 }
+/* The edges sid_tail_owner climbs: the arms of an if, unless, case and
+   case/in, and a begin's body (beside an else too), its rescue clauses and
+   its else; not its ensure. */
+enum { SID_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
+
 /* The method or block whose value node n is, or -1: n is the last
    statement of its body, or of an arm of a conditional, a case or a begin
-   (its body, a rescue, its else; not its ensure) that is in turn. -2 when
-   the climb meets a statement that is not the last of its statements: its
-   value is dropped there (`if a then x.m end; more`). */
+   that is in turn (vp_climb, over SID_CLIMB). -2 when the climb meets a
+   statement that is not the last of its statements: its value is dropped
+   there (`if a then x.m end; more`). */
 static int sid_tail_owner(Compiler *c, const int *parent, int n) {
   const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 64; d++) {
-    int p = parent[n];
-    if (p < 0) {
-      /* a body no node links (one a rewrite moved): its method's, by its
-         scope */
-      Scope *s = comp_scope_of(c, n);
-      return s && s->body == n && s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? s->def_node : -1;
-    }
-    NodeKind pk = nt_kind(nt, p);
-    if (pk == NK_DefNode || pk == NK_BlockNode) return nt_ref(nt, p, "body") == n ? p : -1;
-    if (pk == NK_StatementsNode) {
-      int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
-      if (bn == 0) return -1;
-      if (bb[bn - 1] != n) {
-        for (int i = 0; i + 1 < bn; i++) if (bb[i] == n) return -2;
-        return -1;
-      }
-    }
-    else if (pk == NK_IfNode || pk == NK_UnlessNode) {
-      if (nt_ref(nt, p, "predicate") == n) return -1;
-    }
-    else if (pk == NK_BeginNode) {
-      if (nt_ref(nt, p, "ensure_clause") == n) return -1;
-    }
-    else if (pk == NK_CaseNode || pk == NK_CaseMatchNode) {
-      if (nt_ref(nt, p, "predicate") == n) return -1;
-    }
-    else if (pk == NK_InNode || pk == NK_RescueNode || (nt_type(nt, p) && sp_streq(nt_type(nt, p), "WhenNode"))) {
-      if (nt_ref(nt, p, "statements") != n && nt_ref(nt, p, "subsequent") != n) return -1;
-    }
-    else if (pk != NK_ParenthesesNode && pk != NK_ElseNode) return -1;
-    n = p;
+  VpUp up;
+  switch (vp_climb(nt, parent, n, SID_CLIMB, &up)) {
+  case VPU_DROPPED:
+    return -2;
+  case VPU_ROOT: {
+    /* a body no node links (one a rewrite moved): its method's, by its
+       scope */
+    Scope *s = comp_scope_of(c, up.node);
+    return s && s->body == up.node && s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? s->def_node : -1;
   }
-  return -1;
+  case VPU_ENDED: {
+    NodeKind pk = nt_kind(nt, up.parent);
+    return (pk == NK_DefNode || pk == NK_BlockNode) && nt_ref(nt, up.parent, "body") == up.node ? up.parent : -1;
+  }
+  default:
+    return -1;
+  }
 }
 /* Is a Set's call named nm one that answers the Set or another Set that
    may compare by identity? */
@@ -48092,26 +48080,38 @@ static void an_phase_block_inline(Compiler *c) {
 }
 
 /* Is the value of the def `d` used, so that it is the Symbol it names? A
-   statement before its list's last, the program's last statement (its list
-   has no parent) and a class or module body's last when the class's value
-   is not used throw it away; anything else may hand it on. */
+   statement before its list's last, the program's last statement and a
+   class or module body's last when the class's value is not used throw it
+   away; anything else may hand it on. The climb goes through statement
+   lists (vp_climb over the wrappers), and on from a class whose body's
+   value the def is. Parentheses take the value: the emitter renders a
+   parenthesized def as its Symbol (`rv = (def o.m = 1)`, whose write a
+   rewrite holds aside, so the parentheses have no parent node), so the
+   table holds the name. */
 int an_def_value_used(const NodeTable *nt, const int *par, int v) {
-  for (int p; (p = par[v]) >= 0; v = p) {
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, par, v, VPS_NONE, &up);
+    for (int n = v; n != up.node && n >= 0; n = par[n])
+      if (nt_kind(nt, par[n]) == NK_ParenthesesNode) return 1;
+    switch (ended) {
+    case VPU_ROOT:
+    case VPU_DROPPED:
+      return 0;
+    case VPU_ENDED: {
+      NodeKind k = nt_kind(nt, up.parent);
+      if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) &&
+          nt_ref(nt, up.parent, "body") == up.node) {
+        v = up.parent;
+        continue;
+      }
+      return 1;
     }
-    case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      if (nt_ref(nt, p, "body") != v) return 1;
-      break;
     default:
       return 1;
     }
   }
-  return 0;
+  return 1;
 }
 
 /* ---- String methods whose value no call reads (Scope.ret_unread) ----
@@ -48198,53 +48198,54 @@ static int ur_block_dropped(Compiler *c, const UrCtx *u, int call) {
   if (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto")) return rt == TY_INT;
   return ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE;
 }
+/* The edges ur_value_use climbs: the arms of an if, unless and case (and so
+   their else and when clauses), the right of `&&` and both sides of `||`
+   (its left is tested, so a node there is read: VpUp.reach), and a begin
+   with no rescue clause, else or ensure. A begin with an ensure alone also
+   answers its body; the climb goes on from it by hand. */
+enum { UR_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC | VPS_BEGIN_PLAIN };
+
 /* How the value of node v is taken: 0 dropped, 1 read, 2 + d handed on as
    the value of def d (its body's tail). nref counts each node's parents: a
-   node the desugaring shares between two places is read. */
+   node the desugaring shares between two places is read. The climb
+   (vp_climb, over UR_CLIMB) ends at a statement before its list's last
+   (dropped), a loop's body (dropped) or its condition, an ensure clause
+   (dropped), a def's body, the block of a builtin iterator that drops its
+   value, or anything else, which reads it. */
 static int ur_value_use(Compiler *c, const UrCtx *u, int v) {
   const NodeTable *nt = c->nt;
   const int *par = u->par;
-  for (int d = 0; d < 4096; d++) {
-    if (u->nref[v] > 1) return 1;
-    int p = par[v];
-    if (p < 0) return 1;
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, par, v, UR_CLIMB, &up);
+    for (int n = v;; n = par[n]) {
+      if (u->nref[n] > 1) return 1;
+      if (n == up.node) break;
     }
-    case NK_ParenthesesNode: case NK_ElseNode:
-      break;
-    case NK_IfNode: case NK_UnlessNode: case NK_CaseNode:
-      if (nt_ref(nt, p, "predicate") == v) return 1;
-      break;
-    case NK_AndNode: case NK_OrNode:
-      if (nt_ref(nt, p, "right") != v) return 1;
-      break;
+    if (up.reach) return 1;
+    if (ended == VPU_DROPPED) return 0;
+    if (ended != VPU_ENDED) return 1;
+    int p = up.parent;
+    switch (nt_kind(nt, p)) {
     case NK_WhileNode: case NK_UntilNode:
-      return nt_ref(nt, p, "predicate") == v;
+      return nt_ref(nt, p, "predicate") == up.node;
     case NK_BeginNode:
-      if (nt_ref(nt, p, "statements") != v || nt_ref(nt, p, "rescue_clause") >= 0 ||
+      if (nt_ref(nt, p, "statements") != up.node || nt_ref(nt, p, "rescue_clause") >= 0 ||
           nt_ref(nt, p, "else_clause") >= 0) return 1;
-      break;
+      v = p;
+      continue;
     case NK_DefNode:
-      return nt_ref(nt, p, "body") == v ? 2 + p : 1;
+      return nt_ref(nt, p, "body") == up.node ? 2 + p : 1;
     case NK_BlockNode: {
-      int call = par[p];
-      return !(nt_ref(nt, p, "body") == v && call >= 0 && nt_kind(nt, call) == NK_CallNode &&
-               nt_ref(nt, call, "block") == p && ur_block_dropped(c, u, call));
+      int call = vp_up_block_call(nt, par, &up);
+      return !(call >= 0 && nt_ref(nt, call, "block") == p && ur_block_dropped(c, u, call));
     }
     default: {
       /* kinds the node table names by type only */
       const char *ty = nt_type(nt, p);
-      if (ty && sp_streq(ty, "EnsureNode")) return 0;
-      if (!ty || !sp_streq(ty, "WhenNode") || nt_ref(nt, p, "statements") != v) return 1;
-      break;
+      return !(ty && sp_streq(ty, "EnsureNode"));
     }
     }
-    v = p;
   }
   return 1;
 }

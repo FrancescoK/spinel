@@ -285,10 +285,10 @@ void comp_free(Compiler *c) {
   pivs_facts_free(c);
   strbuf_arg_index_free(c);
   free(c->vs_head); free(c->vs_site); free(c->vs_var); free(c->vs_next); free(c->vs_kind);
-  free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
+  free(c->vs_rparent); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = c->vs_site = c->vs_var = c->vs_next = c->vs_rparent = NULL;
   c->vs_whead = c->vs_wnext = NULL;
-  c->vs_dropped = c->vs_kind = NULL;
+  c->vs_kind = NULL;
   c->vs_count = c->vs_cap = 0;
   c->vs_built = 0;
   free(c->cg_parent);
@@ -3482,10 +3482,8 @@ static int vsite_is_read(const NodeTable *nt, int n) {
    receiver, `x.to_s << y`) or call any method on it (VS_RECV: the call whose
    receiver it is), one entry per (kind, site), chained by (kind, variable)
    in node order. The refusals asked each of those by walking a
-   node kind per candidate. Beside the chains, two per-node lookups the
-   same walk fills: the call whose receiver a node is (comp_recv_parent),
-   and whether it is a statement the next statement follows
-   (comp_value_dropped). Chains
+   node kind per candidate. Beside the chains, a per-node lookup the same
+   walk fills: the call whose receiver a node is (comp_recv_parent). Chains
    carry hash collisions: callers keep their kind/name/key filters
    (comp_vsite_var is the read or write naming an entry's variable).
    Revalidated against nt->version, the scope index's generation and the
@@ -3516,13 +3514,12 @@ static void vsite_build(Compiler *c, int toplevel) {
   int nb = 16;
   while (nb < n && nb < (1 << 22)) nb <<= 1;
   size_t sz = (size_t)(n > 0 ? n : 1);
-  free(c->vs_head); free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
+  free(c->vs_head); free(c->vs_rparent); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = malloc(sizeof(int) * (size_t)nb);
   c->vs_rparent = malloc(sz * sizeof(int));
-  c->vs_dropped = calloc(sz, 1);
   c->vs_whead = malloc(sz * sizeof(int));
   c->vs_wnext = malloc(sz * sizeof(int));
-  if (!c->vs_head || !c->vs_rparent || !c->vs_dropped || !c->vs_whead || !c->vs_wnext) {
+  if (!c->vs_head || !c->vs_rparent || !c->vs_whead || !c->vs_wnext) {
     fprintf(stderr, "spinel: out of memory\n");
     exit(1);
   }
@@ -3543,13 +3540,6 @@ static void vsite_build(Compiler *c, int toplevel) {
     if (vsite_is_read(nt, u)) vsite_add(c, VS_READ, u, u);
     else if (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode || k == NK_GlobalVariableWriteNode)
       vsite_add(c, VS_WRITE, u, u);
-    else if (k == NK_StatementsNode) {
-      int bn = 0; const int *bb = nt_arr(nt, u, "body", &bn);
-      for (int i = 0; i + 1 < bn; i++) {
-        int v = an_unparen(nt, bb[i]);
-        if (v >= 0 && v < n) c->vs_dropped[v] = 1;
-      }
-    }
     else if (k == NK_CallNode && nt_ref(nt, u, "receiver") >= 0) {
       int r = nt_ref(nt, u, "receiver"), ru = an_unparen(nt, r);
       const char *un = nt_str(nt, u, "name");
@@ -3607,11 +3597,6 @@ int comp_lwrite_of_value(Compiler *c, int n) {
 }
 int comp_lwrite_next(const Compiler *c, int w) {
   return w >= 0 && w < c->vs_nodes ? c->vs_wnext[w] : -1;
-}
-int comp_value_dropped(Compiler *c, int n) {
-  vsite_sync(c);
-  n = an_unparen(c->nt, n);
-  return n >= 0 && n < c->vs_nodes && c->vs_dropped[n];
 }
 
 /* Every node of one kind, chained in node order. The string-promotion passes
