@@ -3938,6 +3938,14 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
     case NK_IfNode: case NK_UnlessNode: {
       int is_unless = k == NK_UnlessNode;
       int sub = nt_ref(nt, v, is_unless ? "else_clause" : "subsequent");
+      /* a `respond_to?` answered at compile time takes its arm alone, as
+         the value form does: the other may call what the class lacks */
+      int known = static_respond_to_cond(c, nt_ref(nt, v, "predicate"));
+      if (known >= 0) {
+        emit_strbuf_cond_arm(c, lv, known != is_unless ? nt_ref(nt, v, "statements") : sub, dst, b, depth + 1);
+        buf_puts(b, "\n");
+        return;
+      }
       Buf cnd; memset(&cnd, 0, sizeof cnd);
       emit_cond(c, nt_ref(nt, v, "predicate"), &cnd);
       buf_printf(b, "if (%s%s%s) ", is_unless ? "!(" : "", cnd.p ? cnd.p : "0", is_unless ? ")" : "");
@@ -6720,7 +6728,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
      value is falsy when NULL. Every other concrete value is truthy. */
   /* a value-type object is never a NULL pointer -- it is always truthy */
   if (comp_ty_value_obj(c, t)) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
-  if (t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) ||
+  if (t == TY_STRING || t == TY_STRBUF || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) ||
       t == TY_PROC || t == TY_MATCHDATA || t == TY_EXCEPTION ||
       t == TY_BIGINT || t == TY_REGEX || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_DIR || t == TY_ADDRINFO || t == TY_SOCKOPT ||
       t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_OPENSTRUCT) {
@@ -19919,6 +19927,13 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       char cref[256]; snprintf(cref, sizeof cref, "cst_%s", nm);
       buf_printf(b, "%s = ", cref);
       emit_str_op_assign_concat(c, cref, v, b); buf_puts(b, ";\n");
+    }
+    /* (one-String mode: a String constant holds the handle; `+=` makes a
+       new String, whose handle it then holds) */
+    else if (g_one_string && cv->type == TY_STRBUF && op && sp_streq(op, "+")) {
+      char cref[300]; snprintf(cref, sizeof cref, "SP_STR_B(cst_%s)", nm);
+      buf_printf(b, "cst_%s = SP_STR_HDL(", nm);
+      emit_str_op_assign_concat(c, cref, v, b); buf_puts(b, ");\n");
     }
     /* the other kinds take the arms a global's `op=` does */
     else if (emit_slot_op_assign(c, cslot, cv->type, op, v, 0, b)) { }

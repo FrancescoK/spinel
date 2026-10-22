@@ -3194,7 +3194,9 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     if (an == 1 && nt_kind(nt, av[0]) == NK_NilNode) an = 0;
     if (an == 0) { buf_printf(b, "sp_%sHash_new()", hcn); return 1; }
     TyKind hv = ty_hash_val(slot), dt = comp_ntype(c, av[0]);
-    if (hv != TY_POLY && dt != TY_UNKNOWN && dt != hv && !(hv == TY_FLOAT && dt == TY_INT))
+    /* (one-String mode: a String of either face is the slot's String) */
+    if (hv != TY_POLY && dt != TY_UNKNOWN && dt != hv && !(hv == TY_FLOAT && dt == TY_INT) &&
+        !(g_one_string && hv == TY_STRING && dt == TY_STRBUF))
       unsupported(c, v, "a Hash.new default of another type than the typed hash slot's values");
     buf_printf(b, "sp_%sHash_new_with_default(", hcn);
     if (ty_hash_val(slot) == TY_POLY) emit_boxed(c, av[0], b);
