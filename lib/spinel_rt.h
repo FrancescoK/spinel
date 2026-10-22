@@ -3667,6 +3667,8 @@ static SP_INLINE const char *sp_poly_check_str(sp_RbVal v) {
    no-conversion path too. */
 static SP_NOINLINE const char *sp_str_cmp_conv(sp_RbVal r, sp_RbVal obj) {
   if (r.tag == SP_TAG_STR) return r.v.s;
+  /* a shared String's handle is a String too (sp_obj_conv_str_of) */
+  if (sp_poly_is_strbuf(r)) return sp_String_cstr((sp_String *)r.v.p);
   if (r.tag == SP_TAG_NIL) return NULL;
   sp_raise_cls("TypeError",
                sp_sprintf("can't convert %s to String (%s#to_str gives %s)",

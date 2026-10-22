@@ -1,0 +1,7 @@
+-1
+true
+-1
+true
+false
+"abd!?"
+can't convert Loose to String (Loose#to_str gives Integer)
