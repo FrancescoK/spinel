@@ -3538,7 +3538,9 @@ static SP_UNUSED sp_int sp_bigint_arg_int_chk(sp_Bigint *b) {
 static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_BIGINT) return sp_i64_to_int(sp_bigint_to_int((sp_Bigint *)v.v.p));   /* a 32-bit sp_int refuses what does not fit (RangeError); 64-bit keeps its wrap */
-  if (v.tag == SP_TAG_STR) return (sp_int)strtoll(v.v.s ? v.v.s : sp_str_empty, NULL, 10);
+  /* String#to_i as the typed receiver answers it: `_` between digits, and
+     a RangeError past the word where strtoll saturated (#9941) */
+  if (v.tag == SP_TAG_STR) return sp_str_to_i_cruby(v.v.s ? v.v.s : sp_str_empty);
   if (v.tag == SP_TAG_BOOL) return v.v.b ? 1 : 0;
   /* a boxed Rational truncates toward zero, as Rational#to_i does */
   if (sp_poly_is_rational(v) && v.v.p) { sp_Rational _r = *(sp_Rational *)v.v.p; return _r.den ? _r.num / _r.den : 0; }
