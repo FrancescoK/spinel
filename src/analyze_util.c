@@ -3397,6 +3397,12 @@ int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
            ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
   if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 1;
   if (srt == TY_POLY) {
+    /* any class's chain, from the by-name lists while the chain memo can
+       be trusted, class by class otherwise */
+    int nr;
+    comp_name_responders(c, name, 0, &nr);
+    if (nr > 0) return 1;
+    if (nr == 0) return comp_name_reader_any(c, name);
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 1;
     return 0;

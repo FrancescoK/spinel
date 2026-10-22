@@ -1219,6 +1219,46 @@ const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n
   return cmc_resp[j];
 }
 
+/* See compiler.h. The readers move with the reader and alias tables
+   (comp_table_gen), the aliases' resolution and the parents with the class
+   shape, so the answers are kept while those and the class count stand
+   still; the names hash into an open table as the chain memo's do. */
+static char **rda_name; static signed char *rda_ans; static int rda_cap, rda_n;
+static const Compiler *rda_c; static unsigned rda_tgen, rda_shape; static int rda_ncls = -1;
+int comp_name_reader_any(Compiler *c, const char *name) {
+  if (!name) return 0;
+  if (rda_c != c || rda_tgen != comp_table_gen || rda_shape != cmc_shape || rda_ncls != c->nclasses) {
+    for (int i = 0; i < rda_cap; i++) { free(rda_name[i]); rda_name[i] = NULL; }
+    rda_n = 0; rda_c = c; rda_tgen = comp_table_gen; rda_shape = cmc_shape; rda_ncls = c->nclasses;
+  }
+  if (rda_n * 2 >= rda_cap) {
+    int ocap = rda_cap; char **on = rda_name; signed char *oa = rda_ans;
+    rda_cap = ocap ? ocap * 2 : 256;
+    rda_name = calloc((size_t)rda_cap, sizeof(char *));
+    rda_ans = calloc((size_t)rda_cap, 1);
+    if (!rda_name || !rda_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!on[i]) continue;
+      unsigned j = sp_strhash(on[i]) & (unsigned)(rda_cap - 1);
+      while (rda_name[j]) j = (j + 1) & (unsigned)(rda_cap - 1);
+      rda_name[j] = on[i]; rda_ans[j] = oa[i];
+    }
+    free(on); free(oa);
+  }
+  unsigned j = sp_strhash(name) & (unsigned)(rda_cap - 1);
+  while (rda_name[j]) {
+    if (sp_streq(rda_name[j], name)) return rda_ans[j];
+    j = (j + 1) & (unsigned)(rda_cap - 1);
+  }
+  int ans = 0;
+  for (int k = 0; k < c->nclasses && !ans; k++)
+    if (comp_reader_in_chain(c, k, name, NULL)) ans = 1;
+  rda_name[j] = strdup(name);
+  if (!rda_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  rda_ans[j] = (signed char)ans; rda_n++;
+  return ans;
+}
+
 int comp_ary_root(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses ? c->classes[cid].ary_root - 1 : -1;
 }
