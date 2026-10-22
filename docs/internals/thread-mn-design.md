@@ -59,7 +59,12 @@ untouched.
 
 Parallel workers mutate the heap, so collection is **stop-the-world at a
 safepoint**. The codegen emits, at loop back-edges of a threaded program,
-`if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();` (design 5.1). The flag is
+`if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();` (design 5.1). A loop
+the header cache proves (`i = 0; while i < a.length ... i += 1`, a body that
+runs no code) and that stores no element polls at the back-edge of the loop
+of its function that encloses it, not at its own: it ends within one pass over
+an array nothing in it can grow, which bounds how long a collection waits for
+it as a runtime call over that array does. The flag is
 set only in the threaded runtime while a collector has requested STW; at N=1 it
 is never set, so the poll is a single predicted-not-taken load. It is declared
 unconditionally (not under `SP_THREADS`) so a threaded program's generated C
