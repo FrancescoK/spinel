@@ -19937,13 +19937,13 @@ static int emit_bivar_copy_wrap(Compiler *c, int id, Buf *b) {
   int t = ++g_tmp;
   char rn[24], dn[24];
   snprintf(rn, sizeof rn, "_t%d", t); snprintf(dn, sizeof dn, "_d%d", t);
-  buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " %s = ", rn); emit_expr(c, recv, b);
+  buf_puts(b, "({ "); emit_ctype(c, rr.kind == RK_BOXED ? TY_POLY : rt, b); buf_printf(b, " %s = ", rn); emit_expr(c, recv, b);
   buf_printf(b, rr.kind == RK_BOXED ? "; SP_GC_ROOT_RBVAL(%s); " : "; SP_GC_ROOT(%s); ", rn);
   int slot = view_bind(recv, "%s", rn);
   emit_ctype(c, ret, b); buf_printf(b, " %s = ", dn); emit_call_unwrapped(c, id, b);
   view_unbind(slot);
   buf_printf(b, ret_repr.kind == RK_BOXED ? "; SP_GC_ROOT_RBVAL(%s); sp_bivar_copy(" : "; SP_GC_ROOT(%s); sp_bivar_copy(", dn);
-  emit_boxed_text(c, rt, rn, b); buf_puts(b, ", "); emit_boxed_text(c, ret, dn, b);
+  emit_boxed_text(c, rr.kind == RK_BOXED ? TY_POLY : rt, rn, b); buf_puts(b, ", "); emit_boxed_text(c, ret, dn, b);
   buf_printf(b, "); %s; })", dn);
   return 1;
 }

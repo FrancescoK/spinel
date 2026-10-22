@@ -10481,7 +10481,7 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
   TyKind vt = vr.as_ty;
   if (vt == TY_UNKNOWN) return -1;
   /* nil and void have no C storage type of their own: hold them boxed */
-  int boxed = (vt == TY_NIL || vt == TY_VOID);
+  int boxed = (vt == TY_NIL || vt == TY_VOID || vr.kind == RK_BOXED);
   /* an Integer or Float that can be nil is held with its nil (view_bind_o):
      the writer gets it, and so does the assignment's value */
   int so = !boxed && oint_kind(vt) && node_has_oint_form(c, argv[0]);
@@ -10495,7 +10495,7 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
   buf_printf(g_pre, " _t%d = ", tv);
   buf_puts(g_pre, ab.p ? ab.p : "sp_box_nil()"); buf_puts(g_pre, ";\n");
   free(ab.p);
-  if (boxed || vr.kind == RK_BOXED) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv); }
+  if (boxed) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv); }
   else if (comp_ty_value_obj(c, vt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, vt, tv, g_pre); buf_puts(g_pre, "\n"); }
   else if (needs_root(vt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tv); }
   if (so) { view_bind_o(argv[0], "_t%d", tv); g_sv_oint[g_sv_oint_n++ & 31] = tv; }

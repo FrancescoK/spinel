@@ -2406,7 +2406,7 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a number that can be nil travels as its oint into the _nilable store */
         int voint = rt != TY_POLY_ARRAY && oint_kind(vt) && vsfx[0];
         buf_puts(b, "({ ");
-        if (voint) buf_puts(b, oint_ctype(vt)); else emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_POLY, b);
+        if (voint) buf_puts(b, oint_ctype(vt)); else emit_ctype(c, vr.kind == RK_BOXED || vt == TY_UNKNOWN ? TY_POLY : vt, b);
         buf_printf(b, " _t%d = ", tv);
         if (rt == TY_POLY_ARRAY && vr.kind != RK_BOXED) emit_boxed(c, argv[1], b);
         else if (voint) emit_oint_expr(c, argv[1], vt, b);

@@ -1194,7 +1194,7 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       TyKind dt = dtr.as_ty;
       int t = ++g_tmp;
       buf_puts(b, "({ ");
-      emit_ctype(c, dt, b);
+      emit_ctype(c, dtr.kind == RK_BOXED ? TY_POLY : dt, b);
       buf_printf(b, " _t%d = ", t);
       emit_expr(c, dn, b);
       buf_puts(b, "; ");
