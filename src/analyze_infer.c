@@ -4310,7 +4310,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       { *out = TY_BOOL; return 1; }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
-      if (sp_streq(name, "foreach") && nt_ref(nt, id, "block") < 0 &&
+      if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0 &&
           (an_builtin_only || !cplan_const_user(c, id, "Dir", 1)))
         { *out = TY_ENUMERATOR; return 1; }
       if (sp_streq(name, "pwd") || sp_streq(name, "home")) { *out = TY_STRING; return 1; }

@@ -585,10 +585,10 @@ still works.
   is not converted: typed, it is refused at compile time; boxed, it raises
   TypeError. The other FileTest predicates take no IO operand at all.
 
-- **`Dir.foreach` without a block** -- the Enumerator reads the directory's
-  entries on its first pull and closes it then, so an entry removed between
-  pulls is still listed. A splatted argument is refused at compile time
-  (with a block it fails to build).
+- **`Dir.foreach` and `Dir.each_child` without a block** -- the Enumerator
+  reads the directory's entries on its first pull and closes it then, so an
+  entry removed between pulls is still listed. A splatted argument is refused
+  at compile time (with a block it fails to build).
 
 - **`File::Stat#rdev_major` and `#rdev_minor`** -- refused at compile time
   ("unsupported call") on a typed File::Stat; a boxed one raises NoMethodError.

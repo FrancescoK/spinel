@@ -369,6 +369,7 @@ int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
 
 const char *dir_surface_alias(const char *n, int blockless_iter);
+int is_dir_blockless_iter(const char *n);  /* foreach each_child: an Enumerator without a block */
 
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
