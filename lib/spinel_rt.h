@@ -18524,7 +18524,8 @@ static sp_PolyPolyHash *sp_poly_deconstruct_keys(sp_RbVal v, sp_RbVal keys) {
   sp_PolyArray *ks = sp_poly_to_a_arr(keys); SP_GC_ROOT(ks);
   if (ks->len > mh->len) return out;
   for (sp_int i = 0; i < ks->len; i++) {
-    sp_RbVal k = ks->data[i];
+    /* (a shared String's handle is a String key too) */
+    sp_RbVal k = sp_poly_strbuf_deref(ks->data[i]);
     sp_sym s = (sp_sym)-1;
     if (k.tag == SP_TAG_SYM) s = (sp_sym)k.v.i;
     else if (k.tag == SP_TAG_STR) s = sp_sym_intern(k.v.s ? k.v.s : "");
