@@ -2,12 +2,16 @@
 # identity is the value the parentheses answer: their last statement's, and
 # nil for `()`. A collection, a block's value and map!'s block value in
 # parentheses are judged the same way. The receiver of compare_by_identity
-# in parentheses still makes the Set an identity one.
+# in parentheses still makes the Set an identity one. A Pt equals another
+# of the same n, so only an identity Set tells two of them apart.
 require "set"
 
 class Pt
   def initialize(n) = @n = n
   attr_reader :n
+  def ==(o) = o.is_a?(Pt) && o.n == @n
+  alias eql? ==
+  def hash = @n.hash
 end
 
 a = Pt.new(1)
@@ -46,5 +50,6 @@ end
 bx = Box.new
 bx.add(a)
 bx.add(a)
+bx.add(Pt.new(1))
 bx.add(b)
 p bx.size
