@@ -5755,7 +5755,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
+  if (recv >= 0 && argc == 0 && is_class_query(name)) {
+    const CallPlan *p = cplan_user_fresh(c, id);
+    if (p->mi >= 0 && rt != TY_POLY) { *out = an_user_call(c, id, p->mi, p->via, p->owner_ci); return 1; }
+    if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
     /* empty container literal receivers coerce like everywhere else */
     if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
       const char *rty0 = nt_type(nt, recv);
@@ -5966,8 +5969,13 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */
-      if (self->is_cmethod && sp_streq(name, "new"))
-        { *out = ty_object(self->class_id); return 1; }
+      if (self->is_cmethod && is_new_name(name)) {
+        if (g_plan_check) {
+          const CallPlan *p = cplan_user_fresh(c, id);
+          if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
+        }
+        *out = ty_object(self->class_id); return 1;
+      }
       /* a class method's self is the class: of the instance methods on its
          chain only Object's and Module's are its own (comp_self_call_mi) */
       int mi = self->is_cmethod ? comp_class_self_inst_mi(c, self->class_id, name)
@@ -5998,6 +6006,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
           int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
                                      : comp_method_in_class(c, k, name);
           if (dmi < 0) continue;
+          if (!found) an_user_call_record(c, id, dmi, self->is_cmethod ? UC_CMETH : UC_INST, self->class_id);
           r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
           found = 1;
         }
@@ -8313,6 +8322,43 @@ static TyKind infer_hash_default_proc(Compiler *c, int id, TyKind rt) {
   return op ? bop_result(op, rt) : TY_PROC;
 }
 
+static int infer_accessor_call(Compiler *c, int id, int recv, const char *name, TyKind *out) {
+  /* `Module.accessor.cmethod(...)` where the singleton accessor statically
+     folds to a constant: dispatch as that constant's class method. This has to
+     come BEFORE anything that decides by the receiver's type, because the
+     receiver -- a `class << self; attr_reader` read -- types poly (its slot
+     holds a class value), and every rule that answers a poly receiver answers
+     poly. It sat below them, and was never reached: the emitter, which asks
+     the same fold, devirtualized the call to the class method's C function
+     while the site expected an sp_RbVal, and clang refused the seam (#4426).
+     The hand-written `def self.adapter; @adapter; end` never had the problem
+     because that reader is a class method with a typed return, not a slot. */
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode) {
+    int fold_ci = comp_sg_reader_const(c, recv);
+    if (fold_ci >= 0) {
+      int mi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
+      if (mi >= 0) { *out = an_user_call(c, id, mi, UC_CMETH, fold_ci); return 1; }
+    }
+    /* Stage-2: accessor holds one of several constants; unify their cmethod returns. */
+    CallPlan ap = *cplan_user_fresh(c, id);
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      TyKind r = TY_UNKNOWN;
+      for (int k = 0; k < ncand; k++) {
+        int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
+        if (mi >= 0) r = ty_unify(r, method_call_ret(c, mi, id));
+      }
+      if (r != TY_UNKNOWN) {
+        an_user_call_record(c, id, ap.mi, ap.via, ap.owner_ci);
+        *out = r; return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;
@@ -8471,34 +8517,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (ty_is_object(crt)) return crt;
   }
 
-  /* `Module.accessor.cmethod(...)` where the singleton accessor statically
-     folds to a constant: dispatch as that constant's class method. This has to
-     come BEFORE anything that decides by the receiver's type, because the
-     receiver -- a `class << self; attr_reader` read -- types poly (its slot
-     holds a class value), and every rule that answers a poly receiver answers
-     poly. It sat below them, and was never reached: the emitter, which asks
-     the same fold, devirtualized the call to the class method's C function
-     while the site expected an sp_RbVal, and clang refused the seam (#4426).
-     The hand-written `def self.adapter; @adapter; end` never had the problem
-     because that reader is a class method with a typed return, not a slot. */
-  if (recv >= 0) {
-    int fold_ci = comp_sg_reader_const(c, recv);
-    if (fold_ci >= 0) {
-      int mi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
-      if (mi >= 0) return an_user_call(c, id, mi, UC_CMETH, fold_ci);
-    }
-    /* Stage-2: accessor holds one of several constants; unify their cmethod returns. */
-    int cand[32];
-    int ncand = comp_sg_reader_candidates(c, recv, cand, 32);
-    if (ncand >= 2) {
-      TyKind r = TY_UNKNOWN;
-      for (int k = 0; k < ncand; k++) {
-        int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
-        if (mi >= 0) r = ty_unify(r, method_call_ret(c, mi, id));
-      }
-      if (r != TY_UNKNOWN) return r;
-    }
-  }
+  TyKind accessor_ret;
+  if (infer_accessor_call(c, id, recv, name, &accessor_ret)) return accessor_ret;
 
   /* The universal predicates and conversions the poly runtime answers as a RAW
      C scalar. The emitters have always known this; the TYPE did not say it, so

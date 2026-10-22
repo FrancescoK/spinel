@@ -71,6 +71,7 @@ typedef struct {
   const char *delegate;     /* the protocol method name, before alias resolution */
 } CallPlan;
 
+int cplan_accessor_classes(Compiler *c, int id, int *out, int cap);
 int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
 /* A conversion performed by a helper, separately from the enclosing call. */
 CallPlan cplan_conversion(Compiler *c, int ci, const char *name);

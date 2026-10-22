@@ -192,6 +192,35 @@ static void cplan_resolve_poly(Compiler *c, const char *name, CallPlan *p) {
   return;
 }
 
+/* A missing base implementation still dispatches to the existing descendants. */
+static void cplan_descendant_call(Compiler *c, int cid, const char *name, int cmeth, CallPlan *p) {
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int mi = cmeth ? comp_cmethod_in_class(c, ds[i], name)
+                   : comp_method_in_class(c, ds[i], name);
+    if (mi < 0) continue;
+    cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
+              cmeth ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+    return;
+  }
+}
+
+/* The finite singleton-accessor union, using the resolver's precedence. */
+int cplan_accessor_classes(Compiler *c, int id, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_int(nt, id, "builtin_only", 0)) return 0;
+  int ci = comp_sg_reader_const(c, recv);
+  if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 0;
+  int n = comp_sg_reader_candidates(c, recv, out, cap);
+  if (n >= 2)
+    for (int i = 0; i < n; i++)
+      if (comp_cmethod_in_chain(c, out[i], name, NULL) >= 0) return n;
+  return 0;
+}
+
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -203,6 +232,17 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int fold_ci = comp_sg_reader_const(c, recv);
     int fmi = fold_ci >= 0 ? comp_cmethod_in_chain(c, fold_ci, name, NULL) : -1;
     if (fmi >= 0) { cplan_set(p, fmi, fold_ci, UC_CMETH, CP_DIRECT); return; }
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++) {
+        int mi = comp_cmethod_in_chain(c, cand[i], name, NULL);
+        if (mi >= 0) {
+          cplan_set(p, mi, cand[i], UC_CMETH, CP_SWITCH);
+          return;
+        }
+      }
+    }
   }
   /* a retargeted `x.send(:m)` reaching a top-level def the receiver does
      not own itself */
@@ -248,6 +288,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     /* outside a class method, self reaches a program's own Object method */
     Scope *self = comp_scope_of(c, id);
     if (!(self && self->is_cmethod)) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && self && self->class_id >= 0)
+      cplan_descendant_call(c, self->class_id, name, self->is_cmethod, p);
     return;
   }
   const char *rty = nt_type(nt, recv);
@@ -321,6 +363,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
     if (class_is_exc_subclass(c, cid)) cplan_exc_reopen(c, name, p);
     if (p->mi < 0) cplan_object_reopen(c, name, p);
+    if (p->mi < 0 && !comp_reader_in_chain(c, cid, name, NULL) && !c->classes[cid].is_native_class)
+      cplan_descendant_call(c, cid, name, 0, p);
     return;
   }
   if (rt == TY_POLY) { cplan_resolve_poly(c, name, p); return; }
@@ -412,6 +456,15 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->dispatch < CP_SWITCH) return 0;
   const char *name = p->delegate ? p->delegate : nt_str(c->nt, id, "name");
   if (!name) return 0;
+  if (p->via == UC_CMETH) {
+    int cand[32];
+    int ncand = cplan_accessor_classes(c, id, cand, 32);
+    if (ncand >= 2) {
+      for (int i = 0; i < ncand; i++)
+        if (comp_cmethod_in_chain(c, cand[i], name, NULL) == mi) return 1;
+      return 0;
+    }
+  }
   if (p->by_name) {
     int ncc = 0;
     const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
