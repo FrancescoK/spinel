@@ -59,7 +59,10 @@ int sp_fd_grow_inline(sp_String *s, int64_t need){
   char *raw = (char *)malloc(SP_FD_OVH + new_cap);
   if (!raw) return 0;
   char *data = sp_fd_setup(raw);
-  memcpy(data, s->data, (size_t)s->len + 1);
+  /* the whole old room, as the realloc of an outside payload keeps it: a
+     caller may have set len short of bytes it still reads (set_bin of the
+     String's own bytes empties it, then appends them) */
+  memcpy(data, s->data, (size_t)(s->cap > s->len ? s->cap : s->len) + 1);
   s->cap = new_cap; s->data = data; sp_fd_own(s);
   h->size += s->cap + SP_FD_OVH; sp_gc_bytes_add(s->cap + SP_FD_OVH);
   if (!h->finalize) { h->finalize = sp_String_fin; sp_slab_set_fin(h); }
