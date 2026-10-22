@@ -1079,6 +1079,7 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
    shape (comp_class_shape_changed) moves. */
 static unsigned cmc_shape = 0;
 void comp_class_shape_changed(void) { cmc_shape++; }
+unsigned comp_class_shape_gen(void) { return cmc_shape; }
 static char **cmc_name; static unsigned char *cmc_cm; static int **cmc_ans;
 static int **cmc_resp; static int *cmc_nresp;   /* per slot: the responders (comp_name_responders), -1 unbuilt */
 static int cmc_cap = 0, cmc_n = 0;

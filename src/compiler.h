@@ -1815,6 +1815,8 @@ int        comp_scope_index_is_frozen(void);
 unsigned   comp_scope_index_gen(void);
 /* An alias or a class's parent changed: drops what the chain lookups memoized. */
 void       comp_class_shape_changed(void);
+/* ... and how many times it has: a memo over the chain's answers stamps it. */
+unsigned   comp_class_shape_gen(void);
 /* Find the class (singleton) method scope for class_id + name, or -1 (no chain). */
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */
