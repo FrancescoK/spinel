@@ -35437,7 +35437,9 @@ static int *yield_value_tails(Compiler *c, int y, int *np) {
   if (ymi >= 0) {
     int sv_ybn = yield_block_tails_next; yield_block_tails_next = 1;
     for (int max = 64;; max *= 2) {
-      out = realloc(out, (size_t)max * sizeof *out);
+      int *grown = realloc(out, (size_t)max * sizeof *out);
+      if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      out = grown;
       n = yield_block_tails(c, ymi, out, max);
       if (n < max) break;
     }
