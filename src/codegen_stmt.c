@@ -12124,6 +12124,21 @@ static int hc_subtree_loops(const NodeTable *nt, int id) {
   }
   return 0;
 }
+/* Does a body the cache took hold an element write (`x[j] = v`)? It is the
+   one node such a body admits that can grow an array (hc_call_ok), and it
+   may grow any array of its kind, since two names can denote one. */
+static int hc_subtree_stores(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  if (nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "[]=")) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (hc_subtree_stores(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (hc_subtree_stores(nt, el[j])) return 1;
+  }
+  return 0;
+}
 static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion *r) {
   const NodeTable *nt = c->nt;
   if (prev < 0 || pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return;
@@ -12473,6 +12488,16 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
      a prelude has no single test to put them ahead of, so it keeps its checks */
   int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || sig_polls());
   if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
+  /* ...and one that another loop of its function encloses leaves its
+     safepoint and finalizer polls to that loop's back-edge: it ends within
+     one pass over an array nothing in it can grow (proved above, in a region
+     that runs no code, with no element write in its body), so a collection
+     or a finalizer waits one such pass at most -- what a runtime call over
+     the same array makes them wait already. An inner poll costs a pass of
+     the loop an atomic load and the header reload behind it. Its signal poll
+     was the enclosing loop's already (#9222). */
+  int quiet = polls_in_cond && (g_uses_threads || g_uses_finalizers) && g_poll_loop_nest > 0 &&
+              !hc_subtree_stores(nt, body);
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
     if (hc_bounded_cond(c, pred, &hcc)) { free(ccond.p); ccond = hcc; }
@@ -12494,7 +12519,9 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   else {
     emit_indent(b, indent);
     buf_puts(b, "while (");
-    if (polls_in_cond) {
+    /* (a quiet loop has none left there; its body takes none either) */
+    int cond_polls = polls_in_cond && !quiet;
+    if (cond_polls) {
       buf_puts(b, "({ ");
       if (g_uses_threads) buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s; ", hc_mark());
       if (g_uses_finalizers)
@@ -12506,7 +12533,7 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
     if (is_until) buf_puts(b, "!(");
     buf_puts(b, ccond.p ? ccond.p : "");
     if (is_until) buf_puts(b, ")");
-    if (polls_in_cond) buf_puts(b, "; })");
+    if (cond_polls) buf_puts(b, "; })");
     buf_puts(b, ") {\n");
     g_loop_polls_in_cond = polls_in_cond;
     g_loop_uncounted = !proved && !(sig_polls() && !is_until && poll_while_counted(c, pred, body));
