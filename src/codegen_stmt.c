@@ -23287,22 +23287,25 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         return 1;
       }
       emit_indent(b, indent);
-      /* the receiver read first, as the typed Arrays' store holds it */
+      /* the receiver read first, as the typed Arrays' store holds it: in
+         the prelude, ahead of any statement the index or the value puts
+         there (a block's, a rescue's) */
       NodeKind prk = nt_kind(nt, recv);
       int phold = (prk == NK_InstanceVariableReadNode || prk == NK_GlobalVariableReadNode ||
                    prk == NK_ClassVariableReadNode) &&
                   (subtree_may_reassign_state(c, argv[0]) || subtree_may_reassign_state(c, argv[1]));
       int pth = phold ? ++g_tmp : 0;
       if (phold) {
-        buf_printf(b, "{ sp_PolyArray *_t%d = ", pth); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); ", pth);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = ", pth); emit_expr(c, recv, g_pre);
+        buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", pth);
       }
       buf_puts(b, "sp_PolyArray_set(");
       if (phold) buf_printf(b, "_t%d", pth);
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b);
-      buf_puts(b, phold ? "); }\n" : ");\n");
+      buf_puts(b, ");\n");
       return 1;
     }
     if (is_push_alias(name) && argc >= 1) {

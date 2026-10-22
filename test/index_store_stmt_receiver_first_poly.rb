@@ -20,6 +20,24 @@ class Swap
     nil
   end
 
+  # an index or a value that runs statements of its own (a block, a rescue)
+  def put_rescued(i)
+    @first = @data
+    @data[i] = begin
+      swap(i)
+      "r"
+    rescue
+      "e"
+    end
+    nil
+  end
+
+  def put_block_index(i)
+    @first = @data
+    @data[[i].map { |k| swap(k) }.first] = "b"
+    nil
+  end
+
   def show = p(@first, @data)
 end
 
@@ -28,4 +46,10 @@ s.put(0)
 s.show
 s.reset
 s.put_value(1)
+s.show
+s.reset
+s.put_rescued(1)
+s.show
+s.reset
+s.put_block_index(2)
 s.show
