@@ -3293,7 +3293,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_puts(b, "({ ");
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
     int pickup = repr_call_returns_handle(c, v);
-    buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
+    /* (to_s of a String subclass instance is a new String, #9968) */
+    buf_printf(b, is_to_s_name(nt_str(nt, v, "name")) && program_has_strsub(c)
+                  ? "sp_poly_is_strbuf(_t%d) ? sp_poly_to_s_strbuf(_t%d) : "
+                  : "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
     /* `s&.to_s` on a nil box answers nil; the guard is this test, not one
        hoisted ahead of the held box. */
     int sn = nt_safe_nav(nt, v), sn_skip = g_sn_skip;

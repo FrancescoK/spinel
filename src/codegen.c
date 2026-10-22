@@ -11063,7 +11063,7 @@ static int program_has_hashsub(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_hash) return 1;
   return 0;
 }
-static int program_has_strsub(Compiler *c) {
+int program_has_strsub(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_str) return 1;
   return 0;
 }
