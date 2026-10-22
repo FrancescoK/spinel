@@ -424,4 +424,7 @@ int is_puts_name(const char *n); /* puts */
 int is_to_f_name(const char *n); /* to_f */
 int is_to_i_name(const char *n); /* to_i */
 int is_intersect_name(const char *n); /* intersect? */
+/* size, length, count, empty?: names the containers answer and an
+   OpenStruct does not define, so its member (or nil) answers them */
+int ostruct_member_name(const char *n);
 #endif

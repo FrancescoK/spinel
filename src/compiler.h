@@ -67,7 +67,9 @@ static inline TyKind ty_ref_set(TyRef r, TyKind t) {
   return t;
 }
 
-typedef struct { unsigned char all, n, bv; int cls[CLS_SET_MAX]; } ClsSet;
+/* bv: a builtin value with no class of the program's; os: an OpenStruct,
+   whose members answer any name (size, length, count, empty?) */
+typedef struct { unsigned char all, n, bv, os; int cls[CLS_SET_MAX]; } ClsSet;
 
 typedef struct {
   int node;      /* the argument, written value or returned value whose type degraded the slot; -1 = untraced */
@@ -1911,6 +1913,9 @@ int cls_fact_bounded(Compiler *c, int k);
    known, k is bounded, and k is not in it? A call on recv then never
    reaches k's method, so the binding and the dispatch may leave it out. */
 int cls_fact_excludes(Compiler *c, int recv, int k);
+/* May node's value be an OpenStruct (an OpenStruct.new reaches it, or the
+   walk has no answer for it), in a program that requires "ostruct"? */
+int cls_fact_may_ostruct(Compiler *c, int node);
 /* the fact's own index for recv's set, which names the set uniquely: 0 or -1
    for every class (nothing to filter by) */
 int cls_fact_idx(Compiler *c, int node);

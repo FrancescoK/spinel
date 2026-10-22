@@ -1603,3 +1603,7 @@ int is_to_f_name(const char *n) { return n && sp_streq(n, "to_f"); }
 int is_to_i_name(const char *n) { return n && sp_streq(n, "to_i"); }
 
 int is_intersect_name(const char *n) { return n && sp_streq(n, "intersect?"); }
+
+int ostruct_member_name(const char *n) {
+  return n && (sp_streq(n, "size") || sp_streq(n, "length") || sp_streq(n, "count") || sp_streq(n, "empty?"));
+}

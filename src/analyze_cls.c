@@ -194,26 +194,26 @@ static void cf_load_at(CF *f, int c, int v, int line);
 
 static int cf_set_cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 static unsigned cf_set_hash(const ClsSet *s) {
-  unsigned h = (2166136261u ^ (unsigned)s->all) * 16777619u ^ (unsigned)s->bv;
+  unsigned h = ((2166136261u ^ (unsigned)s->all) * 16777619u ^ (unsigned)s->bv) * 16777619u ^ (unsigned)s->os;
   for (int i = 0; i < s->n; i++) h = (h ^ (unsigned)s->cls[i]) * 16777619u;
   return h;
 }
 static int cf_set_eq(const ClsSet *a, const ClsSet *b) {
-  if (a->all != b->all || a->n != b->n || a->bv != b->bv) return 0;
+  if (a->all != b->all || a->n != b->n || a->bv != b->bv || a->os != b->os) return 0;
   for (int i = 0; i < a->n; i++) if (a->cls[i] != b->cls[i]) return 0;
   return 1;
 }
 /* the pool index of set s, normalized (sorted, no duplicate, every class
    past the cap) */
 static int cf_pool(CF *f, ClsSet *s) {
-  if (s->all) { s->n = 0; s->bv = 0; return CF_ALL; }
+  if (s->all) { s->n = 0; s->bv = 0; s->os = 0; return CF_ALL; }
   if (s->n > 1) {
     qsort(s->cls, (size_t)s->n, sizeof s->cls[0], cf_set_cmp);
     int w = 0;
     for (int i = 0; i < s->n; i++) if (w == 0 || s->cls[w - 1] != s->cls[i]) s->cls[w++] = s->cls[i];
     s->n = (unsigned char)w;
   }
-  if (s->n == 0 && !s->bv) return CF_EMPTY;
+  if (s->n == 0 && !s->bv && !s->os) return CF_EMPTY;
   if (f->npool * 2 >= f->phcap) {
     int ncap = f->phcap ? f->phcap * 2 : 1024;
     int *nh = malloc(sizeof *nh * (size_t)ncap);
@@ -247,6 +247,7 @@ static int cf_union(CF *f, int a, int b) {
   const ClsSet *x = &f->pool[a], *y = &f->pool[b];
   ClsSet s; memset(&s, 0, sizeof s);
   s.bv = (unsigned char)(x->bv | y->bv);
+  s.os = (unsigned char)(x->os | y->os);
   if (x->n + y->n > CLS_SET_MAX) {
     /* the merge may still fit: count the distinct ones */
     int i = 0, j = 0, n = 0;
@@ -276,6 +277,12 @@ static int cf_single(CF *f, int cls) {
 static int cf_bv_set(CF *f) {
   ClsSet s; memset(&s, 0, sizeof s);
   s.bv = 1;
+  return cf_pool(f, &s);
+}
+/* the set of an OpenStruct (OpenStruct.new) */
+static int cf_os_set(CF *f) {
+  ClsSet s; memset(&s, 0, sizeof s);
+  s.os = 1;
   return cf_pool(f, &s);
 }
 /* the Class object of k: a member past the classes */
@@ -2185,7 +2192,7 @@ static void cf_native_class_answer(CF *f, int v, int x, const char *nm, int argc
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
-  int builtin = pidx == CF_EMPTY || s->bv;
+  int builtin = pidx == CF_EMPTY || s->bv || s->os;
   char base[256] = "";
   int is_w = setter_base_name(nm, base, sizeof base);
   for (int i = 0; i < s->n; i++) {
@@ -2637,6 +2644,11 @@ static void cf_call(CF *f, int v) {
     /* a Proc's parameters take what its calls pass; an Enumerator's yielder,
        a Hash's default block's hash and the rest are the builtin's own */
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && sp_streq(nm, "new") && key && sp_streq(key, "Proc")) cf_all_block_params(f, blk);
+    /* an OpenStruct, whose members (its arguments' values, which the
+       builtin rule below brings in) answer names a container answers too:
+       a call on a value it reaches has the member read beside the classes'
+       methods */
+    if (v >= 0 && key && sp_streq(key, "OpenStruct") && sp_streq(nm, "new")) cf_add_set(f, v, cf_os_set(f));
     cf_builtin_rule(f, v, ce, argv, argc, blk, nm);
     return;
   }
@@ -3650,7 +3662,7 @@ static void cf_dump_facts(Compiler *c) {
       int p = c->cls_fact && id < c->cls_fact_n ? c->cls_fact[id] : -1;
       const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
       fprintf(stderr, "cls-val: %s:%d %s node %d value:%s", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", id, p == 0 ? " ANY" : !s ? " ?" : s->n == 0 && !s->bv ? " none" : "");
-      if (s) { for (int i = 0; i < s->n; i++) fprintf(stderr, " %d", s->cls[i]); if (s->bv) fprintf(stderr, " +builtin"); }
+      if (s) { for (int i = 0; i < s->n; i++) fprintf(stderr, " %d", s->cls[i]); if (s->bv) fprintf(stderr, " +builtin"); if (s->os) fprintf(stderr, " +ostruct"); }
       fprintf(stderr, "\n");
     }
     return;
@@ -4413,13 +4425,14 @@ static void cf_meet(Compiler *c, const int *df, const ClsSet *dp, int dn, int **
     else if (d == CF_ALL) m = *us;
     else {
       m.bv = (unsigned char)(us->bv && ds->bv);
+      m.os = (unsigned char)(us->os && ds->os);
       for (int i = 0, j = 0; i < us->n && j < ds->n; ) {
         if (us->cls[i] < ds->cls[j]) i++;
         else if (ds->cls[j] < us->cls[i]) j++;
         else { m.cls[m.n++] = us->cls[i]; i++; j++; }
       }
     }
-    if (m.n == 0 && !m.bv) { fact[v] = CF_EMPTY; continue; }
+    if (m.n == 0 && !m.bv && !m.os) { fact[v] = CF_EMPTY; continue; }
     unsigned h = cf_set_hash(&m) & (unsigned)(hcap - 1);
     while (ht[h] >= 0 && memcmp(&pool[ht[h]], &m, sizeof m)) h = (h + 1) & (unsigned)(hcap - 1);
     if (ht[h] >= 0) { fact[v] = ht[h]; continue; }
@@ -4509,6 +4522,16 @@ int cls_fact_bounded(Compiler *c, int k) {
 }
 
 /* See compiler.h. */
+int cls_fact_may_ostruct(Compiler *c, int node) {
+  if (!sp_feature_required("ostruct")) return 0;
+  /* no fact (every class, or a node made after the pass): it may */
+  if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return 1;
+  int p = c->cls_fact[node];
+  if (p == CF_ALL || p < 0 || p >= c->ncls_pool) return 1;
+  return c->cls_pool[p].os;
+}
+
+/* See compiler.h. */
 int cls_fact_excludes(Compiler *c, int recv, int k) {
   const ClsSet *s = cls_fact_node(c, recv);
   if (!s || !cls_fact_bounded(c, k)) return 0;
@@ -4517,7 +4540,7 @@ int cls_fact_excludes(Compiler *c, int recv, int k) {
      while the facts were every class. Left unbound, such a method's
      parameters are untyped, and an untyped argument it hands on widens a
      live method's parameter to a box (#9514). */
-  if (s->n == 0 && !s->bv) return 0;
+  if (s->n == 0 && !s->bv && !s->os) return 0;
   for (int i = 0; i < s->n; i++) if (s->cls[i] == k) return 0;
   return 1;
 }

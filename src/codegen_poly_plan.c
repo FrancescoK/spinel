@@ -1478,6 +1478,13 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
                    !is_lengthlike && !is_empty && !is_pred &&
                    !poly_builtin_zero_arg_name(name) &&
                    sp_feature_required("ostruct");
+  /* size, length, count and empty?, which an OpenStruct does not define,
+     read its member too where one can reach the receiver
+     (cls_fact_may_ostruct): the containers' arms read 0 for it, and a
+     class's own size took the rest */
+  if (argc == 0 && nt_ref(nt, id, "block") < 0 && ostruct_member_name(name) &&
+      cls_fact_may_ostruct(c, nt_ref(nt, id, "receiver")))
+    is_ostruct = 1;
   /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
      both are builtins/native classes with no user arm, so without this
      pre-arm the call was silently dropped. */
