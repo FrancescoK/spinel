@@ -2510,9 +2510,13 @@ else {
       buf_puts(b, " ({ ");
       emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
       /* the value with its setup after the parameter is bound, as above */
+      /* (one-String mode: a String block value of either face, read as
+         the element is) */
+      int one_b = g_one_string && !boxed && !fo && et == TY_STRING;
+      if (one_b) buf_puts(b, "SP_STR_B(");
       if (fo) emit_blk_value_as_o(c, blk, et, b);
       else emit_blk_value_as(c, blk, boxed ? TY_POLY : et, b);
-      buf_puts(b, "; }); })");
+      buf_puts(b, one_b ? "); }); })" : "; }); })");
     }
     else {
       /* CRuby's message names the index and the valid bounds */
@@ -6401,6 +6405,11 @@ static int emit_hash_nilkey_read(Compiler *c, int id, const char *name, int recv
     if (cr.kind == RK_BOXED) buf_printf(b, "sp_box_oint(%s)", d);
     else if (node_is_oint(c, id)) buf_puts(b, d);
     else buf_printf(b, "sp_oint_arg(%s)", d);
+  }
+  /* (one-String mode: the default is the handle the Hash holds) */
+  else if (is_aref && g_one_string) {
+    if (cr.kind == RK_BOXED) buf_printf(b, "(_t%d && _t%d->default_v ? SP_STR_BOX(_t%d->default_v) : sp_box_nil())", tr, tr, tr);
+    else buf_printf(b, "(_t%d ? SP_STR_B(_t%d->default_v) : (const char *)NULL)", tr, tr);
   }
   else if (is_aref) {
     if (cr.kind == RK_BOXED) buf_printf(b, "sp_box_str(_t%d ? _t%d->default_v : NULL)", tr, tr);
