@@ -2241,9 +2241,12 @@ static int yvt_poly_recv_may_reach(Compiler *c, int cid, int mi) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
   const char *mn = c->scopes[mi].name;
-  int crecv = nt_ref(nt, cid, "receiver");
-  if (!cn || !mn || !sp_streq(cn, mn) || crecv < 0) return 0;
+  if (!cn || !mn || !sp_streq(cn, mn)) return 0;
   if (c->scopes[mi].class_id < 0 || c->scopes[mi].is_cmethod) return 0;
+  /* the receiver is read once the names agree: nearly every site of the
+     list is of another name, and its field scan was 7% of a Rails window */
+  int crecv = nt_ref(nt, cid, "receiver");
+  if (crecv < 0) return 0;
   return infer_type(c, crecv) == TY_POLY;
 }
 
@@ -2399,7 +2402,6 @@ TyKind yield_value_type(Compiler *c, int mi) {
   YvtIt yit; yvt_it_init(c, &yit, mi);
   for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
     int cid = yvt_ids[ii];
-    int blk = nt_ref(nt, cid, "block");
     /* A `callee(...)` forward carries its block implicitly inside the `...`
        (no explicit block node); treat it as a forwarded block too. */
     if (!yvt_may_reach(c, ii, mi)) continue;
@@ -2411,6 +2413,9 @@ TyKind yield_value_type(Compiler *c, int mi) {
       if (yvt_poly_recv_may_reach(c, cid, mi)) poly_site = 1;
       continue;
     }
+    /* read once the site is known to reach: the sites that do not are
+       nearly all of the list */
+    int blk = nt_ref(nt, cid, "block");
     /* `mi(&b)` / `mi(...)`: the call forwards the block of its enclosing
        method rather than passing a literal. The value `mi` yields is then
        whatever that forwarded block produces -- the enclosing method's
