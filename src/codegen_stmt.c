@@ -13264,7 +13264,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
+  if (ts && ts->ret_pub_fresh && share_return_owned(c, nt_paren_single(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;
@@ -13295,7 +13295,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     return;
   }
   if (!ts || !ts->ret_pub_fresh ||
-      !(share_tail_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
+      !(share_tail_fresh(c, nt_paren_single(c->nt, node)) || share_call_fresh(c, nt_paren_single(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;

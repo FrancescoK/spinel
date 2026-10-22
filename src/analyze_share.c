@@ -1883,7 +1883,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
      the same new Strings, in the receiver's class, which an iterator over
      it walks as handles as it walks the receiver's (share_node_fresh_elems).
      Not where a reopening or a module may answer the name instead. */
-  int rcv = an_unparen(nt, nt_ref(nt, n, "receiver"));
+  int rcv = nt_paren_single(nt, nt_ref(nt, n, "receiver"));
   if (container == 1 && blk < 0 && rcv >= 0 && rcv < F->nnodes && F->fresh_cont[rcv] &&
       c->ntype[n] == TY_STR_ARRAY && sh_answers_elems_run(share, argc) &&
       !share_builtin_overridden(c, "Array", nt_str(nt, n, "name")))
@@ -2804,10 +2804,10 @@ static int sh_ostruct_call(ShareFacts *F, Compiler *c, int n, const char *name, 
    links walked from each of them was n^2/2 steps. */
 static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  int start = an_unparen(nt, n);
+  int start = nt_paren_single(nt, n);
   for (n = start; n >= 0 && nt_kind(nt, n) == NK_CallNode; ) {
     if (n < F->nnodes && F->scb[n] >= 0 && F->scb[n] != n) { n = F->scb[n]; continue; }
-    int r = an_unparen(nt, nt_ref(nt, n, "receiver"));
+    int r = nt_paren_single(nt, nt_ref(nt, n, "receiver"));
     TyKind rt = r >= 0 ? c->ntype[r] : TY_VOID;
     const char *nm = nt_str(nt, n, "name");
     if ((rt != TY_STRING && rt != TY_STRBUF) || !nm ||
@@ -6228,7 +6228,7 @@ static int sh_answers_elems_run(int share, int argc) {
    new? */
 static int sh_fresh_elems(Compiler *c, int r, int depth) {
   const NodeTable *nt = c->nt;
-  r = an_unparen(nt, r);
+  r = nt_paren_single(nt, r);
   if (r < 0 || depth > 8) return 0;
   if (nt_kind(nt, r) == NK_ArrayNode) {
     int en = 0; const int *el = nt_arr(nt, r, "elements", &en);
@@ -6730,7 +6730,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
       cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
     int r = nt_ref(c->nt, u, "receiver");
     if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) {
-      *op = an_unparen(c->nt, r);
+      *op = nt_paren_single(c->nt, r);
       return SPK_SELF;
     }
   }
@@ -6811,7 +6811,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
      (emit_strbuf_value) */
   if (by_repr && (r.kind == RK_STRBUF || r.strbuf_src != RS_NONE)) return SPK_SLOT;
   if (sh_bang_self_slot(c, n)) {
-    *op = an_unparen(c->nt, nt_ref(c->nt, n, "receiver"));
+    *op = nt_paren_single(c->nt, nt_ref(c->nt, n, "receiver"));
     return SPK_SELF;
   }
   /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
