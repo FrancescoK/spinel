@@ -188,8 +188,9 @@ static int g_cmp_reopen_id = -1;
 static int emit_nil_aware_num_eq(Compiler *c, int id, const char *name, int recv, int argc, const int *argv, TyKind rt, Buf *b) {
   if (recv < 0 || argc != 1 || !(sp_streq(name, "==") || sp_streq(name, "!="))) return 0;
   if (!oint_kind(rt)) return 0;
-  TyKind at = repr_of(c, argv[0]).as_ty;
-  int a_num = oint_kind(at), a_poly = at == TY_POLY || at == TY_UNKNOWN;
+  Repr ar = repr_of(c, argv[0]);
+  TyKind at = ar.as_ty;
+  int a_num = oint_kind(at), a_poly = ar.kind == RK_BOXED || at == TY_UNKNOWN;
   if (!a_num && !a_poly) return 0;
   if (!node_has_oint_form(c, recv) && !(a_num && node_has_oint_form(c, argv[0]))) return 0;
   int ne = name[0] == '!';
@@ -470,20 +471,20 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "({ sp_Bigint *_t%d = ", tbl); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tbl, tbr);
       if (a0r.big) emit_expr(c, argv[0], b);
-      else if (a0r.as_ty == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (a0r.kind == RK_BOXED) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bigint_%s(_t%d, _t%d); })", tbr, fn, tbl, tbr);
     }
     return 1;
   }
-
   /* integer bitwise operators. A poly receiver is coerced to int (the matching
      inference types these TY_INT); `<<` on a poly is handled earlier as the
      ambiguous shift/append via sp_poly_shl, so only &,|,^,>> reach here. */
   if (recv >= 0 && argc == 1 &&
       ((rt == TY_INT && is_int_bit_op(name)) ||
        (rt == TY_POLY && sp_streq(name, ">>")))) {
-    Repr a0r = repr_of(c, argv[0]); TyKind at0 = a0r.as_ty;
+    Repr a0r = repr_of(c, argv[0]);
+    TyKind at0 = a0r.as_ty;
     /* A `<<`/`>>` by a NEGATIVE (or >= word width) count is UB as a bare C shift
        -- Ruby shifts the other way for a negative count. Only a constant literal
        in that range takes the sp_int_shl/shr path; a non-constant count stays a
@@ -551,7 +552,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "sp_int_%s_ck(", sp_streq(name, "<<") ? "shl" : "shr");
       emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
       buf_puts(b, ", ");
-      if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      if (a0r.kind == RK_BOXED) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "sp_float_to_i_checked("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* a Bignum count saturates (sp_bigint_shift_count): every bit leaves */
       else if (repr_of(c, argv[0]).big) { buf_puts(b, "sp_bigint_shift_count("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -580,7 +581,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
-    if (at0 == TY_POLY) {
+    if (a0r.kind == RK_BOXED) {
       buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_printf(b, ", %d)", is_shift);
     }
     /* A literal wider than int64 (a 64-bit mask like 0xFFFFFFFFFFFFFFFF) is
@@ -636,11 +637,11 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* any?/all?/none?/one?(Class) over an array: Class === element membership,
      a stage-5 builtin-op row (builtin_ops.c) */
   if (recv >= 0 && ty_is_array(rt) && emit_builtin_op_stage(c, id, recv, rt, name, 5, b)) return 1;
-
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
     /* the receiver's own settled type where the dispatch type is poly */
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? comp_ntype(c, recv) : rt;
-    Repr latr = repr_of(c, argv[0]); TyKind lat = latr.as_ty;
+    Repr latr = repr_of(c, argv[0]);
+    TyKind lat = latr.as_ty;
     /* NULL in a String slot is nil, including nil <=> nil == 0. */
     if (lrt == TY_STRING && (lat == TY_STRING || lat == TY_NIL) &&
         !(nt_kind(nt, recv) == NK_StringNode && nt_kind(nt, argv[0]) == NK_StringNode)) {
@@ -794,7 +795,6 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        nil when the class has no `<=>` of its own or answers nil with one.
        `"abc" <=> obj` raised NoMethodError naming String#<=>, a method String
        has, for every such class.
-
        sp_str_cmp_obj carries the rule, and the emitter is where it has to be
        decided: a Symbol receiver is boxed as its NAME, so the runtime cannot
        tell `:s <=> obj` -- which CRuby answers nil, as every non-String
@@ -844,7 +844,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       return 1;
     }
     if (lrt == TY_TIME) {
-      TyKind a0t = comp_ntype(c, argv[0]);
+      Repr a0tr = repr_of(c, argv[0]);
+      TyKind a0t = a0tr.as_ty;
       if (a0t == TY_TIME) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", ta); emit_expr(c, recv, b);
@@ -854,7 +855,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* Time <=> non-Time is nil (poly result). A poly operand is checked at
          run time; a concrete non-Time operand is unconditionally nil. */
-      if (a0t == TY_POLY || a0t == TY_UNKNOWN) {
+      if (a0tr.kind == RK_BOXED || a0t == TY_UNKNOWN) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ sp_Time _t%d = ", ta); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
@@ -887,7 +888,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        mode): tag-dispatch via sp_poly_cmp, not the object-receiver path, which
        would misread a boxed int as a user-class pointer and recurse here. */
     if (lrt == TY_POLY && emit_cmp_reopen_arm(c, id, recv, argv, b)) return 1;
-    if (lrt == TY_POLY || lat == TY_POLY) {
+    if (lrt == TY_POLY || latr.kind == RK_BOXED) {
       /* sp_poly_spaceship answers nil for incomparable runtime operands (an
          oint with its nil flag set) but 0 for identical singletons --
          `nil <=> nil` is 0 even though the two are not "comparable" in the
@@ -973,7 +974,6 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       return 1;
     }
   }
-
   if (recv >= 0 && argc == 1 &&
       is_cmp_op(name)) {
     if ((rt == TY_BIGINT || repr_of(c, argv[0]).big) &&
@@ -990,7 +990,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (ty_is_numeric(rt)) {
       /* a statically non-numeric operand (nil, a string, ...) raises the
          Comparable ArgumentError instead of comparing against a coerced 0 */
-      TyKind cat = comp_ntype(c, argv[0]);
+      Repr catr = repr_of(c, argv[0]);
+      TyKind cat = catr.as_ty;
       if (cat == TY_NIL || cat == TY_STRING || cat == TY_BOOL || cat == TY_SYMBOL) {
         const char *cn9 = rt == TY_FLOAT ? "Float" : rt == TY_RATIONAL ? "Rational" : "Integer";
         const char *an9 = cat == TY_NIL ? "nil" : cat == TY_STRING ? "String"
@@ -1019,7 +1020,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int narl9 = rawl9 && !cmp_operand_may_be_nil(c, recv);
       int narr9 = rawr9 && !cmp_operand_may_be_nil(c, argv[0]);
       int guard9 = rt == rht9 && (rt == TY_INT || rt == TY_FLOAT) &&
-                   (cat == rt || cat == TY_POLY) && (rawl9 || rawr9) &&
+                   (cat == rt || catr.kind == RK_BOXED) && (rawl9 || rawr9) &&
                    !((narl9 || nt_kind(c->nt, recv) == NK_IntegerNode || nt_kind(c->nt, recv) == NK_FloatNode) &&
                      (narr9 || nt_kind(c->nt, argv[0]) == NK_IntegerNode || nt_kind(c->nt, argv[0]) == NK_FloatNode));
       /* An Integer against a Float compares as C does, each side its own
@@ -1061,7 +1062,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          numeric left: coerce it to the comparison's numeric type so the C `>=`
          does not compare an sp_int with an sp_RbVal (`len >= x.megabytes`, an
          unresolved Rails method). */
-      if (cat == TY_POLY) {
+      if (catr.kind == RK_BOXED) {
         buf_printf(b, "%s(", rht9 == TY_FLOAT ? "sp_poly_to_f" : "sp_poly_to_i");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -1487,9 +1488,10 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
   }
   buf_printf(b, "_t%d = %s(_t%d, _t%d); ", tr, pfn, ta, tb);
   /* the consumer's form: the boxed value, or unboxed into its slot */
-  TyKind want = repr_of(c, id).as_ty;
+  Repr wr = repr_of(c, id);
+  TyKind want = wr.as_ty;
   char trn[24]; snprintf(trn, sizeof trn, "_t%d", tr);
-  if (want == TY_POLY || want == TY_UNKNOWN) buf_puts(b, trn);
+  if (wr.kind == RK_BOXED || want == TY_UNKNOWN) buf_puts(b, trn);
   else if (oint_kind(want) && node_is_oint(c, id)) buf_printf(b, "%s(%s)", oint_unbox(want), trn);
   else emit_unbox_text(c, want, trn, b);
   buf_puts(b, "; })");
@@ -1652,8 +1654,9 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* An assignment's value in Ruby is the RIGHT-HAND SIDE: `h.default_proc
        = p` answers the proc, not the hash, which would land a sp_XHash * in
        whatever slot the expression feeds -- a Proc * one here (#3833). */
-    TyKind vt2 = repr_of(c, id).as_ty;
-    int ans = (vt2 == TY_PROC || vt2 == TY_POLY || vt2 == TY_UNKNOWN) ? tp2 : th2;
+    Repr vt2r = repr_of(c, id);
+    TyKind vt2 = vt2r.as_ty;
+    int ans = (vt2 == TY_PROC || vt2r.kind == RK_BOXED || vt2 == TY_UNKNOWN) ? tp2 : th2;
     buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
                   " sp_gc_wb((void *)_t%d); _t%d; })",
                th2, dn2, th2, tp2, th2, ans);
@@ -1788,7 +1791,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* ...when the call answers a bool: one typed boxed has a program class's
      even?/odd? beside the Integer's, which the boxed dispatch reaches (its
      Integer arm views the call as bool and comes back here) */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && repr_of(c, id).as_ty != TY_POLY &&
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && repr_of(c, id).kind != RK_BOXED &&
       (sp_streq(name, "even?") || sp_streq(name, "odd?"))) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = sp_poly_recv_i(\"%s\", ", t, name); emit_expr(c, recv, b); buf_puts(b, "); ");
@@ -1971,7 +1974,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       /* typed boxed for a program's operator that answers more than a bool,
          but in a dispatch's builtin arm the builtin comparison answers: its
          bool is boxed for the readers of the call's boxed type */
-      int bx = comp_ntype(c, id) == TY_POLY;
+      int bx = repr_of(c, id).kind == RK_BOXED;
       buf_printf(b, "%s%s(", bx ? "sp_box_bool(" : "", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, bx ? "))" : ")");
       c->args_in_call = recv;
       return 1;

@@ -524,7 +524,8 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     char rq[192];
     const char *cn = isa_match_name(nt, recv, rq, sizeof rq);
     if (cn) {
-      TyKind at2 = comp_ntype(c, argv[0]);
+      Repr at2r = repr_of(c, argv[0]);
+      TyKind at2 = at2r.as_ty;
       /* An Integer, Float or String argument is nil where its nil flag is
          set (a String's NULL), which the scalar type cannot say:
          `Integer === x` answered
@@ -564,7 +565,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         return 1;
       }
       /* arg type is poly or unknown: runtime tag check */
-      if (at2 == TY_POLY) {
+      if (at2r.kind == RK_BOXED) {
         int tv = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b); buf_printf(b, "; ");
         char v[32]; snprintf(v, sizeof v, "_t%d", tv);
@@ -691,8 +692,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         Buf bb; memset(&bb, 0, sizeof bb);
         emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, &nal);
         if (nal.open && nbn > 0) {
-          TyKind lt = repr_of(c, nbb[nbn - 1]).as_ty;
-          nal_vt = repr_of(c, id).kind == RK_BOXED && lt != TY_POLY ? TY_POLY : lt;
+          Repr lr = repr_of(c, nbb[nbn - 1]);
+          TyKind lt = lr.as_ty;
+          nal_vt = repr_of(c, id).kind == RK_BOXED && lr.kind != RK_BOXED ? TY_POLY : lt;
           if (nhandle) nal_vt = TY_STRBUF;
           if (nal_vt != TY_VOID && nal_vt != TY_NIL && nal_vt != TY_UNKNOWN &&
               (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
@@ -718,7 +720,8 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (!nexec && (block_keyword_name(c, nblk, 0) || block_kwrest_name(c, nblk)))
         emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL, NULL);
       view_unbind(sv_nargov);
-      TyKind nbt = nbn > 0 ? repr_of(c, nbb[nbn - 1]).as_ty : TY_NIL;
+      Repr nbtr = repr_of(c, nbn > 0 ? nbb[nbn - 1] : -1);
+      TyKind nbt = nbn > 0 ? nbtr.as_ty : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
       char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
       g_self = selfb; g_self_deref = ".";
@@ -731,10 +734,10 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_puts(b, "sp_box_nil()"); return 1;
       }
       int nscalar = is_scalar_ret(nbt) && nbt != TY_VOID && nbt != TY_NIL && nbt != TY_UNKNOWN;
-      int nbox = repr_of(c, id).kind == RK_BOXED && nbt != TY_POLY;
+      int nbox = repr_of(c, id).kind == RK_BOXED && nbtr.kind != RK_BOXED;
       if (nal.open) {
         Buf vb; memset(&vb, 0, sizeof vb);
-        if (nal_vt == TY_POLY && nbt != TY_POLY) emit_boxed(c, nbb[nbn - 1], &vb);
+        if (nal_vt == TY_POLY && nbtr.kind != RK_BOXED) emit_boxed(c, nbb[nbn - 1], &vb);
         else if (nhandle) emit_strbuf_handle_of(c, nbb[nbn - 1], &vb);
         else emit_expr(c, nbb[nbn - 1], &vb);
         emit_indent(g_pre, g_indent);
@@ -1100,13 +1103,13 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       /* The call boxed for a forwarded block whose sites answer different
          kinds (ie_fwd_boxed) takes this site's value boxed, a nil block's as
          nil */
-      TyKind ie_call_ty = ie_fwd_boxed ? repr_of(c, id).as_ty : TY_UNKNOWN;
-      if (scalar_res && ie_call_ty == TY_POLY && body_ty != TY_POLY) {
+      Repr ie_call_repr = repr_of(c, ie_fwd_boxed ? id : -1);
+      if (scalar_res && ie_call_repr.kind == RK_BOXED && body_ty != TY_POLY) {
         char tv[32]; snprintf(tv, sizeof tv, "_t%d", tres);
         emit_boxed_text(c, body_ty, tv, b);
       }
       else if (scalar_res) buf_printf(b, "_t%d", tres);
-      else if (ie_call_ty == TY_POLY && (body_ty == TY_NIL || body_ty == TY_VOID)) buf_puts(b, "sp_box_nil()");
+      else if (ie_call_repr.kind == RK_BOXED && (body_ty == TY_NIL || body_ty == TY_VOID)) buf_puts(b, "sp_box_nil()");
       else buf_printf(b, "_t%d", tr);  /* statement use: value is the receiver */
       return 1;
     }
@@ -1588,7 +1591,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        copies (mutable reference types; a native class declares its own dup) --
        skip the identity shortcut for them so the dedicated copy paths run.
        freeze/itself on any value stay identity. */
-    TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    Repr recv_tr = repr_of(c, recv >= 0 ? recv : -1);
+    TyKind recv_t = recv >= 0 ? recv_tr.as_ty : TY_UNKNOWN;
     int is_dup_clone = is_copy_alias(name);
     int recv_native = ty_is_object(recv_t) &&
                       (c->classes[ty_object_class(recv_t)].is_native_class ||
@@ -1644,7 +1648,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* dup/clone of a boxed plain object copies (Object.new included); the
        identity shortcut would alias the original and o.dup == o would
        misreport true */
-    if (argc0 == 0 && is_dup_clone && recv_t == TY_POLY) {
+    if (argc0 == 0 && is_dup_clone && recv_tr.kind == RK_BOXED) {
       buf_printf(b, "sp_poly_dup(");
       emit_expr(c, recv, b);
       buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
@@ -1653,7 +1657,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* clone(freeze: <literal>) on a poly receiver: the immutability of the
        runtime value decides whether `freeze: false` raises, so dispatch on the
        tag at runtime (#3033) */
-    if (argc0 == 1 && is_dup_clone && sp_streq(name, "clone") && recv_t == TY_POLY) {
+    if (argc0 == 1 && is_dup_clone && is_clone_name(name) && recv_tr.kind == RK_BOXED) {
       int cargs = nt_ref(nt, id, "arguments");
       int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
       if (cn == 1 && cv && nt_type(nt, cv[0]) && sp_streq(nt_type(nt, cv[0]), "KeywordHashNode")) {
@@ -2439,9 +2443,10 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          value arm still renders that bool: box it under its natural type or
          the slot it lands in disagrees (#4070). */
       {
-        TyKind ret3 = repr_of(c, id).as_ty;
-        TyKind nat3 = ret3 == TY_POLY ? cg_natural_type(c, id) : ret3;
-        if (ret3 == TY_POLY && g_sn_skip != id &&
+        Repr ret3r = repr_of(c, id);
+        TyKind ret3 = ret3r.as_ty;
+        TyKind nat3 = ret3r.kind == RK_BOXED ? cg_natural_type(c, id) : ret3;
+        if (ret3r.kind == RK_BOXED && g_sn_skip != id &&
             nat3 != TY_POLY && nat3 != TY_UNKNOWN && nat3 != TY_VOID) {
           int sv_skip3 = g_sn_skip; g_sn_skip = id;
           int vw = view_push(c, id, nat3);
@@ -2474,13 +2479,14 @@ static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
   const NodeTable *nt = c->nt;
   TyKind rt = comp_ntype(c, recv);
   int argc = 0; const int *argv = call_args(nt, id, &argc);
-  TyKind at = comp_ntype(c, argv[0]);
+  Repr ar = repr_of(c, argv[0]);
+  TyKind at = ar.as_ty;
   int mi = comp_method_in_chain(c, ty_object_class(rt), "==", NULL);
   if (mi < 0 || comp_ty_value_obj(c, rt) ||
       !(ty_is_object(at) || at == TY_POLY) || comp_ty_value_obj(c, at) ||
       !plain_read_node(nt, recv) || !plain_read_node(nt, argv[0])) return 0;
   Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
-  if (at == TY_POLY)
+  if (ar.kind == RK_BOXED)
     buf_printf(b, "((%s).tag == SP_TAG_OBJ && (%s).v.p == (void *)(%s) || ",
                ab.p ? ab.p : "", ab.p ? ab.p : "", rb.p ? rb.p : "");
   else buf_printf(b, "((void *)(%s) == (void *)(%s) || ", ab.p ? ab.p : "", rb.p ? rb.p : "");
@@ -2822,7 +2828,8 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* true <=> true is 0; nil <=> nil is 0; any other bool/nil pairing is nil */
     if (nm0 && sp_streq(nm0, "<=>") && ac0 == 1 &&
         (rt0 == TY_BOOL || rt0 == TY_NIL)) {
-      TyKind at0 = repr_of(c, av0[0]).as_ty;
+      Repr at0r = repr_of(c, av0[0]);
+      TyKind at0 = at0r.as_ty;
       if (rt0 == TY_BOOL && at0 == TY_BOOL) {
         int t1 = ++g_tmp, t2 = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = ", t1); emit_expr(c, rv0, b);
@@ -2837,7 +2844,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
       }
       /* a boxed operand can hold the same singleton: `false <=> key`, the
          key a boxed false, is 0. A NULL String operand is nil too. */
-      if (at0 == TY_POLY || at0 == TY_UNKNOWN || (rt0 == TY_NIL && at0 == TY_STRING)) {
+      if (at0r.kind == RK_BOXED || at0 == TY_UNKNOWN || (rt0 == TY_NIL && at0 == TY_STRING)) {
         buf_puts(b, "sp_box_oint(");
         emit_poly_cmp_ordered(c, "sp_poly_spaceship", rv0, av0[0], b);
         buf_puts(b, ")");

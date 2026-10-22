@@ -663,7 +663,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
     }
     /* poly-array receiver, POLY argument: same run-time coercion (#3475) */
     if (is_set_op(name) && argc == 1 &&
-        a0 == TY_POLY) {
+        a0r.kind == RK_BOXED) {
       const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
       buf_printf(b, "sp_PolyArray_%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ", sp_poly_set_operand(");
@@ -727,7 +727,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
      CRuby raises. Without this arm the call had nowhere to go and `&`/`|`
      failed to compile (#3475). */
   if (is_set_op(name) && argc == 1 &&
-      a0 == TY_POLY) {
+      a0r.kind == RK_BOXED) {
     const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
     const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
                          rt == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
@@ -777,8 +777,8 @@ int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if (sp_streq(name, "intersect?") && argc == 1 &&
-        (a0r.elem == TY_POLY || a0r.untyped || ty_is_array(a0) || a0 == TY_POLY)) {
+    if (is_intersect_name(name) && argc == 1 &&
+        (a0r.elem == TY_POLY || a0r.untyped || ty_is_array(a0) || a0r.kind == RK_BOXED)) {
       buf_puts(b, "sp_PolyArray_intersect_p_eql("); emit_expr(c, recv, b); buf_puts(b, ", ");
       if (a0r.untyped) buf_puts(b, "NULL");
       else if (a0r.elem == TY_POLY) emit_expr(c, argv[0], b);
@@ -786,7 +786,7 @@ int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b) {
         /* a differently-stored Array argument coerces; Ruby has one Array */
         buf_puts(b, "sp_poly_to_poly_array(");
         Buf ab3; memset(&ab3, 0, sizeof ab3); emit_expr(c, argv[0], &ab3);
-        if (a0 == TY_POLY) buf_puts(b, ab3.p ? ab3.p : "sp_box_nil()");
+        if (a0r.kind == RK_BOXED) buf_puts(b, ab3.p ? ab3.p : "sp_box_nil()");
         else emit_boxed_text(c, a0, ab3.p ? ab3.p : "NULL", b);
         free(ab3.p);
         buf_puts(b, ")");
@@ -796,8 +796,8 @@ int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b) {
     }
     return 0;
   }
-  if (sp_streq(name, "intersect?") && argc == 1 &&
-      (a0r.elem == ty_array_elem(rt) || a0r.untyped || ty_is_array(a0) || a0 == TY_POLY)) {
+  if (is_intersect_name(name) && argc == 1 &&
+      (a0r.elem == ty_array_elem(rt) || a0r.untyped || ty_is_array(a0) || a0r.kind == RK_BOXED)) {
     /* Ruby has one Array; the storage kinds are ours. A receiver and an
        argument of different kinds -- a mapped String array against a
        poly-array constant, the shape this turned up in -- go through the
@@ -821,7 +821,7 @@ int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b) {
       emit_boxed_text(c, rt, rb2.p ? rb2.p : "NULL", b); free(rb2.p); }
     buf_puts(b, ", ");
     { Buf ab2; memset(&ab2, 0, sizeof ab2); emit_expr(c, argv[0], &ab2);
-      if (a0 == TY_POLY) buf_puts(b, ab2.p ? ab2.p : "sp_box_nil()");
+      if (a0r.kind == RK_BOXED) buf_puts(b, ab2.p ? ab2.p : "sp_box_nil()");
       else emit_boxed_text(c, a0, ab2.p ? ab2.p : "NULL", b);
       free(ab2.p); }
     buf_puts(b, ")");
@@ -851,7 +851,7 @@ int emit_op_array_replace(Compiler *c, const BopCtx *x, Buf *b) {
        the widening makes the receiver poly, and the source is read through
        the boxed accessors rather than needing an arm of its own (#4339). */
     if (sp_streq(name, "replace") && argc == 1 && ty_is_array(rt) &&
-        (ty_is_array(a0) || a0 == TY_POLY)) {
+        (ty_is_array(a0) || a0r.kind == RK_BOXED)) {
       buf_puts(b, "sp_PolyArray_replace_from("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
@@ -872,7 +872,7 @@ int emit_op_array_replace(Compiler *c, const BopCtx *x, Buf *b) {
      call fell to NoMethodError. nil or a non-Array is Ruby's TypeError. */
   if (sp_streq(name, "replace") && argc == 1 &&
       (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) &&
-      (a0 == TY_POLY || a0r.elem == TY_POLY || (ty_is_array(a0) && a0r.elem != ty_array_elem(rt)))) {
+      (a0r.kind == RK_BOXED || a0r.elem == TY_POLY || (ty_is_array(a0) && a0r.elem != ty_array_elem(rt)))) {
     int t = ++g_tmp, ts = ++g_tmp, tc = ++g_tmp;
     buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
     ts = hold_operand(c, argv[0], TY_POLY, 1, ts, 1, " ", b);
@@ -1791,7 +1791,7 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
                        : ar.elem == TY_FLOAT ? "sp_PolyArray_from_float_array" : NULL;
       buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
       if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
-      else if (ar.as_ty == TY_POLY || ar.untyped) {
+      else if (ar.kind == RK_BOXED || ar.untyped) {
         /* a boxed argument (a rest param widened to poly): unbox to the
            working array through the runtime kind dispatch (#3317); one
            that is no Array is CRuby's TypeError, not an empty list */
@@ -2253,10 +2253,11 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* Fiber[:k] = v (expression form) */
   if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
     if (fiber_storage_recv(nt, recv)) {
-      TyKind fvt = repr_of(c, argv[1]).as_ty;
+      Repr fvtr = repr_of(c, argv[1]);
+      TyKind fvt = fvtr.as_ty;
       /* Fiber storage is poly-valued. A nil/void/untyped value has no scalar
          C slot -- carry it boxed (`void _t = nil` is otherwise a type error). */
-      int fval_poly = (fvt == TY_POLY || fvt == TY_UNKNOWN || fvt == TY_NIL || fvt == TY_VOID);
+      int fval_poly = (fvtr.kind == RK_BOXED || fvt == TY_UNKNOWN || fvt == TY_NIL || fvt == TY_VOID);
       int tf = ++g_tmp;
       buf_puts(b, "({ ");
       emit_ctype(c, fval_poly ? TY_POLY : fvt, b);
@@ -2279,7 +2280,8 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* `[]=` in expression position: mutate and return the assigned value.
      Ruby's `(h[k] = v)` and `(a[i] = v)` evaluate to v. */
   if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
-    TyKind vt = repr_of(c, argv[1]).as_ty;
+    Repr vr = repr_of(c, argv[1]);
+    TyKind vt = vr.as_ty;
     if (ty_is_hash(rt)) {
       const char *hn = ty_hash_cname(rt);
       if (hn) {
@@ -2288,7 +2290,7 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         TyKind hvt = ty_hash_val(rt);
         /* A poly value into a typed-value hash (e.g. a String? guarded non-nil
            stored into a Hash[String, String]): unbox to the value type. */
-        int unbox_poly_val = (!is_poly_hash && vt == TY_POLY &&
+        int unbox_poly_val = (!is_poly_hash && vr.kind == RK_BOXED &&
                               (hvt == TY_STRING || hvt == TY_INT || hvt == TY_FLOAT));
         /* An UNRESOLVED rhs (a NameError/NoMethodError raise token, emitted
            as a diverging sp_RbVal expression) into a typed-value hash:
@@ -2406,7 +2408,7 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_puts(b, "({ ");
         if (voint) buf_puts(b, oint_ctype(vt)); else emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_POLY, b);
         buf_printf(b, " _t%d = ", tv);
-        if (rt == TY_POLY_ARRAY && vt != TY_POLY) emit_boxed(c, argv[1], b);
+        if (rt == TY_POLY_ARRAY && vr.kind != RK_BOXED) emit_boxed(c, argv[1], b);
         else if (voint) emit_oint_expr(c, argv[1], vt, b);
         else emit_expr(c, argv[1], b);
         buf_printf(b, "; sp_%sArray_set%s(", k, vsfx); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -2454,7 +2456,8 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (rt == TY_POLY && poly_name_user_claimed(c, name, argc)) return 0;
   int g = struct_kwarg_value(c, kw, "random");
   int nel = 0; nt_arr(nt, kw, "elements", &nel);
-  TyKind gt = g >= 0 ? comp_ntype(c, g) : TY_UNKNOWN;
+  Repr gtr = repr_of(c, g >= 0 ? g : -1);
+  TyKind gt = g >= 0 ? gtr.as_ty : TY_UNKNOWN;
   if (g < 0 || nel != 1 || (gt != TY_RANDOM && gt != TY_POLY)) return 0;
   /* a boxed receiver answers in the slot the call was given */
   TyKind et = rt == TY_POLY ? repr_of(c, id).as_ty : rt;
@@ -2463,8 +2466,8 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (rt == TY_POLY) buf_printf(b, "sp_poly_ary_chk(_t%d, \"%s\", 0); ", ta, name);
   int tn = -1;
   if (argc == 2) { tn = ++g_tmp; buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
-  buf_printf(b, "sp_Random *_t%d = %s", tg, gt == TY_POLY ? "sp_poly_random_recv(" : ""); emit_expr(c, g, b);
-  buf_puts(b, gt == TY_POLY ? ", \"rand\"); " : "; ");
+  buf_printf(b, "sp_Random *_t%d = %s", tg, gtr.kind == RK_BOXED ? "sp_poly_random_recv(" : ""); emit_expr(c, g, b);
+  buf_puts(b, gtr.kind == RK_BOXED ? ", \"rand\"); " : "; ");
   char call[96];
   if (sp_streq(name, "shuffle!")) {
     buf_printf(b, "sp_poly_shuffle_bang_r(_t%d, _t%d); ", ta, tg);
@@ -2497,7 +2500,7 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
    take: a Range splices, anything else stores. Read as an Integer, a Range
    stored at index 0. */
 int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
-  if (repr_of(c, argv[0]).as_ty != TY_POLY || !value_may_be_range(c, argv[0])) return 0;
+  if (repr_of(c, argv[0]).kind != RK_BOXED || !value_may_be_range(c, argv[0])) return 0;
   if (rt == TY_POLY_ARRAY) return 1;
   const char *k = array_kind(rt);
   TyKind et = ty_array_elem(rt);
@@ -2544,7 +2547,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
     TyKind et = ty_array_elem(rt), it = ir.as_ty;
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv);
     if (oint_kind(et) && node_is_oint(c, id)) buf_printf(b, "%s(%s)", oint_unbox(et), tn);
-    else if (it == TY_POLY || it == TY_UNKNOWN || ir.kind == RK_BOXED) buf_puts(b, tn);
+    else if (ir.kind == RK_BOXED || it == TY_UNKNOWN) buf_puts(b, tn);
     else emit_unbox_text(c, it, tn, b);
     buf_puts(b, "; })");
     return;
@@ -2569,7 +2572,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
    typed boxed (infer_array_call): a Range removes the subarray, anything
    else the element. Read as an Integer, a Range raised TypeError. */
 static int slice_bang_range_held(Compiler *c, int id, TyKind rt, int argc, const int *argv) {
-  if (argc != 1 || repr_of(c, argv[0]).as_ty != TY_POLY || repr_of(c, id).as_ty != TY_POLY) return 0;
+  if (argc != 1 || repr_of(c, argv[0]).kind != RK_BOXED || repr_of(c, id).kind != RK_BOXED) return 0;
   TyKind et = ty_array_elem(rt);
   if (rt != TY_POLY_ARRAY && et != TY_INT && et != TY_FLOAT && et != TY_STRING) return 0;
   return value_may_be_range(c, argv[0]);

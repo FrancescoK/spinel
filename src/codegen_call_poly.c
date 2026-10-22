@@ -72,7 +72,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            check, which goes into a temp first: beside it in the helper's
            arguments, the C compiler may convert first (x86-64 gcc does), and
            nil's TypeError came ahead of the NoMethodError */
-        int late9 = argc == 1 && (node_has_oint_form(c, argv[0]) || repr_of(c, argv[0]).as_ty == TY_POLY);
+        int late9 = argc == 1 && (node_has_oint_form(c, argv[0]) || repr_of(c, argv[0]).kind == RK_BOXED);
         int tk9 = late9 ? ++g_tmp : -1;
         if (late9) buf_printf(&cb9, "({ sp_RbVal _t%d = ", tk9);
         else buf_printf(&cb9, "%s(", pn9);
