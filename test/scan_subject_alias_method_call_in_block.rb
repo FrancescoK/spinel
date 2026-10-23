@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A method reached through alias_method changes the subject it is given.
 s = +"ab ab ab"; class O; def foo(x) = x << "Z"; alias_method :zork, :foo; end; o = O.new
 kept = []

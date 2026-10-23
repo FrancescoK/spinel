@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed call whose default arm raises is new only where every method it
 # can reach answers a new String: here Object's method, which the builtins
 # take, answers its argument. Handed to a method that appends to it, the

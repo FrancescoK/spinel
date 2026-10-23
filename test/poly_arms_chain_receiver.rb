@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Flag-only: under --share-strings, a second in-place change over a boxed
 # receiver's call whose arms answer a String reaches the bytes the first one
 # answered, not the String: refused.

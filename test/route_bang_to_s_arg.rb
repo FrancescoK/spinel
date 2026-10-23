@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Flag-only: under --share-strings, `t.strip!.to_s` answers t itself when
 # strip! changed it, but the argument takes it as a copy, so grow's append
 # would miss t: refused.

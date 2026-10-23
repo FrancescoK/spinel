@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # `itself` answers `t`, which the block changes: CRuby raises "string modified".
 t = +"abc"
 s = t.itself

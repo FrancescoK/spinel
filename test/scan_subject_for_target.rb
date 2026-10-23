@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A local bound by a for loop holds another name's String, so its writes are not fresh literals.
 t = +"abc"
 for s in [t]; end

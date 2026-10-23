@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A subject a conditional's arm hands `t`, which the block changes: CRuby raises "string modified".
 t = +"abc"
 s = ARGV.size > 5 ? 1 : t

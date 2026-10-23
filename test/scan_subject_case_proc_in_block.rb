@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A case/when with a lambda calls it with the subject, which changes it.
 s = +"ab ab ab"
 pr = ->(x) { x << "Z"; false }

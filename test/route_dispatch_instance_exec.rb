@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # The inherited Object method can return a String already held by another name.
 class FreshResult
   def initialize(text) = @text = text

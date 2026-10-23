@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A lambda that captured the local subject changes it when the block calls it.
 s = +"ab ab"
 l = -> { s << "Z" }

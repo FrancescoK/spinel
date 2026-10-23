@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An interpolated instance variable calls its to_s, which can change the subject in any way.
 class O
   def initialize(s) = @s = s

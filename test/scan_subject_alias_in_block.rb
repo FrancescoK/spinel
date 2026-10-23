@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A name bound to the scan's subject before the scan changes it under the block, so the refusal stays.
 s = +"ab"
 t = s

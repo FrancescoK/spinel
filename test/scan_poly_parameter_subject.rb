@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed parameter subject keeps the refusal.
 class Sc
   def scan(re) = yield(+"q")
@@ -10,5 +11,5 @@ rescue => e
 end
 acc = []
 p f(+"abc", acc)
-p f(Sc.new, acc) rescue p $!.class
+p f(Sc.new, acc).class rescue p $!.class
 p acc

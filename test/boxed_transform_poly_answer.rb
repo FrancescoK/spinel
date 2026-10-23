@@ -1,4 +1,4 @@
-# spinel: not-cruby
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed receiver's String transforms whose answers are boxed (strip,
 # center), kept in an Array beside a String changed through another name and
 # appended to through it: the dispatch boxes each new String as its bytes,

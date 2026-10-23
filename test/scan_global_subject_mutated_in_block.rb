@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A global subject changed by its own block.
 $s = +"ab"
 acc = []

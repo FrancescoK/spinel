@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A subject read through a call, changed by its own block.
 class B
   attr_reader :s

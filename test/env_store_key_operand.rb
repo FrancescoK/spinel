@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # The key object stays live while the value expression can mutate it.
 def env_mutate_key(key, value)
   key << "_CHANGED"

@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A cycle of locals over the subject's String, the block changing one of them: CRuby raises "string modified".
 t = +"abc"
 s = [t, 1].first

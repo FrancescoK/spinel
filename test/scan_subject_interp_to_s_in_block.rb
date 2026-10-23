@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An interpolation inside the block calls a to_s that changes the global subject.
 $s = +"ab ab ab"
 class O; def to_s; $s << "Z"; "o"; end; end

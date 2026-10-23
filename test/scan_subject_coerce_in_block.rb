@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An implicit coerce call changes the subject through a global.
 $s = +"ab ab ab"; s = $s; class O; def coerce(x); $s << "Z"; [x, 1]; end; end; o = O.new
 kept = []

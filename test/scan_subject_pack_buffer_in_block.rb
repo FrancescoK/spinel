@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Array#pack with the subject as its buffer writes the subject.
 s = +"ab ab ab"
 kept = []

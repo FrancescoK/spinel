@@ -1,7 +1,6 @@
-# spinel: not-cruby
-# A reopened Range's take, which the program's values never reach (an old
-# dispatch gap): the facts take no builtin answer for granted, so an
-# element read of it, kept under two names and changed, stays refused.
+# A reopened Range#take is compiled for an Integer Range alone, so the
+# call on a Range of Strings is refused, not answered with the builtin's
+# elements.
 class Range
   def take(n) = [self.begin]
 end

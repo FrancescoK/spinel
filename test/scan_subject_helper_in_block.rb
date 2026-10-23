@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A helper the block calls changes the subject through its argument, so the refusal stays.
 def helper(x) = x << "z"
 s = +"ab"

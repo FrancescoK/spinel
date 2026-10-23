@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A scan whose pattern rebinds the subject's local: the run-time check
 # measured the local's new String, which the block grows, where CRuby
 # scans the String the local held and raises for no change to it. The

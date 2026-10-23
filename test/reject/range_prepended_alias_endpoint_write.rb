@@ -1,8 +1,7 @@
-# spinel: not-cruby
-# A module prepended to Range through a constant that aliases it may
-# answer first in the builtin's place, as one prepended by its own name
-# does: its answer kept under two names and changed stays refused, rather
-# than handing on the builtin's endpoint.
+# A module prepended to Range through a constant that aliases it answers
+# first in the builtin's place; its method is compiled for an Integer Range
+# alone, so the call on a Range of Strings is refused, not answered with
+# the builtin's endpoint.
 $g = String.new("other")
 module Overrides
   def first = $g

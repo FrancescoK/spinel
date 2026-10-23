@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A block the method yields the match to can change the subject, so a scan that
 # yields from its block stays refused when the subject is not a literal.
 def each_match(s)

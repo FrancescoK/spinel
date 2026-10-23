@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # The existing shared-copy refusal also covers an Object method's ivar read.
 class Object
   def label = @label

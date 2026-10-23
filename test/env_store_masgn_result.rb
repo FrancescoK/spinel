@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A local written by a multiple assignment holds whatever the right side
 # held: a boxed value with plain bytes, shared with another name, needs a
 # handle for the returned alias, as a plain write's does.

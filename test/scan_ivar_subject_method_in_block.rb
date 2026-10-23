@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A method the block calls changes the instance variable the scan walks.
 class H
   def initialize; @s = +"ab"; @acc = []; end

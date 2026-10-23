@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A call over an attribute assignment whose argument changes the String: the
 # receiver would be read before the argument runs, and be a copy.
 class K

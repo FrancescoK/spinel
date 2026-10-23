@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Flag-only: under --share-strings this shape is refused rather than compiled
 # handing on a copy of a String that another name holds.
 class K

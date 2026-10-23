@@ -1,4 +1,4 @@
-# spinel: not-cruby
+# The two String representations refused this program; with one it answers as CRuby.
 # A parenthesized local write still cannot publish a mixed return handle.
 class A
  def initialize(x) = @x = x

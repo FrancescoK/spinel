@@ -1,4 +1,4 @@
-# spinel: not-cruby
+# The two String representations refused this program; with one it answers as CRuby.
 # A module prepended to Array may answer shuffle in the builtin's place: an
 # element read of it over a new String Array, kept and changed, stays
 # refused.

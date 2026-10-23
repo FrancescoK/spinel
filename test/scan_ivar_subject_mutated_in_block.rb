@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # The same with an instance variable as the subject, changed by a mutator
 # other than `<<`.
 class Tokens

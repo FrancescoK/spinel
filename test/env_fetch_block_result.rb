@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A missing-key fetch block also returns its supplied key unchanged.
 key = +"SPINEL_SHARE_ENV_FETCH_BLOCK"
 ENV.delete(key)

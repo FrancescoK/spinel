@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An exception's to_s is its message String, so a local from a call has a second name.
 t = +"abc"; ex = RuntimeError.new(t); s = ex.to_s
 acc = []

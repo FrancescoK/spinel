@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An alias made inside the block changes the subject, so the refusal stays.
 s = +"ab"
 acc = []

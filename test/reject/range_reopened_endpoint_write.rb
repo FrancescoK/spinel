@@ -1,7 +1,6 @@
-# spinel: not-cruby
-# A reopened Range#first, which a String Range's value never reaches (an
-# old dispatch gap): its answer kept under two names and changed stays
-# refused, rather than handing on the builtin's endpoint.
+# A reopened Range#first is compiled for an Integer Range alone, so the
+# call on a Range of Strings is refused, not answered with the builtin's
+# endpoint.
 $g = String.new("other")
 class Range
   def first = $g

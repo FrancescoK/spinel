@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Flag-only: under --share-strings, a multiple write at the top level into
 # instance variables that a later `<<` types as Arrays (the default build
 # fails to build it too) cannot store the handle of a String that is shared

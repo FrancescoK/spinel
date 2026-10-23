@@ -1,6 +1,7 @@
-# spinel: not-cruby
-# ...and through a chain of such constants: each is followed to the
-# module it names, so the route stands aside as well.
+# A module prepended to Range through a chain of constants that alias it
+# answers first in the builtin's place; its method is compiled for an
+# Integer Range alone, so the call on a Range of Strings is refused, not
+# answered with the builtin's endpoint.
 $g = String.new("other")
 module Overrides
   def last = $g

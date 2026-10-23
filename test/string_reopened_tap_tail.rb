@@ -1,4 +1,4 @@
-# spinel: not-cruby
+# The two String representations refused this program; with one it answers as CRuby.
 # A reopened String#tap answers what it likes: a method whose tail taps a
 # new String with it does not answer a new String, so the shared String it
 # answers, kept and changed, stays refused.

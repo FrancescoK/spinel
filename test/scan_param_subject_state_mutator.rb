@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # force_encoding changes the subject in place without changing its length, which the run-time check cannot see.
 def c1(t)
   acc = []

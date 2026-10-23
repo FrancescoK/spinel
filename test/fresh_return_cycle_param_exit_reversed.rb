@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A cycle of methods whose way out answers a parameter (here the String
 # the caller holds) is not a cycle of new Strings, whichever of the two
 # methods the program defines first (bb defined first): the walk's rounds settle on what

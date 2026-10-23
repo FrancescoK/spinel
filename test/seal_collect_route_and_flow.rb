@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # Two refusals of the seal: a route (a boxed to_s with an arm answering nil
 # hands the String of the other arm on as a variable's write) and a flow (an
 # Object method's ivar read stored as an element). Without SP_COLLECT_ERRORS

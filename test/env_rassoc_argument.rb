@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # ENV.rassoc keeps the argument as the pair's value.
 value = +"SPINEL_SHARE_ENV_RASSOC_VALUE"
 ENV["SPINEL_SHARE_ENV_RASSOC"] = value

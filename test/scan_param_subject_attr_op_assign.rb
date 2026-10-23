@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An op-assign through a writer calls it, which can change the subject in any way.
 class Box
   attr_reader :x

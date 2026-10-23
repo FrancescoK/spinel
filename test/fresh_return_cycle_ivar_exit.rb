@@ -1,4 +1,4 @@
-# spinel: not-cruby
+# The two String representations refused this program; with one it answers as CRuby.
 # A cycle of inspects whose other way out answers an ivar's String (a leaf
 # node's label) is no new String: kept beside a String changed through
 # another name and changed through the answer, the program stays refused.

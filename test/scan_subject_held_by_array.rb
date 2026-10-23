@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A local subject that an Array also holds has another name, so the refusal stays.
 s = +"ab ab"
 box = [s]

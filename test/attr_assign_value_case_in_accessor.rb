@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A case subject that is an attribute assignment, bound by a pattern and changed:
 # the bound value would be a copy.
 class K

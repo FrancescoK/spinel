@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed to_s with an arm answering nil is not a String route: the change
 # to the other arms' String stays refused until the nil arm has a carrier.
 class Own

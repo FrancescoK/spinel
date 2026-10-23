@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed subject read off an Array literal holding `t`, which the block changes: CRuby raises "string modified".
 t = +"abc"
 s = [t, 1].first

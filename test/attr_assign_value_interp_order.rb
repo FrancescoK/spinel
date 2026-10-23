@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # An interpolation whose first part appends to the String an attribute
 # assignment stores, and whose second part reads the assignment: the read would
 # be a copy taken before the append.

@@ -1,4 +1,5 @@
-# gets also sets $_, so a local from a call has a second name.
+# IO#gets sets $_ in CRuby and does not here: a program that reads $_
+# after `$stdin.gets` is refused, not answered with a nil $_.
 s = $stdin.gets
 acc = []
 begin

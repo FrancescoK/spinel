@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed subject read from an Array the block changes.
 t = +"abc"
 a = [t]

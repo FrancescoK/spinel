@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A lambda the block calls changes the subject, so the refusal stays.
 s = +"ab"
 bump = -> { s << "z" }

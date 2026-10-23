@@ -1,3 +1,4 @@
+# The two String representations refused this program; with one it answers as CRuby.
 # A boxed value may still hold plain bytes; its returned alias needs a handle.
 class EnvStringValue
   def value = +"ab"
