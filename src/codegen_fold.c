@@ -12490,6 +12490,11 @@ static void emit_disp_arm_assign(Compiler *c, const Scope *s, const char *call, 
     return;
   }
   buf_printf(b, "_t%d = ", rtmp);
+  /* (one representation: each arm's String, of whichever face its method
+     answers, into the face of the switch's temp) */
+  int one_s = g_one_string && (disp_ret == TY_STRING || disp_ret == TY_STRBUF) &&
+              !(arm_ret != ret && ret == TY_POLY);
+  if (one_s) buf_printf(b, "SP_STR_TO(_t%d, ", rtmp);
   if (arm_ret != ret && ret == TY_POLY) {
     if (arm_o) buf_printf(b, "%s(%s)", oint_box(arm_ret), call);
     else emit_boxed_text(c, arm_ret, call, b);
@@ -12502,6 +12507,7 @@ static void emit_disp_arm_assign(Compiler *c, const Scope *s, const char *call, 
   else if (g_disp_ro && !arm_o) buf_printf(b, "%s(%s)", oint_of(disp_ret), call);
   else if (!g_disp_ro && arm_o) buf_printf(b, "%s(%s)", oint_arg(arm_ret), call);
   else buf_puts(b, call);
+  if (one_s) buf_puts(b, ")");
   buf_puts(b, "; ");
 }
 
