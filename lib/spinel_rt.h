@@ -19840,7 +19840,7 @@ static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, sp_int n) {
     if (len - i <= n) break;
     i += n;
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e); /* sp_sprintf allocates */ sp_gc_wb((void*)e); e->source = arr; e->meth = sp_sprintf("each_slice(%lld)", (long long)n); return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e); /* sp_sprintf allocates, and can age e: the barrier follows it */ const char *m = sp_sprintf("each_slice(%lld)", (long long)n); sp_gc_wb((void*)e); e->source = arr; e->meth = m; return e; }
 }
 /* Array#each_cons(n) with no block: a materialized Enumerator whose items are
    the sliding windows of length n (none when len < n). */
@@ -19859,7 +19859,7 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, sp_int n) {
       sp_PolyArray_push(out, sp_box_poly_array(win));
     }
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e); /* sp_sprintf allocates */ sp_gc_wb((void*)e); e->source = arr; e->meth = sp_sprintf("each_cons(%lld)", (long long)n); return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e); /* sp_sprintf allocates, and can age e: the barrier follows it */ const char *m = sp_sprintf("each_cons(%lld)", (long long)n); sp_gc_wb((void*)e); e->source = arr; e->meth = m; return e; }
 }
 /* Blockless <enum>.with_index(off): a materialized Enumerator whose items are
    the [element, off + i] pairs of the source enumerator's items. The source is

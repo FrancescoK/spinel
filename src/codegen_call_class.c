@@ -1102,10 +1102,17 @@ static int ffi_arg_allocates(Compiler *c, int node) {
 /* Is argument ai of FFI function fi's call a String made where it stands
    (a shared handle's copy, a call's answer)? Nothing holds it but the C
    call's argument list. */
+/* (one-String mode: a variable's String goes to a :str argument as a copy
+   of its bytes where Ruby code can run during the call, as the argument's
+   emission below has it: the copy is made where it stands) */
+static int ffi_str_arg_copied(Compiler *c, int node) {
+  return g_one_string && comp_ntype(c, node) != TY_POLY && !c->strbuf_read_raw[node] && strbuf_slot_has(c, node);
+}
 static int ffi_str_arg_fresh(Compiler *c, int fi, int ai, const int *argv, int fixed_argc, int is_vararg) {
-  return (ai < fixed_argc ? ffi_spec_is_str(c->ffi_funcs[fi].args[ai])
-                          : is_vararg && comp_ntype(c, argv[ai]) == TY_STRING) &&
-         ffi_str_arg_collectable(c, argv[ai]) && ffi_arg_allocates(c, argv[ai]);
+  int str = ai < fixed_argc ? ffi_spec_is_str(c->ffi_funcs[fi].args[ai])
+                            : is_vararg && comp_ntype(c, argv[ai]) == TY_STRING;
+  return str && ffi_str_arg_collectable(c, argv[ai]) &&
+         (ffi_arg_allocates(c, argv[ai]) || (ai < fixed_argc && ffi_str_arg_copied(c, argv[ai])));
 }
 
 /* Does such a String sit beside another argument whose evaluation
@@ -1113,9 +1120,10 @@ static int ffi_str_arg_fresh(Compiler *c, int fi, int ai, const int *argv, int f
 static int ffi_str_arg_beside_alloc(Compiler *c, int fi, int argc, const int *argv, int fixed_argc, int is_vararg) {
   int nfresh = 0, nalloc = 0;
   for (int ai = 0; ai < argc; ai++) {
-    if (!ffi_arg_allocates(c, argv[ai])) continue;
+    int fresh = ffi_str_arg_fresh(c, fi, ai, argv, fixed_argc, is_vararg);
+    if (!fresh && !ffi_arg_allocates(c, argv[ai])) continue;
     nalloc++;
-    nfresh += ffi_str_arg_fresh(c, fi, ai, argv, fixed_argc, is_vararg);
+    nfresh += fresh;
   }
   return nfresh && nalloc >= 2;
 }
