@@ -18382,6 +18382,32 @@ static void reject_range_reopen_nonint(Compiler *c) {
   }
 }
 
+/* IO#gets and IO#readline set $_ in CRuby; here they do not, so a program
+   that reads $_ would read nil, or a line some other write left, where
+   CRuby reads the line just read. Such a gets is refused, as a bare gets
+   in such a program keeps its NameError (comp_bare_gets_is_argf). */
+static void reject_io_gets_last_line(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int reads = 0;
+  NT_FOREACH_KIND(nt, NK_GlobalVariableReadNode, g) {
+    const char *gn = nt_str(nt, g, "name");
+    if (gn && (sp_streq(gn, "$_") || sp_streq(gn, "$LAST_READ_LINE"))) { reads = 1; break; }
+  }
+  if (!reads) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *name = nt_str(nt, id, "name");
+    if (!name || (!sp_streq(name, "gets") && !sp_streq(name, "readline"))) continue;
+    int rv = nt_ref(nt, id, "receiver");
+    if (rv < 0) continue;
+    TyKind rk = comp_ntype(c, rv);
+    if (rk != TY_IO && rk != TY_ARGF) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (sc && !sc->reachable) continue;
+    unsupported_feature(c, id, "IO#gets or IO#readline in a program that reads $_: they do not set $_ here, "
+                               "so $_ would not be the line just read. Keep the line in a variable instead");
+  }
+}
+
 static void reject_runtime_send(Compiler *c) {
   if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
@@ -20843,6 +20869,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_define_method_early(c);
   reject_define_method_runtime_block(c);
   reject_range_reopen_nonint(c);
+  reject_io_gets_last_line(c);
 
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);

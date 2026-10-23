@@ -702,6 +702,10 @@ spinel: 1 refusal, nothing written
 == test/reject/instance_exec_untraced_proc_param.rb [promote] rc=1
 spinel: test/reject/instance_exec_untraced_proc_param.rb:8: instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal
 spinel: 1 refusal, nothing written
+== test/reject/io_gets_with_last_line_read.rb [default] rc=1
+spinel: test/reject/io_gets_with_last_line_read.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
+== test/reject/io_gets_with_last_line_read.rb [promote] rc=1
+spinel: test/reject/io_gets_with_last_line_read.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
 == test/reject/io_popen.rb [default] rc=1
 spinel: test/reject/io_popen.rb:4: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
 spinel: 1 refusal, nothing written
