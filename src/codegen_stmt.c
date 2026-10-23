@@ -14518,6 +14518,14 @@ static void emit_ensure_return_1(Compiler *c, int eid, int has_retval, Buf *b, i
     else emit_boxed_text(c, g_ret_type, rv, b);
     buf_puts(b, "; return 0; }\n");
   }
+  /* an inline with no exit of its own (a yielding method spliced at its
+     call, whose block's return leaves the caller) returns from the C
+     function it sits in: an Integer's value goes back with the nil that
+     function's oint carries (`def step(n) = (wrap { n } if n > 0)`) */
+  else if (has_retval && !g_c_ret_void && oint_kind(g_ret_type) && !g_ret_oint &&
+           g_fn_ret_oint && g_fn_ret_type == g_ret_type)
+    buf_printf(b, "if (_retf%d) return %s(_retv%d);\n", eid,
+               g_ret_type == TY_FLOAT ? "sp_ofloat_of" : "sp_oint_of", eid);
   else emit_retf_return(eid, has_retval, b);
 }
 
