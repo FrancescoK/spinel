@@ -775,6 +775,11 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
     v.v.p = sp_File_dup((sp_File *)v.v.p, keep_frozen);
     return v;
   }
+  /* Dir#dup on a boxed Dir: a distinct Dir with no stream and no path */
+  if (!keep_frozen && v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_DIR) {
+    v.v.p = sp_dir_dup_handle((sp_Dir *)v.v.p);
+    return v;
+  }
   /* OpenStruct#dup/#clone on a boxed OpenStruct: a copy over its own member
      table. Its cls_id is a builtin's, so the user-object copy below skips it
      and the original came back. */

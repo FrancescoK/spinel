@@ -14379,7 +14379,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      (`super { |v| yield v + 1 }` in a class that prepends). Those, and
      under --plan-check as the assertion, take the lookup. */
   const CallPlan *spl = cplan_user(c, id);
-  const char *own = comp_prep_user_name(s->name);
+  const char *own = comp_prep_user_name(comp_scope_def_name(c, s));
   int mi = -1;
   if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
       (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, own)))) {
@@ -14922,7 +14922,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   }
   /* Strip __prep_N_ prefix to get the user method name for parent chain lookup. */
   int p = comp_super_parent(c, s->class_id, s->is_cmethod);
-  const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
+  const char *uname = comp_super_name(c, p, comp_scope_def_name(c, s), s->is_cmethod);
   /* super inside a class method: resolve through the parent's CLASS-method
      chain and call the sp_<Cls>_s_ form (class methods take no instance
      self). The instance path below would miss `def self.x` entirely. */

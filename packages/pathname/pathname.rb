@@ -39,9 +39,28 @@ class Pathname
     new(Dir.pwd)
   end
 
-  # Every path matching the glob pattern, as Pathnames.
-  def self.glob(pattern)
-    Dir.glob("#{pattern}").map { |x| new(x) }
+  # Every path matching the glob pattern, as Pathnames. A Float flags value
+  # is truncated, as CRuby truncates it; a flags value that is neither an
+  # Integer nor a Float raises TypeError (a Rational or an object with
+  # #to_int is not accepted). Of the Integers, 0 takes the plain glob and
+  # File::FNM_DOTMATCH the one that keeps hidden entries; any other value
+  # raises NotImplementedError rather than reaching a Dir.glob that would not
+  # apply it.
+  def self.glob(pattern, flags = 0)
+    flags = flags.to_i if flags.is_a?(Float)
+    unless flags.is_a?(Integer)
+      raise TypeError, "no implicit conversion from nil to integer" if flags.nil?
+      what = flags == true || flags == false ? flags.to_s : flags.class.to_s
+      raise TypeError, "no implicit conversion of #{what} into Integer"
+    end
+    paths = if flags == 0
+      Dir.glob("#{pattern}")
+    elsif flags == File::FNM_DOTMATCH
+      Dir.glob("#{pattern}", File::FNM_DOTMATCH)
+    else
+      raise NotImplementedError, "Pathname.glob flags other than 0 and File::FNM_DOTMATCH"
+    end
+    paths.map { |x| new(x) }
   end
 
   # ---- conversion and identity ----
@@ -85,20 +104,16 @@ class Pathname
 
   # ---- pure path manipulation (no disk access) ----
 
-  # self + other. An absolute `other` replaces the receiver entirely, and the
-  # result is cleaned, so `Pathname.new("a/b") + ".."` is `a` rather than
-  # `a/b/..`.
+  # self + other, as CRuby's Pathname#plus joins them. An absolute `other`
+  # replaces the receiver. Otherwise other's leading "." components drop and
+  # each leading ".." takes the receiver's last name off
+  # (`Pathname.new("a/b") + ".."` is `a`), and the rest of other is joined as
+  # written: `a + "b/./c"` is `a/b/./c`, not cleaned.
   def +(other)
     # Every branch answers a Pathname. A method that returns its argument on
     # one path and a fresh object on another has no single type here, and the
     # boxed result made the NEXT `/` in a chain compile as numeric division.
-    o = "#{other}"
-    return Pathname.new(o) if o.start_with?(SEPARATOR)
-    return Pathname.new(o) if @path == ""
-    return self if o == "" || o == "."
-
-    joined = Pathname.clean_str("#{@path}#{SEPARATOR}#{o}")
-    Pathname.new(Pathname.dir_form?(o, joined) ? "#{joined}#{SEPARATOR}" : joined)
+    Pathname.new(Pathname.plus_str(@path, "#{other}"))
   end
 
   def /(other)
@@ -345,15 +360,19 @@ class Pathname
   # "a/." both answer "a/top.rs"), and anything else -- "./a" included -- is
   # kept as written, since `+` keeps it too. Joining the pattern onto the
   # folded receiver gives exactly those strings without going through `+`.
-  def glob(pattern)
+  # A match naming the receiver's own "." entry (File::FNM_DOTMATCH, or a
+  # "." pattern) is `self + "."`, which `+` folds to the receiver.
+  def glob(pattern, flags = 0)
     base = @path
     base = base[0, base.length - 2] while base.length > 2 && base.end_with?("#{SEPARATOR}.")
     base = base[0, base.length - 1] while base.length > 1 && base.end_with?(SEPARATOR)
-    if base == "." || base == ""
-      Dir.glob(pattern).map { |x| Pathname.new(x) }
-    else
-      Dir.glob("#{base}#{SEPARATOR}#{pattern}").map { |x| Pathname.new(x) }
-    end
+    prefix = base.end_with?(SEPARATOR) ? base : "#{base}#{SEPARATOR}"
+    # CRuby globs in the receiver's directory and answers `self + match` for
+    # each match, so its "." entries fold the way #+ folds them
+    # (`"./."` is the receiver, `"./.hidden"` is `<base>/.hidden`)
+    here = base == "." || base == "" || pattern.start_with?(SEPARATOR)
+    full = here ? pattern : "#{prefix}#{pattern}"
+    Pathname.glob(full, flags).map { |x| self + (here ? x.to_s : x.to_s[prefix.length..]) }
   end
 
   # Every path under this one, receiver first, depth first. A symlinked
@@ -464,16 +483,61 @@ class Pathname
   # ---- string helpers, shared by the pure-path methods ----
 
   # The name components of a path, with separators, "" and "." removed.
-  # Does `self + o` keep o's trailing slash? CRuby keeps it when o still
-  # names something after its leading "." and ".." are resolved against the
-  # receiver (`a + "b/"` is `a/b/`, `a/b + "../../../"` is `../`), and drops
-  # it when they consume all of o (`a + "./"` is `a`, `a + "../"` is `.`).
-  def self.dir_form?(o, joined)
-    return false unless o.end_with?(SEPARATOR) && joined != SEPARATOR
-    last = ""
-    o.split(SEPARATOR).each { |part| last = part unless part == "" }
-    return true unless last == "." || last == ".."
-    joined == ".." || joined.end_with?("#{SEPARATOR}..")
+  # CRuby's Pathname#plus on the two strings (pathname.rb): path2's names are
+  # listed with where each starts; its leading "." names drop, and each
+  # leading ".." cancels a name of path1 that is not "." or ".." itself. What
+  # is left of path2 is joined, from where its first remaining name starts.
+  def self.plus_str(path1, path2)
+    prefix2 = path2
+    starts2 = []
+    names2 = []
+    while (r2 = chop_basename(prefix2))
+      prefix2 = r2[0]
+      starts2.unshift(prefix2.length)
+      names2.unshift(r2[1])
+    end
+    return path2 if prefix2 != ""
+
+    prefix1 = path1
+    while true
+      while !names2.empty? && names2.first == "."
+        starts2.shift
+        names2.shift
+      end
+      r1 = chop_basename(prefix1)
+      break unless r1
+      prefix1 = r1[0]
+      name1 = r1[1]
+      next if name1 == "."
+      if name1 == ".." || names2.empty? || names2.first != ".."
+        prefix1 = prefix1 + name1
+        break
+      end
+      starts2.shift
+      names2.shift
+    end
+    has_name1 = !chop_basename(prefix1).nil?
+    # at the root, a ".." has nothing to cancel and drops
+    at_root = !has_name1 && File.basename(prefix1).include?(SEPARATOR)
+    if at_root
+      while !names2.empty? && names2.first == ".."
+        starts2.shift
+        names2.shift
+      end
+    end
+    if !names2.empty?
+      suffix2 = path2[starts2.first..-1]
+      has_name1 || at_root ? File.join(prefix1, suffix2) : prefix1 + suffix2
+    else
+      has_name1 || at_root ? prefix1 : File.dirname(prefix1)
+    end
+  end
+
+  # [the path before its last name, the last name], or nil for "" and the root
+  def self.chop_basename(path)
+    base = File.basename(path)
+    return nil if base == "" || base == SEPARATOR
+    [path[0, path.rindex(base)], base]
   end
 
   def self.split_str(path)

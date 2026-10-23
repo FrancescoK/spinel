@@ -2036,6 +2036,21 @@ static int yvt_nb = 0, yvt_always_n = 0;
    are yvt_tg_ii[yvt_tg_off[t] .. yvt_tg_off[t + 1]), ascending (yvt_tg_build) */
 static ANameHash yvt_tg_names;
 static int *yvt_tg_off = NULL, *yvt_tg_ii = NULL, yvt_tg_nn = 0;
+/* the names are copies of their own: an alias table's string is replaced
+   when the alias settles (settle_mixin_aliases), and a node's when a
+   desugar renames it, neither of which rebuilds this index */
+static char **yvt_tg_owned = NULL; static int yvt_tg_nowned = 0, yvt_tg_ocap = 0;
+static const char *yvt_tg_own(const char *s) {
+  if (yvt_tg_nowned == yvt_tg_ocap) {
+    yvt_tg_ocap = yvt_tg_ocap ? yvt_tg_ocap * 2 : 64;
+    yvt_tg_owned = realloc(yvt_tg_owned, sizeof(char *) * (size_t)yvt_tg_ocap);
+    if (!yvt_tg_owned) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  char *cp = strdup(s);
+  if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  yvt_tg_owned[yvt_tg_nowned++] = cp;
+  return cp;
+}
 static void yvt_tg_build(Compiler *c);
 static unsigned char *yvt_alias_name = NULL;   /* per yvt_ids entry: its name is an alias somewhere */
 static unsigned char *yvt_fwd = NULL;          /* per yvt_ids entry: yvt_call_forwards_block */
@@ -2122,6 +2137,8 @@ static void yvt_build(Compiler *c) {
    names, and only an alias edge changes the name it matches. */
 static void yvt_tg_build(Compiler *c) {
   anh_free(&yvt_tg_names); memset(&yvt_tg_names, 0, sizeof yvt_tg_names);
+  for (int i = 0; i < yvt_tg_nowned; i++) free(yvt_tg_owned[i]);
+  yvt_tg_nowned = 0;
   free(yvt_tg_off); free(yvt_tg_ii); yvt_tg_off = NULL; yvt_tg_ii = NULL; yvt_tg_nn = 0;
   const NodeTable *nt = c->nt;
   /* the edges, chained by their new name */
@@ -2182,7 +2199,7 @@ static void yvt_tg_build(Compiler *c) {
           if (qn == qcap) { qcap *= 2; q = realloc(q, sizeof(const char *) * (size_t)qcap); if (!q) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
           q[qn++] = eold[j];
           int t = anh_find(&yvt_tg_names, eold[j]);
-          if (t < 0) { anh_add(&yvt_tg_names, eold[j]); t = anh_find(&yvt_tg_names, eold[j]); }
+          if (t < 0) { const char *own = yvt_tg_own(eold[j]); anh_add(&yvt_tg_names, own); t = anh_find(&yvt_tg_names, own); }
           if (t >= yvt_tg_nn) yvt_tg_nn = t + 1;
           if (tn == tcap) { tcap = tcap ? tcap * 2 : 64; tpool = realloc(tpool, sizeof(int) * (size_t)tcap); if (!tpool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
           tpool[tn++] = t; ylen[y]++;

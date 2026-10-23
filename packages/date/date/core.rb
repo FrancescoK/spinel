@@ -1075,17 +1075,31 @@ class Date
   def +(other)
     case other
     when Integer
-      self.class.__send__(:new_from_jd, @jd + other, @start, @day_fraction)
+      _plus_days(other)
     when Numeric
       r = other.to_r
       raise TypeError, "#{other.class} can't be coerced into Integer" unless r.is_a?(Rational)
-      total = r + day_fraction
-      days = total.floor
-      frac = total - days
-      self.class.__send__(:new_from_jd, @jd + days, @start, frac == 0 ? nil : frac)
+      _plus_fraction(r)
     else
       raise TypeError, "expected numeric"
     end
+  end
+
+  # The construction behind + and -: a Date from its day number and day
+  # fraction, a DateTime from its time of day as well (DateTime defines
+  # these two for itself). CRuby has one + and one - for both classes, so
+  # an alias a program takes of either in Date (activesupport's
+  # plus_without_duration) names the method a DateTime runs too; these hooks
+  # keep it so, where a DateTime#+ of its own would be another method.
+  private def _plus_days(n)
+    self.class.__send__(:new_from_jd, @jd + n, @start, @day_fraction)
+  end
+
+  private def _plus_fraction(r)
+    total = r + day_fraction
+    days = total.floor
+    frac = total - days
+    self.class.__send__(:new_from_jd, @jd + days, @start, frac == 0 ? nil : frac)
   end
 
   # call-seq:
@@ -1108,16 +1122,13 @@ class Date
   def -(other)
     case other
     when Date
-      Rational(@jd - other.jd) + day_fraction - other.day_fraction
+      ajd - other.ajd
     when Integer
-      self.class.__send__(:new_from_jd, @jd - other, @start, @day_fraction)
+      _plus_days(-other)
     when Numeric
       r = other.to_r
       raise TypeError, "#{other.class} can't be coerced into Integer" unless r.is_a?(Rational)
-      total = day_fraction - r
-      days = total.floor
-      frac = total - days
-      self.class.__send__(:new_from_jd, @jd + days, @start, frac == 0 ? nil : frac)
+      _plus_fraction(-r)
     else
       raise TypeError, "expected numeric"
     end

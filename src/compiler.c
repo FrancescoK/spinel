@@ -4054,6 +4054,28 @@ const char *comp_prep_user_name(const char *name) {
    the clone of `def on(&) = super(&)` behind a poly receiver raised
    "no superclass method 'on#pf'". It falls back to the ancestor's plain method,
    which is callable, since only a yielding method is inlined away. */
+/* The name super looks up from scope s: the name its def has. An alias that
+   captured an earlier def renamed that scope to the alias
+   (alias_capture_earlier_def), and settle_mixin_aliases keeps a copy under
+   a shadow name, but the body's super still asks for the name its def has,
+   as CRuby's does. A proc-form clone keeps its "#pf" mark. A scope that
+   still carries its def's name answers its own name, prefix and all. */
+const char *comp_scope_def_name(Compiler *c, const Scope *s) {
+  const char *nm = s->name;
+  if (!nm || s->def_node < 0 || nt_kind(c->nt, s->def_node) != NK_DefNode) return nm;
+  const char *dn = nt_str(c->nt, s->def_node, "name");
+  if (!dn) return nm;
+  const char *u = comp_prep_user_name(nm);
+  size_t n = strlen(u);
+  int pf = n > 3 && strcmp(u + n - 3, "#pf") == 0;
+  size_t base = pf ? n - 3 : n;
+  if (strlen(dn) == base && strncmp(u, dn, base) == 0) return nm;
+  static char buf[4][320];
+  static int r;
+  char *b = buf[r++ & 3];
+  snprintf(b, sizeof buf[0], "%s%s", dn, pf ? "#pf" : "");
+  return b;
+}
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod) {
   const char *u = comp_prep_user_name(name);
   if (!u) return u;

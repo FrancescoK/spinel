@@ -1683,6 +1683,13 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
       return 1;
     }
+    /* Dir#dup allocates a distinct, closed object with no path. */
+    if (argc0 == 0 && sp_streq(name, "dup") && recv_t == TY_DIR) {
+      buf_puts(b, "sp_dir_dup_handle(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     /* Proc#dup/#clone: a distinct shallow copy, not the identity shortcut
        below (d.equal?(pr) must be false) (#3048) */
     if (argc0 == 0 && is_dup_clone && recv_t == TY_PROC) {

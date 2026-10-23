@@ -12,3 +12,10 @@ test/poly_range_bsearch_float_arm.rb
 test/range_boxed_endpoints.rb
 test/range_symbol_endpoints.rb
 test/string_range_shared_ends_enum.rb
+
+# Date#to_s appends its month-and-day suffix to the year's to_s, which
+# promote boxes: that String route is refused as shared and changed in place
+# (#9258), so a test that requires date does not compile under promote. The
+# one-String mode carries it; a test leaves with that mode as the default.
+test/date_plus_inherited_by_datetime.rb
+test/alias_date_compare_without_coercion.rb
