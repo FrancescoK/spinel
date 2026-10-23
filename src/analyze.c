@@ -19413,13 +19413,21 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
    walk read each store's name, receiver and arguments over again -- on a
    Rails program 9% of a sampled window of the share pass. A write of a
    call's value is not kept: the collecting iterator's tail it may store
-   goes with the call's plan, which moves as the pass promotes. */
+   goes with the call's plan, which moves as the pass promotes. The values
+   go with the table's version and edits as well as with the index: an
+   edit that replaces a store's argument array moves neither the node count
+   nor the version, only edits. */
 static int *svc_off, *svc_n, *svc_pool, svc_cap, svc_pool_n, svc_pool_cap;
+static const NodeTable *svc_nt; static unsigned svc_ver; static unsigned long svc_edits;
 static void svc_clear(void) {
   free(svc_off); free(svc_n); svc_off = svc_n = NULL; svc_cap = 0; svc_pool_n = 0;
 }
 static int sb_store_values(Compiler *c, int w, const char *contn, Scope *conts, StoreVals *sv) {
   const NodeTable *nt = c->nt;
+  if (svc_nt != nt || svc_ver != nt->version || svc_edits != nt->edits) {
+    svc_clear();
+    svc_nt = nt; svc_ver = nt->version; svc_edits = nt->edits;
+  }
   if (w >= svc_cap) {
     int cap = nt->count > w + 1 ? nt->count : w + 1;
     svc_off = realloc(svc_off, sizeof(int) * (size_t)cap);
