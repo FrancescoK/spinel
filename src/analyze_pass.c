@@ -1383,13 +1383,8 @@ static TyKind push_elem_ty(Compiler *c, int node) {
   /* a pushed nil keeps the container boxed, as a nil literal element does:
      the scalar nil joins of ty_unify are for slots, not for typed storage */
   if (t == TY_NIL) return TY_POLY;
-  if (t == TY_UNKNOWN && node >= 0) {
-    NodeKind k = nt_kind(c->nt, node);
-    if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
-      int en = 0; nt_arr(c->nt, node, "elements", &en);
-      if (en == 0) return TY_POLY;
-    }
-  }
+  /* (an empty container, `[]` or a bare `Array.new`, is built boxed) */
+  if (t == TY_UNKNOWN && node >= 0 && node_is_empty_container(c->nt, node)) return TY_POLY;
   return t;
 }
 
@@ -3153,12 +3148,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            definite container evidence: treat it as poly so an int-keyed
            write can still settle the hash variant (`h = {}; h[k] = []`
            stayed Str-keyed and stored the int key as a pointer, #2442) */
-        else if (vt == TY_UNKNOWN && nt_type(nt, argv[1]) &&
-                 (sp_streq(nt_type(nt, argv[1]), "ArrayNode") ||
-                  sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
-          int ven9 = 0; nt_arr(nt, argv[1], "elements", &ven9);
-          if (ven9 == 0) vt = TY_POLY;
-        }
+        else if (vt == TY_UNKNOWN && node_is_empty_container(nt, argv[1])) vt = TY_POLY;   /* (a bare `Array.new` too) */
       }
       else if (name && sp_streq(name, "store") && an == 2) {
         /* Hash#store is []= (#2433) */
@@ -3925,6 +3915,13 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       if (dn >= 0) vt = ty_unify(vt, hash_default_value_ty(c, dn));
     }
     TyKind before = *slot;
+    /* an empty container stored at an index (`a[0] = []`, a bare
+       `Array.new`) is boxed, as a pushed one is, and an Array of scalars
+       cannot hold it: it is no boxed value of the element's kind the store
+       converts at run time */
+    if (!is_push && !is_splice && vt == TY_POLY && vnode >= 0 && ty_is_array(*slot) && *slot != TY_POLY_ARRAY &&
+        !ty_is_array(ty_array_elem(*slot)) && node_is_empty_container(nt, vnode))
+      vt = TY_POLY_ARRAY;
     int fits = fold_container_evidence(slot, is_push, is_splice, kt, vt);
     /* --share-strings: a local Array of Strings a String's handle is pushed
        into holds its Strings as handles (#8328 step 5), where its container
