@@ -23617,8 +23617,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       return 1;
     }
     if (sp_streq(name, "clear") && argc == 0) {
+      /* a frozen receiver raises FrozenError and keeps its elements, as
+         the value form's template does */
+      int tr = ++g_tmp;
       emit_indent(b, indent);
-      buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")->len = 0;\n");
+      buf_printf(b, "{ sp_PolyArray *_t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; if (_t%d->frozen) sp_raise_frozen_array_at(_t%d, SP_BUILTIN_POLY_ARRAY); _t%d->len = 0; }\n", tr, tr, tr);
       return 1;
     }
     return 0;

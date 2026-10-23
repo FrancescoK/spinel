@@ -1,0 +1,4 @@
+FrozenError
+can't modify frozen Array: [1, "x"]
+[1, "x"]
+[]
