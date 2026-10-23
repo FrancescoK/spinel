@@ -24908,21 +24908,10 @@ static int an_tail_tap_blind(Compiler *c, int n) {
    so no other name ever holds the String it answers, whatever share class
    the walk gave it. How a value is used, for the walk below: */
 enum { BL_OTHER, BL_DROP, BL_RET, BL_RECV };
-/* n with its single-expression parentheses taken off */
-static int bl_unparen(const NodeTable *nt, int n) {
-  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, n, "body"), bn = 0;
-    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
-    if (bn != 1) return -1;
-    n = bb[0];
-  }
-  return n;
-}
 /* Is v a new String each time it runs: an interpolation, `+"lit"` or `+`
    of one, `"lit" * n`, `"lit".dup`, String.new? */
 static int bl_new_string(const NodeTable *nt, int v) {
-  v = bl_unparen(nt, v);
-  if (v < 0) return 0;
+  v = nt_paren_single(nt, v);
   NodeKind k = nt_kind(nt, v);
   if (k == NK_InterpolatedStringNode) return 1;
   if (k != NK_CallNode) return 0;
@@ -24941,8 +24930,7 @@ static int bl_is_append(const NodeTable *nt, int n) {
 }
 /* Is n the local (name, at block depth depth) or an append chain on it? */
 static int bl_alias(const NodeTable *nt, int n, const char *name, int depth) {
-  n = bl_unparen(nt, n);
-  if (n < 0) return 0;
+  n = nt_paren_single(nt, n);
   if (nt_kind(nt, n) == NK_LocalVariableReadNode)
     return sp_streq(nt_str(nt, n, "name"), name) && nt_int(nt, n, "depth", 0) == depth;
   return bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth);
