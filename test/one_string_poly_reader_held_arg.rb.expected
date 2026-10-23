@@ -1,0 +1,7 @@
+int 1
+<str gear>
+<str lever>
+a=gear b=gear
+a=lever b=lever
+NoMethodError: attach ["gear", "gear"]
+NoMethodError: attach ["lever", "lever"]

@@ -1290,6 +1290,8 @@ void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc
    rewrites them, and a nil value, skipped as if it were a raise, ran after
    the keywords, or never when their check raised. */
 void emit_args_run(Compiler *c, const int *argv, int argc);
+/* The bare temp an argument that ran first is held in, -1 when it is not one. */
+int ran_first_temp_of(int node);
 /* Has the argument `node` run already, into the temp an override from
    the `from`th on names? */
 int arg_ran_first(int node, int from);
