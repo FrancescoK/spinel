@@ -834,7 +834,10 @@ static int subtree_has_return(const NodeTable *nt, int root, int skip) {
   return 0;
 }
 
-int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
+/* The nodes of the tuple call `value` answers when its method has one tuple
+   shape (`return a, b`, or a literal `[a, b]` last): their count, 0 when it
+   has none. */
+static int multi_return_elem_nodes(Compiler *c, int value, const int **elems) {
   const NodeTable *nt = c->nt;
   const char *vty = nt_type(nt, value);
   if (!vty || !sp_streq(vty, "CallNode")) return 0;
@@ -901,7 +904,14 @@ int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
     for (int i = 0; av && i < an; i++)
       if (nt_type(nt, av[i]) && sp_streq(nt_type(nt, av[i]), "SplatNode")) return 0;
   }
-  if (!av || an < 2 || an > max) return 0;
+  if (!av || an < 2) return 0;
+  *elems = av;
+  return an;
+}
+int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
+  const int *av = NULL;
+  int an = multi_return_elem_nodes(c, value, &av);
+  if (an == 0 || an > max) return 0;
   for (int i = 0; i < an; i++) {
     TyKind et = infer_type(c, av[i]);
     if (et == TY_UNKNOWN || et == TY_POLY || et == TY_NIL || et == TY_VOID) return 0;
@@ -9471,10 +9481,118 @@ static void ipt_work_end(IptWork *w) {
   free(w->bhead); free(w->bnext); free(w->bseen); free(w->cand); free(w->dirty);
 }
 
-static int infer_param_types_ex(Compiler *c, int settle);
-int infer_param_types(Compiler *c) { return infer_param_types_ex(c, 0); }
-int infer_param_types_settle(Compiler *c) { return infer_param_types_ex(c, 1); }
-static int infer_param_types_ex(Compiler *c, int settle) {
+void node_types_take(Compiler *c, NodeTypes *s) {
+  s->n = c->nt->count;
+  s->ty = malloc(sizeof(TyKind) * (size_t)(s->n > 0 ? s->n : 1));
+  if (!s->ty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < s->n; id++) s->ty[id] = infer_type(c, id);
+}
+static int binding_type_widened(Compiler *c, int id, const NodeTypes *before) {
+  TyKind old = id < before->n ? before->ty[id] : TY_UNKNOWN, now = infer_type(c, id);
+  if (now == old || now == TY_UNKNOWN) return 0;
+  /* promote boxes Integer slots itself, and the ones it keeps narrow take a
+     box through a conversion where it reaches them (an_phase_late_widen):
+     an Integer that became a box is that widening, not a new one */
+  if (g_promote_mode && old == TY_INT && now == TY_POLY) return 0;
+  if (ty_is_hash(old) && ty_is_hash(now))
+    return (ty_hash_key(old) == ty_hash_key(now) || ty_hash_key(now) == TY_POLY) &&
+           (ty_hash_val(old) == ty_hash_val(now) || ty_hash_val(now) == TY_POLY);
+  if (ty_is_array(old) && now == TY_POLY_ARRAY) return 1;
+  return ty_unify(old, now) == now;
+}
+static int binding_arg_changed(Compiler *c, int id, const NodeTypes *before) {
+  if (binding_type_widened(c, id, before)) return 1;
+  if (nt_kind(c->nt, id) != NK_KeywordHashNode) return 0;
+  int n = 0; const int *els = nt_arr(c->nt, id, "elements", &n);
+  for (int i = 0; i < n; i++) {
+    int v = nt_ref(c->nt, els[i], "value");
+    if (v >= 0 && binding_type_widened(c, v, before)) return 1;
+  }
+  return 0;
+}
+static int binding_inputs_changed(Compiler *c, int id, const NodeTypes *before) {
+  const NodeTable *nt = c->nt;
+  int b = nt_ref(nt, id, "block");
+  int body = b >= 0 ? nt_ref(nt, b, "body") : -1;
+  if (body >= 0 && binding_type_widened(c, body, before)) return 1;
+  int r = nt_ref(nt, id, "receiver");
+  if (r >= 0 && binding_type_widened(c, r, before)) return 1;
+  int a = nt_ref(nt, id, "arguments"), n = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+  for (int i = 0; i < n; i++) if (binding_arg_changed(c, av[i], before)) return 1;
+  return 0;
+}
+/* What a store hands its slot: a write's value, or a storing call's
+   receiver and arguments (an attribute writer, instance_variable_set,
+   `CONST << v`). Has it widened since `before`? */
+int an_store_widened(Compiler *c, int id, const NodeTypes *before) {
+  if (nt_kind(c->nt, id) == NK_CallNode) return binding_inputs_changed(c, id, before);
+  int v = nt_ref(c->nt, id, "value");
+  return v >= 0 && binding_type_widened(c, v, before);
+}
+/* A multiple assignment from a tuple types each target from its element
+   (infer_write_types): a literal's, or that of the one tuple a called method
+   answers. A target whose element has widened since `before` widens with
+   it, whatever kind of slot it is (masgn_unify_elem). */
+int rejoin_changed_masgn(Compiler *c, const NodeTypes *before) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, id) {
+    int value = nt_ref(nt, id, "value"), ln = 0, en = 0, rn = 0;
+    const int *lefts = nt_arr(nt, id, "lefts", &ln), *els = NULL;
+    nt_arr(nt, id, "rights", &rn);
+    if (masgn_tuple_rhs(nt, value)) els = nt_arr(nt, value, "elements", &en);
+    else if (rn == 0 && nt_ref(nt, id, "rest") < 0 && multi_return_elem_nodes(c, value, &els) == ln) en = ln;
+    Scope *ms = comp_scope_of(c, id);
+    for (int i = 0; i < ln && i < en; i++) {
+      if (!binding_type_widened(c, els[i], before)) continue;
+      /* (a plain local reports nothing there: the write pass resets it) */
+      const char *lnm = nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode ? nt_str(nt, lefts[i], "name") : NULL;
+      LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+      TyKind was = lv ? lv->type : TY_UNKNOWN;
+      changed |= masgn_unify_elem(c, ms, &lefts[i], 1, infer_type(c, els[i]));
+      if (lv && lv->type != was) changed = 1;
+    }
+  }
+  return changed;
+}
+/* A pattern binding the whole value it matches -- `in x`, `in P => x`, and
+   so `v => x` and `v in x`, which are rewritten to a `case` -- types its
+   local from the value (infer_case_pattern_locals): the local widens with a
+   value that has widened since `before`. */
+int rejoin_changed_pattern_locals(Compiler *c, const NodeTypes *before) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CaseMatchNode, id) {
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0 || !binding_type_widened(c, pred, before)) continue;
+    TyKind t = infer_type(c, pred);
+    int cn = 0;
+    const int *conds = nt_arr(nt, id, "conditions", &cn);
+    for (int k = 0; k < cn; k++) {
+      int pat = nt_kind(nt, conds[k]) == NK_InNode ? nt_ref(nt, conds[k], "pattern") : -1;
+      /* `in x if guard`: the guard wraps the pattern */
+      if (pat >= 0 && (nt_kind(nt, pat) == NK_IfNode || nt_kind(nt, pat) == NK_UnlessNode)) {
+        int st = nt_ref(nt, pat, "statements"), bn = 0;
+        const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+        pat = bn > 0 ? body[0] : -1;
+      }
+      if (pat >= 0 && nt_kind(nt, pat) == NK_CapturePatternNode) pat = nt_ref(nt, pat, "target");
+      if (pat < 0 || nt_kind(nt, pat) != NK_LocalVariableTargetNode) continue;
+      const char *nm = nt_str(nt, pat, "name");
+      LocalVar *lv = nm ? scope_local(comp_scope_of(c, conds[k]), nm) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      TyKind m = ty_unify(lv->type, t);
+      if (m != lv->type) { lv_set_type(lv, m); changed = 1; }
+    }
+  }
+  return changed;
+}
+static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before);
+int infer_param_types(Compiler *c) { return infer_param_types_ex(c, 0, NULL); }
+int infer_param_types_settle(Compiler *c) { return infer_param_types_ex(c, 1, NULL); }
+int infer_changed_param_types(Compiler *c, const NodeTypes *before) { return infer_param_types_ex(c, 1, before); }
+static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before) {
   const NodeTable *nt = c->nt;
   int changed = 0, any = 0;
   /* the walks the bindings start share what they found unchanged, until a
@@ -9489,6 +9607,8 @@ static int infer_param_types_ex(Compiler *c, int settle) {
     int id = ids ? ids[k] : k;
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
+    /* Rebind only widened inputs after backstops have boxed unbound params. */
+    if (before && sp_streq(ty, "CallNode") && !binding_inputs_changed(c, id, before)) continue;
     if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
       Scope *s = comp_scope_of(c, id);
       if (s->class_id < 0 || !s->name) continue;
@@ -17304,6 +17424,14 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      follows its body only from a typed String Array to the poly Array the
      rule made of the local it answers. */
   if (g_ret_no_new_poly == 3 && !(r == TY_POLY_ARRAY && sc->ret == TY_STR_ARRAY)) return ch;
+  /* At 4, containers and boxed element reads follow late nullable widening;
+     scalar returns already boxed by promote never narrow back to a number.
+     Under promote a number's return does not box here either: what boxed
+     its body is promote's own widening, which leaves a Bignum or a Float
+     return as it is (an_phase_late_widen). */
+  if (g_ret_no_new_poly == 4 && !ty_is_hash(sc->ret) && !ty_is_array(sc->ret) &&
+      (!(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) ||
+       (g_promote_mode && ty_is_numeric(sc->ret)))) return ch;
   if (g_ret_no_new_poly == 2 &&
       !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
       !(r == TY_BIGINT && sc->ret == TY_INT)) return ch;

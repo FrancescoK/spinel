@@ -551,6 +551,16 @@ int infer_array_params(Compiler *c);
 int infer_string_params(Compiler *c);
 int infer_param_types(Compiler *c);
 int infer_param_types_settle(Compiler *c);
+/* Every node's type at one point of the late passes (node_types_take): a
+   pass handed one joins again only the calls and stores whose inputs have
+   widened since. A node made after it had no type then. */
+typedef struct { TyKind *ty; int n; } NodeTypes;
+void node_types_take(Compiler *c, NodeTypes *s);
+int an_store_widened(Compiler *c, int id, const NodeTypes *before);
+int infer_changed_param_types(Compiler *c, const NodeTypes *before);
+int rejoin_changed_masgn(Compiler *c, const NodeTypes *before);
+int rejoin_changed_pattern_locals(Compiler *c, const NodeTypes *before);
+int infer_changed_store_types(Compiler *c, const NodeTypes *before);
 int infer_for_index(Compiler *c);
 int infer_catch_block_params(Compiler *c);
 void infer_bigint_loop_locals(Compiler *c);
