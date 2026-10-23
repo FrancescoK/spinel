@@ -1592,8 +1592,11 @@ static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap);
    Listing every class's method joined the new String `[:a].map(&:inspect)`
    answers with the ivar a class's own inspect publishes, which no Symbol
    reaches (#9258). The fresh walk bounds its targets the same way. */
-int share_target_armed(Compiler *c, int call, int mi) {
-  const CallPlan *p = cplan_user_fresh(c, call);
+/* ... with the call's fresh plan `p` in hand: the facts' target walk asks
+   this of every target of a call, and resolved the plan again for each
+   (cplan_user_fresh keeps nothing), which on a Rails program was 7% of a
+   sampled window of the share pass. */
+static int share_target_armed_plan(Compiler *c, const CallPlan *p, int call, int mi) {
   if (p->via != UC_POLY || p->send_fallback == mi || mi < 0 || mi >= c->nscopes || c->scopes[mi].is_cmethod) return 1;
   int recv = nt_ref(c->nt, call, "receiver");
   /* (a receiver of no type the walk follows the user methods of: with
@@ -1614,13 +1617,19 @@ int share_target_armed(Compiler *c, int call, int mi) {
               c->scopes[mi].class_id >= 0 ? c->classes[c->scopes[mi].class_id].name : "?", nm, cs->n, cs->bv, np); }
   return 0;
 }
+int share_target_armed(Compiler *c, int call, int mi) {
+  return share_target_armed_plan(c, cplan_user_fresh(c, call), call, mi);
+}
 static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
   (void)F;
   int n = cplan_targets(c, call, out, cap), m = 0;
   if (n == CPT_UNKNOWN) return -1;
   if (n == 0) return sh_copied_self_targets(c, call, out, cap);
+  /* the plan once for the call: cplan_user_fresh answers in a buffer the
+     next resolution overwrites, so it is copied */
+  CallPlan p = *cplan_user_fresh(c, call);
   for (int i = 0; i < n; i++)
-    if (share_target_reachable(c, call, out[i]) && share_target_armed(c, call, out[i])) out[m++] = out[i];
+    if (share_target_reachable(c, call, out[i]) && share_target_armed_plan(c, &p, call, out[i])) out[m++] = out[i];
   return m;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
