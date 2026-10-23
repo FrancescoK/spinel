@@ -4,6 +4,7 @@ class Clock
   def secs(t) = t.to_i
 end
 
-vals = [Time.at(5), "five"]
+# (a Range is boxed as an object too: the check compares the builtin class)
+vals = [Time.at(5), (1..5)]
 p Clock.new.secs(vals[0])
 p Clock.new.secs(vals[1])

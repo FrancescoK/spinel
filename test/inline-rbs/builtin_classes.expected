@@ -6,6 +6,9 @@
 1
 "Integer"
 "bad"
+"mine"
+3
+"Errno::ENOENT"
 7
 1970
 nil

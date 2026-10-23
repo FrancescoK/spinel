@@ -145,7 +145,7 @@ overridden return can remain inferred while supported parameter types apply.
 | Two signatures for one method, or duplicate parameter annotations | Error naming both locations |
 | Conflicting applied inline or external declarations | Error naming both locations |
 | Unseedable types: literals, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | Warning; ignore the whole annotation |
-| Unknown program class, such as `Regexp` or `Array[Time]` (a builtin class with values of its own, such as `Time`, `File` or `ArgumentError`, applies: see [Type vocabulary](rbs-extract.md#type-vocabulary)) | Warning naming the type as written; ignore the whole annotation |
+| Unknown program class, such as `Regexp` or `Array[Time]` (a builtin class with values of its own, such as `Time` or `File`, applies, and so do `Range` and an exception class: see [Type vocabulary](rbs-extract.md#type-vocabulary)) | Warning naming the type as written; ignore the whole annotation |
 | Optional positional, rest, trailing, rest-keyword, or RBS block parameters | Warning; ignore the whole signature |
 | Overloads, `...`, generic method signatures, and superclass/mixin type arguments | Warning; ignore the annotation |
 | Constants and type/module declarations that have no analyzer pin | Warning; ignore the annotation |

@@ -118,9 +118,9 @@ What it does and does not catch:
 - **Tag level only.** A pointer landing in a scalar slot and the reverse,
   which is the reinterpretation family. Object identity is not checked:
   a subclass in an ancestor-typed slot is correct and layout-compatible.
-  A builtin value (a Time, a Thread, an IO, an exception) is boxed as an
-  object too, so one of them in another's slot passes; a String or an
-  Integer in one aborts.
+  A builtin value with no subclass (a Time, a Thread, a Fiber, a Random,
+  an IO) is checked by its builtin class as well, so a Range in a `Time`
+  slot aborts.
 - **A nil always passes.** An unset slot reads nil, and a non-nullable
   seed still sees `@x = nil` in an `initialize`.
 - **Only dynamic narrowings.** If the value is already statically typed,
@@ -196,7 +196,8 @@ the field layouts coincide by construction.
 | `bool`                                 | `bool`                                |
 | `void` (return only)                   | `-` (no pin: unused, not typed)       |
 | `Foo`, `Foo::Bar` (nominal)            | `obj_Foo`, `obj_Foo_Bar`              |
-| `Time`, `Range`, `Thread`, `Fiber`, `Random`, `File`, `IO`, a socket class, `Class`, an exception class | `obj_Time`, ... (the builtin's own kind) |
+| `Time`, `Thread`, `Fiber`, `Random`, `File`, `IO`, a socket class, `Class` | `obj_Time`, ... (the builtin's own kind) |
+| `Range`, an exception class (`StandardError`, `Errno::ENOENT`) | `obj_Range`, ... (applies; the slot stays inferred) |
 | `IO::Buffer` (a native class)          | `obj_IO_Buffer`                       |
 | `Array[Integer]`                       | `int_array`                           |
 | `Array[Float]`                         | `float_array`                         |
@@ -218,11 +219,13 @@ the field layouts coincide by construction.
 
 A nominal type that names no class of the program but a builtin class
 with values of its own pins the slot to that kind: a `Time` parameter is
-Spinel's `sp_Time *`, an `IO` or a `File` its IO handle, an `ArgumentError`
-its exception reference, as inference types the same values. A class of
-the program's own by that name, or a reopened builtin, is found first.
-`T?` of a kind with no nil of its own (`Range?`, `Time?`) is the boxed
-value. A
+Spinel's `sp_Time *`, an `IO` or a `File` its IO handle, as inference types
+the same values. A class of the program's own by that name, or a reopened
+builtin, is found first. `T?` of a kind with no nil of its own (`Time?`)
+is the boxed value. `Range` and an exception class name more values than
+one kind holds -- a Float or a String Range, an exception class of the
+program's own -- so they pin nothing: the annotation applies, and that
+slot keeps the type inference gives it. A
 native class a package declares under a qualified name (`IO::Buffer`) is
 matched by that name. The other builtin classes (`Regexp`, `MatchData`,
 `Proc`, `Method`, `Mutex`, `Queue`, `ConditionVariable`, `Complex`,
