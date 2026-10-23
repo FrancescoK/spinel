@@ -23,3 +23,12 @@ rescue RuntimeError => e
   p e.message
 end
 p acc, v
+# a scan that matches nothing leaves $~ nil
+h = +"hello"
+h.scan(/l/) { }
+h.scan(/zz/) { }
+p $~
+h.scan(/(z)/) { }
+p $~
+h.scan(/(l)/) { }
+p $~[0]

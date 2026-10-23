@@ -113,9 +113,11 @@ sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str);
    own, or NULL past the last; a turn that changed the String's length
    raises CRuby's RuntimeError ("string modified") before the next search,
    and one that changed bytes in place is searched on. */
-typedef struct { struct sp_String_s *h; const char *data; int64_t len, pos; int started; } sp_re_scan_it;
+/* (found: a scan that matches nothing leaves `$~` nil, one that matched
+   leaves its last match) */
+typedef struct { struct sp_String_s *h; const char *data; int64_t len, pos; int started, found; } sp_re_scan_it;
 static inline void sp_re_scan_begin(sp_re_scan_it *it, struct sp_String_s *h) {
-  it->h = h; it->data = NULL; it->len = 0; it->pos = 0; it->started = 0;
+  it->h = h; it->data = NULL; it->len = 0; it->pos = 0; it->started = 0; it->found = 0;
 }
 const char *sp_re_scan_next(mrb_regexp_pattern *pat, sp_re_scan_it *it);
 sp_PolyArray *sp_re_scan_next_row(mrb_regexp_pattern *pat, sp_re_scan_it *it);

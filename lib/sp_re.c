@@ -827,7 +827,11 @@ const char *sp_re_scan_next(mrb_regexp_pattern *pat, sp_re_scan_it *it) {
   if (it->pos > slen) return NULL;
   int caps[64];
   int n = spinel_re_exec(pat, str, slen, it->pos, caps, 64, sp_str_is_binary(str));
-  if (n <= 0 || caps[0] < 0) { it->pos = slen + 1; return NULL; }
+  if (n <= 0 || caps[0] < 0) {
+    if (!it->found && sp_re_track_last) sp_re_clear_last_match();
+    it->pos = slen + 1; return NULL;
+  }
+  it->found = 1;
   if (sp_re_track_last) sp_re_set_last_match(pat, str, caps, n > 64 ? 64 : n);
   int len = caps[1] - caps[0];
   char *m = sp_str_alloc_raw(len + 1); memcpy(m, str + caps[0], len); m[len] = 0;
@@ -851,7 +855,11 @@ sp_PolyArray *sp_re_scan_next_row(mrb_regexp_pattern *pat, sp_re_scan_it *it) {
   if (it->pos > slen) return NULL;
   int caps[64];
   int n = spinel_re_exec(pat, str, slen, it->pos, caps, 64, sp_str_is_binary(str));
-  if (n <= 0 || caps[0] < 0) { it->pos = slen + 1; return NULL; }
+  if (n <= 0 || caps[0] < 0) {
+    if (!it->found && sp_re_track_last) sp_re_clear_last_match();
+    it->pos = slen + 1; return NULL;
+  }
+  it->found = 1;
   if (n > 64) n = 64;
   if (sp_re_track_last) sp_re_set_last_match(pat, str, caps, n);
   sp_PolyArray *row = sp_PolyArray_new();
