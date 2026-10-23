@@ -665,6 +665,12 @@ typedef struct {
                                      SCALAR -- so without this flag the next
                                      write pass replaced the narrowed type with
                                      something strictly worse. */
+  unsigned char *ivar_alias_wide;  /* the alias propagation widened the slot
+                                      to the general Array because another
+                                      name of its Array is one
+                                      (propagate_alias_widening): the
+                                      re-narrow keeps it, as its own
+                                      pushes do not show why */
   int nivars, civars;
   unsigned char *ivar_obj_may_nil; /* the nil fact per ivar (analyze_nil.c,
                                      #7444), indexed as ivars was when the

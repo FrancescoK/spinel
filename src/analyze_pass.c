@@ -4,6 +4,7 @@
 #include "call_plan.h"
 #include "value_pos.h"
 #include "repr.h"
+#include "holder.h"
 #include "share.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
@@ -1773,6 +1774,107 @@ static TyRef named_array_slot(Compiler *c, int recv) {
     }
     default: return NULL;
   }
+}
+
+/* One side of a direct alias, for the alias propagation below: the type
+   slot of the variable a read or write names, as the holder rule resolves
+   it (holder_of_node); whether it is a local, which infer_write_types
+   resets and re-derives each round; and for an ivar its class and index. */
+typedef struct { TyRef slot; unsigned char local; int cid, iv; } AliasSide;
+
+/* Resolves `n` into *out; 0 for a parameter or a block parameter (typed
+   from their call sites), an ivar a seed pins or a narrowed int table
+   holds, and any node that names no variable. */
+static int alias_side(Compiler *c, int n, AliasSide *out) {
+  HolderRef h;
+  out->slot = NULL; out->local = 0; out->cid = out->iv = -1;
+  if (!holder_of_node(c, n, &h)) return 0;
+  switch (h.kind) {
+    case HK_LOCAL:
+      if (h.lv->is_param || h.lv->is_block_param) return 0;
+      out->slot = &h.lv->type; out->local = 1;
+      return 1;
+    case HK_GVAR: case HK_CONST:
+      out->slot = &h.lv->type;
+      return 1;
+    case HK_IVAR: {
+      ClassInfo *ci = h.idx >= 0 ? &c->classes[h.cid] : NULL;
+      if (!ci || class_ivar_pinned(ci, h.name) || ci->ivar_int_table[h.idx]) return 0;
+      out->slot = &ci->ivar_types[h.idx]; out->cid = h.cid; out->iv = h.idx;
+      return 1;
+    }
+    case HK_CVAR:
+      if (h.idx < 0) return 0;
+      out->slot = &c->classes[h.cid].cvar_types[h.idx];
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* Is k a plain read of a local, an ivar, a global, a class variable or a
+   constant: the value of a write that makes its target an alias? */
+static int alias_read_kind(NodeKind k) {
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+         k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode;
+}
+
+/* Propagates container widening across direct aliases (`b = a`, and the
+   same between ivars, globals, class variables and constants: `@b = @a`,
+   `$b = a`, `M = L`). Two names of one Array or Hash must agree on its
+   kind: where they do not, the write between them converts, which is a
+   copy, and a push or a store through the wider name never reaches the
+   other. Whichever side is the general Array (the poly-keyed Hash) wins,
+   in both directions, to a fixed point. Params stay excluded (their types
+   are call-site unified). An ivar widened here is marked
+   (ivar_alias_wide), and the re-narrow keeps it (an_ivar_nonscalar_table).
+   The aliases are resolved once per call; the sweeps over them alternate
+   direction, so a chain written in either order settles in two. Answers 1
+   when a slot that keeps its type across rounds changed; a local is reset
+   and re-derived each round, and infer_write_types' sweep reports it. */
+static int propagate_alias_widening(Compiler *c) {
+  static const NodeKind alias_writes[] = {
+    NK_LocalVariableWriteNode, NK_InstanceVariableWriteNode, NK_GlobalVariableWriteNode,
+    NK_ClassVariableWriteNode, NK_ConstantWriteNode };
+  const NodeTable *nt = c->nt;
+  AliasSide *ev = NULL;   /* pairs: ev[2i] the written name, ev[2i+1] the read one */
+  int n = 0, cap = 0;
+  for (int wk = 0; wk < (int)(sizeof alias_writes / sizeof alias_writes[0]); wk++)
+    NT_FOREACH_KIND(nt, alias_writes[wk], id) {
+      /* the value is a read of the other name (a write's value, `$b = $a =
+         [1]`, is not taken: an ivar write read as a value is emitted at its
+         value's type, not its slot's) */
+      int v = nt_paren_single(nt, nt_ref(nt, id, "value"));
+      if (v < 0 || !alias_read_kind(nt_kind(nt, v))) continue;
+      AliasSide d, r;
+      if (!alias_side(c, v, &r) || !alias_side(c, id, &d) || d.slot == r.slot) continue;
+      if (n == cap) {
+        cap = cap ? cap * 2 : 16;
+        ev = (AliasSide *)realloc(ev, sizeof(AliasSide) * 2 * (size_t)cap);
+        if (!ev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      ev[2 * n] = d; ev[2 * n + 1] = r; n++;
+    }
+  int changed = 0, prop = 1;
+  for (int sweep = 0; prop; sweep++) {
+    prop = 0;
+    for (int k = 0; k < n; k++) {
+      int i = sweep & 1 ? n - 1 - k : k;
+      AliasSide *d = &ev[2 * i], *r = &ev[2 * i + 1];
+      if (*d->slot == *r->slot) continue;
+      TyKind top = ty_is_array(*d->slot) && ty_is_array(*r->slot) ? TY_POLY_ARRAY
+                 : ty_is_hash(*d->slot) && ty_is_hash(*r->slot) ? TY_POLY_POLY_HASH : TY_UNKNOWN;
+      AliasSide *w = top == TY_UNKNOWN ? NULL : *d->slot == top ? r : *r->slot == top ? d : NULL;
+      if (!w) continue;
+      ty_ref_set(w->slot, top);
+      prop = 1;
+      if (w->local) continue;
+      changed = 1;
+      if (w->iv >= 0) c->classes[w->cid].ivar_alias_wide[w->iv] = 1;
+    }
+  }
+  free(ev);
+  return changed;
 }
 
 /* `m[i]` over a method returning a fixed tuple (`def pair = [1, "x"]`), at an
@@ -4905,35 +5007,10 @@ int infer_write_types(Compiler *c) {
 
   changed |= infer_write_container_usage(c, nt, nfb, fb, lw_ix, ivw_ix);
 
-  /* Propagate container widening across direct local aliases (`b = a`): the
-     fold above runs AFTER the write-site unification, so an alias assigned
-     before its source widened would keep the narrower array kind -- two C
-     representations for one runtime object, which reads garbage. Whichever
-     side of the alias is the poly array wins, in both directions, to a local
-     fixpoint. Params stay excluded (their types are call-site unified). */
-  {
-    int prop = 1;
-    while (prop) {
-      prop = 0;
-      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
-        int v = nt_ref(nt, id, "value");
-        const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
-        if (!vty || !sp_streq(vty, "LocalVariableReadNode")) continue;
-        const char *dn = nt_str(nt, id, "name");
-        const char *sn = nt_str(nt, v, "name");
-        LocalVar *dst = dn ? scope_local(comp_scope_of(c, id), dn) : NULL;
-        LocalVar *src = sn ? scope_local(comp_scope_of(c, v), sn) : NULL;
-        if (!dst || !src || dst == src) continue;
-        if (dst->is_param || dst->is_block_param || src->is_param || src->is_block_param) continue;
-        if (!ty_is_array(dst->type) || !ty_is_array(src->type)) continue;
-        if (dst->type == src->type) continue;
-        /* Both are reset locals, so the sweep reports; `prop` still drives
-           this loop's own re-run to a fixed point within the round. */
-        if (dst->type == TY_POLY_ARRAY) { lv_set_type(src, TY_POLY_ARRAY); prop = 1; }
-        else if (src->type == TY_POLY_ARRAY) { lv_set_type(dst, TY_POLY_ARRAY); prop = 1; }
-      }
-    }
-  }
+  /* Container widening across direct aliases (`b = a`): the fold above
+     runs AFTER the write-site unification, so an alias assigned before its
+     source widened would keep the narrower container kind. */
+  changed |= propagate_alias_widening(c);
 
   /* The container-usage fold above can widen a hash's value layout after the
      main write-site scan has already typed a destination local. Reconcile the

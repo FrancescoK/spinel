@@ -77,3 +77,38 @@ class Rows
 end
 
 p Rows.new.bank
+
+# A second ivar written the first (`@alias_i = @seed_i`) is the same Array,
+# and the alias propagation widens both names together when a push through
+# one of them is of another kind. A push of the slot's own kind, of a
+# parameter that settles late, leaves the pair typed: the slot is boxed for
+# a round or two while the parameter settles, and the re-narrow resets it.
+# Only a slot the alias step itself widened is kept from the re-narrow.
+class Aliased
+  def initialize
+    @seed_i = [0]
+    @alias_i = @seed_i
+    @seed_f = Array.new(0, 1.5)
+    @alias_f = @seed_f
+    @seed_s = Array.new(0, "")
+    @alias_s = @seed_s
+    @seed_w = [0]
+    @alias_w = @seed_w
+  end
+
+  def add(i, f, s)
+    @seed_i.push(i)
+    @seed_f << f
+    @alias_s << s
+    @alias_w << s
+    0
+  end
+
+  def read
+    [@alias_i.last, @alias_f.sum, @seed_s.join(","), @seed_w]
+  end
+end
+
+al = Aliased.new
+al.add(4, 2.5, "a")
+p al.read
