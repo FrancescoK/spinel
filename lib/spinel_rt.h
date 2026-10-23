@@ -14779,7 +14779,27 @@ static sp_PolyArray *sp_poly_user_elems(sp_RbVal v) {
   return NULL;
 }
 static sp_oint sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) SP_UNUSED;
+/* A boxed Dir's Enumerable probes walk the open handle, restarting each
+   traversal; include? stops at its first matching entry. */
+static sp_int sp_poly_dir_count(sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_Dir *d = (sp_Dir *)v.v.p;
+  sp_Dir_rewind(d);
+  sp_int n = 0;
+  while (sp_Dir_read(d) != NULL) n++;
+  return n;
+}
+static int sp_poly_dir_include(sp_RbVal v, sp_RbVal x) {
+  SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(x);
+  sp_Dir *d = (sp_Dir *)v.v.p;
+  sp_Dir_rewind(d);
+  const char *entry = NULL; SP_GC_ROOT_STR(entry);
+  while ((entry = sp_Dir_read(d)) != NULL)
+    if (sp_poly_rb_equal(sp_box_str(entry), x)) return 1;
+  return 0;
+}
 static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x) {
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_DIR) return sp_poly_dir_include(recv, x);
   /* an Enumerator stops at the first hit, so an endless one answers too */
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_ENUMERATOR && recv.v.p)
     return !sp_enum_find_index_val(recv, x).nil;
@@ -15121,6 +15141,7 @@ static sp_RbVal sp_poly_arr_drop(sp_RbVal v, sp_int n) {
    counts its members, which sp_poly_length alone answered 0 for. nil has no
    count (#4485). */
 static sp_int sp_poly_count(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_DIR) return sp_poly_dir_count(v);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return sp_frange_poly_count((*(sp_FloatRange *)v.v.p));
   sp_poly_coll_chk(v, "count");
   /* String#count needs the character set to count */
