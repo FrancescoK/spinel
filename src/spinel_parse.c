@@ -2390,7 +2390,10 @@ static int sp_set_word_at(const char *src, const char *p) {
                   (next >= '0' && next <= '9') || next == '_');
   return prev_ok && next_ok;
 }
-static int source_references_set(const char *src) {
+/* Whether hit(src, p) answers true at some p in CODE: comments, =begin
+   blocks and the text of quoted strings are passed over, and a #{...} inside
+   double quotes is scanned as the code it is. */
+static int sp_src_code_any(const char *src, int (*hit)(const char *src, const char *p)) {
   const char *p = src;
   int bol = 1;   /* at the beginning of a line, for =begin/=end */
   while (*p) {
@@ -2420,9 +2423,7 @@ static int source_references_set(const char *src) {
           int depth = 1;
           while (*q && depth) { if (*q == '{') depth++; else if (*q == '}') depth--; q++; }
           for (const char *r = p + 2; r < q; r++)
-            if (strncmp(r, "Set", 3) == 0 && sp_set_word_at(src, r)) return 1;
-          for (const char *r = p + 2; r + 7 <= q; r++)
-            if (strncmp(r, ".to_set", 7) == 0) return 1;
+            if (hit(src, r)) return 1;
           p = q;
           continue;
         }
@@ -2431,12 +2432,17 @@ static int source_references_set(const char *src) {
       if (*p) p++;
       continue;
     }
-    if (strncmp(p, "Set", 3) == 0 && sp_set_word_at(src, p)) return 1;
-    if (strncmp(p, ".to_set", 7) == 0) return 1;
+    if (hit(src, p)) return 1;
     if (*p == '\n') bol = 1;
     p++;
   }
   return 0;
+}
+static int sp_set_hit(const char *src, const char *p) {
+  return (strncmp(p, "Set", 3) == 0 && sp_set_word_at(src, p)) || strncmp(p, ".to_set", 7) == 0;
+}
+static int source_references_set(const char *src) {
+  return sp_src_code_any(src, sp_set_hit);
 }
 
 /* Whether `src` references `IO::Buffer` in CODE, with the same
@@ -2456,50 +2462,11 @@ static int sp_iob_word_at(const char *src, const char *p) {
                   (next >= '0' && next <= '9') || next == '_');
   return prev_ok && next_ok;
 }
+static int sp_iob_hit(const char *src, const char *p) {
+  return strncmp(p, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, p);
+}
 static int source_references_io_buffer(const char *src) {
-  const char *p = src;
-  int bol = 1;
-  while (*p) {
-    if (bol && strncmp(p, "=begin", 6) == 0) {
-      const char *e = strstr(p, "\n=end");
-      if (!e) return 0;
-      p = e + 5;
-      continue;
-    }
-    bol = 0;
-    if (*p == '#') {
-      while (*p && *p != '\n') p++;
-      continue;
-    }
-    if (*p == '\'') {
-      p++;
-      while (*p && *p != '\'') { if (*p == '\\' && p[1]) p++; p++; }
-      if (*p) p++;
-      continue;
-    }
-    if (*p == '"') {
-      p++;
-      while (*p && *p != '"') {
-        if (*p == '\\' && p[1]) { p += 2; continue; }
-        if (p[0] == '#' && p[1] == '{') {
-          const char *q = p + 2;
-          int depth = 1;
-          while (*q && depth) { if (*q == '{') depth++; else if (*q == '}') depth--; q++; }
-          for (const char *r = p + 2; r < q; r++)
-            if (strncmp(r, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, r)) return 1;
-          p = q;
-          continue;
-        }
-        p++;
-      }
-      if (*p) p++;
-      continue;
-    }
-    if (strncmp(p, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, p)) return 1;
-    if (*p == '\n') bol = 1;
-    p++;
-  }
-  return 0;
+  return sp_src_code_any(src, sp_iob_hit);
 }
 
 /* ---- require-gate: features enabled by a `require "name"` ----
