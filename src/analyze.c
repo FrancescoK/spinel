@@ -16223,6 +16223,9 @@ static int ekh_value_literals(const NodeTable *nt, int recv, int *lits, int cap)
   if (for_each_value_position(nt, recv, VPS_IF | VPS_UNLESS | VPS_CASE, ekh_lit_leaf, &a)) return 0;
   return a.n;
 }
+/* (set while the class structure is built, ahead of any inference: a write
+   of no type yet says nothing then, and the mark it would pin only widens) */
+static int g_eh_pre_infer = 0;
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -16332,7 +16335,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          type yet, wait rather than guess (see g_infer_optimistic). */
       int nw = 0;
       TyKind wv = aset_value_type_ex(c, recv, &nw);
-      if (nw > 0 && wv == TY_UNKNOWN && g_infer_optimistic) continue;
+      if (nw > 0 && wv == TY_UNKNOWN && (g_infer_optimistic || g_eh_pre_infer)) continue;
       /* The default is a value the hash answers, so it is part of the value
          type: `Hash.new("none")` written with Integers widens to a poly value
          that carries the default boxed, instead of casting the string into
@@ -16340,6 +16343,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          and constant slots apply. */
       { int dn = recv_hash_new_default_arg(c, recv);
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
+      if (g_one_string && wv == TY_STRBUF) wv = TY_STRING;   /* (one-String mode: the typed Hash holds the handle) */
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_STRING, wv)
                                                : TY_STR_POLY_HASH;
       break;
@@ -16354,7 +16358,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          that is neither Int nor String still takes the boxed one. */
       int nw = 0;
       TyKind wv = aset_value_type_ex(c, recv, &nw);
-      if (nw > 0 && wv == TY_UNKNOWN && g_infer_optimistic) continue;
+      if (nw > 0 && wv == TY_UNKNOWN && (g_infer_optimistic || g_eh_pre_infer)) continue;
       /* The default is a value the hash answers, so it is part of the value
          type: `Hash.new("none")` written with Integers widens to a poly value
          that carries the default boxed, instead of casting the string into
@@ -16362,6 +16366,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          and constant slots apply. */
       { int dn = recv_hash_new_default_arg(c, recv);
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
+      if (g_one_string && wv == TY_STRBUF) wv = TY_STRING;
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_INT, wv)
                                                : TY_POLY_POLY_HASH;
       break;
@@ -49087,7 +49092,9 @@ static void an_phase_class_structure(Compiler *c) {
   comp_scope_index_set_frozen(1);
   mark_mixed_key_hash_locals(c);
   mark_empty_hash_cmp_peers(c);
+  g_eh_pre_infer = 1;
   (void)mark_empty_hash_key_ctx(c);
+  g_eh_pre_infer = 0;
   mark_empty_hash_const_writes(c);
   comp_scope_index_set_frozen(0);
 }

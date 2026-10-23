@@ -3343,6 +3343,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       continue;
     }
     if (recv < 0) continue;
+    /* (one-String mode: a String held as its handle is a String to the
+       kind of the container it goes into, which holds the handle) */
+    if (g_one_string && vt == TY_STRBUF) vt = TY_STRING;
+    if (g_one_string && kt == TY_STRBUF) kt = TY_STRING;
     /* a parenthesized sequence stores into its value, the last statement's
        (`(log << :d; a).push(x)` fills a as `a.push(x)` does); a single
        parenthesized expression keeps the readings below */

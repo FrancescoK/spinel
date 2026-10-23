@@ -31175,6 +31175,7 @@ int strbuf_call_picks_up(Compiler *c, int id) {
    copy if a path did not publish). An attr reader has no body to publish
    from; its implicit-self read hands out the slot itself
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
+static int g_pickup_route = -1;   /* the call emit_deep_return_pickup routes */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   /* (an attribute assignment is its own route: emit_strbuf_write_handle) */
   if (repr_share_rule(c) && strbuf_assign_leaf(c, id)) return 0;
@@ -31184,9 +31185,16 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */
   /* A boxed conversion carries each arm directly under that demand. */
+  /* (a route that runs the call under the demand again, an implicit-self
+     reader's, reaches here once more: the ordinary call takes it then) */
   if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id) &&
-      repr_boxed_to_s_operand(c, id) < 0)
-    return emit_strbuf_route(c, id, b);
+      repr_boxed_to_s_operand(c, id) < 0 && g_pickup_route != id) {
+    int sv = g_pickup_route;
+    g_pickup_route = id;
+    int r = emit_strbuf_route(c, id, b);
+    g_pickup_route = sv;
+    return r;
+  }
   if (!strbuf_call_picks_up(c, id)) return 0;
   emit_published_pickup(c, id, b);
   return 1;
