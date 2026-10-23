@@ -16161,6 +16161,18 @@ static int class_is_hashkey(Compiler *c, int k) {
   return 1;
 }
 
+/* 1 if instantiated class k defines #hash but keeps Object#eql?: a key of it
+   is still the same key only as itself, but CRuby calls its #hash wherever
+   it hashes the key, and the program can watch that call */
+static int class_is_hashonly_key(Compiler *c, int k) {
+  ClassInfo *ci = &c->classes[k];
+  if (!ci->instantiated || ci->is_struct || ci->is_data || ci->is_value_type) return 0;
+  int h_mi = comp_method_in_chain(c, k, "hash", NULL);
+  if (h_mi < 0 || comp_method_in_chain(c, k, "eql?", NULL) >= 0) return 0;
+  Scope *h_m = &c->scopes[h_mi];
+  return h_m->nparams == 0 && (h_m->ret == TY_INT || h_m->ret == TY_POLY);
+}
+
 /* 1 if instantiated class k is a pure Struct/Data (no user ==/eql?/hash), so
    it is a value hash key: hash combines the member hashes and eql? is the
    field-wise eql? (sp_poly_eql_strict). #2660 */
@@ -16184,7 +16196,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
      target method's scope, whose C symbol carries the target's name. */
   buf_puts(b, "static sp_int sp_gen_obj_hash(int cls_id, void *p) {\n  switch (cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
-    if (!class_is_hashkey(c, k)) continue;
+    if (!class_is_hashkey(c, k) && !class_is_hashonly_key(c, k)) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "hash", &defcls);
     if (mi < 0) {
@@ -21262,7 +21274,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   g_gen_obj_hashkey = 0;
   for (int k = 0; k < c->nclasses; k++)
-    if (class_is_hashkey(c, k) || class_is_valuekey(c, k)) { g_gen_obj_hashkey = 1; break; }
+    if (class_is_hashkey(c, k) || class_is_hashonly_key(c, k) || class_is_valuekey(c, k)) { g_gen_obj_hashkey = 1; break; }
   g_gen_obj_valeq = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated) continue;
