@@ -4065,15 +4065,20 @@ const char *comp_scope_def_name(Compiler *c, const Scope *s) {
   if (!nm || s->def_node < 0 || nt_kind(c->nt, s->def_node) != NK_DefNode) return nm;
   const char *dn = nt_str(c->nt, s->def_node, "name");
   if (!dn) return nm;
+  /* a def a reopening redefined keeps its earlier body under `m#redef<n>`
+     (version_redefined_reopen_defs), its def renamed too: the name is m */
+  size_t dl = strlen(dn);
+  const char *rd = strstr(dn, "#redef");
+  if (rd && rd[6] >= '0' && rd[6] <= '9' && strspn(rd + 6, "0123456789") == strlen(rd + 6)) dl = (size_t)(rd - dn);
   const char *u = comp_prep_user_name(nm);
   size_t n = strlen(u);
   int pf = n > 3 && strcmp(u + n - 3, "#pf") == 0;
   size_t base = pf ? n - 3 : n;
-  if (strlen(dn) == base && strncmp(u, dn, base) == 0) return nm;
+  if (dl == base && strncmp(u, dn, base) == 0) return nm;
   static char buf[4][320];
   static int r;
   char *b = buf[r++ & 3];
-  snprintf(b, sizeof buf[0], "%s%s", dn, pf ? "#pf" : "");
+  snprintf(b, sizeof buf[0], "%.*s%s", (int)dl, dn, pf ? "#pf" : "");
   return b;
 }
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod) {
