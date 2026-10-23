@@ -1389,7 +1389,7 @@ static TyKind push_elem_ty(Compiler *c, int node) {
      the scalar nil joins of ty_unify are for slots, not for typed storage */
   if (t == TY_NIL) return TY_POLY;
   /* (an empty container, `[]` or a bare `Array.new`, is built boxed) */
-  if (t == TY_UNKNOWN && node >= 0 && node_is_empty_container(c->nt, node)) return TY_POLY;
+  if (t == TY_UNKNOWN && node >= 0 && node_is_empty_container(c, node)) return TY_POLY;
   return t;
 }
 
@@ -3367,7 +3367,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            definite container evidence: treat it as poly so an int-keyed
            write can still settle the hash variant (`h = {}; h[k] = []`
            stayed Str-keyed and stored the int key as a pointer, #2442) */
-        else if (vt == TY_UNKNOWN && node_is_empty_container(nt, argv[1])) vt = TY_POLY;   /* (a bare `Array.new` too) */
+        else if (vt == TY_UNKNOWN && node_is_empty_container(c, argv[1])) vt = TY_POLY;   /* (a bare `Array.new` too) */
       }
       else if (name && sp_streq(name, "store") && an == 2) {
         /* Hash#store is []= (#2433) */
@@ -4139,7 +4139,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
        cannot hold it: it is no boxed value of the element's kind the store
        converts at run time */
     if (!is_push && !is_splice && vt == TY_POLY && vnode >= 0 && ty_is_array(*slot) && *slot != TY_POLY_ARRAY &&
-        !ty_is_array(ty_array_elem(*slot)) && node_is_empty_container(nt, vnode))
+        !ty_is_array(ty_array_elem(*slot)) && node_is_empty_container(c, vnode))
       vt = TY_POLY_ARRAY;
     int fits = fold_container_evidence(slot, is_push, is_splice, kt, vt);
     /* An ivar hash the write does not fit widens to the poly-keyed variant,
@@ -5938,9 +5938,13 @@ int is_fresh_array(Compiler *c, int v) {
   int r = nt_ref(nt, v, "receiver");
   if (!nm || r < 0 || !ty_is_array(infer_type(c, v))) return 0;
   if (nt_kind(nt, r) == NK_ConstantReadNode)
-    return sp_streq(nm, "new") && sp_streq(nt_str(nt, r, "name"), "Array");
+    return sp_streq(nm, "new") && sp_streq(nt_str(nt, r, "name"), "Array") &&
+           !cplan_const_user(c, v, "Array", 1);
   TyKind rt = infer_type(c, r);
   if (rt == TY_UNKNOWN || rt == TY_POLY || ty_is_object(rt)) return 0;
+  /* a reopen's own method of the name answers what it answers: an Array it
+     may hold elsewhere, not a fresh one */
+  if (cplan_user_fresh(c, v)->mi >= 0) return 0;
   if (sp_streq(nm, "to_a")) return !ty_is_array(rt);
   return str_in(nm, fresh);
 }
@@ -8166,7 +8170,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        parameter that no other call site typed, as an (empty) poly array so
        the callee's array methods dispatch. Never during the fixpoint -- a
        concrete kind from another call site must win the unification. */
-    int empty_kind = at == TY_UNKNOWN && node_is_empty_container(nt, anode) ? an_empty_container_kind(c, anode) : 0;
+    int empty_kind = at == TY_UNKNOWN && node_is_empty_container(c, anode) ? an_empty_container_kind(c, anode) : 0;
     if (at == TY_UNKNOWN && !empty_kind && local_only_fresh_hash(c, anode)) empty_kind = 2;
     if (g_final_bind_pass && p->type == TY_UNKNOWN && empty_kind == 1) {
       slot_rule(c, p, TY_POLY_ARRAY, anode, "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue;
@@ -11436,7 +11440,7 @@ static TyKind bs_join(TyKind a, TyKind b) {
 static TyKind bs_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   TyKind t = v >= 0 ? infer_type(c, v) : TY_NIL;
-  if (t == TY_UNKNOWN && node_is_empty_container(nt, v)) t = TY_POLY;
+  if (t == TY_UNKNOWN && node_is_empty_container(c, v)) t = TY_POLY;
   return t;
 }
 
@@ -15434,7 +15438,7 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
                a poly array. Left open it unified away, the parameters took
                the other rows' element type, and the loop read that row as a
                typed array: `[[1, 2], []].each { |a, b| }` bound 0 and 0. */
-            if (row_at == TY_UNKNOWN && node_is_empty_container(nt, re_els2[ri])) row_at = TY_POLY;
+            if (row_at == TY_UNKNOWN && node_is_empty_container(c, re_els2[ri])) row_at = TY_POLY;
             common_at = ty_unify(common_at, row_at);
           }
           if (ty_is_array(common_at)) inner_elem = ty_array_elem(common_at);

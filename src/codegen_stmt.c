@@ -15198,7 +15198,7 @@ int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
     return 1;
   }
   /* a bare `Array.new` / `Hash.new` is as empty as the literal */
-  if (sp_streq(vty, "CallNode") && node_is_empty_container(nt, v)) {
+  if (sp_streq(vty, "CallNode") && node_is_empty_container(c, v)) {
     const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
     if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) {
       /* a `capacity:` value left to run runs after the Hash is built */

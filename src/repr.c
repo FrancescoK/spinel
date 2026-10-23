@@ -1408,7 +1408,7 @@ static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
     nt_arr(nt, v, "elements", &n);
     return !n && ty_is_hash(slot) && ty_hash_cname(slot);
   }
-  if (sp_streq(vty, "CallNode") && node_is_empty_container(nt, v)) {
+  if (sp_streq(vty, "CallNode") && node_is_empty_container(c, v)) {
     const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
     if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) return 1;
     if (rn && sp_streq(rn, "Array"))

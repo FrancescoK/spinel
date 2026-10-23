@@ -537,7 +537,7 @@ int node_may_be_null_nil(Compiler *c, int node) {
       return 0;
     /* a bare Array.new / Hash.new is as fresh as the literal */
     case NK_CallNode:
-      return !node_is_empty_container(c->nt, node);
+      return !node_is_empty_container(c, node);
     default:
       return 1;
   }
@@ -2707,7 +2707,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      and lands in a poly slot, box that array -- otherwise the fallback below
      evaluates it for side effect and yields nil, dropping the array. */
   if ((tr.untyped || tr.as_ty == TY_POLY_ARRAY) && nt_kind(c->nt, node) == NK_CallNode &&
-      node_is_empty_container(c->nt, node) && an_empty_container_kind(c, node) == 1) {
+      node_is_empty_container(c, node) && an_empty_container_kind(c, node) == 1) {
     buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */

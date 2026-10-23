@@ -2235,7 +2235,7 @@ const struct BuiltinOp *an_bop_row_for_kind(Compiler *c, int id, TyKind rt);
    const Compiler* call sites can use it too. */
 void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
                               TyKind *arg1, int *range_has_float_bound);
-int node_is_empty_container(const NodeTable *nt, int node);
+int node_is_empty_container(Compiler *c, int node);
 int an_empty_container_kind(Compiler *c, int b);
 TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);

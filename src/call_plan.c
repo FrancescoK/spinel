@@ -52,6 +52,7 @@ static const char *cplan_reopen_class(TyKind rt) {
   case TY_TIME:   return "Time";
   case TY_THREAD: return "Thread";
   case TY_FIBER:  return "Fiber";
+  case TY_ENUMERATOR: return "Enumerator";
   case TY_RANDOM: return "Random";
   case TY_CLASS:  return "Class";
   default:        return NULL;

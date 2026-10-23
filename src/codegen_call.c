@@ -2710,7 +2710,7 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   /* a fresh String lifted into the handle for a boxed parameter it reaches */
   if (r.as_ty == TY_STRING && c->poly_strbuf_lift[a]) return TY_STRBUF;
   TyKind t = r.as_ty;
-  if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
+  if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c, a))
     return TY_INT_ARRAY;
   return t;
 }
@@ -18889,7 +18889,7 @@ int json_to_json_is_builtin(Compiler *c, int recv) {
    not read as an Array or Hash type. */
 static const char *empty_container_class(Compiler *c, int node) {
   node = nt_paren_single(c->nt, node);
-  if (!node_is_empty_container(c->nt, node)) return NULL;
+  if (!node_is_empty_container(c, node)) return NULL;
   NodeKind k = nt_kind(c->nt, node);
   if (k == NK_ArrayNode) return "Array";
   if (k != NK_CallNode) return "Hash";
