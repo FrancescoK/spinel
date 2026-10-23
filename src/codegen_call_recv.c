@@ -8946,8 +8946,24 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT_STR(_t%d);\n", tr);
     }
+    /* (one representation: the subject is one String the block can change:
+       each turn searches it as it is then and sets $~ to that turn's match,
+       and a turn that changed its length raises, as rb_str_scan does) */
+    int live = g_one_string && re_idx >= 0;
     emit_indent(g_pre, g_indent);
-    if (has_cap)
+    if (live) {
+      int th = ++g_tmp, tit = ++g_tmp;
+      buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(_t%d); SP_GC_ROOT(_t%d);\n", th, tr, th);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_re_scan_it _t%d; sp_re_scan_begin(&_t%d, _t%d);\n", tit, tit, th);
+      emit_indent(g_pre, g_indent);
+      if (has_cap) buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tm, tm);
+      else buf_printf(g_pre, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);\n", tm, tm);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "while ((_t%d = sp_re_scan_next%s(sp_re_pat_%d, &_t%d)) != NULL) {\n",
+                 tm, has_cap ? "_row" : "", re_idx, tit);
+    }
+    else if (has_cap)
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
                  tm, re_idx, tr, tm);
     else if (re_idx >= 0)
@@ -9010,7 +9026,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        match; walk the subject again per iteration when the body reads $~
        or a capture global (#3601). The walk reads the subject after the
        body has run, so it is rooted. */
-    int sc_pos = ((re_idx >= 0 || tpat >= 0 || trx >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
+    int sc_pos = (!live && (re_idx >= 0 || tpat >= 0 || trx >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
     if (sc_pos >= 0) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
@@ -9018,10 +9034,19 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          target: the subject is kept once here, not copied per match) */
       if (g_one_string) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = sp_str_keep(_t%d);\n", tr, tr); }
     }
-    char sc_step[512];
-    emit_scan_rtcheck_open(c, id, nt_ref(nt, id, "receiver"), g_pre, g_indent, sc_step, sizeof sc_step);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++%s) {\n", ti, ti, tm, ti, sc_step);
+    if (!live) {
+      char sc_step[512];
+      emit_scan_rtcheck_open(c, id, nt_ref(nt, id, "receiver"), g_pre, g_indent, sc_step, sizeof sc_step);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++%s) {\n", ti, ti, tm, ti, sc_step);
+    }
+    /* the turn's row of groups, and its match without groups */
+    char sc_row[64], sc_m[64];
+    if (live) { snprintf(sc_row, sizeof sc_row, "_t%d", tm); snprintf(sc_m, sizeof sc_m, "_t%d", tm); }
+    else {
+      snprintf(sc_row, sizeof sc_row, "(sp_PolyArray *)_t%d->data[_t%d].v.p", tm, ti);
+      snprintf(sc_m, sizeof sc_m, "_t%d->data[_t%d]", tm, ti);
+    }
     if (sc_pos >= 0 && tpat >= 0) {
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
@@ -9060,7 +9085,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (has_cap && np >= 2) {
       int trow = ++g_tmp;
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", trow, sc_row);
       for (int pj = 0; pj < np; pj++) {
         const char *pn = rename_local(block_param_name(c, blk, pj));
         emit_indent(g_pre, g_indent + 1);
@@ -9080,7 +9105,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       const char *p0r = rename_local(block_param_name(c, blk, 0));
       emit_indent(g_pre, g_indent + 1);
       if (has_cap) {
-        char value[80]; snprintf(value, sizeof value, "(sp_PolyArray *)_t%d->data[_t%d].v.p", tm, ti);
+        const char *value = sc_row;
         Scope *sc = comp_scope_of(c, blk);
         LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, 0)) : NULL;
         buf_printf(g_pre, "lv_%s = ", p0r);
@@ -9093,7 +9118,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            match, a fresh String, as a handle of its own */
         Scope *sc = comp_scope_of(c, blk);
         LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, 0)) : NULL;
-        char value[64]; snprintf(value, sizeof value, "_t%d->data[_t%d]", tm, ti);
+        const char *value = sc_m;
         /* (one representation: the match, an element, into the parameter's face) */
         if (g_one_string) buf_printf(g_pre, "lv_%s = SP_STR_TO(lv_%s, %s);\n", p0r, p0r, value);
         else {
@@ -17661,9 +17686,12 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (re_i < 0 && (pat_t == TY_REGEX || pat_t == TY_POLY))
       return emit_poly_scan_rows(c, id, b, nt, name, recv, argc, argv, 0);
     int ts = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
+    /* (one representation: the subject is one String the block can change,
+       searched as it is each turn, as the typed-String arm does) */
+    int live = g_one_string && re_i >= 0;
     /* a body that reads `$~` or a capture global walks the subject for its
        own turn's match, as the typed-String arm does (#3601) */
-    int tw = (re_i >= 0 || pat_t == TY_STRING) && subtree_reads_match_globals(c, sbody) ? ++g_tmp : -1;
+    int tw = !live && (re_i >= 0 || pat_t == TY_STRING) && subtree_reads_match_globals(c, sbody) ? ++g_tmp : -1;
     int tp = tw >= 0 && re_i < 0 ? ++g_tmp : -1;
     buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
     buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
@@ -17672,6 +17700,17 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", tp);
     }
     if (tw >= 0) buf_printf(b, " sp_int _t%d = 0;", tw);
+    char sm[64];
+    if (live) {
+      int th = ++g_tmp;
+      buf_printf(b, " sp_String *_t%d = SP_STR_HDL(_t%d); SP_GC_ROOT(_t%d);", th, ts, th);
+      buf_printf(b, " sp_re_scan_it _t%d; sp_re_scan_begin(&_t%d, _t%d);", ti, ti, th);
+      buf_printf(b, " const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);", tm, tm);
+      buf_printf(b, " while ((_t%d = sp_re_scan_next(sp_re_pat_%d, &_t%d)) != NULL) {", tm, re_i, ti);
+      snprintf(sm, sizeof sm, "_t%d", tm);
+    }
+    else {
+    snprintf(sm, sizeof sm, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
     buf_printf(b, " sp_StrArray *_t%d = ", tm);
     if (re_i >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", re_i, ts);
     else if (pat_t == TY_REGEX) { buf_puts(b, "sp_re_scan("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d)", ts); }
@@ -17686,6 +17725,7 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tm);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, tm, ti);
+    }
     if (tp >= 0) buf_printf(b, " _t%d = sp_str_scan_at(_t%d, _t%d, _t%d);", tw, ts, tp, tw);
     else if (tw >= 0)
       buf_printf(b, " if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
@@ -17695,7 +17735,8 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
       Scope *sbs = comp_scope_of(c, sblk);
       LocalVar *shlv = sbs ? scope_local(sbs, sp0) : NULL;
       if (shlv && shlv->type == TY_POLY) {
-        buf_printf(b, " sp_RbVal lv_%s = %ssp_StrArray_get%s(_t%d, _t%d));", sp0r, ONE_SA_BOXO, ONE_SA_GE, tm, ti);
+        if (live) buf_printf(b, " sp_RbVal lv_%s = SP_STR_BOX(_t%d);", sp0r, tm);
+        else buf_printf(b, " sp_RbVal lv_%s = %ssp_StrArray_get%s(_t%d, _t%d));", sp0r, ONE_SA_BOXO, ONE_SA_GE, tm, ti);
         /* --share-strings: a boxed parameter of a shared class takes the match
            as a handle of its own, as the typed arms bind it */
         Buf lb; memset(&lb, 0, sizeof lb);
@@ -17704,7 +17745,7 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
         free(lb.p);
       }
       else
-        buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", sp0r, tm, ti);
+        buf_printf(b, " const char *lv_%s = %s;", sp0r, sm);
     }
     for (int k2 = 0; k2 < sbn; k2++) emit_stmt(c, sbb[k2], b, 0);
     buf_printf(b, " } _t%d; })", ts);

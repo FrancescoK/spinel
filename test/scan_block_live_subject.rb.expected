@@ -1,0 +1,19 @@
+a1 a1 a
+b2 b2 b
+c3 c3 c
+"a1b2c3"
+["a", "1"]
+["b", "2"]
+["c", "3"]
+["a", "a"]
+["b", "b"]
+["c", "c"]
+["x"]
+["Y"]
+["Z"]
+"string modified"
+"ab"
+"k1k2"
+"string modified"
+["p"]
+"pqr"

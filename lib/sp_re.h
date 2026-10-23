@@ -118,6 +118,7 @@ static inline void sp_re_scan_begin(sp_re_scan_it *it, struct sp_String_s *h) {
   it->h = h; it->data = NULL; it->len = 0; it->pos = 0; it->started = 0;
 }
 const char *sp_re_scan_next(mrb_regexp_pattern *pat, sp_re_scan_it *it);
+sp_PolyArray *sp_re_scan_next_row(mrb_regexp_pattern *pat, sp_re_scan_it *it);
 #endif
 sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit);
