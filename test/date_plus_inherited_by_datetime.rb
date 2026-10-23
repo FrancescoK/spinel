@@ -1,3 +1,4 @@
+# spinel: int64
 # Date#+ and Date#- serve DateTime too, as CRuby's one method does for both
 # classes: a DateTime adds and subtracts days, day fractions and dates with
 # its time of day and offset kept. An alias a program takes of + or - in
