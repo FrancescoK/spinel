@@ -817,6 +817,16 @@ void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
     case TY_STRING: tag = "SP_TAG_STR"; want = "String";  break;
     case TY_SYMBOL: tag = "SP_TAG_SYM"; want = "Symbol";  break;
     case TY_BOOL:   tag = "SP_TAG_BOOL"; want = "a boolean"; break;
+    /* a builtin class's value an RBS type names (builtin_value_kind): boxed
+       as an object of that builtin, or a Class as its own tag */
+    case TY_RANGE:     tag = "SP_TAG_OBJ"; want = "a Range"; break;
+    case TY_TIME:      tag = "SP_TAG_OBJ"; want = "a Time"; break;
+    case TY_THREAD:    tag = "SP_TAG_OBJ"; want = "a Thread"; break;
+    case TY_FIBER:     tag = "SP_TAG_OBJ"; want = "a Fiber"; break;
+    case TY_RANDOM:    tag = "SP_TAG_OBJ"; want = "a Random"; break;
+    case TY_IO:        tag = "SP_TAG_OBJ"; want = "an IO"; break;
+    case TY_EXCEPTION: tag = "SP_TAG_OBJ"; want = "an exception"; break;
+    case TY_CLASS:     tag = "SP_TAG_CLASS"; want = "a Class"; break;
     default:
       if (ty_is_object(slot) && !comp_ty_value_obj(c, slot)) {
         tag = "SP_TAG_OBJ";

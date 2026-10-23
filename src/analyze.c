@@ -5568,8 +5568,11 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
        values are still the builtin's: a Time is Spinel's by-value Time, not
        an object of the reopen. The kind is the one `self` has in the reopen,
        and a nilable one with no nil of its own (a struct) is the boxed value. */
-    if (ci >= 0 && is_builtin_reopen(c->classes[ci].name)) {
-      TyKind t = infer_builtin_self(c, ci);
+    /* A builtin the program does not reopen names that kind as well
+       (`Time`, `File`, `ArgumentError`). */
+    TyKind t = ci >= 0 && is_builtin_reopen(c->classes[ci].name) ? infer_builtin_self(c, ci)
+             : ci < 0 ? builtin_value_kind(buf + 4) : TY_UNKNOWN;
+    if (t != TY_UNKNOWN) {
       const TyTraits *tr = ty_traits_of(t);
       return nilable && tr && !tr->null_is_nil ? TY_POLY : t;
     }
@@ -5680,6 +5683,22 @@ static int seed_class_index(Compiler *c, const char *name) {
   }
   buf2[j2] = '\0';
   if (!sp_streq(buf, buf2)) { int q2 = comp_class_index(c, buf2); if (q2 >= 0) return q2; }
+  /* A native class declared under a qualified name (`native_struct
+     "IO::Buffer"`) is keyed by its leaf with no enclosing link; its Ruby
+     name keeps the path. Match that name in the `_` form. */
+  for (int i = 0; i < c->nclasses; i++) {
+    const ClassInfo *k = &c->classes[i];
+    const char *rn = k->is_native_class && k->enclosing_class < 0 ? class_ruby_name(c, i) : NULL;
+    if (!rn || !strstr(rn, "::")) continue;
+    char und[256];
+    size_t r = 0;
+    for (const char *p = rn; *p && r < sizeof und - 1; ) {
+      if (p[0] == ':' && p[1] == ':') { und[r++] = '_'; p += 2; }
+      else und[r++] = *p++;
+    }
+    und[r] = '\0';
+    if (sp_streq(und, buf)) return i;
+  }
   /* A module-nested class (`module M; class C`) is stored under its leaf name
      `C` with enclosing_class = M, but the extractor emits the qualified
      `M_C`. Match against each class's reconstructed qualified name so the
