@@ -49347,11 +49347,13 @@ static int ur_name_excluded(const char *nm) {
   return method_name_implicitly_invoked(nm) || is_definition_hook_name(nm) || str_in(nm, names);
 }
 /* a plain String method, emitted as a function of its own under the name
-   its def gives it (not a prepend's shadow, which a `super` reaches) */
+   its def gives it (not a prepend's shadow, which a `super` reaches). An
+   --ext-entry is no candidate: the host reads its value. */
 static int ur_candidate(Compiler *c, const Scope *s) {
   return s->ret == TY_STRING && s->name && s->def_node >= 0 && nt_kind(c->nt, s->def_node) == NK_DefNode &&
          nt_str(c->nt, s->def_node, "name") && sp_streq(nt_str(c->nt, s->def_node, "name"), s->name) &&
-         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !ur_name_excluded(s->name);
+         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !s->is_ext_entry &&
+         !ur_name_excluded(s->name);
 }
 /* the builtin iterators that drop their block's value */
 static const char *const ur_dropping_iters[] = {

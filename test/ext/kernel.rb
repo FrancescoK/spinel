@@ -46,6 +46,14 @@ module ExtKernel
     n.nil? ? -1 : n + 1
   end
 
+  # The program does not call this entry, and its String still reaches the
+  # host. With no call site, its parameter is boxed.
+  def self.label(n)
+    out = "n="
+    out += (n * 2).to_s
+    out
+  end
+
   def self.find_pos(arr, v)
     i = 0
     while i < arr.length
