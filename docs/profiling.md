@@ -195,7 +195,7 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | `an_desugar_register`, `an_class_structure`, `an_block_inline`, `an_pre_fixpoint` | the analysis phases ahead of the fixpoint |
 | `analysis_fixpoint` | the inference fixpoint (`rounds=N`, plus `capped=1` if it hit the cap) |
 | `analysis_renarrow` | the loop that re-narrows poly slots once the fixpoint has settled (`rounds=N`); inside `analysis_fixpoint` |
-| `an_post_fixpoint`, `an_procs`, `an_method_backstops`, `an_late_widen`, `an_proc_returns`, `an_storage`, `an_value_types`, `an_reconcile_check` | the analysis phases after it |
+| `an_post_fixpoint`, `an_procs`, `an_method_backstops`, `an_late_widen`, `an_nullable_returns`, `an_proc_returns`, `an_storage`, `an_value_types`, `an_reconcile_check` | the analysis phases after it |
 | `analysis` | all of `analyze_program`; includes the phases above |
 | `codegen_program` | analysis and C generation; includes `analysis` |
 | `write_c` | writing the C file |

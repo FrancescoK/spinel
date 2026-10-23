@@ -39149,6 +39149,10 @@ static void ps_compute(Compiler *c, int mi) {
    coerced into `what`), else 0; *ord its place among the checks */
 int param_strict(Compiler *c, int mi, int k, const char **what, int *ord) {
   if (mi < 0 || mi >= c->nscopes || k < 0 || k >= 16) return 0;
+  /* A later widening can box a parameter whose strictness was cached. */
+  Scope *m = &c->scopes[mi];
+  LocalVar *p = k < m->nparams && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+  if (!p || (p->type != TY_INT && p->type != TY_FLOAT)) return 0;
   if (!g_pstrict || g_pstrict_n < c->nscopes || g_pstrict_nt != c->nt) {
     free(g_pstrict);
     g_pstrict = calloc((size_t)c->nscopes + 1, sizeof *g_pstrict);
@@ -51805,7 +51809,7 @@ static void an_phase_method_backstops(Compiler *c) {
 }
 
 /* The late widening and narrowing: unresolved locals and returns to poly, ivars fed by nil-only params, the arithmetic widen, the object-array and poly-int narrowing, then the gc-root marks and the full node type cache (analyze_program's steps, in their order) */
-static void an_phase_late_widen(Compiler *c) {
+static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
   /* A non-parameter local that inference never resolved holds a value of unknown
      static type -- a block param bound to an element of a poly receiver, or a
      local fed by a dynamically-dispatched call (e.g. optcarrot's memory-map
@@ -51913,6 +51917,9 @@ static void an_phase_late_widen(Compiler *c) {
      cache so reads pick up the widened slot types. TY_BIGINT loop vars (detect_bigint_loop_vars) stay
      bigint. EXPERIMENTAL: gated by g_promote_mode; default/wrap untouched. */
   if (g_promote_mode) {
+    /* (a Hash literal of the Integers it widens turns poly-valued: the calls
+       it reaches bind again, an_phase_nullable_returns) */
+    node_types_take(c, promote_before);
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       /* `<=>` yields a bounded -1/0/1 and is consumed as `(a <=> b) <cmp> 0`;
@@ -54169,6 +54176,62 @@ static void sa_check_conversion_stores(Compiler *c) {
     if (seen) sa_refuse(c, v, 3);
   }
 }
+/* Does a node hold a Hash of another shape than at the snapshots: one the
+   marks, or promote's widening before them, made poly-valued? */
+static int an_hash_reshaped(Compiler *c, const NodeTypes *settled, const NodeTypes *calls) {
+  for (int id = 0; id < c->nt->count; id++) {
+    TyKind now = infer_type(c, id);
+    if (!ty_is_hash(now)) continue;
+    const NodeTypes *at[2] = { settled, calls };
+    for (int k = 0; k < 2; k++) {
+      TyKind was = id < at[k]->n ? at[k]->ty[id] : TY_UNKNOWN;
+      if (now != was && (ty_is_hash(was) || was == TY_UNKNOWN)) return 1;
+    }
+  }
+  return 0;
+}
+/* The nullable marks settle after every slot has (the reconcile check
+   reads them again): a Hash built from a nullable number turns poly-valued
+   only here (infer_type), as one built from the Integers promote widens
+   does in the late widening. What holds it follows -- the returns, locals,
+   parameters and block parameters it reaches, and the instance, class and
+   global variables and constants it is stored in. A call whose inputs have
+   widened since promote's widening (or the marks) binds again, and a store
+   whose input has widened since the marks joins again; the late widening's
+   other changes it leaves as they settled. Both ask against a fixed
+   snapshot, so a widening a later pass of the round finds still reaches a
+   call or a store an earlier one visited. A program where no Hash changed
+   shape skips the rounds: its slots keep what the late widening settled. */
+static void an_phase_nullable_returns(Compiler *c, const NodeTypes *promoted) {
+  NodeTypes settled;
+  node_types_take(c, &settled);
+  const NodeTypes *calls = promoted->ty ? promoted : &settled;
+  mark_nullable_int_locals(c);
+  sync_captured_nullable(c);
+  infer_memo_boundary();
+  if (!an_hash_reshaped(c, &settled, calls)) { free(settled.ty); return; }
+  g_ret_no_new_poly = 4;
+  AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+  for (int iter = 0; iter < rc.cap; iter++) {
+    int ch = infer_return_types(c);
+    ch |= rejoin_local_writes(c);
+    ch |= rejoin_changed_masgn(c, &settled);
+    ch |= rejoin_changed_pattern_locals(c, &settled);
+    ch |= infer_changed_param_types(c, calls);
+    ch |= infer_block_params(c);
+    if (infer_changed_store_types(c, &settled)) {
+      ch = 1;
+      /* and a class hierarchy's copies of a widened ivar with it, so the
+         layouts stay cast-compatible (an_phase_late_widen) */
+      for (int k = 0; k < 16; k++) if (!(infer_inherited_ivars(c) | propagate_ivars_up(c))) break;
+    }
+    if (!ch) break;
+    an_round_cap_step(c, &rc, iter);
+  }
+  free(settled.ty);
+  free(rc.seen);
+  g_ret_no_new_poly = 0;
+}
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   an_note_written_names(c->nt);
@@ -54188,7 +54251,10 @@ void analyze_program(Compiler *c) {
   AN_PHASE("post_fixpoint", an_phase_post_fixpoint(c));
   AN_PHASE("procs", an_phase_procs(c));
   AN_PHASE("method_backstops", an_phase_method_backstops(c));
-  AN_PHASE("late_widen", an_phase_late_widen(c));
+  NodeTypes promoted = { NULL, 0 };
+  AN_PHASE("late_widen", an_phase_late_widen(c, &promoted));
+  AN_PHASE("nullable_returns", an_phase_nullable_returns(c, &promoted));
+  free(promoted.ty);
   AN_PHASE("proc_returns", an_phase_proc_returns(c));
   AN_PHASE("storage", an_phase_storage(c));
   AN_PHASE("value_types", an_phase_value_types(c));

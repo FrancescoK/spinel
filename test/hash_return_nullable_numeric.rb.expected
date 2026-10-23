@@ -1,0 +1,11 @@
+{"n" => nil}
+{"n" => 1}
+{"n" => nil}
+nil
+1
+nil
+1
+NoMethodError
+2
+{"n" => nil}
+{"n" => 1.5}

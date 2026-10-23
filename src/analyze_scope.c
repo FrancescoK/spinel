@@ -5857,12 +5857,20 @@ static TyKind lit_takes_general_hash(Compiler *c, const LocalVar *lv, int vnode,
   return TY_POLY_POLY_HASH;
 }
 
+/* Set while the store passes below run again after the late nullable marks
+   (infer_changed_store_types): they then join only the stores whose input
+   has widened since these types, and leave the rest as they settled. */
+static const NodeTypes *g_store_before;
+static int store_unchanged(Compiler *c, int id) {
+  return g_store_before && !an_store_widened(c, id, g_store_before);
+}
+
 int infer_global_const_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty) continue;
+    if (!ty || store_unchanged(c, id)) continue;
     LocalVar *lv = NULL;
     TyKind vt = TY_UNKNOWN;
     if (sp_streq(ty, "GlobalVariableWriteNode")) {
@@ -6047,6 +6055,7 @@ int infer_global_const_types(Compiler *c) {
     TyKind merged = keep_general_array(lv->type, vt) ? lv->type : ty_unify(lv->type, vt);
     if (merged != lv->type) { lv_set_type(lv, merged); changed = 1; }
   }
+  if (g_store_before) return changed;
   changed |= gvar_implicit_nil_writes(c);
   /* $stdout / $stderr start out holding the standard stream, so a program
      that stores anything else into one (a StringIO, an object with its own
@@ -9270,7 +9279,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
-      if (!sty) continue;
+      if (!sty || store_unchanged(c, s)) continue;
       if (is_cvar_write_kind(nt_kind(nt, s))) {
         if (cvar_note_write(c, ci, s, nil_only)) changed = 1;
       }
@@ -9302,7 +9311,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
      like top-level code, but the scope pass recorded the enclosing body's
      class in node_cbody, and the cvar is that class's (not Toplevel's). */
   for (int id = 0; id < nt->count; id++) {
-    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
+    if (!is_cvar_write_kind(nt_kind(nt, id)) || store_unchanged(c, id)) continue;
     Scope *s = comp_scope_of(c, id);
     int wcid = s->class_id;
     if (wcid < 0 && c->node_cbody && id < c->node_cap) wcid = c->node_cbody[id];
@@ -9326,7 +9335,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
      an if (Pass 1 sees only a body's direct statements), and one in a
      reopening of the class rather than the body that defined it. */
   for (int id = 0; id < nt->count; id++) {
-    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
+    if (!is_cvar_write_kind(nt_kind(nt, id)) || store_unchanged(c, id)) continue;
     Scope *s = comp_scope_of(c, id);
     if (s->class_id >= 0 || id >= c->node_cap || c->node_cbody[id] < 0) continue;
     if (cvar_note_write(c, c->node_cbody[id], id, nil_only)) changed = 1;
@@ -9336,7 +9345,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
      the fly, and the codegen store needs a registered global to hit (#2719). */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "class_variable_set")) continue;
+    if (!nm || !sp_streq(nm, "class_variable_set") || store_unchanged(c, id)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     int cci = comp_class_index(c, nt_str(nt, recv, "name"));
@@ -9360,7 +9369,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
   /* Pass 3: top-level writes (class_id == -1 in scope 0, and not inside any
      class body) -- use Toplevel pseudo-class. */
   for (int id = 0; id < nt->count; id++) {
-    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
+    if (!is_cvar_write_kind(nt_kind(nt, id)) || store_unchanged(c, id)) continue;
     Scope *s = comp_scope_of(c, id);
     if (!nt_str(nt, id, "name") || s->class_id >= 0) continue;
     if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
@@ -10997,7 +11006,7 @@ int infer_ivar_types(Compiler *c) {
   if (dn_nscopes != c->nscopes || dn_count != nt->count) dn_build(c);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty) continue;
+    if (!ty || store_unchanged(c, id)) continue;
     /* A top-level method that only READS an ivar (never assigned anywhere)
        gets no slot from the write pass and none from register_locals (which
        interns reads only for a real class scope), so the read can't be
@@ -11295,8 +11304,23 @@ int infer_ivar_types(Compiler *c) {
     }
   }
   free(aset.mty); free(aset.structs);
-  implicit_nil_writes_note(c, &nilw);
+  if (!g_store_before) implicit_nil_writes_note(c, &nilw);
   changed |= nil_writes_apply(c, &nilw);
+  return changed;
+}
+
+/* The nullable marks settle after every slot has, so a Hash built from a
+   nullable number turns poly-valued only after the instance, class and
+   global variables and the constants it is stored in have settled on its
+   Integer-valued form. Each store whose input has widened since `before`
+   joins its slot again, through the pass that typed it; the others keep
+   what they settled on. */
+int infer_changed_store_types(Compiler *c, const NodeTypes *before) {
+  g_store_before = before;
+  int changed = infer_ivar_types(c);
+  changed |= infer_cvar_types(c, 0);
+  changed |= infer_global_const_types(c);
+  g_store_before = NULL;
   return changed;
 }
 
