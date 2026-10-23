@@ -627,10 +627,10 @@ TyKind dm_lit_type(Compiler *c, int lit) {
 
 /* Detect `[lit, ...].each { |v| define_method("m_#{v}") { body } }` in a
    class body and synthesize one method scope per literal element, each with
-   a compile-time substitution of `v`. Returns 1 if handled. */
+   a compile-time substitution of `v`. In a Struct.new block class_id is
+   still -1; fix_struct_block_scopes homes the scopes. Returns 1 if handled. */
 int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   const NodeTable *nt = c->nt;
-  if (class_id < 0) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "each")) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -669,7 +669,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     if (dkn0 > 0) return 0; }
   /* iterate the array literal's elements */
   int en = 0; const int *elems = nt_arr(nt, recv, "elements", &en);
-  if (en == 0) return 0;
+  if (en == 0) return 1;  /* an empty loop defines nothing */
   for (int k = 0; k < en; k++) {
     TyKind lt = dm_lit_type(c, elems[k]);
     if (lt == TY_UNKNOWN) return 0;  /* non-literal element: bail (unhandled) */
@@ -909,6 +909,19 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
   }
 }
 
+/* The define_method call of `[...].each { |v| define_method(...) { } }`, else -1. */
+static int dm_each_inner(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  int blk = nt_ref(nt, call, "block");
+  if (!nm || !sp_streq(nm, "each") || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  int body = nt_ref(nt, blk, "body");
+  int bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bb[0]) != NK_CallNode) return -1;
+  const char *dn = nt_str(nt, bb[0], "name");
+  return dn && sp_streq(dn, "define_method") ? bb[0] : -1;
+}
+
 /* The literal name a receiverless `define_method(:m, ...)` call defines, else NULL. */
 static const char *dm_defined_name(const NodeTable *nt, int call) {
   const char *nm = nt_str(nt, call, "name");
@@ -1090,6 +1103,9 @@ static void singleton_reopen_mark(Compiler *c, int def, int recv, int class_id) 
    points, #5358). A define_method there is a class method too. Anything
    else is walked as usual. */
 static int g_dm_sclass;
+/* Directly in the block of `Name = Struct.new(...) do ... end`, whose class
+   register_structs makes only after walk_scope (fix_struct_block_scopes). */
+static int g_struct_direct;
 static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class, int depth, int reopen_recv, int reopen_class) {
   const NodeTable *nt = c->nt;
   if (s < 0 || s >= nt->count) return;
@@ -1576,7 +1592,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     /* [lits].each { |v| define_method("m_#{v}") { body } } -- unroll into one
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
-    if (class_id >= 0 && collect_dm_each_unroll(c, id, class_id)) return;
+    if ((class_id >= 0 || g_struct_direct) && collect_dm_each_unroll(c, id, class_id)) return;
     /* compiler_state_int/str/sa/ia :fields -- declare ivars + synthesize the
        init/dump/set methods (the metaprogramming is native, not define_method). */
     if (class_id >= 0 && cs_macro_kind(nt_str(c->nt, id, "name"))) {
@@ -1588,7 +1604,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        function (class_id stays -1), matching `def`. */
     const char *dm_cn = nt_str(c->nt, id, "name");
     int dm_recv = nt_ref(c->nt, id, "receiver");
-    if (is_define_method_name(dm_cn) && (scope_idx > 0 || g_cbody_direct >= 0) &&
+    if (is_define_method_name(dm_cn) && (scope_idx > 0 || g_cbody_direct >= 0 || g_struct_direct) &&
         (dm_recv < 0 || nt_kind(c->nt, dm_recv) == NK_SelfNode)) {
       int an = nt_ref(c->nt, id, "arguments"), ac = 0;
       const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
@@ -1711,6 +1727,12 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
 
   int saved_cbody = g_cbody_class_id;
   int saved_direct = g_cbody_direct;
+  int saved_struct = g_struct_direct;
+  NodeKind wk = nt_kind(c->nt, id);
+  if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
+    g_struct_direct = 0;
+  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c, id) >= 0)
+    g_struct_direct = 1;
   if (child_class >= 0) g_cbody_class_id = child_class;
   /* g_cbody_direct tracks the class whose body we are *directly* in (where `self`
      is the class). A method/block scope is entered exactly when `child` was
@@ -1742,6 +1764,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   }
   g_cbody_class_id = saved_cbody;
   g_cbody_direct = saved_direct;
+  g_struct_direct = saved_struct;
 }
 
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
@@ -3689,12 +3712,17 @@ void fix_struct_block_scopes(Compiler *c) {
             vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
           dn = vv[0];
       }
-      if (nt_kind(nt, dn) != NK_DefNode) continue;
+      /* [lits].each { |v| define_method(...) { } }: one scope per element,
+         each on the inner define_method (collect_dm_each_unroll) */
+      int unrolled = sp_streq(sty, "CallNode") && dm_each_inner(nt, dn) >= 0;
+      if (unrolled) dn = dm_each_inner(nt, dn);
+      /* define_method(:m) { } registered its scope on the call node */
+      else if (nt_kind(nt, dn) != NK_DefNode && !dm_defined_name(nt, dn)) continue;
       /* Find the scope whose def_node == dn and fix its class_id */
       for (int s = 0; s < c->nscopes; s++) {
         if (c->scopes[s].def_node == dn) {
           c->scopes[s].class_id = ci;
-          break;
+          if (!unrolled) break;
         }
       }
     }
