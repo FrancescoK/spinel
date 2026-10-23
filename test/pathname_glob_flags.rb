@@ -18,6 +18,9 @@ begin
   p short.(pn.glob("*", File::FNM_DOTMATCH))
   p short.(Pathname.new("#{dir}/").glob("*", File::FNM_DOTMATCH))
   p short.(pn.glob("sub/*", File::FNM_DOTMATCH))
+  # "./" in the pattern folds as #+ folds it (CRuby: self + match)
+  p short.(pn.glob("./*", File::FNM_DOTMATCH))
+  p short.(pn.glob("sub/./*", File::FNM_DOTMATCH))
   p short.(pn.glob("*", 0))
   # flags held in a variable
   [0, File::FNM_DOTMATCH].each do |flags|

@@ -4,6 +4,8 @@
 ["D", "D/.hidden", "D/sub", "D/visible"]
 ["D", "D/.hidden", "D/sub", "D/visible"]
 ["D/sub/.", "D/sub/.inner"]
+["D", "D/.hidden", "D/sub", "D/visible"]
+["D/sub/./.", "D/sub/./.inner"]
 ["D/sub", "D/visible"]
 ["D/sub", "D/visible"]
 ["D/sub", "D/visible"]

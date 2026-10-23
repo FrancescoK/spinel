@@ -1,0 +1,17 @@
+D D/.hidden D/sub/./. D D/sub/. D/sub/x D/.hidden . .. ../.. D/b/ D . D/b/../c /abs D/x//y 
+D D/.hidden D/sub/./. D D/sub/. D/sub/x D/.hidden . .. ../.. D/b/ D . D/b/../c /abs D/x//y 
+/ /.hidden /sub/./. / /sub/. /sub/x /.hidden / / / /b/ / / /b/../c /abs /x//y 
+. .hidden sub/./. . sub/. sub/x .hidden .. ../.. ../../.. b/ . ../ b/../c /abs x//y 
+./D ./D/.hidden ./D/sub/./. ./D ./D/sub/. ./D/sub/x ./D/.hidden . .. ../.. ./D/b/ ./D . ./D/b/../c /abs ./D/x//y 
+a/b a/b/.hidden a/b/sub/./. a/b a/b/sub/. a/b/sub/x a/b/.hidden a . .. a/b/b/ a/b a a/b/b/../c /abs a/b/x//y 
+a/.. a/../.hidden a/../sub/./. a/.. a/../sub/. a/../sub/x a/../.hidden a/../.. a/../../.. a/../../../.. a/../b/ a/.. a/../../ a/../b/../c /abs a/../x//y 
+.. ../.hidden ../sub/./. .. ../sub/. ../sub/x ../.hidden ../.. ../../.. ../../../.. ../b/ .. ../../ ../b/../c /abs ../x//y 
+../x ../x/.hidden ../x/sub/./. ../x ../x/sub/. ../x/sub/x ../x/.hidden .. ../.. ../../.. ../x/b/ ../x .. ../x/b/../c /abs ../x/x//y 
+/ /.hidden /sub/./. / /sub/. /sub/x /.hidden / / / /b/ / / /b/../c /abs /x//y 
+. .hidden sub/./. . sub/. sub/x .hidden .. ../.. ../../.. b/ . ../ b/../c /abs x//y 
+"a"
+"."
+"/"
+".."
+"a/b/c"
+"x/z"
