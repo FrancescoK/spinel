@@ -6773,7 +6773,14 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
     int rev = sp_streq(name, "reverse_each");
     int t = ++g_tmp, tn = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
+    /* a receiver the nil fact says can be nil, which nothing tested ahead
+       (a safe navigation guards it itself), raises CRuby's NoMethodError:
+       the walk read the NULL Array as an empty one (strh_emit_recv) */
+    int rnn = !nt_safe_nav(c->nt, id) && repr_of(c, recv).may_nil && !repr_of(c, recv).nil_tested;
+    int trn = rnn ? ++g_tmp : 0;
+    if (rnn) buf_printf(&rb, "({ __auto_type _t%d = ", trn);
     emit_expr(c, recv, &rb);
+    if (rnn) buf_printf(&rb, "; if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\"); _t%d; })", trn, name, trn);
     hoist_loop_recv(c, rt, &rb, b, indent);
     /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
     TyKind et = p0 ? ty_array_elem(rt) : TY_UNKNOWN;
