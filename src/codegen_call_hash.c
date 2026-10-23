@@ -983,7 +983,15 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b); buf_puts(b, ";");
   if (env) buf_printf(b, " SP_GC_ROOT(_t%d);", th);
   /* store argument */
-  if (!is_rassoc) {
+  /* (one-String mode: ENV.assoc's pair holds the argument itself, which
+     the caller can change, so its handle is held and boxed) */
+  int one_k = g_one_string && env && !is_rassoc && comp_ntype(c, argv[0]) == TY_STRING;
+  int tk = one_k ? ++g_tmp : 0;
+  if (one_k) {
+    buf_printf(b, " sp_String *_t%d = SP_STR_HDL(", tk); emit_expr(c, argv[0], b);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_t%d = sp_env_chk(SP_STR_B(_t%d), 0);", tk, ta, tk);
+  }
+  else if (!is_rassoc) {
     buf_printf(b, " %s _t%d = ", hash_key_ctype(c, argv[0], kt), ta); emit_hash_key_o(c, argv[0], kt, b); buf_puts(b, ";");
   }
   else {
@@ -1017,7 +1025,9 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   }
   /* build pair */
   buf_printf(b, " _t%d = sp_PolyArray_new();", tr);
-  if (env) {
+  if (one_k)
+    buf_printf(b, " SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, SP_STR_BOX(_t%d));", tr, tr, tk);
+  else if (env) {
     buf_printf(b, " SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, sp_box_str(", tr, tr);
     if (is_rassoc) buf_printf(b, "sp_str_dup_external(_t%d->order[_t%d])", th, ti);
     else buf_printf(b, "_t%d", ta);
