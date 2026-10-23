@@ -23215,6 +23215,40 @@ static int strh_empty_arg(Compiler *c, const int *par, int n) {
   int mis[1];
   return cplan_targets(c, pc, mis, 1) > 0 || (is_new_name(nt_str(nt, pc, "name")) && cplan_initialize(c, pc) >= 0);
 }
+/* One-String mode: a container a reflective call reaches by its name
+   (const_get, instance_variable_get, a send of either, a listing, eval)
+   takes values no inference sees stored, so a String Array held there
+   keeps the general form, as share_strh_gate's refusal gave it under the
+   two representations (`Object.const_get("H::L") << 64`). Answers whether
+   a type changed. */
+static int one_reflect_widen(Compiler *c) {
+  StrhReflect rf; memset(&rf, 0, sizeof rf);
+  strh_reflect_scan(c, &rf);
+  int changed = 0;
+  if (rf.cnt > 0 || rf.all) {
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *kc = &c->classes[k];
+      for (int i = 0; i < kc->nivars; i++)
+        if (kc->ivar_types[i] == TY_STR_ARRAY && strh_reflect_has(&rf, kc->ivars[i])) {
+          ivar_set_type(kc, i, TY_POLY_ARRAY); changed = 1;
+        }
+      for (int i = 0; i < kc->ncvars; i++)
+        if (kc->cvar_types[i] == TY_STR_ARRAY && strh_reflect_has(&rf, kc->cvars[i])) {
+          cvar_set_type(kc, i, TY_POLY_ARRAY); changed = 1;
+        }
+    }
+    for (int i = 0; i < c->nconsts; i++)
+      if (c->consts[i].type == TY_STR_ARRAY && !c->consts[i].rbs_seeded && strh_reflect_has(&rf, c->consts[i].name)) {
+        lv_set_type(&c->consts[i], TY_POLY_ARRAY); changed = 1;
+      }
+    for (int i = 0; i < c->ngvars; i++)
+      if (c->gvars[i].type == TY_STR_ARRAY && !c->gvars[i].rbs_seeded && rf.all) {
+        lv_set_type(&c->gvars[i], TY_POLY_ARRAY); changed = 1;
+      }
+  }
+  free(rf.n);
+  return changed;
+}
 /* Decide the form for every container class with a candidate (a local
    String Array whose Strings the rule shares, or an Array literal inference
    gave the form, infer_array_literal) and apply it: a class whose names all
@@ -23224,8 +23258,9 @@ static int strh_empty_arg(Compiler *c, const int *par, int n) {
 static int share_strh_gate(Compiler *c) {
   const NodeTable *nt = c->nt;
   int nc = share_class_count(c), nh = share_holder_count(c), changed = 0, any = 0;
-  /* (one representation: a typed String Array holds the handles itself) */
-  if (g_one_string) return 0;
+  /* (one representation: a typed String Array holds the handles itself;
+     only a reflectively reached one takes the general form) */
+  if (g_one_string) return one_reflect_widen(c);
   if (!c->share_strings || nc <= 0) return 0;
   unsigned char *st = calloc((size_t)nc, 1);
   if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

@@ -1762,6 +1762,12 @@ static TyRef named_array_slot(Compiler *c, int recv) {
       LocalVar *lv = comp_const(c, nm);
       return lv ? &lv->type : NULL;
     }
+    /* `H::L` names the constant its read resolves to (infer_constant_path) */
+    case NK_ConstantPathNode: {
+      if (const_path_in_closed_builtin(c, recv) || const_path_misses_toplevel(c, recv)) return NULL;
+      LocalVar *lv = comp_const(c, nm);
+      return lv ? &lv->type : NULL;
+    }
     case NK_ClassVariableReadNode: {
       Scope *s = comp_scope_of(c, recv);
       int cid = s ? s->class_id : -1;
@@ -2931,11 +2937,9 @@ static int push_chain_base(Compiler *c, int recv) {
    Hash keyed by anything). 1 when the slot widened. */
 static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
                                     int is_idx_write, TyKind kt, TyKind vt) {
-  /* a qualified constant (`Codes::T["k"] = v`) is the constant of its leaf,
-     as constants are kept; taken for a Hash slot only */
-  int qual = nt_kind(c->nt, recv) == NK_ConstantPathNode;
-  LocalVar *qlv = qual && nt_str(c->nt, recv, "name") ? comp_const(c, nt_str(c->nt, recv, "name")) : NULL;
-  TyRef nslot = qual ? (qlv && ty_is_hash(qlv->type) ? &qlv->type : NULL) : named_array_slot(c, recv);
+  /* a qualified constant (`Codes::T["k"] = v`, `H::L << 64`) is the
+     constant of its leaf, as constants are kept */
+  TyRef nslot = named_array_slot(c, recv);
   int nhash = nslot && ty_is_hash(*nslot) && is_idx_write && !is_push && !is_splice;
   if (!nslot || (!nhash && ((!ty_is_array(*nslot) && *nslot != TY_STRH_ARRAY) || *nslot == TY_POLY_ARRAY))) return 0;
   TyKind nt2 = *nslot;
@@ -3723,13 +3727,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     }
     else if ((is_push || is_idx_write) && rty &&
              (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
-              sp_streq(rty, "ConstantReadNode"))) {
-      changed |= fold_named_slot_evidence(c, recv, is_push, is_splice, is_idx_write, (TyKind)kt, (TyKind)vt);
-      continue;
-    }
-    else if (is_idx_write && rty && sp_streq(rty, "ConstantPathNode") && nt_str(nt, recv, "name") &&
-             comp_const(c, nt_str(nt, recv, "name")) && ty_is_hash(comp_const(c, nt_str(nt, recv, "name"))->type)) {
-      /* `Codes::T["k"] = v`: a Hash constant named by its path */
+              sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      /* (`Codes::T["k"] = v`, `H::L << 64`: a constant named by its path) */
       changed |= fold_named_slot_evidence(c, recv, is_push, is_splice, is_idx_write, (TyKind)kt, (TyKind)vt);
       continue;
     }
