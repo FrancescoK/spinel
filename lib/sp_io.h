@@ -113,6 +113,9 @@ sp_File *sp_File_open_perm(const char *path, const char *mode, sp_oint perm);   
    CRuby sockets' sync = true. `kind` labels the handle ("tcp", "tcpserver",
    ...) for #class rendering. (#2922) */
 sp_File *sp_io_fdopen_sock(int fd, const char *kind);
+/* Access-mode checks retain closed-stream error precedence. */
+void sp_io_check_readable(sp_File *f);
+void sp_io_check_writable(sp_File *f);
 void sp_io_wait_readable(sp_File *f);
 void sp_io_wait_fd_readable(int fd);
 /* Park until the handle can take bytes (a socket, or an IO.pipe write end). */

@@ -1291,6 +1291,7 @@ const char *sp_str_splice_at(const char *s, sp_int from, sp_int n, const char *v
 static inline const char *sp_File_gets(sp_File *f) {
   SP_GC_ROOT(f);   /* `File.new(path).gets` holds the File nowhere else */
   SP_IO_OPEN(f);
+  sp_io_check_readable(f);
   sp_io_wait_readable(f);
   /* getline answers the line whole, however long, with its byte count, so a
      NUL inside it neither ends the line nor drops what follows, as ARGF's
