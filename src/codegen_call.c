@@ -16611,10 +16611,14 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   else {
     /* scalar RHS: replace the slice with a single element */
     int scalar_ok = (elem == TY_INT    && rhs_ty == TY_INT) ||
-                    (elem == TY_STRING && rhs_ty == TY_STRING) ||
+                    (elem == TY_STRING && (rhs_ty == TY_STRING || (g_one_string && rhs_ty == TY_STRBUF))) ||
                     (elem == TY_FLOAT  && rhs_ty == TY_FLOAT);
     if (!scalar_ok) { unsupported(c, id, "array splice with a mismatched scalar value"); return; }
-    emit_ctype(c, elem, b); buf_printf(b, " _t%d = ", ts); emit_expr(c, rhs_node, b); buf_puts(b, "; ");
+    /* (one representation: the String goes in as its handle, the element) */
+    if (g_one_string && elem == TY_STRING) {
+      buf_printf(b, "sp_strelem _t%d = SP_STR_HDL(", ts); emit_expr(c, rhs_node, b); buf_puts(b, "); ");
+    }
+    else { emit_ctype(c, elem, b); buf_printf(b, " _t%d = ", ts); emit_expr(c, rhs_node, b); buf_puts(b, "; "); }
     buf_printf(b, "_src%d = &_t%d; _srcn%d = 1; ", ta, ts, ta);
   }
 
@@ -27231,7 +27235,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* (one-String mode: a call to a method that answers no value is a `void`
      C call, which the String faces (SP_STR_B, SP_STR_HDL) cannot take; it
      raises before anything reads it, so it reads as nil's String) */
-  int no_value = g_one_string && call_answers_no_value(c, id);
+  int no_value = g_one_string && call_answers_no_value(c, id) &&
+                 (repr_of(c, id).as_ty == TY_STRING || repr_of(c, id).as_ty == TY_STRBUF);
   if (no_value) buf_puts(b, "((void)(");
   emit_call_inner(c, id, b);
   if (no_value) buf_puts(b, "), (const char *)0)");

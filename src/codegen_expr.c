@@ -4550,9 +4550,10 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       emit_cond(c, pred, b);
       if (is_unless) buf_puts(b, ")");
       buf_puts(b, " ? ");
-      buf_puts(b, ta.p ? ta.p : "0");
+      int hw = g_one_string && res == TY_STRBUF;   /* (#10021: either face into the handle result) */
+      buf_printf(b, hw ? "SP_STR_HDL(%s)" : "%s", ta.p ? ta.p : "0");
       buf_puts(b, " : ");
-      buf_puts(b, te.p ? te.p : "0");
+      buf_printf(b, hw ? "SP_STR_HDL(%s)" : "%s", te.p ? te.p : "0");
       buf_puts(b, ")");
     }
     else {
@@ -4570,7 +4571,9 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       /* a diverging (raise/fail) arm is emitted as a statement; the result
          temp keeps its default (never read, since the arm never returns) */
       /* (one representation: a String arm of either face lands in the bytes result as its view) */
-      const char *fo = g_one_string && res == TY_STRING && !res_o ? "SP_STR_B(" : "", *fc = fo[0] ? ")" : "";
+      /* ...and a String arm of either face lands in a handle result as its handle (#10021) */
+      const char *fo = g_one_string && res == TY_STRING && !res_o ? "SP_STR_B("
+                     : g_one_string && res == TY_STRBUF ? "SP_STR_HDL(" : "", *fc = fo[0] ? ")" : "";
       if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
       else buf_printf(b, " _t%d = %s%s%s;\n", tr, fo, ta.p ? ta.p : "0", fc);
       buf_puts(b, "}\nelse {\n");

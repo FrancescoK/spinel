@@ -10682,7 +10682,10 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
   emit_indent(g_pre, g_indent);
   if (so) buf_puts(g_pre, oint_ctype(vt)); else emit_ctype(c, boxed ? TY_POLY : vt, g_pre);
   buf_printf(g_pre, " _t%d = ", tv);
-  buf_puts(g_pre, ab.p ? ab.p : "sp_box_nil()"); buf_puts(g_pre, ";\n");
+  /* (one representation: a handle temp takes a String of either face) */
+  int hdl = g_one_string && !boxed && vt == TY_STRBUF;
+  if (hdl) buf_puts(g_pre, "SP_STR_HDL(");
+  buf_puts(g_pre, ab.p ? ab.p : "sp_box_nil()"); buf_puts(g_pre, hdl ? ");\n" : ";\n");
   free(ab.p);
   if (boxed) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv); }
   else if (comp_ty_value_obj(c, vt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, vt, tv, g_pre); buf_puts(g_pre, "\n"); }

@@ -9354,6 +9354,8 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
      handle so held stays alive and keeps its identity, where a copy of its
      bytes lost both) */
   if (g_one_string && !boxed && ty == TY_STRING && vb.p) { buf_printf(b, "__auto_type _t%d = (%s);", t, vb.p); one_face_mark(t, node); }
+  /* ...and a handle slot's String of either face as the handle */
+  else if (g_one_string && !boxed && ty == TY_STRBUF && vb.p) buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
   else {
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));

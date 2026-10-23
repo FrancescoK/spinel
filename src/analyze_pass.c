@@ -2854,6 +2854,25 @@ static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope
    A Hash subclass's store is the key and value evidence a Hash local's is,
    and a fold that leaves no Hash kind widens to boxed keys and values.
    Answers whether the receiver was such an instance. */
+/* A store into a boxed receiver may store into an instance of any Hash
+   subclass whose own `[]=` is Hash's: its key and value are evidence for
+   each such class's Hash, as a typed instance's store is. optparse keeps a
+   CompletingHash in a box and stores Symbol keys through it, where its
+   typed stores key it by Strings: the String-keyed Hash raised TypeError
+   at the Symbol. 1 when a class's Hash widened. */
+static int boxed_store_hash_subclass_evidence(Compiler *c, TyKind kt, TyKind vt) {
+  int changed = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].ary_hash || comp_ary_root(c, k) != k) continue;
+    if (comp_method_in_chain(c, k, "[]=", NULL) >= 0) continue;
+    TyKind was = c->classes[k].ary_kind, now = was;
+    if (now == TY_UNKNOWN) continue;
+    fold_container_evidence(&now, 0, 0, kt, vt);
+    if (now != was && !ty_is_hash(now)) now = TY_POLY_POLY_HASH;
+    if (now != was) { c->classes[k].ary_kind = now; changed = 1; }
+  }
+  return changed;
+}
 static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push, int is_splice,
                                      TyKind kt, TyKind vt, int *changed) {
   TyKind rt = infer_type(c, recv), k;
@@ -3370,6 +3389,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY && rt0 != TY_STRH_ARRAY)
         vt = TY_STRING;
     }
+    if (is_idx_write && !is_push && !is_splice && kt != TY_UNKNOWN && infer_type(c, recv) == TY_POLY)
+      changed |= boxed_store_hash_subclass_evidence(c, (TyKind)kt, (TyKind)vt);
     if ((is_push || is_idx_write) && !elem_splat_index &&
         arysub_container_evidence(c, id, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt, &changed)) continue;
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,
@@ -10472,6 +10493,10 @@ int infer_for_index(Compiler *c) {
       LocalVar *lv = scope_local_intern(isc, vn);
       lv->is_block_param = 1;  /* iteration-bound: survives the write-types reset */
       et = for_local_other_writes(c, lv, vn, et);
+      /* (a String index the share rule made the handle is that String
+         already: resetting it each round kept the fixpoint from settling,
+         as infer_catch_block_params says) */
+      if (lv_is_handle_of(c, lv, et)) continue;
       if (lv->type != et) { lv_set_type(lv, et); changed = 1; }
     }
   }

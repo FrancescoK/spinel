@@ -190,9 +190,18 @@ int sp_str_stress_checked = 0;
 const char sp_str_empty_data[] = "\xff";
 /* nil.to_s, true.to_s and false.to_s answer FROZEN Strings in CRuby: a
    header-carrying static object marked 0xf1, as a frozen literal is */
-static struct { sp_str_hdr h; unsigned char m; char d[1]; } sp_fz_empty_s = { { NULL, 1 | SP_STR_SIZE_ASCII7, 0, 0 }, 0xf1, "" };
-static struct { sp_str_hdr h; unsigned char m; char d[5]; } sp_fz_true_s = { { NULL, 5 | SP_STR_SIZE_ASCII7, 4, 0 }, 0xf1, "true" };
-static struct { sp_str_hdr h; unsigned char m; char d[6]; } sp_fz_false_s = { { NULL, 6 | SP_STR_SIZE_ASCII7, 5, 0 }, 0xf1, "false" };
+#ifdef SP_ONE_STRING
+/* ...with the handle slot a generated literal has (sp_StringLiteral: the
+   handle, then the next slot; the header links it, tagged), so each of them
+   is one String object wherever it is boxed or held, as CRuby's is */
+static struct { void *value, *next; } sp_fz_empty_l, sp_fz_true_l, sp_fz_false_l;
+#define SP_FZ_LINK(l) ((sp_str_hdr *)((char *)&(l) + 1))
+#else
+#define SP_FZ_LINK(l) NULL
+#endif
+static struct { sp_str_hdr h; unsigned char m; char d[1]; } sp_fz_empty_s = { { SP_FZ_LINK(sp_fz_empty_l), 1 | SP_STR_SIZE_ASCII7, 0, 0 }, 0xf1, "" };
+static struct { sp_str_hdr h; unsigned char m; char d[5]; } sp_fz_true_s = { { SP_FZ_LINK(sp_fz_true_l), 5 | SP_STR_SIZE_ASCII7, 4, 0 }, 0xf1, "true" };
+static struct { sp_str_hdr h; unsigned char m; char d[6]; } sp_fz_false_s = { { SP_FZ_LINK(sp_fz_false_l), 6 | SP_STR_SIZE_ASCII7, 5, 0 }, 0xf1, "false" };
 const char *const sp_str_frozen_empty = sp_fz_empty_s.d;
 const char *const sp_str_frozen_true = sp_fz_true_s.d;
 const char *const sp_str_frozen_false = sp_fz_false_s.d;
