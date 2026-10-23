@@ -1808,6 +1808,7 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
 /* the same for any receiver the call guards: an ivar as above, or a param or
    local that can hold nil (codegen_call.c) */
 int nil_recv_guard(Compiler *c, int id, int *recv_out);
+int emit_held_nil_guard(Compiler *c, int id, int th, Buf *b);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b);
 void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b);

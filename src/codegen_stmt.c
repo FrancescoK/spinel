@@ -4982,7 +4982,12 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     int st = as_h ? view_push(c, r, TY_STRBUF) : -1;
     if (as_h) ran_first_bind(r, th, th);
     else ran_first_bind_read(r, th);
+    /* the route tests the held receiver for nil itself (emit_bang_held_open,
+       or after the arguments when they run first): a guard of the call's
+       own would go ahead of the hold and read its temp undeclared (#10017) */
+    int sv_ng = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = v;
     emit_bang_on_held(c, v, th, b);
+    g_ivar_nil_guarded_id = sv_ng;
     view_unbind(mark);
     if (as_h) { view_pop(c, st); view_pop(c, sv); }
     if (late) view_unbind(amark);
@@ -4993,7 +4998,12 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     int tr = ++g_tmp;
     int th = ++g_tmp, mark = g_n_argov;
     emit_bang_held_open(c, v, th, sref, 1, 0, b);
+    /* the receiver's nil test reads the hold, inside the expression */
+    int ng = emit_held_nil_guard(c, v, th, b);
+    int sv_ng = g_ivar_nil_guarded_id;
+    if (ng) g_ivar_nil_guarded_id = v;
     if (emit_self_mutator_stmt(c, v, b)) {
+      g_ivar_nil_guarded_id = sv_ng;
       if (pub) str_read_handle_tmp(b, th, 1);
       else buf_printf(b, "_t%d", th);
       buf_puts(b, "; })");
@@ -5008,6 +5018,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     if (iter) ran_first_bind_read(r, th);
     else ran_first_bind(r, th, th);
     emit_bang_on_held(c, v, th, b);
+    g_ivar_nil_guarded_id = sv_ng;
     view_unbind(mark);
     { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
     break;
@@ -5023,10 +5034,15 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     int tr = ++g_tmp;
     int th = ++g_tmp;
     emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v), 0, b);
+    /* (the receiver's nil test reads the hold, as in BSF_SLOT_REBOUND) */
+    int ng = emit_held_nil_guard(c, v, th, b);
+    int sv_ng = g_ivar_nil_guarded_id;
+    if (ng) g_ivar_nil_guarded_id = v;
     buf_printf(b, "const char *_t%d = ", tr);
     int mark = g_n_argov;
     ran_first_bind(r, th, th);
     emit_bang_on_held(c, v, th, b);
+    g_ivar_nil_guarded_id = sv_ng;
     view_unbind(mark);
     { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
     break;

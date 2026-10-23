@@ -24607,6 +24607,18 @@ void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent) {
   buf_printf(b, ") == NULL) %s;\n", nr);
 }
 
+/* The nil test of call id's receiver, written where the receiver is held in
+   `_t<th>` (a bang's slot hold: emit_bang_self_handle_1), when the call
+   would take one (nil_recv_guard). Answers 1 when it wrote it: the caller
+   then emits the call under g_ivar_nil_guarded_id, whose own guard would
+   go ahead of the hold and read the temp undeclared (#10017). */
+int emit_held_nil_guard(Compiler *c, int id, int th, Buf *b) {
+  int grecv = -1;
+  if (id == g_ivar_nil_guarded_id || !nil_recv_guard(c, id, &grecv)) return 0;
+  char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
+  buf_printf(b, " if (SP_UNLIKELY(!_t%d)) %s;", th, nr);
+  return 1;
+}
 /* Run statement emitter `fn` for call `id` behind the ivar nil guard: the
    guard goes in front only when `fn` handles the call, since a caller that
    falls back to another emission guards it there. */
@@ -27386,7 +27398,9 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
   if (nt_int(c->nt, id, "node_line", 0) > 0) g_refuse_outer = id;
   refuse_string_copies(c, id);
   int grecv = -1;
-  int guard = nil_recv_guard(c, id, &grecv);
+  /* (not for a call whose emitter tests its receiver itself: the bang's
+     held route, g_ivar_nil_guarded_id) */
+  int guard = id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv);
   if (guard && nt_kind(c->nt, nt_paren_single(c->nt, grecv)) == NK_CallNode) {
     /* a call's result is read once, into a rooted temp the call reads */
     int tg = ++g_tmp;
