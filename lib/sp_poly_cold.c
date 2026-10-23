@@ -1653,3 +1653,46 @@ else {
   buf[out] = 0;
   char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
 }
+
+/* A grouped redirection shares one open file description across its slots. */
+static int sp_process_redirect_slot(sp_RbVal key) {
+  if (key.tag == SP_TAG_INT) return key.v.i >= 0 && key.v.i < 3 ? (int)key.v.i : -1;
+  if (key.tag != SP_TAG_SYM || !sp_sym_name_fn) return -1;
+  const char *name = sp_sym_name_fn((sp_sym)key.v.i);
+  return strcmp(name, "in") == 0 ? 0 : strcmp(name, "out") == 0 ? 1 :
+         strcmp(name, "err") == 0 ? 2 : -1;
+}
+static int sp_process_redirect_group(sp_RbVal key) {
+  if (!sp_rbval_is_array(key)) return 0;
+  int mask = 0;
+  sp_int n = sp_poly_length(key);
+  for (sp_int j = 0; j < n; j++) {
+    int slot = sp_process_redirect_slot(sp_poly_arr_get(key, j));
+    if (slot < 0) return 0;
+    mask |= 1 << slot;
+  }
+  return mask;
+}
+/* Process.spawn's value for one standard descriptor slot (0 in, 1 out,
+   2 err): a :in/:out/:err key, or an Array key such as [:out, :err] that
+   names the slot. For a group, *prior is the group's first slot when that
+   comes before this one, so the caller reuses the descriptor it resolved
+   there instead of opening the same file again. */
+sp_RbVal sp_process_redirect_value(sp_RbVal opts, int slot, sp_bool *found, int *prior) {
+  SP_GC_ROOT_RBVAL(opts);
+  *found = FALSE;
+  *prior = -1;
+  for (sp_int j = 0, n = sp_poly_length(opts); j < n; j++) {
+    sp_RbVal key, value;
+    sp_poly_hash_pair(opts, j, &key, &value);
+    if (key.tag == SP_TAG_SYM && sp_process_redirect_slot(key) == slot) {
+      *found = TRUE; return value;
+    }
+    int mask = sp_process_redirect_group(key);
+    if (mask & (1 << slot)) {
+      for (int k = 0; k < slot; k++) if (mask & (1 << k)) { *prior = k; break; }
+      *found = TRUE; return value;
+    }
+  }
+  return sp_box_nil();
+}

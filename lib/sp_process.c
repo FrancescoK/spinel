@@ -2,8 +2,10 @@
  *
  * Lives in its own TU because the codegen calls sp_process_spawn
  * with pre-resolved positional args (in_fd, out_fd, err_fd, pgroup,
- * rlimit_cpu, rlimit_as, chdir, owned). All opts-hash unpacking happens
- * at compile time in the codegen; the runtime just needs primitive int
+ * rlimit_cpu, rlimit_as, chdir, owned). The codegen turns each option
+ * into one of them; the in/out/err redirects are found in opts at run
+ * time by sp_process_redirect_value (lib/sp_poly_cold.c), grouped keys
+ * ([:out, :err] =>) included; the runtime just needs primitive int
  * / int-fd / int-pgroup / int-rlimit values. The cmd is either a
  * String or an Array (boxed as a PolyArray). args is a PolyArray of
  * extra String args appended after cmd.
