@@ -1,0 +1,6 @@
+[:literal, [".hidden.md", "a.md"]]
+[:local, [".hidden.md", "a.md", "a.md"]]
+[:empty, []]
+[:boxed, [".hidden.md", "a.md"]]
+[:integer, TypeError, "no implicit conversion of Integer into String"]
+[:nil, TypeError, "no implicit conversion of nil into String"]
