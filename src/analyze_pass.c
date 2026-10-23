@@ -5442,13 +5442,16 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
   for (int i = 0; i < sc->nparams; i++)
     if (sc->pnames[i] && sp_streq(sc->pnames[i], vn)) return 0;
   int nw = 0;
-  for (int u = 0; u < nt->count; u++) {
-    const char *ut = nt_type(nt, u);
-    if (!ut || strncmp(ut, "LocalVariable", 13) != 0 || sp_streq(ut, "LocalVariableReadNode")) continue;
+  /* the local's writes in its scope, off the (scope, name) index: the scan
+     of every node for them ran once per `new` on a Class value and pass,
+     and was most of the parameter binding of a large program's re-narrow */
+  for (int u = comp_lvw_first_sc(c, (int)(sc - c->scopes), vn); u >= 0; u = comp_lvw_next_sc(c, u)) {
+    NodeKind uk = nt_kind(nt, u);
+    if (!comp_is_local_write(uk)) continue;
     const char *un = nt_str(nt, u, "name");
     if (!un || !sp_streq(un, vn)) continue;
     if (comp_scope_of(c, u) != sc) continue;
-    if (!sp_streq(ut, "LocalVariableWriteNode")) return 0;
+    if (uk != NK_LocalVariableWriteNode) return 0;
     if (!value_class_set(c, nt_ref(nt, u, "value"), set)) return 0;
     nw++;
   }
