@@ -17744,6 +17744,9 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
         if (lb.p && lb.p[0]) buf_printf(b, "\n%s", lb.p);
         free(lb.p);
       }
+      /* (one representation: a parameter the body changes is a handle slot) */
+      else if (g_one_string && shlv && repr_of_slot(c, shlv).as_ty == TY_STRBUF)
+        buf_printf(b, " sp_String *lv_%s = SP_STR_HDL(%s);", sp0r, sm);
       else
         buf_printf(b, " const char *lv_%s = %s;", sp0r, sm);
     }
