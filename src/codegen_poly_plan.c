@@ -376,7 +376,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       snprintf(_dself, sizeof _dself, "_t%d", tv);
     /* a boxed Time / Range points at the value; the reopen takes it by value */
     else if (is_range_or_time_class(_dcn))
-      snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
+      snprintf(_dself, sizeof _dself, sp_streq(_dcn, "Time") ? "(sp_%s *)_t%d.v.p" : "*(sp_%s *)_t%d.v.p", _dcn, tv);   /* a Time is a reference */
     /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
     else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
     /* a boxed IO or socket is the runtime's sp_File handle */
@@ -982,7 +982,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
     else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
     else if (is_range_or_time_class(_dcn2))
-      snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
+      snprintf(selfpbuf2, sizeof selfpbuf2, sp_streq(_dcn2, "Time") ? "(sp_%s *)_t%d.v.p" : "*(sp_%s *)_t%d.v.p", _dcn2, tv);   /* a Time is a reference */
     else if (sp_streq(_dcn2, "Thread"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
     else if (io_family_class(c, defcls)) {
@@ -1139,7 +1139,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
     else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
     else if (is_range_or_time_class(_dcn2))
-      snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
+      snprintf(selfpbuf2, sizeof selfpbuf2, sp_streq(_dcn2, "Time") ? "(sp_%s *)_t%d.v.p" : "*(sp_%s *)_t%d.v.p", _dcn2, tv);   /* a Time is a reference */
     else if (sp_streq(_dcn2, "Thread"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
     else if (io_family_class(c, defcls)) {
@@ -4200,9 +4200,9 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     if (repr_of(c, argv[0]).kind == RK_BOXED) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
     else snprintf(fa, sizeof fa, "%s", strarg);
     if (ret == TY_POLY)
-      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, %s)); break;", tr, tv, fa);
+      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime((sp_Time *)_t%d.v.p, %s)); break;", tr, tv, fa);
     else
-      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, %s); break;", tr, tv, fa);
+      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime((sp_Time *)_t%d.v.p, %s); break;", tr, tv, fa);
     /* with user arms in the switch, the default is theirs to emit */
     if (ps->ncand == 0)
       buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);

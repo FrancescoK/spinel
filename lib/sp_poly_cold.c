@@ -709,6 +709,10 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
     return sp_range_dup(v, keep_frozen);
+  /* a Time is a reference: its copy is a new Time a later localtime / utc
+     changes apart */
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_TIME)
+    return sp_box_time(sp_time_dup((sp_Time *)v.v.p));
 
   /* Hash#dup/#clone on a boxed hash: a shallow copy of the same variant. The
      hash went out as-is, so a `dup` taken to keep the caller's hash intact

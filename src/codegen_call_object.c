@@ -1621,6 +1621,12 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        hash exclusion below is for freeze/dup/clone, which need real
        handling on the reference types */
     if (argc0 == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return 1; }
+    /* a Time is a reference: dup and clone answer a new Time, which a later
+       localtime / utc changes apart from the receiver */
+    if (is_dup_clone && recv_t == TY_TIME && recv_tr.kind != RK_BOXED) {
+      buf_puts(b, "sp_time_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
     /* clone(freeze: _) on an immutable value is the value itself; the
        keyword can't unfreeze what has no mutable state (#2379) */
     if (argc0 == 1 && sp_streq(name, "clone") &&

@@ -266,14 +266,14 @@ static const BuiltinOp bop_rows[] = {
   { TY_TIME, "sec",        0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_time_sec($r)" },
   { TY_TIME, "wday",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_time_wday($r)" },
   { TY_TIME, "yday",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_time_yday($r)" },
-  { TY_TIME, "to_i",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r).tv_sec" },
-  { TY_TIME, "tv_sec",     0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r).tv_sec" },
-  { TY_TIME, "tv_usec",    0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r).tv_nsec / 1000)" },
-  { TY_TIME, "usec",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r).tv_nsec / 1000)" },
-  { TY_TIME, "tv_nsec",    0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r).tv_nsec)" },
-  { TY_TIME, "nsec",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r).tv_nsec)" },
-  { TY_TIME, "utc?",       0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r).is_utc == 1)" },
-  { TY_TIME, "gmt?",       0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r).is_utc == 1)" },
+  { TY_TIME, "to_i",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->tv_sec" },
+  { TY_TIME, "tv_sec",     0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->tv_sec" },
+  { TY_TIME, "tv_usec",    0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r)->tv_nsec / 1000)" },
+  { TY_TIME, "usec",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r)->tv_nsec / 1000)" },
+  { TY_TIME, "tv_nsec",    0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r)->tv_nsec)" },
+  { TY_TIME, "nsec",       0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "((sp_int)($r)->tv_nsec)" },
+  { TY_TIME, "utc?",       0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r)->is_utc == 1)" },
+  { TY_TIME, "gmt?",       0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r)->is_utc == 1)" },
   { TY_TIME, "dst?",       0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(sp_time_isdst($r) != 0)" },
   { TY_TIME, "isdst",      0, 127, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(sp_time_isdst($r) != 0)" },
   { TY_TIME, "utc_offset", 0, 127, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_time_utc_offset($r)" },
@@ -1094,7 +1094,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_TIME, "-",          0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
   { TY_TIME, "clamp",      2,   2, BF_ANY, TY_TIME,       BOPE_NONE },  /* self or a bound */
   { TY_TIME, "to_a",       0,   0, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },
-  { TY_TIME, "to_r",      0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "({ sp_Time _t$t = $r; sp_rational_new_i64((int64_t)_t$t.tv_sec * 1000000000LL + _t$t.tv_nsec, 1000000000); })", TY_UNKNOWN },
+  { TY_TIME, "to_r",      0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "({ SP_TIME_TMP(_t$t) = $r; sp_rational_new_i64((int64_t)_t$t->tv_sec * 1000000000LL + _t$t->tv_nsec, 1000000000); })", TY_UNKNOWN },
   { TY_TIME, "floor",     0,   0, BF_ANY, TY_TIME,       BOPE_TEMPLATE, "sp_time_round_to($r, 0, 0)", TY_UNKNOWN },  /* ndigits 0: whole seconds (#3089) */
   { TY_TIME, "floor",     1,   1, BF_ANY, TY_TIME,       BOPE_TEMPLATE, "sp_time_round_to($r, $i0, 0)", TY_UNKNOWN },  /* a negative count raises (#3700) */
   { TY_TIME, "ceil",      0,   0, BF_ANY, TY_TIME,       BOPE_TEMPLATE, "sp_time_round_to($r, 0, 1)", TY_UNKNOWN },
@@ -1106,8 +1106,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_TIME, "deconstruct_keys", 1,   1, BF_ANY, TY_POLY,       BOPE_NONE },  /* a boxed Symbol => Integer hash */
   { TY_TIME, "strftime",  1,   1, BF_ANY, TY_STRING,     BOPE_TEMPLATE, "sp_time_strftime($r, $s0)", TY_UNKNOWN },
   { TY_TIME, "strftime",   0, 127, BF_ANY, TY_STRING,     BOPE_NONE },
-  { TY_TIME, "to_f",      0, 127, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "({ sp_Time _t$t = ($r); sp_time_ns_to_f(_t$t.tv_sec, _t$t.tv_nsec); })", TY_UNKNOWN },  /* one read of the receiver (#2865) */
-  { TY_TIME, "subsec",    0, 127, BF_ANY, TY_POLY,       BOPE_TEMPLATE, "({ sp_Time _t$t = $r; _t$t.tv_nsec == 0 ? sp_box_int(0) : sp_box_rational(sp_rational_new((sp_int)_t$t.tv_nsec, 1000000000)); })", TY_UNKNOWN },  /* Integer 0 for a whole second, else a Rational */
+  { TY_TIME, "to_f",      0, 127, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "({ SP_TIME_TMP(_t$t) = ($r); sp_time_ns_to_f(_t$t->tv_sec, _t$t->tv_nsec); })", TY_UNKNOWN },  /* one read of the receiver (#2865) */
+  { TY_TIME, "subsec",    0, 127, BF_ANY, TY_POLY,       BOPE_TEMPLATE, "({ SP_TIME_TMP(_t$t) = $r; _t$t->tv_nsec == 0 ? sp_box_int(0) : sp_box_rational(sp_rational_new((sp_int)_t$t->tv_nsec, 1000000000)); })", TY_UNKNOWN },  /* Integer 0 for a whole second, else a Rational */
   { TY_TIME, "<",          0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_TIME, ">",          0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_TIME, "<=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },

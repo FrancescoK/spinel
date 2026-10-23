@@ -6,7 +6,7 @@
 #include "sp_dtoa.h"    /* sp_format_float (locale-independent %g) */
 #include <stdio.h>
 #include <string.h>
-#include "sp_time.h"   /* sp_time_inspect_v / sp_time_to_s_v */
+#include "sp_time.h"   /* sp_timev_inspect_v / sp_timev_to_s_v */
 #include "sp_range.h"  /* sp_range_inspect */
 
 /* Format a non-negative Complex-component magnitude the way MRI does: infinite
@@ -93,8 +93,8 @@ const char *sp_Range_inspect(sp_Range *r) {
    zone kind and offset, the year in Ruby's form. A gmtime + strftime
    rendering here called every Time UTC, and C's %Y left a year below 1000
    unpadded on glibc. */
-const char *sp_Time_inspect(sp_Time *t) {SP_GC_ROOT(t); return sp_time_inspect_v(*t); }
-const char *sp_Time_to_s(sp_Time *t)    {SP_GC_ROOT(t); return sp_time_to_s_v(*t); }
+const char *sp_Time_inspect(sp_Time *t) {SP_GC_ROOT(t); return sp_timev_inspect_v(*t); }
+const char *sp_Time_to_s(sp_Time *t)    {SP_GC_ROOT(t); return sp_timev_to_s_v(*t); }
 
 /* ---- Complex arithmetic ---- */
 /* Component-class (fl) propagation mirrors CRuby's numeric tower: add/sub act

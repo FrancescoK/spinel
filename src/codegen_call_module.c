@@ -831,7 +831,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
         struct_kwarg_value(c, argv[0], "in") >= 0) {
       int ts = ++g_tmp;
-      buf_printf(b, "({ sp_Time _t%d = sp_time_now();", ts);
+      buf_printf(b, "({ SP_TIME_TMP(_t%d) = sp_time_now();", ts);
       emit_time_in_zone(c, ts, struct_kwarg_value(c, argv[0], "in"), b);
       return 1;
     }
@@ -857,7 +857,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "at") && argc == 1) {
       Repr ar = repr_of(c, argv[0]);
       TyKind at = ar.as_ty;
-      if (at == TY_TIME) { emit_expr(c, argv[0], b); return 1; }  /* value copy */
+      if (at == TY_TIME) { buf_puts(b, "sp_time_dup("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1; }  /* a new Time */
       if (at == TY_RATIONAL) {
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_Rational _t%d = ", tr);
@@ -871,7 +871,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                         at == TY_NIL ? "NilClass" : NULL;
       if (atc) {
         buf_printf(b, "({ sp_raise_cls(\"TypeError\", "
-                      "\"can't convert %s into an exact number\"); (sp_Time){0, 0, 0}; })", atc);
+                      "\"can't convert %s into an exact number\"); (sp_Time *)NULL; })", atc);
         return 1;
       }
       /* a poly argument (`Time.at(x)` where x is a heterogeneous/nullable
@@ -893,7 +893,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         const char *ocn = conv_cls_name_of(c, at);
         if (ocn) {
           buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
-          buf_printf(b, "); sp_raise_cls(\"TypeError\", \"can't convert %s into an exact number\"); (sp_Time){0, 0, 0}; })", ocn);
+          buf_printf(b, "); sp_raise_cls(\"TypeError\", \"can't convert %s into an exact number\"); (sp_Time *)NULL; })", ocn);
           return 1;
         }
       }
@@ -913,7 +913,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int ts = ++g_tmp;
       Repr sr = repr_of(c, argv[0]);
       TyKind st = sr.as_ty;
-      buf_printf(b, "({ sp_Time _t%d = ", ts);
+      buf_printf(b, "({ SP_TIME_TMP(_t%d) = ", ts);
       if (st == TY_TIME) emit_expr(c, argv[0], b);
       else if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (st == TY_RATIONAL) {
@@ -949,13 +949,13 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (un && (sp_streq(un, "usec") || sp_streq(un, "microsecond"))) mult = 1000;
       else if (un && (sp_streq(un, "nsec") || sp_streq(un, "nanosecond"))) mult = 1;
       else if (un) {
-        buf_printf(b, "({ sp_raise_cls(\"ArgumentError\", \"unexpected unit: %s\"); (sp_Time){0}; })", un);
+        buf_printf(b, "({ sp_raise_cls(\"ArgumentError\", \"unexpected unit: %s\"); (sp_Time *)NULL; })", un);
         return 1;
       }
       if (mult > 0) {
         TyKind st = repr_of(c, argv[0]).as_ty;
         int ts = ++g_tmp;
-        buf_printf(b, "({ sp_Time _t%d = ", ts);
+        buf_printf(b, "({ SP_TIME_TMP(_t%d) = ", ts);
         if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
         buf_printf(b, "; _t%d = sp_time_add_nsec(_t%d, (int64_t)(", ts, ts);
@@ -976,7 +976,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       Repr st_repr = repr_of(c, argv[0]);
       TyKind st = st_repr.as_ty;
       int ts = ++g_tmp;
-      buf_printf(b, "({ sp_Time _t%d = ", ts);
+      buf_printf(b, "({ SP_TIME_TMP(_t%d) = ", ts);
       if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (st_repr.kind == RK_BOXED || st == TY_UNKNOWN) { buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
       else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }

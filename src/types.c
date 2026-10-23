@@ -880,8 +880,8 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
   /* Proc#=== (a curried one too), Method#=== and Range#=== call, invoke or
      cover: not identity */
   if (is_case && (rt == TY_METHOD || rt == TY_CURRY || rt == TY_STR_RANGE)) return 0;
-  /* a by-value struct has no identity to compare */
-  if (kind == 2 && is_equal) return 0;
+  /* a by-value struct has no identity to compare; a Time is a reference */
+  if (kind == 2 && is_equal && rt != TY_TIME) return 0;
   return 1;
 }
 

@@ -855,8 +855,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       TyKind a0t = a0tr.as_ty;
       if (a0t == TY_TIME) {
         int ta = ++g_tmp, tb = ++g_tmp;
-        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", ta); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_Time _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_puts(b, "({ SP_TIME_TMP(_t"); buf_printf(b, "%d) = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_TIME_TMP(_t%d) = ", tb); emit_expr(c, argv[0], b);
         buf_printf(b, "; (sp_int)sp_time_cmp(_t%d, _t%d); })", ta, tb);
         return 1;
       }
@@ -864,10 +864,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          run time; a concrete non-Time operand is unconditionally nil. */
       if (a0tr.kind == RK_BOXED || a0t == TY_UNKNOWN) {
         int ta = ++g_tmp, tb = ++g_tmp;
-        buf_printf(b, "({ sp_Time _t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "({ SP_TIME_TMP(_t%d) = ", ta); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
         buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? "
-                      "sp_box_int(sp_time_cmp(_t%d, *(sp_Time *)_t%d.v.p)) : sp_box_nil(); })",
+                      "sp_box_int(sp_time_cmp(_t%d, (sp_Time *)_t%d.v.p)) : sp_box_nil(); })",
                    tb, tb, ta, tb);
         return 1;
       }
@@ -1126,8 +1126,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (rt == TY_TIME) {
       if (comp_ntype(c, argv[0]) == TY_TIME) {
         int tt = ++g_tmp, tu = ++g_tmp;
-        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
+        buf_puts(b, "({ SP_TIME_TMP(_t"); buf_printf(b, "%d) = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_TIME_TMP(_t%d) = ", tu); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
         return 1;
       }
@@ -1135,7 +1135,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       Repr tar = repr_of(c, argv[0]);
       if (tar.kind == RK_BOXED || tar.untyped) {
         int tt = ++g_tmp, tu = ++g_tmp;
-        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
+        buf_puts(b, "({ SP_TIME_TMP(_t"); buf_printf(b, "%d) = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
         buf_printf(b, "; sp_poly_time_cmp_arg(_t%d, _t%d) %s 0; })", tt, tu, name);
         return 1;

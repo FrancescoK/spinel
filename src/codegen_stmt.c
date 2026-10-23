@@ -174,7 +174,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   else if (t == TY_TIME) {
     int tv = ++g_tmp;
-    buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ SP_TIME_TMP(_t%d) = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; const char *_ts = sp_time_to_s_v(_t%d); sp_puts_line(_ts); }\n", tv);
   }
   else if (t == TY_RANGE) {
@@ -545,7 +545,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   else if (t == TY_TIME) {
     int tv = ++g_tmp;
-    buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ SP_TIME_TMP(_t%d) = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; sp_puts_line(sp_time_inspect_v(_t%d)); }\n", tv);
   }
   else if (t == TY_RANGE) {   /* a Range inspects as "first..last" / "first...last" */

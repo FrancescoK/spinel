@@ -14,7 +14,7 @@
    already uses for the extern sp_gc_heap / sp_gc_bytes object heap. */
 #include "sp_types.h"   /* sp_str_hdr, sp_int, sp_float */
 #include "sp_gc.h"      /* sp_gc_collect, sp_oom_die, sp_gc_str_sweep_hook */
-#include "sp_time.h"    /* sp_Time for sp_box_time */
+#include "sp_time.h"    /* sp_Time for sp_box_timev */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>      /* snprintf for the int/float formatters below */
@@ -1313,7 +1313,8 @@ static inline sp_RbVal sp_box_ptr_array_k(void *p, int kind, int cls) {
 sp_RbVal sp_box_method(void *p);
 sp_RbVal sp_box_complex(sp_Complex v);
 sp_RbVal sp_box_rational(sp_Rational v);
-sp_RbVal sp_box_time(sp_Time v);
+sp_RbVal sp_box_timev(sp_Time v);
+sp_RbVal sp_box_time(sp_Time *p);   /* a Time is boxed as itself */
 sp_RbVal sp_box_tms(sp_Tms v);
 struct sp_ProcessStatus_s;   /* forward decl for the box helper */
 sp_RbVal sp_box_process_status(struct sp_ProcessStatus_s *v);

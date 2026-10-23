@@ -1212,7 +1212,7 @@ const char *sp_file_read(const char *path) {SP_GC_ROOT_STR(path);
   return r;
 }
 
-sp_Time sp_file_atime(const char *path) {SP_GC_ROOT_STR(path);
+sp_Time sp_filev_atime(const char *path) {SP_GC_ROOT_STR(path);
   if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
   struct stat st;
   if (stat(path, &st) == -1) {
@@ -1225,7 +1225,7 @@ sp_Time sp_file_atime(const char *path) {SP_GC_ROOT_STR(path);
   return (sp_Time){(int64_t)st.st_atim.tv_sec, (int32_t)st.st_atim.tv_nsec, 0};
 #endif
 }
-sp_Time sp_file_ctime(const char *path) {SP_GC_ROOT_STR(path);
+sp_Time sp_filev_ctime(const char *path) {SP_GC_ROOT_STR(path);
   if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
   struct stat st;
   if (stat(path, &st) == -1) {
@@ -1238,7 +1238,7 @@ sp_Time sp_file_ctime(const char *path) {SP_GC_ROOT_STR(path);
   return (sp_Time){(int64_t)st.st_ctim.tv_sec, (int32_t)st.st_ctim.tv_nsec, 0};
 #endif
 }
-sp_Time sp_file_mtime(const char *path) {SP_GC_ROOT_STR(path);
+sp_Time sp_filev_mtime(const char *path) {SP_GC_ROOT_STR(path);
   if (!path) {
     sp_raise_cls("TypeError", "no implicit conversion of nil into String");
     return (sp_Time){0, 0, 0};
@@ -1257,7 +1257,7 @@ sp_Time sp_file_mtime(const char *path) {SP_GC_ROOT_STR(path);
   return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
 #endif
 }
-sp_Time sp_file_birthtime(const char *path) {SP_GC_ROOT_STR(path);  /* (#2985) */
+sp_Time sp_filev_birthtime(const char *path) {SP_GC_ROOT_STR(path);  /* (#2985) */
   if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
   /* OpenBSD's struct stat keeps the birth time only as the private
      __st_birthtim, so CRuby has no File.birthtime there either: the #else */
@@ -3013,12 +3013,12 @@ static sp_int sp_stat_field_n(sp_File *f, sp_int which, int *ok) {SP_GC_ROOT(f);
 }
 /* The TIME accessors of File::Stat, reading the struct the handle's own mode
    selects. Like the type predicates below, these went through the path
-   helpers -- sp_file_mtime(path) always stat(2)s -- so an lstat handle
+   helpers -- sp_filev_mtime(path) always stat(2)s -- so an lstat handle
    reported the TARGET's times and File.lutime was invisible through it
    (#4616). birthtime keeps the path helper: it needs statx/st_birthtimespec,
    which the plain struct here does not carry portably. Kinds: 0=mtime
    1=atime 2=ctime. */
-sp_Time sp_stat_handle_time(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
+sp_Time sp_statv_handle_time(sp_File *f, sp_int kind) {SP_GC_ROOT(f);
   struct stat st;
   int r;
   if (sp_stat_pathless(f)) r = fstat(fileno(f->fp), &st);
@@ -5273,11 +5273,17 @@ sp_RbVal sp_box_rational(sp_Rational v) {
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
    so no scanner is needed. */
-sp_RbVal sp_box_time(sp_Time v) {
+sp_RbVal sp_box_timev(sp_Time v) {
   sp_Time *p = (sp_Time *)sp_gc_alloc(sizeof(sp_Time), NULL, NULL);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_TIME);
 }
+sp_RbVal sp_box_time(sp_Time *p) { return sp_box_obj(p, SP_BUILTIN_TIME); }
+sp_Time *sp_file_mtime(const char *path) { return sp_time_ref(sp_filev_mtime(path)); }
+sp_Time *sp_file_atime(const char *path) { return sp_time_ref(sp_filev_atime(path)); }
+sp_Time *sp_file_ctime(const char *path) { return sp_time_ref(sp_filev_ctime(path)); }
+sp_Time *sp_file_birthtime(const char *path) { return sp_time_ref(sp_filev_birthtime(path)); }
+sp_Time *sp_stat_handle_time(sp_File *f, sp_int kind) { return sp_time_ref(sp_statv_handle_time(f, kind)); }
 /* Boxing for the unboxed sp_Tms value (a rescue expression merges it into a
    nullable slot, #3132): heap-copy like sp_box_frange. */
 sp_RbVal sp_box_tms(sp_Tms v) {
