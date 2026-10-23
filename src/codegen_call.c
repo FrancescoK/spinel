@@ -7002,6 +7002,9 @@ static int kwh_named_kwarg_fills(Compiler *c, Scope *m, int kwh) {
    lib/sp_proc.h. */
 void abi_sig_token(TyKind t, char *out) {
   int code;
+  /* (one-String mode: every String parameter is the handle, and a call
+     hands a String to the cast as its handle: one token for both) */
+  if (g_one_string && t == TY_STRING) t = TY_STRBUF;
   switch (t) {
     case TY_UNKNOWN: code = 0;     break;   /* wildcard over the scalar kinds */
     case TY_INT:     code = 1;     break;
@@ -7384,6 +7387,8 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
       else { char _tn[24]; snprintf(_tn, sizeof _tn, "_t%d", atmp[k]); \
              emit_boxed_text(c, atmp_ty[k], _tn, &eb); } \
     } \
+    else if (g_one_string && (atmp_ty[k] == TY_STRING || atmp_ty[k] == TY_STRBUF)) \
+      buf_printf(&eb, "(sp_int)(uintptr_t)SP_STR_HDL(_t%d)", atmp[k]); \
     else PA_SLOT(k); \
   } while (0)
   /* The bound Method may wrap an instance method (self-ful: fn(self, args))
