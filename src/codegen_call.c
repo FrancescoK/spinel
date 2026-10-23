@@ -14889,10 +14889,12 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
     if (cn && sp_streq(cn, "Array") && argc == 2) {
-      /* Array.new(n, v) -> n copies of v */
+      /* Array.new(n, v) -> n copies of v; a narrowed pointer array (an
+         object array, a table of rows) holds v's unboxed pointer n times */
       Repr ar = repr_of(c, id);
       TyKind at = ar.as_ty;
-      const char *k = (ar.elem == TY_POLY) ? "Poly" : array_kind(at);
+      const char *k = (ar.elem == TY_POLY) ? "Poly"
+                    : ty_is_ptr_array(at) && at != TY_STRH_ARRAY ? "Ptr" : array_kind(at);
       if (k) {
         int tn = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         /* The size goes into an `sp_int` temp; coerce a poly size expression

@@ -13379,15 +13379,22 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
       claimed[crecv] = 1;
       oa_uf_union(sl, S, read_slot[crecv]);
     }
+    /* `t = Array.new(n, v)`: every slot holds the one fill value v, so v is
+       the same evidence a pushed element gives, as the generator block's
+       value is below. */
+    else if (crecv >= 0 && nt_kind(nt, crecv) == NK_ConstantReadNode &&
+             is_array_new(nt_str(nt, crecv, "name"), cn) && nt_ref(nt, v, "block") < 0 && can == 2) {
+      int ec = oa_elem_evidence(c, sl, S, nt_arr(nt, cargs, "arguments", &can)[1]);
+      if (ec < 0 && !OA_CLS_IS_NESTED(ec)) sl[S].alive = 0;
+      else sl[S].cls = oa_cls_join(sl[S].cls, ec);
+    }
     /* `t = Array.new(n) { <int array> }`: the generator block's value is the
        element, so its type is the same evidence a pushed element gives. The
        nested int table this builds is the one shape the pass still left on
        the boxed poly path, so every read of it went through sp_poly_arr_get
        and its arithmetic boxed. */
-    else if (cn && sp_streq(cn, "new") && crecv >= 0 &&
-             nt_type(nt, crecv) && sp_streq(nt_type(nt, crecv), "ConstantReadNode") &&
-             nt_str(nt, crecv, "name") && sp_streq(nt_str(nt, crecv, "name"), "Array") &&
-             nt_ref(nt, v, "block") >= 0) {
+    else if (crecv >= 0 && nt_kind(nt, crecv) == NK_ConstantReadNode &&
+             is_array_new(nt_str(nt, crecv, "name"), cn) && nt_ref(nt, v, "block") >= 0) {
       int gb = nt_ref(nt, v, "block");
       int gbody = gb >= 0 ? nt_ref(nt, gb, "body") : -1;
       int gn = 0;
