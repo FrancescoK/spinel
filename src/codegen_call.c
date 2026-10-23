@@ -14911,8 +14911,6 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
-        emit_indent(g_pre, g_indent);
         if (ar.elem == TY_POLY) {
           buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
           Repr fvtr = repr_of(c, argv[1]);
@@ -14943,6 +14941,10 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
         if (array_fill_held_only_here(c, argv[1], fh, k)) { emit_gc_root_tmp(c, fh || ar.elem == TY_POLY ? TY_POLY : ar.elem, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
+        /* the size is checked after the fill ran, as CRuby evaluates both
+           arguments before Array.new looks at them (CodeRabbit on #10019) */
+        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
+        emit_indent(g_pre, g_indent);
         if (is_numeric_literal_tag(k) && *nil_store_sfx(c, k, argv[1])) {
           buf_printf(g_pre, "sp_%sArray *_t%d = _t%d.nil ? sp_%sArray_new_nil(_t%d) : sp_%sArray_new_fill(_t%d, _t%d.v);\n",
                      k, tr, tv, k, tn, k, tn, tv);
