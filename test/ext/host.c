@@ -29,6 +29,7 @@ int main(void) {
   printf("%lld\n", (long long)sp_ExtKernel_s_opt_inc(sp_oint_nil()));
   printf("%lld\n", (long long)sp_ExtKernel_s_opt_inc(sp_oint_of(41LL)));
   printf("%lld\n", (long long)sp_ExtKernel_s_opt_inc(sp_oint_of(INT64_MIN)));
+  printf("%s\n", sp_ExtKernel_s_label(sp_box_int(21LL)));
   sp_oint pos = sp_ExtKernel_s_find_pos(a, 20LL);
   if (pos.nil) puts("nil"); else printf("%lld\n", (long long)pos.v);
   pos = sp_ExtKernel_s_find_pos(a, 99LL);
