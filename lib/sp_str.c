@@ -518,7 +518,10 @@ const char*sp_str_repeat(const char*s,sp_int n){SP_GC_ROOT_STR(s);
   size_t total=(size_t)n*l;
   sp_str_check_size(0,total);
   char*r=sp_str_alloc_raw(total+1);
-  for(sp_int i=0;i<n;i++)memcpy(r+(l*i),s,l);
+  /* one copy, then the filled part onto the rest, doubling: log2(n)
+     memcpys rather than n (a one-byte string times 20M was 20M calls) */
+  memcpy(r,s,l);
+  for(size_t done=l;done<total;){size_t c=done<total-done?done:total-done;memcpy(r+done,r,c);done+=c;}
   r[total]=0;
   sp_str_set_len(r,total);
   return sp_str_bin_from(r,s);
