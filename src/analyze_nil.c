@@ -160,17 +160,6 @@ static int nf_slot_why(NF *f, const int *flag) {
   return *flag;
 }
 
-static int nf_unparen(const NodeTable *nt, int v) {
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, v, "body");
-    int n = 0; const int *bd = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    if (b >= 0 && nt_kind(nt, b) != NK_StatementsNode) { v = b; continue; }
-    if (n != 1) break;
-    v = bd[0];
-  }
-  return v;
-}
-
 /* Does class y's chain reach class or module x (itself, an ancestor, or a
    module one of them includes)? */
 static int nf_class_reaches(Compiler *c, int y, int x) {
@@ -207,7 +196,7 @@ static int nf_written_before(NF *f, int rd, NodeKind wk, const char *name) {
   if (top < 0 || f->par[top] < 0) return 0;
   int bn = 0; const int *b = nt_arr(nt, f->par[top], "body", &bn);
   for (int i = 0; i < bn && b[i] != top; i++) {
-    int w = nf_unparen(nt, b[i]);
+    int w = nt_paren_single(nt, b[i]);
     const char *wn = nt_kind(nt, w) == wk ? nt_str(nt, w, "name") : NULL;
     if (wn && sp_streq(wn, name)) return 1;
   }
@@ -264,7 +253,7 @@ static int nf_ivar_def_list(NF *f, int st, const char *ivn, int mi, int depth) {
 
 /* A raise ends no path normally: it writes every ivar. */
 static int nf_raises(const NodeTable *nt, int n) {
-  n = nf_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n >= 0 && nt_kind(nt, n) == NK_StatementsNode) {
     int bn = 0; const int *b = nt_arr(nt, n, "body", &bn);
     return bn > 0 && nf_raises(nt, b[bn - 1]);
@@ -404,7 +393,7 @@ static int nf_ivar(NF *f, int cls, const char *ivn) {
 /* ---- the guard a read of a local sits under ---- */
 
 static int nf_is_read_of(const NodeTable *nt, int n, const char *nm) {
-  n = nf_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k != NK_LocalVariableReadNode && k != NK_LocalVariableWriteNode) return 0;
@@ -441,7 +430,7 @@ static int nf_class_excludes_nil(Compiler *c, int p) {
 }
 static int nf_truthy_implies(Compiler *c, int p, const char *nm) {
   const NodeTable *nt = c->nt;
-  p = nf_unparen(nt, p);
+  p = nt_paren_single(nt, p);
   if (p < 0) return 0;
   if (nf_is_read_of(nt, p, nm)) return 1;
   NodeKind k = nt_kind(nt, p);
@@ -452,7 +441,7 @@ static int nf_truthy_implies(Compiler *c, int p, const char *nm) {
     int r = nt_ref(nt, p, "receiver");
     if (!cn || r < 0) return 0;
     if (sp_streq(cn, "!")) return nf_falsy_implies(c, r, nm);
-    if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nf_unparen(nt, r)) != NK_LocalVariableReadNode) return 0;
+    if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nt_paren_single(nt, r)) != NK_LocalVariableReadNode) return 0;
     if (sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?"))
       return nf_class_excludes_nil(c, p);
     if (sp_streq(cn, "!=")) {
@@ -466,7 +455,7 @@ static int nf_truthy_implies(Compiler *c, int p, const char *nm) {
 /* p falsy => local nm is not nil */
 static int nf_falsy_implies(Compiler *c, int p, const char *nm) {
   const NodeTable *nt = c->nt;
-  p = nf_unparen(nt, p);
+  p = nt_paren_single(nt, p);
   if (p < 0) return 0;
   NodeKind k = nt_kind(nt, p);
   if (k == NK_OrNode)
@@ -476,7 +465,7 @@ static int nf_falsy_implies(Compiler *c, int p, const char *nm) {
     int r = nt_ref(nt, p, "receiver");
     if (!cn || r < 0) return 0;
     if (sp_streq(cn, "!")) return nf_truthy_implies(c, r, nm);
-    if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nf_unparen(nt, r)) != NK_LocalVariableReadNode) return 0;
+    if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nt_paren_single(nt, r)) != NK_LocalVariableReadNode) return 0;
     if (sp_streq(cn, "nil?")) return 1;
     if (sp_streq(cn, "==")) {
       int a = nt_ref(nt, p, "arguments"), an = 0;
@@ -609,14 +598,14 @@ static int nf_nil_user_method(Compiler *c, const char *name) {
    left of `&&` and `||`, a list's statements, an Array's elements. */
 static int nf_derefs(Compiler *c, int n, const char *nm, int depth) {
   const NodeTable *nt = c->nt;
-  n = nf_unparen(nt, n);
+  n = nt_paren_single(nt, n);
   if (n < 0 || depth > 64) return 0;
   switch (nt_kind(nt, n)) {
   case NK_CallNode: {
     int r = nt_ref(nt, n, "receiver");
     const char *cn = nt_str(nt, n, "name");
     if (r >= 0 && cn && !nt_safe_nav(nt, n) && nf_is_read_of(nt, r, nm) &&
-        nt_kind(nt, nf_unparen(nt, r)) == NK_LocalVariableReadNode && !is_nil_method(cn) &&
+        nt_kind(nt, nt_paren_single(nt, r)) == NK_LocalVariableReadNode && !is_nil_method(cn) &&
         !nf_nil_user_method(c, cn)) return 1;
     if (r >= 0 && nf_derefs(c, r, nm, depth + 1)) return 1;
     int a = nt_ref(nt, n, "arguments"), an = 0;
@@ -647,7 +636,7 @@ static int nf_derefs(Compiler *c, int n, const char *nm, int depth) {
 }
 /* A statement that leaves the list: `return`, `next`, `break`, `raise` */
 static int nf_is_jump(const NodeTable *nt, int s) {
-  s = nf_unparen(nt, s);
+  s = nt_paren_single(nt, s);
   if (s < 0) return 0;
   if (nt_kind(nt, s) == NK_StatementsNode) {
     int n = 0; const int *b = nt_arr(nt, s, "body", &n);
@@ -665,7 +654,7 @@ static int nf_is_jump(const NodeTable *nt, int s) {
 /* `return unless nm` / `raise ... if nm.nil?`: after it, nm is not nil */
 static int nf_exit_guard(Compiler *c, int s, const char *nm) {
   const NodeTable *nt = c->nt;
-  s = nf_unparen(nt, s);
+  s = nt_paren_single(nt, s);
   if (s < 0) return 0;
   NodeKind k = nt_kind(nt, s);
   if (k == NK_OrNode)   /* `nm or return` */
@@ -943,7 +932,7 @@ static int nf_elem_ivar_op(NF *f, int cls, const char *ivn, int bits) {
 static int nf_elem_slot_op(NF *f, int v, int bits) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
-  v = nf_unparen(nt, v);
+  v = nt_paren_single(nt, v);
   if (v < 0) return -1;
   const char *nm = nt_str(nt, v, "name");
   if (!nm) return -1;
@@ -1390,7 +1379,7 @@ static int nf_target_value(NF *f, int t) {
   NodeKind pk = nt_kind(nt, p);
   if (pk == NK_RescueNode) return -3;
   if (pk != NK_MultiWriteNode) return -2;
-  int val = nf_unparen(nt, nt_ref(nt, p, "value"));
+  int val = nt_paren_single(nt, nt_ref(nt, p, "value"));
   if (val < 0 || nt_kind(nt, val) != NK_ArrayNode || nt_ref(nt, p, "rest") >= 0) return -2;
   int ln = 0; const int *ls = nt_arr(nt, p, "lefts", &ln);
   int en = 0; const int *es = nt_arr(nt, val, "elements", &en);
