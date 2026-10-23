@@ -1401,6 +1401,16 @@ static void header_parent_encloses(Compiler *c, int par, int child, const char *
 }
 
 
+/* `def (expr).m`: Prism gives the receiver's own parentheses the expression
+   itself as body; parentheses inside it hold statements as usual. */
+static int sg_def_receiver(const NodeTable *nt, int recv) {
+  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, recv, "body");
+    if (b >= 0 && nt_kind(nt, b) != NK_StatementsNode) recv = b;
+  }
+  return nt_paren_single(nt, recv);
+}
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -3302,7 +3312,7 @@ void register_singleton_defs(Compiler *c) {
       /* `def (obj).m` is `def obj.m`: a variable, or a constant that may
          hold an object, binds the same way unwrapped. Self and a class's
          constant stay as the walk filed them. */
-      int ur = sg_unparen(nt, recv);
+      int ur = sg_def_receiver(nt, recv);
       NodeKind uk = ur >= 0 && ur != recv ? nt_kind(nt, ur) : NK_NilNode;
       if (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode ||
           uk == NK_ClassVariableReadNode || uk == NK_GlobalVariableReadNode ||
