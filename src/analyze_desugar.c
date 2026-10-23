@@ -19248,7 +19248,7 @@ int object_public_method_name(const char *n) {
 
 static int rbself_builtin(const char *cn) {
   static const char *const B[] = { "String", "Integer", "Float", "Symbol", "TrueClass",
-    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", "Random", NULL };
+    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", "Random", "Enumerator", NULL };
   return str_in(cn, B);
 }
 

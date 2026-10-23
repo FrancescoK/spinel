@@ -3548,8 +3548,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
       const char *ecn = c->classes[g_emitting_class_id].name;
-      /* an IO reopening's self is the sp_File handle, typed so */
-      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass") && !io_family_class(c, g_emitting_class_id))
+      /* an IO reopening's self is the sp_File handle, an Enumerator's the sp_Enumerator */
+      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass") && !io_family_class(c, g_emitting_class_id) && !sp_streq(ecn, "Enumerator"))
         rt = TY_POLY;
     }
     /* MatchData is nullable (nil on no-match): .class checks at run time so a

@@ -10171,6 +10171,9 @@ TyKind infer_builtin_self(Compiler *c, int self_cls) {
   /* a Numeric reopen is called on any number -- an Integer, a Float --
      and takes self boxed, the arithmetic on it dispatching on the value */
   if (sp_streq(cn, "Numeric")) return TY_POLY;
+  /* an Enumerator reopen's method is called on the runtime's Enumerator,
+     and the C function takes it so (mc_reopen_cls) */
+  if (sp_streq(cn, "Enumerator")) return TY_ENUMERATOR;
   TyKind bk = builtin_value_kind(cn);
   /* (File, IO and the sockets only at the top level: `M::File` is the
      program's own class) */

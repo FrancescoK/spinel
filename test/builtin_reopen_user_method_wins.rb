@@ -72,3 +72,13 @@ class Array
 end
 p([1, 2].detect { |v| v > 1 }, [1, 2].collect_concat { |v| [v] })
 p([1, 2].find { |v| v > 1 }, [1, 2].flat_map { |v| [v] })
+
+# self in an Enumerator reopen is the Enumerator, and a bare call is its own
+class Enumerator
+  def self_size = self.size
+  def heads = [self.next, peek]
+  def doubled = map { |x| x * 2 }
+  def own_class = self.class
+end
+e2 = [1, 2, 3].each
+p e2.self_size, e2.heads, e2.doubled, e2.own_class, 3.times.doubled

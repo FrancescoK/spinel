@@ -29,3 +29,8 @@ true
 [1, 2]
 :array_find
 :array_flat_map
+:enum_size
+[:enum_next, 1]
+:enum_map
+Enumerator
+:enum_map
