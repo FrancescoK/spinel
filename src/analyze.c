@@ -14710,12 +14710,12 @@ static int narrow_object_arrays(Compiler *c) {
     /* ... and only while nothing yet unsupported comes with it: a block that
        nests another (bit 4), a walk whose value is used (bit 8), or an
        element class that is itself Enumerable, whose Enumerable methods have
-       no emitter on a typed receiver. */
+       no emitter on a typed receiver. An element class with its own `each`
+       but no Enumerable has no such methods, and its `each` is an ordinary
+       method call on the element. */
     if (!OA_CLS_IS_NESTED(sl[r].cls) &&
         ((sl[r].row_iter & 14) ||
-         (sl[r].row_iter && sl[r].cls >= 0 &&
-          (an_class_includes_enumerable(c, sl[r].cls) ||
-           comp_method_in_chain(c, sl[r].cls, "each", NULL) >= 0)))) {
+         (sl[r].row_iter && sl[r].cls >= 0 && an_class_includes_enumerable(c, sl[r].cls)))) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;
       oa_restore_pin(c, &sl[i]);
