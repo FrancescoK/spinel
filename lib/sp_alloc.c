@@ -1370,7 +1370,9 @@ void sp_alloc_report_tag(void *scan, const char *name) {
 #endif
 typedef struct { uintptr_t lo, hi; const char *name; } sp_AllocSym;
 typedef struct { char *c, *ruby; } sp_AllocRubyName;
+#ifndef SP_THREADS
 static int sp_alloc_syms_loaded = 0;
+#endif
 static sp_AllocSym *sp_alloc_syms = NULL;      /* FUNC symbols, sorted by lo */
 static size_t sp_alloc_nsyms = 0;
 static char *sp_alloc_symstr = NULL;           /* the .strtab the names point into */
@@ -1465,9 +1467,7 @@ static void sp_alloc_load_ruby_names(const char *exe) {
 /* Read the executable's .symtab once. Any surprise -- not ELF, another
    class or byte order, no .symtab (stripped) -- leaves the table empty and
    the caller falls back. */
-static void sp_alloc_load_symtab(void) {
-  if (sp_alloc_syms_loaded) return;
-  sp_alloc_syms_loaded = 1;
+static void sp_alloc_read_symtab(void) {
   char exe[4096];
   ssize_t el = readlink("/proc/self/exe", exe, sizeof exe - 1);
   if (el <= 0) return;
@@ -1530,6 +1530,20 @@ done:
   free(st);
   free(sh);
   close(fd);
+}
+/* A dump asked for by signal runs on the reader thread (or on whichever
+   thread allocates next) and can overlap the one atexit writes, so under
+   threads the tables are built under pthread_once: a second dump waits for
+   the first to finish building them instead of reading them half-sorted. */
+static void sp_alloc_load_symtab(void) {
+#ifdef SP_THREADS
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, sp_alloc_read_symtab);
+#else
+  if (sp_alloc_syms_loaded) return;
+  sp_alloc_syms_loaded = 1;
+  sp_alloc_read_symtab();
+#endif
 }
 /* The function whose body holds `site`, by its .symtab name; NULL when the
    address is not inside any (a shared library's frame, a stripped binary). */

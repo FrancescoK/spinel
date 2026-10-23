@@ -4992,9 +4992,10 @@ alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	  SPINEL_ALLOC_REPORT="$$tmp/snc.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sn" >/dev/null 2>&1; \
 	  grep -qE '^alloc;sp_Tree_walk[^;]*;String [0-9]+$$' "$$tmp/snc.folded" || { echo "alloc-report-test: FAIL (without the symbol map a site was not named by its C function)"; sed -n 1,8p "$$tmp/snc.folded"; ok=0; }; \
 	  if command -v strip >/dev/null 2>&1; then \
-	    cp "$$tmp/sn" "$$tmp/sns" && strip "$$tmp/sns" 2>/dev/null && { \
+	    if cp "$$tmp/sn" "$$tmp/sns" && strip "$$tmp/sns"; then \
 	      SPINEL_ALLOC_REPORT="$$tmp/sns.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sns" > "$$tmp/sns.out" 2>&1; \
-	      grep -q '^700$$' "$$tmp/sns.out" && grep -qE '^alloc;.+;String [0-9]+$$' "$$tmp/sns.folded" || { echo "alloc-report-test: FAIL (a stripped binary lost its site rows)"; sed -n 1,5p "$$tmp/sns.folded"; ok=0; }; }; \
+	      grep -q '^700$$' "$$tmp/sns.out" && grep -qE '^alloc;.+;String [0-9]+$$' "$$tmp/sns.folded" || { echo "alloc-report-test: FAIL (a stripped binary lost its site rows)"; sed -n 1,5p "$$tmp/sns.folded"; ok=0; }; \
+	    else echo "alloc-report-test: FAIL (could not make the stripped copy)"; ok=0; fi; \
 	  fi; \
 	fi; \
 	$(SPINEL) test/alloc-report/straight_append.rb -o "$$tmp/sa" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile straight_append)"; exit 1; }; \
