@@ -19995,6 +19995,7 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
    store site: its string elements mark for the handle wrap directly. */
 static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2);
 static int an_class_dynamic_new_risk(Compiler *c, int cid);
+static int sb_call_reaches(Compiler *c, int u, int mi, Scope *m);
 static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode);
 /* After inference, the argument bindings no longer move. Keep their reverse
    edges on the compiler: a parameter query visits its sources, not every
@@ -20123,7 +20124,7 @@ static int *strbuf_scope_callers(Compiler *c, int mi, Scope *m, int *n) {
   int *cand = an_scope_call_candidates(c, m, &ncand);
   for (int i = 0; i < ncand; i++) {
     int u = cand[i];
-    if (nt_kind(nt, u) != NK_CallNode || !an_call_targets_scope(c, u, mi, m)) continue;
+    if (nt_kind(nt, u) != NK_CallNode || !sb_call_reaches(c, u, mi, m)) continue;
     cand[k++] = u;
   }
   *n = k;
@@ -27156,6 +27157,46 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   Scope *m2 = &c->scopes[mi];
   if (!m2->name || m2->class_id < 0 || m2->is_cmethod) return;
   act_add(t, mi);
+}
+
+/* The targets of each candidate call, kept for one promote_shared_stored_strings
+   pass as strbuf_scope_callers keeps each method's callers. The callers of
+   every method of a name are asked of the same calls, and each call was
+   resolved once per method of its name, an_call_targets_nonunique typing its
+   receiver and walking the chain every time: on a Rails program 22% of a
+   sampled window of the share pass. A call's targets are resolved once per
+   pass through an_call_targets_of, which answers for every scope at once and
+   agrees with an_call_targets_scope, and each method asks whether it is
+   among them. Outside the pass nothing is kept. */
+static int *sbc_off, *sbc_n, *sbc_pool, sbc_cap, sbc_pn, sbc_pcap, sbc_gen = -1;
+static int sb_call_reaches(Compiler *c, int u, int mi, Scope *m) {
+  if (!sb_targets_on || u < 0) return an_call_targets_scope(c, u, mi, m);
+  if (sbc_gen != sb_targets_gen) {
+    sbc_gen = sb_targets_gen; sbc_pn = 0;
+    for (int i = 0; i < sbc_cap; i++) sbc_off[i] = -1;
+  }
+  if (u >= sbc_cap) {
+    int cap = c->nt->count > u + 1 ? c->nt->count : u + 1;
+    sbc_off = realloc(sbc_off, sizeof(int) * (size_t)cap);
+    sbc_n = realloc(sbc_n, sizeof(int) * (size_t)cap);
+    if (!sbc_off || !sbc_n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = sbc_cap; i < cap; i++) sbc_off[i] = -1;
+    sbc_cap = cap;
+  }
+  if (sbc_off[u] < 0) {
+    ACallTargets t = { NULL, 0, 0, -1, 0 };
+    an_call_targets_of(c, u, &t);
+    if (sbc_pn + t.n > sbc_pcap) {
+      sbc_pcap = (sbc_pn + t.n) * 2 + 256;
+      sbc_pool = realloc(sbc_pool, sizeof(int) * (size_t)sbc_pcap);
+      if (!sbc_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    sbc_off[u] = sbc_pn; sbc_n[u] = t.n;
+    for (int k = 0; k < t.n; k++) sbc_pool[sbc_pn++] = t.v[k];
+    free(t.v);
+  }
+  for (int k = 0; k < sbc_n[u]; k++) if (sbc_pool[sbc_off[u] + k] == mi) return 1;
+  return 0;
 }
 
 static void strbuf_arg_index_edge(SbArgIndex *x, int h, int a, int scope, int p, int loose) {
