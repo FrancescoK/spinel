@@ -2363,7 +2363,7 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # separately, so the test asserts the mechanism rather than a timing.
 gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-threshold-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
-	@tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \
+	tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \
 	src=test/gc_threshold_per_heap.rb; \
 	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
 	[ $$rc -eq 0 ] || \
@@ -2400,7 +2400,7 @@ gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # promotes (#4407).
 gc-str-major-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-str-major-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
-	@tmp=$$(mktemp -d /tmp/spinel-gcstrmaj.XXXXXX); ok=1; \
+	tmp=$$(mktemp -d /tmp/spinel-gcstrmaj.XXXXXX); ok=1; \
 	src=test/gc_str_major_interval.rb; \
 	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
 	[ $$rc -eq 0 ] || \
@@ -2440,7 +2440,7 @@ gc-str-major-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # moments, which is what made a cross-run version of this flake.
 gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-obj-budget-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
-	@tmp=$$(mktemp -d /tmp/spinel-gcobj.XXXXXX); ok=1; \
+	tmp=$$(mktemp -d /tmp/spinel-gcobj.XXXXXX); ok=1; \
 	str_of() { sed -n 's/.*+ \([0-9.]*\) MB str; trigger.*/\1/p' "$$1" | tail -1; }; \
 	trg_of() { sed -n 's/.*trigger \([0-9.]*\) MB obj.*/\1/p' "$$1" | tail -1; }; \
 	for prog in gc_obj_budget_walk gc_obj_budget_mark; do \
@@ -2501,7 +2501,7 @@ gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 # program whose first half did carry it, which the count against `str` shows.
 gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-str-budget-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
-	@tmp=$$(mktemp -d /tmp/spinel-gcstr.XXXXXX); ok=1; \
+	tmp=$$(mktemp -d /tmp/spinel-gcstr.XXXXXX); ok=1; \
 	for prog in gc_str_budget_objects gc_str_budget_still gc_str_budget_kept; do \
 	  $(SPINEL) test/$$prog.rb -o "$$tmp/$$prog" >"$$tmp/cc.out" 2>&1; rc=$$?; \
 	  [ $$rc -eq 0 ] || \
