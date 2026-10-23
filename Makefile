@@ -2362,6 +2362,7 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # collections (#4384). Read back off SPINEL_GC_STATS, which reports the two
 # separately, so the test asserts the mechanism rather than a timing.
 gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
+	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-threshold-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	@tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \
 	src=test/gc_threshold_per_heap.rb; \
 	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
@@ -2398,6 +2399,7 @@ gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # either arm has to hit, because both numbers are set by how much this box
 # promotes (#4407).
 gc-str-major-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
+	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-str-major-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	@tmp=$$(mktemp -d /tmp/spinel-gcstrmaj.XXXXXX); ok=1; \
 	src=test/gc_str_major_interval.rb; \
 	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
@@ -2437,6 +2439,7 @@ gc-str-major-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # Both triggers retune continuously, so two runs' last lines are two different
 # moments, which is what made a cross-run version of this flake.
 gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-obj-budget-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	@tmp=$$(mktemp -d /tmp/spinel-gcobj.XXXXXX); ok=1; \
 	str_of() { sed -n 's/.*+ \([0-9.]*\) MB str; trigger.*/\1/p' "$$1" | tail -1; }; \
 	trg_of() { sed -n 's/.*trigger \([0-9.]*\) MB obj.*/\1/p' "$$1" | tail -1; }; \
@@ -2497,6 +2500,7 @@ gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 # no share in the trigger, so the last `[gc]` line has to say zero -- on a
 # program whose first half did carry it, which the count against `str` shows.
 gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-str-budget-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	@tmp=$$(mktemp -d /tmp/spinel-gcstr.XXXXXX); ok=1; \
 	for prog in gc_str_budget_objects gc_str_budget_still gc_str_budget_kept; do \
 	  $(SPINEL) test/$$prog.rb -o "$$tmp/$$prog" >"$$tmp/cc.out" 2>&1; rc=$$?; \
@@ -5141,7 +5145,8 @@ share-check-test: $(SPINEL)
 # leaves a stale line fails its gate rather than master's ratchet.
 .PHONY: share-check-ratchet
 share-check-ratchet: $(SPINEL)
-	@tools/share_check_ratchet.sh
+	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "share-check-ratchet: skipped (one-String mode: no String is a copy of another's bytes, and the share plan it holds the C to is the two representations')"; exit 0; fi; \
+	tools/share_check_ratchet.sh
 
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)
