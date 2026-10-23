@@ -492,6 +492,9 @@ typedef struct {
                           of docs/internals/ext-design.md) */
   int ret_rbs_seeded;  /* ret pinned from an --rbs advisory seed: the fixpoint
                           must not recompute it from the body */
+  int ret_rbs_box_held; /* a box reached that container seed while the
+                          fixpoint ran and the seed held: the settled types
+                          decide (ret_seed_holds, an_settle_seed_boxes) */
   int ret_elems_shared; /* --share-strings: that seed was Array[String], and the
                           Strings the method answers are shared, so the return
                           settled in its poly form, the boxes holding the
@@ -685,6 +688,9 @@ typedef struct {
   char **rbs_pin_ivars; /* ivar names (incl '@') pinned by an --rbs seed: the
                            fixpoint must not widen their type */
   int n_rbs_pin_ivars, c_rbs_pin_ivars;
+  int ivar_box_held;    /* a box reached one of those container pins while the
+                           fixpoint ran and the pin held: the settled types
+                           decide (class_ivar_pin_holds, an_settle_seed_boxes) */
   char **cvars;        /* class variable names, incl. leading '@@' */
   SP_TY_FIELD TyKind *cvar_types;
   unsigned char *cvar_nullable_int; /* the Integer or Float class variable can

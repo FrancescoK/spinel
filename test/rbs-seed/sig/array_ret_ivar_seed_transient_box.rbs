@@ -1,0 +1,8 @@
+class SeedBoxRetPlan
+  @last: Array[Integer]
+  def row: (Integer a) -> Array[Integer]
+end
+
+class SeedBoxRetSource
+  @codes: Array[Array[Integer]]
+end
