@@ -45754,50 +45754,67 @@ static int sa_stored_value(Compiler *c, int u, int k) {
    receiver is a push or a global (`a << t << s`, `$a << s`). Answers the
    k-th stored value's node when it is such a name, -1 when it is not, and
    -2 past the last value or for another call. */
-/* The last call asked about, read once: the callers ask for its values one
-   k at a time, and each ask read the call's name, receiver and arguments
-   again -- on a Rails program 6% of a sampled window of the share pass, in
-   the argument scan. What is kept is the node table's (the name, the
-   receiver, the values and their count, and whether the call's shape is
-   one of the walk's), and goes with the table: its version, its edits (an
-   argument array an edit replaces is freed, and version does not count
-   that edit) and its node count; the receiver's type is asked each time,
-   as before. */
-static const NodeTable *sau_nt; static unsigned sau_ver; static unsigned long sau_edits; static int sau_cnt = -1, sau_u = -1;
-static const char *sau_nm; static int sau_r, sau_an, sau_shape; static const int *sau_av;
+/* What the node table says of each call asked about, read once per table
+   (its version, its edits -- an argument array an edit replaces is freed,
+   and version does not count that edit -- and its node count): the name
+   and receiver on the first ask, and, once the receiver is known to be an
+   Array's, the values, their count and whether the call's shape is one of
+   the walk's. The store walk asks this of every store into a container
+   local, once per outermost walk that reaches the local, and the memo of
+   the last call (#9996) answered only the k asks of one call in a row: on a
+   Rails program the reads were still 6-10% of a sampled window of the
+   share pass, the argument scan most of it. The receiver's type is asked
+   each time, as before. */
+static const NodeTable *sau_nt; static unsigned sau_ver; static unsigned long sau_edits; static int sau_cnt = -1, sau_cap;
+static signed char *sau_state;      /* per node: 0 unread, 1 name and receiver read, 2 shape read too */
+static const char **sau_nm; static int *sau_r, *sau_an; static signed char *sau_shape; static const int **sau_av;
 static int sa_unseen_element(Compiler *c, int u, int k) {
   const NodeTable *nt = c->nt;
-  if (sau_nt != nt || sau_ver != nt->version || sau_edits != nt->edits || sau_cnt != nt->count || sau_u != u) {
-    sau_nt = nt; sau_ver = nt->version; sau_edits = nt->edits; sau_cnt = nt->count; sau_u = u;
-    sau_nm = nt_str(nt, u, "name");
-    sau_r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
-    sau_av = NULL; sau_an = 0; sau_shape = 0;
-    if (sau_nm && sau_r >= 0) {
-      const char *nm = sau_nm; int r = sau_r;
-      int a = nt_ref(nt, u, "arguments"), an = 0;
-      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
-      sau_shape = 1;
-      if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
-        int body = nt_ref(nt, block, "body");
-        av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
-        if (an > 0) { av += an - 1; an = 1; }
-      }
-      else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
-        av = nt_arr(nt, av[0], "elements", &an);
-      else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
-      else if (add != ARRAY_ADD_PREPEND &&
-               !(is_push_unshift(nm) && (nt_kind(nt, r) == NK_GlobalVariableReadNode ||
-                                         (nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
-                                          is_push_unshift(nt_str(nt, r, "name"))))))
-        sau_shape = 0;
-      sau_av = av; sau_an = an;
+  if (sau_nt != nt || sau_ver != nt->version || sau_edits != nt->edits || sau_cnt != nt->count) {
+    sau_nt = nt; sau_ver = nt->version; sau_edits = nt->edits; sau_cnt = nt->count;
+    if (sau_cap < nt->count) {
+      sau_cap = nt->count;
+      sau_state = realloc(sau_state, (size_t)sau_cap);
+      sau_nm = realloc(sau_nm, sizeof(const char *) * (size_t)sau_cap);
+      sau_r = realloc(sau_r, sizeof(int) * (size_t)sau_cap);
+      sau_an = realloc(sau_an, sizeof(int) * (size_t)sau_cap);
+      sau_shape = realloc(sau_shape, (size_t)sau_cap);
+      sau_av = realloc(sau_av, sizeof(const int *) * (size_t)sau_cap);
+      if (!sau_state || !sau_nm || !sau_r || !sau_an || !sau_shape || !sau_av) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
+    memset(sau_state, 0, (size_t)sau_cap);
   }
-  const char *nm = sau_nm; int r = sau_r;
+  if (u < 0 || u >= sau_cap) return -2;
+  if (sau_state[u] == 0) {
+    sau_nm[u] = nt_str(nt, u, "name");
+    sau_r[u] = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
+    sau_state[u] = 1;
+  }
+  const char *nm = sau_nm[u]; int r = sau_r[u];
   if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
-  if (!sau_shape) return -2;
-  const int *av = sau_av; int an = sau_an;
+  if (sau_state[u] == 1) {
+    int a = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
+    signed char shape = 1;
+    if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
+      int body = nt_ref(nt, block, "body");
+      av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
+      if (an > 0) { av += an - 1; an = 1; }
+    }
+    else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
+      av = nt_arr(nt, av[0], "elements", &an);
+    else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
+    else if (add != ARRAY_ADD_PREPEND &&
+             !(is_push_unshift(nm) && (nt_kind(nt, r) == NK_GlobalVariableReadNode ||
+                                       (nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
+                                        is_push_unshift(nt_str(nt, r, "name"))))))
+      shape = 0;
+    sau_av[u] = av; sau_an[u] = an; sau_shape[u] = shape;
+    sau_state[u] = 2;
+  }
+  if (!sau_shape[u]) return -2;
+  const int *av = sau_av[u]; int an = sau_an[u];
   if (k >= an) return -2;
   /* a read that yields the live handle (strbuf_box) stored into an Array
      of boxed values is the String; a String Array holds a copy */
