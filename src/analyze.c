@@ -45694,30 +45694,48 @@ static int sa_stored_value(Compiler *c, int u, int k) {
    receiver is a push or a global (`a << t << s`, `$a << s`). Answers the
    k-th stored value's node when it is such a name, -1 when it is not, and
    -2 past the last value or for another call. */
+/* The last call asked about, read once: the callers ask for its values one
+   k at a time, and each ask read the call's name, receiver and arguments
+   again -- on a Rails program 6% of a sampled window of the share pass, in
+   the argument scan. What is kept is the node table's (the name, the
+   receiver, the values and their count, and whether the call's shape is
+   one of the walk's), and goes with the table; the receiver's type is asked
+   each time, as before. */
+static const NodeTable *sau_nt; static unsigned sau_ver; static int sau_cnt = -1, sau_u = -1;
+static const char *sau_nm; static int sau_r, sau_an, sau_shape; static const int *sau_av;
 static int sa_unseen_element(Compiler *c, int u, int k) {
   const NodeTable *nt = c->nt;
-  const char *nm = nt_str(nt, u, "name");
-  int r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
-  /* the arguments are read once the call is an Array's: the store walk asks
-     this of every store into a container local, the writes of it too (no
-     receiver), and their argument scan was 2% of a sampled Rails window */
-  if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
-  int a = nt_ref(nt, u, "arguments"), an = 0;
-  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
-  if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
-    int body = nt_ref(nt, block, "body");
-    av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
-    if (an > 0) { av += an - 1; an = 1; }
+  if (sau_nt != nt || sau_ver != nt->version || sau_cnt != nt->count || sau_u != u) {
+    sau_nt = nt; sau_ver = nt->version; sau_cnt = nt->count; sau_u = u;
+    sau_nm = nt_str(nt, u, "name");
+    sau_r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
+    sau_av = NULL; sau_an = 0; sau_shape = 0;
+    if (sau_nm && sau_r >= 0) {
+      const char *nm = sau_nm; int r = sau_r;
+      int a = nt_ref(nt, u, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
+      sau_shape = 1;
+      if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
+        int body = nt_ref(nt, block, "body");
+        av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
+        if (an > 0) { av += an - 1; an = 1; }
+      }
+      else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
+        av = nt_arr(nt, av[0], "elements", &an);
+      else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
+      else if (add != ARRAY_ADD_PREPEND &&
+               !(is_push_unshift(nm) && (nt_kind(nt, r) == NK_GlobalVariableReadNode ||
+                                         (nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
+                                          is_push_unshift(nt_str(nt, r, "name"))))))
+        sau_shape = 0;
+      sau_av = av; sau_an = an;
+    }
   }
-  else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
-    av = nt_arr(nt, av[0], "elements", &an);
-  else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
-  else if (add != ARRAY_ADD_PREPEND &&
-           !(is_push_unshift(nm) && (nt_kind(nt, r) == NK_GlobalVariableReadNode ||
-                                     (nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
-                                      is_push_unshift(nt_str(nt, r, "name"))))))
-    return -2;
+  const char *nm = sau_nm; int r = sau_r;
+  if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
+  if (!sau_shape) return -2;
+  const int *av = sau_av; int an = sau_an;
   if (k >= an) return -2;
   /* a read that yields the live handle (strbuf_box) stored into an Array
      of boxed values is the String; a String Array holds a copy */
