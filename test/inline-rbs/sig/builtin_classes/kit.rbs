@@ -7,7 +7,8 @@ class Kit
   def gen_class: (Random g) -> String
   def fd: (IO io) -> Integer
   def named: (Class k) -> String
-  def said: (ArgumentError e) -> String
+  def said: (StandardError e) -> String
+  def errno: (Errno::ENOENT e) -> String
   def byte_at: (IO::Buffer b, Integer i) -> Integer
   def stamp: (Time? t) -> void
 end

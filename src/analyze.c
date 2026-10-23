@@ -5502,6 +5502,20 @@ void rename_shadowing_block_params(Compiler *c) {
    when SPINEL_RBS_SEED is unset -- the normal compile path is unchanged. */
 
 static int seed_class_index(Compiler *c, const char *name);
+/* builtin_value_kind for a seed's `_`-joined name: a qualified builtin
+   (`Errno::ENOENT`, `JSON::ParserError`) arrives as `Errno_ENOENT`. */
+static TyKind seed_builtin_kind(const char *name) {
+  TyKind t = builtin_value_kind(name);
+  if (t != TY_UNKNOWN || !strchr(name, '_')) return t;
+  char q[256];
+  size_t j = 0;
+  for (const char *p = name; *p && j + 2 < sizeof q; p++) {
+    if (*p == '_') { q[j++] = ':'; q[j++] = ':'; }
+    else q[j++] = *p;
+  }
+  q[j] = '\0';
+  return builtin_value_kind(q);
+}
 
 /* Set by parse_seed_type when the token carried RBS's trailing `?`. An int or
    float pin keeps the unboxed kind and holds its nil beside the value (an
@@ -5510,8 +5524,13 @@ static int seed_class_index(Compiler *c, const char *name);
    #3493).
    Recorded here because the '?' is gone by the time the type is returned. */
 static int g_seed_nilable;
+/* Set by parse_seed_type when it answers TY_UNKNOWN for a type it knows but
+   pins nothing for (a Range, an exception): the slot keeps its inferred
+   type, and an inline annotation naming it still applies. */
+static int g_seed_unpinned;
 static TyKind parse_seed_type(Compiler *c, const char *tok) {
   g_seed_nilable = 0;
+  g_seed_unpinned = 0;
   if (!tok || !*tok) return TY_UNKNOWN;
   size_t n = strlen(tok);
   char buf[128];
@@ -5569,9 +5588,16 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
        an object of the reopen. The kind is the one `self` has in the reopen,
        and a nilable one with no nil of its own (a struct) is the boxed value. */
     /* A builtin the program does not reopen names that kind as well
-       (`Time`, `File`, `ArgumentError`). */
+       (`Time`, `File`, `Errno::ENOENT`). */
     TyKind t = ci >= 0 && is_builtin_reopen(c->classes[ci].name) ? infer_builtin_self(c, ci)
-             : ci < 0 ? builtin_value_kind(buf + 4) : TY_UNKNOWN;
+             : ci < 0 ? seed_builtin_kind(buf + 4) : TY_UNKNOWN;
+    /* The type names every value of its class, so a kind that holds only
+       some of them pins nothing and the slot keeps its inferred type:
+       TY_RANGE is the Integer Range (a Float or a String one is another
+       kind), and TY_EXCEPTION is not an exception class of the program's
+       own (`class MyError < StandardError`). Boxing would do for both but
+       a Range's box is a copy, so `equal?` would stop answering true. */
+    if (t == TY_RANGE || t == TY_EXCEPTION) { g_seed_unpinned = 1; return TY_UNKNOWN; }
     if (t != TY_UNKNOWN) {
       const TyTraits *tr = ty_traits_of(t);
       return nilable && tr && !tr->null_is_nil ? TY_POLY : t;
@@ -6184,7 +6210,7 @@ static void inline_pin_record(Scope *s, int ci, const char *ivar, const char *re
 static int inline_seed_tok_ok(Compiler *c, const char *tok) {
   if (!tok || !*tok || sp_streq(tok, "-")) return 1;
   int nil = g_seed_nilable;
-  int ok = parse_seed_type(c, tok) != TY_UNKNOWN;
+  int ok = parse_seed_type(c, tok) != TY_UNKNOWN || g_seed_unpinned;
   g_seed_nilable = nil;
   return ok;
 }
