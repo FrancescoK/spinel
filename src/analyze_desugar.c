@@ -19031,6 +19031,13 @@ static int rbself_array_method(const char *nm) {
   return core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm);
 }
 
+/* In a module mixed into one builtin class (rbself_module_host), the
+   methods that class's own bodies define (the prelude's `Integer#fdiv` too):
+   a bare call of one is self's, given `self` like a core method's, where
+   the module's own methods stay bare */
+static char **g_rbself_host_defs;
+static int g_rbself_host_nd;
+
 /* `is_array`: 1 in a method added to Array, 2 in one added to Random, whose
    own `rand`, `seed` and `bytes` a bare call reaches before Kernel's. */
 static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *changed, int is_array) {
@@ -19050,7 +19057,9 @@ static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *chang
     const char *nm = nt_str(nt, node, "name");
     int user = 0;
     for (int i = 0; nm && i < nd; i++) if (sp_streq(defs[i], nm)) user = 1;
-    if (nm && !user && ((core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm)) ||
+    int host = 0;
+    for (int i = 0; nm && !user && i < g_rbself_host_nd; i++) if (sp_streq(g_rbself_host_defs[i], nm)) host = 1;
+    if (nm && !user && (host || (core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm)) ||
                         name_in_list(RB_OBJECT_PUBLIC, nm) ||
                         (is_array == 2 && builtin_instance_method_known("Random", nm))) &&
         !sp_streq(nm, "lambda") && !sp_streq(nm, "proc") && !sp_streq(nm, "loop") &&
@@ -19109,9 +19118,79 @@ static void rbself_defs(NodeTable *nt, int node, char **defs, int nd, int *chang
   }
 }
 
+/* The instance methods the bodies of class (or module) `cn` define at their
+   top, appended to defs (the names a bare call there reaches as the
+   program's own) */
+static int rbself_body_defs(NodeTable *nt, int n0, NodeKind kind, const char *cn, char **defs, int nd, int cap) {
+  for (int m2 = 0; m2 < n0; m2++) {
+    if (nt_kind(nt, m2) != kind) continue;
+    int cp2 = nt_ref(nt, m2, "constant_path");
+    const char *cn2 = cp2 >= 0 ? nt_str(nt, cp2, "name") : NULL;
+    if (!cn2 || !sp_streq(cn2, cn)) continue;
+    int b2 = nt_ref(nt, m2, "body");
+    int bn2 = 0; const int *bs2 = b2 >= 0 ? nt_arr(nt, b2, "body", &bn2) : NULL;
+    for (int k = 0; k < bn2 && nd < cap; k++)
+      if (nt_kind(nt, bs2[k]) == NK_DefNode && nt_str(nt, bs2[k], "name"))
+        defs[nd++] = (char *)nt_str(nt, bs2[k], "name");
+  }
+  return nd;
+}
+
+/* The builtin class module `mod` is mixed into, when every include or
+   prepend of it names that one class (`class String; include M; end` or
+   `String.include(M)`), and nothing extends with it: its methods then run
+   with that builtin value as self, as a reopening's do. NULL otherwise, a
+   mixin the walk cannot place included. */
+static const char *rbself_module_host(NodeTable *nt, int n0, const char *mod) {
+  const char *host = NULL;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "include") && !sp_streq(nm, "prepend") && !sp_streq(nm, "extend"))) continue;
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int names = 0;
+    for (int i = 0; i < an; i++)
+      if (nt_kind(nt, av[i]) == NK_ConstantReadNode && sp_streq(nt_str(nt, av[i], "name") ? nt_str(nt, av[i], "name") : "", mod))
+        names = 1;
+    if (!names) continue;
+    if (sp_streq(nm, "extend")) return NULL;
+    const char *target = NULL;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0) target = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+    else
+      for (int m = 0; m < n0 && !target; m++) {
+        if (nt_kind(nt, m) != NK_ClassNode) continue;
+        int b = nt_ref(nt, m, "body"), bn = 0;
+        const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+        for (int k = 0; k < bn; k++)
+          if (bs[k] == id) { int cp = nt_ref(nt, m, "constant_path"); target = cp >= 0 ? nt_str(nt, cp, "name") : NULL; break; }
+      }
+    if (!target || !rbself_builtin(target) || (host && !sp_streq(host, target))) return NULL;
+    host = target;
+  }
+  return host;
+}
+
 int desugar_builtin_reopen_self_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  /* a module mixed into one builtin class alone: its methods' bare calls are
+     the builtin value's, as a reopening's are (`module M; def shout = upcase
+     + "!"; end; String.include(M)`) */
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    const char *host = mn ? rbself_module_host(nt, n0, mn) : NULL;
+    if (!host) continue;
+    char *defs[512], *hdefs[512];
+    int nd = rbself_body_defs(nt, n0, NK_ModuleNode, mn, defs, 0, 512);
+    g_rbself_host_nd = rbself_body_defs(nt, n0, NK_ClassNode, host, hdefs, 0, 512);
+    g_rbself_host_defs = hdefs;
+    rbself_defs(nt, nt_ref(nt, m, "body"), defs, nd, &changed, rbself_kind(host));
+    g_rbself_host_defs = NULL; g_rbself_host_nd = 0;
+  }
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ClassNode) continue;
     int cp = nt_ref(nt, m, "constant_path");
