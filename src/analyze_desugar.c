@@ -1461,6 +1461,11 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
      their own */
   if (!decl && !attr && !sp_streq(nm, "extend") && nt_kind(nt, recv) == NK_ConstantReadNode &&
       (sp_streq(leaf, "Fiber") || sp_streq(leaf, "Thread"))) decl = 1;
+  /* ...as do the builtin classes a reopening models (`Array.prepend(M)`,
+     `class Array; prepend M; end`) */
+  static const char *const reopened[] = { "String", "Array", "Hash", "Integer", "Float", "Symbol", "Range", NULL };
+  if (!decl && !attr && !sp_streq(nm, "extend") && nt_kind(nt, recv) == NK_ConstantReadNode)
+    for (int i = 0; reopened[i]; i++) if (sp_streq(leaf, reopened[i])) { decl = 1; break; }
   if (!decl) return st;
   int args = nt_ref(nt, st, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
