@@ -62,7 +62,7 @@ These are provided by Spinel but, like CRuby, only after their `require`:
 | `require "pathname"` | `Pathname` | uninitialized constant |
 | `require "pathname"` | `Pathname()` (the `Kernel` conversion method) | `NoMethodError` |
 | `require "io/console"` | `IO#winsize` | `NoMethodError` |
-| `require "time"` | `Time#iso8601` | `NoMethodError` |
+| `require "time"` | `Time#iso8601`, `Time.parse`, `Time.strptime` | `NoMethodError` |
 | `require "bigdecimal"` | `BigDecimal`, `BigDecimal()` (a minimal subset: see `packages/bigdecimal/bigdecimal.rb`) | `NoMethodError` (`BigDecimal()`) |
 
 `socket` is the strictest of these: its `require` is mandatory even with the
@@ -158,6 +158,12 @@ anywhere, in the entry file or in a file it requires, gets `require "set"`
 prepended, and one that references `IO::Buffer` gets
 `require "io/buffer"` (packages/io) the same way. Writing the require
 explicitly is fine too -- the splice only fills it in when absent.
+
+`require "time"` is the runtime's C, except in a program whose code calls
+`Time.parse` or `Time.strptime`: that one also gets CRuby's time.rb
+(`packages/time`) spliced in, which reads those through `Date._parse` and
+`Date._strptime` and so brings in `date`. A program that only formats keeps
+its C and its size.
 
 ## Providing your own feature
 
