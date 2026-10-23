@@ -1,0 +1,13 @@
+class Kit
+  @at: Time?
+  def secs: (Time t) -> Integer
+  def total: (Range r) -> Integer
+  def joined: (Thread th) -> Integer
+  def resumed: (Fiber f) -> Integer
+  def gen_class: (Random g) -> String
+  def fd: (IO io) -> Integer
+  def named: (Class k) -> String
+  def said: (ArgumentError e) -> String
+  def byte_at: (IO::Buffer b, Integer i) -> Integer
+  def stamp: (Time? t) -> void
+end

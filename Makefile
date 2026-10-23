@@ -3515,7 +3515,7 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 inline-rbs-test:
 	@echo "inline-rbs-test: parser-backed cases skipped (vendor/rbs not fetched; run 'make deps')"
 else
-INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest hash_return_box
+INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest hash_return_box builtin_classes
 INLINE_RBS_CHECKS := false_positives ignored_symlink ignored_errors warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
                      placements duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
                      redefine_unannotated redefine_unannotated_req redefine_define_method redefine_class_eval redefine_ignored redefine_refused mixin_not_applied analyzer_warnings dump_ast_malformed \
@@ -3690,15 +3690,19 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	else echo "inline-rbs-test: FAIL (override_family: C did not compile)"; ok=0; fi; \
 	;; \
 	check_false) \
-	$(SPINEL) $(IRB)/check_false.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; \
+	for f in check_false check_false_builtin; do \
+	$(SPINEL) $(IRB)/$$f.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/f.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/f" 2>/dev/null; then \
-	  if "$$tmp/f" > "$$tmp/f.out" 2>&1; then echo "inline-rbs-test: FAIL (a false inline annotation did NOT abort under -DSP_RBS_CHECK)"; ok=0; \
-	  else grep -q "seed violated" "$$tmp/f.out" || { echo "inline-rbs-test: FAIL (a false inline annotation aborted without naming the slot)"; sed -n 1,3p "$$tmp/f.out"; ok=0; }; fi; \
-	else echo "inline-rbs-test: FAIL (check_false: C did not compile)"; ok=0; fi; \
-	$(SPINEL) $(IRB)/check_honest.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; \
+	  if "$$tmp/f" > "$$tmp/f.out" 2>&1; then echo "inline-rbs-test: FAIL ($$f: a false inline annotation did NOT abort under -DSP_RBS_CHECK)"; ok=0; \
+	  else grep -q "seed violated" "$$tmp/f.out" || { echo "inline-rbs-test: FAIL ($$f: a false inline annotation aborted without naming the slot)"; sed -n 1,3p "$$tmp/f.out"; ok=0; }; fi; \
+	else echo "inline-rbs-test: FAIL ($$f: C did not compile)"; ok=0; fi; \
+	done; \
+	for h in check_honest builtin_classes; do \
+	$(SPINEL) $(IRB)/$$h.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/h.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/h" 2>/dev/null; then \
-	  "$$tmp/h" > "$$tmp/h.out" 2>&1; cmp -s "$$tmp/h.out" $(IRB)/check_honest.expected || { echo "inline-rbs-test: FAIL (the run-time check fired on an honest inline annotation)"; ok=0; }; \
-	else echo "inline-rbs-test: FAIL (check_honest: C did not compile under -DSP_RBS_CHECK)"; ok=0; fi; \
+	  "$$tmp/h" > "$$tmp/h.out" 2>&1; cmp -s "$$tmp/h.out" $(IRB)/$$h.expected || { echo "inline-rbs-test: FAIL ($$h: the run-time check fired on an honest inline annotation)"; ok=0; }; \
+	else echo "inline-rbs-test: FAIL ($$h: C did not compile under -DSP_RBS_CHECK)"; ok=0; fi; \
+	done; \
 	;; \
 	off_switch) \
 	for t in warnings syntax_error; do \
@@ -3815,9 +3819,9 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	$(call IRB_IGNORED,analyzer_warnings.rb); \
 	for w in 'analyzer_warnings_part.rb:3:3: warning: inline RBS: the signature of `part_count` is not applied: `Array[Set]` names no type' \
 	         'analyzer_warnings.rb:9:3: warning: inline RBS: the declaration of @log is not applied: `Array[Time]` names no type' \
-	         'analyzer_warnings.rb:12:24: warning: inline RBS: this type is not applied: `Time?` names no type' \
+	         'analyzer_warnings.rb:12:24: warning: inline RBS: this type is not applied: `Regexp?` names no type' \
 	         'analyzer_warnings.rb:10:3: warning: inline RBS: the declaration of @zone is not applied: `Net::HTTP` names no type' \
-	         'analyzer_warnings.rb:20:3: warning: inline RBS: the signature of `at` is not applied: `Time` names no type' \
+	         'analyzer_warnings.rb:20:3: warning: inline RBS: the signature of `at` is not applied: `Regexp` names no type' \
 	         'analyzer_warnings.rb:25:3: warning: inline RBS: the signature of `size` is not applied: `Pathname` names no type' \
 	         'analyzer_warnings.rb:33:1: warning: inline RBS: this instance variable declaration is not applied: it is not inside a class body'; do \
 	  grep -qF "$$w" "$$tmp/w.err" || { echo "inline-rbs-test: FAIL (no warning '$$w')"; ok=0; }; done; \

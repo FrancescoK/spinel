@@ -10157,15 +10157,27 @@ TyKind infer_builtin_self(Compiler *c, int self_cls) {
   /* a Numeric reopen is called on any number -- an Integer, a Float --
      and takes self boxed, the arithmetic on it dispatching on the value */
   if (sp_streq(cn, "Numeric")) return TY_POLY;
-  if (sp_streq(cn, "Range"))   return TY_RANGE;
-  if (sp_streq(cn, "Time"))    return TY_TIME;
-  if (sp_streq(cn, "Thread"))  return TY_THREAD;
-  if (sp_streq(cn, "Fiber"))   return TY_FIBER;
-  if (sp_streq(cn, "Random"))  return TY_RANDOM;
-  if (io_family_class(c, self_cls)) return TY_IO;   /* File, IO, the sockets: one handle type */
-  if (sp_streq(cn, "Class"))   return TY_CLASS;
-  if (is_builtin_exception_name(cn)) return TY_EXCEPTION;
-  return ty_object(self_cls);
+  TyKind bk = builtin_value_kind(cn);
+  /* (File, IO and the sockets only at the top level: `M::File` is the
+     program's own class) */
+  if (bk == TY_IO && !io_family_class(c, self_cls)) bk = TY_UNKNOWN;
+  return bk != TY_UNKNOWN ? bk : ty_object(self_cls);
+}
+
+/* The kind of a value of the builtin class named n, which has one of its
+   own -- a Time is Spinel's by-value Time -- or TY_UNKNOWN. A reopen's
+   `self` and an RBS type naming the class (parse_seed_type) both take it. */
+TyKind builtin_value_kind(const char *n) {
+  if (!n) return TY_UNKNOWN;
+  if (sp_streq(n, "Range"))   return TY_RANGE;
+  if (sp_streq(n, "Time"))    return TY_TIME;
+  if (sp_streq(n, "Thread"))  return TY_THREAD;
+  if (sp_streq(n, "Fiber"))   return TY_FIBER;
+  if (sp_streq(n, "Random"))  return TY_RANDOM;
+  if (io_family_name(n))      return TY_IO;   /* File, IO, the sockets: one handle type */
+  if (sp_streq(n, "Class"))   return TY_CLASS;
+  if (is_builtin_exception_name(n)) return TY_EXCEPTION;
+  return TY_UNKNOWN;
 }
 
 /* Is global `name` (resolved, without the `$`) assigned anywhere -- a write,

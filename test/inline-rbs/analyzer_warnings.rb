@@ -9,7 +9,7 @@ class Clock
   # @rbs @log: Array[Time]
   # @rbs @zone: Net::HTTP
 
-  attr_accessor :stamp #: Time?
+  attr_accessor :stamp #: Regexp?
 
   def initialize
     @log = []
@@ -17,7 +17,7 @@ class Clock
     @zone = "UTC"
   end
 
-  #: (Integer) -> Time
+  #: (Integer) -> Regexp
   def at(x)
     x
   end
