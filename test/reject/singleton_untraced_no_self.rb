@@ -102,3 +102,32 @@ struct_class
 or_write_const
 paren_argv
 p (+"abc").tag!.size
+
+# Inner statement lists in a def receiver must keep their side effects.
+class ParenItem; end
+class ParenConst; end
+class ParenSelf
+  def self.install
+    def ((puts "side"; self)).answer = 9
+  end
+end
+class ParenOuter
+  def self.install
+    def ((puts "side"; ParenConst)).other_answer = 9
+  end
+end
+def paren_sequence_local
+  item = ParenItem.new
+  def ((puts "side"; item)).answer = 9
+  p item.answer
+end
+def paren_sequence_constant
+  def ((puts "side"; ParenConst)).answer = 9
+  p ParenConst.answer
+end
+paren_sequence_local
+ParenSelf.install
+p ParenSelf.answer
+paren_sequence_constant
+ParenOuter.install
+p ParenConst.other_answer
