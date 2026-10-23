@@ -42975,6 +42975,26 @@ static int redef_collect_calls(const NodeTable *nt, int id, const char *nm, int 
   return n;
 }
 
+/* The Symbol nodes naming `nm` as the method an alias statement of class
+   body `body`, from statement `from` on, gives another name: `alias new
+   nm`, `alias_method :new, :nm`. Into out (at most cap), after n of them. */
+static int redef_collect_aliases(const NodeTable *nt, int body, int from, const char *nm, int *out, int n, int cap) {
+  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = from; k < bn; k++) {
+    int on = -1;
+    if (nt_kind(nt, bb[k]) == NK_AliasMethodNode) on = nt_ref(nt, bb[k], "old_name");
+    else if (nt_kind(nt, bb[k]) == NK_CallNode && nt_ref(nt, bb[k], "receiver") < 0 && nt_str(nt, bb[k], "name") &&
+             sp_streq(nt_str(nt, bb[k], "name"), "alias_method")) {
+      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, bb[k], "arguments"), "arguments", &an);
+      if (an == 2) on = av[1];
+    }
+    if (on >= 0 && nt_kind(nt, on) == NK_SymbolNode && nt_str(nt, on, "value") &&
+        sp_streq(nt_str(nt, on, "value"), nm) && n < cap)
+      out[n++] = on;
+  }
+  return n;
+}
+
 /* The DefNode of instance method `nm` in class body statement `cls`, or -1. */
 static int redef_class_def(const NodeTable *nt, int cls, const char *nm) {
   int body = nt_ref(nt, cls, "body");
@@ -43049,18 +43069,28 @@ static void version_redefined_reopen_defs(Compiler *c) {
         if (redef_class_def(nt, st[q], nm) >= 0) j = q;
       int calls[256], nc = 0;
       for (int q = i + 1; j >= 0 && q < j; q++) nc = redef_collect_calls(nt, st[q], nm, calls, nc, 256, 0);
-      if (j < 0 || nc == 0) { free(nm); continue; }
+      /* an alias of the name made while this is the definition, after it in
+         this body or in a reopening ahead of the later def, names it, not
+         the later def (`class B; def get = 1; alias old get; end`) */
+      int aliases[64], na = 0;
+      na = redef_collect_aliases(nt, cb, k + 1, nm, aliases, na, 64);
+      for (int q = reopened[i]; j >= 0 && q >= 0 && q < j; q = reopened[q])
+        na = redef_collect_aliases(nt, nt_ref(nt, st[q], "body"), 0, nm, aliases, na, 64);
+      if (j < 0 || (nc == 0 && na == 0)) { free(nm); continue; }
       char hidden[300];
       snprintf(hidden, sizeof hidden, "%s#redef%d", nm, ++serial);
       nt_set_str(nt, d1, "name", hidden);
-      int *rc = realloc(c->redef_calls, sizeof(int) * (size_t)(c->nredef_calls + nc));
-      if (!rc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      c->redef_calls = rc;
+      if (nc > 0) {
+        int *rc = realloc(c->redef_calls, sizeof(int) * (size_t)(c->nredef_calls + nc));
+        if (!rc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        c->redef_calls = rc;
+      }
       for (int q = 0; q < nc; q++) {
         nt_node_set_str(nt, calls[q], "redef_name", hidden);
         nt_node_set_str(nt, calls[q], "redef_class", cn);
         c->redef_calls[c->nredef_calls++] = calls[q];
       }
+      for (int q = 0; q < na; q++) nt_set_str(nt, aliases[q], "value", hidden);
       /* its own receiverless calls run while it is the definition */
       redef_rename_calls(nt, nt_ref(nt, d1, "body"), nm, hidden, 0);
       /* the visibility the body gives it after the def (`private :get`) is
@@ -43110,8 +43140,12 @@ static int desugar_redef_version_calls(Compiler *c) {
     int reaches = 0, maybe = 0;
     if (ty_is_object(rt)) {
       int k = ty_object_class(rt), d = -1;
-      if ((k == cid || is_descendant(c, k, cid)) && comp_method_in_chain(c, k, nm, &d) >= 0) {
-        if (d == cid) reaches = 1;
+      int mi = (k == cid || is_descendant(c, k, cid)) ? comp_method_in_chain(c, k, nm, &d) : -1;
+      if (mi >= 0) {
+        /* a module prepended to the class answers it ahead of either
+           definition, from where the prepend runs */
+        if (d == cid && c->scopes[mi].is_prepend_copy) maybe = 3;
+        else if (d == cid) reaches = 1;
         /* a descendant's own override: whether it is defined yet where the
            call runs decides between it and the earlier definition */
         else if (d >= 0 && is_descendant(c, d, cid)) maybe = 2;
@@ -43131,6 +43165,11 @@ static int desugar_redef_version_calls(Compiler *c) {
       nt_set_str(nt, id, "name", hid);
       changed = 1;
     }
+    else if (maybe == 3)
+      unsupported_feature(c, id,
+        "a method redefined by a later reopening of its class is called between the two definitions, and a "
+        "module prepended to the class defines it too, so which method the call reaches depends on where the "
+        "prepend runs. Define the method once, or prepend the module where the class is defined.");
     else if (maybe == 2)
       unsupported_feature(c, id,
         "a method redefined by a later reopening of its class is called between the two definitions on an "
@@ -47899,39 +47938,102 @@ static int reinit_rename_calls(NodeTable *nt, int n, const char *to, int depth) 
   return hit;
 }
 
+/* The last segment of constant node n's name (`A::B` -> "B"), or NULL. */
+static const char *reinit_leaf(const NodeTable *nt, int n) {
+  if (n < 0 || (nt_kind(nt, n) != NK_ConstantReadNode && nt_kind(nt, n) != NK_ConstantPathNode)) return NULL;
+  const char *nm = nt_str(nt, n, "name");
+  const char *t = nm ? strrchr(nm, ':') : NULL;
+  return t ? t + 1 : nm;
+}
 /* `def reload(s) = initialize(s)`: a method of the class calling its own
    initialize, for its effect and for its value. The emitted initialize is a
    constructor body: it answers nothing, and on a class laid out by value it
-   takes a pointer the method does not have, so the C did not compile. The
-   class gets a copy of the def as an ordinary method (__spinel_reinit),
-   which answers the body's value as CRuby's initialize does, and the calls
-   in the class's other methods call that. A body bound to being initialize
-   (super, yield, block_given?) is left alone. */
+   takes a pointer the method does not have, so the C did not compile. Each
+   such call is renamed to __spinel_reinit, and each `def initialize` of the
+   program -- in every class and module body, a reopening's and a
+   subclass's too -- gets a copy of itself under that name beside it, which
+   answers the body's value as CRuby's initialize does. The call then finds
+   the copy of the initialize the receiver's class has, as CRuby's lookup
+   finds that initialize. A body bound to being initialize (super, yield,
+   block_given?) gets no copy, and refuse_reinit_mismatch refuses a call
+   that would find another initialize's copy for it. */
 static void desugar_explicit_initialize_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count;
+  int n0 = nt->count, hits = 0;
+  ANameHash near = {0};   /* the classes and modules a renamed call may run on */
   for (int cls = 0; cls < n0; cls++) {
     if (nt_kind(nt, cls) != NK_ClassNode) continue;
     int body = nt_ref(nt, cls, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     int init = -1;
     for (int k = 0; k < bn; k++)
-      if (nt_kind(nt, bb0[k]) == NK_DefNode && nt_ref(nt, bb0[k], "receiver") < 0 &&
-          nt_str(nt, bb0[k], "name") && sp_streq(nt_str(nt, bb0[k], "name"), "initialize"))
-        init = bb0[k];
+      if (nt_kind(nt, bb[k]) == NK_DefNode && nt_ref(nt, bb[k], "receiver") < 0 &&
+          nt_str(nt, bb[k], "name") && sp_streq(nt_str(nt, bb[k], "name"), "initialize"))
+        init = bb[k];
     if (init < 0 || reinit_body_bound(nt, nt_ref(nt, init, "body"), 0)) continue;
-    int *bb = malloc(sizeof(int) * (size_t)(bn + 2));
-    if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
-    int hits = 0;
+    int h = 0;
     for (int k = 0; k < bn; k++)
       if (nt_kind(nt, bb[k]) == NK_DefNode && bb[k] != init)
-        hits += reinit_rename_calls(nt, nt_ref(nt, bb[k], "body"), "__spinel_reinit", 0);
-    if (hits) {
+        h += reinit_rename_calls(nt, nt_ref(nt, bb[k], "body"), "__spinel_reinit", 0);
+    const char *cn = reinit_leaf(nt, nt_ref(nt, cls, "constant_path"));
+    if (h && cn && !anh_has(&near, cn)) anh_add(&near, strdup(cn));
+    hits += h;
+  }
+  /* the copies go where such a call may find an initialize: the class, its
+     reopenings, its subclasses, and the modules they include. A class left
+     out is one refuse_reinit_mismatch refuses a call for; a copy elsewhere
+     would only be a method nothing calls, with untyped parameters */
+  for (int grew = hits > 0; grew; ) {
+    grew = 0;
+    for (int cls = 0; cls < n0; cls++) {
+      if (nt_kind(nt, cls) != NK_ClassNode) continue;
+      const char *cn = reinit_leaf(nt, nt_ref(nt, cls, "constant_path"));
+      const char *sn = reinit_leaf(nt, nt_ref(nt, cls, "superclass"));
+      if (!cn || anh_has(&near, cn) || !sn || !anh_has(&near, sn)) continue;
+      anh_add(&near, strdup(cn));
+      grew = 1;
+    }
+  }
+  for (int cls = 0; hits && cls < n0; cls++) {
+    if (nt_kind(nt, cls) != NK_ClassNode) continue;
+    const char *cn = reinit_leaf(nt, nt_ref(nt, cls, "constant_path"));
+    int body = nt_ref(nt, cls, "body");
+    if (!cn || !anh_has(&near, cn) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      const char *in = nt_kind(nt, bb[k]) == NK_CallNode && nt_ref(nt, bb[k], "receiver") < 0 ? nt_str(nt, bb[k], "name") : NULL;
+      if (!in || (!sp_streq(in, "include") && !sp_streq(in, "prepend"))) continue;
+      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, bb[k], "arguments"), "arguments", &an);
+      for (int a = 0; a < an; a++) {
+        const char *mn = reinit_leaf(nt, av[a]);
+        if (mn && !anh_has(&near, mn)) anh_add(&near, strdup(mn));
+      }
+    }
+  }
+  if (!hits) { anh_free(&near); return; }
+  for (int cls = 0; cls < n0; cls++) {
+    if (nt_kind(nt, cls) != NK_ClassNode && nt_kind(nt, cls) != NK_ModuleNode) continue;
+    const char *cn = reinit_leaf(nt, nt_ref(nt, cls, "constant_path"));
+    if (!cn || !anh_has(&near, cn)) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb1 = nt_arr(nt, body, "body", &bn);
+    int *bb = malloc(sizeof(int) * (size_t)(bn * 3 + 1)), *bb0 = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!bb || !bb0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    /* (a clone may move the body's array: read a copy) */
+    memcpy(bb0, bb1, sizeof(int) * (size_t)bn);
+    int m = 0, added = 0;
+    for (int k = 0; k < bn; k++) {
+      int init = bb0[k];
+      bb[m++] = init;
+      if (nt_kind(nt, init) != NK_DefNode || nt_ref(nt, init, "receiver") >= 0 || !nt_str(nt, init, "name") ||
+          !sp_streq(nt_str(nt, init, "name"), "initialize") || reinit_body_bound(nt, nt_ref(nt, init, "body"), 0))
+        continue;
       int copy = nt_clone_subtree(nt, init);
       if (copy < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       nt_node_set_str(nt, copy, "name", "__spinel_reinit");
+      nt_node_set_int(nt, copy, "reinit_of", init + 1);
       /* private, as initialize is: no caller outside the class sees it */
       int sym = nt_new_node(nt, "SymbolNode"), args = nt_new_node(nt, "ArgumentsNode"),
           priv = nt_new_node(nt, "CallNode");
@@ -47948,11 +48050,71 @@ static void desugar_explicit_initialize_calls(Compiler *c) {
         nt_node_set_int(nt, ln[j], "node_line", line);
         nt_node_set_int(nt, ln[j], "node_file", file);
       }
-      bb[bn] = copy;
-      bb[bn + 1] = priv;
-      nt_node_set_arr(nt, body, "body", bb, bn + 2);
+      bb[m++] = copy;
+      bb[m++] = priv;
+      added = 1;
     }
+    if (added) nt_node_set_arr(nt, body, "body", bb, m);
     free(bb);
+    free(bb0);
+  }
+  anh_free(&near);
+}
+
+/* A class whose objects run a `__spinel_reinit` call
+   (desugar_explicit_initialize_calls) finds the copy of an initialize: the
+   call is refused where that copy is not of the initialize the class's own
+   lookup finds -- that one has no copy, its body being bound to running as
+   initialize (super, yield, block_given?). */
+/* Can the method of scope si, whose body has the `__spinel_reinit` call,
+   run on an object of class k? Its calls are followed: on self, through the
+   caller's own calls; on a receiver, by the receiver's type. */
+static int reinit_reaches(Compiler *c, int si, int k, int depth) {
+  const NodeTable *nt = c->nt;
+  const char *mn = c->scopes[si].name;
+  /* (a method run by a name the program spells or computes: any receiver) */
+  if (!mn || depth > 8 || an_prog_names_method(mn) || an_prog_meta_by_value()) return 1;
+  if (comp_method_in_chain(c, k, mn, NULL) != si) return 0;
+  for (int id = an_calls_named_first(c, mn); id >= 0; id = an_calls_named_next(id)) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->is_cmethod || s->class_id < 0) continue;
+      if (s->class_id != k && !is_descendant(c, k, s->class_id)) continue;
+      if (reinit_reaches(c, (int)(s - c->scopes), k, depth + 1)) return 1;
+      continue;
+    }
+    TyKind t = comp_ntype(c, r);
+    if (ty_is_object(t)) { if (ty_object_class(t) == k) return 1; continue; }
+    if (t != TY_POLY) continue;
+    int n = 0;
+    const int *cl = poly_recv_classes(c, id, &n);
+    if (!cl) return 1;
+    for (int q = 0; q < n; q++) if (cl[q] == k) return 1;
+  }
+  return 0;
+}
+
+static void refuse_reinit_mismatch(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    int mr = comp_method_in_chain(c, k, "__spinel_reinit", NULL);
+    if (mr < 0) continue;
+    int mi = comp_method_in_chain(c, k, "initialize", NULL);
+    int of = c->scopes[mr].def_node >= 0 ? (int)nt_int(nt, c->scopes[mr].def_node, "reinit_of", 0) - 1 : -1;
+    if (mi >= 0 && of >= 0 && c->scopes[mi].def_node == of) continue;
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !sp_streq(nm, "__spinel_reinit") || nt_ref(nt, id, "receiver") >= 0) continue;
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->is_cmethod || s->class_id < 0 || (s->class_id != k && !is_descendant(c, k, s->class_id))) continue;
+      if (!reinit_reaches(c, (int)(s - c->scopes), k, 0)) continue;
+      unsupported_feature(c, id,
+        "a method calls initialize on an object whose class's initialize uses super, yield or block_given?, "
+        "so the call cannot run it as a plain method here. Move the shared code to a method of its own and "
+        "call that from both.");
+    }
   }
 }
 
@@ -54153,6 +54315,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   refuse_string_alias_copies(c);
   refuse_set_identity_members(c);
   refuse_mixin_after_calls(c);
+  refuse_reinit_mismatch(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
