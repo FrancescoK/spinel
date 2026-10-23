@@ -268,7 +268,7 @@ static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked worke
 static pthread_cond_t g_sysmon_cv = PTHREAD_COND_INITIALIZER;    /* the monitor thread waits here */
 static pthread_t      g_sysmon;                                  /* monitor: wakes sleepers + preempts */
 static int            g_sysmon_started = 0;
-static int            g_sysmon_idle = 0; /* monitor parked on g_sysmon_cv: 1 with nothing to time (a thread that starts running must signal it), 2 in a timed wait of at most a tick (it notices a running thread itself) */
+static int            g_sysmon_idle = 0; /* monitor parked on g_sysmon_cv: 1 with nothing to time (a thread that starts running must signal it), 2 in a timed wait (one that ends too late for a starting thread's timeslice is signalled too: g_sysmon_wake_at) */
 static int            g_sysmon_pipe[2] = { -1, -1 };  /* self-pipe: wake the monitor out of poll() */
 int sp_io_make_pipe(int fds[2]);   /* lib/sp_io.c: a close-on-exec pipe */
 static void sp_sched_report_stats(void);   /* SPINEL_SCHED_STATS, below */
@@ -292,6 +292,22 @@ static void sp_sysmon_wake(void) {
   if (SP_ATOMIC_LOAD(&g_sysmon_idle, __ATOMIC_SEQ_CST)) pthread_cond_signal(&g_sysmon_cv);
   else if (g_sysmon_pipe[1] >= 0) { char c = 1; ssize_t r = write(g_sysmon_pipe[1], &c, 1); (void)r; }
 }
+/* When the monitor, now in a TIMED wait (its condvar or its poll), comes back
+   on its own; 0 while it is not in one. The monitor stores it before it waits
+   and reads the workers' slots after; a worker that starts a thread stores
+   its slot and then reads this, all sequentially consistent: so the monitor
+   sees the thread and does not wait, or the worker sees how long it waits and
+   signals it if that is too late for the thread's timeslice
+   (run_thread_once).
+
+   The monitor used to cap every timed wait at a tick instead, so that a
+   starting thread need not signal it: a server with connections parked in
+   timed reads -- which always has a deadline -- kept it turning two hundred
+   times a second, idle or not, each turn a condvar timeout and a
+   scheduler-lock round trip. */
+static uint64_t g_sysmon_wake_at_bits = 0;   /* a double; 0 = not in a timed wait */
+static inline double sysmon_wake_at(void) { uint64_t b = SP_ATOMIC_LOAD(&g_sysmon_wake_at_bits, __ATOMIC_SEQ_CST); double d; memcpy(&d, &b, sizeof d); return d; }
+static inline void sysmon_wake_at_set(double d) { uint64_t b; memcpy(&b, &d, sizeof b); SP_ATOMIC_STORE(&g_sysmon_wake_at_bits, b, __ATOMIC_SEQ_CST); }
 
 /* (#8702) The timers. A thread has at most one, for the wait it is in, and it
    lives in the thread: its generation (tm_armed, 0 when none) is what a cancel
@@ -562,6 +578,14 @@ static double g_quantum = 0.010, g_tick = 0.005;
 /* (#8702) and keeps ticking this long after it last saw a worker busy, before
    it waits untimed: a thread that starts while it ticks needs no signal */
 #define SP_MON_LINGER      (4 * SP_PREEMPT_TICK)
+/* While a worker started a thread this recently, the monitor's timed waits
+   stay within a quantum, so a run that starts then finds the monitor coming
+   back in time on its own and does not signal it (run_thread_once): a server
+   under load starts a thread far more often than this and never signals it;
+   an isolated run (a once-a-second timer, an idle accept loop's poll) costs
+   at most two short monitor turns besides its signal. 1.0 s kept a 0.5 s
+   accept poll warm forever: a hundred monitor turns a second at idle. */
+#define SP_SYSMON_WARM     (2 * SP_PREEMPT_QUANTUM)
 static int g_npreempt = 0;         /* preempt_requests set but not yet consumed */
 static int g_preempt_sig = SIGURG; /* the signal the monitor sends; SPINEL_PREEMPT_SIGNAL overrides */
 /* SPINEL_WAKE_PREEMPT=1 (#8702): a woken thread goes to the front of its home
@@ -2891,10 +2915,16 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
      monitor's untimed wait (sp_sysmon_main) for why the pair cannot both miss */
   SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, t, __ATOMIC_SEQ_CST);
   /* A monitor with nothing to time waits untimed: signal it under the lock its
-     condvar uses, so it starts ticking. One in a timed wait comes round within
-     a tick and sees this worker busy then; nudging it here as well cost every
-     thread start the scheduler lock (condvar) or a write to its pipe (poll). */
-  if (SP_ATOMIC_LOAD(&g_sysmon_idle, __ATOMIC_SEQ_CST) == 1) {
+     condvar uses, so it starts ticking. One in a timed wait that comes round
+     within a quantum sees this worker busy then, and the preemption still
+     lands by since + quantum + tick; nudging it here as well cost every
+     thread start the scheduler lock (condvar) or a write to its pipe (poll).
+     One that waits longer (nothing ran lately: SP_SYSMON_WARM) is signalled
+     like an idle one -- under the lock for its condvar, which it holds from
+     publishing g_sysmon_wake_at until its wait releases it. */
+  double mon_at = sysmon_wake_at();
+  if (SP_ATOMIC_LOAD(&g_sysmon_idle, __ATOMIC_SEQ_CST) == 1 ||
+      (mon_at != 0.0 && mon_at > wslot_since(sp_worker_id) + SP_PREEMPT_QUANTUM)) {
     if (!locked) SCHED_LOCK();
     sp_sysmon_wake();
     if (!locked) SCHED_UNLOCK();
@@ -3586,6 +3616,16 @@ static int sp_worker_count(void) {
    it for preemption and SIGURG the worker so it yields at its next safepoint. It
    idles on g_sysmon_cv when nothing sleeps and no worker runs a green thread, and
    otherwise ticks on a short nanosleep. It never participates in GC. */
+/* A thread a worker started after this turn read the slots, seen once
+   g_sysmon_wake_at is out: go round instead of waiting, and time it (see
+   g_sysmon_wake_at). Only for a turn that found every worker idle -- a busy
+   one waits a tick. PRE: the monitor. */
+static int sp_sysmon_missed_start(int busy) {
+  if (busy) return 0;
+  for (int i = 0; i < sp_active_workers; i++)
+    if (g_wslot[i].active && SP_ATOMIC_LOAD(&g_wslot[i].cur, __ATOMIC_SEQ_CST)) return 1;
+  return 0;
+}
 static void *sp_sysmon_main(void *arg) {
   (void)arg;
   /* The monitor must never field a preemption signal itself. */
@@ -3774,10 +3814,22 @@ static void *sp_sysmon_main(void *arg) {
       double dt = busy ? SP_PREEMPT_TICK : (nearest != 0.0 ? nearest - now : 0.05);
       if (nearest != 0.0 && nearest - now < dt) dt = nearest - now;
       if (dt > 0.05) dt = 0.05;
-      /* A thread that starts running does not signal a monitor in a timed wait
-         (run_thread_once), so the wait is no longer than the tick at which it
-         checks timeslices: it finds the thread running within a tick. */
-      if (dt > SP_PREEMPT_TICK) dt = SP_PREEMPT_TICK;
+      /* A thread that starts running signals a monitor in a timed wait only
+         when the wait ends later than a quantum away (run_thread_once). While
+         threads start often, keep the wait within a quantum, so they need not
+         signal it; once they stop, back to the 50 ms backstop (SP_SYSMON_WARM).
+         At SPINEL_WORKERS=1 main's own code is timed beside the runnable
+         threads (above), and a thread main makes runnable signals no one: so
+         while main runs, the monitor looks a quantum later at most, as its
+         idle wait does. */
+      if (!busy && dt > SP_PREEMPT_QUANTUM) {
+        double last_run = 0.0;
+        for (int i = 0; i < sp_active_workers; i++)
+          if (g_wslot[i].active && wslot_since(i) > last_run) last_run = wslot_since(i);
+        if ((last_run != 0.0 && now - last_run < SP_SYSMON_WARM) ||
+            (g_worker_cap == 0 && SP_TH_STATE(&g_main_thread) == SP_TH_RUNNING))
+          dt = SP_PREEMPT_QUANTUM;
+      }
       /* A floor keeps a deadline already due from becoming a zero wait; it is
          small, since a sleep's lateness is whatever is left above it. */
       if (dt < 0.00001) dt = 0.00001;
@@ -3805,6 +3857,9 @@ static void *sp_sysmon_main(void *arg) {
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         SP_STAT_ADD(g_mon_polls, 1);
         SP_ATOMIC_STORE(&g_sysmon_idle, 2, __ATOMIC_SEQ_CST);
+        /* published after the flag, which a worker reads after this: one that
+           sees the time sees the condvar wait it signals */
+        sysmon_wake_at_set(sp_monotonic_now() + dt);
         /* a deadline added since the heap was read and earlier than the one
            this wait is for: go round instead (see sp_sysmon_nudge). Compared
            with `nearest`, which is what was published, not with the end of
@@ -3812,8 +3867,9 @@ static void *sp_sysmon_main(void *arg) {
            read as new, so a monitor with sleepers due every few us never
            waited -- it went round 300,000 times in a run, on the lock. */
         double gn = nearest_get();
-        if (!(gn != 0.0 && (nearest == 0.0 || gn < nearest)))
+        if (!(gn != 0.0 && (nearest == 0.0 || gn < nearest)) && !sp_sysmon_missed_start(busy))
           pthread_cond_timedwait(&g_sysmon_cv, &g_sched_lock, &ts);
+        sysmon_wake_at_set(0.0);
         SP_ATOMIC_STORE(&g_sysmon_idle, 0, __ATOMIC_SEQ_CST);
         continue;
       }
@@ -3832,9 +3888,12 @@ static void *sp_sysmon_main(void *arg) {
         continue;
       }
       g_pfds[0].fd = g_sysmon_pipe[0]; g_pfds[0].events = POLLIN; g_pfds[0].revents = 0;
+      sysmon_wake_at_set(sp_monotonic_now() + tmo / 1000.0);
+      if (sp_sysmon_missed_start(busy)) { sysmon_wake_at_set(0.0); continue; }
       SCHED_UNLOCK();
       int pr = poll(g_pfds, (nfds_t)npf, tmo);
       SCHED_LOCK();
+      sysmon_wake_at_set(0.0);
       SP_STAT_ADD(g_mon_polls, 1); SP_STAT_ADD(g_mon_pollfds, npf);
       if (g_pfds[0].revents & POLLIN) {   /* drain the wake pipe */
         char buf[64]; while (read(g_sysmon_pipe[0], buf, sizeof buf) > 0) {}
