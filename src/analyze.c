@@ -458,6 +458,11 @@ int an_prog_never_gives(const char *nm, int defs) {
 int an_prog_names_method(const char *nm) {
   return g_meta_by_value || anh_has(&g_symbol_names, nm);
 }
+/* Does the program define, rename, remove or hide a method by a name it
+   computes? */
+int an_prog_meta_by_value(void) {
+  return g_meta_by_value;
+}
 
 static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {
   for (int k = cls, hops = 0; k >= 0 && k < c->nclasses && hops < c->nclasses; k = c->classes[k].parent, hops++)
@@ -46412,6 +46417,39 @@ static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
   const int *argv = nt_arr(nt, up.parent, "arguments", &argc);
   return argc == 2 && argv[1] == up.node;
 }
+/* Does the program name each of S's readers only where it declares it
+   (`attr_reader :seen`): no other Symbol or String of its name, no alias
+   of it, and no method named by a name the program computes? And each
+   place's ivar only where it reads or writes it by reflection? */
+static int sid_readers_only_declared(Compiler *c, const SidSources *S) {
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < S->nreaders; i++) {
+    const char *r = S->readers[i];
+    if (!an_prog_names_method(r)) continue;
+    if (an_prog_meta_by_value()) return 0;
+    for (int k = 0; k < c->nclasses; k++)
+      for (int j = 0; j < c->classes[k].naliases; j++)
+        if (sp_streq(c->classes[k].alias_old[j], r)) return 0;
+    for (int h = 0; h < 2; h++)
+      NT_FOREACH_KIND(nt, h ? NK_StringNode : NK_SymbolNode, lit) {
+        if (!sp_streq(nt_str(nt, lit, h ? "content" : "value"), r)) continue;
+        int args = S->parent[lit], call = args >= 0 ? S->parent[args] : -1;
+        if (h || call < 0 || nt_ref(nt, call, "arguments") != args || !attr_decl_call(c, call)) return 0;
+      }
+  }
+  /* a place's ivar named by a Symbol or a String reaches it unseen
+     (`def_delegator :@seen, :add, :put`), unless it is a reflective read
+     or write, followed as one (sid_reflect_reaches_place) */
+  for (int i = 0; i < S->nivars; i++)
+    for (int h = 0; h < 2; h++)
+      NT_FOREACH_KIND(nt, h ? NK_StringNode : NK_SymbolNode, lit) {
+        if (!sp_streq(nt_str(nt, lit, h ? "content" : "value"), S->ivars[i])) continue;
+        int args = S->parent[lit], call = args >= 0 ? S->parent[args] : -1;
+        if (call < 0 || nt_ref(nt, call, "arguments") != args || sid_reflect_reaches_place(nt, S, call, NULL) != 1)
+          return 0;
+      }
+  return 1;
+}
 /* Follow the compare_by_identity calls (asked) to their places. 0 when
    one of them, or a read of a place, cannot be followed. */
 static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
@@ -46523,6 +46561,18 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
       for (int i = 0; i < S->nlocals; i++)
         if (sp_streq(S->locals[i], nm) && S->lscopes[i] != as) return 0;
     }
+  /* a place's ivar an attr reader answers (`attr_reader :seen`): its calls
+     are a reader's */
+  for (int i = 0; i < S->nivars; i++)
+    for (int k = 0; S->ivars[i][0] == '@' && k < c->nclasses; k++)
+      for (int j = 0; j < c->classes[k].nreaders; j++)
+        if (sp_streq(c->classes[k].readers[j], S->ivars[i] + 1) && !sid_add_name(S->readers, &S->nreaders, c->classes[k].readers[j]))
+          return 0;
+  /* (a class-level one too: `class << self; attr_reader :seen; end`) */
+  for (int i = 0; i < S->nivars; i++)
+    for (int k = 0; S->ivars[i][0] == '@' && k < c->nclasses; k++)
+      if (comp_is_sg_reader(&c->classes[k], S->ivars[i] + 1) && !sid_add_name(S->readers, &S->nreaders, S->ivars[i] + 1))
+        return 0;
   /* every read is used as a Set, and so is every call of a reader; a
      reader found on the way adds its calls, so this runs to a fixpoint */
   int before = -1;
@@ -46538,7 +46588,11 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
     }
   }
   /* (a reader chain longer than the rounds is not followed) */
-  return before == S->nreaders;
+  if (before != S->nreaders) return 0;
+  /* a reader is reached by calls no read above shows where the program
+     names it other than to declare it: an alias (`alias_method :s2,
+     :seen`), a Method (`b.method(:seen).call`) */
+  return sid_readers_only_declared(c, S);
 }
 
 /* Is v the answer of an operator no class of the program defines -- not
@@ -46718,7 +46772,21 @@ static void refuse_set_identity_members(Compiler *c) {
       int is_elem = 0, is_coll = 0;
       for (int k = 0; elem_names[k] && !is_elem; k++) is_elem = sp_streq(nm, elem_names[k]);
       for (int k = 0; coll_names[k] && !is_coll; k++) is_coll = sp_streq(nm, coll_names[k]);
-      if (is_elem && argc == 1) {
+      int spread = 0;
+      for (int a = 0; a < argc; a++) {
+        NodeKind ak = nt_kind(nt, argv[a]);
+        if (ak == NK_SplatNode || ak == NK_ForwardingArgumentsNode) spread = 1;
+      }
+      /* a member handed in a splat (`@seen.add(*args)`, a def_delegator's
+         forwarding def): every element of the list is one */
+      if ((is_elem || is_coll) && spread)
+        for (int a = 0; a < argc && ok; a++) {
+          NodeKind ak = nt_kind(nt, argv[a]);
+          if (ak == NK_ForwardingArgumentsNode) ok = 0;
+          else if (ak == NK_SplatNode) ok = sid_collection_ok(c, nt_ref(nt, argv[a], "expression"), set_cid);
+          else ok = is_elem ? sid_value_ok(c, argv[a], 0) : sid_collection_ok(c, argv[a], set_cid);
+        }
+      else if (is_elem && argc == 1) {
         int r = sid_value_or_check(c, id, argv[0]);
         ok = r != 0; checked = r == 2;
       }

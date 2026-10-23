@@ -2230,6 +2230,8 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       /* the reader an alias names reads its own ivar (`alias loc location`) */
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
       cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
+      /* (an ivar reflection writes may hold anything, as a read of it) */
+      if (f->all_ivars) cf_all(f, v);
       continue;
     }
     if (is_w && comp_writer_in_chain(c, k, base, NULL)) {
