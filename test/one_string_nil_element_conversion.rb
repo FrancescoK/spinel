@@ -17,3 +17,8 @@ p w
 b = [+"q"]
 s = b[0].to_s << "z"
 p s, b
+# ...and a safe-navigation conversion skips the nil element instead.
+x = a[5]&.to_s
+p x
+y = a[5]&.to_str
+p y

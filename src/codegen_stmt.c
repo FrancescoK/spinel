@@ -4059,7 +4059,7 @@ static int strbuf_chain_links_m(Compiler *c, int v, int base, int *args, int mul
     /* a self-call that changes nothing; any other (clear, replace, freeze)
        keeps the value form */
     if (str_self_call(nt, cur)) {
-      if (nm && is_receiver_conversion(nm)) continue;
+      if (nm && is_receiver_conversion(nm) && !nt_safe_nav(nt, cur)) continue;
       return -1;
     }
     int a = nt_ref(nt, cur, "arguments"), ac = 0;
