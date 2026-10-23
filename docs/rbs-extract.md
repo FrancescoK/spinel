@@ -278,7 +278,8 @@ symbol arrays, object arrays, or of tables.
 so the compiler narrows an ivar to it only when every use is one of those,
 from the class's own instance methods or through its `attr_reader` on a
 receiver statically of that class. That analysis runs with or without the seed (a `@items = Array.new(n)
-{ Foo.new }` read as `h.items[i]` in a loop narrows on its own); the seed's
+{ Foo.new }`, or `Array.new(n, Foo.new)` with its one object in every slot, read as `h.items[i]` in a loop
+narrows on its own); the seed's
 effect is a warning when the request cannot be honoured, naming the ivar,
 so the boxed fallback is never silent.
 

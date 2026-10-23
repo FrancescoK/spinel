@@ -1324,22 +1324,21 @@ static int emit_proc_cell_lvalue(Compiler *c, int scope_node, const char *nm, Bu
   return 1;
 }
 
-/* `Array.new(n) { ... }`: a generator that builds its container in place, so
+/* `Array.new(n) { ... }`, or `Array.new(n, v)` into a slot that is not a
+   String-handle Array: a constructor that builds its container in place, so
    the container's C form is free to follow the destination rather than the
    node's own type. That matters wherever a pointer-array narrowing is a
    decision about a SLOT (a local, a method's return) which never reached the
-   node the value is emitted from. */
-static int is_array_new_block(Compiler *c, int v) {
+   node the value is emitted from. (A String-handle Array's fill is built
+   by the fill emitter's handle path, not here.) */
+static int is_array_new_build(Compiler *c, int v, TyKind want) {
   const NodeTable *nt = c->nt;
-  const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
-  if (!vty || !sp_streq(vty, "CallNode")) return 0;
-  if (nt_ref(nt, v, "block") < 0) return 0;
-  const char *cn = nt_str(nt, v, "name");
-  if (!cn || !sp_streq(cn, "new")) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int argc = 0; call_args(nt, v, &argc);
+  if (nt_ref(nt, v, "block") < 0 && (argc != 2 || want == TY_STRH_ARRAY)) return 0;
   int r = nt_ref(nt, v, "receiver");
-  if (r < 0 || !nt_type(nt, r) || !sp_streq(nt_type(nt, r), "ConstantReadNode")) return 0;
-  const char *rn = nt_str(nt, r, "name");
-  return rn && sp_streq(rn, "Array");
+  return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode &&
+         is_array_new(nt_str(nt, r, "name"), nt_str(nt, v, "name"));
 }
 
 /* Emit a value that BUILDS its container into a narrowed pointer array (an
@@ -1382,7 +1381,7 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
     buf_printf(b, " _t%d; })", t);
     return 1;
   }
-  if (is_array_new_block(c, v)) {
+  if (is_array_new_build(c, v, want)) {
     int vw = view_push(c, v, want);
     emit_expr(c, v, b);
     view_pop(c, vw);
@@ -18807,18 +18806,12 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     else if (wk == 2 && civ_is_oint(c, wcid, wiv)) emit_oint_expr(c, v, ivt, b);
     else if (oint_kind(ivt) && node_may_be_nil(c, v)) refuse_nil_store(c, v, ivt, "an instance variable write");
-    /* `@t = Array.new(n) { <int array> }` into a narrowed pointer-array ivar:
-       the generator emits from the NODE's type, which the narrowing (a slot
+    /* `@t = Array.new(n) { <int array> }` (or `Array.new(n, obj)`) into a
+       narrowed pointer-array ivar: the generator emits from the NODE's type, which the narrowing (a slot
        decision) does not change. Lend it the slot's type, exactly as the local
        write does, or the sp_PolyArray * it builds lands in an sp_PtrArray *
        field and every read of the table dereferences the wrong shape. */
-    else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "CallNode") &&
-        nt_ref(nt, v, "block") >= 0 && nt_str(nt, v, "name") &&
-        sp_streq(nt_str(nt, v, "name"), "new") && nt_ref(nt, v, "receiver") >= 0 &&
-        nt_type(nt, nt_ref(nt, v, "receiver")) &&
-        sp_streq(nt_type(nt, nt_ref(nt, v, "receiver")), "ConstantReadNode") &&
-        nt_str(nt, nt_ref(nt, v, "receiver"), "name") &&
-        sp_streq(nt_str(nt, nt_ref(nt, v, "receiver"), "name"), "Array")) {
+    else if (ty_is_ptr_array(ivt) && is_array_new_build(c, v, ivt)) {
       int vw = view_push(c, v, ivt);
       emit_expr(c, v, b);
       view_pop(c, vw);
