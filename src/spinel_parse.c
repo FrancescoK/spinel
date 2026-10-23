@@ -2469,6 +2469,33 @@ static int source_references_io_buffer(const char *src) {
   return sp_src_code_any(src, sp_iob_hit);
 }
 
+/* Whether `src` calls Time.parse or Time.strptime in CODE (the skipping of
+   sp_src_code_any). `Time` starts a word that no `.` or `::` qualifies, so
+   DateTime.parse and Foo::Time.parse do not count, though a top-level
+   ::Time.parse does; the method name ends there, so Time.parser does not.
+   `Time::parse` and a `.` on the next line count too. Drives the time.rb
+   splice below; a receiver held in a variable (`k = Time; k.parse(s)`) is
+   not seen. */
+static int sp_req_ident_char(char ch);
+static int sp_time_parser_hit(const char *src, const char *p) {
+  if (strncmp(p, "Time", 4) != 0) return 0;
+  const char *b = p;
+  if (b - src >= 2 && b[-1] == ':' && b[-2] == ':') b -= 2;   /* ::Time */
+  if (b > src && (sp_req_ident_char(b[-1]) || b[-1] == '.' || b[-1] == ':')) return 0;
+  const char *q = p + 4;
+  while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+  if (q[0] == '&' && q[1] == '.') q += 2;
+  else if (q[0] == '.') q++;
+  else if (q[0] == ':' && q[1] == ':') q += 2;
+  else return 0;
+  while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+  size_t n = strncmp(q, "parse", 5) == 0 ? 5 : strncmp(q, "strptime", 8) == 0 ? 8 : 0;
+  return n && !sp_req_ident_char(q[n]);
+}
+static int source_calls_time_parser(const char *src) {
+  return sp_src_code_any(src, sp_time_parser_hit);
+}
+
 /* ---- require-gate: features enabled by a `require "name"` ----
    SPINEL_REQUIRE_GATE: when set, a require-gated stdlib feature (stringio,
    io/console, ...) is provided only if its `require` textually appears in the
@@ -4295,9 +4322,14 @@ static int sp_require_preloaded(const char *name) {
    lookup. packages/time/time.rb is CRuby's time.rb, for Time.parse and
    Time.strptime: a plain `require "time"` stays the runtime's, whose
    formatters and strict parsers are C, so a program that does not parse
-   keeps the C it had (#9946). */
+   keeps the C it had (#9946). The file is reached only through
+   SP_TIME_PARSERS_FEATURE, the name the time.rb splice requires it by:
+   `require "time"` itself is already resolved by then, and a second one
+   would be skipped as a repeat. */
+#define SP_TIME_PARSERS_FEATURE "spinel/time_parsers"
 static const char *sp_package_feature(const char *lib_name) {
   if (strcmp(lib_name, "time") == 0) return NULL;
+  if (strcmp(lib_name, SP_TIME_PARSERS_FEATURE) == 0) return "time";
   return lib_name;
 }
 
@@ -5474,6 +5506,11 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     source = sp_prepend_require(source, argv0, "require \"set\"\n", &fsl, &fsl_n);
   if (!sp_feature_required("io/buffer") && source_references_io_buffer(source))
     source = sp_prepend_require(source, argv0, "require \"io/buffer\"\n", &fsl, &fsl_n);
+  /* CRuby's time.rb (packages/time) for a program that requires "time" and
+     calls Time.parse or Time.strptime; any other program keeps the
+     runtime's C (#9946). */
+  if (sp_feature_required("time") && source_calls_time_parser(source))
+    source = sp_prepend_require(source, argv0, "require \"" SP_TIME_PARSERS_FEATURE "\"\n", &fsl, &fsl_n);
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);

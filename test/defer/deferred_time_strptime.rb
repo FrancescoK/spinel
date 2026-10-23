@@ -1,9 +1,8 @@
-# Compiled with --defer-refusals: a Time.strptime in a method is deferred like
-# any other refusal -- the method raises NotImplementedError naming it, and
-# a program that never calls it (webrick's cookie expiry, activesupport's
-# date conversions) builds and runs. Without the flag it is refused.
+# Compiled with --defer-refusals: a Time.strptime in a method, without
+# `require "time"`, is deferred like any other refusal -- the method raises
+# NotImplementedError naming it, and a program that never calls it builds
+# and runs. Without the flag it is refused.
 # spinel: defer-refusals: 2:start true after
-require "time"
 def expires_at(s) = Time.strptime(s, "%Y-%m-%d")
 
 puts "start"

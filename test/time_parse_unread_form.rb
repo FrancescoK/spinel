@@ -1,7 +1,6 @@
-# spinel: not-cruby -- CRuby's Date._parse reads these forms; Spinel's Time.parse reads only the numeric ISO 8601 ones and says so.
-# A form Time.parse does not read raises NotImplementedError naming it, not
-# an ArgumentError a program would take for an invalid date (CRuby answers a
-# Time for each of these), and not some other instant.
+# Time.parse reads the free forms through CRuby's time.rb (packages/time),
+# spliced in because the program calls it: these forms read as in CRuby,
+# with no NotImplementedError, and "x" is CRuby's ArgumentError.
 require "time"
 
 ["Oct 9 2026", "Fri, 09 Oct 2026 10:23:24 +0200", "10:23", "2026-10-09 foo",

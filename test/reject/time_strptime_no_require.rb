@@ -1,7 +1,7 @@
-# Time.strptime is not implemented, same as Time.parse (K-001): a
-# compile-time refusal naming the documented limit.
+# Time.strptime without `require "time"`, same as Time.parse (K-001): a
+# compile-time refusal naming the documented limit. With the require, it is
+# CRuby's time.rb (test/time_strptime.rb).
 # spinel: reject-time-parse: Time.strptime is not supported
-require "time"
 
 def read_log_line(s)
   t = Time.strptime(s, "%Y-%m-%d")

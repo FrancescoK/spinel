@@ -1,7 +1,7 @@
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "Oct 9 2026"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "Fri, 09 Oct 2026 10:23:24 +0200"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "10:23"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "2026-10-09 foo"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "2026-10-09 10:23:24 CEST"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "2026-10-09 UTC"
-Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, optionally hh:mm[:ss[.frac]] and a zone), not "x"
+read Oct 9 2026
+read Fri, 09 Oct 2026 10:23:24 +0200
+read 10:23
+read 2026-10-09 foo
+read 2026-10-09 10:23:24 CEST
+read 2026-10-09 UTC
+ArgumentError: no time information in "x"
