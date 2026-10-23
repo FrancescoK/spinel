@@ -3256,6 +3256,15 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  cmp -s "$$tmp/bw.out" test/rbs-seed/block_param_hash_widen.expected || { echo "rbs-seed-test: FAIL (#4100 block param over an untyped receiver widened the hash it writes into)"; diff -u test/rbs-seed/block_param_hash_widen.expected "$$tmp/bw.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#4100 widened block param: C did not compile)"; ok=0; fi; \
 	;; \
+	settle_drop_keeps_unrelated_pins) \
+	$(SPINEL) test/rbs-seed/settle_drop_keeps_unrelated_pins.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/sdk.c" 2>/dev/null; \
+	grep -q 'sp_SdkColumnSet_add(sp_SdkColumnSet \* *self, sp_FloatArray \* lv_col_tr' "$$tmp/sdk.c" || { echo "rbs-seed-test: FAIL (a parameter seed dropped on the settled types boxed an unrelated method's parameters)"; ok=0; }; \
+	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/sdk.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/sdk" 2>"$$tmp/sdk.err"; then \
+	  "$$tmp/sdk" > "$$tmp/sdk.out" 2>/dev/null && \
+	    cmp -s "$$tmp/sdk.out" test/rbs-seed/settle_drop_keeps_unrelated_pins.expected || { echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins failed or output differs from CRuby)"; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins: C did not compile)"; ok=0; fi; \
+	;; \
 	array_param_seed_transient_box) \
 	$(SPINEL) test/rbs-seed/array_param_seed_transient_box.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/pst.c" 2>/dev/null; \
