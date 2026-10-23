@@ -9,7 +9,7 @@ module Gate
     cache="vendor/prism vendor/rbs build/rubyspec build/optcarrot build/rubyboy"
     for d in $cache; do [ -d /cache/$d ] && mkdir -p $(dirname $d) && cp -a /cache/$d $d; done
     chown -R gate:gate /src
-    runuser -u gate -- env HOME=/home/gate PATH="$PATH" bash -c 'cd /src && git init -q && git add -A &&
+    runuser -u gate -- env HOME=/home/gate PATH="$PATH" GATE_JOBS="$GATE_JOBS" bash -c 'cd /src && git init -q && git add -A &&
       git -c user.email=gate@local -c user.name=gate commit -qm gate &&
       for i in 1 2 3 4 5; do make deps >/dev/null 2>&1 && break; sleep 5; done; make -j${GATE_JOBS:-$(nproc)} gate 2>&1'
     rc=$?
