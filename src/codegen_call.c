@@ -16939,7 +16939,17 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
       }
-      if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
+      /* (one-String mode: an operand that changes the left String in place,
+         `(o.a = s) + (s << "3")`, runs before the left's bytes are read; the
+         left is held as its handle) */
+      if (g_one_string && operand_may_change_string(c, argv[0])) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(", ta); emit_str_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);
+        emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(SP_STR_B(_t%d), _t%d); })", tb, ta, tb);
+      }
+      else if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", ta); emit_str_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);

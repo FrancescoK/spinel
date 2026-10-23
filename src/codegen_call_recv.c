@@ -9845,6 +9845,25 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(&rs, "%s(", oint_arg(rt)); emit_oint_expr(c, recv, rt, &rs); buf_puts(&rs, ")");
   }
   if (!rs.p) emit_expr(c, recv, &rs);
+  /* One-String mode: an argument that can change a String in place (the
+     receiver's own: `u.center((u << "x"; 9))`) runs before the receiver's
+     bytes are read, as CRuby's method reads its receiver when it runs. The
+     receiver is held as its handle first, in Ruby's order, the arguments
+     run into their temps (emit_args_before), and the bytes are read from
+     the handle after them; the caller unbinds the temps. */
+  if (g_one_string && rt == TY_STRING && recv >= 0 && argc > 0 && g_pre && rs.p && !nt_safe_nav(nt, id) &&
+      nt_ref(nt, id, "block") < 0 && !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) {
+    int chg = 0;
+    for (int ai = 0; ai < argc && !chg; ai++) chg = operand_may_change_string(c, argv[ai]);
+    if (chg) {
+      int th = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, rs.p, th);
+      emit_args_before(c, argv, argc, NULL, 0, g_pre);
+      free(rs.p); memset(&rs, 0, sizeof rs);
+      buf_printf(&rs, "SP_STR_B(_t%d)", th);
+    }
+  }
   const char *r = rs.p ? rs.p : "";
   /* A Float receiver that can be nil answers a Float's methods only where
      NilClass has the name:
@@ -10617,7 +10636,11 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && name &&
       sp_streq(name, "scrub!") && argc <= 1 && emit_scrub_bang(c, recv, rt, argc, argv, b))
     return 1;
-  { int r; if (emit_scalar_recv_arms(c, id, b, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
+  /* (the arguments emit_scalar_recv_arms ran first are bound to temps for
+     its arms alone) */
+  { int r, sv_argov = g_n_argov, done = emit_scalar_recv_arms(c, id, b, nt, name, recv, argc, argv, rt, a0, &r);
+    if (g_n_argov > sv_argov) view_unbind(sv_argov);
+    if (done) return r; }
   return 0;
 }
 
