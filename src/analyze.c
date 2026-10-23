@@ -11568,16 +11568,48 @@ static int desugar_method_block_arg(Compiler *c) {
    a real entry in the includer's chain -- and the comp_method_in_chain test
    at the top of the loop below then declines to rewrite its call. The
    rewrite still serves every body that genuinely does not care. */
+/* The module_function scopes by name, for one run of the pass below: per
+   name (its index in mfn_names) the chain of the modules that have a
+   module_function of it. The pass asked every receiverless call's class
+   chain for its name, and each module on the way scanned every scope of the
+   program for one; a large program spent minutes on the one call it rewrote.
+   With the names in hand a call named as no module_function is passed over
+   before any lookup. Built at each run: the pass adds no scope. */
+static ANameHash mfn_names;
+static int *mfn_first, *mfn_next, *mfn_mod, mfn_n, mfn_cap;
+static void mfn_build(Compiler *c) {
+  anh_free(&mfn_names); memset(&mfn_names, 0, sizeof mfn_names);
+  free(mfn_first); mfn_first = NULL; mfn_n = 0;
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *ms = &c->scopes[si];
+    if (ms->class_id < 0 || !ms->is_module_function || !ms->name) continue;
+    int i = anh_find(&mfn_names, ms->name);
+    if (i < 0) {
+      anh_add(&mfn_names, ms->name); i = mfn_names.n - 1;
+      mfn_first = realloc(mfn_first, sizeof *mfn_first * (size_t)mfn_names.n);
+      mfn_first[i] = -1;
+    }
+    if (mfn_n == mfn_cap) {
+      mfn_cap = mfn_cap ? mfn_cap * 2 : 64;
+      mfn_next = realloc(mfn_next, sizeof *mfn_next * (size_t)mfn_cap);
+      mfn_mod = realloc(mfn_mod, sizeof *mfn_mod * (size_t)mfn_cap);
+    }
+    mfn_mod[mfn_n] = ms->class_id; mfn_next[mfn_n] = mfn_first[i]; mfn_first[i] = mfn_n++;
+  }
+}
+/* does module m have a module_function named nm (mfn_build ran)? */
+static int mfn_module_has(int m, const char *nm) {
+  int i = anh_find(&mfn_names, nm);
+  for (int e = i >= 0 ? mfn_first[i] : -1; e >= 0; e = mfn_next[e]) if (mfn_mod[e] == m) return 1;
+  return 0;
+}
 /* The first module, in the ancestor order module m and the modules it
    includes take (m, then its includes from the last made), that has a
    module_function named nm; -1 for none. depth only stops an include
    cycle: no chain of distinct modules is longer than the class count. */
 static int module_function_owner(Compiler *c, int m, const char *nm, int depth) {
   if (m < 0 || m >= c->nclasses || depth > c->nclasses) return -1;
-  for (int si = 1; si < c->nscopes; si++) {
-    const Scope *ms = &c->scopes[si];
-    if (ms->class_id == m && ms->is_module_function && ms->name && sp_streq(ms->name, nm)) return m;
-  }
+  if (mfn_module_has(m, nm)) return m;
   const ClassInfo *mi = &c->classes[m];
   for (int j = mi->nincluded_mods - 1; j >= 0; j--) {
     int r = module_function_owner(c, mi->included_mods[j], nm, depth + 1);
@@ -11589,11 +11621,13 @@ static int desugar_module_function_call(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+  mfn_build(c);
+  if (mfn_names.n == 0) return 0;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
+    if (!nm || anh_find(&mfn_names, nm) < 0) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
     if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
