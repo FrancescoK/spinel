@@ -287,15 +287,8 @@ extern void  __tsan_switch_to_fiber(void *fiber, unsigned flags);
    constant), so each worker sets it via sp_fiber_worker_init before running any
    fiber; the single-threaded build keeps the constant static init unchanged
    (byte-identical). */
-#ifdef SP_ONE_STRING
-/* (one representation: 0xfd is a handle payload's marker, which sp_gc_mark
-   follows to the handle; the root fiber takes the literal's skip byte) */
-#define SP_FIBER_ROOT_GUARD 0xff
-#else
-#define SP_FIBER_ROOT_GUARD 0xfd
-#endif
 static SP_TLS struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
-    = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)SP_FIBER_ROOT_GUARD }, .root = {0} };
+    = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)SP_STATIC_GUARD }, .root = {0} };
 #define sp_fiber_root (sp_fiber_root_box.root)
 #ifdef SP_THREADS
 SP_TLS sp_Fiber *sp_fiber_current = NULL;              /* set by sp_fiber_worker_init */

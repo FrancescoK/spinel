@@ -84,7 +84,7 @@ sp_float sp_krand_float(void) {
    fiber in sp_fiber.c: the guard array is exactly one alignment unit, so its
    last byte always directly precedes the struct with no padding in between. */
 static SP_TLS struct { char guard[_Alignof(sp_Random)]; sp_Random r; } sp_random_default_box
-    = { .guard = { [_Alignof(sp_Random) - 1] = (char)0xfd } };
+    = { .guard = { [_Alignof(sp_Random) - 1] = (char)SP_STATIC_GUARD } };
 #define sp_random_default (sp_random_default_box.r)
 uint64_t sp_random_next(sp_Random *r) {SP_GC_ROOT(r);
   if (r == &sp_random_default) return sp_krand_next();
