@@ -6628,10 +6628,12 @@ int desugar_array_first_last(Compiler *c) {
    settled types, as desugar_symbol_string_methods does. */
 int desugar_interp_reopened_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
-  const char *const names[] = { "Integer", "Float", "Symbol" };
-  const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL };
-  int own[3], any = 0;
-  for (int k = 0; k < 3; k++) {
+  /* true and false: either class's own to_s makes the part a call, which
+     picks the side by value (cplan_bool_sides) */
+  const char *const names[] = { "Integer", "Float", "Symbol", "TrueClass", "FalseClass" };
+  const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL, TY_BOOL, TY_BOOL };
+  int own[5], any = 0;
+  for (int k = 0; k < 5; k++) {
     int ci = comp_class_index(c, names[k]);
     own[k] = ci >= 0 && comp_method_in_chain(c, ci, "to_s", NULL) >= 0;
     any |= own[k];
@@ -6651,7 +6653,7 @@ int desugar_interp_reopened_to_s(Compiler *c) {
       if (expr < 0) continue;
       TyKind t = infer_type(c, expr);
       int hit = 0;
-      for (int j = 0; j < 3; j++) if (own[j] && t == kinds[j]) hit = 1;
+      for (int j = 0; j < 5; j++) if (own[j] && t == kinds[j]) hit = 1;
       if (!hit) continue;
       int tsc = nt_new_node(nt, "CallNode");
       if (tsc < 0) continue;

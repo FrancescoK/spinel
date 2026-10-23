@@ -1,0 +1,41 @@
+42
+0
+yes
+false
+:eq
+true
+"T"
+false.hi: NoMethodError
+3
+true.lo: NoMethodError
+flag 2
+42
+flag 0
+0
+flag 2
+yes
+flag 0
+false
+flag 2
+flag 0
+yes false
+flag 0
+:and
+flag 2
+true
+flag 2
+4
+flag 2
+2
+flag 2
+"mod"
+flag 0
+false.sure?: NoMethodError
+flag 2
+then
+flag 0
+2
+[42, 0]
+yes
+false
+["yes", "false"]

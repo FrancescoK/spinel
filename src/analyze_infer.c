@@ -6403,13 +6403,23 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
   /* built-in class reopening: look up user-defined methods on scalar built-in
      types -- not for an alias that captured the builtin (builtin_only) */
   if (recv >= 0 && !bonly && !nt_int(nt, id, "builtin_only", 0)) {
+    /* true and false: each value's own class's method, or the builtin's
+       where its class has none; one answer where they agree, else boxed */
+    int tmi, fmi;
+    if (rt == TY_BOOL && !(an_builtin_only && an_bo_recv == recv) && cplan_bool_sides(c, id, &tmi, &fmi)) {
+      int mi = tmi >= 0 ? tmi : fmi;
+      TyKind t = an_user_call(c, id, mi, UC_REOPEN, c->scopes[mi].class_id);
+      int other = tmi >= 0 ? fmi : tmi;
+      TyKind o = other >= 0 ? method_call_ret(c, other, id) : an_builtin_answer(c, id);
+      *out = o == t || o == TY_UNKNOWN || o == TY_VOID ? t : TY_POLY;
+      return 1;
+    }
     const char *oc_cn = NULL;
     switch (rt) {
     case TY_STRING: oc_cn = "String"; break;
     case TY_INT:    oc_cn = "Integer"; break;
     case TY_FLOAT:  oc_cn = "Float"; break;
     case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_BOOL:   oc_cn = "TrueClass"; break;
     case TY_RANGE:  oc_cn = "Range"; break;
     case TY_TIME:   oc_cn = "Time"; break;
     case TY_THREAD: oc_cn = "Thread"; break;

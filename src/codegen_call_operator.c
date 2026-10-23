@@ -164,6 +164,8 @@ static int poly_cmp_reopen_test(Compiler *c, const char *v, char *out, size_t ca
     { "Numeric", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
     { "String",  "%s.tag == SP_TAG_STR" },
     { "Symbol",  "%s.tag == SP_TAG_SYM" },
+    { "TrueClass",  "(%s.tag == SP_TAG_BOOL && %s.v.i)" },
+    { "FalseClass", "(%s.tag == SP_TAG_BOOL && !%s.v.i)" },
   };
   size_t n = 0; out[0] = '\0';
   for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
