@@ -334,6 +334,9 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {SP
      msg NULL, and #message answers the class name when it is asked */
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
     e->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
+    /* (the copy may have collected and aged e: a handle's copy, one-String,
+       is an object the old exception now holds) */
+    sp_gc_wb((void *)e);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
     /* (after the copy: a message no one else holds gets the exception's
        own handle over it, which reads e->msg and its frozen mark) */
@@ -424,6 +427,9 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {SP_EXC_ONE_OWNE
   SP_GC_ROOT(e);
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
     e->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
+    /* (the copy may have collected and aged e: a handle's copy, one-String,
+       is an object the old exception now holds) */
+    sp_gc_wb((void *)e);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
     /* (after the copy: a message no one else holds gets the exception's
        own handle over it, which reads e->msg and its frozen mark) */
@@ -508,6 +514,9 @@ sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);
   if ((msg && msg[0]) || sp_exc_msg_empty_given(msg)) {
     sp_exc_one_attach(n, (sp_String *)_one_h);
     n->msg = sp_exc_msg_copy(msg && msg[0] ? msg : "");
+    /* (the copy may have collected and aged n: a handle's copy, one-String,
+       is an object the old exception now holds) */
+    sp_gc_wb((void *)n);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   }
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
