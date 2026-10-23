@@ -96,7 +96,7 @@ for p in "$@"; do i=$((i + 1)); printf '%06d:%s\n' "$i" "$p"; done | xargs -P "$
     rc=$?
     rm -f "$4/$k.$side.c"
     [ $rc -eq 0 ] || { echo "$p" > "$4/$k.fail"; continue; }
-    sed -E "s/__bp[0-9]+/__bp/g" "$4/$k.$side.raw" | LC_ALL=C sort > "$4/$k.$side"
+    sed -E "s/__bp[A-Za-z0-9_]+/__bp/g" "$4/$k.$side.raw" | LC_ALL=C sort > "$4/$k.$side"
   done
   printf "%s\n" "$p" > "$4/$k.name"' _ {} "$REF" "$NEW" "$T" || { echo "repr_diff: dumping the programs failed" >&2; exit 2; }
 
