@@ -43221,6 +43221,12 @@ static void refuse_mixin_after_calls(Compiler *c) {
       if (id >= nt->count || !ahead[id]) continue;
       const char *name = nt_str(nt, id, "name");
       if (!name) continue;
+      /* an arm of a lowered `send` is no statement of the program: which
+         method the send runs is the run time's, and CRuby finds a module's
+         method through it only once the module is mixed in (Rails'
+         Module#redefine_method sends the visibility it computed, and the arm
+         for `concerning` stopped the program at `Module.include Concerning`) */
+      if (nt_int(nt, id, "dyn_arm", 0)) continue;
       int recv = nt_ref(nt, id, "receiver");
       Scope *ms = comp_scope_of(c, id);
       int in_def = ms && ms->def_node >= 0;
