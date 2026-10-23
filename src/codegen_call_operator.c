@@ -1931,8 +1931,12 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          poly operation, not a binding) */
       if (g_plan_check && c->ucall_inf[id].via != UC_NONE)
         for (int k = 0; k < c->nclasses; k++) {
-          int kmi = comp_method_in_class(c, k, name);
-          if (kmi >= 0) ucall_observe(c, id, kmi, k, 1);
+          /* (resolved as the dispatch resolves it, an alias of the name
+             included: activesupport's `alias_method :+, :plus_with_duration`
+             in Date dispatches to plus_with_duration) */
+          int dc = -1;
+          int kmi = comp_method_in_chain(c, k, name, &dc);
+          if (kmi >= 0 && dc == k) ucall_observe(c, id, kmi, k, 1);
         }
       Buf pcall; memset(&pcall, 0, sizeof pcall);
       if (subtree_may_allocate(nt, argv[0])) {
