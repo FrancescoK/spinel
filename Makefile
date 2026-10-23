@@ -2803,7 +2803,7 @@ build/gc-minor-results/store_value_after_collect.chk: FORCE | $(SPINEL) $(SP_RT_
 build/gc-minor-results/byref_param_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
 	$(SPINEL) test/gc_minor_byref_param_same_name_cell.rb --no-line-map -c -o "$$tmp/bp.c" >/dev/null 2>&1; \
-	sed -n '/^[^ ].* sp_emit(const char \* \*_cell_io) {$$/,/^}$$/p' "$$tmp/bp.c" > "$$tmp/bp.emit"; \
+	sed -n '/^[^ ].* sp_emit(\(const char \* \*_cell_io\|sp_String \* lv_io\)) {$$/,/^}$$/p' "$$tmp/bp.c" > "$$tmp/bp.emit"; \
 	if [ ! -s "$$tmp/bp.emit" ] || grep -q sp_gc_wb "$$tmp/bp.emit"; then \
 	  echo "gc-minor-test: FAIL (a by-reference parameter's store took a cell barrier: it reads a header off the caller's stack)"; ok=0; fi; \
 	rm -rf "$$tmp"; echo $$ok > $@
@@ -2813,16 +2813,21 @@ build/gc-minor-results/byref_param_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(S
 build/gc-minor-results/byref_param_cond_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
 	$(SPINEL) test/gc_minor_byref_param_cond_store.rb --no-line-map -c -o "$$tmp/bc.c" >/dev/null 2>&1; \
-	awk '/^[^ ].* sp_layout_into\(const char \* \*_cell_io, .*\) \{$$/ { f = 1; print; next } f && /^static / { exit } f' "$$tmp/bc.c" > "$$tmp/bc.into"; \
-	if [ ! -s "$$tmp/bc.into" ] || ! grep -q '_cell_io' "$$tmp/bc.into" || grep -q sp_gc_wb "$$tmp/bc.into"; then \
+	awk '/^[^ ].* sp_layout_into\((const char \* \*_cell_io|sp_String \* lv_io), .*\) \{$$/ { f = 1; print; next } f && /^static / { exit } f' "$$tmp/bc.c" > "$$tmp/bc.into"; \
+	if [ ! -s "$$tmp/bc.into" ] || ! grep -qE '_cell_io|lv_io' "$$tmp/bc.into" || grep -q sp_gc_wb "$$tmp/bc.into"; then \
 	  echo "gc-minor-test: FAIL (a by-reference parameter's store after a multi-line condition took a cell barrier on the caller's stack)"; ok=0; fi; \
 	rm -rf "$$tmp"; echo $$ok > $@
+# (one-String mode: a literal's String is its handle, made on first use
+# and young until a collection ages it, so its store keeps the barrier)
 build/gc-minor-results/never_young_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
 	$(SPINEL) test/gc_minor_never_young_store.rb --no-line-map -c -o "$$tmp/ny.c" >/dev/null 2>&1; \
 	sed -n '/^[^ ].* sp_Node_initialize(.*) {$$/,/^}$$/p' "$$tmp/ny.c" > "$$tmp/ny.init"; \
 	sed -n '/^[^ ].* sp_grow(.*) {$$/,/^}$$/p' "$$tmp/ny.c" > "$$tmp/ny.grow"; \
-	if [ ! -s "$$tmp/ny.init" ] || grep -q 'sp_gc_wb\|SP_WBO' "$$tmp/ny.init"; then \
+	if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then \
+	  if [ ! -s "$$tmp/ny.init" ] || grep -E '= NULL;' "$$tmp/ny.init" | grep -q 'sp_gc_wb\|SP_WBO'; then \
+	    echo "gc-minor-test: FAIL (a store of nil took a barrier: nil is no object)"; ok=0; fi; \
+	elif [ ! -s "$$tmp/ny.init" ] || grep -q 'sp_gc_wb\|SP_WBO' "$$tmp/ny.init"; then \
 	  echo "gc-minor-test: FAIL (a store of nil or of a string literal took a barrier: neither is ever a young object)"; ok=0; fi; \
 	if [ "$$(grep -c sp_gc_wb "$$tmp/ny.grow")" != 3 ]; then \
 	  echo "gc-minor-test: FAIL (a store of a fresh object or string lost its barrier)"; ok=0; fi; \
@@ -4881,7 +4886,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 # short of that, a later method silently emitted with the wrong return
 # convention. Both are checked here (#4141). The --share-strings seal, which
 # runs before any unit is emitted, reports every refusal it finds under
-# SP_COLLECT_ERRORS instead of stopping at the first (#8328). tools/refusals.sh then compares
+# SP_COLLECT_ERRORS instead of stopping at the first (#8328); the one-String
+# mode has no seal, and takes that program, so its checks run in the two
+# representations alone. tools/refusals.sh then compares
 # every message test/reject/ and test/collect/ print, in both overflow modes,
 # with test/collect/refusals.expected.
 collect-errors-test: $(SPINEL)
@@ -4890,7 +4897,7 @@ collect-errors-test: $(SPINEL)
 	SP_COLLECT_ERRORS=1 $(SPINEL) "$$src" -c --no-line-map -o "$$tmp/g.c" >"$$tmp/g.err" 2>&1; rc=$$?; \
 	if [ $$rc -ne 0 ]; then echo "collect-errors-test: FAIL (rc=$$rc; a unit abandoned by the longjmp left a global pointing into its dead frame)"; sed -n 1,3p "$$tmp/g.err"; rm -rf "$$tmp"; exit 1; fi; \
 	grep -q 'unsupported class variable read' "$$tmp/g.err" || { echo "collect-errors-test: FAIL (the gap was not reported at all, so nothing was recovered from)"; ok=0; }; \
-	sed -n '/^static inline .* sp_b(const char \* lv_scheme) {/,/^}/p' "$$tmp/g.c" >"$$tmp/b.c"; \
+	sed -n '/^static inline .* sp_b(.* lv_scheme) {/,/^}/p' "$$tmp/g.c" >"$$tmp/b.c"; \
 	[ -s "$$tmp/b.c" ] || { echo "collect-errors-test: FAIL (the unit after the abandoned one was not emitted)"; ok=0; }; \
 	grep -q 'return ' "$$tmp/b.c" || { echo "collect-errors-test: FAIL (the unit after the abandoned one lost its return)"; ok=0; }; \
 	! grep -q '_sp_proc_poly_ret' "$$tmp/b.c" || { echo "collect-errors-test: FAIL (a plain method inherited the abandoned proc's return funnel)"; ok=0; }; \
@@ -4905,6 +4912,7 @@ collect-errors-test: $(SPINEL)
 	[ "$$n" -eq 2 ] || { echo "collect-errors-test: FAIL (without the flag the run reported $$n of 2 contradictions: every compile collects)"; ok=0; }; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a contradicted seed was emitted without the flag)"; ok=0; }; \
 	sr=test/share/refuse/seal_collect_route_and_flow.rb; \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ]; then \
 	SP_COLLECT_ERRORS=1 $(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr.c" >"$$tmp/sr.err" 2>&1; \
 	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr.err"); \
 	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (collect mode reported $$n of the seal's 3 refusals)"; ok=0; }; \
@@ -4918,6 +4926,7 @@ collect-errors-test: $(SPINEL)
 	[ -f "$$tmp/sr.json" ] || { echo "collect-errors-test: FAIL (a program the seal refuses left no --emit-types JSON)"; ok=0; }; \
 	n=$$(grep -c '"severity":"error"' "$$tmp/sr.json" 2>/dev/null); \
 	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (the --emit-types JSON carries $$n of the seal's 3 refusals)"; ok=0; }; \
+	fi; \
 	$(SPINEL) "$$src" -c --no-line-map -o "$$tmp/g2.c" >"$$tmp/g2.err" 2>&1; rc=$$?; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a program with a gap compiled without the flag)"; ok=0; }; \
 	[ ! -f "$$tmp/g2.c" ] || { echo "collect-errors-test: FAIL (a refused program's C was written)"; ok=0; }; \
@@ -4956,16 +4965,16 @@ alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q '^960$$' "$$tmp/sa.out" || { echo "alloc-report-test: FAIL (straight_append wrong length)"; ok=0; }; \
 	awk '/^# bytes .*String /{n=$$NF} END{ if (n == "" || n+0 > 5000) exit 1 }' "$$tmp/sa.folded" || { echo "alloc-report-test: FAIL (straight-line appends allocate a multiple of the result: quadratic is back)"; grep String "$$tmp/sa.folded"; ok=0; }; \
 	grep -q '^alloc;(unattributed) ' "$$tmp/s.folded" && { echo "alloc-report-test: FAIL (the stats table saturated on a normal run)"; ok=0; }; \
-	$(CC) $(CFLAGS) -DSP_ALLOC_STATS=2 -Ilib -c lib/sp_alloc.c -o "$$tmp/sm.o" 2>/dev/null || { echo "alloc-report-test: FAIL (compile small-table sp_alloc)"; exit 1; }; \
+	$(CC) $(CFLAGS) $(filter -DSP_ONE_STRING,$(COPT)) -DSP_ALLOC_STATS=2 -Ilib -c lib/sp_alloc.c -o "$$tmp/sm.o" 2>/dev/null || { echo "alloc-report-test: FAIL (compile small-table sp_alloc)"; exit 1; }; \
 	cp $(SP_RT_LIB) "$$tmp/sm.a" && ar d "$$tmp/sm.a" sp_alloc.o 2>/dev/null && ar r "$$tmp/sm.a" "$$tmp/sm.o" 2>/dev/null; \
 	$(SPINEL) test/alloc-report/sites.rb -c --no-line-map -o "$$tmp/sm.c" >/dev/null 2>&1; \
 	$(CC) $(CFLAGS) -Ilib "$$tmp/sm.c" "$$tmp/sm.a" $(LDFLAGS) -lm $(GC_FLAGS) -o "$$tmp/sm" 2>/dev/null || { echo "alloc-report-test: FAIL (link small-table binary)"; exit 1; }; \
 	SPINEL_ALLOC_REPORT="$$tmp/sm.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sm" >/dev/null 2>&1; \
 	grep -q '^alloc;(unattributed) ' "$$tmp/sm.folded" || { echo "alloc-report-test: FAIL (a saturated table said nothing about it)"; sed -n 1,8p "$$tmp/sm.folded"; ok=0; }; \
 	grep -q '^# note the stats table' "$$tmp/sm.folded" || { echo "alloc-report-test: FAIL (no note explaining the saturated run)"; ok=0; }; \
-	full=$$(awk '/;\(no-scan\) /{print $$NF}' "$$tmp/s.folded" | head -1); \
 	sat=$$(awk '/;\(no-scan\) /{print $$NF}' "$$tmp/sm.folded" | head -1); \
-	[ -n "$$full" ] && [ "$$full" = "$$sat" ] || { echo "alloc-report-test: FAIL (a saturated run changed a surviving row: $$full vs $$sat)"; ok=0; }; \
+	full=$$(awk '/;\(no-scan\) /{print $$NF}' "$$tmp/s.folded" | grep -x "$$sat" | head -1); \
+	[ -n "$$sat" ] && [ "$$full" = "$$sat" ] || { echo "alloc-report-test: FAIL (a saturated run changed a surviving row: $$sat is no count of the full run's)"; awk '/;\(no-scan\) /{print $$NF}' "$$tmp/s.folded"; ok=0; }; \
 	$(SPINEL) test/alloc-report/signal_dump.rb -o "$$tmp/sig" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile signal_dump)"; exit 1; }; \
 	waitfor() { n=0; while [ $$n -lt 100 ]; do eval "$$2" && return 0; kill -0 $$1 2>/dev/null || return 1; sleep 0.1; n=$$((n+1)); done; return 1; }; \
 	strings_in() { awk '/^alloc;.*String /{print $$NF; exit}' "$$1" 2>/dev/null; }; \
