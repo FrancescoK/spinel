@@ -6421,6 +6421,9 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   else if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || comp_ntype(c, recv) != TY_ENUMERATOR) return 0;
+  /* the program's own Enumerator method of the name is the call's target */
+  { const CallPlan *up = cplan_user(c, id);
+    if (up->mi >= 0 && up->via == UC_REOPEN) return 0; }
   /* find(ifnone) { }: the proc answers when nothing matched, exactly as the
      array form serves it. Any other argument stays a loud reject. (#3814) */
   int f_ifnone = !inc && !take && iargc == 1 && iargv &&

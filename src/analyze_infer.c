@@ -8257,7 +8257,7 @@ static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *n
    builtin_only. A rewrite that turns the call into another builtin's asks
    it first. */
 int an_reopen_owner(Compiler *c, int id, const char *cn) {
-  const char *name = nt_str(c->nt, id, "name");
+  const char *name = nt_str(c->nt, id, "orig_name") ? nt_str(c->nt, id, "orig_name") : nt_str(c->nt, id, "name");
   if (!name || nt_int(c->nt, id, "builtin_only", 0)) return -1;
   int mi = reopen_owner_of(c, id, cn, name);
   /* (a Symbol or Range one; an Array or Hash one keeps the answer the

@@ -409,6 +409,10 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
+  /* a call written under a builtin alias (detect, collect_concat) that the
+     desugar renamed to the builtin's own name reaches a reopen's method of
+     the name it was written with, not of the new name */
+  const char *rname = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
   /* an IO handle's reopen: the File, IO or socket class that defines it */
   if (rt == TY_IO) {
     int eci = io_reopen_class(c, name);
@@ -430,7 +434,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const char *rc = cplan_reopen_class(rt);
   if (rc) {
     int ci = comp_class_index(c, rc);
-    int mi = ci >= 0 ? comp_method_in_chain(c, ci, name, NULL) : -1;
+    int mi = ci >= 0 ? comp_method_in_chain(c, ci, rname, NULL) : -1;
     /* (--share-strings: a String reopening's yielding method of a name,
        which a call with a literal block reaches, is the builtin's still for
        a call the program runs ahead of the method's definition, at its top
@@ -452,8 +456,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* an Array or Hash reopen's own method of the name */
   if ((ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) && nt_ref(nt, id, "block") < 0) {
     int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
-    int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
-    if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name)) {
+    int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, rname, &adc) : -1;
+    if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, rname)) {
       cplan_set(p, ami, aci, UC_REOPEN, CP_DIRECT);
       return;
     }
