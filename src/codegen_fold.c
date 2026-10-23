@@ -9058,8 +9058,13 @@ void ran_first_bind_read(int v, int th) {
 int ran_first_read_handle(int node) {
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
-    for (int j = 0; j < g_n_ran_hnd; j++)
-      if (g_ran_hnd[j].idx == i && g_ran_hnd[j].node == node) return g_ran_hnd[j].read ? g_ran_hnd[j].th : -1;
+    /* Not the record's word alone: one left by a binding since unbound outlives it when a view_bind reuses its slot. */
+    for (int j = 0; j < g_n_ran_hnd; j++) {
+      if (g_ran_hnd[j].idx != i || g_ran_hnd[j].node != node) continue;
+      char want[40];
+      snprintf(want, sizeof want, "sp_strbuf_read_pub(_t%d)", g_ran_hnd[j].th);
+      return g_ran_hnd[j].read && sp_streq(g_argov_text[i], want) ? g_ran_hnd[j].th : -1;
+    }
     return -1;
   }
   return -1;
@@ -9246,6 +9251,16 @@ static void emit_arg_temp(Compiler *c, int v) {
   free(hb.p);
   ran_first_bind_o(v, t, th, to);
   if (one_face) snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", t);
+}
+
+/* See codegen_internal.h. */
+int ran_first_temp_of(int node) {
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != node) continue;
+    int t; char rest;
+    return sscanf(g_argov_text[i], "_t%d%c", &t, &rest) == 1 ? t : -1;
+  }
+  return -1;
 }
 
 /* See codegen_internal.h. */
