@@ -9198,7 +9198,12 @@ static sp_bool sp_poly_intersect_p(sp_RbVal a, sp_RbVal b) {
   return 0;
 }
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_union_eql(a, b); }
-static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_difference_eql(a, b); }
+/* a nil operand is CRuby's TypeError, as the typed arrays' difference has it */
+static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) {
+  if (SP_UNLIKELY(!a)) sp_nil_recv("-");
+  if (SP_UNLIKELY(!b)) sp_raise_cls("TypeError", "no implicit conversion of nil into Array");
+  return sp_PolyArray_difference_eql(a, b);
+}
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (SP_UNLIKELY(!a)) sp_nil_recv("compact"); for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
 static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("compact!"); sp_int w = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }

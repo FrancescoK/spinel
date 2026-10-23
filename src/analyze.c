@@ -23224,31 +23224,35 @@ static int strh_empty_arg(Compiler *c, const int *par, int n) {
    (const_get, instance_variable_get, a send of either, a listing, eval)
    takes values no inference sees stored, so a String Array held there
    keeps the general form, as share_strh_gate's refusal gave it under the
-   two representations (`Object.const_get("H::L") << 64`). Answers whether
-   a type changed. */
+   two representations (`Object.const_get("H::L") << 64`). Only a name the
+   program spells is taken: a name it computes reaches every holder, and
+   widening them all left each String Array of a program with a dynamic
+   send boxed, where the bytes build kept them typed. Answers whether a
+   type changed. */
+static int one_reflect_named(const StrhReflect *r, const char *nm) {
+  if (nm && nm[0] == ':' && nm[1] == ':') nm += 2;
+  for (int i = 0; i < r->cnt; i++) if (sp_streq(r->n[i], nm)) return 1;
+  return 0;
+}
 static int one_reflect_widen(Compiler *c) {
   StrhReflect rf; memset(&rf, 0, sizeof rf);
   strh_reflect_scan(c, &rf);
   int changed = 0;
-  if (rf.cnt > 0 || rf.all) {
+  if (rf.cnt > 0) {
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *kc = &c->classes[k];
       for (int i = 0; i < kc->nivars; i++)
-        if (kc->ivar_types[i] == TY_STR_ARRAY && strh_reflect_has(&rf, kc->ivars[i])) {
+        if (kc->ivar_types[i] == TY_STR_ARRAY && one_reflect_named(&rf, kc->ivars[i])) {
           ivar_set_type(kc, i, TY_POLY_ARRAY); changed = 1;
         }
       for (int i = 0; i < kc->ncvars; i++)
-        if (kc->cvar_types[i] == TY_STR_ARRAY && strh_reflect_has(&rf, kc->cvars[i])) {
+        if (kc->cvar_types[i] == TY_STR_ARRAY && one_reflect_named(&rf, kc->cvars[i])) {
           cvar_set_type(kc, i, TY_POLY_ARRAY); changed = 1;
         }
     }
     for (int i = 0; i < c->nconsts; i++)
-      if (c->consts[i].type == TY_STR_ARRAY && !c->consts[i].rbs_seeded && strh_reflect_has(&rf, c->consts[i].name)) {
+      if (c->consts[i].type == TY_STR_ARRAY && !c->consts[i].rbs_seeded && one_reflect_named(&rf, c->consts[i].name)) {
         lv_set_type(&c->consts[i], TY_POLY_ARRAY); changed = 1;
-      }
-    for (int i = 0; i < c->ngvars; i++)
-      if (c->gvars[i].type == TY_STR_ARRAY && !c->gvars[i].rbs_seeded && rf.all) {
-        lv_set_type(&c->gvars[i], TY_POLY_ARRAY); changed = 1;
       }
   }
   free(rf.n);

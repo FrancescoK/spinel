@@ -14945,13 +14945,19 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(g_pre, "%s _t%d = ", oint_ctype(ty_array_elem(at)), tv);
           emit_oint_expr(c, argv[1], ty_array_elem(at), g_pre);
         }
+        /* (one representation: a String Array is filled with the one
+           String's handle, the same object in every slot, as CRuby's is) */
+        else if (g_one_string && ar.elem == TY_STRING && sp_streq(k, "Str")) {
+          buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s)", tv, vb.p ? vb.p : "NULL");
+        }
         else {
           emit_ctype(c, ar.elem, g_pre);
           buf_printf(g_pre, " _t%d = ", tv); buf_puts(g_pre, vb.p ? vb.p : "");
         }
+        int str_fill_h = g_one_string && ar.elem == TY_STRING && sp_streq(k, "Str");
         buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
-        if (array_fill_held_only_here(c, argv[1], fh, k)) { emit_gc_root_tmp(c, fh || ar.elem == TY_POLY ? TY_POLY : ar.elem, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
+        if (array_fill_held_only_here(c, argv[1], fh, k)) { emit_gc_root_tmp(c, fh || ar.elem == TY_POLY ? TY_POLY : str_fill_h ? TY_STRBUF : ar.elem, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
         /* the size is checked after the fill ran, as CRuby evaluates both
            arguments before Array.new looks at them (CodeRabbit on #10019) */
         buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
@@ -14969,8 +14975,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, _t%d);\n",
-                     ti, ti, tn, ti, k, tr, tv);
+          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, _t%d);\n",
+                     ti, ti, tn, ti, k, str_fill_h ? "_e" : "", tr, tv);
         }
         free(nb.p); free(vb.p);
         buf_printf(b, "_t%d", tr);
@@ -16567,7 +16573,10 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     /* root the boxed RHS: when it holds a same-kind array, _src aliases into
        _sa->data, which the splice's pushes can collect out from under us */
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ts);
-    emit_ctype(c, elem, b); buf_printf(b, " _v%d; ", ta);
+    /* (one representation: a String Array's element is the handle) */
+    int one_e = g_one_string && elem == TY_STRING;
+    if (one_e) buf_printf(b, "sp_strelem _v%d; ", ta);
+    else { emit_ctype(c, elem, b); buf_printf(b, " _v%d; ", ta); }
     poly_so = onum;
     /* an Integer or Float source with nils is spliced as the array (splice_o) */
     if (onum) buf_printf(b, "sp_%sArray *_so%d = NULL; ", k, ta);
@@ -16598,6 +16607,9 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
                     " else { _v%d = _o%d.v; _src%d = &_v%d; _srcn%d = 1; } } ",
                  oint_ctype(elem), ta, elem == TY_INT ? "sp_poly_elem_i" : "sp_poly_elem_f", ts, ta, ta, k, k, ta, ta, ta,
                  ta, ta, ta, ta, ta);
+    else if (one_e)
+      buf_printf(b, "else { _v%d = SP_STR_HDL(%s(_t%d)); _src%d = &_v%d; _srcn%d = 1; } ",
+                 ta, conv, ts, ta, ta, ta);
     else
       buf_printf(b, "else { _v%d = %s(_t%d); _src%d = &_v%d; _srcn%d = 1; } ",
                  ta, conv, ts, ta, ta, ta);
@@ -27240,8 +27252,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* (one-String mode: a call to a method that answers no value is a `void`
      C call, which the String faces (SP_STR_B, SP_STR_HDL) cannot take; it
      raises before anything reads it, so it reads as nil's String) */
+  /* (a call typed some other kind -- an Integer's oint, a box, an Array --
+     answers its own nil of that kind already) */
+  TyKind nvt = repr_of(c, id).as_ty;
   int no_value = g_one_string && call_answers_no_value(c, id) &&
-                 (repr_of(c, id).as_ty == TY_STRING || repr_of(c, id).as_ty == TY_STRBUF);
+                 (nvt == TY_STRING || nvt == TY_STRBUF || nvt == TY_NIL || nvt == TY_VOID || nvt == TY_UNKNOWN);
   if (no_value) buf_puts(b, "((void)(");
   emit_call_inner(c, id, b);
   if (no_value) buf_puts(b, "), (const char *)0)");
@@ -28429,7 +28444,8 @@ void emit_adapter_arg_static(Compiler *c, int node, char kind, Buf *out) {
   TyKind at = comp_ntype(c, node);
   if (kind == 's') {
     if (at == TY_STRING || at == TY_STRBUF) {
-      buf_puts(out, "(sp_int)(uintptr_t)(");
+      /* (one-String mode: the adapter takes the String's handle, the element) */
+      buf_puts(out, g_one_string ? "(sp_int)(uintptr_t)SP_STR_HDL(" : "(sp_int)(uintptr_t)(");
       emit_expr(c, node, out);
       buf_puts(out, ")");
     }
@@ -28451,11 +28467,11 @@ void emit_adapter_arg_static(Compiler *c, int node, char kind, Buf *out) {
 /* Emit a boxed runtime value as one typed-array adapter argument. */
 void emit_adapter_arg_boxed(const char *v, char kind, Buf *out) {
   if (kind == 's') {
-    /* (one-String mode: a String arrives as its handle's box, whose bytes
-       face is the adapter's argument; the view keeps its identity) */
+    /* (one-String mode: a String arrives as its handle's box, and the
+       adapter takes the handle its bytes face names) */
     if (g_one_string)
       buf_printf(out, "({ sp_RbVal _ade = sp_poly_strbuf_deref(%s); if (_ade.tag != SP_TAG_STR)"
-                      " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)_ade.v.s; })", v);
+                      " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)SP_STR_HDL(_ade.v.s); })", v);
     else
       buf_printf(out, "({ sp_RbVal _ade = %s; if (_ade.tag != SP_TAG_STR)"
                       " sp_raise_typed_elem(_ade, \"String\"); (sp_int)(uintptr_t)_ade.v.s; })", v);

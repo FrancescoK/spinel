@@ -2392,6 +2392,11 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
              unboxed temp back so the expression result stays poly. */
           buf_puts(b, "); "); emit_boxed_text(c, hvt, tvn, b); buf_puts(b, "; })");
         }
+        /* (one representation: a value held as the handle answers the
+           String the expression is typed as) */
+        else if (g_one_string && decl_type == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING) {
+          buf_printf(b, "); SP_STR_B(_t%d); })", tv);
+        }
         else {
           buf_printf(b, "); _t%d; })", tv);
         }
@@ -2510,6 +2515,7 @@ int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
   if (repr_of(c, argv[1]).kind == RK_BOXED) return 1;
   /* an Integer or Float that can be nil splices and stores with its nil */
   TyKind vt = comp_ntype(c, argv[1]);
+  if (g_one_string && vt == TY_STRBUF) vt = TY_STRING;   /* (one-String mode: a String held as its handle) */
   return vt == et || (vt == TY_NIL && et != TY_STRING);
 }
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
