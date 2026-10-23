@@ -19968,6 +19968,20 @@ static sp_Enumerator *sp_poly_str_each_enum(sp_RbVal v, const char *meth) {
   return sp_enum_with_src(e, sp_box_str(s), meth);
 }
 
+sp_Enumerator *sp_io_codepoint_enumerator(sp_File *io);
+/* IO uses a streaming Enumerator; String keeps its existing selected form. */
+static sp_RbVal sp_poly_io_codepoint_enum(sp_RbVal v, sp_bool str_enum) {SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) {
+    sp_File *io = (sp_File *)v.v.p;
+    if (io->mode && (strcmp(io->mode, "stat") == 0 || strcmp(io->mode, "lstat") == 0))
+      sp_raise_poly_nomethod("each_codepoint", v);
+    return sp_box_obj(sp_io_codepoint_enumerator(io), SP_BUILTIN_ENUMERATOR);
+  }
+  if (str_enum) return sp_box_obj(sp_poly_str_each_enum(v, SPL("each_codepoint")), SP_BUILTIN_ENUMERATOR);
+  const char *s = sp_poly_recv_s(v, "each_codepoint"); SP_GC_ROOT_STR(s);
+  return sp_box_int_array(sp_str_codepoints(s));
+}
+
 /* Enumerator#inspect: the CRuby "#<Enumerator: <source>:<method>>" for a
    materialized enumerator with a known source; a generator has no printable
    receiver and renders a Generator placeholder (CRuby shows its address). */
