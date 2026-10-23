@@ -1,1 +1,0 @@
-spinel: test/share/refuse/multi_toplevel_ivar_array.rb:11: the String this value hands on as a multiple write's target is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)

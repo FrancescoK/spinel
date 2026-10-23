@@ -1400,13 +1400,14 @@ re-lit-test: $(SPINEL)
 # --share-strings (#6765): test/share/*.rb hold answers the shared String
 # gives (the copying build, gone since, refused them or answered with a
 # copy). Each runs, as do the top-level test/share_strings_*.rb, plain and
-# with GC stress, against its CRuby .expected. Each test/share/refuse/*.rb
-# is a program the flag
-# would answer with a copy of a shared String (a route codegen does not
-# carry the handle along yet): it has to be refused under the flag, with
-# the first `spinel:` line its .expected holds. gate-props runs it. A
+# with GC stress, against its CRuby .expected. gate-props runs it. A
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
+# The checks of the two representations' C (a handle Array, a byte or a
+# handle ABI, the share plan's flows) skip the one-String mode, whose
+# Strings are each one object under every name; the programs the two
+# refused as a copy of a shared String answer as CRuby there, and are in
+# the corpus.
 SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
                $(shell grep -l '^\# spinel: share$$' test/*.rb packages/*/test/*.rb)
 # test/share_strings_copy_beside_alloc.rb runs at SPINEL_GC_STRESS=2 as
@@ -1444,9 +1445,9 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	    echo "share-strings-test: FAIL (Class calls of Stat field names add a dispatch)"; ok=0; \
 	  fi; \
 	done; \
-	if ! $(SPINEL) --share-strings test/share/share_strings_open_targets.rb -c --no-line-map -o "$$tmp/open.c" >"$$tmp/out" 2>&1 || \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! $(SPINEL) --share-strings test/share/share_strings_open_targets.rb -c --no-line-map -o "$$tmp/open.c" >"$$tmp/out" 2>&1 || \
 	   ! grep -q 'const char \* lv_path = NULL;' "$$tmp/open.c" || \
-	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; then \
+	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; }; then \
 	  echo "share-strings-test: FAIL (File.open's path shares StringIO.open's init)"; ok=0; \
 	fi; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_literal_queries.rb -c --no-line-map -o "$$tmp/queries.c" >"$$tmp/out" 2>&1 || \
@@ -1457,18 +1458,18 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   grep -q 'sp_String_new_fresh' "$$tmp/ivstore.c"; then \
 	  echo "share-strings-test: FAIL (a Hash store through a boxed ivar's reader shares a String)"; ok=0; \
 	fi; \
-	if ! $(SPINEL) --share-strings test/share/poly_ivar_op_write_shares.rb -c --no-line-map -o "$$tmp/ivopw.c" >"$$tmp/out" 2>&1 || \
-	   ! grep -q 'sp_String_new_fresh' "$$tmp/ivopw.c"; then \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! $(SPINEL) --share-strings test/share/poly_ivar_op_write_shares.rb -c --no-line-map -o "$$tmp/ivopw.c" >"$$tmp/out" 2>&1 || \
+	   ! grep -q 'sp_String_new_fresh' "$$tmp/ivopw.c"; }; then \
 	  echo "share-strings-test: FAIL (an operator write through an attribute is not taken as a String write)"; ok=0; \
 	fi; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_narrow_reads.rb -c --no-line-map -o "$$tmp/reads.c" >"$$tmp/out" 2>&1 || \
 	   grep -q 'sp_poly_as_strbuf' "$$tmp/reads.c"; then \
 	  echo "share-strings-test: FAIL (a narrowed byte read allocates a handle)"; ok=0; \
 	fi; \
-	if ! $(SPINEL) --share-strings test/share/share_strings_poly_transient_returns.rb -c --no-line-map -o "$$tmp/transient.c" >"$$tmp/out" 2>&1 || \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! $(SPINEL) --share-strings test/share/share_strings_poly_transient_returns.rb -c --no-line-map -o "$$tmp/transient.c" >"$$tmp/out" 2>&1 || \
 	   ! grep -q 'sp_box_str(sp_TransientStringReturn_upcase(' "$$tmp/transient.c" || \
 	   ! grep -q 'sp_box_str(sp_TransientStringReturn_delete(' "$$tmp/transient.c" || \
-	   [ "$$(grep -c 'const char \*_t[0-9]* = sp_TransientStringReturn_upcase(' "$$tmp/transient.c")" != 1 ]; then \
+	   [ "$$(grep -c 'const char \*_t[0-9]* = sp_TransientStringReturn_upcase(' "$$tmp/transient.c")" != 1 ]; }; then \
 	  echo "share-strings-test: FAIL (transient String returns allocate, or kept returns lose their handle)"; ok=0; \
 	fi; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_self.rb -c --no-line-map -o "$$tmp/self.c" >"$$tmp/out" 2>&1 || \
@@ -1476,11 +1477,11 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! grep -q 'sp_String_receiver_bytes(const char \*self)' "$$tmp/self.c"; then \
 	  echo "share-strings-test: FAIL (String self does not select its receiver ABI)"; ok=0; \
 	fi; \
-	if ! $(SPINEL) --share-strings test/share/share_strings_self_forwarding.rb -c --no-line-map -o "$$tmp/forward.c" >"$$tmp/out" 2>&1 || \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! $(SPINEL) --share-strings test/share/share_strings_self_forwarding.rb -c --no-line-map -o "$$tmp/forward.c" >"$$tmp/out" 2>&1 || \
 	   grep -q 'sp_String_self_bytes_[a-z_]*(sp_String \*self' "$$tmp/forward.c" || \
 	   grep -q 'sp_String_self_handle_[a-z_]*(const char \*self' "$$tmp/forward.c" || \
 	   ! grep -q 'sp_String_self_bytes_argument(const char \*self)' "$$tmp/forward.c" || \
-	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; then \
+	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; }; then \
 	  echo "share-strings-test: FAIL (String self forwarding does not select the callee ABI)"; ok=0; \
 	fi; \
 	if ! SPINEL_SHARE_STATS=3 $(SPINEL) --share-strings test/share/share_strings_dead_send.rb -c --no-line-map -o "$$tmp/dead.c" >"$$tmp/out" 2>&1 || \
@@ -1492,8 +1493,8 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  echo "share-strings-test: FAIL (a send in a define_method body that never runs widens the sharing facts)"; ok=0; \
 	fi; \
 	t=test/share/share_strings_flow_destinations; \
-	if ! SPINEL_SHARE_STATS=2 $(SPINEL) --share-strings "$$t.rb" -c --no-line-map -o "$$tmp/dest.c" >"$$tmp/out" 2>&1 || \
-	   ! grep '^share-flow-need:' "$$tmp/out" | cmp -s - "$$t.flows"; then \
+	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! SPINEL_SHARE_STATS=2 $(SPINEL) --share-strings "$$t.rb" -c --no-line-map -o "$$tmp/dest.c" >"$$tmp/out" 2>&1 || \
+	   ! grep '^share-flow-need:' "$$tmp/out" | cmp -s - "$$t.flows"; }; then \
 	  echo "share-strings-test: FAIL (a flow's destination, or the handle a stored value needs, changed)"; ok=0; \
 	fi; \
 	t=test/share_strings_copy_beside_alloc.rb; \
@@ -1501,7 +1502,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
 	  echo "share-strings-test: FAIL (a shared String's copy beside an allocating operand is not rooted, GC stress 2)"; ok=0; \
 	fi; \
-	for t in test/share/strh_*.rb; do \
+	[ -n "$(filter -DSP_ONE_STRING,$(COPT))" ] || for t in test/share/strh_*.rb; do \
 	  if ! $(SPINEL) --share-strings "$$t" -c --no-line-map -o "$$tmp/strh.c" >"$$tmp/out" 2>&1; then \
 	    echo "share-strings-test: FAIL $$t (refused)"; ok=0; \
 	  elif [ "$$t" = test/share/strh_poly_fallback.rb ]; then \
@@ -1511,12 +1512,6 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	    grep -q 'sp_StrhArray_new' "$$tmp/strh.c" || \
 	      { echo "share-strings-test: FAIL $$t (its Array of shared Strings is not held as their handles)"; ok=0; }; \
 	  fi; \
-	done; \
-	for t in test/share/refuse/*.rb; do \
-	  if $(SPINEL) --share-strings "$$t" -c -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
-	    echo "share-strings-test: FAIL $$t (compiled)"; ok=0; \
-	  else grep -m1 '^spinel:' "$$tmp/out" | cmp -s - "$$t.expected" || \
-	    { echo "share-strings-test: FAIL $$t (refused otherwise)"; sed -n 1,3p "$$tmp/out"; ok=0; }; fi; \
 	done; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
@@ -4934,7 +4929,7 @@ collect-errors-test: $(SPINEL)
 	n=$$(grep -c 'seed contradicted' "$$tmp/s2.err"); \
 	[ "$$n" -eq 2 ] || { echo "collect-errors-test: FAIL (without the flag the run reported $$n of 2 contradictions: every compile collects)"; ok=0; }; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a contradicted seed was emitted without the flag)"; ok=0; }; \
-	sr=test/share/refuse/seal_collect_route_and_flow.rb; \
+	sr=test/seal_collect_route_and_flow.rb; \
 	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ]; then \
 	SP_COLLECT_ERRORS=1 $(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr.c" >"$$tmp/sr.err" 2>&1; \
 	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr.err"); \
@@ -5233,7 +5228,7 @@ IMEMO_SHADOW_PROGRAMS = test/proc_curry_arity_arg.rb test/issue_3071.rb \
   test/string_receiver_snapshot_copy.rb test/issue_3069.rb test/to_set_forms.rb \
   test/enumerator_produce_pair.rb test/issue_3174.rb test/set_comparator_block.rb \
   test/builtin_singleton_alias_user.rb test/kw_only_positional_hash_sym_local.rb \
-  test/share/refuse/route_object_ivar.rb
+  test/route_object_ivar.rb
 imemo-shadow-test: $(SPINEL)
 	@tmp=$$(mktemp -d /tmp/spinel-imemo.XXXXXX); ok=1; \
 	sh test/scale/gen.sh 100 > "$$tmp/g.rb"; sh test/scale/call_shapes.sh 25 > "$$tmp/s.rb"; \

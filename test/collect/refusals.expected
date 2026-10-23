@@ -1152,6 +1152,14 @@ spinel: test/reject/prepend_after_call_in_method.rb:11: a later statement mixes 
 spinel: test/reject/prepend_after_self_call.rb:10: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
 == test/reject/prepend_after_self_call.rb [promote] rc=1
 spinel: test/reject/prepend_after_self_call.rb:10: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
+== test/reject/range_prepended_alias_chain_endpoint_write.rb [default] rc=1
+spinel: test/reject/range_prepended_alias_chain_endpoint_write.rb:17: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_prepended_alias_chain_endpoint_write.rb [promote] rc=1
+spinel: test/reject/range_prepended_alias_chain_endpoint_write.rb:17: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_prepended_alias_endpoint_write.rb [default] rc=1
+spinel: test/reject/range_prepended_alias_endpoint_write.rb:16: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_prepended_alias_endpoint_write.rb [promote] rc=1
+spinel: test/reject/range_prepended_alias_endpoint_write.rb:16: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
 == test/reject/range_reopen_float_range.rb [default] rc=1
 spinel: test/reject/range_reopen_float_range.rb:8: a method the program defines in Range, called on a Range of Floats: only an Integer Range runs it
 == test/reject/range_reopen_float_range.rb [promote] rc=1
@@ -1160,6 +1168,14 @@ spinel: test/reject/range_reopen_float_range.rb:8: a method the program defines 
 spinel: test/reject/range_reopen_string_range.rb:12: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
 == test/reject/range_reopen_string_range.rb [promote] rc=1
 spinel: test/reject/range_reopen_string_range.rb:12: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_reopened_endpoint_write.rb [default] rc=1
+spinel: test/reject/range_reopened_endpoint_write.rb:11: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_reopened_endpoint_write.rb [promote] rc=1
+spinel: test/reject/range_reopened_endpoint_write.rb:11: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_reopened_member_answer.rb [default] rc=1
+spinel: test/reject/range_reopened_member_answer.rb:9: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
+== test/reject/range_reopened_member_answer.rb [promote] rc=1
+spinel: test/reject/range_reopened_member_answer.rb:9: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
 == test/reject/range_time_bound.rb [default] rc=1
 spinel: test/reject/range_time_bound.rb:4: a Range of Time objects cannot be built: a Range is an unboxed value with sp_int bounds, so it has nowhere to hold them. Comparing against the bounds directly (`t >= lo && t < hi`) needs no Range and does work (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -1232,6 +1248,10 @@ spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_respond_to.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/scan_subject_stdin_gets.rb [default] rc=1
+spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
+== test/reject/scan_subject_stdin_gets.rb [promote] rc=1
+spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
 == test/reject/scrub_bang_block.rb [default] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written

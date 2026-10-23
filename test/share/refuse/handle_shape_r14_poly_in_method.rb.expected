@@ -1,1 +1,0 @@
-spinel: test/share/refuse/handle_shape_r14_poly_in_method.rb:9: the String the value of `bump` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)

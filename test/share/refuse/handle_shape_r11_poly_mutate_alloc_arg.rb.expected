@@ -1,1 +1,0 @@
-spinel: test/share/refuse/handle_shape_r11_poly_mutate_alloc_arg.rb:8: the String the value of `pick` hands on as an in-place change is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)

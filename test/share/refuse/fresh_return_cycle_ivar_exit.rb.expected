@@ -1,1 +1,0 @@
-spinel: test/share/refuse/fresh_return_cycle_ivar_exit.rb:15: the String the value of `inspect` hands on as a block's value a container keeps is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)

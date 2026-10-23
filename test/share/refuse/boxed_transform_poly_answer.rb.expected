@@ -1,1 +1,0 @@
-spinel: test/share/refuse/boxed_transform_poly_answer.rb:11: the String the value of `squeeze` hands on as a container's element is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)
