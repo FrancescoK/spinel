@@ -13227,6 +13227,86 @@ static int narrowed_local_other_writes_fit(Compiler *c, int s, const char *nm, T
   return 1;
 }
 
+/* The parameter of a walk over a narrowed object array -- `xs.each { |x| }`,
+   reverse_each, each_entry, and each_with_index's first -- binds an element,
+   as `x = xs[i]` does in narrow_locals_from_arrays: it takes the element
+   class, so its reads unbox. A block parameter is a local of the enclosing
+   scope, so every block or lambda that binds it must be such a walk of the
+   same class, and nothing else may write it. (map and collect bind theirs in
+   their emitter.) */
+static int narrow_walk_block_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes, total = 0;
+  int *off = (int *)malloc(sizeof(int) * (size_t)(ns + 1));
+  if (!off) return 0;
+  for (int s = 0; s < ns; s++) { off[s] = total; total += c->scopes[s].nlocals; }
+  off[ns] = total;
+  TyKind *elem = (TyKind *)malloc(sizeof(TyKind) * (size_t)(total ? total : 1));
+  char *bad = (char *)calloc((size_t)(total ? total : 1), 1);
+  if (!elem || !bad) { free(off); free(elem); free(bad); return 0; }
+  for (int i = 0; i < total; i++) elem[i] = TY_UNKNOWN;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int blk = k == NK_LambdaNode ? id : nt_ref(nt, id, "block");
+    if (blk < 0 || (nt_kind(nt, blk) != NK_BlockNode && nt_kind(nt, blk) != NK_LambdaNode)) continue;
+    Scope *bs = comp_scope_of(c, blk);
+    if (!bs) continue;
+    int s = (int)(bs - c->scopes);
+    /* a walk of an object array, with one plain parameter (each_with_index
+       a second, the index) and no other kind of parameter */
+    const char *cn = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    int ca = k == NK_CallNode ? nt_ref(nt, id, "arguments") : -1;
+    int recv = k == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+    TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+    int np = 0; while (block_param_name(c, blk, np)) np++;
+    int bp = nt_ref(nt, blk, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int extra = 0;
+    if (pn >= 0) {
+      static const char *const more[] = { "optionals", "posts", "keywords", NULL };
+      for (int m = 0; more[m]; m++) { int mn = 0; nt_arr(nt, pn, more[m], &mn); extra |= mn > 0; }
+      extra |= nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0;
+    }
+    int walk = cn && is_each_walk_or_with_index(cn) && ca < 0 && blk != id && ty_is_obj_array(rt) && !extra &&
+               (np == 1 || (np == 2 && sp_streq(cn, "each_with_index"))) && !block_param_is_multi(c, blk, 0);
+    for (int pi = 0; pi < np; pi++) {
+      const char *nm = block_param_name(c, blk, pi);
+      LocalVar *lv = nm ? scope_local(bs, nm) : NULL;
+      if (!lv) continue;
+      int gi = off[s] + (int)(lv - bs->locals);
+      if (gi < off[s] || gi >= off[s + 1]) continue;
+      if (!walk || pi != 0) { bad[gi] = 1; continue; }
+      TyKind ec = ty_array_elem(rt);
+      if (elem[gi] == TY_UNKNOWN) elem[gi] = ec;
+      else if (elem[gi] != ec) bad[gi] = 1;
+    }
+  }
+  int any = 0;
+  for (int s = 0; s < ns; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int li = 0; li < sc->nlocals; li++) {
+      LocalVar *lv = &sc->locals[li];
+      if (!lv->is_block_param || lv->rbs_seeded) continue;
+      int gi = off[s] + li;
+      int fits = !bad[gi] && ty_is_object(elem[gi]) &&
+                 comp_lvw_first_sc(c, s, lv->name) < 0;   /* not written in the body */
+      /* a pin whose walk no longer qualifies (the array widened, another
+         block binds the name) goes, and the parameter is the walk's boxed
+         element again */
+      if (ty_is_object(lv->oa_pin) && (!fits || elem[gi] != lv->oa_pin)) {
+        lv->oa_pin = TY_UNKNOWN;
+        lv_set_type(lv, TY_POLY);
+        any = 1;
+      }
+      if (!fits || lv->type != TY_POLY) continue;
+      lv_set_type(lv, elem[gi]);
+      lv->oa_pin = elem[gi];
+      any = 1;
+    }
+  }
+  free(off); free(elem); free(bad);
+  return any;
+}
+
 /* Locals read out of an already-narrowed array: `b = arr[i]` makes b the
    element type, so its own reads unbox. Split out of narrow_object_arrays
    so it still runs when that pass has no local candidate slot and returns
@@ -13243,7 +13323,8 @@ static int narrow_locals_from_arrays(Compiler *c) {
         (#3354). */
   int any = 0;
   for (int prop = 0; prop < 8; prop++) {
-  int prop_ch = 0;
+  int prop_ch = narrow_walk_block_params(c);
+  any |= prop_ch;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     for (int li = 0; li < sc->nlocals; li++) {
