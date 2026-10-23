@@ -27222,7 +27222,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
      across the block (g_one_held) */
   int held = g_one_held;
   if (g_one_string && nt_ref(c->nt, id, "block") >= 0) g_one_held = 1;
+  /* (one-String mode: a call to a method that answers no value is a `void`
+     C call, which the String faces (SP_STR_B, SP_STR_HDL) cannot take; it
+     raises before anything reads it, so it reads as nil's String) */
+  int no_value = g_one_string && call_answers_no_value(c, id);
+  if (no_value) buf_puts(b, "((void)(");
   emit_call_inner(c, id, b);
+  if (no_value) buf_puts(b, "), (const char *)0)");
   g_one_held = held;
 }
 static void emit_call_inner(Compiler *c, int id, Buf *b) {
