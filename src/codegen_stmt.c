@@ -17460,6 +17460,19 @@ int masgn_face_elem(Compiler *c, int mw, int el) {
   return 0;
 }
 
+/* A multiple write's value's own prelude, put in the statement right
+   before that value's hold (at), and the statement's prelude back. */
+static void masgn_el_pre_flush(Buf *b, size_t at, Buf *el_pre, Buf *sv_pre) {
+  if (sv_pre) g_pre = sv_pre;
+  if (el_pre->p && el_pre->p[0]) {
+    Buf nb; memset(&nb, 0, sizeof nb);
+    if (b->p && at) { char save = b->p[at]; b->p[at] = 0; buf_puts(&nb, b->p); b->p[at] = save; }
+    buf_puts(&nb, el_pre->p);
+    if (b->p) buf_puts(&nb, b->p + at);
+    free(b->p); *b = nb;
+  }
+  free(el_pre->p);
+}
 /* The targets that store through a receiver, in the order Ruby evaluates
    them: a multiple assignment's lefts, its splat target and its rights, a
    nested `(a, b)` expanded where it stands. Fills `out` when given; answers
@@ -17661,6 +17674,14 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
      must box/unbox from this, not re-derive comp_ntype (#3280). */
   TyKind *tmpts = en > 0 ? alloca(sizeof(TyKind) * (size_t)en) : NULL;
   for (int i = 0; i < en; i++) {
+    /* what a value puts ahead of itself (an Array literal's pushes) runs
+       right before its own hold, after the values before it: in the
+       statement's prelude it ran ahead of them all, and `x, (y, z) =
+       s.upcase!, [s.upcase!, +"i"]` ran the second upcase! first */
+    Buf el_pre; memset(&el_pre, 0, sizeof el_pre);
+    Buf *el_sv_pre = g_pre;
+    size_t el_at = b->len;
+    if (g_pre) g_pre = &el_pre;
     tmps[i] = ++g_tmp;
     emit_indent(b, indent);
     /* A nil (or void) element has no scalar C type; hold it as a boxed poly
@@ -17751,6 +17772,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
       if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
       buf_puts(b, "\n");
+      masgn_el_pre_flush(b, el_at, &el_pre, el_sv_pre);
       continue;
     }
     /* an element with no C type of its own (an unresolved call, which
@@ -17823,6 +17845,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     for (int j = i + 1; j < en && !later_alloc; j++) later_alloc = masgn_part_allocates(c, els[j]);
     if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, boxed_el ? TY_POLY : elt, tmps[i], b);
     buf_puts(b, "\n");
+    masgn_el_pre_flush(b, el_at, &el_pre, el_sv_pre);
   }
   /* assign lefts */
   for (int i = 0; i < ln; i++) {
