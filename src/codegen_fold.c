@@ -1960,6 +1960,9 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   else if (gvt != TY_STRING && gvt != TY_UNKNOWN) {
     buf_puts(&vb, "sp_poly_to_s("); emit_boxed(c, bb[bn - 1], &vb); buf_puts(&vb, ")");
   }
+  /* (one representation: a String value of either face, a handle where an
+     arm keeps one, is appended as its bytes) */
+  else if (g_one_string) { buf_puts(&vb, "SP_STR_B("); emit_iter_step_tail(c, &st, &vb); buf_puts(&vb, ")"); }
   else emit_iter_step_tail(c, &st, &vb);
   g_indent = save;
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append_bin(_t%d, %s);\n", tout, vb.p ? vb.p : "\"\""); free(vb.p);
