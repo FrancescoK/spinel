@@ -16,3 +16,9 @@ class String
   def self.shout = "hi"
 end
 p String.singleton_methods.include?(:shout), String.singleton_methods(false).include?(:new)
+p Array.singleton_methods(false).include?(:try_convert)
+p Integer.singleton_methods(false).include?(:try_convert)
+p Hash.singleton_methods(false).include?(:try_convert)
+p String.singleton_methods(false).include?(:try_convert)
+p IO.singleton_methods(false).include?(:try_convert)
+p Regexp.singleton_methods(false).include?(:try_convert)
