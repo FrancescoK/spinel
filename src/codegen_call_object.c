@@ -2046,7 +2046,8 @@ static int sn_args_run_late(Compiler *c, int id, int recv) {
        String it had) */
     return nd && !wrote ? 3 : 0;
   }
-  return repr_share_rule(c) && call_publishes_shared_handle(c, recv) ? 2 : 0;
+  /* (one-String mode: every String is its handle, which the guard holds) */
+  return g_one_string || (repr_share_rule(c) && call_publishes_shared_handle(c, recv)) ? 2 : 0;
 }
 /* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {

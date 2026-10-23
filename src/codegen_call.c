@@ -1031,7 +1031,7 @@ int sn_guard_pending(Compiler *c, int id) {
     const char *kn = nt_str(nt, k, "name");
     if (kn && sp_streq(kn, "lazy")) return 0;
   }
-  if ((ty_is_object(rt) && rr.kind != RK_VOBJ) || rt == TY_STRING ||
+  if ((ty_is_object(rt) && rr.kind != RK_VOBJ) || rt == TY_STRING || rt == TY_STRBUF ||
       /* an Integer / Float receiver only when it can be nil (its oint form):
          `3&.fdiv(2)` has no guard and no nil to answer */
       ((rt == TY_INT || rt == TY_FLOAT) && node_has_oint_form(c, recv)) ||
@@ -14838,8 +14838,12 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         /* a tail marked for the shared handle boxes through emit_boxed,
            which wraps the plain string it evaluates to in a fresh handle */
         int tail_strbuf = sp_streq(k, "Poly") && repr_of(c, bb[bn - 1]).as_ty == TY_STRBUF;
+        /* (one representation: a String Array holds the String the tail
+           answers, its handle, where its bytes became a new one) */
+        int tail_hdl = g_one_string && sp_streq(k, "Str") && !tail_o && !an_next && !nil_store_sfx(c, k, bb[bn - 1])[0];
         if (tail_strbuf) emit_boxed(c, bb[bn - 1], &vb);
         else if (tail_o) emit_oint_expr(c, bb[bn - 1], elem_t, &vb);
+        else if (tail_hdl) emit_strbuf_handle_of(c, bb[bn - 1], &vb);
         else emit_expr(c, bb[bn - 1], &vb);
         if (an_next) {
           /* the tail lands in the slot too; the push below reads the slot */
@@ -14879,6 +14883,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(g_pre, "sp_PtrArray_push(_t%d, (void *)(%s));\n", tr, vb.p ? vb.p : "0");
         /* (one representation: the tail may be the handle; a String Array
            takes the bytes) */
+        else if (tail_hdl)
+          buf_printf(g_pre, "sp_StrArray_push_e(_t%d, SP_STR_HDL(%s));\n", tr, vb.p ? vb.p : "NULL");
         else if (g_one_string && sp_streq(k, "Str") && !tail_o && !nil_store_sfx(c, k, bb[bn - 1])[0])
           buf_printf(g_pre, "sp_StrArray_push(_t%d, SP_STR_B(%s));\n", tr, vb.p ? vb.p : "NULL");
         else { buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, tail_o ? "_nilable" : nil_store_sfx(c, k, bb[bn - 1]), tr, vb.p ? vb.p : ""); }

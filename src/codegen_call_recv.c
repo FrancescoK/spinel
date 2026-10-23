@@ -15356,10 +15356,12 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   int tvb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
-                    " const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
-             tvb, rbb.p ? rbb.p : "sp_box_nil()", tvb, tob, tvb, bang, tob);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);", tvb, rbb.p ? rbb.p : "sp_box_nil()", tvb);
+  size_t tob_at = g_pre->len;
+  buf_puts(g_pre, "\n");
   free(rbb.p);
+  char tob_rd[160];
+  snprintf(tob_rd, sizeof tob_rd, " const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT(_t%d);", tob, tvb, bang, tob);
   view_bind(recv, "_t%d", tob);
   int v = view_push(c, recv, TY_STRING);
   int vb = boxed ? view_push(c, id, TY_STRING) : -1;
@@ -15375,7 +15377,13 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
-  buf_printf(b, "({ const char *_t%d = %s; ", tnb, nbb.p ? nbb.p : "\"\"");
+  /* (one-String mode: the receiver's bytes are read when the bang runs,
+     after the operands ahead of it, which can change the same String --
+     `m(s.upcase!, s.downcase!)`; a prelude the transform put ahead that
+     reads them keeps them there) */
+  int tob_late = g_one_string && !pre_names_tmp(g_pre, tob_at, tob);
+  if (!tob_late) buf_insert_at(g_pre, tob_at, tob_rd);
+  buf_printf(b, "({%s const char *_t%d = %s; ", tob_late ? tob_rd : "", tnb, nbb.p ? nbb.p : "\"\"");
   free(nbb.p);
   /* Decide "did it change?" BEFORE the mutation. The receiver's old text
      is the LIVE payload of a shared handle, so once become() has written
