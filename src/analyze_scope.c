@@ -658,7 +658,6 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   if (dan < 1) return 0;
   int dblk = nt_ref(nt, dc, "block");
   if (dblk < 0) return 0;
-  int dbody = nt_ref(nt, dblk, "body");
   /* Keyword parameters are bound only by a DefNode's parameters (see
      desugar_define_method_keywords), which an unrolled scope does not
      have: a call's `k: 5` would bind the whole Hash to k. Leave those. */
@@ -675,21 +674,37 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   if (nt_kind(nt, dav[0]) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, dav[0], "name"), bv))
     for (int k = 0; k < en; k++)
       if (nt_kind(nt, elems[k]) != NK_SymbolNode && nt_kind(nt, elems[k]) != NK_StringNode) return 0;
+  /* every element must name a method before any scope is made */
+  char **names = calloc((size_t)en, sizeof *names);
   for (int k = 0; k < en; k++) {
-    TyKind lt = dm_lit_type(c, elems[k]);
-    if (lt == TY_UNKNOWN) return 0;  /* non-literal element: bail (unhandled) */
-    char *mname = dm_eval_name(c, dav[0], bv, elems[k]);
-    if (!mname) return 0;
-    Scope *ms = comp_scope_new(c, mname, dc);
-    free(mname);
-    ms->body = dbody;
+    char *mname = dm_lit_type(c, elems[k]) != TY_UNKNOWN ? dm_eval_name(c, dav[0], bv, elems[k]) : NULL;
+    if (!mname) {
+      for (int j = 0; j < k; j++) free(names[j]);
+      free(names);
+      return 0;
+    }
+    names[k] = mname;
+  }
+  for (int k = 0; k < en; k++) {
+    /* each method gets its own copy of the block: the methods' bodies are
+       typed apart (`|v| options[n] = v` stores an Integer in one and false
+       in the next) */
+    int kblk = dblk;
+    if (k > 0) {
+      kblk = nt_clone_subtree((NodeTable *)nt, dblk);
+      comp_grow_node_arrays(c);
+    }
+    int kbody = nt_ref(nt, kblk, "body");
+    Scope *ms = comp_scope_new(c, names[k], dc);
+    free(names[k]);
+    ms->body = kbody;
     ms->class_id = class_id;
     ms->dm_subst_name = strdup(bv);
     ms->dm_subst_node = elems[k];
     /* the define_method block's parameters are the method's, as for a
        literal name (`|*args|`, `|w, fill = "-"|`): left out, the body read
        parameters the method did not have */
-    int dpn = nt_ref(nt, dblk, "parameters");
+    int dpn = nt_ref(nt, kblk, "parameters");
     if (dpn >= 0 && nt_kind(nt, dpn) == NK_BlockParametersNode) {
       collect_def_params(c, dpn, ms);
       int dps = nt_ref(nt, dpn, "parameters"), drn = 0;
@@ -698,17 +713,14 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     }
     /* the loop var reads inside the body resolve to the literal type */
     LocalVar *lv = scope_local_intern(ms, bv);
-    lv_set_type(lv, lt);
+    lv_set_type(lv, dm_lit_type(c, elems[k]));
     lv->is_param = 1;  /* not a real C param, but keeps it out of decls */
-    /* Walk the (shared) define_method body in this synthetic scope so its
-       nodes get nscope attribution. The last element wins for the shared
-       body nodes; that is fine since all elements share the value type. */
     int ms_idx = c->nscopes - 1;
-    if (dbody >= 0) walk_scope(c, dbody, ms_idx, class_id);
+    if (kbody >= 0) walk_scope(c, kbody, ms_idx, class_id);
+    /* the body is a method's: its `next` is a `return` */
+    method_body_next_to_return((NodeTable *)nt, kbody);
   }
-  /* every element named a method, so the shared body is a method's: its
-     `next` is a `return`. Not before, where a later element may still bail. */
-  method_body_next_to_return((NodeTable *)nt, dbody);
+  free(names);
   return 1;
 }
 
