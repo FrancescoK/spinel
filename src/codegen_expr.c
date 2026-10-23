@@ -4942,7 +4942,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
          and short-circuited. `res` may be void/nil (a writer arm) -- hold poly. */
       TyKind rres = (res == TY_VOID || res == TY_NIL) ? TY_POLY : res;
       int tr = ++g_tmp;
-      emit_res_ctype(c, rres, ro, b); buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
+      /* a handle left makes the String result a handle (the right arm is
+         wrapped to one above), so the temp holds the handle, not bytes */
+      if (lhandle && rres == TY_STRING) buf_puts(b, "sp_String *");
+      else emit_res_ctype(c, rres, ro, b);
+      buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
       if (is_and) buf_printf(b, "%s_t%d = %s;\n}\nelse { _t%d = %s; } _t%d; })",
                              rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr, larm.p ? larm.p : "0", tr);
       else        buf_printf(b, "_t%d = %s;\n}\nelse { %s_t%d = %s; } _t%d; })",
