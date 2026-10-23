@@ -2448,7 +2448,9 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
   if (argc == 0) {
     PolySpecials0 ps;
     cpoly_flags0(c, id, name, p, &ps);
-    cpoly_user_arms0(c, id, name, p->ret, p);
+    /* (one-String mode: a String answer the arms hand on as its bytes, as
+       the emitter's slot takes it: a handle ivar's reader reads it out) */
+    cpoly_user_arms0(c, id, name, g_one_string && p->ret == TY_STRBUF ? TY_STRING : p->ret, p);
     if (!full) return;
     int cap = p->n;
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
