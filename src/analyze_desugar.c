@@ -5122,14 +5122,21 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
 static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out) {
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
+  ANameHash asked; memset(&asked, 0, sizeof asked);   /* the names asked of class d */
   for (int d = 0; d < c->nclasses; d++) {
     if (cls < 0 ? comp_class_is_module(c, &c->classes[d]) : d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
     for (int s = 0; s < c->nscopes; s++) {
       const Scope *sc = &c->scopes[s];
       if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
       if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
+      /* (the chain answers a name the same for every scope that has it:
+         one lookup per name, where a large program's scopes outnumber its
+         method names many times over, and the lookup was most of the pass) */
+      if (anh_has(&asked, sc->name)) continue;
+      anh_add(&asked, sc->name);
       if (comp_method_in_chain(c, d, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
     }
+    anh_free(&asked); memset(&asked, 0, sizeof asked);
     for (int k = d; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
       ClassInfo *cl = &c->classes[k];
       for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
