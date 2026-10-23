@@ -6529,12 +6529,13 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
   static char buf[128];
   const char *stem = c->classes[class_id].c_name;
   /* The runtime owns dozens of sp_Range_* / sp_Time_* / sp_File_* /
-     sp_Class_* functions and grows more; rather than track the names, a
+     sp_Class_* / sp_Enumerator_* functions and grows more; rather than track the names, a
      reopen of these takes the `_oc` stem for every method. */
   {
     const char *rn = c->classes[class_id].name;
     if (rn && (is_range_or_time_class(rn) ||
-               io_family_class(c, class_id) || sp_streq(rn, "Class"))) {
+               io_family_class(c, class_id) || sp_streq(rn, "Class") ||
+               sp_streq(rn, "Enumerator"))) {
       snprintf(buf, sizeof buf, "%s_oc", stem);
       return buf;
     }

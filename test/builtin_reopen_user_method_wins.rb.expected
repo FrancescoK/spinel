@@ -4,8 +4,15 @@
 3
 :mine
 [1, 2]
+:enum_size
+:enum_next
+:enum_size
+:enum_map
+:enum_map
 1
 false
 1
 1
 "hey"
+:mine2
+:mine2

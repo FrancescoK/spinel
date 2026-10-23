@@ -8600,6 +8600,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (ty_is_object(crt)) return crt;
   }
 
+  /* a method the program defines on Enumerator answers an Enumerator's call
+     (by the name an alias resolved to above) ahead
+     of the builtin arms below, as the emitter calls it */
+  if (recv >= 0 && infer_type(c, recv) == TY_ENUMERATOR && !bonly && !nt_int(nt, id, "builtin_only", 0)) {
+    const CallPlan *p = cplan_user(c, id);
+    if (p->mi >= 0 && p->via == UC_REOPEN) return an_user_call(c, id, p->mi, p->via, p->owner_ci);
+  }
+
   TyKind accessor_ret;
   if (infer_accessor_call(c, id, recv, name, &accessor_ret)) return accessor_ret;
 

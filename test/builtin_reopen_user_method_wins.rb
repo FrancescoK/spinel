@@ -14,6 +14,15 @@ p 3.times.count
 p 3.times.mine
 p [1, 2].each.to_a
 
+# names the builtin Enumerator answers itself, typed and through a local
+class Enumerator
+  def size = :enum_size
+  def next = :enum_next
+  def map = :enum_map
+end
+p e.size, e.next, [1, 2].each.size
+p(e.map { |x| x }, 3.times.map { |x| x })
+
 # Array.new defined by the program
 class Array
   def self.new(*) = [:mine]
@@ -32,3 +41,10 @@ t = Tape.new("abc")
 p(t.each_char.with_index { |c, i| break i if c == "B" })
 p("xyz".each_char.with_index { |c, i| break i if c == "y" })
 p("hey".each_char.with_index { |c, i| })
+
+# an alias in the Enumerator reopen calls the method it names
+class Enumerator
+  def mine2 = __method__
+  alias other mine2
+end
+p 3.times.other, [1].each.send(:mine2)

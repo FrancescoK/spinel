@@ -5117,7 +5117,10 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
               emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           size_t at = b->len;
-          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
+          /* the method's own name: an alias's call names the method it
+             resolved to */
+          const char *mn = c->scopes[oc_mi].name;
+          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, mn), mc(mn));
           int open = emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, at, b);
           /* a method taking `&block` takes the call's block, or NULL (#7200) */
           emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
