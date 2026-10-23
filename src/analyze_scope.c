@@ -1413,6 +1413,16 @@ static void header_parent_encloses(Compiler *c, int par, int child, const char *
 }
 
 
+/* `def (expr).m`: Prism gives the receiver's own parentheses the expression
+   itself as body; parentheses inside it hold statements as usual. */
+static int sg_def_receiver(const NodeTable *nt, int recv) {
+  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, recv, "body");
+    if (b >= 0 && nt_kind(nt, b) != NK_StatementsNode) recv = b;
+  }
+  return nt_paren_single(nt, recv);
+}
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -1582,6 +1592,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     int defrecv = nt_ref(c->nt, id, "receiver");
     if (defrecv >= 0) {
       s->is_cmethod = 1;
+      defrecv = sg_def_receiver(c->nt, defrecv);
       /* `def Klass.foo` with an explicit constant receiver (typically defined
          outside the class body, where the enclosing class_id is -1) attaches
          to that class's singleton chain rather than becoming a top-level free
@@ -3273,21 +3284,6 @@ static int sg_const_holds_class(Compiler *c, const char *name) {
   return strncmp(name, "RUBY_", 5) != 0;
 }
 
-/* `def (self).m`, `def (Foo).m`: the receiver inside its parentheses */
-static int sg_unparen(const NodeTable *nt, int recv) {
-  for (int d = 0; d < 8 && recv >= 0 && nt_kind(nt, recv) == NK_ParenthesesNode; d++) {
-    int body = nt_ref(nt, recv, "body");
-    if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) {
-      int n = 0; const int *st = nt_arr(nt, body, "body", &n);
-      if (n != 1) break;
-      body = st[0];
-    }
-    if (body < 0) break;
-    recv = body;
-  }
-  return recv;
-}
-
 /* The innermost `def` whose body holds `id`, or -1 */
 static int sg_enclosing_def(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -3313,8 +3309,10 @@ void register_singleton_defs(Compiler *c) {
       recv = nt_ref(nt, id, "receiver");
       /* `def (obj).m` is `def obj.m`: a variable, or a constant that may
          hold an object, binds the same way unwrapped. Self and a class's
-         constant stay as the walk filed them. */
-      int ur = sg_unparen(nt, recv);
+         constant stay as the walk filed them.
+         `def (self).m`, `def (Foo).m`: the receiver inside its parentheses
+         has one direct-expression body; inner parentheses hold statements. */
+      int ur = sg_def_receiver(nt, recv);
       NodeKind uk = ur >= 0 && ur != recv ? nt_kind(nt, ur) : NK_NilNode;
       if (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode ||
           uk == NK_ClassVariableReadNode || uk == NK_GlobalVariableReadNode ||
@@ -3352,7 +3350,7 @@ void register_singleton_defs(Compiler *c) {
          call on the object reaches. Left alone: self, a class's constant and
          `self.class`, in parentheses or not, which name that class. */
       if (recv < 0) continue;
-      int ur = sg_unparen(nt, recv);
+      int ur = sg_def_receiver(nt, recv);
       NodeKind rk = ur >= 0 ? nt_kind(nt, ur) : NK_SelfNode;
       const char *un = rk == NK_CallNode ? nt_str(nt, ur, "name") : NULL;
       int self_class = un && sp_streq(un, "class") &&
