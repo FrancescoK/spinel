@@ -2729,6 +2729,17 @@ static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   return changed;
 }
 
+/* The class whose slot an ivar target tgt of a multiple write in scope ms
+   writes: the method's, outside a method the class body's, or the top
+   level's (the Toplevel pseudo-class), as an `@x = v` write's is. -1 for
+   none yet. */
+static int masgn_ivar_cls(Compiler *c, Scope *ms, int tgt) {
+  int icid = ms ? ms->class_id : -1;
+  if (icid < 0 && c->node_cbody && tgt < c->node_cap) icid = c->node_cbody[tgt];
+  if (icid < 0) icid = comp_class_index(c, "Toplevel");
+  return icid;
+}
+
 static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKind elem) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2741,9 +2752,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
     }
     else if (sp_streq(lty_ms, "InstanceVariableTargetNode") && ms) {
       /* outside a method: the class body's slot, or the top level's */
-      int icid = ms->class_id;
-      if (icid < 0 && c->node_cbody && tgts[i] < c->node_cap) icid = c->node_cbody[tgts[i]];
-      if (icid < 0) icid = comp_class_index(c, "Toplevel");
+      int icid = masgn_ivar_cls(c, ms, tgts[i]);
       if (icid < 0) continue;
       const char *ivnm = nt_str(nt, tgts[i], "name");
       int iv_ms = ivnm ? comp_ivar_index(&c->classes[icid], ivnm) : -1;
@@ -4171,14 +4180,15 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
    the change detector for these slots (same rule as slot_reset). */
             changed |= masgn_local_take(c, lv, elems[i], value);
           }
-          else if (sp_streq(lty_mr, "InstanceVariableTargetNode") &&
-                   ms_mr && ms_mr->class_id >= 0) {
+          else if (sp_streq(lty_mr, "InstanceVariableTargetNode") && ms_mr &&
+                   masgn_ivar_cls(c, ms_mr, lefts[i]) >= 0) {
+            int icid = masgn_ivar_cls(c, ms_mr, lefts[i]);
             const char *ivnm = nt_str(nt, lefts[i], "name");
-            int ivx = ivnm ? comp_ivar_index(&c->classes[ms_mr->class_id], ivnm) : -1;
-            if (ivx < 0 || class_ivar_pinned(&c->classes[ms_mr->class_id], ivnm)) continue;
-            TyKind mg = ty_unify(c->classes[ms_mr->class_id].ivar_types[ivx], elems[i]);
-            if (mg != c->classes[ms_mr->class_id].ivar_types[ivx]) {
-              ivar_set_type(&c->classes[ms_mr->class_id], ivx, mg); changed = 1;
+            int ivx = ivnm ? comp_ivar_index(&c->classes[icid], ivnm) : -1;
+            if (ivx < 0 || class_ivar_pinned(&c->classes[icid], ivnm)) continue;
+            TyKind mg = ty_unify(c->classes[icid].ivar_types[ivx], elems[i]);
+            if (mg != c->classes[icid].ivar_types[ivx]) {
+              ivar_set_type(&c->classes[icid], ivx, mg); changed = 1;
             }
           }
           else if (sp_streq(lty_mr, "GlobalVariableTargetNode") || sp_streq(lty_mr, "ClassVariableTargetNode"))
@@ -4350,8 +4360,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
         if (lv_widen(cv, et)) changed = 1;
       }
       else if (sp_streq(lty, "InstanceVariableTargetNode")) {
-        Scope *iv_sc = comp_scope_of(c, id);
-        int iv_cid = iv_sc ? iv_sc->class_id : -1;
+        int iv_cid = masgn_ivar_cls(c, comp_scope_of(c, id), lefts[i]);
         if (iv_cid < 0) continue;
         const char *ivnm = nt_str(nt, lefts[i], "name");
         int iv_idx = ivnm ? comp_ivar_index(&c->classes[iv_cid], ivnm) : -1;
@@ -4434,8 +4443,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
       else if (sp_streq(rty3, "GlobalVariableTargetNode") || sp_streq(rty3, "ClassVariableTargetNode"))
         changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rights[j], 1, et);
       else if (sp_streq(rty3, "InstanceVariableTargetNode")) {
-        Scope *iv_sc3 = comp_scope_of(c, id);
-        int iv_cid3 = iv_sc3 ? iv_sc3->class_id : -1;
+        int iv_cid3 = masgn_ivar_cls(c, comp_scope_of(c, id), rights[j]);
         if (iv_cid3 < 0) continue;
         const char *ivnm3 = nt_str(nt, rights[j], "name");
         int iv_idx3 = ivnm3 ? comp_ivar_index(&c->classes[iv_cid3], ivnm3) : -1;
