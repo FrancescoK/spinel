@@ -860,6 +860,16 @@ double sp_time_sub_t(sp_Time a, sp_Time b) {
 }
 
 const char *sp_str_inspect(const char *s);
+const char *sp_sym_inspect_name(const char *name);
+/* The fixed-format parsers' argument as their ArgumentError shows it: the
+   Symbol a call passed (sp_time_s_parse_sym), else the String inspected.
+   Read once: a raise leaves it cleared. */
+static SP_TLS const char *tp_sym_arg;
+static const char *tp_inspect_arg(const char *s) {
+  const char *sym = tp_sym_arg;
+  tp_sym_arg = NULL;
+  return sym ? sp_sym_inspect_name(sym) : sp_str_inspect(s);
+}
 
 /* ---- require "time": Time.httpdate / rfc2822 / xmlschema (iso8601) ----
    The strict class-method parsers, each the format its RFC fixes, read the
@@ -1063,7 +1073,7 @@ sp_Time sp_time_s_rfc2822(const char *date) {SP_GC_ROOT_STR(date);
     return tp_in_zone(year, mon + 1, day, h, mi, s, 0, z, zl);
   }
 bad:
-  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2822 compliant date: %s", sp_str_inspect(date)));
+  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2822 compliant date: %s", tp_inspect_arg(date)));
   return (sp_Time){0, 0, 1};
 }
 
@@ -1098,7 +1108,7 @@ sp_Time sp_time_s_httpdate(const char *date) {SP_GC_ROOT_STR(date);
         (year = tp_digits(q + 1, 4, 4, &q)) >= 0 && tp_skip_ws(q) == end)
       return sp_time_new_utc(year, mon + 1, day, h, mi, s);
   }
-  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2616 compliant date: %s", sp_str_inspect(date)));
+  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2616 compliant date: %s", tp_inspect_arg(date)));
   return (sp_Time){0, 0, 1};
 }
 
@@ -1140,7 +1150,7 @@ sp_Time sp_time_s_xmlschema(const char *str) {SP_GC_ROOT_STR(str);
   if (z) return tp_in_zone(year, mon, day, h, mi, s, nsec, z, zl);
   return sp_time_add_nsec(sp_time_new(year, mon, day, h, mi, s), nsec);
 bad:
-  sp_raise_cls("ArgumentError", sp_sprintf("invalid xmlschema format: %s", sp_str_inspect(str)));
+  sp_raise_cls("ArgumentError", sp_sprintf("invalid xmlschema format: %s", tp_inspect_arg(str)));
   return (sp_Time){0, 0, 1};
 }
 
@@ -1214,4 +1224,13 @@ unsupported:
                sp_sprintf("Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, "
                           "optionally hh:mm[:ss[.frac]] and a zone), not %s", sp_str_inspect(str)));
   return (sp_Time){0, 0, 1};
+}
+
+/* A fixed-format parser handed a Symbol: time.rb matches its regexp against
+   the Symbol's name, and a failure shows the Symbol itself */
+sp_Time sp_time_s_parse_sym(sp_Time (*parse)(const char *), const char *name) {
+  tp_sym_arg = name;
+  sp_Time t = parse(name);
+  tp_sym_arg = NULL;
+  return t;
 }

@@ -1558,26 +1558,32 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* Time.httpdate / rfc2822 / xmlschema / parse: the runtime parser of
        that format. A nil argument reaches it as NULL, which it answers as
        CRuby does (time.rb matches a regexp against it, Date._parse wants a
-       String); any other non-String is
-       CRuby's TypeError, or for httpdate, whose regexp is matched with
+       String). The fixed-format parsers match their regexp against a Symbol
+       too, so they read its name; any other non-String is CRuby's
+       TypeError, or for httpdate, whose regexp is matched with
        String#match?, its NoMethodError. */
     { const char *tfn = time_strict_parser_call(c, id);
       if (tfn) {
         TyKind at = comp_ntype(c, argv[0]);
-        buf_printf(b, "%s(", tfn);
-        if (at == TY_STRING) emit_expr(c, argv[0], b);
-        else if (at == TY_NIL) buf_puts(b, "(const char *)0");
+        int sym_ok = !sp_streq(tfn, "sp_time_s_parse");
+        if (at == TY_STRING || at == TY_NIL) {
+          buf_printf(b, "%s(", tfn);
+          if (at == TY_STRING) emit_expr(c, argv[0], b);
+          else buf_puts(b, "(const char *)0");
+          buf_puts(b, ")");
+        }
         else {
           int tv = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tv);
           emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (const char *)0 : ", tv);
+          buf_puts(b, "; ");
+          if (sym_ok) buf_printf(b, "_t%d.tag == SP_TAG_SYM ? sp_time_s_parse_sym(%s, sp_sym_to_s((sp_sym)_t%d.v.i)) : ", tv, tfn, tv);
+          buf_printf(b, "%s(_t%d.tag == SP_TAG_NIL ? (const char *)0 : ", tfn, tv);
           if (sp_streq(tfn, "sp_time_s_httpdate"))
             buf_printf(b, "(_t%d.tag != SP_TAG_STR && !sp_poly_is_strbuf(_t%d))"
                           " ? (sp_raise_nomethod(sp_nomethod_msg(\"match?\", _t%d)), (const char *)0) : ", tv, tv, tv);
-          buf_printf(b, "sp_poly_arg_str_chk(_t%d); })", tv);
+          buf_printf(b, "sp_poly_arg_str_chk(_t%d)); })", tv);
         }
-        buf_puts(b, ")");
         return 1;
       } }
     /* Time.strptime, and a Time.parse the parser above does not take,

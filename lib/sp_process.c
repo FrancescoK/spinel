@@ -352,6 +352,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   int extra_from_args = 0;
 
   int via_shell = 0;
+  char **words = NULL;   /* a command line's own words, when no shell runs it */
   cmd = sp_spawn_str(cmd);
   if (cmd.tag == SP_TAG_STR) {
     prog = cmd.v.s;
@@ -363,11 +364,20 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
       sp_process_spawn_fail(owned, "TypeError", "args must be a PolyArray of extra args");
     }
     /* One string and no arguments is a command LINE, as for Kernel#system:
-       CRuby hands it to the shell when it carries a shell character and
-       splits it into words otherwise, which the shell also does; it was
-       exec'd as a program name, so `spawn("sleep 2")` was ENOENT. */
-    if (!args_arr || args_arr->len == 0)
-      via_shell = strpbrk(prog, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
+       CRuby hands it to the shell when it carries a shell character (or
+       starts with a word the shell answers) and splits it into words
+       otherwise, exec'd with no shell -- so a missing program is ENOENT,
+       not the shell's exit 127 (sp_cmdline_shell_p). */
+    if (!args_arr || args_arr->len == 0) {
+      via_shell = sp_cmdline_shell_p(prog);
+      if (!via_shell) {
+        int wn = 0;
+        if (!(words = sp_cmdline_words(prog, &wn)))
+          sp_process_spawn_fail(owned, "NoMemoryError", "out of memory");
+        if (wn == 0) { free(words); sp_process_spawn_fail(owned, "Errno::ENOENT", sp_errf_path(ENOENT, prog)); }
+        prog = words[0];
+      }
+    }
   }
   else if (cmd.tag == SP_TAG_OBJ &&
              cmd.cls_id == SP_BUILTIN_POLY_ARRAY) {
@@ -390,21 +400,24 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   }
   if (args_arr) extra_from_args = (int)args_arr->len;
 
-  int total = 1 + extra_from_cmd + extra_from_args + (via_shell ? 2 : 0);
-  argv = (char **)malloc(sizeof(char *) * (size_t)(total + 1));
-  if (!argv) sp_process_spawn_fail(owned, "NoMemoryError", "out of memory");
-  int ai = 0;
-  if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
-  argv[ai++] = cmd_arr ? (char *)sp_spawn_str(cmd_arr->data[1]).v.s : (char *)prog;
-  if (via_shell) prog = "/bin/sh";
-  if (args_arr) {
-    for (int i = 0; i < args_arr->len; i++) {
-      if (sp_spawn_str(args_arr->data[i]).tag != SP_TAG_STR)
-        sp_process_spawn_fail(owned, "ArgumentError", "spawn args must be Strings");
-      argv[ai++] = (char *)sp_spawn_str(args_arr->data[i]).v.s;
+  if (words) argv = words;   /* one block: the free(argv)s below free it */
+  else {
+    int total = 1 + extra_from_cmd + extra_from_args + (via_shell ? 2 : 0);
+    argv = (char **)malloc(sizeof(char *) * (size_t)(total + 1));
+    if (!argv) sp_process_spawn_fail(owned, "NoMemoryError", "out of memory");
+    int ai = 0;
+    if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
+    argv[ai++] = cmd_arr ? (char *)sp_spawn_str(cmd_arr->data[1]).v.s : (char *)prog;
+    if (via_shell) prog = "/bin/sh";
+    if (args_arr) {
+      for (int i = 0; i < args_arr->len; i++) {
+        if (sp_spawn_str(args_arr->data[i]).tag != SP_TAG_STR)
+          sp_process_spawn_fail(owned, "ArgumentError", "spawn args must be Strings");
+        argv[ai++] = (char *)sp_spawn_str(args_arr->data[i]).v.s;
+      }
     }
+    argv[ai] = NULL;
   }
-  argv[ai] = NULL;
 
   char **envp = NULL;
   if (env.tag != SP_TAG_NIL && !(envp = sp_spawn_envp(env))) {
@@ -600,15 +613,25 @@ void sp_process_exec(sp_RbVal cmd, sp_RbVal args_box) {
   else sp_raise_cls("TypeError", "wrong first argument type (expected String or Array)");
   for (int i = 0; i < na; i++)
     if (sp_spawn_str(args->data[i]).tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(args->data[i]));
-  int via_shell = cmd.tag == SP_TAG_STR && na == 0 &&
-                  strpbrk(prog, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
-  char **argv = (char **)malloc(sizeof(char *) * (size_t)(na + 4));
-  if (!argv) sp_raise_cls("NoMemoryError", "out of memory");
-  int ai = 0;
-  if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
-  argv[ai++] = (char *)argv0;
-  for (int i = 0; i < na; i++) argv[ai++] = (char *)sp_spawn_str(args->data[i]).v.s;
-  argv[ai] = NULL;
+  /* a command line as Process.spawn reads one (sp_cmdline_shell_p) */
+  int line = cmd.tag == SP_TAG_STR && na == 0;
+  int via_shell = line && sp_cmdline_shell_p(prog);
+  char **argv;
+  if (line && !via_shell) {
+    int wn = 0;
+    if (!(argv = sp_cmdline_words(prog, &wn))) sp_raise_cls("NoMemoryError", "out of memory");
+    if (wn == 0) { free(argv); sp_raise_cls("Errno::ENOENT", sp_errf_path(ENOENT, prog)); }
+    prog = argv[0];
+  }
+  else {
+    argv = (char **)malloc(sizeof(char *) * (size_t)(na + 4));
+    if (!argv) sp_raise_cls("NoMemoryError", "out of memory");
+    int ai = 0;
+    if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
+    argv[ai++] = (char *)argv0;
+    for (int i = 0; i < na; i++) argv[ai++] = (char *)sp_spawn_str(args->data[i]).v.s;
+    argv[ai] = NULL;
+  }
   execvp(via_shell ? "/bin/sh" : prog, argv);
   int e = errno;
   free(argv);

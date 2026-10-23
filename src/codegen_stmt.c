@@ -785,7 +785,7 @@ static int tail_output_has_value(const char *nm) {
    the literal list's do. A Hash ahead of the command (`system(env, cmd)`, or
    one a splat brings) is the child's environment, as Process.spawn takes it:
    the test is made at run time, where a splat's first element is known.
-   Writes the expression (a bool) and answers 1 when a splat is among the
+   Writes the expression (true, false or nil) and answers 1 when a splat is among the
    arguments or the first is a Hash or a boxed value that may be one; 0
    otherwise, with nothing written (#7868). */
 int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
@@ -826,7 +826,7 @@ int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
   buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d->data[_i] = sp_box_str(sp_poly_arg_str_chk(_t%d->data[_i]));", ta, ta, ta);
   buf_printf(b, " const char **_t%d = (const char **)malloc(sizeof(char *) * (size_t)(_t%d->len + 1));", tv, ta);
   buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d[_i] = _t%d->data[_i].v.s;", ta, tv, ta);
-  buf_printf(b, " _t%d[_t%d->len] = NULL; sp_bool _t%d = (sp_bool)(_t%d.tag == SP_TAG_NIL ? sp_system_args((int)_t%d->len, _t%d)"
+  buf_printf(b, " _t%d[_t%d->len] = NULL; sp_RbVal _t%d = sp_system_answer(_t%d.tag == SP_TAG_NIL ? sp_system_args((int)_t%d->len, _t%d)"
                 " : sp_system_env_args(_t%d, (int)_t%d->len, _t%d)); free(_t%d); _t%d; })",
              tv, ta, tr, te, ta, tv, te, ta, tv, tv, tr);
   return 1;

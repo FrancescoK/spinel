@@ -49,7 +49,7 @@ sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym
   return r;
 }
 sp_PolyArray *sp_proc_parameters(sp_Proc *p) { SP_GC_ROOT(p); sp_PolyArray *r = sp_PolyArray_new(); if (!p || p->param_count <= 0 || !p->param_kinds) return r; SP_GC_ROOT(r); for (sp_int i = 0; i < p->param_count; i++) { sp_PolyArray *pair = sp_PolyArray_new(); sp_PolyArray_push(pair, sp_box_sym(p->param_kinds[i])); if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i])); sp_PolyArray_push(r, sp_box_poly_array(pair)); } return r; }
-void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); for (sp_int i = 0; i < c->nargs && i < 16; i++) sp_mark_rbval(c->args[i]); }
+void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); for (sp_int i = 0; i < c->nargs; i++) sp_mark_rbval(c->args[i]); }
 sp_Curry *sp_curry_new(sp_Proc *p) {
   SP_GC_ROOT(p);  /* the target proc has no other root across this alloc */
   sp_Curry *c = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
@@ -84,16 +84,16 @@ sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg) {SP_GC_ROOT_RBVAL(arg);
   /* root the source accumulator: in a chained apply it is only referenced
      from a C argument slot, and this allocation can collect */
   SP_GC_ROOT(c);
-  sp_Curry *n = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
-  *n = *c;
-  if (n->nargs < 16) n->args[n->nargs++] = arg;
+  sp_int k = c->nargs;
+  if ((size_t)k >= (SIZE_MAX - sizeof(sp_Curry)) / sizeof(sp_RbVal)) {
+    fprintf(stderr, "spinel: out of memory\n");
+    abort();
+  }
+  sp_Curry *n = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry) + sizeof(sp_RbVal) * (size_t)(k + 1), NULL, sp_curry_scan);
+  n->target = c->target; n->arity = c->arity; n->nargs = k + 1;
+  for (sp_int i = 0; i < k; i++) n->args[i] = c->args[i];
+  n->args[k] = arg;
   return n;
-}
-/* Publish the accumulated (boxed) args on the side-channel: a poly-param
-   target reads its arguments back from there, keeping each arg's real type. */
-void sp_curry_publish_args(sp_Curry *c) {
-  for (sp_int i = 0; i < c->nargs && i < 16; i++)
-    _sp_proc_poly_args[i] = c->args[i];
 }
 
 /* Method#to_proc: wrap the bound method in a Proc whose trampoline forwards

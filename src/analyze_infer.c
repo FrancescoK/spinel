@@ -6193,7 +6193,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     }
     if (sp_streq(name, "Hash") && argc == 1) { *out = kconv_hash_kind(c, argv[0]); return 1; }
     if ((is_format_alias(name)) && argc >= 1) { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "system") && argc >= 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "system") && argc >= 1) { *out = TY_POLY; return 1; }  /* true, false, or nil when the command cannot run */
     if (sp_streq(name, "trap") && argc >= 1) { *out = TY_POLY; return 1; }  /* the previous handler: a command string or a Proc */
     /* at_exit answers the Proc it registered, so the handler stays callable (#3727) */
     if (sp_streq(name, "at_exit") && nt_ref(nt, id, "block") >= 0) { *out = TY_PROC; return 1; }
