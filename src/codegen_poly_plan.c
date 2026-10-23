@@ -1870,6 +1870,14 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
     if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_int(_rw);", tr);
     else if (ret == TY_INT) buf_printf(b, " _t%d = _rw;", tr);
     buf_puts(b, " (void)_rw; }\nelse ");
+    /* a Dir also rewinds and answers its own handle, where the program can
+       make one */
+    if (an_program_makes_dir(c)) {
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR)"
+                    " { sp_Dir_rewind((sp_Dir *)_t%d.v.p);", tv, tv, tv);
+      if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
+      buf_puts(b, " }\nelse ");
+    }
     /* an Enumerator rewinds, and answers itself where the result is boxed */
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR)"
                   " { sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p);", tv, tv, tv);
@@ -3871,6 +3879,13 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       }
       if (ret == TY_POLY) buf_puts(b, ")");
       buf_puts(b, "; break;");
+      if (sp_streq(name, "seek") && argc == 1 && an_program_makes_dir(c)) {
+        buf_puts(b, " case SP_BUILTIN_DIR: ");
+        if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_obj(", tr);
+        buf_printf(b, "sp_Dir_seek((sp_Dir *)_t%d.v.p, %s)", tv, iv[0]);
+        if (ret == TY_POLY) buf_puts(b, ", SP_BUILTIN_DIR)");
+        buf_puts(b, "; break;");
+      }
     }
   }
   if (is_unshift) {

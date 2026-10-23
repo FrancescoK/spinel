@@ -1599,6 +1599,25 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
   return 0;
 }
 
+/* Does the program name Dir (a constant read or path ending in Dir)? Only
+   then can a boxed value be a Dir, and a boxed one-argument `seek` answer
+   the Dir rather than IO#seek's Integer. */
+int an_program_makes_dir(Compiler *c) {
+  static const NodeTable *memo_nt = NULL;
+  static int memo_n = -1, memo = 0;
+  const NodeTable *nt = c->nt;
+  if (memo_nt == nt && memo_n == nt->count) return memo;
+  memo = 0;
+  for (int id = 0; id < nt->count && !memo; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && sp_streq(nm, "Dir")) memo = 1;
+  }
+  memo_nt = nt; memo_n = nt->count;
+  return memo;
+}
+
 /* Can the program make a bsearch Enumerator (Array#bsearch without a
    block, or a bsearch it names by Symbol)? Only then does `e.each { }` over
    an Enumerator hand its block on as a proc, to the walk a bsearch one
