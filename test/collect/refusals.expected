@@ -594,6 +594,12 @@ spinel: 1 refusal, nothing written
 == test/reject/define_method_name_self.rb [promote] rc=1
 spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/define_method_name_struct_block.rb [default] rc=1
+spinel: test/reject/define_method_name_struct_block.rb:5: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_struct_block.rb [promote] rc=1
+spinel: test/reject/define_method_name_struct_block.rb:5: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/define_method_proc_ref_constant.rb [default] rc=1
 spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
