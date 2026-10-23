@@ -159,8 +159,11 @@ sp_Enumerator *sp_enum_derive(sp_Enumerator *e, unsigned char kind, sp_int arg) 
   /* (inspected as built on e, as CRuby nests it) */
   r->source = sp_box_obj(e, SP_BUILTIN_ENUMERATOR); r->has_src = TRUE;
   r->yields_pair = kind == SP_ENUM_DER_PAIRS;
-  r->meth = kind == SP_ENUM_DER_PAIRS ? SPL("with_index")
-          : sp_sprintf(kind == SP_ENUM_DER_CONS ? "each_cons(%lld)" : "each_slice(%lld)", (long long)arg);
+  const char *m = kind == SP_ENUM_DER_PAIRS ? SPL("with_index")
+                : sp_sprintf(kind == SP_ENUM_DER_CONS ? "each_cons(%lld)" : "each_slice(%lld)", (long long)arg);
+  /* (the name is a String of its own, young where r aged while it was made) */
+  sp_gc_wb((void *)r);
+  r->meth = m;
   return sp_enum_inherit_size(r, e);
 }
 /* See sp_enum.h. The copy is no live Enumerator: nothing lays its items out
