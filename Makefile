@@ -3261,8 +3261,8 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  -c --no-line-map -o "$$tmp/pst.c" 2>/dev/null; \
 	grep -q 'sp_SeedBoxPair_s_combine(sp_IntArray \* lv_ci, sp_IntArray \* lv_cj)' "$$tmp/pst.c" || { echo "rbs-seed-test: FAIL (an Array parameter seed gave way to a box that settled as its own form)"; ok=0; }; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/pst.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/pst" 2>"$$tmp/pst.err"; then \
-	  "$$tmp/pst" > "$$tmp/pst.out" 2>/dev/null; \
-	  cmp -s "$$tmp/pst.out" test/rbs-seed/array_param_seed_transient_box.expected || { echo "rbs-seed-test: FAIL (array_param_seed_transient_box output differs from CRuby)"; ok=0; }; \
+	  "$$tmp/pst" > "$$tmp/pst.out" 2>/dev/null && \
+	    cmp -s "$$tmp/pst.out" test/rbs-seed/array_param_seed_transient_box.expected || { echo "rbs-seed-test: FAIL (array_param_seed_transient_box failed or output differs from CRuby)"; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (array_param_seed_transient_box: C did not compile)"; ok=0; fi; \
 	;; \
 	hash_kind_arg_boundary) \

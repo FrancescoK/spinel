@@ -50255,6 +50255,18 @@ static int an_settle_seed_boxes(Compiler *c) {
       if (lv->rbs_box_held && !lv->rbs_seeded) dropped = 1;
       lv->rbs_box_held = 0;
     }
+  /* A local narrowed while the seed held (`row = ci[i]` pinned to the
+     element of a typed `ci`, narrow_locals_from_arrays) would keep that pin
+     through the re-derivation (lv_keep_decisions), though `ci` is a box now.
+     The narrowing passes give the pins back that the settled types support. */
+  if (dropped)
+    for (int s = 0; s < c->nscopes; s++)
+      for (int i = 0; i < c->scopes[s].nlocals; i++) {
+        LocalVar *lv = &c->scopes[s].locals[i];
+        if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+        lv->oa_pin = TY_UNKNOWN;
+        lv->oa_grace = 0;
+      }
   return dropped;
 }
 
