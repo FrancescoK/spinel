@@ -33656,6 +33656,7 @@ int a_super_target(Compiler *c, Scope *m) {
   const char *shadow = comp_super_shadow(c, m);
   if (shadow) return m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, shadow)
                                    : comp_method_in_class(c, m->class_id, shadow);
+  if (m->class_id < 0) return -1; /* a top-level def: no class, so no superclass method */
   int p = c->classes[m->class_id].parent;
   if (p < 0) return -1;
   const char *u = comp_prep_user_name(m->name);
