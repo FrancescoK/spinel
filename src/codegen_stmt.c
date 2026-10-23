@@ -4059,7 +4059,7 @@ static int strbuf_chain_links_m(Compiler *c, int v, int base, int *args, int mul
     /* a self-call that changes nothing; any other (clear, replace, freeze)
        keeps the value form */
     if (str_self_call(nt, cur)) {
-      if (nm && is_receiver_conversion(nm)) continue;
+      if (nm && is_receiver_conversion(nm) && !nt_safe_nav(nt, cur)) continue;
       return -1;
     }
     int a = nt_ref(nt, cur, "arguments"), ac = 0;
@@ -4098,6 +4098,20 @@ static int emit_strbuf_chain_in_place_m(Compiler *c, int v, int base, const char
   if (na < 0) return 0;
   int th = ++g_tmp;
   buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); " : "({ sp_String *_t%d = %s; "), th, bref);
+  /* not the base's handle as is: a nil base (an element past the end) meets to_s as "" and to_str as a raise */
+  int convs[32], nc = 0;
+  for (int cur = nt_paren_single(c->nt, v); cur >= 0 && cur != base && nc < 32;
+       cur = nt_paren_single(c->nt, nt_ref(c->nt, cur, "receiver"))) {
+    const char *nm = nt_str(c->nt, cur, "name");
+    if (nm && is_receiver_conversion(nm) && str_self_call(c->nt, cur)) convs[nc++] = cur;
+    else nc = 0;
+  }
+  for (int i = nc - 1; i >= 0; i--) {
+    const char *nm = nt_str(c->nt, convs[i], "name");
+    if (is_to_s_name(nm)) buf_printf(b, "if (!_t%d) _t%d = sp_String_new_shared(sp_str_frozen_empty); ", th, th);
+    else if (!is_self_copy(nm))
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th, nm);
+  }
   for (int i = na - 1; i >= 0; i--) {
     if (args[i] <= -2) {
       int link = -2 - args[i], ac = 0;

@@ -1,0 +1,11 @@
+class SeedBoxPlan
+  @codes: Array[Array[Integer]]
+end
+
+class SeedBoxSource
+  @codes: Array[Array[Integer]]
+end
+
+module SeedBoxPair
+  def self.combine: (Array[Integer] ci, Array[Integer] cj) -> Array[Integer]
+end

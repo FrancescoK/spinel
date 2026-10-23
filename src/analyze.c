@@ -27,6 +27,10 @@ int g_arm_check = 0;
    parameter that stayed UNKNOWN through the fixpoint (see bind_call_params);
    applied only after convergence so any concrete kind wins first. */
 int g_final_bind_pass = 0;
+/* Set for the one bind pass that decides, on the settled types, the
+   container parameter seeds a box reached while the fixpoint ran
+   (LocalVar.rbs_box_held, an_settle_seed_boxes). */
+int g_seed_box_settled = 0;
 /* Set while the type fixpoint iterates: a pass that would otherwise GUESS a
    type from ambiguous or not-yet-arrived evidence must instead leave the slot
    at UNKNOWN (bottom) and wait. "Not yet known" is not "could be anything",
@@ -5832,8 +5836,13 @@ int param_seed_holds(LocalVar *lv, TyKind at) {
   if (!lv->rbs_seeded) return 0;
   /* (a box handed to a container seed is the caller's object: unboxed into
      the seed's form it would be a copy the method changes in vain) */
-  if (!seed_form_gives_way(lv->rbs_type, at) && !seed_symkey_box_gives_way(lv->rbs_type, at) &&
-      !seed_box_gives_way(lv->rbs_type, at)) return 1;
+  int form = seed_form_gives_way(lv->rbs_type, at) || seed_symkey_box_gives_way(lv->rbs_type, at);
+  int box = seed_box_gives_way(lv->rbs_type, at);
+  if (!form && !box) return 1;
+  /* (only a box the settled types still hand it: one seen mid-fixpoint may be
+     a transient, and a seed it dropped never came back -- the parameter
+     re-derived from the same transient and stayed boxed) */
+  if (!form && !g_seed_box_settled) { lv->rbs_box_held = 1; return 1; }
   lv->rbs_seeded = 0;
   lv->rbs_type = TY_UNKNOWN;
   lv_set_type(lv, TY_UNKNOWN);
@@ -50403,6 +50412,40 @@ static int an_retract_stale_reverse_widening(Compiler *c) {
   return any;
 }
 
+/* A container parameter seed held against a box while the types settled
+   (param_seed_holds): bind once more on the settled types, where a call that
+   still hands it a box which may be another form drops the seed. 1 when one
+   did: the program then derives again without it. */
+static int an_settle_seed_boxes(Compiler *c) {
+  int held = 0;
+  for (int s = 0; s < c->nscopes; s++)
+    for (int i = 0; i < c->scopes[s].nlocals; i++) held |= c->scopes[s].locals[i].rbs_box_held;
+  if (!held) return 0;
+  g_seed_box_settled = 1;
+  infer_param_types(c);
+  g_seed_box_settled = 0;
+  int dropped = 0;
+  for (int s = 0; s < c->nscopes; s++)
+    for (int i = 0; i < c->scopes[s].nlocals; i++) {
+      LocalVar *lv = &c->scopes[s].locals[i];
+      if (lv->rbs_box_held && !lv->rbs_seeded) dropped = 1;
+      lv->rbs_box_held = 0;
+    }
+  /* A local narrowed while the seed held (`row = ci[i]` pinned to the
+     element of a typed `ci`, narrow_locals_from_arrays) would keep that pin
+     through the re-derivation (lv_keep_decisions), though `ci` is a box now.
+     The narrowing passes give the pins back that the settled types support. */
+  if (dropped)
+    for (int s = 0; s < c->nscopes; s++)
+      for (int i = 0; i < c->scopes[s].nlocals; i++) {
+        LocalVar *lv = &c->scopes[s].locals[i];
+        if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+        lv->oa_pin = TY_UNKNOWN;
+        lv->oa_grace = 0;
+      }
+  return dropped;
+}
+
 /* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
 /* --timing (#7236): each pass of the inference fixpoint, its wall time
    summed over the rounds, how often it ran and how often it reported a
@@ -51121,6 +51164,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
      the parameter back to its callers' arguments and derive once more, the
      reverse binding held off it. */
   if (AN_PASS("an_retract_stale_reverse_widening", an_retract_stale_reverse_widening(c))) an_phase_infer_fixpoint(c);
+  if (AN_PASS("an_settle_seed_boxes", an_settle_seed_boxes(c))) an_phase_infer_fixpoint(c);
 }
 
 /* After the fixpoint: the backstops for slots left without a type (empty literals, nullable params, unknown ivars and hashes), the nil-guard and is_a? narrowing, the return-type re-run, the param and hash-shape reconciliation, the bigint loop variables (analyze_program's steps, in their order) */

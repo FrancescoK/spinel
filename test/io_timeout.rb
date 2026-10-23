@@ -120,10 +120,13 @@ result("buffered-byte") { left.read(1) }
 close_pair(left, right)
 
 left, right = Socket.pair(Socket::AF_UNIX, Socket::SOCK_STREAM, 0)
-left.timeout = 0.1
+# each byte comes well inside the timeout, the three together after it: a
+# wait that makes progress starts its timeout again (a 0.05s gap under a
+# 0.1s timeout timed out on a loaded macOS runner)
+left.timeout = 0.6
 producer = Thread.new do
   3.times do
-    sleep 0.05
+    sleep 0.25
     right.write("X")
   end
   right.close

@@ -3270,6 +3270,15 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  cmp -s "$$tmp/bw.out" test/rbs-seed/block_param_hash_widen.expected || { echo "rbs-seed-test: FAIL (#4100 block param over an untyped receiver widened the hash it writes into)"; diff -u test/rbs-seed/block_param_hash_widen.expected "$$tmp/bw.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#4100 widened block param: C did not compile)"; ok=0; fi; \
 	;; \
+	array_param_seed_transient_box) \
+	$(SPINEL) test/rbs-seed/array_param_seed_transient_box.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/pst.c" 2>/dev/null; \
+	grep -q 'sp_SeedBoxPair_s_combine(sp_IntArray \* lv_ci, sp_IntArray \* lv_cj)' "$$tmp/pst.c" || { echo "rbs-seed-test: FAIL (an Array parameter seed gave way to a box that settled as its own form)"; ok=0; }; \
+	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/pst.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/pst" 2>"$$tmp/pst.err"; then \
+	  "$$tmp/pst" > "$$tmp/pst.out" 2>/dev/null && \
+	    cmp -s "$$tmp/pst.out" test/rbs-seed/array_param_seed_transient_box.expected || { echo "rbs-seed-test: FAIL (array_param_seed_transient_box failed or output differs from CRuby)"; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (array_param_seed_transient_box: C did not compile)"; ok=0; fi; \
+	;; \
 	hash_kind_arg_boundary) \
 	$(SPINEL) test/rbs-seed/hash_kind_arg_boundary.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/hk.c" 2>/dev/null; \
@@ -4892,6 +4901,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/gc_root_hoisted_arg_once.rb -c --no-line-map -o "$$tmp/rha.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (gc_root_hoisted_arg_once: -c)"; ok=0; }; \
 	awk '/ sp_make_tree\(sp_int lv_depth\) \{/,/^}/' "$$tmp/rha.c" > "$$tmp/rha_mt.c"; \
 	grep -q 'sp_make_tree(' "$$tmp/rha_mt.c" && ! grep -Eq '_gcf\.v\[[0-9]+\] = _gcf\.v\[[0-9]+\];|_t[0-9]+ = _t[0-9]+;' "$$tmp/rha_mt.c" || { echo "infer-test: FAIL (an argument the call hoisted into a rooted temp is copied into a second rooted one)"; ok=0; }; \
+	$(SPINEL) test/block_on_user_call_receiver_once.rb -c --no-line-map -o "$$tmp/bur.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (block_on_user_call_receiver_once: -c)"; ok=0; }; \
+	n=$$(grep -Ec '^static .* _proc_[0-9]+\(.*\{$$' "$$tmp/bur.c"); [ "$$n" -eq 2 ] || { echo "infer-test: FAIL (a block on a call-valued receiver of a user class left a dead copy of its proc: $$n proc functions, want 2)"; ok=0; }; \
 	$(SPINEL) test/poll_dynamic_call_reacher.rb -c --no-line-map -o "$$tmp/pdc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poll_dynamic_call_reacher: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_Device_peek\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && awk '/^[a-z].* sp_Bus_sum\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' || { echo "infer-test: FAIL (a method making a proc's call, or the caller of a yielder making one, does not poll at its entry)"; ok=0; }; \
 	awk '/^[a-z].* sp_Bus_read\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && { echo "infer-test: FAIL (a method that only reaches a proc's call polls at its entry)"; ok=0; }; \
