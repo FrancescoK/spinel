@@ -2560,19 +2560,23 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
     return;
   }
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
+  /* (one-String mode: the splice answers the element, the handle, and the
+     store the String's bytes; both arms answer the bytes) */
+  int one_s = g_one_string && ty_array_elem(rt) == TY_STRING;
+  if (one_s) buf_puts(b, "SP_STR_B(");
   int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
   int v = view_push(c, argv[0], TY_RANGE);
   emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
   view_pop(c, v);
   view_unbind(bind);
-  buf_puts(b, " : ");
+  buf_puts(b, one_s ? ") : SP_STR_B(" : " : ");
   bind = view_bind(argv[0], "sp_poly_arg_int_chk(_t%d)", ti);
   v = view_push(c, argv[0], TY_INT);
   emit_call_array_arms(c, id, b, c->nt, "[]=", recv, 2, argv, rt);
   view_pop(c, v);
   view_unbind(bind);
   view_unbind(rbind);
-  buf_puts(b, "; })");
+  buf_puts(b, one_s ? "); })" : "; })");
 }
 
 /* `arr.slice!(i)` whose boxed index may be a Range (value_may_be_range),
