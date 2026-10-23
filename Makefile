@@ -3691,14 +3691,16 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	;; \
 	check_false) \
 	for f in check_false check_false_builtin; do \
-	$(SPINEL) $(IRB)/$$f.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; \
+	if ! $(SPINEL) $(IRB)/$$f.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; then \
+	  echo "inline-rbs-test: FAIL ($$f: the compile failed)"; ok=0; continue; fi; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/f.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/f" 2>/dev/null; then \
 	  if "$$tmp/f" > "$$tmp/f.out" 2>&1; then echo "inline-rbs-test: FAIL ($$f: a false inline annotation did NOT abort under -DSP_RBS_CHECK)"; ok=0; \
 	  else grep -q "seed violated" "$$tmp/f.out" || { echo "inline-rbs-test: FAIL ($$f: a false inline annotation aborted without naming the slot)"; sed -n 1,3p "$$tmp/f.out"; ok=0; }; fi; \
 	else echo "inline-rbs-test: FAIL ($$f: C did not compile)"; ok=0; fi; \
 	done; \
 	for h in check_honest builtin_classes; do \
-	$(SPINEL) $(IRB)/$$h.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; \
+	if ! $(SPINEL) $(IRB)/$$h.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; then \
+	  echo "inline-rbs-test: FAIL ($$h: the compile failed)"; ok=0; continue; fi; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/h.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/h" 2>/dev/null; then \
 	  "$$tmp/h" > "$$tmp/h.out" 2>&1; cmp -s "$$tmp/h.out" $(IRB)/$$h.expected || { echo "inline-rbs-test: FAIL ($$h: the run-time check fired on an honest inline annotation)"; ok=0; }; \
 	else echo "inline-rbs-test: FAIL ($$h: C did not compile under -DSP_RBS_CHECK)"; ok=0; fi; \
