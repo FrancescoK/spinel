@@ -138,6 +138,10 @@ typedef struct {
                        during the init raise NameError (uninitialized constant) */
   int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the
                        fixpoint must not widen it (see apply_rbs_seeds) */
+  int rbs_box_held; /* (params) a box reached the container seed while the
+                       fixpoint ran and the seed held: it may have been a
+                       transient, so the settled types decide whether the
+                       seed gives way (param_seed_holds, an_settle_seed_boxes) */
   int nullable_int; /* an int local that was assigned a value which can be
                        nil (a search miss, a pop off an empty array): its
                        slot holds its nil beside the value, and boxing it
