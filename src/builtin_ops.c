@@ -244,10 +244,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_ADDRINFO, "ip_port",      0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->port" },
   { TY_ADDRINFO, "socktype",     0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->socktype" },
   { TY_ADDRINFO, "protocol",     0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->protocol" },
-  { TY_ADDRINFO, "ipv4?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r)->afname && strcmp(($r)->afname, \"AF_INET\") == 0)" },
-  { TY_ADDRINFO, "ipv6?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r)->afname && strcmp(($r)->afname, \"AF_INET6\") == 0)" },
-  { TY_ADDRINFO, "unix?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r)->afname && strcmp(($r)->afname, \"AF_UNIX\") == 0)" },
-  { TY_ADDRINFO, "ip?",          0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(!(($r)->afname && strcmp(($r)->afname, \"AF_UNIX\") == 0))" },
+  { TY_ADDRINFO, "ipv4?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_Addrinfo *_t$t = ($r); (_t$t->afname && strcmp(_t$t->afname, \"AF_INET\") == 0); })" },
+  { TY_ADDRINFO, "ipv6?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_Addrinfo *_t$t = ($r); (_t$t->afname && strcmp(_t$t->afname, \"AF_INET6\") == 0); })" },
+  { TY_ADDRINFO, "unix?",        0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_Addrinfo *_t$t = ($r); (_t$t->afname && strcmp(_t$t->afname, \"AF_UNIX\") == 0); })" },
+  { TY_ADDRINFO, "ip?",          0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_Addrinfo *_t$t = ($r); (!(_t$t->afname && strcmp(_t$t->afname, \"AF_UNIX\") == 0)); })" },
   { TY_ADDRINFO, "to_sockaddr",  0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_addrinfo_to_sockaddr($r)" },
   { TY_ADDRINFO, "inspect",      0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_addrinfo_inspect($r)" },
   { TY_ADDRINFO, "to_s",         0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_addrinfo_inspect($r)" },
@@ -1626,11 +1626,11 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "dup",         0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "clone",       0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "freeze",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
-  { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((sp_int)sizeof(sp_int))" },
+  { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)sizeof(sp_int))" },
   { TY_INT,   "to_int",      1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "ord",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "infinite?",   1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), sp_oint_nil())" },
-  { TY_INT,   "abs2",        1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_int_mul($r, $r)" },
+  { TY_INT,   "abs2",        1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_int _t$t = ($r); sp_int_mul(_t$t, _t$t); })" },
   { TY_INT,   "real",        1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "imaginary",   1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), 0)" },
   { TY_INT,   "imag",        1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), 0)" },
@@ -1661,7 +1661,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "finite?",     0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
   { TY_INT,   "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
   { TY_INT,   "infinite?",   0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), sp_oint_nil())" },  /* always nil (an sp_oint) */
-  { TY_INT,   "abs2",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_mul($r, $r)" },  /* the Complex projection (#2328) */
+  { TY_INT,   "abs2",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "({ sp_int _t$t = ($r); sp_int_mul(_t$t, _t$t); })" },  /* the Complex projection (#2328) */
   { TY_INT,   "real",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "imaginary",   0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), 0)" },
   { TY_INT,   "imag",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), 0)" },
@@ -1674,7 +1674,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "phase",       0,   0, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "(($r) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))" },
   { TY_INT,   "rect",        0,   0, BF_ANY,      TY_INT_ARRAY,   BOPE_TEMPLATE, "({ sp_IntArray *_t$t = sp_IntArray_new(); SP_GC_ROOT(_t$t); sp_IntArray_push(_t$t, ($r)); sp_IntArray_push(_t$t, 0); _t$t; })" },
   { TY_INT,   "rectangular", 0,   0, BF_ANY,      TY_INT_ARRAY,   BOPE_TEMPLATE, "({ sp_IntArray *_t$t = sp_IntArray_new(); SP_GC_ROOT(_t$t); sp_IntArray_push(_t$t, ($r)); sp_IntArray_push(_t$t, 0); _t$t; })" },
-  { TY_INT,   "polar",       0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_int(sp_int_abs($r))); sp_PolyArray_push(_t$t, ($r) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0)); _t$t; })" },
+  { TY_INT,   "polar",       0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_int _t$u = ($r); sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_int(sp_int_abs(_t$u))); sp_PolyArray_push(_t$t, _t$u < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0)); _t$t; })" },
   { TY_INT,   "ord",         0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "to_int",      0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "pred",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_sub(($r), 1)" },
@@ -1683,7 +1683,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "numerator",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "denominator", 0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "bit_length",  0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_bit_length($r)" },
-  { TY_INT,   "magnitude",   0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "(($r) < 0 ? -($r) : ($r))" },
+  { TY_INT,   "magnitude",   0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_abs($r)" },  /* an alias of abs, down to its overflow */
   { TY_INT,   "nonzero?",    0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "({ sp_int _t$t = ($r); _t$t == 0 ? sp_oint_nil() : sp_oint_of(_t$t); })" },  /* self or nil (an sp_oint) */
   { TY_INT,   "ceildiv",     1, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "to_r",        0,   0, BF_ANY,      TY_RATIONAL,    BOPE_NONE },
@@ -1730,9 +1730,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "zero?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "(($r) == 0.0)" },
   { TY_FLOAT, "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), FALSE)" },
   { TY_FLOAT, "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
-  { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "(($r) != 0.0 ? sp_box_float($r) : sp_box_nil())" },  /* self or nil */
+  { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_float _t$t = ($r); _t$t != 0.0 ? sp_box_float(_t$t) : sp_box_nil(); })" },  /* self or nil */
   { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $F0)" },
-  { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "(($r) * ($r))" },
+  { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "({ sp_float _t$t = ($r); _t$t * _t$t; })" },
   { TY_FLOAT, "real",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
   { TY_FLOAT, "conj",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
   { TY_FLOAT, "conjugate",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
@@ -1755,7 +1755,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "imaginary",   0, 127, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)0)" },
   { TY_FLOAT, "rect",        0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_float($r)); sp_PolyArray_push(_t$t, sp_box_int(0)); _t$t; })" },
   { TY_FLOAT, "rectangular", 0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_float($r)); sp_PolyArray_push(_t$t, sp_box_int(0)); _t$t; })" },
-  { TY_FLOAT, "polar",       0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_float(fabs($r))); sp_PolyArray_push(_t$t, sp_float_arg($r)); _t$t; })" },
+  { TY_FLOAT, "polar",       0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "({ sp_float _t$u = ($r); sp_PolyArray *_t$t = sp_PolyArray_new(); SP_GC_ROOT(_t$t); sp_PolyArray_push(_t$t, sp_box_float(fabs(_t$u))); sp_PolyArray_push(_t$t, sp_float_arg(_t$u)); _t$t; })" },
   { TY_FLOAT, "numerator",   0,   0, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "sp_float_to_rational($r).num" },  /* an Integer, or the non-finite Float (#3011) */
   { TY_FLOAT, "denominator", 0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_to_rational($r).den" },
   { TY_FLOAT, "to_r",        0,   0, BF_ANY,      TY_RATIONAL,    BOPE_TEMPLATE, "sp_float_to_rational($r)" },

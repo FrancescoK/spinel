@@ -20,3 +20,14 @@ srv = TCPServer.new("127.0.0.1", 0)
 la = srv.local_address
 puts "#{la.ipv4?} #{la.ipv6?} #{la.unix?} #{la.ip?}"
 srv.close
+
+# the predicates read their receiver once: each named it twice in its own C
+# text, so a receiver that is a call ran twice
+$n = 0
+
+def one_addr
+  $n += 1
+  Addrinfo.tcp("127.0.0.1", 80)
+end
+
+puts "#{one_addr.ipv4?} #{$n}"
