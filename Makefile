@@ -4982,6 +4982,21 @@ alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	if grep -qE '^alloc;.+;[A-Za-z(][^;]* [0-9]+$$' "$$tmp/s.folded"; then \
 	  grep -qE '^alloc;.+;String [0-9]+$$' "$$tmp/s.folded" || { echo "alloc-report-test: FAIL (String has no site while other types do)"; grep String "$$tmp/s.folded" | head -2; ok=0; }; \
 	fi; \
+	if [ "$$(uname -s)" = Linux ]; then \
+	  $(SPINEL) test/alloc-report/site_names.rb --profile -o "$$tmp/sn" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile site_names --profile)"; exit 1; }; \
+	  SPINEL_ALLOC_REPORT="$$tmp/sn.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sn" > "$$tmp/sn.out" 2>&1; \
+	  grep -q '^700$$' "$$tmp/sn.out" || { echo "alloc-report-test: FAIL (site_names output)"; ok=0; }; \
+	  grep -qE '^alloc;Tree#walk;String [0-9]+$$' "$$tmp/sn.folded" || { echo "alloc-report-test: FAIL (a --profile site was not named by its Ruby method)"; sed -n 1,8p "$$tmp/sn.folded"; ok=0; }; \
+	  ! grep -qE '^(alloc;|# bytes )[^;]*\(\+0x' "$$tmp/sn.folded" || { echo "alloc-report-test: FAIL (an unstripped binary still reported a raw address)"; grep -E '\(\+0x' "$$tmp/sn.folded" | head -3; ok=0; }; \
+	  mv "$$tmp/sn.symbols.json" "$$tmp/sn.map"; \
+	  SPINEL_ALLOC_REPORT="$$tmp/snc.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sn" >/dev/null 2>&1; \
+	  grep -qE '^alloc;sp_Tree_walk[^;]*;String [0-9]+$$' "$$tmp/snc.folded" || { echo "alloc-report-test: FAIL (without the symbol map a site was not named by its C function)"; sed -n 1,8p "$$tmp/snc.folded"; ok=0; }; \
+	  if command -v strip >/dev/null 2>&1; then \
+	    cp "$$tmp/sn" "$$tmp/sns" && strip "$$tmp/sns" 2>/dev/null && { \
+	      SPINEL_ALLOC_REPORT="$$tmp/sns.folded" SPINEL_ALLOC_SITES=1 "$$tmp/sns" > "$$tmp/sns.out" 2>&1; \
+	      grep -q '^700$$' "$$tmp/sns.out" && grep -qE '^alloc;.+;String [0-9]+$$' "$$tmp/sns.folded" || { echo "alloc-report-test: FAIL (a stripped binary lost its site rows)"; sed -n 1,5p "$$tmp/sns.folded"; ok=0; }; }; \
+	  fi; \
+	fi; \
 	$(SPINEL) test/alloc-report/straight_append.rb -o "$$tmp/sa" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile straight_append)"; exit 1; }; \
 	SPINEL_ALLOC_REPORT="$$tmp/sa.folded" "$$tmp/sa" > "$$tmp/sa.out" 2>&1; \
 	grep -q '^960$$' "$$tmp/sa.out" || { echo "alloc-report-test: FAIL (straight_append wrong length)"; ok=0; }; \

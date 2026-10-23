@@ -1336,9 +1336,248 @@ void sp_alloc_report_tag(void *scan, const char *name) {
     if (n->key == scan || n->key == NULL) { n->key = scan; n->name = name; return; }
   }
 }
-/* A site's human name, resolved at dump time. Prefers the symbol name from
-   the dynamic symbol table; falls back to the raw address. Caller frees. */
+/* ---- naming a site ----
+   backtrace_symbols reads only the DYNAMIC symbol table, and user methods are
+   `static` C functions, so on its own it names nothing the user wrote: every
+   site came out as `./app(+0x1bf67) [0x55..]`. The executable's full symbol
+   table (.symtab) does carry the static functions whenever the binary was not
+   stripped -- which --profile and -g builds guarantee and the default build
+   leaves in place -- so on ELF the dump reads it from /proc/self/exe, once,
+   and names the function containing the return address. When `--profile`
+   also wrote `<exe>.symbols.json` beside the binary, that C name is turned
+   into the Ruby name it was emitted for (`sp_Foo_bar` -> `Foo#bar`).
+
+   All of this runs at dump time only and only for a site row: with
+   SPINEL_ALLOC_SITES unset nothing here is ever reached. Every step degrades
+   to the one before it -- no map: the C name; stripped or not ELF: the old
+   backtrace_symbols text; nothing at all: the raw address. */
+#if SP_ALLOC_SITE_AVAILABLE && defined(__linux__) && defined(__has_include)
+#  if __has_include(<elf.h>)
+#    include <elf.h>
+#    include <ctype.h>
+#    define SP_ALLOC_SYMTAB 1
+#  endif
+#endif
+#ifndef SP_ALLOC_SYMTAB
+#  define SP_ALLOC_SYMTAB 0
+#endif
+
+#if SP_ALLOC_SYMTAB
+#if UINTPTR_MAX > 0xffffffffu
+#  define SP_ELF(t) Elf64_##t
+#else
+#  define SP_ELF(t) Elf32_##t
+#endif
+typedef struct { uintptr_t lo, hi; const char *name; } sp_AllocSym;
+typedef struct { char *c, *ruby; } sp_AllocRubyName;
+static int sp_alloc_syms_loaded = 0;
+static sp_AllocSym *sp_alloc_syms = NULL;      /* FUNC symbols, sorted by lo */
+static size_t sp_alloc_nsyms = 0;
+static char *sp_alloc_symstr = NULL;           /* the .strtab the names point into */
+static uintptr_t sp_alloc_load_bias = 0;
+static sp_AllocRubyName *sp_alloc_rnames = NULL; /* from <exe>.symbols.json, sorted by c */
+static size_t sp_alloc_nrnames = 0;
+
+static int sp_alloc_sym_cmp(const void *a, const void *b) {
+  uintptr_t x = ((const sp_AllocSym *)a)->lo, y = ((const sp_AllocSym *)b)->lo;
+  return x < y ? -1 : x > y;
+}
+static int sp_alloc_rname_cmp(const void *a, const void *b) {
+  return strcmp(((const sp_AllocRubyName *)a)->c, ((const sp_AllocRubyName *)b)->c);
+}
+static int sp_alloc_pread_all(int fd, void *buf, size_t n, off_t off) {
+  char *p = (char *)buf;
+  while (n > 0) {
+    ssize_t r = pread(fd, p, n, off);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) return 0;
+    p += r; n -= (size_t)r; off += r;
+  }
+  return 1;
+}
+/* A JSON string body starting at `p` (just past the opening quote) into a
+   fresh C string; *end is left past the closing quote. Only the escapes
+   codegen's json_escape_into writes for a name matter here. */
+static char *sp_alloc_json_str(const char *p, const char **end) {
+  size_t cap = 32, n = 0;
+  char *o = (char *)malloc(cap);
+  if (!o) return NULL;
+  while (*p && *p != '"') {
+    char ch = *p++;
+    if (ch == '\\' && *p) {
+      char e = *p++;
+      if (e == 'u') {               /* \u00XX: a control byte, kept as-is */
+        unsigned v = 0; int k;
+        for (k = 0; k < 4 && isxdigit((unsigned char)*p); k++, p++)
+          v = v * 16 + (unsigned)(isdigit((unsigned char)*p) ? *p - '0' : (tolower((unsigned char)*p) - 'a' + 10));
+        ch = (char)v;
+      }
+      else ch = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
+    }
+    if (n + 2 > cap) { char *g = (char *)realloc(o, cap *= 2); if (!g) { free(o); return NULL; } o = g; }
+    o[n++] = ch;
+  }
+  o[n] = 0;
+  *end = *p == '"' ? p + 1 : p;
+  return o;
+}
+/* `<exe>.symbols.json` is what --profile / --emit-symbol-map write: one
+   {"c":"...","ruby":"...",...} object per emitted method. */
+static void sp_alloc_load_ruby_names(const char *exe) {
+  char path[4200];
+  snprintf(path, sizeof path, "%s.symbols.json", exe);
+  FILE *f = fopen(path, "r");
+  if (!f) return;
+  size_t cap = 1 << 16, len = 0;
+  char *buf = (char *)malloc(cap);
+  while (buf) {
+    if (len + 4096 + 1 > cap) { char *g = (char *)realloc(buf, cap *= 2); if (!g) { free(buf); buf = NULL; break; } buf = g; }
+    size_t r = fread(buf + len, 1, cap - len - 1, f);
+    if (r == 0) break;
+    len += r;
+  }
+  fclose(f);
+  if (!buf) return;
+  buf[len] = 0;
+  size_t rcap = 0;
+  for (const char *p = buf; (p = strstr(p, "{\"c\":\"")) != NULL; ) {
+    const char *q;
+    char *c = sp_alloc_json_str(p + 6, &q);
+    if (!c) break;
+    if (strncmp(q, ",\"ruby\":\"", 9) != 0) { free(c); p = q; continue; }
+    char *rb = sp_alloc_json_str(q + 9, &q);
+    p = q;
+    if (!rb || !*c || !*rb) { free(c); free(rb); continue; }
+    if (sp_alloc_nrnames == rcap) {
+      size_t nc = rcap ? rcap * 2 : 256;
+      sp_AllocRubyName *g = (sp_AllocRubyName *)realloc(sp_alloc_rnames, nc * sizeof *g);
+      if (!g) { free(c); free(rb); break; }
+      sp_alloc_rnames = g; rcap = nc;
+    }
+    sp_alloc_rnames[sp_alloc_nrnames].c = c;
+    sp_alloc_rnames[sp_alloc_nrnames].ruby = rb;
+    sp_alloc_nrnames++;
+  }
+  free(buf);
+  if (sp_alloc_nrnames)
+    qsort(sp_alloc_rnames, sp_alloc_nrnames, sizeof *sp_alloc_rnames, sp_alloc_rname_cmp);
+}
+/* Read the executable's .symtab once. Any surprise -- not ELF, another
+   class or byte order, no .symtab (stripped) -- leaves the table empty and
+   the caller falls back. */
+static void sp_alloc_load_symtab(void) {
+  if (sp_alloc_syms_loaded) return;
+  sp_alloc_syms_loaded = 1;
+  char exe[4096];
+  ssize_t el = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (el <= 0) return;
+  exe[el] = 0;
+  int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return;
+  SP_ELF(Ehdr) eh;
+  SP_ELF(Shdr) *sh = NULL;
+  SP_ELF(Sym) *st = NULL;
+  int have_anchor = 0;
+  if (!sp_alloc_pread_all(fd, &eh, sizeof eh, 0)) goto done;
+  if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0) goto done;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  if (eh.e_ident[EI_DATA] != ELFDATA2LSB) goto done;
+#else
+  if (eh.e_ident[EI_DATA] != ELFDATA2MSB) goto done;
+#endif
+  if (eh.e_ident[EI_CLASS] != (sizeof(void *) == 8 ? ELFCLASS64 : ELFCLASS32)) goto done;
+  if (eh.e_shentsize != sizeof(SP_ELF(Shdr)) || eh.e_shnum == 0 || eh.e_shnum > 65000) goto done;
+  sh = (SP_ELF(Shdr) *)malloc((size_t)eh.e_shnum * sizeof *sh);
+  if (!sh || !sp_alloc_pread_all(fd, sh, (size_t)eh.e_shnum * sizeof *sh, (off_t)eh.e_shoff)) goto done;
+  for (size_t i = 0; i < eh.e_shnum; i++) {
+    if (sh[i].sh_type != SHT_SYMTAB || sh[i].sh_entsize != sizeof(SP_ELF(Sym))) continue;
+    if (sh[i].sh_link >= eh.e_shnum) break;
+    SP_ELF(Shdr) *ss = &sh[sh[i].sh_link];
+    size_t nsym = (size_t)(sh[i].sh_size / sizeof(SP_ELF(Sym)));
+    st = (SP_ELF(Sym) *)malloc(nsym * sizeof *st);
+    sp_alloc_symstr = (char *)malloc((size_t)ss->sh_size + 1);
+    if (!st || !sp_alloc_symstr ||
+        !sp_alloc_pread_all(fd, st, nsym * sizeof *st, (off_t)sh[i].sh_offset) ||
+        !sp_alloc_pread_all(fd, sp_alloc_symstr, (size_t)ss->sh_size, (off_t)ss->sh_offset)) {
+      free(sp_alloc_symstr); sp_alloc_symstr = NULL; break;
+    }
+    sp_alloc_symstr[ss->sh_size] = 0;
+    sp_alloc_syms = (sp_AllocSym *)malloc(nsym * sizeof *sp_alloc_syms);
+    if (!sp_alloc_syms) break;
+    for (size_t k = 0; k < nsym; k++) {
+      if (ELF32_ST_TYPE(st[k].st_info) != STT_FUNC || st[k].st_size == 0 || st[k].st_shndx == SHN_UNDEF) continue;
+      if (st[k].st_name >= ss->sh_size) continue;
+      sp_AllocSym *y = &sp_alloc_syms[sp_alloc_nsyms++];
+      y->lo = (uintptr_t)st[k].st_value;
+      y->hi = y->lo + (uintptr_t)st[k].st_size;
+      y->name = sp_alloc_symstr + st[k].st_name;
+      /* The anchor that gives the load bias: a PIE runs slid from the
+         addresses the file records, by however much this function -- which
+         is in the same executable as every site -- moved. 0 when fixed. */
+      if (!have_anchor && strcmp(y->name, "sp_alloc_report_count") == 0) {
+        sp_alloc_load_bias = (uintptr_t)&sp_alloc_report_count - y->lo;
+        have_anchor = 1;
+      }
+    }
+    qsort(sp_alloc_syms, sp_alloc_nsyms, sizeof *sp_alloc_syms, sp_alloc_sym_cmp);
+    break;
+  }
+  /* Without the anchor the slide is unknown and every lookup would name the
+     wrong function: better to name none. */
+  if (sp_alloc_nsyms && !have_anchor) sp_alloc_nsyms = 0;
+  if (sp_alloc_nsyms) sp_alloc_load_ruby_names(exe);
+done:
+  free(st);
+  free(sh);
+  close(fd);
+}
+/* The function whose body holds `site`, by its .symtab name; NULL when the
+   address is not inside any (a shared library's frame, a stripped binary). */
+static const char *sp_alloc_symtab_name(void *site) {
+  sp_alloc_load_symtab();
+  if (!sp_alloc_nsyms) return NULL;
+  /* a return address is one past the call, which can be one past the end
+     of a function that ends in a noreturn call: look up the byte before. */
+  uintptr_t a = (uintptr_t)site - sp_alloc_load_bias - 1;
+  size_t lo = 0, hi = sp_alloc_nsyms;
+  while (lo < hi) { size_t m = lo + (hi - lo) / 2; if (sp_alloc_syms[m].lo <= a) lo = m + 1; else hi = m; }
+  /* the innermost of any overlapping entries is the last one starting at or
+     below a; scan back a little for one that actually contains it */
+  for (size_t k = lo, tries = 0; k > 0 && tries < 8; k--, tries++) {
+    sp_AllocSym *y = &sp_alloc_syms[k - 1];
+    if (a >= y->lo && a < y->hi) return y->name;
+  }
+  return NULL;
+}
+/* `sp_Foo_bar` (or a compiler clone of it, `sp_Foo_bar.constprop.0`) to the
+   Ruby name the symbol map gives it; NULL without a map entry. */
+static const char *sp_alloc_ruby_name(const char *cname) {
+  if (!sp_alloc_nrnames) return NULL;
+  char base[512];
+  size_t n = strcspn(cname, ".");
+  if (n >= sizeof base) return NULL;
+  memcpy(base, cname, n); base[n] = 0;
+  sp_AllocRubyName key = { base, NULL };
+  sp_AllocRubyName *hit = (sp_AllocRubyName *)bsearch(&key, sp_alloc_rnames, sp_alloc_nrnames,
+                                                      sizeof *sp_alloc_rnames, sp_alloc_rname_cmp);
+  return hit ? hit->ruby : NULL;
+}
+#endif
+
+/* A site's human name, resolved at dump time: the Ruby method name when the
+   symbol map is beside the binary, else the C function from .symtab, else
+   what the dynamic symbol table knows, else the raw address. Caller frees. */
 static char *sp_alloc_site_name(void *site) {
+#if SP_ALLOC_SYMTAB
+  {
+    const char *cn = sp_alloc_symtab_name(site);
+    if (cn) {
+      const char *rn = sp_alloc_ruby_name(cn);
+      char *r = strdup(rn ? rn : cn);
+      if (r) return r;
+    }
+  }
+#endif
 #if SP_ALLOC_SITE_AVAILABLE
   char **syms = backtrace_symbols(&site, 1);
   if (syms && syms[0]) {
