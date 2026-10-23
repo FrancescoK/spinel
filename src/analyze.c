@@ -1637,7 +1637,7 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
     if (!s || !s->is_proc_form || s->class_id < 0 || !s->name) return 0;
     int p = comp_super_parent(c, s->class_id, s->is_cmethod);
     if (p < 0) return 0;
-    const char *u = comp_super_name(c, p, s->name, s->is_cmethod);
+    const char *u = comp_super_name(c, p, comp_scope_def_name(c, s), s->is_cmethod);
     int tmi = s->is_cmethod ? comp_cmethod_in_chain(c, p, u, NULL)
                             : comp_method_in_chain(c, p, u, NULL);
     return tmi >= 0 && c->scopes[tmi].is_proc_form;
@@ -41351,7 +41351,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       Scope *ss = comp_scope_of(c, id);
       if (!ss || ss->class_id < 0 || !ss->name || comp_super_is_class_new(c, id)) continue;
       int sp = comp_super_parent(c, ss->class_id, ss->is_cmethod);
-      const char *sn = sp >= 0 ? comp_super_name(c, sp, ss->name, ss->is_cmethod) : NULL;
+      const char *sn = sp >= 0 ? comp_super_name(c, sp, comp_scope_def_name(c, ss), ss->is_cmethod) : NULL;
       if (!sn) continue;
       int smi = ss->is_cmethod ? comp_cmethod_in_chain(c, sp, sn, NULL) : comp_method_in_chain(c, sp, sn, NULL);
       if (smi >= 0) changed |= mark_nullable_params_of_call(c, id, smi);

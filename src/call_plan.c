@@ -134,7 +134,7 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
     return;
   }
   int par = comp_super_parent(c, s->class_id, s->is_cmethod);
-  const char *uname = comp_super_name(c, par, s->name, s->is_cmethod);
+  const char *uname = comp_super_name(c, par, comp_scope_def_name(c, s), s->is_cmethod);
   if (!uname) return;
   int mi = cplan_super_chain_mi(c, s, par, uname);
   if (mi >= 0) cplan_set(p, mi, par, UC_SUPER, CP_DIRECT);

@@ -4383,6 +4383,57 @@ static int alias_def_in_effect(Compiler *c, int k, const char *od, int at,
    effect instead (an include or prepend keeps one under a shadow name). It
    is refused when the class has no copy, and where a subclass's own include
    or prepend still answers the alias with another method. */
+static void scope_copy_params(Scope *dst, const Scope *src);
+extern int g_inc_did_clone;
+
+/* The copy in class k, under a shadow name (`__inc <n> od`), of k's own
+   method whose def is `want`, or NULL. CRuby's alias keeps the body in
+   effect where it appears: a subclass's later def of the old name does not
+   take the alias. The table names a method by name, which the subclass's
+   chain answers with its own def, so the alias names this copy instead, a
+   name no subclass defines. (An inherited body is not copied: its super
+   would start from k rather than from the class that defines it.) */
+static const char *alias_body_copy(Compiler *c, int k, int want, const char *od) {
+  int si = -1;
+  for (int s = 1; s < c->nscopes && si < 0; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->class_id == k && !sc->is_cmethod && sc->def_node == want && sc->name &&
+        sp_streq(comp_prep_user_name(sc->name), od)) si = s;
+  }
+  if (si < 0) return NULL;
+  char nm[256];
+  snprintf(nm, sizeof nm, "__inc %d %s", c->classes[k].prep_shadow_count++, od);
+  comp_scope_new(c, nm, want);
+  int di = c->nscopes - 1;
+  Scope *src = &c->scopes[si], *dst = &c->scopes[di];
+  dst->body = src->body;
+  if (src->body >= 0) {
+    int nb = nt_clone_subtree((NodeTable *)c->nt, src->body);
+    if (nb >= 0) {
+      comp_grow_node_arrays(c);
+      src = &c->scopes[si]; dst = &c->scopes[di];
+      dst->body = nb;
+      walk_scope(c, nb, di, k);
+      src = &c->scopes[si]; dst = &c->scopes[di];
+    }
+  }
+  dst->class_id = k;
+  dst->is_cmethod = 0;
+  dst->is_include_copy = src->is_include_copy;
+  dst->origin_module_ci = src->origin_module_ci;
+  dst->reachable = 1;
+  dst->yields = src->yields;
+  dst->nrequired = src->nrequired;
+  dst->rest_idx = src->rest_idx;
+  dst->npost_rest = src->npost_rest;
+  dst->kwrest_idx = src->kwrest_idx;
+  scope_copy_block_param(dst, src);
+  scope_copy_params(dst, src);
+  scope_own_defaults(c, di);
+  g_inc_did_clone = 1;
+  return c->scopes[di].name;
+}
+
 void settle_mixin_aliases(Compiler *c) {
   int nb = 0, *bci = NULL, *bnode = NULL;
   for (int k = 0; k < c->nclasses; k++) {
@@ -4450,6 +4501,15 @@ void settle_mixin_aliases(Compiler *c) {
         if (dd >= 0 && dd != want && !(ddn && sp_streq(ddn, nw))) sub = d;
       }
       if (ok && sub < 0) continue;
+      /* the body in effect is the class's own: the alias names a copy of
+         it that no later def or subclass takes */
+      const char *bc = alias_body_copy(c, k, want, od);
+      if (bc) {
+        free(cls->alias_old[i]);
+        cls->alias_old[i] = strdup(bc);
+        comp_class_shape_changed();
+        continue;
+      }
       char msg[512];
       snprintf(msg, sizeof msg, "%s#%s: an alias of %s that a later include, prepend or def%s%s changes is not "
                "supported: the alias would call the later method, not the one in effect where it appears",

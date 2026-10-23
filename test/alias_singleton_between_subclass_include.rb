@@ -1,8 +1,8 @@
 # Base's alias fmt names Base's to_fs; Mid between Base and Leaf aliases
 # fmt only on its singleton, which no instance resolves, and Leaf includes
-# a module with its own to_fs: CRuby prints "base" for Leaf.new.fmt, where
-# a by-name resolution of the alias would reach Ext's to_fs. Refused, as
-# alias_then_subclass_include is: Mid's class-side alias does not answer it.
+# a module with its own to_fs: CRuby prints "base" for Leaf.new.fmt. The
+# alias names a copy of the body in effect where it appears, which Leaf's
+# chain does not take (it was refused before).
 class Base
   def to_fs = "base"
   alias_method :fmt, :to_fs

@@ -11241,7 +11241,7 @@ TyKind infer_uncached(Compiler *c, int id) {
       return ty_object(s->class_id);
     }
     int p = comp_super_parent(c, s->class_id, s->is_cmethod);
-    const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
+    const char *uname = comp_super_name(c, p, comp_scope_def_name(c, s), s->is_cmethod);
     /* `super` in a respond_to? override no ancestor defines is Object's
        respond_to?: a boolean (see emit_super_respond_to) */
     int rto_super = !s->is_cmethod && uname &&
@@ -11887,7 +11887,7 @@ int super_reaches_exc_text(Compiler *c, int id, int reopen) {
       !class_is_exc_subclass(c, s->class_id))
     return 0;
   int p = comp_super_parent(c, s->class_id, 0);
-  const char *uname = comp_super_name(c, p, s->name, 0);
+  const char *uname = comp_super_name(c, p, comp_scope_def_name(c, s), 0);
   if (!uname || !is_exception_message(uname) || (p >= 0 && comp_method_in_chain(c, p, uname, NULL) >= 0))
     return 0;
   int xr[8], xn = reopen ? exc_reopen_definers(c, uname, xr, 8) : 0;

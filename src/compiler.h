@@ -2035,6 +2035,7 @@ const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_user_name(const char *name);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
+const char *comp_scope_def_name(Compiler *c, const Scope *s);
 int comp_super_is_class_new(Compiler *c, int id);
 int comp_super_parent(Compiler *c, int class_id, int is_cmethod); /* super in `self.new` is Class#new */
 /* Resolve `name` through the class's (chain-aware) alias table to the
