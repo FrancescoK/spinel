@@ -90,11 +90,20 @@ for o in $(sed -n 's#^.*/\* SPINEL_LINK_OBJ: \(.*\) \*/.*$#\1#p' "$c"); do
   done
   [ "$dup" = 1 ] || pkg_objs="$pkg_objs $cand"
 done
+# The host libraries, as the driver's add_host_libs (src/main.c) picks them:
+# String#crypt is libc crypt(3), which Darwin's and OpenBSD's libc carry with
+# no libcrypt to link, and OpenBSD's backtrace(3) is libexecinfo's.
+host_libs=""
+case "$(uname)" in
+  Darwin) ;;
+  OpenBSD) host_libs="-lexecinfo" ;;
+  *) if grep -q 'sp_str_crypt(' "$c"; then host_libs="-lcrypt"; fi ;;
+esac
 # -Wno-all matches the production cc driver (src/main.c): the generated C
 # carries benign patterns (e.g. a fiber body's dead deferred-return epilogue)
 # that newer clangs otherwise reject by default.
 cc -O1 -g -Wno-all -fsanitize=thread -DSP_THREADS -ftls-model=initial-exec \
-   -Ilib -Ilib/regexp "$c" $link_objs $pkg_objs "$ARCHIVE" -lm -lcrypt -lpthread $ffi_libs -o "$bin"
+   -Ilib -Ilib/regexp "$c" $link_objs $pkg_objs "$ARCHIVE" -lm $host_libs -lpthread $ffi_libs -o "$bin"
 
 # halt_on_error keeps the first race fatal (a clean exit means TSan saw none).
 TSAN_OPTIONS="halt_on_error=1 ${TSAN_OPTIONS:-}" "$bin" "$@"

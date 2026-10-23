@@ -20364,9 +20364,19 @@ static sp_RbVal sp_rbs_check(sp_RbVal v, int want, const char *slot, const char 
           slot, wantname, sp_poly_class_name(v));
   abort();
 }
+/* A builtin with no subclass (Time, Thread, Fiber, Random, IO) is boxed as
+   an object of its own builtin class id, so the id is checked as well: a
+   Range has the object tag too. Anything else goes to the tag check, which
+   aborts on it. */
+static sp_RbVal sp_rbs_check_cls(sp_RbVal v, int cls, const char *slot, const char *wantname) {
+  if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && v.cls_id == cls)) return v;
+  return sp_rbs_check(v, -1, slot, wantname);
+}
 #define SP_RBS_CHECK_TAG(v, want, slot, wantname) sp_rbs_check((v), (want), (slot), (wantname))
+#define SP_RBS_CHECK_CLS(v, cls, slot, wantname) sp_rbs_check_cls((v), (cls), (slot), (wantname))
 #else
 #define SP_RBS_CHECK_TAG(v, want, slot, wantname) (v)
+#define SP_RBS_CHECK_CLS(v, cls, slot, wantname) (v)
 #endif
 
 #ifdef SPINEL_EXT_HOST

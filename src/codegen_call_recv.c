@@ -11991,6 +11991,37 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
   return 0;
 }
 
+/* A receiver an enclosing emission bound to a rooted temp
+   (emit_operands_in_order, emit_args_before_binding) reads as that temp:
+   it ran already, and reading it again runs nothing. Held in a second temp
+   in g_pre, the hold names the first one ahead of the statement that
+   declares it, and emit_operands_in_order took the call back for it; the
+   receiver and its blocks were then emitted again with the whole call, once
+   per enclosing call: 2^depth copies of a builder chain
+   `E.new.child(E.new.on_click { })...`. */
+static int recv_bound_to_temp(int recv) {
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != recv) continue;
+    const char *t = g_argov_text[i];
+    if (t[0] != '_' || t[1] != 't' || !t[2]) return 0;
+    for (t += 2; *t; t++) if (*t < '0' || *t > '9') return 0;
+    return 1;
+  }
+  return 0;
+}
+
+/* ...but what the call put in g_pre since `pre_at` -- an argument, a
+   splat's spread -- runs ahead of the statement that declares that temp,
+   where Ruby runs the receiver first. The temp is named there, and
+   emit_operands_in_order takes the call back, as it did when the receiver
+   was held in a second temp (emit_dispatch names an argument the same
+   way). */
+static void recv_temp_named_if_preceded(int recv, const char *text, size_t pre_at) {
+  if (!text || g_pre->len <= pre_at || !recv_bound_to_temp(recv)) return;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "(void)%s;\n", text);
+}
+
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = view_call_name(c, id);
@@ -12731,7 +12762,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            name down to another local's name with no diagnostic. */
         Buf selfv; memset(&selfv, 0, sizeof selfv);
         const char *rty = nt_type(nt, recv);
-        if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode")))
+        if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") ||
+                    recv_bound_to_temp(recv)))
           selfv = expr_buf(c, recv);
         else {
           int t = ++g_tmp;
@@ -12743,9 +12775,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           buf_puts(g_pre, "\n"); buf_printf(&selfv, "_t%d", t);
         }
         TyKind svt = TY_UNKNOWN;
+        size_t pre_at = g_pre->len;
         int sv = setter_value_open(c, id, b, &svt);
         emit_dispatch(c, cid, name, selfv.p ? selfv.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         setter_value_close(c, id, svt, b, sv);
+        recv_temp_named_if_preceded(recv, selfv.p, pre_at);
         free(selfv.p);
         return 1;
       }
@@ -12754,7 +12788,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
          multiple times) */
       Buf selfptr; memset(&selfptr, 0, sizeof selfptr);   /* heap text, as above */
       const char *rty = nt_type(nt, recv);
-      if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode")))
+      if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") ||
+                  recv_bound_to_temp(recv)))
         selfptr = expr_buf(c, recv);
       else {
         int t = ++g_tmp;
@@ -12772,9 +12807,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         buf_printf(&selfptr, "_t%d", t);
       }
       TyKind svt = TY_UNKNOWN;
+      size_t pre_at = g_pre->len;
       int sv = setter_value_open(c, id, b, &svt);
       emit_dispatch(c, cid, name, selfptr.p ? selfptr.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
       setter_value_close(c, id, svt, b, sv);
+      recv_temp_named_if_preceded(recv, selfptr.p, pre_at);
       free(selfptr.p);
       return 1;
     }

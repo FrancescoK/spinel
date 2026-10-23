@@ -3529,7 +3529,7 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 inline-rbs-test:
 	@echo "inline-rbs-test: parser-backed cases skipped (vendor/rbs not fetched; run 'make deps')"
 else
-INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest hash_return_box
+INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest hash_return_box builtin_classes
 INLINE_RBS_CHECKS := false_positives ignored_symlink ignored_errors warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
                      placements duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
                      redefine_unannotated redefine_unannotated_req redefine_define_method redefine_class_eval redefine_ignored redefine_refused mixin_not_applied analyzer_warnings dump_ast_malformed \
@@ -3704,15 +3704,21 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	else echo "inline-rbs-test: FAIL (override_family: C did not compile)"; ok=0; fi; \
 	;; \
 	check_false) \
-	$(SPINEL) $(IRB)/check_false.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; \
+	for f in check_false check_false_builtin; do \
+	if ! $(SPINEL) $(IRB)/$$f.rb -c --no-line-map -o "$$tmp/f.c" 2>/dev/null; then \
+	  echo "inline-rbs-test: FAIL ($$f: the compile failed)"; ok=0; continue; fi; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/f.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/f" 2>/dev/null; then \
-	  if "$$tmp/f" > "$$tmp/f.out" 2>&1; then echo "inline-rbs-test: FAIL (a false inline annotation did NOT abort under -DSP_RBS_CHECK)"; ok=0; \
-	  else grep -q "seed violated" "$$tmp/f.out" || { echo "inline-rbs-test: FAIL (a false inline annotation aborted without naming the slot)"; sed -n 1,3p "$$tmp/f.out"; ok=0; }; fi; \
-	else echo "inline-rbs-test: FAIL (check_false: C did not compile)"; ok=0; fi; \
-	$(SPINEL) $(IRB)/check_honest.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; \
+	  if "$$tmp/f" > "$$tmp/f.out" 2>&1; then echo "inline-rbs-test: FAIL ($$f: a false inline annotation did NOT abort under -DSP_RBS_CHECK)"; ok=0; \
+	  else grep -q "seed violated" "$$tmp/f.out" || { echo "inline-rbs-test: FAIL ($$f: a false inline annotation aborted without naming the slot)"; sed -n 1,3p "$$tmp/f.out"; ok=0; }; fi; \
+	else echo "inline-rbs-test: FAIL ($$f: C did not compile)"; ok=0; fi; \
+	done; \
+	for h in check_honest builtin_classes; do \
+	if ! $(SPINEL) $(IRB)/$$h.rb -c --no-line-map -o "$$tmp/h.c" 2>/dev/null; then \
+	  echo "inline-rbs-test: FAIL ($$h: the compile failed)"; ok=0; continue; fi; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) -DSP_RBS_CHECK "$$tmp/h.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/h" 2>/dev/null; then \
-	  "$$tmp/h" > "$$tmp/h.out" 2>&1; cmp -s "$$tmp/h.out" $(IRB)/check_honest.expected || { echo "inline-rbs-test: FAIL (the run-time check fired on an honest inline annotation)"; ok=0; }; \
-	else echo "inline-rbs-test: FAIL (check_honest: C did not compile under -DSP_RBS_CHECK)"; ok=0; fi; \
+	  "$$tmp/h" > "$$tmp/h.out" 2>&1; cmp -s "$$tmp/h.out" $(IRB)/$$h.expected || { echo "inline-rbs-test: FAIL ($$h: the run-time check fired on an honest inline annotation)"; ok=0; }; \
+	else echo "inline-rbs-test: FAIL ($$h: C did not compile under -DSP_RBS_CHECK)"; ok=0; fi; \
+	done; \
 	;; \
 	off_switch) \
 	for t in warnings syntax_error; do \
@@ -3829,9 +3835,9 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	$(call IRB_IGNORED,analyzer_warnings.rb); \
 	for w in 'analyzer_warnings_part.rb:3:3: warning: inline RBS: the signature of `part_count` is not applied: `Array[Set]` names no type' \
 	         'analyzer_warnings.rb:9:3: warning: inline RBS: the declaration of @log is not applied: `Array[Time]` names no type' \
-	         'analyzer_warnings.rb:12:24: warning: inline RBS: this type is not applied: `Time?` names no type' \
+	         'analyzer_warnings.rb:12:24: warning: inline RBS: this type is not applied: `Regexp?` names no type' \
 	         'analyzer_warnings.rb:10:3: warning: inline RBS: the declaration of @zone is not applied: `Net::HTTP` names no type' \
-	         'analyzer_warnings.rb:20:3: warning: inline RBS: the signature of `at` is not applied: `Time` names no type' \
+	         'analyzer_warnings.rb:20:3: warning: inline RBS: the signature of `at` is not applied: `Regexp` names no type' \
 	         'analyzer_warnings.rb:25:3: warning: inline RBS: the signature of `size` is not applied: `Pathname` names no type' \
 	         'analyzer_warnings.rb:33:1: warning: inline RBS: this instance variable declaration is not applied: it is not inside a class body'; do \
 	  grep -qF "$$w" "$$tmp/w.err" || { echo "inline-rbs-test: FAIL (no warning '$$w')"; ok=0; }; done; \
@@ -4667,6 +4673,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_PtrArray \* iv_jobs;' "$$tmp/oar.c" && grep -q 'sp_PtrArray_pop(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_shift(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_delete_at(' "$$tmp/oar.c" && grep -q 'sp_PtrArray_clear(' "$$tmp/oar.c" || { echo "infer-test: FAIL (pop, shift, delete_at or clear left an array of one class boxed)"; ok=0; }; \
 	$(SPINEL) test/array_new_fill_object_array.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_fill_object_array: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_items;' "$$tmp/anf.c" && grep -q 'sp_bump(sp_Foo \* lv_f)' "$$tmp/anf.c" && grep -q 'sp_rb_sum_bytes(sp_IOBuffer \* lv_b' "$$tmp/anf.c" && grep -q 'sp_PtrArray \* sp_mk(' "$$tmp/anf.c" || { echo "infer-test: FAIL (an Array.new(n, obj) fill left an array of one class boxed)"; ok=0; }; \
+	$(SPINEL) test/obj_array_walk_method_tail.rb -c --no-line-map -o "$$tmp/owt.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_walk_method_tail: -c)"; ok=0; }; \
+	for v in herd flock pack; do \
+	  grep -q "sp_PtrArray \\* iv_$$v;" "$$tmp/owt.c" || { echo "infer-test: FAIL (obj_array_walk_method_tail: a walk at a method's end left @$$v boxed)"; ok=0; }; \
+	done; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' '$(STR_SLOT_C) iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

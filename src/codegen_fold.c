@@ -12476,6 +12476,10 @@ int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
 /* the dispatch switch being emitted holds an Integer / Float answer that
    can be nil (node_is_oint of the call) as the oint */
 static int g_disp_ro = 0;
+/* the temps of arguments an enclosing emission bound that the dispatch
+   being emitted passes as they are (emit_dispatch_in), named in g_pre by
+   emit_dispatch when the dispatch put anything there */
+static int g_disp_outer_t[MAX_ARG_OVERRIDE], g_n_disp_outer = 0;
 /* `_t<rtmp> = <arm call>` for an arm whose method is `s`, in the switch's
    form: an arm answering the oint is unwrapped into a plain switch, a plain
    arm lifted into an oint one; a void arm answers nil */
@@ -12932,8 +12936,24 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
                              const char *selfptr, int argsNode, int blk_node, Buf *b);
 void emit_dispatch(Compiler *c, int cid, const char *name,
                           const char *selfptr, int argsNode, int blk_node, Buf *b) {
-  int sv_disp_ro = g_disp_ro;
+  int sv_disp_ro = g_disp_ro, sv_outer = g_n_disp_outer;
+  Buf *pre = g_pre;
+  size_t pre_at = pre->len;
   emit_dispatch_in(c, cid, name, selfptr, argsNode, blk_node, b);
+  /* An argument an enclosing emission bound is passed as its temp, which
+     that emission (emit_operands_in_order) declares where the call stands:
+     what the dispatch put in g_pre -- a splat's spread, the count judged
+     once every argument has run, a later argument -- ran ahead of it, and
+     `o.v(lg(7), *[8, 9, 10])` raised before lg ran. Named in g_pre, the
+     temp has emit_operands_in_order take the call back, and the arguments
+     run in the dispatch's own order, as they did when it held each in a
+     temp of its own. */
+  if (g_pre == pre && pre->len > pre_at)
+    for (int i = sv_outer; i < g_n_disp_outer; i++) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "(void)_t%d;\n", g_disp_outer_t[i]);
+    }
+  g_n_disp_outer = sv_outer;
   g_disp_ro = sv_disp_ro;
 }
 static void emit_dispatch_in(Compiler *c, int cid, const char *name,
@@ -13394,10 +13414,22 @@ else {
         }
         continue;
       }
-      /* an argument the call ran first (emit_args_before_binding) is its
-         rooted temp already, when the slot takes it unconverted */
+      /* an argument the call ran first (emit_args_before_binding), or an
+         enclosing emission bound (emit_operands_in_order), is its rooted
+         temp already, when the slot takes it unconverted. Held in a second
+         temp in g_pre, an enclosing binding's temp is named ahead of the
+         statement that declares it, and emit_operands_in_order takes the
+         call back: the argument and its blocks were emitted again with the
+         whole call, once per enclosing call (`E.new.child(E.new.on_click
+         { })...` gave 2^depth copies of each block). An enclosing binding
+         is recorded for emit_dispatch, which names it in g_pre when the
+         dispatch put anything there to run ahead of it. */
       int ran_t = provided >= 0 && repr_of(c, provided).as_ty == att
                     ? ran_first_temp(provided, argov_saved_d, ab.p, &atmp_o[k]) : -1;
+      if (ran_t < 0 && provided >= 0 && repr_of(c, provided).as_ty == att && g_n_disp_outer < MAX_ARG_OVERRIDE) {
+        ran_t = ran_first_temp(provided, 0, ab.p, &atmp_o[k]);
+        if (ran_t >= 0) g_disp_outer_t[g_n_disp_outer++] = ran_t;
+      }
       if (ran_t >= 0) atmp[k] = ran_t;
       else {
         emit_indent(g_pre, g_indent);

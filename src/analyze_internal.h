@@ -463,6 +463,7 @@ TyKind an_builtin_answer(Compiler *c, int id);
 /* the kind of a value of class self_cls: a reopened builtin's own (Time -> TY_TIME),
    else the object */
 TyKind infer_builtin_self(Compiler *c, int self_cls);
+TyKind builtin_value_kind(const char *n);   /* the builtin class n's own value kind, or TY_UNKNOWN */
 TyKind an_self_node_type(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */

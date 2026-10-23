@@ -14913,14 +14913,17 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            (e.g. `nrows * ncols` where a factor widened to poly -> sp_poly_mul,
            which returns sp_RbVal) through sp_poly_to_i. spinel-dev#24. */
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
+        /* (the size is held before the fill emits what it puts ahead of
+           itself, an Array or Hash literal's elements: CRuby evaluates the
+           size first) */
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
         /* --share-strings: a fill stored as the shared handle is boxed as
            its handle, one object in every slot, as a literal's element is */
         int fh = array_fill_boxes_handle(c, id, argv[1]);
         Buf vb; memset(&vb, 0, sizeof vb);
         if (fh) emit_boxed(c, argv[1], &vb);
         else vb = expr_buf(c, argv[1]);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
         if (ar.elem == TY_POLY) {
           buf_printf(g_pre, "sp_RbVal _t%d = ", tv);

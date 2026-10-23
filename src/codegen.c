@@ -810,13 +810,22 @@ void emit_array_store_value(Compiler *c, TyKind slot, int v, Buf *b) {
    is checkable at all: the moment a dynamic value becomes a static type. */
 void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
                            const char *expr, Buf *b) {
-  const char *tag = NULL, *want = NULL;
+  const char *tag = NULL, *want = NULL, *cls = NULL;
   switch (slot) {
     case TY_INT:    tag = "SP_TAG_INT"; want = "Integer"; break;
     case TY_FLOAT:  tag = "SP_TAG_FLT"; want = "Float";   break;
     case TY_STRING: tag = "SP_TAG_STR"; want = "String";  break;
     case TY_SYMBOL: tag = "SP_TAG_SYM"; want = "Symbol";  break;
     case TY_BOOL:   tag = "SP_TAG_BOOL"; want = "a boolean"; break;
+    /* a builtin class's value an RBS type names (builtin_value_kind): boxed
+       as an object of that builtin, whose class id is checked too (the
+       builtin has no subclass), or a Class as its own tag */
+    case TY_TIME:   tag = "SP_TAG_OBJ"; cls = "SP_BUILTIN_TIME";   want = "a Time"; break;
+    case TY_THREAD: tag = "SP_TAG_OBJ"; cls = "SP_BUILTIN_THREAD"; want = "a Thread"; break;
+    case TY_FIBER:  tag = "SP_TAG_OBJ"; cls = "SP_BUILTIN_FIBER";  want = "a Fiber"; break;
+    case TY_RANDOM: tag = "SP_TAG_OBJ"; cls = "SP_BUILTIN_RANDOM"; want = "a Random"; break;
+    case TY_IO:     tag = "SP_TAG_OBJ"; cls = "SP_BUILTIN_IO";     want = "an IO"; break;
+    case TY_CLASS:  tag = "SP_TAG_CLASS"; want = "a Class"; break;
     default:
       if (ty_is_object(slot) && !comp_ty_value_obj(c, slot)) {
         tag = "SP_TAG_OBJ";
@@ -829,7 +838,8 @@ void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
       break;
   }
   if (!tag) { buf_puts(b, expr); return; }
-  buf_printf(b, "SP_RBS_CHECK_TAG(%s, %s, \"", expr, tag);
+  if (cls) buf_printf(b, "SP_RBS_CHECK_CLS(%s, %s, \"", expr, cls);
+  else buf_printf(b, "SP_RBS_CHECK_TAG(%s, %s, \"", expr, tag);
   for (const char *p2 = slotname ? slotname : "?"; *p2; p2++) {
     if (*p2 == '"' || *p2 == '\\') buf_puts(b, "\\");
     buf_printf(b, "%c", *p2);
