@@ -2343,6 +2343,10 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
                                           : "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? _t%d : sp_box_str(%s(_t%d))",
                  tv, tv, tv, pfn, tv);
     else if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);
+    /* (one-String mode: the bytes of a String subclass instance lead back
+       to its handle, so its to_s, a new String, is a copy of them, #9968) */
+    else if (g_one_string && program_has_strsub(c) && is_to_s_name(name))
+      buf_printf(b, "(sp_poly_is_str_subclass(_t%d) ? sp_str_dup(%s(_t%d)) : %s(_t%d))", tv, pfn, tv, pfn, tv);
     else buf_printf(b, "%s(_t%d)", pfn, tv);
     buf_puts(b, "; break;");
     obj_default_done = 1;
