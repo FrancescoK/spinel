@@ -556,7 +556,8 @@ static int setop_splat_args(Compiler *c, const int *argv, int argc) {
 /* The operands gathered, then the poly op folded over each into the rooted
    poly array _t<tr>, which holds the receiver's elements; one that is no
    Array is CRuby's TypeError. None at all leaves the receiver's copy,
-   deduplicated by union alone. */
+   deduplicated by union alone (difference_eql, whose nil operand is no
+   operand: the public difference raises on one). */
 static void emit_setop_splat_fold(Compiler *c, const int *argv, int argc, const char *name, int tr, Buf *b) {
   int ta = ++g_tmp, ti = ++g_tmp;
   const char *fn = fn_of_named_setop(name);
@@ -564,7 +565,7 @@ static void emit_setop_splat_fold(Compiler *c, const int *argv, int argc, const 
   buf_printf(b, " if (_t%d->len == 0) _t%d = sp_PolyArray_%s(_t%d, NULL);"
                 " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                 " _t%d = sp_PolyArray_%s(_t%d, sp_poly_set_operand(_t%d->data[_t%d]));",
-             ta, tr, sp_streq(fn, "union") ? "union" : "difference", tr,
+             ta, tr, sp_streq(fn, "union") ? "union" : "difference_eql", tr,
              ti, ti, ta, ti, tr, fn, tr, ta, ti);
 }
 

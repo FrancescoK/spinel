@@ -107,6 +107,18 @@ void sp_re_expand_rep(const mrb_regexp_pattern *pat, char **out_io, size_t *olen
 const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str);
+#ifdef SP_ONE_STRING
+/* String#scan with a block, one match a turn over the String as it is then
+   (rb_str_scan): sp_re_scan_next answers the next match, a String of its
+   own, or NULL past the last; a turn that changed the String's length
+   raises CRuby's RuntimeError ("string modified") before the next search,
+   and one that changed bytes in place is searched on. */
+typedef struct { struct sp_String_s *h; const char *data; int64_t len, pos; int started; } sp_re_scan_it;
+static inline void sp_re_scan_begin(sp_re_scan_it *it, struct sp_String_s *h) {
+  it->h = h; it->data = NULL; it->len = 0; it->pos = 0; it->started = 0;
+}
+const char *sp_re_scan_next(mrb_regexp_pattern *pat, sp_re_scan_it *it);
+#endif
 sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit);
 sp_oint sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str);

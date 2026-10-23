@@ -6160,8 +6160,26 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     int sc_handle = sclv && repr_share_rule(c) && repr_of_slot(c, sclv).kind == RK_STRBUF;
     int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN && !sc_handle;
     int tm = ++g_tmp, ti = ++g_tmp;
+    /* (one representation: the subject is one String the block can change:
+       each turn searches it as it is then, and a turn that changed its
+       length or moved its bytes raises, as rb_str_scan does) */
+    int live = g_one_string && sc_re >= 0;
+    char sc_get[96], sc_get_e[96];
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
+    if (live) {
+      int th = ++g_tmp;
+      buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, rb.p ? rb.p : "NULL", th);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_re_scan_it _t%d; sp_re_scan_begin(&_t%d, _t%d);\n", tm, tm, th);
+      emit_indent(b, indent);
+      buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);\n", ti, ti);
+      emit_indent(b, indent);
+      buf_printf(b, "while ((_t%d = sp_re_scan_next(sp_re_pat_%d, &_t%d)) != NULL) {\n", ti, sc_re, tm);
+      snprintf(sc_get, sizeof sc_get, "_t%d", ti);
+      snprintf(sc_get_e, sizeof sc_get_e, "SP_STR_HDL(_t%d)", ti);
+    }
+    else {
     if (sc_re >= 0)
       buf_printf(b, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, %s);\n",
                  tm, sc_re, rb.p ? rb.p : "");
@@ -6169,13 +6187,16 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       buf_printf(b, "sp_StrArray *_t%d = sp_str_scan(%s, ", tm, rb.p ? rb.p : "");
       emit_expr(c, sc_argv[0], b); buf_puts(b, ");\n");
     }
-    free(rb.p);
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
     char sc_step[512];
     emit_scan_rtcheck_open(c, id, recv, b, indent, sc_step, sizeof sc_step);
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++%s) {\n",
                ti, ti, tm, ti, sc_step);
+    snprintf(sc_get, sizeof sc_get, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
+    snprintf(sc_get_e, sizeof sc_get_e, "sp_StrArray_get_e(_t%d, _t%d)", tm, ti);
+    }
+    free(rb.p);
     int bodyIndent = indent + 1;
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
@@ -6184,7 +6205,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       lv_set_type(clv0, bt);
       arm_body_infer(c, ARM_SITE_SCAN, block, bt, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
-      emit_indent(b, bodyIndent); buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get_e(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_indent(b, bodyIndent); buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = %s;\n" : "const char *lv_%s = %s;\n", p0, bt == TY_STRBUF ? sc_get_e : sc_get);
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
@@ -6192,10 +6213,8 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     }
     else {
       if (p0) {
-        char sc_src[64];
-        snprintf(sc_src, sizeof sc_src, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
         emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = ", p0);
-        emit_strbuf_param_bind(c, sclv, TY_STRING, sc_src, b);
+        emit_strbuf_param_bind(c, sclv, TY_STRING, sc_get, b);
         buf_puts(b, ";\n");
       }
       emit_loop_body(c, body, b, bodyIndent);
