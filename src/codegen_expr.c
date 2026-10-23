@@ -5120,6 +5120,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                                    (comp_scope_of(c, id)->ret_handle && tail_pub_leaf(c, r))))
         emit_tail_value(c, r, &rv);
       else if (hdem) emit_strbuf_handle_of(c, r, &rv);
+      /* an empty `[]` or `{}` has no element type of its own and takes
+         the other arm's, as a ternary arm does; emitted bare it is an
+         IntArray in a StrArray slot (`s.split(".") rescue []`) */
+      else if (node_is_empty_container(nt, r) && (ty_is_array(rt) || ty_is_hash(rt)))
+        emit_ternary_arm_o(c, r, rt, res_o, &rv);
       else emit_expr_slot(c, r, rt, &rv);
       g_rescue_save_depth--;
       g_pre = sv_pre; g_indent = sv_ind;
