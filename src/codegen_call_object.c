@@ -1040,6 +1040,10 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       view_unbind(ie_sv_argov);   /* the binds were the arguments' last readers */
       if (ie_bn > 0) {
+        /* (one representation: the body's own reads are not operands held
+           across the block, g_one_held; `o.instance_eval { @s }` answers the
+           String @s holds) */
+        int sv_oh = g_one_held; g_one_held = 0;
         /* In statement position the value is discarded, so emit the whole body
            as statements -- the last node may not be expressible (e.g. puts). */
         int last_as_stmt = g_ie_discard_value && !scalar_res;
@@ -1094,6 +1098,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         g_ie_res_poly = sv_iep; g_ie_next_oint = sv_ieo;
         g_brk_ser_var = sv_bser;
         g_ie_discard_value = saved_discard;
+        g_one_held = sv_oh;
       }
       /* the aliases end with the body, which the result temps outlive */
       block_aliases_release(&ie_al);
