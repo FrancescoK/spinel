@@ -1,1 +1,0 @@
-spinel: test/share/refuse/array_prepended_run_answer.rb:10: the String the value of `[]` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)

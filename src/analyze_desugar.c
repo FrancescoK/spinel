@@ -1426,9 +1426,11 @@ int desugar_kernel_reopen(Compiler *c) {
    then left receiverless there):
      K.prepend(M)  ->  class K; prepend M; end    (module K when K is one)
    include, extend and attr_reader/_writer/_accessor are the same shape
-   (console's `Console.extend(Interface)` in `module Console`). Inside a
-   method, a block or a condition the call still runs only when reached,
-   so those stay refused (call_plan.c), as does define_method. */
+   (console's `Console.extend(Interface)` in `module Console`), and so is
+   `K.send(:include, M)`. A builtin class K (String, Integer, Object, ...)
+   is reopened the same way for include and prepend. Inside a method, a
+   block or a condition the call still runs only when reached, so those
+   stay refused (call_plan.c), as does define_method. */
 /* How the program declares `leaf`: 1 a class, 2 a module, 0 neither (a
    builtin such as Thread, whose own pass takes Thread.attr_accessor, or a
    constant holding a class, `AliasObject = Object`, which `class AliasObject`
@@ -1443,40 +1445,74 @@ static int erm_declared_as(const NodeTable *nt, const char *leaf) {
   }
   return 0;
 }
+/* `K.send(:include, M)` (or __send__ / public_send) is K.include(M): the name
+   it calls, and the index of its first mixin argument; NULL when it is not one */
+static const char *erm_mixin_name(const NodeTable *nt, int st, int an, const int *av, int *first) {
+  const char *nm = nt_str(nt, st, "name");
+  *first = 0;
+  if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) return nm;
+  if (an < 2 || nt_kind(nt, av[0]) != NK_SymbolNode) return NULL;
+  const char *sv = nt_str(nt, av[0], "value");
+  if (!sv || (!sp_streq(sv, "include") && !sp_streq(sv, "prepend"))) return NULL;
+  *first = 1;
+  return sv;
+}
 static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return st;
-  const char *nm = nt_str(nt, st, "name");
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int first = 0;
+  const char *nm = erm_mixin_name(nt, st, an, av, &first);
   if (!nm) return st;
   int attr = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
   if (!attr && !sp_streq(nm, "include") && !sp_streq(nm, "prepend") && !sp_streq(nm, "extend")) return st;
   if (nt_safe_nav(nt, st)) return st;
   int recv = nt_ref(nt, st, "receiver");
+  /* `K.singleton_class.prepend(M)` -> `class K; singleton_class.prepend M; end`,
+     which desugar_singleton_class_mixin then takes */
+  int sclass = -1;
+  if (recv >= 0 && !attr && !sp_streq(nm, "extend") && nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "singleton_class") && nt_ref(nt, recv, "arguments") < 0 &&
+      nt_ref(nt, recv, "block") < 0) {
+    sclass = recv;
+    recv = nt_ref(nt, recv, "receiver");
+  }
   if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) return st;
   const char *leaf = nt_str(nt, recv, "name");
-  if (!leaf || sp_streq(leaf, "Object")) return st;
+  if (!leaf || (sp_streq(leaf, "Object") && sp_streq(nm, "extend"))) return st;
   int decl = erm_declared_as(nt, leaf);
   /* Fiber and Thread take a mixin in a reopening (fiber-annotation's
      `Fiber.prepend(Fiber::Annotation)`); their attr_* have a pass of
      their own */
-  if (!decl && !attr && !sp_streq(nm, "extend") && nt_kind(nt, recv) == NK_ConstantReadNode &&
+  if (!decl && !attr && !sp_streq(nm, "extend") && sclass < 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       (sp_streq(leaf, "Fiber") || sp_streq(leaf, "Thread"))) decl = 1;
+  /* a builtin class (String, Integer, Object, ...) takes include and prepend
+     in a reopening of its own; its singleton class does not */
+  if (!decl && !attr && !sp_streq(nm, "extend") && sclass < 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      is_builtin_reopen_name(leaf) && !sp_streq(leaf, "Toplevel") && !sp_streq(leaf, "Class"))
+    decl = 1;
   if (!decl) return st;
-  int args = nt_ref(nt, st, "arguments"), an = 0;
-  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (an < 1 || !av) return st;
-  for (int i = 0; i < an; i++) {
+  if (an - first < 1 || !av) return st;
+  for (int i = first; i < an; i++) {
     NodeKind k = nt_kind(nt, av[i]);
     if (attr ? k != NK_SymbolNode : (k != NK_ConstantReadNode && k != NK_ConstantPathNode)) return st;
   }
   /* in a class or module body a reopening would nest (`class K` inside
      `class K` is K::K): there only the body's own class is rewritten, and
      to the receiverless statement it is in that body */
-  if (self_leaf) {
-    if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(leaf, self_leaf)) return st;
-    nt_node_set_ref(nt, st, "receiver", -1);
-    return -2;   /* rewritten in place */
+  if (self_leaf && (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(leaf, self_leaf))) return st;
+  if (first) {
+    nt_node_set_str(nt, st, "name", nm);
+    int *rest = malloc(sizeof(int) * (size_t)(an - 1));
+    if (!rest) return st;
+    memcpy(rest, av + 1, sizeof(int) * (size_t)(an - 1));
+    nt_node_set_arr(nt, args, "arguments", rest, an - 1);
+    free(rest);
   }
+  if (sclass >= 0) nt_node_set_ref(nt, sclass, "receiver", -1);
+  else nt_node_set_ref(nt, st, "receiver", -1);
+  if (self_leaf) return -2;   /* rewritten in place */
   int is_mod = decl == 2;
   int rn = nt_new_node(nt, is_mod ? "ModuleNode" : "ClassNode");
   int body = nt_new_node(nt, "StatementsNode");
@@ -1485,7 +1521,6 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   nt_node_set_int(nt, rn, "node_line", nt_int(nt, st, "node_line", 0));
   nt_node_set_int(nt, rn, "node_file", nt_int(nt, st, "node_file", 0));
   nt_node_set_ref(nt, rn, "constant_path", path);
-  nt_node_set_ref(nt, st, "receiver", -1);
   nt_node_set_arr(nt, body, "body", &st, 1);
   nt_node_set_ref(nt, rn, "body", body);
   return rn;
@@ -2063,6 +2098,19 @@ int desugar_singleton_class_mixin(Compiler *c) {
       nt_node_set_ref(nt, st, "receiver", -1);
       nt_node_reset(nt, recv, "NilNode");
       changed = 1;
+    }
+  }
+  /* a mixin in `class << Svc` (any x but self) was dropped: the ancestry it
+     changes is not modeled */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SingletonClassNode || nt_kind(nt, nt_ref(nt, id, "expression")) == NK_SelfNode) continue;
+    int sb = nt_ref(nt, id, "body"), sn = 0;
+    const int *ss = sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode ? nt_arr(nt, sb, "body", &sn) : NULL;
+    for (int j = 0; j < sn; j++) {
+      const char *nm = nt_kind(nt, ss[j]) == NK_CallNode && nt_ref(nt, ss[j], "receiver") < 0 ? nt_str(nt, ss[j], "name") : NULL;
+      if (nm && (sp_streq(nm, "prepend") || sp_streq(nm, "include")))
+        unsupported_feature_collect(c, ss[j], "include / prepend inside `class << x` is supported only in "
+          "`class << self`: write `singleton_class.prepend M` or `extend M` in the body of the class (see docs/limitations.md)");
     }
   }
   return changed;

@@ -1,5 +1,6 @@
 # A method named include in an unrelated class does not stand in for
-# Object.include: the call is still refused.
+# Object.include: the statement mixes M into Object, and Foo's own include
+# still answers for a Foo.
 class Foo
   def include(m) = :mine
 end
