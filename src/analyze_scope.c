@@ -670,6 +670,11 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   /* iterate the array literal's elements */
   int en = 0; const int *elems = nt_arr(nt, recv, "elements", &en);
   if (en == 0) return 1;  /* an empty loop defines nothing */
+  /* define_method(v) names the method v itself: CRuby raises TypeError for
+     anything but a Symbol or String, so leave such a loop to the refusal */
+  if (nt_kind(nt, dav[0]) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, dav[0], "name"), bv))
+    for (int k = 0; k < en; k++)
+      if (nt_kind(nt, elems[k]) != NK_SymbolNode && nt_kind(nt, elems[k]) != NK_StringNode) return 0;
   for (int k = 0; k < en; k++) {
     TyKind lt = dm_lit_type(c, elems[k]);
     if (lt == TY_UNKNOWN) return 0;  /* non-literal element: bail (unhandled) */
@@ -3659,6 +3664,74 @@ static void struct_block_cbody(Compiler *c, int node, int ci) {
   }
 }
 
+/* Home the methods a Struct block statement defines with define_method:
+   `define_method(:m) { }`, or `[lits].each { |v| define_method(...) { } }`
+   with one scope per element on the inner call (collect_dm_each_unroll). */
+static void struct_home_dm(Compiler *c, int stmt, int ci) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, stmt) != NK_CallNode) return;
+  int dn = dm_each_inner(nt, stmt);
+  int unrolled = dn >= 0;
+  if (!unrolled && !dm_defined_name(nt, stmt)) return;
+  if (!unrolled) dn = stmt;
+  for (int s = 0; s < c->nscopes; s++) {
+    if (c->scopes[s].def_node != dn) continue;
+    c->scopes[s].class_id = ci;
+    if (!unrolled) break;
+  }
+}
+
+/* The arm of an if/unless in a Struct block that a constant condition
+   takes runs, so its define_methods are the struct's, as alias's are
+   (register_aliases_body). Under a condition only the run time decides,
+   struct_cond_dm_refuse catches them. */
+static void struct_home_cond_dm(Compiler *c, int cond, int ci) {
+  const NodeTable *nt = c->nt;
+  while (cond >= 0) {
+    NodeKind k = nt_kind(nt, cond);
+    int arm = -1;
+    if (k == NK_ElseNode) arm = nt_ref(nt, cond, "statements");
+    else if (k == NK_IfNode || k == NK_UnlessNode) {
+      int unl = k == NK_UnlessNode;
+      int pc = alias_pred_const(nt, nt_ref(nt, cond, "predicate"));
+      if (pc < 0) return;
+      if (pc == !unl) arm = nt_ref(nt, cond, "statements");
+      else {
+        cond = nt_ref(nt, cond, unl ? "else_clause" : "subsequent");
+        continue;
+      }
+    }
+    int n = 0;
+    const int *st = arm >= 0 ? nt_arr(nt, arm, "body", &n) : NULL;
+    for (int j = 0; j < n; j++) {
+      NodeKind sk = nt_kind(nt, st[j]);
+      if (sk == NK_IfNode || sk == NK_UnlessNode) struct_home_cond_dm(c, st[j], ci);
+      else struct_home_dm(c, st[j], ci);
+    }
+    return;
+  }
+}
+
+/* A define_method in a Struct block that is left without a class (under a
+   run-time condition, in a loop, a case, a rescue) defines its method only
+   when that code runs: the struct would answer it from the start or not at
+   all. It is refused, as a def there is (cond_def_class_new). */
+static void struct_cond_dm_refuse(Compiler *c, int ci) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    int dn = sc->def_node;
+    if (sc->class_id >= 0 || sc->is_cmethod || dn < 0 || c->node_cbody[dn] != ci) continue;
+    if (nt_kind(nt, dn) != NK_CallNode || !sp_streq(nt_str(nt, dn, "name"), "define_method")) continue;
+    if (nt_int(nt, dn, "dm_host", 0)) continue;  /* in a method's body */
+    nt_node_set_int(nt, dn, "struct_cond_dm", 1);
+    nt_node_set_str(nt, dn, "name", "raise");
+    nt_node_set_ref(nt, dn, "receiver", -1);
+    nt_node_set_ref(nt, dn, "block", -1);
+    nt_node_set_ref(nt, dn, "arguments", -1);
+  }
+}
+
 /* Fix scope class_id for DefNodes inside Struct.new { } blocks.
    walk_scope runs before register_structs, so defs in struct blocks get
    class_id=-1. This pass corrects them after the class is registered. */
@@ -3712,20 +3785,23 @@ void fix_struct_block_scopes(Compiler *c) {
             vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
           dn = vv[0];
       }
-      /* [lits].each { |v| define_method(...) { } }: one scope per element,
-         each on the inner define_method (collect_dm_each_unroll) */
-      int unrolled = sp_streq(sty, "CallNode") && dm_each_inner(nt, dn) >= 0;
-      if (unrolled) dn = dm_each_inner(nt, dn);
-      /* define_method(:m) { } registered its scope on the call node */
-      else if (nt_kind(nt, dn) != NK_DefNode && !dm_defined_name(nt, dn)) continue;
+      if (sp_streq(sty, "IfNode") || sp_streq(sty, "UnlessNode")) {
+        struct_home_cond_dm(c, dn, ci);
+        continue;
+      }
+      if (nt_kind(nt, dn) != NK_DefNode) {
+        struct_home_dm(c, dn, ci);
+        continue;
+      }
       /* Find the scope whose def_node == dn and fix its class_id */
       for (int s = 0; s < c->nscopes; s++) {
         if (c->scopes[s].def_node == dn) {
           c->scopes[s].class_id = ci;
-          if (!unrolled) break;
+          break;
         }
       }
     }
+    struct_cond_dm_refuse(c, ci);
   }
 }
 

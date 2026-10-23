@@ -1300,6 +1300,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
+  if (is_raise_alias(name) && nt_int(nt, id, "struct_cond_dm", 0) && cplan_reachable(c, id))
+    return "a define_method under a condition only the run time decides, in a Struct.new or "
+           "Data.define block, is not supported: write the class with `class`; see docs/limitations.md";
   if (cplan_computed_ivar_get(c, id, name))
     return sp_streq(name, "instance_variable_set")
       ? "Object#instance_variable_set with a non-literal name on a receiver that may be an instance "
