@@ -7264,6 +7264,16 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
       else c->scopes[own].reachable = 0;   /* nothing can reach it now */
       own = -1;
     }
+    /* A builtin class's own method comes before an included module's, as
+       the class's own def does (`class String; include M; end` with M#size:
+       "abc".size is 3): the module's copy is shadowed, unless an alias the
+       module or the class makes of it names it */
+    if (own < 0 && is_builtin_reopen_name(c->classes[ci].name) &&
+        builtin_method_known(c->classes[ci].name, src->name) &&
+        !module_aliases_name(&c->classes[mod_id], src->name) && !class_aliases_name(&c->classes[ci], src->name)) {
+      if (!src->is_module_function) src->is_transplanted_source = 1;
+      continue;
+    }
     if (own >= 0) {
       /* The class overrides the module method. If the override calls super,
          the module method is the super target: copy it under a shadow name
