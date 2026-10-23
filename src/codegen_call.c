@@ -31125,9 +31125,10 @@ int strbuf_call_picks_up(Compiler *c, int id) {
   int r = nt_ref(c->nt, id, "receiver");
   if (r < 0) return implicit_self_reader_cid(c, id) < 0;
   if (comp_ntype(c, r) != TY_CLASS) return 0;
-  /* (a class method of the program's publishes; a builtin's, `File.join`,
-     does not, and a String an argument read published was taken for its
-     answer) */
+  if (!g_one_string) return 1;
+  /* (one-String mode: a class method of the program's publishes; a
+     builtin's, `File.join`, does not, and a String an argument read
+     published was taken for its answer) */
   int k = class_recv_static_ci(c, r);
   const char *nm = nt_str(c->nt, id, "name");
   if (k < 0) {
