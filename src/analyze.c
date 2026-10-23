@@ -50606,6 +50606,11 @@ static void an_tree_ran(Compiler *c, int slot) {
 #define AN_PASS_V(nm, call) do { infer_memo_boundary(); if (!sp_timing_on()) { call; } \
   else { \
   double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
+/* A pass timed but not framed: the re-narrow runs its inner passes without
+   the memo boundary and the tree skip a round's passes get (they read the
+   slots the loop re-clears), and the pass table missed them. */
+#define AN_PASS_T(nm, call) (!sp_timing_on() ? (call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
   return x < y ? 1 : x > y ? -1 : 0;
@@ -51033,7 +51038,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            it never widened the parameter and the one call site's explicit
            argument type stood alone. The pass further down still runs for
            defaults over state this iteration derives; types only widen. */
-        int pre_def = infer_default_param_types(c);
+        int pre_def = AN_PASS_T("infer_default_param_types", infer_default_param_types(c));
         /* stash last-settled values, then re-clear the reset ivars so they
            recompute fresh (narrowing) this iteration. */
         for (int k = 0; k < nrec; k++) prev[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
@@ -51044,27 +51049,27 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = pre_def, ch_other = pre_def;
         ch |= AN_PASS("infer_write_types", infer_write_types(c));
-        { int _w = bind_coerce_operator_params(c); ch |= _w; ch_other |= _w; }   /* 3 + obj calls obj's op WITH obj */
-        { int _w = infer_param_hash_value(c); ch |= _w; ch_other |= _w; }
-        { int _w = propagate_prep_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_string_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_default_param_types(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_block_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_for_index(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_catch_block_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_global_const_types(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_multiwrite_const_types(c); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("bind_coerce_operator_params", bind_coerce_operator_params(c)); ch |= _w; ch_other |= _w; }   /* 3 + obj calls obj's op WITH obj */
+        { int _w = AN_PASS_T("infer_param_hash_value", infer_param_hash_value(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("propagate_prep_params", propagate_prep_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_string_params", infer_string_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_default_param_types", infer_default_param_types(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_block_params", infer_block_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_for_index", infer_for_index(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_catch_block_params", infer_catch_block_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_global_const_types", infer_global_const_types(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_multiwrite_const_types", infer_multiwrite_const_types(c)); ch |= _w; ch_other |= _w; }
         ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
         /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
-        { int _w = promote_shared_stored_strings(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_dyncall_string_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_spread_string_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_forwarded_rest_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
-        { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_cvar_types(c, 0); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_shared_stored_strings", promote_shared_stored_strings(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_dyncall_string_args", promote_dyncall_string_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_spread_string_args", promote_spread_string_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_forwarded_rest_args", promote_forwarded_rest_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_append_accumulators", promote_append_accumulators(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("widen_shared_cmp_params", widen_shared_cmp_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_cvar_types", infer_cvar_types(c, 0)); ch |= _w; ch_other |= _w; }
         int ivsame = c->nclasses == ivncls;
         for (int ci = 0; ivsame && ci < ivncls; ci++)
           if (c->classes[ci].nivars != ivoff[ci + 1] - ivoff[ci]) ivsame = 0;
