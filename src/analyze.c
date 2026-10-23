@@ -13601,6 +13601,149 @@ static int oa_byname_first(const OaByName *b, const char *name) {
 }
 static void oa_byname_free(OaByName *b) { anh_free(&b->names); free(b->first); free(b->next); }
 
+/* A method that the runtime can call with no call node of its own: a
+   protocol, pattern matching, method_missing, an operator or a setter
+   (`sum` calls `+`, `case` calls `===`), an extension entry, a proc form
+   and a lowered yield. sh_settle_reads counts the same methods as read. */
+static int oa_entered_unseen(const Scope *sc) {
+  const char *nm = sc->name;
+  if (sc->is_ext_entry || sc->is_proc_form || sc->is_lowered_yield) return 1;
+  if (method_name_implicitly_invoked(nm) || sp_streq(nm, "method_missing") ||
+      sp_streq(nm, "deconstruct") || sp_streq(nm, "deconstruct_keys")) return 1;
+  if (!(nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z'))) return 1;
+  return name_is_plain_setter(nm);
+}
+
+/* (name, method) pairs, sorted by name: each name a method answers to */
+typedef struct { const char *nm; int s; } OaNamed;
+static int oa_named_cmp(const void *a, const void *b) {
+  return strcmp(((const OaNamed *)a)->nm, ((const OaNamed *)b)->nm);
+}
+
+/* walk_disc[id]: a walk's value is thrown away. An object array walk
+   narrows only there: `y = a.each { }` or `a.each { break r }` hands the
+   array (or the break value) to a consumer typed for the boxed array, which
+   the narrowed sp_PtrArray is not (#4879). These statements throw their
+   value away: one that another statement follows, a top-level statement,
+   and the last statement of an Integer's `times` block or of a loop body.
+
+   The last statement of a method is the method's value. This pass finds
+   the method names whose value something can read. A call of a name reads
+   the value, except a call that walk_disc marks, or a call at the end of a
+   method. A call at the end of a method reads the value only when that
+   method's own value is read. Calls are known only by name, so a call of a
+   name on any receiver counts. A Symbol, a String given to `send`, a
+   `super`, and the getter of `x.m ||= v` also read the value of their
+   name. A computed name given to `send` or `method` can read any value.
+   A method entered with no call node (oa_entered_unseen) is read too. The
+   last statement of each method whose value nothing reads goes into
+   walk_disc. */
+static char *oa_walk_disc(Compiler *c, int nc) {
+  const NodeTable *nt = c->nt;
+  char *walk_disc = (char *)calloc(nc, 1);
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "StatementsNode")) continue;
+    int bn = 0; const int *bl = nt_arr(nt, id, "body", &bn);
+    for (int i = 0; i + 1 < bn; i++) if (bl[i] >= 0 && bl[i] < nc) walk_disc[bl[i]] = 1;
+  }
+  { int root = nt->count > 0 ? nt->count - 1 : -1;
+    for (int id = 0; id < nt->count; id++)
+      if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode")) { root = id; break; }
+    int ps = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+    int bn = 0; const int *bl = ps >= 0 ? nt_arr(nt, ps, "body", &bn) : NULL;
+    for (int i = 0; i < bn; i++) if (bl[i] >= 0 && bl[i] < nc) walk_disc[bl[i]] = 1; }
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int body = -1;
+    if (k == NK_WhileNode || k == NK_UntilNode) body = nt_ref(nt, id, "statements");
+    else if (k == NK_CallNode) {
+      const char *cn = nt_str(nt, id, "name");
+      int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+      if (cn && sp_streq(cn, "times") && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+          recv >= 0 && infer_type(c, recv) == TY_INT)
+        body = nt_ref(nt, blk, "body");
+    }
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bl = nt_arr(nt, body, "body", &bn);
+    if (bn > 0 && bl[bn - 1] >= 0 && bl[bn - 1] < nc) walk_disc[bl[bn - 1]] = 1;
+  }
+  /* tail[s]: the last statement of method s, or -1 */
+  int ns = c->nscopes ? c->nscopes : 1;
+  int *tail = (int *)malloc(sizeof(int) * (size_t)ns);
+  char *is_tail = (char *)calloc((size_t)nc, 1);
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    tail[s] = -1;
+    if (sc->def_node < 0 || !sc->name || sc->body < 0) continue;
+    int bn = 0; const int *bl = nt_arr(nt, sc->body, "body", &bn);
+    if (bn > 0 && bl[bn - 1] >= 0 && bl[bn - 1] < nc) { tail[s] = bl[bn - 1]; is_tail[tail[s]] = 1; }
+  }
+  ANameHash read; memset(&read, 0, sizeof read);
+  int all = 0;
+  for (int id = 0; id < nt->count && id < nc && !all; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *mn = NULL;
+    if (k == NK_SymbolNode) mn = nt_str(nt, id, "value");
+    else if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+      Scope *ssc = comp_scope_of(c, id);
+      mn = ssc ? ssc->name : NULL;
+    }
+    else if (k == NK_CallOrWriteNode || k == NK_CallAndWriteNode ||
+             (nt_type(nt, id) && sp_streq(nt_type(nt, id), "CallOperatorWriteNode")))
+      mn = nt_str(nt, id, "read_name") ? nt_str(nt, id, "read_name") : nt_str(nt, id, "name");
+    else if (k == NK_CallNode) {
+      const char *cn = nt_str(nt, id, "name");
+      if (cn && (sp_streq(cn, "send") || sp_streq(cn, "__send__") || sp_streq(cn, "public_send") ||
+                 sp_streq(cn, "method") || sp_streq(cn, "public_method") || sp_streq(cn, "instance_method"))) {
+        int args = nt_ref(nt, id, "arguments"), an = 0;
+        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        NodeKind ak = an > 0 ? nt_kind(nt, av[0]) : NK_NilNode;
+        if (ak == NK_StringNode && nt_str(nt, av[0], "content")) {
+          const char *sn = nt_str(nt, av[0], "content");
+          if (!anh_has(&read, sn)) anh_add(&read, sn);
+        }
+        else if (ak != NK_SymbolNode) all = 1;
+      }
+      if (!walk_disc[id] && !is_tail[id]) mn = cn;
+    }
+    if (mn && !anh_has(&read, mn)) anh_add(&read, mn);
+  }
+  /* a method answers to its own name, and to the name of its def: a copy
+     (an include's shadow, a proc-form clone) has a name no call spells */
+  OaNamed *named = (OaNamed *)malloc(sizeof(OaNamed) * (size_t)ns * 2);
+  int nnamed = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    if (tail[s] < 0) continue;
+    named[nnamed++] = (OaNamed){ c->scopes[s].name, s };
+    const char *dn = nt_str(nt, c->scopes[s].def_node, "name");
+    if (dn && !sp_streq(dn, c->scopes[s].name)) named[nnamed++] = (OaNamed){ dn, s };
+  }
+  qsort(named, (size_t)nnamed, sizeof *named, oa_named_cmp);
+  /* m_read[s]: something reads method s's value. read.key is the worklist:
+     a method read through a name adds its tail call's name at the end. */
+  char *m_read = (char *)calloc((size_t)ns, 1);
+  #define OA_READ_METHOD(s) do { int _s = (s); if (!m_read[_s]) { m_read[_s] = 1; int _t = tail[_s]; \
+      const char *_cn = !walk_disc[_t] && nt_kind(nt, _t) == NK_CallNode ? nt_str(nt, _t, "name") : NULL; \
+      if (_cn && !anh_has(&read, _cn)) anh_add(&read, _cn); } } while (0)
+  for (int s = 0; s < c->nscopes; s++)
+    if (tail[s] >= 0 && (all || oa_entered_unseen(&c->scopes[s]))) OA_READ_METHOD(s);
+  for (int i = 0; i < read.n; i++) {
+    int lo = 0, hi = nnamed;
+    while (lo < hi) { int mid = (lo + hi) / 2; if (strcmp(named[mid].nm, read.key[i]) < 0) lo = mid + 1; else hi = mid; }
+    for (int j = lo; j < nnamed && sp_streq(named[j].nm, read.key[i]); j++) OA_READ_METHOD(named[j].s);
+  }
+  #undef OA_READ_METHOD
+  /* a tail node two methods share is read when either method is read */
+  char *tail_read = (char *)calloc((size_t)nc, 1);
+  for (int s = 0; s < c->nscopes; s++) if (tail[s] >= 0 && m_read[s]) tail_read[tail[s]] = 1;
+  for (int s = 0; s < c->nscopes; s++)
+    if (tail[s] >= 0 && !tail_read[tail[s]]) walk_disc[tail[s]] = 1;
+  anh_free(&read);
+  free(named); free(m_read); free(tail_read); free(is_tail); free(tail);
+  return walk_disc;
+}
+
 static int narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -13861,24 +14004,8 @@ static int narrow_object_arrays(Compiler *c) {
     int bn = 0; const int *bl = nt_arr(nt, sc->body, "body", &bn);
     if (bn > 0 && bl[bn - 1] >= 0 && bl[bn - 1] < nc) value_ok[bl[bn - 1]] = 0;
   }
-  /* walk_disc[id]: a walk's value is thrown away -- a statement followed by
-     another, or one of the program's top-level statements. An object array
-     walk narrows only there: `y = a.each { }` or `a.each { break r }` hands
-     the array (or the break value) to a consumer typed for the boxed array,
-     which the narrowed sp_PtrArray is not (#4879). */
-  char *walk_disc = (char *)calloc(nc, 1);
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "StatementsNode")) continue;
-    int bn = 0; const int *bl = nt_arr(nt, id, "body", &bn);
-    for (int i = 0; i + 1 < bn; i++) if (bl[i] >= 0 && bl[i] < nc) walk_disc[bl[i]] = 1;
-  }
-  { int root = nt->count > 0 ? nt->count - 1 : -1;
-    for (int id = 0; id < nt->count; id++)
-      if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode")) { root = id; break; }
-    int ps = root >= 0 ? nt_ref(nt, root, "statements") : -1;
-    int bn = 0; const int *bl = ps >= 0 ? nt_arr(nt, ps, "body", &bn) : NULL;
-    for (int i = 0; i < bn; i++) if (bl[i] >= 0 && bl[i] < nc) walk_disc[bl[i]] = 1; }
+  /* walk_disc[id]: a walk's value is thrown away (oa_walk_disc) */
+  char *walk_disc = oa_walk_disc(c, nc);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
