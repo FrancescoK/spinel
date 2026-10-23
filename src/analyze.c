@@ -50376,24 +50376,30 @@ static int an_settle_seed_boxes(Compiler *c) {
   infer_param_types(c);
   g_seed_box_settled = 0;
   int dropped = 0;
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (lv->rbs_box_held && !lv->rbs_seeded) dropped = 1;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    int here = 0;
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->rbs_box_held && !lv->rbs_seeded) here = 1;
       lv->rbs_box_held = 0;
     }
-  /* A local narrowed while the seed held (`row = ci[i]` pinned to the
-     element of a typed `ci`, narrow_locals_from_arrays) would keep that pin
-     through the re-derivation (lv_keep_decisions), though `ci` is a box now.
-     The narrowing passes give the pins back that the settled types support. */
-  if (dropped)
-    for (int s = 0; s < c->nscopes; s++)
-      for (int i = 0; i < c->scopes[s].nlocals; i++) {
-        LocalVar *lv = &c->scopes[s].locals[i];
-        if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-        lv->oa_pin = TY_UNKNOWN;
-        lv->oa_grace = 0;
-      }
+    if (!here) continue;
+    dropped = 1;
+    /* A local of the method narrowed while the seed held (`row = ci[i]`
+       pinned to the element of a typed `ci`, narrow_locals_from_arrays) would
+       keep that pin through the re-derivation (lv_keep_decisions), though
+       `ci` is a box now; the narrowing passes give back the pins the settled
+       types support. Only this method's: a pin elsewhere was not narrowed
+       under the seed, and one the re-derivation cannot give back leaves its
+       slot boxed for good. */
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      lv->oa_pin = TY_UNKNOWN;
+      lv->oa_grace = 0;
+    }
+  }
   return dropped;
 }
 
