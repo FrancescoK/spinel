@@ -27272,9 +27272,79 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (no_value) buf_puts(b, "), (const char *)0)");
   g_one_held = held;
 }
+/* One-String mode: a builtin String method's argument that can change a
+   String in place (the receiver's own: `u.center((u << "x"; 9))`) runs
+   before the method reads its receiver, as in CRuby. The receiver is held
+   as its handle first, in Ruby's order, its reads are that handle's bytes
+   where they are read (ran_first_bind_read), the arguments run into their
+   temps (emit_args_before), and the call is emitted again over them. A
+   method that changes its receiver writes through the handle already. 1
+   when it emitted the call. */
+static int g_one_recv_hold_node = -1;
+/* Does operand n spell a call that changes a String in place (`s << "x"`,
+   `s.upcase!`) outside a block? A user method's call is not asked: the arms
+   the call is emitted again through do not all read their operands through
+   the temps (a case-mapping option, a Range literal's ends), so only an
+   operand the program writes as such a change takes the order. */
+static int operand_spells_string_change(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode) return 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int rv = nt_ref(nt, n, "receiver");
+    if (nm && rv >= 0 && (sp_str_mutator(nm, 0) || bop_name_mutates(nm, 0)) &&
+        (comp_ntype(c, rv) == TY_STRING || comp_ntype(c, rv) == TY_STRBUF)) return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (operand_spells_string_change(c, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (operand_spells_string_change(c, ids[j])) return 1;
+  }
+  return 0;
+}
+static int emit_call_recv_held_first(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!g_one_string || g_one_recv_hold_node == id || !g_pre) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (recv < 0 || !name || comp_ntype(c, recv) != TY_STRING || arg_ran_first(recv, 0) || nt_safe_nav(nt, id) ||
+      nt_ref(nt, id, "block") >= 0 || sp_str_mutator(name, 0) || bop_name_mutates(name, 0)) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  if (p->mi >= 0 || p->dispatch != CP_NONE) return 0;
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (argc == 0 || nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
+  int chg = 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, nt_paren_single(nt, argv[i]));
+    if (ak == NK_RangeNode || ak == NK_RegularExpressionNode || ak == NK_InterpolatedRegularExpressionNode) return 0;
+    chg |= operand_spells_string_change(c, argv[i]);
+  }
+  if (!chg) return 0;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  int th = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, rb.p ? rb.p : "NULL", th);
+  free(rb.p);
+  int sv_argov = g_n_argov;
+  ran_first_bind_read(recv, th);
+  emit_args_before(c, argv, argc, NULL, 0, g_pre);
+  int sv_node = g_one_recv_hold_node;
+  g_one_recv_hold_node = id;
+  emit_call(c, id, b);
+  g_one_recv_hold_node = sv_node;
+  view_unbind(sv_argov);
+  return 1;
+}
+
 static void emit_call_inner(Compiler *c, int id, Buf *b) {
   if (emit_call_on_held_self_answer(c, id, b)) return;
   refuse_prepass_at_emit(c, id);
+  if (emit_call_recv_held_first(c, id, b)) return;
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);
   /* A builtin_only call on a boxed receiver (a prepended Array method's
