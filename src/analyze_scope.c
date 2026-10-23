@@ -9099,17 +9099,18 @@ int infer_inherited_ivars(Compiler *c) {
    through `def self.h = @@h`)? */
 /* The zero-parameter methods whose value is a class-variable read, chained
    by name (the read's variable per method), kept while the scopes and the
-   nodes stand still. The call-receiver side asked this of every scope per
+   nodes stand still (the table's count and version: a node renamed in place
+   frees the name this holds). The call-receiver side asked this of every scope per
    index-write site, for every class variable assigned an empty hash, per
    round: on a Rails program (119k scopes) the walk was 6% of a window. */
 static ANameHash rcv_names; static int *rcv_first, *rcv_next, rcv_cap;
 static const char **rcv_cv;
 static const Compiler *rcv_c; static const NodeTable *rcv_nt;
-static int rcv_ntc = -1, rcv_nscopes = -1; static unsigned rcv_gen;
+static int rcv_ntc = -1, rcv_nscopes = -1; static unsigned rcv_gen, rcv_ver;
 static void rcv_build(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (rcv_c == c && rcv_nt == nt && rcv_ntc == nt->count && rcv_nscopes == c->nscopes &&
-      rcv_gen == comp_scope_index_gen()) return;
+  if (rcv_c == c && rcv_nt == nt && rcv_ntc == nt->count && rcv_ver == nt->version &&
+      rcv_nscopes == c->nscopes && rcv_gen == comp_scope_index_gen()) return;
   anh_free(&rcv_names); memset(&rcv_names, 0, sizeof rcv_names);
   free(rcv_first); rcv_first = NULL; rcv_cap = 0;
   size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
@@ -9136,7 +9137,7 @@ static void rcv_build(Compiler *c) {
     }
     rcv_cv[mi] = rn; rcv_next[mi] = rcv_first[e]; rcv_first[e] = mi;
   }
-  rcv_c = c; rcv_nt = nt; rcv_ntc = nt->count; rcv_nscopes = c->nscopes; rcv_gen = comp_scope_index_gen();
+  rcv_c = c; rcv_nt = nt; rcv_ntc = nt->count; rcv_ver = nt->version; rcv_nscopes = c->nscopes; rcv_gen = comp_scope_index_gen();
 }
 static int recv_is_cvar(Compiler *c, int recv, const char *cvname) {
   const NodeTable *nt = c->nt;
