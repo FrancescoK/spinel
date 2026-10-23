@@ -657,6 +657,7 @@ static int fill_value_fits(Compiler *c, int call, TyKind rt) {
     if (an < 1) return 1;
     fv = infer_type(c, av[0]);
   }
+  if (g_one_string && fv == TY_STRBUF) fv = TY_STRING;   /* (one-String mode: the String Array holds the handle) */
   return fe == TY_POLY || fv == TY_UNKNOWN || fv == TY_POLY || fv == TY_VOID || fv == fe;
 }
 

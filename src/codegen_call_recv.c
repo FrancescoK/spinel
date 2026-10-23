@@ -3621,6 +3621,10 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         buf_puts(g_pre, ");\n");
       }
+      /* (one representation: a String Array's slot takes the String's handle) */
+      else if (g_one_string && sp_streq(fk, "Str") && !nil_store_sfx(c, fk, fbb[fbn - 1])[0]) {
+        buf_printf(g_pre, "sp_StrArray_set_e(_t%d, _t%d, SP_STR_HDL(%s));\n", trecv, ti, vb.p ? vb.p : "NULL");
+      }
       else {
         const char *fsfx = nil_store_sfx(c, fk, fbb[fbn - 1]);
         buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", fk, fsfx, trecv, ti);

@@ -34458,6 +34458,7 @@ int make_yield_proc_forms(Compiler *c) {
    slot), bigint (int converts at the boundary), a by-value object or a
    shared-string handle (neither is a plain pointer). */
 static int seed_repr_family(Compiler *c, TyKind t) {
+  if (g_one_string && t == TY_STRBUF) t = TY_STRING;   /* (one-String mode: a String slot is the handle) */
   switch (t) {
     case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: return 1;
     case TY_STRING: case TY_PROC: return 2;
@@ -34473,6 +34474,7 @@ static int seed_repr_family(Compiler *c, TyKind t) {
    layouts. Anything else that is a pointer (a Proc, an object -- which may
    carry to_s / to_ary conversions the emitter knows) is left unjudged. */
 static int seed_ptr_kind(TyKind t) {
+  if (g_one_string && t == TY_STRBUF) t = TY_STRING;
   if (ty_is_array(t)) return 1;
   if (ty_is_hash(t))  return 2;
   if (t == TY_STRING) return 3;

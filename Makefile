@@ -3062,7 +3062,7 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	nested_ivar) \
 	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/out.c" 2>/dev/null; \
-	grep -Eq 'const char[[:space:]]+\*[[:space:]]*iv_label' "$$tmp/out.c" || { echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; ok=0; }; \
+	grep -Eq '$(STR_SLOT_RE)[[:space:]]*iv_label' "$$tmp/out.c" || { echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; ok=0; }; \
 	if grep -Eq 'sp_RbVal[[:space:]]+iv_label' "$$tmp/out.c"; then echo "rbs-seed-test: FAIL (#1417: ivar stayed poly)"; ok=0; fi; \
 	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || { echo "rbs-seed-test: FAIL (nested_ivar C invalid)"; ok=0; }; \
 	;; \
@@ -3162,10 +3162,15 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	done; \
 	;; \
 	shared_rbs_string_return_refused) \
+	if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then \
+	  $(SPINEL) test/rbs-seed/shared_rbs_string_return_refused.rb --rbs test/rbs-seed/sig -c --no-line-map -o "$$tmp/srsf.c" >/dev/null 2>"$$tmp/srsf.err" || \
+	    { echo "rbs-seed-test: FAIL (one-String mode: a seeded String method whose tail is the handle was refused)"; sed -n 1,3p "$$tmp/srsf.err"; ok=0; }; \
+	else \
 	SP_COLLECT_ERRORS=1 $(SPINEL) test/rbs-seed/shared_rbs_string_return_refused.rb --rbs test/rbs-seed/sig --share-strings -c --no-line-map -o "$$tmp/srsf.c" >/dev/null 2>"$$tmp/srsf.err"; \
 	for m in ens_after ens_reader ens_tail ens_def ens_block; do \
 	  grep -q "the value of \`$$m\` hands on" "$$tmp/srsf.err" || { echo "rbs-seed-test: FAIL (#6765 a seeded String method's $$m was not refused: its tail does not publish the box's handle)"; ok=0; }; \
 	done; \
+	fi; \
 	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \
@@ -3182,9 +3187,9 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	colliding_class_pin) \
 	$(SPINEL) test/rbs-seed/colliding_class_pin.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/cp.c" 2>/dev/null; \
-	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_rtag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (collision-renamed class seed not applied)"; ok=0; }; \
+	grep -Eq '$(STR_SLOT_RE)[[:space:]]*iv_rtag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (collision-renamed class seed not applied)"; ok=0; }; \
 	grep -Eq 'sp_RbVal[[:space:]]+sp_Blue__Base_btag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (poly union return seed not pinned)"; ok=0; }; \
-	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_itag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (seed for class nested in a renamed class not applied)"; ok=0; }; \
+	grep -Eq '$(STR_SLOT_RE)[[:space:]]*iv_itag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (seed for class nested in a renamed class not applied)"; ok=0; }; \
 	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/cp.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/cp" 2>"$$tmp/cp.err"; then \
 	  "$$tmp/cp" > "$$tmp/cp.out" 2>/dev/null; \
 	  cmp -s "$$tmp/cp.out" test/rbs-seed/colliding_class_pin.expected || { echo "rbs-seed-test: FAIL (colliding_class_pin output mismatch)"; diff -u test/rbs-seed/colliding_class_pin.expected "$$tmp/cp.out" || true; ok=0; }; \
@@ -4459,10 +4464,12 @@ new-string-oracle: $(SPINEL) new-string-oracle-selftest
 # by-reference String parameter the same (a handle needs no cell)
 ifneq ($(filter -DSP_ONE_STRING,$(COPT)),)
 STR_SLOT_C = sp_String \*
+STR_SLOT_RE = sp_String[[:space:]]*\*
 STR_BYREF_S = sp_String \* lv_s
 STR_BYREF_PLAIN = sp_String \* lv_plain
 else
 STR_SLOT_C = const char \*
+STR_SLOT_RE = const char[[:space:]]*\*
 STR_BYREF_S = const char \* \*_cell_s
 STR_BYREF_PLAIN = const char \* \*_cell_plain
 endif
