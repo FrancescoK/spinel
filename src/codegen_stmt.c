@@ -16194,10 +16194,13 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
       masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
       emit_indent(b, indent);
       /* a masgn element is often nil (a short right side): the store notes it */
-      buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, NIL_STORE_BOXED));
+      /* (one representation: a String Array's element is the String's handle) */
+      int str_h = g_one_string && sp_streq(k, "Str") && !nil_store_sfx(c, k, NIL_STORE_BOXED)[0] && vt != TY_POLY;
+      if (str_h) buf_puts(b, "sp_StrArray_set_e(");
+      else buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, NIL_STORE_BOXED));
       emit_node_or_tmp(c, recv, recv_tmp, b); buf_puts(b, ", ");
       if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp); else emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", ");
+      buf_puts(b, str_h ? ", SP_STR_HDL(" : ", ");
       /* a boxed value a typed array cannot hold is refused, as the single
          store refuses it (#4481) */
       TyKind et = rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt);
@@ -16206,7 +16209,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
       else if (val && vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING))
         buf_printf(b, "sp_poly_elem_%c(%s)", et == TY_INT ? 'i' : et == TY_FLOAT ? 'f' : 's', val);
       else masgn_conv(c, id, et, vt, val, b);
-      buf_puts(b, ");\n");
+      buf_puts(b, str_h ? "));\n" : ");\n");
     }
     else if (rr.kind == RK_BOXED || rt == TY_UNKNOWN) {
       emit_indent(b, indent);
@@ -18113,6 +18116,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
           else if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
           else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(_t%d)", tmps[i]);
           else if (valt == TY_POLY && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(_t%d)", tmps[i]);
+          /* (one representation: the String goes in by either face, which
+             sp_StrArray_set maps to the handle) */
+          else if (g_one_string && et == TY_STRING) buf_printf(b, "SP_STR_B(_t%d)", tmps[i]);
           else buf_printf(b, "_t%d", tmps[i]);
         }
         buf_puts(b, ");\n");

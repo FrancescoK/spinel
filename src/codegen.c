@@ -18417,6 +18417,12 @@ static void reject_time_parse(Compiler *c) {
    cover refuses the entry at compile time, naming it. The kernel runs
    off-GVL on the calling thread, one at a time (R6); a raise crosses as
    (class name, message) through the exported try helper (R7). */
+/* Is parameter lv held as the String's handle (one-String mode)? The
+   shim converts a Ruby String into one, as the entry's C signature takes. */
+static int ext_param_is_handle(Compiler *c, LocalVar *lv) {
+  return g_one_string && lv && (lv->type == TY_STRING || lv->type == TY_STRBUF) &&
+         repr_of_slot(c, lv).kind == RK_STRBUF;
+}
 static const char *ext_rb_in(TyKind t) {
   switch (t) {
     case TY_INT:    return "spx_in_int";
@@ -18560,6 +18566,9 @@ static void ext_generate_cruby_shim(Compiler *c) {
     "    if (ei != rb_utf8_encindex() && ei != rb_usascii_encindex() && ei != rb_ascii8bit_encindex())\n"
     "      rb_raise(rb_eArgError, \"string encoding %%s cannot cross into the compiled kernel (UTF-8 or binary only)\", rb_enc_name(rb_enc_get(v))); }\n"
     "  return sp_str_from_bytes(RSTRING_PTR(v), (size_t)RSTRING_LEN(v));\n}\n"
+    "#ifdef SP_ONE_STRING\n"
+    "static sp_String *spx_in_strh(VALUE v) { return SP_STR_HDL(spx_in_str(v)); }\n"
+    "#endif\n"
     "static sp_IntArray *spx_in_int_array(VALUE v) {\n"
     "  if (!RB_TYPE_P(v, T_ARRAY)) rb_raise(rb_eTypeError, \"no implicit conversion of %%s into Array\", rb_obj_classname(v));\n"
     "  { long n = RARRAY_LEN(v); sp_IntArray *a = sp_IntArray_new(); SP_GC_ROOT(a);\n"
@@ -18618,7 +18627,7 @@ static void ext_generate_cruby_shim(Compiler *c) {
     }
     for (int p9 = 0; p9 < sc->nparams; p9++) {
       LocalVar *lv = scope_local(sc, sc->pnames[p9]);
-      if (!lv || !ext_rb_in(lv->type)) {
+      if (!lv || (!ext_rb_in(lv->type) && !ext_param_is_handle(c, lv))) {
         fprintf(stderr, "spinel: --ext cruby: %s.%s: parameter `%s` has type "
                         "%s, which cannot cross the extension boundary "
                         "(Integer/Float/bool/String and their typed arrays "
@@ -18640,7 +18649,7 @@ static void ext_generate_cruby_shim(Compiler *c) {
     buf_printf(&sb, "typedef struct {");
     for (int p9 = 0; p9 < sc->nparams; p9++) {
       LocalVar *lv = scope_local(sc, sc->pnames[p9]);
-      buf_printf(&sb, " %s a%d;", c_type_name(lv->type), p9);
+      buf_printf(&sb, " %s a%d;", ext_param_is_handle(c, lv) ? "sp_String *" : c_type_name(lv->type), p9);
     }
     if (sc->ret != TY_VOID && sc->ret != TY_NIL)
       buf_printf(&sb, " %s ret;", c_type_name(sc->ret));
@@ -18671,8 +18680,10 @@ static void ext_generate_cruby_shim(Compiler *c) {
                s9, s9, s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) {
       LocalVar *lv = scope_local(sc, sc->pnames[p9]);
-      buf_printf(&sb, "  a->c->a%d = %s(a->v%d);", p9, ext_rb_in(lv->type), p9);
-      if (lv->type == TY_STRING || lv->type == TY_INT_ARRAY ||
+      int hdl = ext_param_is_handle(c, lv);
+      const char *conv = hdl ? "spx_in_strh" : ext_rb_in(lv->type);   /* (each was checked above) */
+      buf_printf(&sb, "  a->c->a%d = %s(a->v%d);", p9, conv ? conv : "", p9);
+      if (hdl || lv->type == TY_STRING || lv->type == TY_INT_ARRAY ||
           lv->type == TY_FLOAT_ARRAY || lv->type == TY_STR_ARRAY)
         buf_printf(&sb, " _sp_gc_root_push((void**)((uintptr_t)&a->c->a%d | "
                         "_SP_GC_SLOT_TAG(a->c->a%d)));", p9, p9);

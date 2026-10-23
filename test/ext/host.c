@@ -12,7 +12,8 @@ static void call_must_pos(void *p) {
 int main(void) {
   Init_ext_kernel();
   printf("%lld\n", (long long)sp_ExtKernel_s_triple(14LL));
-  printf("%s\n", sp_ExtKernel_s_shout(sp_str_from_bytes("hey", 3)));
+  /* a String parameter is the String's handle, as the header says */
+  printf("%s\n", sp_ExtKernel_s_shout(SP_STR_HDL(sp_str_from_bytes("hey", 3))));
   sp_IntArray *a = sp_IntArray_new();
   SP_GC_ROOT(a);
   sp_IntArray_push(a, 10); sp_IntArray_push(a, 20); sp_IntArray_push(a, 12);

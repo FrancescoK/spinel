@@ -1635,7 +1635,7 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 	  --ext-entry ExtKernel.triple,ExtKernel.shout,ExtKernel.total,ExtKernel.pair_sum,ExtKernel.must_pos,ExtKernel.pause_total \
 	  -o "$$tmp/extk.c" >/dev/null 2>&1 || { echo "ext-cruby-test: FAIL (emission)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
-	  if $(CC) $$SOFLAGS -fPIC -O1 -w -I"$$RH" -I"$$RA" -Ilib -Ilib/regexp -Ilib/regexp/shim -I"$$tmp" \
+	  if $(CC) $$SOFLAGS -fPIC -O1 -w $(filter -DSP_ONE_STRING,$(COPT)) -I"$$RH" -I"$$RA" -Ilib -Ilib/regexp -Ilib/regexp/shim -I"$$tmp" \
 	       "$$tmp/extk_ext.c" "$$tmp/extk.c" $$(ls lib/*.c lib/regexp/*.c | sed 's/^/ /') \
 	       $(LDFLAGS) -lm -o "$$tmp/extk.$$DLEXT" 2>"$$tmp/cc.err"; then \
 	    ( cd "$$tmp" && cp $(CURDIR)/test/ext/driver.rb . && ruby driver.rb > out 2>&1 ); \

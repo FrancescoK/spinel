@@ -1439,6 +1439,9 @@ int main(int argc, char **argv) {
   if (!target_wasi) add_platform_flags(&cmd, &bi, SPINEL_PLATFORM_LIBS, lib_dir);
 #endif
   bi_put(&bi, "define", ov_define);
+  /* (the runtime a pack compiles from source is the one-String mode's, as
+     the program's C defines it for itself) */
+  if (g_one_string) bi_put(&bi, "define", "-DSP_ONE_STRING");
 #if !defined(__APPLE__)
   if (debug && !target_wasi) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
 #endif
