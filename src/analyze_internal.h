@@ -486,6 +486,7 @@ int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fol
 int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i); /* codegen_fold.c */
 int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread); /* codegen_fold.c */
 void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int *out); /* codegen_fold.c */
+void arg_layout_call_param_map(Compiler *c, Scope *m, int call, int n, int *out, int *spread); /* codegen_fold.c */
 int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread);
 int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
 int ty_runs_no_code(TyKind t);  /* codegen_call.c: a builtin reading such a value runs no program code */

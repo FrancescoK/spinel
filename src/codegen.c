@@ -3243,6 +3243,11 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      strbuf_held_chain) is boxed as the handle it holds */
   if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, nt_paren_single(c->nt, node), b))
     return 1;
+  /* Not the dispatch again: an argument the call ran first renders as its held temp, unboxed. */
+  if (g_one_string && strbuf_poly_user_boxes(c, node) && ran_first_temp_of(node) >= 0) {
+    str_box_handle_tmp(b, ran_first_temp_of(node));
+    return 1;
+  }
   /* --share-strings: a boxed receiver's call whose every target answers a
      String, a handle it publishes or a new one (strbuf_poly_user_boxes):
      the dispatch read as a box, each arm boxing its own answer

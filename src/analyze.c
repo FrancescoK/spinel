@@ -11568,16 +11568,48 @@ static int desugar_method_block_arg(Compiler *c) {
    a real entry in the includer's chain -- and the comp_method_in_chain test
    at the top of the loop below then declines to rewrite its call. The
    rewrite still serves every body that genuinely does not care. */
+/* The module_function scopes by name, for one run of the pass below: per
+   name (its index in mfn_names) the chain of the modules that have a
+   module_function of it. The pass asked every receiverless call's class
+   chain for its name, and each module on the way scanned every scope of the
+   program for one; a large program spent minutes on the one call it rewrote.
+   With the names in hand a call named as no module_function is passed over
+   before any lookup. Built at each run: the pass adds no scope. */
+static ANameHash mfn_names;
+static int *mfn_first, *mfn_next, *mfn_mod, mfn_n, mfn_cap;
+static void mfn_build(Compiler *c) {
+  anh_free(&mfn_names); memset(&mfn_names, 0, sizeof mfn_names);
+  free(mfn_first); mfn_first = NULL; mfn_n = 0;
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *ms = &c->scopes[si];
+    if (ms->class_id < 0 || !ms->is_module_function || !ms->name) continue;
+    int i = anh_find(&mfn_names, ms->name);
+    if (i < 0) {
+      anh_add(&mfn_names, ms->name); i = mfn_names.n - 1;
+      mfn_first = realloc(mfn_first, sizeof *mfn_first * (size_t)mfn_names.n);
+      mfn_first[i] = -1;
+    }
+    if (mfn_n == mfn_cap) {
+      mfn_cap = mfn_cap ? mfn_cap * 2 : 64;
+      mfn_next = realloc(mfn_next, sizeof *mfn_next * (size_t)mfn_cap);
+      mfn_mod = realloc(mfn_mod, sizeof *mfn_mod * (size_t)mfn_cap);
+    }
+    mfn_mod[mfn_n] = ms->class_id; mfn_next[mfn_n] = mfn_first[i]; mfn_first[i] = mfn_n++;
+  }
+}
+/* does module m have a module_function named nm (mfn_build ran)? */
+static int mfn_module_has(int m, const char *nm) {
+  int i = anh_find(&mfn_names, nm);
+  for (int e = i >= 0 ? mfn_first[i] : -1; e >= 0; e = mfn_next[e]) if (mfn_mod[e] == m) return 1;
+  return 0;
+}
 /* The first module, in the ancestor order module m and the modules it
    includes take (m, then its includes from the last made), that has a
    module_function named nm; -1 for none. depth only stops an include
    cycle: no chain of distinct modules is longer than the class count. */
 static int module_function_owner(Compiler *c, int m, const char *nm, int depth) {
   if (m < 0 || m >= c->nclasses || depth > c->nclasses) return -1;
-  for (int si = 1; si < c->nscopes; si++) {
-    const Scope *ms = &c->scopes[si];
-    if (ms->class_id == m && ms->is_module_function && ms->name && sp_streq(ms->name, nm)) return m;
-  }
+  if (mfn_module_has(m, nm)) return m;
   const ClassInfo *mi = &c->classes[m];
   for (int j = mi->nincluded_mods - 1; j >= 0; j--) {
     int r = module_function_owner(c, mi->included_mods[j], nm, depth + 1);
@@ -11589,11 +11621,13 @@ static int desugar_module_function_call(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+  mfn_build(c);
+  if (mfn_names.n == 0) return 0;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
+    if (!nm || anh_find(&mfn_names, nm) < 0) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
     if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
@@ -13236,6 +13270,86 @@ static int narrowed_local_other_writes_fit(Compiler *c, int s, const char *nm, T
   return 1;
 }
 
+/* The parameter of a walk over a narrowed object array -- `xs.each { |x| }`,
+   reverse_each, each_entry, and each_with_index's first -- binds an element,
+   as `x = xs[i]` does in narrow_locals_from_arrays: it takes the element
+   class, so its reads unbox. A block parameter is a local of the enclosing
+   scope, so every block or lambda that binds it must be such a walk of the
+   same class, and nothing else may write it. (map and collect bind theirs in
+   their emitter.) */
+static int narrow_walk_block_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes, total = 0;
+  int *off = (int *)malloc(sizeof(int) * (size_t)(ns + 1));
+  if (!off) return 0;
+  for (int s = 0; s < ns; s++) { off[s] = total; total += c->scopes[s].nlocals; }
+  off[ns] = total;
+  TyKind *elem = (TyKind *)malloc(sizeof(TyKind) * (size_t)(total ? total : 1));
+  char *bad = (char *)calloc((size_t)(total ? total : 1), 1);
+  if (!elem || !bad) { free(off); free(elem); free(bad); return 0; }
+  for (int i = 0; i < total; i++) elem[i] = TY_UNKNOWN;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int blk = k == NK_LambdaNode ? id : nt_ref(nt, id, "block");
+    if (blk < 0 || (nt_kind(nt, blk) != NK_BlockNode && nt_kind(nt, blk) != NK_LambdaNode)) continue;
+    Scope *bs = comp_scope_of(c, blk);
+    if (!bs) continue;
+    int s = (int)(bs - c->scopes);
+    /* a walk of an object array, with one plain parameter (each_with_index
+       a second, the index) and no other kind of parameter */
+    const char *cn = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    int ca = k == NK_CallNode ? nt_ref(nt, id, "arguments") : -1;
+    int recv = k == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+    TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+    int np = 0; while (block_param_name(c, blk, np)) np++;
+    int bp = nt_ref(nt, blk, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int extra = 0;
+    if (pn >= 0) {
+      static const char *const more[] = { "optionals", "posts", "keywords", NULL };
+      for (int m = 0; more[m]; m++) { int mn = 0; nt_arr(nt, pn, more[m], &mn); extra |= mn > 0; }
+      extra |= nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0;
+    }
+    int walk = cn && is_each_walk_or_with_index(cn) && ca < 0 && blk != id && ty_is_obj_array(rt) && !extra &&
+               (np == 1 || (np == 2 && sp_streq(cn, "each_with_index"))) && !block_param_is_multi(c, blk, 0);
+    for (int pi = 0; pi < np; pi++) {
+      const char *nm = block_param_name(c, blk, pi);
+      LocalVar *lv = nm ? scope_local(bs, nm) : NULL;
+      if (!lv) continue;
+      int gi = off[s] + (int)(lv - bs->locals);
+      if (gi < off[s] || gi >= off[s + 1]) continue;
+      if (!walk || pi != 0) { bad[gi] = 1; continue; }
+      TyKind ec = ty_array_elem(rt);
+      if (elem[gi] == TY_UNKNOWN) elem[gi] = ec;
+      else if (elem[gi] != ec) bad[gi] = 1;
+    }
+  }
+  int any = 0;
+  for (int s = 0; s < ns; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int li = 0; li < sc->nlocals; li++) {
+      LocalVar *lv = &sc->locals[li];
+      if (!lv->is_block_param || lv->rbs_seeded) continue;
+      int gi = off[s] + li;
+      int fits = !bad[gi] && ty_is_object(elem[gi]) &&
+                 comp_lvw_first_sc(c, s, lv->name) < 0;   /* not written in the body */
+      /* a pin whose walk no longer qualifies (the array widened, another
+         block binds the name) goes, and the parameter is the walk's boxed
+         element again */
+      if (ty_is_object(lv->oa_pin) && (!fits || elem[gi] != lv->oa_pin)) {
+        lv->oa_pin = TY_UNKNOWN;
+        lv_set_type(lv, TY_POLY);
+        any = 1;
+      }
+      if (!fits || lv->type != TY_POLY) continue;
+      lv_set_type(lv, elem[gi]);
+      lv->oa_pin = elem[gi];
+      any = 1;
+    }
+  }
+  free(off); free(elem); free(bad);
+  return any;
+}
+
 /* Locals read out of an already-narrowed array: `b = arr[i]` makes b the
    element type, so its own reads unbox. Split out of narrow_object_arrays
    so it still runs when that pass has no local candidate slot and returns
@@ -13252,7 +13366,8 @@ static int narrow_locals_from_arrays(Compiler *c) {
         (#3354). */
   int any = 0;
   for (int prop = 0; prop < 8; prop++) {
-  int prop_ch = 0;
+  int prop_ch = narrow_walk_block_params(c);
+  any |= prop_ch;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     for (int li = 0; li < sc->nlocals; li++) {
@@ -14638,12 +14753,12 @@ static int narrow_object_arrays(Compiler *c) {
     /* ... and only while nothing yet unsupported comes with it: a block that
        nests another (bit 4), a walk whose value is used (bit 8), or an
        element class that is itself Enumerable, whose Enumerable methods have
-       no emitter on a typed receiver. */
+       no emitter on a typed receiver. An element class with its own `each`
+       but no Enumerable has no such methods, and its `each` is an ordinary
+       method call on the element. */
     if (!OA_CLS_IS_NESTED(sl[r].cls) &&
         ((sl[r].row_iter & 14) ||
-         (sl[r].row_iter && sl[r].cls >= 0 &&
-          (an_class_includes_enumerable(c, sl[r].cls) ||
-           comp_method_in_chain(c, sl[r].cls, "each", NULL) >= 0)))) {
+         (sl[r].row_iter && sl[r].cls >= 0 && an_class_includes_enumerable(c, sl[r].cls)))) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;
       oa_restore_pin(c, &sl[i]);
@@ -22151,8 +22266,13 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
            a poly read of an ivar that only ever holds Hashes would
            otherwise reach every program class's `[]=` */
         if (pm->class_id >= 0 && cls_fact_excludes(c, rv, pm->class_id)) continue;
+        /* (the call's layout once, for every parameter: it was worked out
+           per parameter, and this walk was a fifth of a Rails program's
+           share pass) */
+        int pmap[32];
+        if (pm->nparams > 0) arg_layout_call_param_map(c, pm, node, 32, pmap, NULL);
         for (int j = 0; j < pm->nparams && j < 32; j++) {
-          int an = arg_layout_param_node(c, pm, node, j, NULL);
+          int an = pmap[j];
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
               !sp_streq(nt_str(nt, an, "name"), vn)) continue;
           LocalVar *q2 = pm->pnames[j] ? scope_local(pm, pm->pnames[j]) : NULL;
@@ -22166,8 +22286,10 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
       }
     }
     Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    int mmap[32];
+    if (m && m->nparams > 0) arg_layout_call_param_map(c, m, node, 32, mmap, NULL);
     for (int j = 0; m && j < m->nparams && j < 32; j++) {
-      int an = arg_layout_param_node(c, m, node, j, NULL);
+      int an = mmap[j];
       if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
           !sp_streq(nt_str(nt, an, "name"), vn)) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
@@ -26331,15 +26453,22 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     int cmi = pq5 >= 0 ? (pc5[pq5].native ? -1 : pc5[pq5].mi)
                       : objrecv ? an_call_target_mi(c, cu) : an_any_scope_by_name(c, cun);
     if (cmi < 0) continue;
-    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
+    /* the call's layout once for every parameter (it was worked out per
+       parameter): the argument each binds, and the splat or `**` operand it
+       comes out of */
+    int np5 = c->scopes[cmi].nparams;
+    int *map5 = malloc(sizeof *map5 * (size_t)(np5 > 0 ? np5 : 1) * 2), *spr5 = map5 + (np5 > 0 ? np5 : 1);
+    if (!map5) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    arg_layout_call_param_map(c, &c->scopes[cmi], cu, np5, map5, spr5);
+    for (int j = 0; j < np5; j++) {
       int app5 = an_param_mutated_in_place(c, cmi, j);
       /* the argument parameter j binds, a keyword's by name. One that comes
          out of a splat's or a `**`'s operand is an element read like
          `push(arr[0])` below, with the operand the container: `m(*arr)` and
          `m(**h)` handed the callee a copy of what arr and h hold, and its
          appends never reached them, nor the local stored there. */
-      int spread5 = -1;
-      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
+      int spread5 = spr5[j];
+      int an5 = map5[j];
       /* An element is appended to as surely when the callee hands its
          parameter on to a method that appends to it: `def m1(s) = m2(s)`
          called `m1(h[:a])` copied the element as `m2(h[:a])` would have,
@@ -26427,6 +26556,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         }
       }
     }
+    free(map5);
     }
   }
 
@@ -50425,24 +50555,30 @@ static int an_settle_seed_boxes(Compiler *c) {
   infer_param_types(c);
   g_seed_box_settled = 0;
   int dropped = 0;
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (lv->rbs_box_held && !lv->rbs_seeded) dropped = 1;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    int here = 0;
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->rbs_box_held && !lv->rbs_seeded) here = 1;
       lv->rbs_box_held = 0;
     }
-  /* A local narrowed while the seed held (`row = ci[i]` pinned to the
-     element of a typed `ci`, narrow_locals_from_arrays) would keep that pin
-     through the re-derivation (lv_keep_decisions), though `ci` is a box now.
-     The narrowing passes give the pins back that the settled types support. */
-  if (dropped)
-    for (int s = 0; s < c->nscopes; s++)
-      for (int i = 0; i < c->scopes[s].nlocals; i++) {
-        LocalVar *lv = &c->scopes[s].locals[i];
-        if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-        lv->oa_pin = TY_UNKNOWN;
-        lv->oa_grace = 0;
-      }
+    if (!here) continue;
+    dropped = 1;
+    /* A local of the method narrowed while the seed held (`row = ci[i]`
+       pinned to the element of a typed `ci`, narrow_locals_from_arrays) would
+       keep that pin through the re-derivation (lv_keep_decisions), though
+       `ci` is a box now; the narrowing passes give back the pins the settled
+       types support. Only this method's: a pin elsewhere was not narrowed
+       under the seed, and one the re-derivation cannot give back leaves its
+       slot boxed for good. */
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      lv->oa_pin = TY_UNKNOWN;
+      lv->oa_grace = 0;
+    }
+  }
   return dropped;
 }
 
@@ -50615,6 +50751,11 @@ static void an_tree_ran(Compiler *c, int slot) {
 #define AN_PASS_V(nm, call) do { infer_memo_boundary(); if (!sp_timing_on()) { call; } \
   else { \
   double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
+/* A pass timed but not framed: the re-narrow runs its inner passes without
+   the memo boundary and the tree skip a round's passes get (they read the
+   slots the loop re-clears), and the pass table missed them. */
+#define AN_PASS_T(nm, call) (!sp_timing_on() ? (call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
   return x < y ? 1 : x > y ? -1 : 0;
@@ -51042,7 +51183,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            it never widened the parameter and the one call site's explicit
            argument type stood alone. The pass further down still runs for
            defaults over state this iteration derives; types only widen. */
-        int pre_def = infer_default_param_types(c);
+        int pre_def = AN_PASS_T("infer_default_param_types", infer_default_param_types(c));
         /* stash last-settled values, then re-clear the reset ivars so they
            recompute fresh (narrowing) this iteration. */
         for (int k = 0; k < nrec; k++) prev[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
@@ -51053,27 +51194,27 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = pre_def, ch_other = pre_def;
         ch |= AN_PASS("infer_write_types", infer_write_types(c));
-        { int _w = bind_coerce_operator_params(c); ch |= _w; ch_other |= _w; }   /* 3 + obj calls obj's op WITH obj */
-        { int _w = infer_param_hash_value(c); ch |= _w; ch_other |= _w; }
-        { int _w = propagate_prep_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_string_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_default_param_types(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_block_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_for_index(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_catch_block_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_global_const_types(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_multiwrite_const_types(c); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("bind_coerce_operator_params", bind_coerce_operator_params(c)); ch |= _w; ch_other |= _w; }   /* 3 + obj calls obj's op WITH obj */
+        { int _w = AN_PASS_T("infer_param_hash_value", infer_param_hash_value(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("propagate_prep_params", propagate_prep_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_string_params", infer_string_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_default_param_types", infer_default_param_types(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_block_params", infer_block_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_for_index", infer_for_index(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_catch_block_params", infer_catch_block_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_global_const_types", infer_global_const_types(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_multiwrite_const_types", infer_multiwrite_const_types(c)); ch |= _w; ch_other |= _w; }
         ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
         /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
-        { int _w = promote_shared_stored_strings(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_dyncall_string_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_spread_string_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_forwarded_rest_args(c); ch |= _w; ch_other |= _w; }
-        { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
-        { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_cvar_types(c, 0); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_shared_stored_strings", promote_shared_stored_strings(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_dyncall_string_args", promote_dyncall_string_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_spread_string_args", promote_spread_string_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_forwarded_rest_args", promote_forwarded_rest_args(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("promote_append_accumulators", promote_append_accumulators(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("widen_shared_cmp_params", widen_shared_cmp_params(c)); ch |= _w; ch_other |= _w; }
+        { int _w = AN_PASS_T("infer_cvar_types", infer_cvar_types(c, 0)); ch |= _w; ch_other |= _w; }
         int ivsame = c->nclasses == ivncls;
         for (int ci = 0; ivsame && ci < ivncls; ci++)
           if (c->classes[ci].nivars != ivoff[ci + 1] - ivoff[ci]) ivsame = 0;

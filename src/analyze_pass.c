@@ -5475,13 +5475,16 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
   for (int i = 0; i < sc->nparams; i++)
     if (sc->pnames[i] && sp_streq(sc->pnames[i], vn)) return 0;
   int nw = 0;
-  for (int u = 0; u < nt->count; u++) {
-    const char *ut = nt_type(nt, u);
-    if (!ut || strncmp(ut, "LocalVariable", 13) != 0 || sp_streq(ut, "LocalVariableReadNode")) continue;
+  /* the local's writes in its scope, off the (scope, name) index: the scan
+     of every node for them ran once per `new` on a Class value and pass,
+     and was most of the parameter binding of a large program's re-narrow */
+  for (int u = comp_lvw_first_sc(c, (int)(sc - c->scopes), vn); u >= 0; u = comp_lvw_next_sc(c, u)) {
+    NodeKind uk = nt_kind(nt, u);
+    if (!comp_is_local_write(uk)) continue;
     const char *un = nt_str(nt, u, "name");
     if (!un || !sp_streq(un, vn)) continue;
     if (comp_scope_of(c, u) != sc) continue;
-    if (!sp_streq(ut, "LocalVariableWriteNode")) return 0;
+    if (uk != NK_LocalVariableWriteNode) return 0;
     if (!value_class_set(c, nt_ref(nt, u, "value"), set)) return 0;
     nw++;
   }
@@ -14488,8 +14491,17 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
   return changed;
 }
 
+/* A walk parameter narrow_walk_block_params pinned to its narrowed array's
+   element class is bound here as the poly scalar every narrowed object
+   array's walk binds (#4879, in infer_block_params); it keeps the pin, as
+   lv_keep_decisions has a local bound from a container read keep its own. */
+static int bp_keeps_oa_pin(const LocalVar *lv, TyKind t) {
+  return t == TY_POLY && ty_is_object(lv->oa_pin) && lv->type == lv->oa_pin;
+}
+
 static int bp_widen(Scope *s, const char *name, TyKind t) {
   LocalVar *lv = scope_local_intern(s, name); lv->is_block_param = 1;
+  if (bp_keeps_oa_pin(lv, t)) return 0;
   return lv_widen(lv, t);
 }
 
@@ -16543,7 +16555,9 @@ int infer_block_params(Compiler *c) {
        parameter (the emitters' box_to_poly), as the array's elements were
        before it narrowed: the parameter keeps the element type a poly array
        gives it. Left untyped, the block's own uses typed it -- `r[k] = v`
-       made it a hash, and an sp_X * element was bound into it (#4879). */
+       made it a hash, and an sp_X * element was bound into it (#4879).
+       A parameter narrow_walk_block_params pinned to the element class
+       keeps it (bp_keeps_oa_pin), and the emitters bind it unboxed. */
     if (ty_is_obj_array(rt)) rt = TY_POLY_ARRAY;
     /* --share-strings: the walk of a String Array of handles binds each String
        as a typed String Array's does. Left untyped until the receiver was
@@ -16839,6 +16853,7 @@ int infer_block_params(Compiler *c) {
       lv_set_type(lv, pt); changed = 1;
       continue;
     }
+    if (bp_keeps_oa_pin(lv, pt)) continue;
     if (lv_widen(lv, pt)) changed = 1;
   }
   return changed;

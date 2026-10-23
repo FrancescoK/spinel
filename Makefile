@@ -3270,6 +3270,15 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  cmp -s "$$tmp/bw.out" test/rbs-seed/block_param_hash_widen.expected || { echo "rbs-seed-test: FAIL (#4100 block param over an untyped receiver widened the hash it writes into)"; diff -u test/rbs-seed/block_param_hash_widen.expected "$$tmp/bw.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#4100 widened block param: C did not compile)"; ok=0; fi; \
 	;; \
+	settle_drop_keeps_unrelated_pins) \
+	$(SPINEL) test/rbs-seed/settle_drop_keeps_unrelated_pins.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/sdk.c" 2>/dev/null; \
+	grep -q 'sp_SdkColumnSet_add(sp_SdkColumnSet \* *self, sp_FloatArray \* lv_col_tr' "$$tmp/sdk.c" || { echo "rbs-seed-test: FAIL (a parameter seed dropped on the settled types boxed an unrelated method's parameters)"; ok=0; }; \
+	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/sdk.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/sdk" 2>"$$tmp/sdk.err"; then \
+	  "$$tmp/sdk" > "$$tmp/sdk.out" 2>/dev/null && \
+	    cmp -s "$$tmp/sdk.out" test/rbs-seed/settle_drop_keeps_unrelated_pins.expected || { echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins failed or output differs from CRuby)"; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins: C did not compile)"; ok=0; fi; \
+	;; \
 	array_param_seed_transient_box) \
 	$(SPINEL) test/rbs-seed/array_param_seed_transient_box.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/pst.c" 2>/dev/null; \
@@ -4676,6 +4685,12 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/object_array_map.rb -c --no-line-map -o "$$tmp/oam.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_map: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_list;' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an array of one class walked by map stayed boxed)"; ok=0; }; \
 	grep -q '(lv_x)->iv_name' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an element call is not a direct read)"; ok=0; }; \
+	rounds=$$(SP_FIXPOINT_LOG=1 $(SPINEL) test/infer/object_array_each.rb -c --no-line-map -o "$$tmp/oae.c" 2>&1 | sed -n 's/^\[fp\] rounds=\([0-9]*\).*/\1/p' | tail -1); \
+	case "$$rounds" in ''|*[!0-9]*) echo "infer-test: FAIL (no fixpoint round count for object_array_each)"; ok=0;; \
+	  *) [ "$$rounds" -lt 128 ] || { echo "infer-test: FAIL (an each walk's parameter pin and its boxed binding traded the parameter every round: the fixpoint ran to its cap)"; ok=0; };; \
+	esac; \
+	grep -q 'sp_PtrArray \* iv_pts;' "$$tmp/oae.c" || { echo "infer-test: FAIL (an array of one class whose class defines each stayed boxed through a walk)"; ok=0; }; \
+	[ "$$(grep -cE '\(lv_pt__bp[0-9]+\)->iv_x' "$$tmp/oae.c")" = 3 ] || { echo "infer-test: FAIL (an each, reverse_each or each_with_index walk over an array of one class bound its parameter boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/obj_array_literal_arg.rb -c --no-line-map -o "$$tmp/oal.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_literal_arg: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_steps;' "$$tmp/oal.c" && grep -q 'sp_total(sp_PtrArray \* lv_parts' "$$tmp/oal.c" || { echo "infer-test: FAIL (an object Array literal passed as an argument stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/obj_array_removals.rb -c --no-line-map -o "$$tmp/oar.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_removals: -c)"; ok=0; }; \
@@ -5662,6 +5677,7 @@ install: all bin/spin
 	fi
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
+	install -m 644 lib/libspinel_rt_one.a lib/libspinel_rt_one_mt.a $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a $(SPNLDIR)/lib/
 	install -d $(SPNLDIR)/include/ruby $(SPNLDIR)/tools/cext $(SPNLDIR)/tools/spin
 	install -m 644 include/ruby.h $(SPNLDIR)/include/

@@ -9058,8 +9058,13 @@ void ran_first_bind_read(int v, int th) {
 int ran_first_read_handle(int node) {
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
-    for (int j = 0; j < g_n_ran_hnd; j++)
-      if (g_ran_hnd[j].idx == i && g_ran_hnd[j].node == node) return g_ran_hnd[j].read ? g_ran_hnd[j].th : -1;
+    /* Not the record's word alone: one left by a binding since unbound outlives it when a view_bind reuses its slot. */
+    for (int j = 0; j < g_n_ran_hnd; j++) {
+      if (g_ran_hnd[j].idx != i || g_ran_hnd[j].node != node) continue;
+      char want[40];
+      snprintf(want, sizeof want, "sp_strbuf_read_pub(_t%d)", g_ran_hnd[j].th);
+      return g_ran_hnd[j].read && sp_streq(g_argov_text[i], want) ? g_ran_hnd[j].th : -1;
+    }
     return -1;
   }
   return -1;
@@ -9246,6 +9251,16 @@ static void emit_arg_temp(Compiler *c, int v) {
   free(hb.p);
   ran_first_bind_o(v, t, th, to);
   if (one_face) snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", t);
+}
+
+/* See codegen_internal.h. */
+int ran_first_temp_of(int node) {
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != node) continue;
+    int t; char rest;
+    return sscanf(g_argov_text[i], "_t%d%c", &t, &rest) == 1 ? t : -1;
+  }
+  return -1;
 }
 
 /* See codegen_internal.h. */
@@ -11405,6 +11420,18 @@ void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int 
   ArgBind B;
   arg_bind_begin(c, m, argv, argc, &B);
   for (int j = 0; m && j < m->nparams; j++) out[j] = arg_bind_param(c, m, &B, j, NULL, 0);
+  arg_bind_end(&B);
+}
+/* The same for call `call`'s own arguments and the first n parameters: out[j]
+   (and spread[j], when `spread` is given) are arg_layout_param_node's answers
+   for parameter j < n. The walks that follow a String into a callee asked
+   once per parameter, and worked the call's layout out as many times. */
+void arg_layout_call_param_map(Compiler *c, Scope *m, int call, int n, int *out, int *spread) {
+  int argc = 0;
+  const int *argv = call_arg_list(c, call, &argc);
+  ArgBind B;
+  arg_bind_begin(c, m, argv, argc, &B);
+  for (int j = 0; m && j < m->nparams && j < n; j++) out[j] = arg_bind_param(c, m, &B, j, spread ? &spread[j] : NULL, 0);
   arg_bind_end(&B);
 }
 /* The value binding a parameter, including an omitted optional's default. */

@@ -1,0 +1,14 @@
+class SdkPairPlan
+  @codes_tr: Array[Array[Integer]]
+end
+
+module SdkPipeline
+  def self.combo_codes_train: (Array[Integer] ci, Array[Integer] cj, Integer mult, Integer n) -> Array[Integer]
+  def self.encode_target: (SdkPairPlan plan) -> Integer
+end
+
+class SdkBases
+  @raw_train: Array[Array[Float]]
+  @raw_test: Array[Array[Float]]
+  def self.build: (SdkDataset train, SdkDataset tst) -> SdkBases
+end
