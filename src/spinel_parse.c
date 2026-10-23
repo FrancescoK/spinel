@@ -4324,6 +4324,16 @@ static int sp_require_preloaded(const char *name) {
   return 0;
 }
 
+/* The name a plain require looks up under packages/, or NULL to skip the
+   lookup. packages/time/time.rb is CRuby's time.rb, for Time.parse and
+   Time.strptime: a plain `require "time"` stays the runtime's, whose
+   formatters and strict parsers are C, so a program that does not parse
+   keeps the C it had (#9946). */
+static const char *sp_package_feature(const char *lib_name) {
+  if (strcmp(lib_name, "time") == 0) return NULL;
+  return lib_name;
+}
+
 /* ---- Plain require resolution ---- */
 static char *resolve_plain_requires(char *source, const char *exe_path,
                                     unsigned char **fsl, size_t *fsl_n);
@@ -4998,11 +5008,12 @@ else {
            packages/erb/erb/util.rb. */
         char gp[1024];
         char first[256];
+        const char *pkg = sp_package_feature(lib_name);
         {
-          const char *sl = strchr(lib_name, '/');
-          size_t fl2 = sl ? (size_t)(sl - lib_name) : strlen(lib_name);
+          const char *sl = pkg ? strchr(pkg, '/') : NULL;
+          size_t fl2 = !pkg ? 0 : sl ? (size_t)(sl - pkg) : strlen(pkg);
           if (fl2 >= sizeof(first)) fl2 = sizeof(first) - 1;
-          memcpy(first, lib_name, fl2);
+          if (pkg) memcpy(first, pkg, fl2);
           first[fl2] = 0;
         }
         int base_len = (int)strlen(lib_dir);
@@ -5019,11 +5030,13 @@ else {
           }
           if (content) sp_note_builtin_path(gp);
         }
-        if (!content) snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
-        if (!content) content = read_file(gp);
-        if (!content) {
+        if (!content && pkg) {
+          snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, pkg);
+          content = read_file(gp);
+        }
+        if (!content && pkg) {
           /* dev binary one level below the repo root (build/spinel) */
-          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
+          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, pkg);
           content = read_file(gp);
         }
         /* the ffi package is glue over the system libffi, built only where

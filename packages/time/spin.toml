@@ -1,0 +1,8 @@
+[package]
+name = "time"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# CRuby's lib/time.rb, vendored unchanged (README.md names the version).
+# `require "time"` alone stays the runtime's: its formatters and strict
+# parsers are C. This file is spliced in only for a program that requires
+# "time" and calls Time.parse or Time.strptime (src/spinel_parse.c).
