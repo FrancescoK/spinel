@@ -1,7 +1,8 @@
-# spinel: reject-subclass: is shared with another name and changed in place
-# The same call past the plan, where a bare super reaches a superclass's
-# attr_reader, not Object's own inspect: it answers the String the ivar
-# holds, so the refusal stays.
+# The same call past the plan in a program with method_missing: a method the
+# walk does not see may answer it. The two String representations refused
+# the change as one through a String shared with another name; with one, the
+# String is the same object under every name and the program answers as
+# CRuby does.
 
 class K0; def initialize = @v = 0; def inspect = "K0(#{@v})"; end
 class K1; def initialize = @v = 1; def inspect = "K1(#{@v})"; end
@@ -73,14 +74,18 @@ class K66; def initialize = @v = 66; def inspect = "K66(#{@v})"; end
 class K67; def initialize = @v = 67; def inspect = "K67(#{@v})"; end
 class K68; def initialize = @v = 68; def inspect = "K68(#{@v})"; end
 class K69; def initialize = @v = 69; def inspect = "K69(#{@v})"; end
-class Base; def initialize(s) = @inspect = s; attr_reader :inspect; end
-class Sub < Base; def inspect = super; end
+class Abstract; def inspect = raise(NoMethodError, "abstract"); end
+class Wrapped; def initialize = @t = 1; def inspect; @t; super; end; end
+class Ghost; def method_missing(name, *args) = +"ghost"; def respond_to_missing?(*) = true; end
 
 module Util
   def self.lit(x) = x.inspect
 end
-objs = [K0.new, K1.new, K2.new, K3.new, K4.new, K5.new, K6.new, K7.new, K8.new, K9.new, K10.new, K11.new, K12.new, K13.new, K14.new, K15.new, K16.new, K17.new, K18.new, K19.new, K20.new, K21.new, K22.new, K23.new, K24.new, K25.new, K26.new, K27.new, K28.new, K29.new, K30.new, K31.new, K32.new, K33.new, K34.new, K35.new, K36.new, K37.new, K38.new, K39.new, K40.new, K41.new, K42.new, K43.new, K44.new, K45.new, K46.new, K47.new, K48.new, K49.new, K50.new, K51.new, K52.new, K53.new, K54.new, K55.new, K56.new, K57.new, K58.new, K59.new, K60.new, K61.new, K62.new, K63.new, K64.new, K65.new, K66.new, K67.new, K68.new, K69.new, Sub.new(+"held")]
-h = objs[ARGV.size + 70]
-s = Util.lit(h)
+objs = [K0.new, K1.new, K2.new, K3.new, K4.new, K5.new, K6.new, K7.new, K8.new, K9.new, K10.new, K11.new, K12.new, K13.new, K14.new, K15.new, K16.new, K17.new, K18.new, K19.new, K20.new, K21.new, K22.new, K23.new, K24.new, K25.new, K26.new, K27.new, K28.new, K29.new, K30.new, K31.new, K32.new, K33.new, K34.new, K35.new, K36.new, K37.new, K38.new, K39.new, K40.new, K41.new, K42.new, K43.new, K44.new, K45.new, K46.new, K47.new, K48.new, K49.new, K50.new, K51.new, K52.new, K53.new, K54.new, K55.new, K56.new, K57.new, K58.new, K59.new, K60.new, K61.new, K62.new, K63.new, K64.new, K65.new, K66.new, K67.new, K68.new, K69.new, Abstract.new, Wrapped.new]
+o = objs[ARGV.size * 3]
+s = Util.lit(o)
+t = Util.lit("str")
+names = { a: s, b: t }
 s << "!"
-p h.inspect, s
+p names[:a], names[:b], s
+p Util.lit(objs[1]), Util.lit(nil), Util.lit(:sym)

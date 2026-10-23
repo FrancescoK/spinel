@@ -1,8 +1,9 @@
-# spinel: reject-subclass: is shared with another name and changed in place
 # The same call past the plan, where one inspect's local is the answer of a
-# `return` inside a lambda, whose value an ivar keeps: the String is held
-# by another name, so the inspect does not answer a new String and the
-# refusal stays.
+# `return` inside a lambda, whose value an ivar keeps: the String is held by
+# another name, so the inspect does not answer a new String. The two String
+# representations refused the change as one through a String shared with
+# another name; with one, the String is the same object under every name and
+# the program answers as CRuby does.
 
 class K0
   attr_reader :keep

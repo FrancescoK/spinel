@@ -1,7 +1,8 @@
-# spinel: reject-subclass: is shared with another name and changed in place
-# The same call past the plan, where one method of the name answers a
-# String an ivar holds: the answer may be that String, which the call's
-# caller and the ivar both name, so the change through one stays refused.
+# The same call past the plan, where one method of the name answers a String
+# an ivar holds: the answer may be that String, which the call's caller and
+# the ivar both name. The two String representations refused the change as
+# one through a String shared with another name; with one, the String is the
+# same object under every name and the program answers as CRuby does.
 
 class K0; def initialize = @v = 0; def inspect = "K0(#{@v})"; end
 class K1; def initialize = @v = 1; def inspect = "K1(#{@v})"; end
