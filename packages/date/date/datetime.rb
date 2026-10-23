@@ -147,72 +147,17 @@ class DateTime < Date
   # Arithmetic (override for fractional day support)
   # ---------------------------------------------------------------------------
 
-  # call-seq:
-  #    d + other  ->  date
-  #
-  # Returns a date object pointing +other+ days after self.  The other
-  # should be a numeric value.  If the other is a fractional number,
-  # assumes its precision is at most nanosecond.
-  #
-  #    Date.new(2001,2,3) + 1	#=> #<Date: 2001-02-04 ...>
-  #    DateTime.new(2001,2,3) + Rational(1,2)
-  #				#=> #<DateTime: 2001-02-03T12:00:00+00:00 ...>
-  #    DateTime.new(2001,2,3) + Rational(-1,2)
-  #				#=> #<DateTime: 2001-02-02T12:00:00+00:00 ...>
-  #    DateTime.jd(0,12) + DateTime.new(2001,2,3).ajd
-  #				#=> #<DateTime: 2001-02-03T00:00:00+00:00 ...>
-  def +(other)
-    case other
-    when Integer
-      self.class.__send__(:_new_dt_from_jd_time,@jd + other, @hour, @min, @sec_i, @sec_frac, @of, @start)
-    when Rational, Float
-      # other is days (may be fractional) — add as seconds
-      extra_sec = other.to_r * 86400
-      total_r   = Rational(@jd) * 86400 + @hour * 3600 + @min * 60 + @sec_i + @sec_frac + extra_sec
-      _from_total_sec_r(total_r)
-    when Numeric
-      r = other.to_r
-      raise TypeError, "#{other.class} can't be coerced into Integer" unless r.is_a?(Rational)
-      extra_sec = r * 86400
-      total_r   = Rational(@jd) * 86400 + @hour * 3600 + @min * 60 + @sec_i + @sec_frac + extra_sec
-      _from_total_sec_r(total_r)
-    else
-      raise TypeError, "expected numeric"
-    end
+  # DateTime#+ and DateTime#- are Date's (one method for both classes, as
+  # CRuby has it): the construction they come down to is here, from the day
+  # number and the time of day.
+  private def _plus_days(n)
+    self.class.__send__(:_new_dt_from_jd_time, @jd + n, @hour, @min, @sec_i, @sec_frac, @of, @start)
   end
 
-  # call-seq:
-  #    d - other  ->  date or rational
-  #
-  # If the other is a date object, returns a Rational
-  # whose value is the difference between the two dates in days.
-  # If the other is a numeric value, returns a date object
-  # pointing +other+ days before self.
-  # If the other is a fractional number,
-  # assumes its precision is at most nanosecond.
-  #
-  #     Date.new(2001,2,3) - 1	#=> #<Date: 2001-02-02 ...>
-  #     DateTime.new(2001,2,3) - Rational(1,2)
-  #				#=> #<DateTime: 2001-02-02T12:00:00+00:00 ...>
-  #     Date.new(2001,2,3) - Date.new(2001)
-  #				#=> (33/1)
-  #     DateTime.new(2001,2,3) - DateTime.new(2001,2,2,12)
-  #				#=> (1/2)
-  def -(other)
-    case other
-    when Date
-      ajd - other.ajd
-    when Integer
-      self.class.__send__(:_new_dt_from_jd_time,@jd - other, @hour, @min, @sec_i, @sec_frac, @of, @start)
-    when Rational, Float
-      self + (-other)
-    when Numeric
-      r = other.to_r
-      raise TypeError, "#{other.class} can't be coerced into Integer" unless r.is_a?(Rational)
-      self + (-r)
-    else
-      raise TypeError, "expected numeric"
-    end
+  private def _plus_fraction(r)
+    extra_sec = r * 86400
+    total_r   = Rational(@jd) * 86400 + @hour * 3600 + @min * 60 + @sec_i + @sec_frac + extra_sec
+    _from_total_sec_r(total_r)
   end
 
   # call-seq:

@@ -22,7 +22,14 @@ type and share what the code holds (to be offered upstream):
   `__send__(sym)`;
 - each `StringScanner` scans a copy of its String, and a parsed zone is
   read as `String(...)`;
-- `deconstruct_keys`' `each` block ends in `nil`.
+- `deconstruct_keys`' `each` block ends in `nil`;
+- `+` and `-` are Date's for DateTime too, as CRuby's one method serves both
+  classes: they come down to private `_plus_days` / `_plus_fraction` hooks
+  DateTime defines for itself, and `Date - Date` is `ajd - other.ajd` for
+  both (the Date form read the day fractions and dropped a DateTime's
+  offset). An alias a program takes of `+` in Date (activesupport's
+  `plus_without_duration`) is then the method a DateTime runs as well, where
+  a `DateTime#+` of its own was another method the alias settling refused.
 
 When the pull request is merged upstream, replace these files with the
 released gem's `lib/`, keep the changes upstream has not taken, and update
