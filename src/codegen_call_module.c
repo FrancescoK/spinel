@@ -1041,16 +1041,27 @@ int emit_marshal_value_call(Compiler *c, int id, Buf *b) {
    array) goes through its box, each argument rooted while the rest are
    evaluated and converted (an Array, else CRuby's "wrong argument type";
    select takes no #to_ary).
-   A nil array watches nothing; a literal nil timeout waits. */
+   A nil array watches nothing. A timeout that is a number and never nil
+   converts as a Float; any other, a number that can be nil included, goes
+   through its box: nil waits, and anything but a number is
+   sp_poly_time_interval's "can't convert X into time interval". */
 static int io_select_arg_direct(Compiler *c, int node) {
   return nt_kind(c->nt, node) == NK_NilNode || repr_of(c, node).as_ty == TY_POLY_ARRAY;
+}
+/* a timeout that is a number and never nil: one that can be nil goes
+   through its box, where nil waits */
+static int io_select_timeout_numeric(Compiler *c, int node) {
+  Repr r = repr_of(c, node);
+  if (r.big) return 1;
+  if (r.may_nil) return 0;
+  return ty_is_numeric(r.as_ty) || r.as_ty == TY_RATIONAL || r.as_ty == TY_UNKNOWN;
 }
 int emit_io_select(Compiler *c, int argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
   int direct = 1;
   for (int k = 0; k < 3 && k < argc; k++)
     if (!io_select_arg_direct(c, argv[k])) direct = 0;
-  if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode && comp_ntype(c, argv[3]) == TY_NIL) direct = 0;
+  if (argc >= 4 && nt_kind(nt, argv[3]) != NK_NilNode && !io_select_timeout_numeric(c, argv[3])) direct = 0;
   if (direct) {
     buf_puts(b, "sp_io_select(");
     for (int k = 0; k < 3; k++) {
@@ -1074,9 +1085,17 @@ int emit_io_select(Compiler *c, int argc, const int *argv, Buf *b) {
   }
   int timeout = ++g_tmp;
   buf_printf(b, "double _t%d = ", timeout);
-  if (argc >= 4 && comp_ntype(c, argv[3]) != TY_NIL) emit_float_expr(c, argv[3], b);
-  else if (argc >= 4) { buf_puts(b, "((void)("); emit_expr(c, argv[3], b); buf_puts(b, "), -1.0)"); }
-  else buf_puts(b, "-1.0");
+  if (argc < 4) buf_puts(b, "-1.0");
+  else if (io_select_timeout_numeric(c, argv[3])) emit_float_expr(c, argv[3], b);
+  else if (repr_of(c, argv[3]).as_ty == TY_NIL) {
+    buf_puts(b, "((void)("); emit_expr(c, argv[3], b); buf_puts(b, "), -1.0)");
+  }
+  else {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+    emit_boxed(c, argv[3], b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? -1.0 : sp_poly_time_interval(_t%d); })", tv, tv);
+  }
   buf_puts(b, "; ");
   for (int k = 0; k < 3; k++) {
     arrays[k] = ++g_tmp;
