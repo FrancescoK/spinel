@@ -4143,6 +4143,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->store_key_src = 0;
   lv->store_val_src = 0;
   lv->store_elems_src = 0;
+  lv->store_merge_src = 0;
   lv->store_rest_src = 0;
   scope_locals_appended(s);
   return lv;

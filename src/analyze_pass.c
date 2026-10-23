@@ -3203,6 +3203,21 @@ static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int c
   }
   return changed;
 }
+/* `obj.merge!(src)` with `src` boxed: when both are parameters the body
+   never assigns, src's position is recorded on obj (store_merge_src), for
+   the binding to check each call's hash for it against obj's container
+   (param_src_misfits). A box from anywhere else is left to the store. */
+static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an) {
+  if (recv < 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return 0;
+  Scope *sc = comp_scope_of(c, recv);
+  if (unassigned_param_read(c, sc, recv) < 0) return 0;
+  LocalVar *lv = scope_local(sc, nt_str(c->nt, recv, "name"));
+  if (!lv || lv->rbs_seeded) return 0;
+  int ch = 0;
+  for (int ai = 0; ai < an; ai++)
+    if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_read(c, sc, argv[ai]));
+  return ch;
+}
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -3393,12 +3408,12 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            brings keys and values of any kind: the instance's Hash boxes both */
         int bsub_recv = recv >= 0 && comp_ty_ary_root(c, infer_type(c, recv)) >= 0;
         if (bsub_recv && mat == TY_POLY) mat = TY_POLY_POLY_HASH;
-        if (!ty_is_hash(mat)) continue;
+        if (!ty_is_hash(mat)) { changed |= note_merge_param_srcs(c, recv, argv, an); continue; }
         is_idx_write = 1; kt = ty_hash_key(mat); vt = ty_hash_val(mat);
         for (int ai = 1; ai < an; ai++) {
           TyKind mai = infer_type(c, argv[ai]);
           if (bsub_recv && mai == TY_POLY) mai = TY_POLY_POLY_HASH;
-          if (!ty_is_hash(mai)) { is_idx_write = 0; break; }
+          if (!ty_is_hash(mai)) { changed |= note_merge_param_srcs(c, recv, argv, an); is_idx_write = 0; break; }
           kt = ty_unify(kt, ty_hash_key(mai));
           vt = ty_unify(vt, ty_hash_val(mai));
         }
@@ -7447,6 +7462,33 @@ static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth
   return ch;
 }
 
+/* 1 when the hash `a` (of type `t`) merged into a container of type `ct`
+   brings a key or value `ct` cannot hold, each checked where it is known.
+   A boxed key or value is one only the run time knows, which the store
+   checks then; a literal's own elements still show theirs. */
+static int merged_kv_misfits(TyKind ct, TyKind k, TyKind v) {
+  if (k == TY_STRBUF) k = TY_STRING;
+  if (v == TY_STRBUF) v = TY_STRING;
+  TyKind f = ct;
+  if (k != TY_POLY && k != TY_UNKNOWN && (!fold_container_evidence(&f, 0, 0, k, ty_hash_val(ct)) || f != ct)) return 1;
+  f = ct;
+  /* (nil is a value the store holds in any slot) */
+  if (v != TY_POLY && v != TY_UNKNOWN && v != TY_NIL &&
+      (!fold_container_evidence(&f, 0, 0, ty_hash_key(ct), v) || f != ct)) return 1;
+  return 0;
+}
+static int merged_hash_misfits(Compiler *c, int a, TyKind t, TyKind ct) {
+  if (!ty_is_hash(t)) return 0;
+  if (merged_kv_misfits(ct, ty_hash_key(t), ty_hash_val(t))) return 1;
+  int h = nt_paren_single(c->nt, a), en = 0;
+  const int *el = h >= 0 && nt_kind(c->nt, h) == NK_HashNode ? nt_arr(c->nt, h, "elements", &en) : NULL;
+  for (int i = 0; i < en; i++)
+    if (nt_kind(c->nt, el[i]) == NK_AssocNode &&
+        merged_kv_misfits(ct, infer_type(c, nt_ref(c->nt, el[i], "key")), infer_type(c, nt_ref(c->nt, el[i], "value"))))
+      return 1;
+  return 0;
+}
+
 /* 1 when a call passing `argv` has parameter `p` store into a container of
    type `ct` a key or value that `ct` cannot hold, where the method takes that
    key or value from another of its parameters (p's store_key_src and
@@ -7455,13 +7497,13 @@ static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth
    splat or gathered has its elements' type only, and is not asked. */
 int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv,
                       const ArgLayout *L) {
-  if (!p || !argv || !(p->store_key_src | p->store_val_src | p->store_elems_src)) return 0;
+  if (!p || !argv || !(p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src)) return 0;
   int arr = ty_is_array(ct) && ct != TY_POLY_ARRAY;
   if (!arr && !(ty_is_hash(ct) && ct != TY_POLY_POLY_HASH)) return 0;
   for (int j = 0; j < L->n && j < 64; j++) {
     int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
-    int ise = (int)((p->store_elems_src >> j) & 1ULL);
-    int a = isk || isv || ise ? layout_plain_arg(c, m, argv, L, j) : -1;
+    int ise = (int)((p->store_elems_src >> j) & 1ULL), ism = (int)((p->store_merge_src >> j) & 1ULL);
+    int a = isk || isv || ise || ism ? layout_plain_arg(c, m, argv, L, j) : -1;
     if (a < 0) continue;
     TyKind t = infer_type(c, a);
     if (t == TY_STRBUF) t = TY_STRING;
@@ -7480,6 +7522,7 @@ int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *
     if (isk && (!fold_container_evidence(&f, 0, 0, t, ty_hash_val(ct)) || f != ct)) return 1;
     f = ct;
     if (isv && (!fold_container_evidence(&f, 0, 0, ty_hash_key(ct), t) || f != ct)) return 1;
+    if (ism && merged_hash_misfits(c, a, t, ct)) return 1;
   }
   return 0;
 }
@@ -8264,7 +8307,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* A caller that hands its own parameters on, as the container and as
        the key or value, stores them the same way: record it on the caller's
        container parameter, for its own callers' binding to check. */
-    if (p->store_key_src | p->store_val_src | p->store_elems_src) {
+    if (p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src) {
       Scope *cs = comp_scope_of(c, call_id);
       int ck = unassigned_param_read(c, cs, anode);
       LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
@@ -8275,6 +8318,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         if ((p->store_key_src >> j) & 1ULL) changed |= mask_add(&cp->store_key_src, cj);
         if ((p->store_val_src >> j) & 1ULL) changed |= mask_add(&cp->store_val_src, cj);
         if ((p->store_elems_src >> j) & 1ULL) changed |= mask_add(&cp->store_elems_src, cj);
+        if ((p->store_merge_src >> j) & 1ULL) changed |= mask_add(&cp->store_merge_src, cj);
       }
     }
     if (src_misfit && p->type != TY_POLY) {
