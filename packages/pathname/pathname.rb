@@ -39,9 +39,28 @@ class Pathname
     new(Dir.pwd)
   end
 
-  # Every path matching the glob pattern, as Pathnames.
-  def self.glob(pattern)
-    Dir.glob("#{pattern}").map { |x| new(x) }
+  # Every path matching the glob pattern, as Pathnames. A Float flags value
+  # is truncated, as CRuby truncates it; a flags value that is neither an
+  # Integer nor a Float raises TypeError (a Rational or an object with
+  # #to_int is not accepted). Of the Integers, 0 takes the plain glob and
+  # File::FNM_DOTMATCH the one that keeps hidden entries; any other value
+  # raises NotImplementedError rather than reaching a Dir.glob that would not
+  # apply it.
+  def self.glob(pattern, flags = 0)
+    flags = flags.to_i if flags.is_a?(Float)
+    unless flags.is_a?(Integer)
+      raise TypeError, "no implicit conversion from nil to integer" if flags.nil?
+      what = flags == true || flags == false ? flags.to_s : flags.class.to_s
+      raise TypeError, "no implicit conversion of #{what} into Integer"
+    end
+    paths = if flags == 0
+      Dir.glob("#{pattern}")
+    elsif flags == File::FNM_DOTMATCH
+      Dir.glob("#{pattern}", File::FNM_DOTMATCH)
+    else
+      raise NotImplementedError, "Pathname.glob flags other than 0 and File::FNM_DOTMATCH"
+    end
+    paths.map { |x| new(x) }
   end
 
   # ---- conversion and identity ----
@@ -345,15 +364,16 @@ class Pathname
   # "a/." both answer "a/top.rs"), and anything else -- "./a" included -- is
   # kept as written, since `+` keeps it too. Joining the pattern onto the
   # folded receiver gives exactly those strings without going through `+`.
-  def glob(pattern)
+  # A match naming the receiver's own "." entry (File::FNM_DOTMATCH, or a
+  # "." pattern) is `self + "."`, which `+` folds to the receiver.
+  def glob(pattern, flags = 0)
     base = @path
     base = base[0, base.length - 2] while base.length > 2 && base.end_with?("#{SEPARATOR}.")
     base = base[0, base.length - 1] while base.length > 1 && base.end_with?(SEPARATOR)
-    if base == "." || base == ""
-      Dir.glob(pattern).map { |x| Pathname.new(x) }
-    else
-      Dir.glob("#{base}#{SEPARATOR}#{pattern}").map { |x| Pathname.new(x) }
-    end
+    prefix = base.end_with?(SEPARATOR) ? base : "#{base}#{SEPARATOR}"
+    full = base == "." || base == "" ? pattern : "#{prefix}#{pattern}"
+    dot = "#{prefix}."
+    Pathname.glob(full, flags).map { |x| x.to_s == dot ? Pathname.new(base) : x }
   end
 
   # Every path under this one, receiver first, depth first. A symlinked
