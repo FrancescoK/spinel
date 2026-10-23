@@ -18354,6 +18354,34 @@ static void reject_define_method_runtime_block(Compiler *c) {
   }
 }
 
+/* A method the program defines in Range (or a module it prepends to
+   Range) has a body for an Integer Range alone (sp_Range self): a Range of
+   Floats or Strings answered with the builtin method in its place, or
+   raised NoMethodError for a name the builtin lacks. */
+static void reject_range_reopen_nonint(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int rci = comp_class_index(c, "Range");
+  if (rci < 0) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int rv = nt_ref(nt, id, "receiver");
+    if (rv < 0) continue;
+    TyKind rk = comp_ntype(c, rv);
+    if (rk != TY_STR_RANGE && rk != TY_FLOAT_RANGE) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name || nt_int(nt, id, "builtin_only", 0)) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (sc && !sc->reachable) continue;
+    int dc = -1, mi = comp_method_in_chain(c, rci, name, &dc);
+    if (mi < 0) continue;
+    /* (the builtin's own method stays in front of an included module's) */
+    if (!c->scopes[mi].is_prepend_copy && dc != rci && builtin_method_known("Range", name)) continue;
+    if (c->scopes[mi].is_include_copy && !c->scopes[mi].is_prepend_copy && builtin_method_known("Range", name)) continue;
+    unsupported_feature(c, id, rk == TY_STR_RANGE
+      ? "a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it"
+      : "a method the program defines in Range, called on a Range of Floats: only an Integer Range runs it");
+  }
+}
+
 static void reject_runtime_send(Compiler *c) {
   if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
@@ -20814,6 +20842,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_time_parse(c);
   reject_define_method_early(c);
   reject_define_method_runtime_block(c);
+  reject_range_reopen_nonint(c);
 
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
