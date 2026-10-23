@@ -4432,6 +4432,17 @@ void settle_mixin_aliases(Compiler *c) {
         for (int j = 0; j < c->classes[d].naliases && !dalias; j++)
           dalias = sp_streq(c->classes[d].alias_new[j], nw);
         if (dalias) continue;
+        /* (and one between d and k that defines or aliases the name answers
+           it for d: k's alias is not what d resolves. activesupport aliases
+           to_formatted_s in Date and again in DateTime over its own to_fs,
+           and tzinfo's DateTimeWithOffset < DateTime includes a module) */
+        int between = 0;
+        for (int a = c->classes[d].parent; a >= 0 && a != k && !between; a = c->classes[a].parent) {
+          between = alias_def_after(c, a, nw, -1, 0) >= 0;
+          for (int j = 0; j < c->classes[a].naliases && !between; j++)
+            between = sp_streq(c->classes[a].alias_new[j], nw);
+        }
+        if (between) continue;
         /* (a module's own method of the name answers it in the subclass) */
         int dm = comp_method_in_chain(c, d, nw, NULL);
         int dd = dm >= 0 ? c->scopes[dm].def_node : -1;
