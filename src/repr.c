@@ -183,6 +183,12 @@ static int node_is_oint_asked(Compiler *c, int node) {
     if (!nm) return 0;
     /* a File::Stat field and File.size?: the runtime answers the oint */
     if (file_stat_nil_call(c, node)) return 1;
+    /* a call on true or false where TrueClass or FalseClass defines the
+       name: the oint where a side's method answers one (emit_call_bool_sides) */
+    { int br = nt_ref(nt, node, "receiver"), btm, bfm;
+      if (br >= 0 && comp_ntype(c, br) == TY_BOOL && cplan_bool_sides(c, node, &btm, &bfm) &&
+          ((btm >= 0 && method_ret_is_oint(&c->scopes[btm])) || (bfm >= 0 && method_ret_is_oint(&c->scopes[bfm]))))
+        return 1; }
     /* `o.x = v` as a value answers v, whatever the writer returns */
     if (call_is_setter_assign(nt, node)) {
       int sa = nt_ref(nt, node, "arguments"), san = 0;

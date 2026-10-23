@@ -27048,16 +27048,36 @@ int emit_env_args_before(Compiler *c, int id) {
    class's own method (user side, mi >= 0), or the builtin's arm, as a poly
    dispatch's builtin arm re-enters the call. Boxed when the call's two
    sides answer different types. */
-static void emit_bool_side(Compiler *c, int id, int recv, int tb, int mi, int boxed, Buf *b) {
+static void emit_bool_side(Compiler *c, int id, int recv, int tb, int mi, int boxed, int ow, Buf *b) {
   Buf nb; memset(&nb, 0, sizeof nb);
   TyKind t;
   if (mi >= 0) {
     if (g_plan_check) ucall_observe(c, id, mi, c->scopes[mi].class_id, 1);
     emit_method_cname(c, &c->scopes[mi], &nb);
     buf_printf(&nb, "(_t%d", tb);
+    /* (a default that reads self reads the value held in _t<tb>) */
+    char self[32]; snprintf(self, sizeof self, "_t%d", tb);
+    const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+    int sv_arm_depth = g_arm_depth;
+    g_arm_self = self; g_arm_scope = &c->scopes[mi]; g_arm_depth = g_expr_depth;
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", &nb);
+    g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
     buf_puts(&nb, ")");
+    /* (boxed, the method's answer is boxed as its own return is: an
+       Integer or Float that can be nil keeps its nil) */
+    if (boxed) {
+      emit_poly_user_box(c, id, &c->scopes[mi], nb.p ? nb.p : "0", b);
+      free(nb.p);
+      return;
+    }
     t = c->scopes[mi].ret;
+    /* (the call answers an oint where a side's method does: the other
+       side's plain number is lifted into one) */
+    if (ow && !method_ret_is_oint(&c->scopes[mi])) {
+      buf_printf(b, "%s(%s)", oint_of(t), nb.p ? nb.p : "0");
+      free(nb.p);
+      return;
+    }
   }
   else {
     t = an_builtin_answer(c, id);
@@ -27071,6 +27091,7 @@ static void emit_bool_side(Compiler *c, int id, int recv, int tb, int mi, int bo
     view_unbind(slot);
   }
   if (boxed && t != TY_POLY) emit_boxed_text(c, t, nb.p ? nb.p : "0", b);
+  else if (ow && mi < 0) buf_printf(b, "%s(%s)", oint_of(comp_ntype(c, id)), nb.p ? nb.p : "0");
   else buf_puts(b, nb.p ? nb.p : "0");
   free(nb.p);
 }
@@ -27087,14 +27108,15 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
   const CallPlan *pl = cplan_user(c, id);
   if (pl->via != UC_REOPEN || pl->dispatch != CP_SWITCH || !cplan_bool_sides(c, id, &tmi, &fmi)) return 0;
   int boxed = repr_of(c, id).kind == RK_BOXED;
+  int ow = !boxed && node_is_oint(c, id);
   int tb = ++g_tmp;
   Buf pre; memset(&pre, 0, sizeof pre);
   Buf *sv = g_pre; g_pre = &pre;
   Buf tv; memset(&tv, 0, sizeof tv);
   Buf fv; memset(&fv, 0, sizeof fv);
-  emit_bool_side(c, id, recv, tb, tmi, boxed, &tv);
+  emit_bool_side(c, id, recv, tb, tmi, boxed, ow, &tv);
   Buf fpre; memset(&fpre, 0, sizeof fpre); g_pre = &fpre;
-  emit_bool_side(c, id, recv, tb, fmi, boxed, &fv);
+  emit_bool_side(c, id, recv, tb, fmi, boxed, ow, &fv);
   g_pre = sv;
   /* each side's own hoisted lines run inside its branch */
   buf_printf(b, "({ int _t%d = ", tb);

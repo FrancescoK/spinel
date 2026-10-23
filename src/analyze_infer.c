@@ -5749,6 +5749,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* identity methods: return the receiver unchanged (clone also with its
      freeze: keyword argument) */
+  int self_tmi, self_fmi;
   if (recv >= 0 &&
       (argc == 0 ||
        (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
@@ -5760,7 +5761,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
          body answers -- `def dup = self.class.new(...)` answers boxed (#5461) */
       !(ty_is_object(rt) &&
         comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
-      !(rt == TY_POLY && an_user_defines_method(c, name))) {
+      !(rt == TY_POLY && an_user_defines_method(c, name)) &&
+      /* (nor where TrueClass or FalseClass defines it: the reopen rule below
+         types each value's side, cplan_bool_sides) */
+      !(rt == TY_BOOL && cplan_bool_sides(c, id, &self_tmi, &self_fmi))) {
     /* the receiver kind's row answers (the receiver itself, as the rule says
        where no row does) */
     const BuiltinOp *op = an_bop_find(c, id, bop_family_of(rt), name, argc, nt_ref(nt, id, "block") >= 0);
