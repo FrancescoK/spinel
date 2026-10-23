@@ -1,7 +1,7 @@
 # spinel: share
 # What the parsers raise for an argument that is not a String: a TypeError
 # naming nil, true or false, or the class of anything else; an object with
-# its own to_str is read through it.
+# its own to_str, public or not, is read through it.
 require "date"
 
 class DateText
@@ -60,3 +60,14 @@ class IntText; def to_str = 1; end
 class NilText; def to_str = nil; end
 show("_parse to_str gives Integer") { Date._parse(IntText.new) }
 show("_strptime to_str gives nil") { Date._strptime(NilText.new, "%Y") }
+
+# A to_str that is not public is read as well.
+class PrivText; private def to_str = "2001-02-03"; end
+class ProtText; protected def to_str = "2001-02-03"; end
+class PrivIntText; private def to_str = 1; end
+show("_parse private to_str") { Date._parse(PrivText.new) }
+show("_iso8601 private to_str") { Date._iso8601(PrivText.new) }
+show("_strptime private to_str") { Date._strptime(PrivText.new, "%Y-%m-%d") }
+show("strftime private to_str") { Date.new(2001, 2, 3).strftime(PrivText.new) }
+show("_parse protected to_str") { Date._parse(ProtText.new) }
+show("_parse private to_str gives Integer") { Date._parse(PrivIntText.new) }

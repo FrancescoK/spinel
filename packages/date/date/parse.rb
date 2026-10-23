@@ -802,8 +802,8 @@ class Date
       when String then return obj
       when nil, true, false then raise TypeError, "no implicit conversion of #{obj.inspect} into String"
       end
-      if obj.respond_to?(:to_str)
-        str = obj.to_str
+      if obj.respond_to?(:to_str, true)
+        str = obj.__send__(:to_str)
         return str if String === str
         raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{str.class})"
       end
