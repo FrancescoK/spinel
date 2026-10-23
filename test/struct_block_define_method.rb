@@ -6,12 +6,14 @@ ColumnDefinition = Struct.new(:name, :type, :options) do
   [:precision, :null].each do |option_name|
     define_method(option_name) { options[option_name] }
   end
+  [].each { |option_name| define_method(:never) { option_name } }
 end
 c = ColumnDefinition.new(:title, :string, {null: false})
 c.limit = 5
 p c.limit
 p c.precision
 p c.null
+p c.respond_to?(:never)
 
 Point = Data.define(:x, :y) do
   define_method(:sum) { x + y }

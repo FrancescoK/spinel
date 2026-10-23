@@ -669,7 +669,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     if (dkn0 > 0) return 0; }
   /* iterate the array literal's elements */
   int en = 0; const int *elems = nt_arr(nt, recv, "elements", &en);
-  if (en == 0) return 0;
+  if (en == 0) return 1;  /* an empty loop defines nothing */
   for (int k = 0; k < en; k++) {
     TyKind lt = dm_lit_type(c, elems[k]);
     if (lt == TY_UNKNOWN) return 0;  /* non-literal element: bail (unhandled) */
