@@ -22261,8 +22261,13 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
            a poly read of an ivar that only ever holds Hashes would
            otherwise reach every program class's `[]=` */
         if (pm->class_id >= 0 && cls_fact_excludes(c, rv, pm->class_id)) continue;
+        /* (the call's layout once, for every parameter: it was worked out
+           per parameter, and this walk was a fifth of a Rails program's
+           share pass) */
+        int pmap[32];
+        if (pm->nparams > 0) arg_layout_call_param_map(c, pm, node, 32, pmap, NULL);
         for (int j = 0; j < pm->nparams && j < 32; j++) {
-          int an = arg_layout_param_node(c, pm, node, j, NULL);
+          int an = pmap[j];
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
               !sp_streq(nt_str(nt, an, "name"), vn)) continue;
           LocalVar *q2 = pm->pnames[j] ? scope_local(pm, pm->pnames[j]) : NULL;
@@ -22276,8 +22281,10 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
       }
     }
     Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    int mmap[32];
+    if (m && m->nparams > 0) arg_layout_call_param_map(c, m, node, 32, mmap, NULL);
     for (int j = 0; m && j < m->nparams && j < 32; j++) {
-      int an = arg_layout_param_node(c, m, node, j, NULL);
+      int an = mmap[j];
       if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
           !sp_streq(nt_str(nt, an, "name"), vn)) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
@@ -26401,15 +26408,22 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     int cmi = pq5 >= 0 ? (pc5[pq5].native ? -1 : pc5[pq5].mi)
                       : objrecv ? an_call_target_mi(c, cu) : an_any_scope_by_name(c, cun);
     if (cmi < 0) continue;
-    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
+    /* the call's layout once for every parameter (it was worked out per
+       parameter): the argument each binds, and the splat or `**` operand it
+       comes out of */
+    int np5 = c->scopes[cmi].nparams;
+    int *map5 = malloc(sizeof *map5 * (size_t)(np5 > 0 ? np5 : 1) * 2), *spr5 = map5 + (np5 > 0 ? np5 : 1);
+    if (!map5) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    arg_layout_call_param_map(c, &c->scopes[cmi], cu, np5, map5, spr5);
+    for (int j = 0; j < np5; j++) {
       int app5 = an_param_mutated_in_place(c, cmi, j);
       /* the argument parameter j binds, a keyword's by name. One that comes
          out of a splat's or a `**`'s operand is an element read like
          `push(arr[0])` below, with the operand the container: `m(*arr)` and
          `m(**h)` handed the callee a copy of what arr and h hold, and its
          appends never reached them, nor the local stored there. */
-      int spread5 = -1;
-      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
+      int spread5 = spr5[j];
+      int an5 = map5[j];
       /* An element is appended to as surely when the callee hands its
          parameter on to a method that appends to it: `def m1(s) = m2(s)`
          called `m1(h[:a])` copied the element as `m2(h[:a])` would have,
@@ -26497,6 +26511,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         }
       }
     }
+    free(map5);
     }
   }
 

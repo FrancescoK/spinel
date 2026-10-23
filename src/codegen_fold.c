@@ -11420,6 +11420,18 @@ void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int 
   for (int j = 0; m && j < m->nparams; j++) out[j] = arg_bind_param(c, m, &B, j, NULL, 0);
   arg_bind_end(&B);
 }
+/* The same for call `call`'s own arguments and the first n parameters: out[j]
+   (and spread[j], when `spread` is given) are arg_layout_param_node's answers
+   for parameter j < n. The walks that follow a String into a callee asked
+   once per parameter, and worked the call's layout out as many times. */
+void arg_layout_call_param_map(Compiler *c, Scope *m, int call, int n, int *out, int *spread) {
+  int argc = 0;
+  const int *argv = call_arg_list(c, call, &argc);
+  ArgBind B;
+  arg_bind_begin(c, m, argv, argc, &B);
+  for (int j = 0; m && j < m->nparams && j < n; j++) out[j] = arg_bind_param(c, m, &B, j, spread ? &spread[j] : NULL, 0);
+  arg_bind_end(&B);
+}
 /* The value binding a parameter, including an omitted optional's default. */
 int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread) {
   int argc = 0;
