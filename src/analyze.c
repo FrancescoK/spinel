@@ -45705,14 +45705,16 @@ static int sa_stored_value(Compiler *c, int u, int k) {
    again -- on a Rails program 6% of a sampled window of the share pass, in
    the argument scan. What is kept is the node table's (the name, the
    receiver, the values and their count, and whether the call's shape is
-   one of the walk's), and goes with the table; the receiver's type is asked
-   each time, as before. */
-static const NodeTable *sau_nt; static unsigned sau_ver; static int sau_cnt = -1, sau_u = -1;
+   one of the walk's), and goes with the table: its version, its edits (an
+   argument array an edit replaces is freed, and version does not count
+   that edit) and its node count; the receiver's type is asked each time,
+   as before. */
+static const NodeTable *sau_nt; static unsigned sau_ver; static unsigned long sau_edits; static int sau_cnt = -1, sau_u = -1;
 static const char *sau_nm; static int sau_r, sau_an, sau_shape; static const int *sau_av;
 static int sa_unseen_element(Compiler *c, int u, int k) {
   const NodeTable *nt = c->nt;
-  if (sau_nt != nt || sau_ver != nt->version || sau_cnt != nt->count || sau_u != u) {
-    sau_nt = nt; sau_ver = nt->version; sau_cnt = nt->count; sau_u = u;
+  if (sau_nt != nt || sau_ver != nt->version || sau_edits != nt->edits || sau_cnt != nt->count || sau_u != u) {
+    sau_nt = nt; sau_ver = nt->version; sau_edits = nt->edits; sau_cnt = nt->count; sau_u = u;
     sau_nm = nt_str(nt, u, "name");
     sau_r = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
     sau_av = NULL; sau_an = 0; sau_shape = 0;

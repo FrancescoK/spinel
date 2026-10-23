@@ -8,6 +8,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in the class body before an alias rebinds it: an alias binds for the whole program here, so the call would run the aliased body, not the `def a` Ruby runs at that point. Call it after the alias, or give the alias another name
 == test/reject/alias_rebinds_after_class_body_call.rb [promote] rc=1
 spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in the class body before an alias rebinds it: an alias binds for the whole program here, so the call would run the aliased body, not the `def a` Ruby runs at that point. Call it after the alias, or give the alias another name
+== test/reject/alias_singleton_between_subclass_include.rb [default] rc=1
+spinel: test/reject/alias_singleton_between_subclass_include.rb:8: Base#fmt: an alias of to_fs that a later include, prepend or def in subclass Leaf changes is not supported: the alias would call the later method, not the one in effect where it appears
+== test/reject/alias_singleton_between_subclass_include.rb [promote] rc=1
+spinel: test/reject/alias_singleton_between_subclass_include.rb:8: Base#fmt: an alias of to_fs that a later include, prepend or def in subclass Leaf changes is not supported: the alias would call the later method, not the one in effect where it appears
 == test/reject/alias_then_subclass_include.rb [default] rc=1
 spinel: test/reject/alias_then_subclass_include.rb:9: A#o: an alias of hi that a later include, prepend or def in subclass B changes is not supported: the alias would call the later method, not the one in effect where it appears
 == test/reject/alias_then_subclass_include.rb [promote] rc=1
