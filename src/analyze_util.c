@@ -4328,7 +4328,7 @@ int io_reopen_ret_mixed(Compiler *c, const char *name) {
 }
 /* The builtin superclass of an IO-family class, as lib/sp_io.c walks a
    handle's kind (sp_io_super_of); NULL above IO. */
-static const char *io_super_name(const char *k) {
+const char *io_super_name(const char *k) {
   static const char *const pairs[][2] = {
     {"TCPServer", "TCPSocket"}, {"TCPSocket", "IPSocket"}, {"UDPSocket", "IPSocket"},
     {"IPSocket", "BasicSocket"}, {"UNIXServer", "UNIXSocket"}, {"UNIXSocket", "BasicSocket"},

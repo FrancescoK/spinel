@@ -19012,7 +19012,7 @@ void refl_builtin_singleton_methods(const char *cls, int all, ReflNames *r) {
   const char *par = bid && builtin_class_parent_id(bid) == builtin_class_id("IO") ? "IO" : NULL;
   if (!bid) return;
   refl_builtin_cls_rows(cls, all ? NULL : par, r);
-  if (all && par) refl_builtin_cls_rows(par, NULL, r);
+  if (all) for (const char *p = io_super_name(cls); p; p = io_super_name(p)) refl_builtin_cls_rows(p, NULL, r);
 }
 
 int builtin_super_cmethod_known(const char *cls, const char *name) {
