@@ -3978,10 +3978,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
    the handle, as a literal's element does (#6765). */
 static TyKind infer_array_new_fill(Compiler *c, int fill) {
   TyKind ft = infer_type(c, fill);
-  if (ft == TY_STRBUF && c->share_strings) ft = TY_POLY;
+  /* (one-String mode: the String Array holds the handle) */
+  if (ft == TY_STRBUF && c->share_strings && !g_one_string) ft = TY_POLY;
   /* Static slots keep their String type after their storage is shared. */
   /* A demanded reader or a late-promoted local also keeps that type. */
-  if (ft == TY_STRING && c->share_strings && repr_of(c, fill).kind == RK_STRBUF) ft = TY_POLY;
+  if (ft == TY_STRING && c->share_strings && !g_one_string && repr_of(c, fill).kind == RK_STRBUF) ft = TY_POLY;
   return ty_array_of(ft);
 }
 /* A constructor call: a class's .new, and the builtin constructors (infer_call_inner's rules, in their order) */

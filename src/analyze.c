@@ -23609,7 +23609,8 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     /* An empty Hash factory return can follow its construction context into
        the boxed-value variant. Other return producer shapes keep their
        existing inferred layout and downstream sharing behavior. */
-    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+    /* (one-String mode: the typed Hash holds the handles) */
+    else if (!g_one_string && sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
              !c->scopes[sh->scope].ret_rbs_seeded &&
              (c->scopes[sh->scope].ret == TY_STR_STR_HASH ||
               c->scopes[sh->scope].ret == TY_STR_POLY_HASH) &&
@@ -53253,7 +53254,8 @@ static void an_phase_storage(Compiler *c) {
     const char *vn = nt_str(c->nt, recv, "name");
     Scope *s = vn ? comp_scope_of(c, recv) : NULL;
     LocalVar *lv = s ? scope_local(s, vn) : NULL;
-    if (!lv || lv->is_param || lv->type != TY_STRING) continue;
+    /* (one-String mode: a String local is the handle) */
+    if (!lv || lv->is_param || (lv->type != TY_STRING && !(g_one_string && lv->type == TY_STRBUF))) continue;
     /* Only promote when every write to this local is a bare string literal:
        such a value is a fresh mutable string. A `.freeze`/`.dup`/method-result
        write may carry runtime frozen state that sp_String_new would discard,

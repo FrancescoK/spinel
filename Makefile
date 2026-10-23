@@ -4450,6 +4450,18 @@ new-string-oracle: $(SPINEL) new-string-oracle-selftest
 # not reach this directory, and the assertions below read the emitted C as text
 # only -- so without this a fixture whose C names the right types but does not
 # compile, or compiles and then raises, passes the whole leg.
+# The C a String parameter, field or local is declared as, which the checks
+# below read: the handle in the one-String mode, the bytes otherwise, and a
+# by-reference String parameter the same (a handle needs no cell)
+ifneq ($(filter -DSP_ONE_STRING,$(COPT)),)
+STR_SLOT_C = sp_String \*
+STR_BYREF_S = sp_String \* lv_s
+STR_BYREF_PLAIN = sp_String \* lv_plain
+else
+STR_SLOT_C = const char \*
+STR_BYREF_S = const char \* \*_cell_s
+STR_BYREF_PLAIN = const char \* \*_cell_plain
+endif
 infer-test: $(SPINEL) $(SP_RT_LIB)
 	@tmp=$$(mktemp -d /tmp/spinel-infer.XXXXXX); ok=1; \
 	for f in test/infer/*.rb; do \
@@ -4482,7 +4494,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	done; \
 	$(SPINEL) test/byref_string_selective_volatile.rb -c --no-line-map -o "$$tmp/bsv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (byref_string_selective_volatile: -c)"; ok=0; }; \
 	for m in rb_plain_append unrelated_begin; do \
-	  grep -q "sp_$$m(const char \* \*_cell_s) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \
+	  grep -q "sp_$$m($(STR_BYREF_S)) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \
 	done; \
 	for m in leaf relay forward mixed block_leaf rb_kw_block_leaf; do \
 	  grep -q "sp_$$m(sp_String \* lv_s) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (a borrowed setjmp-live String is not the shared handle, which a longjmp cannot clobber: $$m)"; ok=0; }; \
@@ -4493,8 +4505,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	for param in optional post; do \
 	  grep -Eq "sp_String \* lv__y[0-9]+_$$param = " "$$tmp/bsv.c" || { echo "infer-test: FAIL (a yielded block alias of a setjmp-live String is not the shared handle: $$param)"; ok=0; }; \
 	done; \
-	grep -q 'sp_rb_kw_leaf(sp_String \* lv_s, const char \* lv_suffix) {' "$$tmp/bsv.c" && \
-	grep -q 'sp_two_slots(const char \* \*_cell_plain, sp_String \* lv_guarded) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (the shared handle of a setjmp-live String is not selective per parameter or through keywords)"; ok=0; }; \
+	grep -q 'sp_rb_kw_leaf(sp_String \* lv_s, $(STR_SLOT_C) lv_suffix) {' "$$tmp/bsv.c" && \
+	grep -q 'sp_two_slots($(STR_BYREF_PLAIN), sp_String \* lv_guarded) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (the shared handle of a setjmp-live String is not selective per parameter or through keywords)"; ok=0; }; \
 	$(SPINEL) test/gc_root_stmt_local_arg.rb -c --no-line-map -o "$$tmp/rsl.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (gc_root_stmt_local_arg: -c)"; ok=0; }; \
 	grep -A1 -E 'sp_Vec \* _t[0-9]+ = lv_ray;' "$$tmp/rsl.c" | head -2 | grep -q 'lv_isect;' || { echo "infer-test: FAIL (a local nothing in its statement rebinds is copied into a rooted argument temp)"; ok=0; }; \
 	grep -A1 -E 'sp_Vec \* _t[0-9]+ = lv_isect;' "$$tmp/rsl.c" | grep -q 'SP_GC_ROOT(_t' || { echo "infer-test: FAIL (a local its statement rebinds lost its argument temp's root)"; ok=0; }; \
@@ -4511,7 +4523,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_Item \* lv_it' "$$tmp/hoc.c" && grep -q 'sp_Item_describe((sp_Item \*)lv_it)' "$$tmp/hoc.c" || { echo "infer-test: FAIL (#4846 a one-class hash's each_value is not typed)"; ok=0; }; \
 	$(SPINEL) test/hash_one_class_value_unbox.rb -c --no-line-map -o "$$tmp/hcu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_one_class_value_unbox: -c)"; ok=0; }; \
 	awk '/^static inline void \*sp_poly_unbox_cls\(.*\)\{/,/^}/' "$$tmp/hcu.c" > "$$tmp/hcu_u.c"; \
-	grep -q 'sp_poly_unbox_cls(sp_StrPolyHash_get(lv_h, lv_key), 0,' "$$tmp/hcu.c" && grep -q 'v.cls_id==cls))return v.v.p;' "$$tmp/hcu_u.c" && ! grep -q 'sp_class_le' "$$tmp/hcu_u.c" || { echo "infer-test: FAIL (a one-class Hash's object read walks the class chain instead of checking the class id inline)"; ok=0; }; \
+	grep -Eq 'sp_poly_unbox_cls\(sp_StrPolyHash_get\(lv_h, (lv_key|SP_STR_B\(\(lv_key \? sp_String_cstr\(lv_key\) : NULL\)\))\), 0,' "$$tmp/hcu.c" && grep -q 'v.cls_id==cls))return v.v.p;' "$$tmp/hcu_u.c" && ! grep -q 'sp_class_le' "$$tmp/hcu_u.c" || { echo "infer-test: FAIL (a one-class Hash's object read walks the class chain instead of checking the class id inline)"; ok=0; }; \
 	$(SPINEL) test/boxed_recv_class_set_binding.rb -c --no-line-map -o "$$tmp/bcs.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (boxed_recv_class_set_binding: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_Seq_output(sp_Seq \*self, sp_int lv_col, sp_int lv_shift)' "$$tmp/bcs.c" || { echo "infer-test: FAIL (#8530 a call on a boxed receiver bound the parameters of a class it never holds)"; ok=0; }; \
 	$(SPINEL) test/class_ancestor_tests_dynamic.rb -c --no-line-map -o "$$tmp/cat.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_ancestor_tests_dynamic: -c)"; ok=0; }; \
@@ -4554,7 +4566,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/poly_dispatch_out_of_line_array_subclass.rb -c --no-line-map -o "$$tmp/pdla.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line_array_subclass: -c)"; ok=0; }; \
 	[ "$$(grep -c '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdla.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9]*(' "$$tmp/pdla.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (a poly dispatch in a program that subclasses Array is not one shared out-of-line function)"; ok=0; }; \
 	$(SPINEL) test/infer/string_handle_initialize_reader.rb -c --no-line-map -o "$$tmp/shi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (string_handle_initialize_reader: -c)"; ok=0; }; \
-	grep -q 'sp_Count_initialize(sp_Count \*self, const char \* lv_s)' "$$tmp/shi.c" && grep -q 'sp_Name_initialize(sp_Name \*self, const char \* lv_s)' "$$tmp/shi.c" && grep -q 'const char \* lv_line = NULL;' "$$tmp/shi.c" && grep -q 'sp_Grow_initialize(sp_Grow \*self, sp_String \* lv_s)' "$$tmp/shi.c" || { echo "infer-test: FAIL (#6179 an initialize that only reads or keeps its String took the shared handle)"; ok=0; }; \
+	grep -q 'sp_Count_initialize(sp_Count \*self, $(STR_SLOT_C) lv_s)' "$$tmp/shi.c" && grep -q 'sp_Name_initialize(sp_Name \*self, $(STR_SLOT_C) lv_s)' "$$tmp/shi.c" && grep -q '$(STR_SLOT_C) lv_line = NULL;' "$$tmp/shi.c" && grep -q 'sp_Grow_initialize(sp_Grow \*self, sp_String \* lv_s)' "$$tmp/shi.c" || { echo "infer-test: FAIL (#6179 an initialize that only reads or keeps its String took the shared handle)"; ok=0; }; \
 	$(SPINEL) test/infer/tally_typed.rb -c --no-line-map -o "$$tmp/tly.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (tally_typed: -c)"; ok=0; }; \
 	grep -q '^static inline sp_IntIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" && grep -q '^static inline sp_StrIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" || { echo "infer-test: FAIL (tally over a typed array answers a boxed hash)"; ok=0; }; \
 	$(SPINEL) test/infer/param_narrow_super_route.rb -c --no-line-map -o "$$tmp/psr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (param_narrow_super_route: -c)"; ok=0; }; \
@@ -4572,7 +4584,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q '? sp_String_cstr(_t' "$$tmp/rro.c" || { echo "infer-test: FAIL (a read-only reader read still copies the whole String)"; ok=0; }; \
 	[ "$$(grep -c 'sp_str_concat(sp_String_cstr' "$$tmp/rro.c")" -le 2 ] || { echo "infer-test: FAIL (a read-only reader read copies where it need not)"; ok=0; }; \
 	$(SPINEL) test/setbyte_handle_in_place.rb -c --no-line-map -o "$$tmp/sbh.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (setbyte_handle_in_place: -c)"; ok=0; }; \
-	grep -q 'sp_str_setbyte_cow(_p' "$$tmp/sbh.c" || { echo "infer-test: FAIL (setbyte on a handle still reads the whole String out)"; ok=0; }; \
+	grep -qE 'sp_str_setbyte_cow\(_p|sp_String_setbyte\(' "$$tmp/sbh.c" || { echo "infer-test: FAIL (setbyte on a handle still reads the whole String out)"; ok=0; }; \
 	awk '/while \\(\\(lv_i < 16LL\\)\\)/{f=1} f{print} f&&/^  }/{exit}' "$$tmp/sbh.c" | grep -q 'sp_str_concat' && { echo "infer-test: FAIL (a setbyte loop copies the String per write)"; ok=0; }; \
 	$(SPINEL) test/renarrow_resets_return.rb -c --no-line-map -o "$$tmp/rrr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (renarrow_resets_return: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_Rng_next_u32(' "$$tmp/rrr.c" || { echo "infer-test: FAIL (a self-referential ivar through a return stayed boxed)"; ok=0; }; \
@@ -4593,9 +4605,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_qv.*lv_qk.*lv_qs' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a class test on a scalar kept a loop from caching its arrays' headers)"; ok=0; }; \
 	$(SPINEL) test/loop_string_getbyte_unheld.rb -c --no-line-map -o "$$tmp/lsgu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_string_getbyte_unheld: -c)"; ok=0; }; \
-	awk '/^[a-z].* sp_(total|edges|uncached)\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -c 'getbyte_opt(sp_String_cstr(lv_rows), ' | grep -qx 3 || { echo "infer-test: FAIL (String#getbyte with an arithmetic index does not read its receiver where the call needs it)"; ok=0; }; \
+	awk '/^[a-z].* sp_(total|edges|uncached)\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -cE 'getbyte_opt\((sp_String_cstr|SP_STR_B)\(lv_rows\), ' | grep -qx 3 || { echo "infer-test: FAIL (String#getbyte with an arithmetic index does not read its receiver where the call needs it)"; ok=0; }; \
 	awk '/^[a-z].* sp_(total|edges|uncached)\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -q 'SP_GC_ROOT(_t' && { echo "infer-test: FAIL (String#getbyte with an arithmetic index fetches and roots its receiver's bytes ahead of the index)"; ok=0; }; \
-	awk '/^[a-z].* sp_built\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -qE 'const char \*_t[0-9]+ = \(sp_String_cstr\(lv_rows\)\); SP_GC_ROOT\(_t' || { echo "infer-test: FAIL (String#getbyte with an index that allocates does not hold its receiver rooted)"; ok=0; }; \
+	awk '/^[a-z].* sp_built\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -qE 'const char \*_t[0-9]+ = (\(sp_String_cstr\(lv_rows\)\)|SP_STR_B\(SP_STR_B\(lv_rows\)\)); SP_GC_ROOT\(_t' || { echo "infer-test: FAIL (String#getbyte with an index that allocates does not hold its receiver rooted)"; ok=0; }; \
 	$(SPINEL) test/begin_while_locals_not_volatile.rb -c --no-line-map -o "$$tmp/bwv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (begin_while_locals_not_volatile: -c)"; ok=0; }; \
 	grep -qE 'volatile .* lv_(sum|v|f|n) ' "$$tmp/bwv.c" && { echo "infer-test: FAIL (a local a handler-less begin ... end while writes was declared volatile)"; ok=0; }; \
 	grep -qE 'volatile sp_int lv_x ' "$$tmp/bwv.c" || { echo "infer-test: FAIL (a local a begin with a rescue writes lost its volatile)"; ok=0; }; \
@@ -4627,7 +4639,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -qE '= \(lv_h\)->iv_data; SP_GC_ROOT\(_t' "$$tmp/rop.c" || { echo "infer-test: FAIL (a reader next to a call that reassigns it lost its ordering)"; ok=0; }; \
 	$(SPINEL) test/infer/typed_array_elem_arg_types_param.rb -c --no-line-map -o "$$tmp/tae.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (typed_array_elem_arg_types_param: -c)"; ok=0; }; \
 	grep -Eq 'sp_Plan_write_column\(sp_Plan \*self, sp_o?int lv_wcol\)' "$$tmp/tae.c" || { echo "infer-test: FAIL (an int-array element passed as an argument left the parameter boxed)"; ok=0; }; \
-	grep -q 'sp_Plan_shout(sp_Plan \*self, const char \* lv_s)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a String-array element passed as an argument left the parameter boxed)"; ok=0; }; \
+	grep -q 'sp_Plan_shout(sp_Plan \*self, $(STR_SLOT_C) lv_s)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a String-array element passed as an argument left the parameter boxed)"; ok=0; }; \
 	grep -q 'sp_Mixed_take(sp_Mixed \*self, sp_RbVal lv_v)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a parameter whose call sites pass two element kinds must keep the boxed slot)"; ok=0; }; \
 	$(SPINEL) test/infer/array_new_default_push_narrows.rb -c --no-line-map -o "$$tmp/and.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_default_push_narrows: -c)"; ok=0; }; \
 	grep -q 'sp_FloatArray \* iv_f;' "$$tmp/and.c" && grep -q 'sp_StrArray \* iv_s;' "$$tmp/and.c" || { echo "infer-test: FAIL (an Array.new(n, default) slot pushed a parameter stayed boxed)"; ok=0; }; \
@@ -4650,7 +4662,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/array_new_fill_object_array.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_fill_object_array: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_items;' "$$tmp/anf.c" && grep -q 'sp_bump(sp_Foo \* lv_f)' "$$tmp/anf.c" && grep -q 'sp_rb_sum_bytes(sp_IOBuffer \* lv_b' "$$tmp/anf.c" && grep -q 'sp_PtrArray \* sp_mk(' "$$tmp/anf.c" || { echo "infer-test: FAIL (an Array.new(n, obj) fill left an array of one class boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
-	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' 'const char \* iv_b;' 'sp_int iv_v;'; do \
+	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' '$(STR_SLOT_C) iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \
 	done; \
 	$(SPINEL) test/infer/emit_types_fields.rb --emit-types -o "$$tmp/et.json" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-types on emit_types_fields)"; exit 1; }; \
@@ -4713,11 +4725,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q '"param":"xs",.*"why":\[{"role":"rule","note":"by construction: a splat parameter holds the extra arguments of every call, untyped"}\]' "$$tmp/wwr.json" && grep -q '"param":"b",.*"why":\[{"file":"test/infer/why_widen_rules.rb","line":5,"col":15,"end_line":5,"end_col":18,"role":"by","rbs":"nil","note":" -- a `= nil` default' "$$tmp/wwr.json" || { echo "infer-test: FAIL (--emit-types: a rule is a why hop, with its subject when it has one)"; ok=0; }; \
 	grep -q ': note: ' "$$tmp/wwc2.err" && { echo "infer-test: FAIL (a plain compile derives no origin)"; ok=0; }; \
 	$(SPINEL) test/infer/class_of_known_receiver_reach.rb -c --no-line-map -o "$$tmp/ckr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile class_of_known_receiver_reach)"; exit 1; }; \
-	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/ckr.c" || { echo "infer-test: FAIL (a handed-on .class of a known receiver let a class-value new reach every class)"; grep -E 'sp_Digest_initialize\(' "$$tmp/ckr.c" | head -1; ok=0; }; \
+	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, $(STR_SLOT_C) lv_raw_hash\)' "$$tmp/ckr.c" || { echo "infer-test: FAIL (a handed-on .class of a known receiver let a class-value new reach every class)"; grep -E 'sp_Digest_initialize\(' "$$tmp/ckr.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/const_get_literal_reach.rb -c --no-line-map -o "$$tmp/cgl.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile const_get_literal_reach)"; exit 1; }; \
-	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/cgl.c" || { echo "infer-test: FAIL (a literal const_get let a class-value new reach every class's initialize)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cgl.c" | head -1; ok=0; }; \
+	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, $(STR_SLOT_C) lv_raw_hash\)' "$$tmp/cgl.c" || { echo "infer-test: FAIL (a literal const_get let a class-value new reach every class's initialize)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cgl.c" | head -1; ok=0; }; \
 	$(SPINEL) test/class_method_self_is_no_escape.rb -c --no-line-map -o "$$tmp/cms.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile class_method_self_is_no_escape)"; exit 1; }; \
-	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/cms.c" || { echo "infer-test: FAIL (the self of def self.m let a class-value new reach every class with a class method)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cms.c" | head -1; ok=0; }; \
+	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, $(STR_SLOT_C) lv_raw_hash\)' "$$tmp/cms.c" || { echo "infer-test: FAIL (the self of def self.m let a class-value new reach every class with a class method)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cms.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/unsettled_index_write.rb -c --no-line-map -o "$$tmp/u.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile unsettled_index_write)"; exit 1; }; \
 	grep -Eq 'static (inline )?((__attribute__\(\(always_inline\)\)|SP_ALWAYS_INLINE) )?sp_int sp_M_s_mul\(sp_o?int [A-Za-z_]+, sp_o?int [A-Za-z_]+\)' "$$tmp/u.c" || { echo "infer-test: FAIL (an int-keyed []= on an unsettled slot poisoned the call graph)"; grep -E 'sp_M_s_mul\(' "$$tmp/u.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_xs' "$$tmp/u.c" || { echo "infer-test: FAIL (the mapped array did not settle to an int array)"; ok=0; }; \

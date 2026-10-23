@@ -351,7 +351,9 @@ TyKind aset_value_type_ex(Compiler *c, int recv, int *nwrites) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 2) continue;
     if (nwrites) (*nwrites)++;
-    acc = ty_unify(acc, infer_type(c, av[1]));
+    TyKind vt = infer_type(c, av[1]);
+    if (g_one_string && vt == TY_STRBUF) vt = TY_STRING;   /* (the typed Hash holds the handle) */
+    acc = ty_unify(acc, vt);
   }
   return acc;
 }
@@ -385,7 +387,9 @@ TyKind local_aset_key_type(Compiler *c, Scope *sc, const char *name, int *nwrite
                     wk == NK_IndexOperatorWriteNode) ? 1 : 2;
     if (an < min_args) continue;
     if (nwrites) (*nwrites)++;
-    acc = ty_unify(acc, infer_type(c, av[0]));
+    TyKind kt = infer_type(c, av[0]);
+    if (g_one_string && kt == TY_STRBUF) kt = TY_STRING;
+    acc = ty_unify(acc, kt);
   }
   return acc;
 }

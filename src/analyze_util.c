@@ -1462,6 +1462,9 @@ int recv_hash_new_default_arg(Compiler *c, int recv) {
 TyKind hash_default_value_ty(Compiler *c, int dn) {
   if (dn < 0) return TY_UNKNOWN;
   TyKind t = infer_type(c, dn);
+  /* (one-String mode: a default held as its handle is a String to the
+     Hash's value kind, which holds the handle) */
+  if (g_one_string && t == TY_STRBUF) return TY_STRING;
   if (t != TY_UNKNOWN) return t;
   NodeKind k = nt_kind(c->nt, dn);
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) return TY_POLY;
