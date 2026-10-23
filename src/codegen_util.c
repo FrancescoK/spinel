@@ -6129,9 +6129,10 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
 }
 /* An iterator's receiver n: a fresh String Array whose elements the rule
    shares (share_node_fresh_elems)? Then it is consumed as the PolyArray of
-   handles a local's Array would be. */
+   handles a local's Array would be. (One-String mode: the String Array
+   holds the handles.) */
 int iter_src_as_handles(Compiler *c, int n) {
-  return c->share_strings && comp_ntype(c, n) == TY_STR_ARRAY && share_node_fresh_elems(c, n);
+  return c->share_strings && !g_one_string && comp_ntype(c, n) == TY_STR_ARRAY && share_node_fresh_elems(c, n);
 }
 /* A retaining iterator call `id` (select, reject, find_all, the in-place
    filters) over a fresh sharing String Array `recv`: the receiver is

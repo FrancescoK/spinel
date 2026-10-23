@@ -708,8 +708,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        elements the rule shares answers the handles its block saw, the
        PolyArray a local's Array of them would be (a temporary result has no
        holder to select boxed element storage). The in-place filters answer
-       self or nil, boxed, and keep their type. */
-    if (c->share_strings && rt == TY_STR_ARRAY && !is_select_reject_bang(name) &&
+       self or nil, boxed, and keep their type. (One-String mode: the String
+       Array holds the handles.) */
+    if (c->share_strings && !g_one_string && rt == TY_STR_ARRAY && !is_select_reject_bang(name) &&
         share_iter_answers_handles(c, id)) {
       *out = TY_POLY_ARRAY;
       return 1;

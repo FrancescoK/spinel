@@ -5326,7 +5326,12 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   LocalVar *flv = (fs && bp0) ? scope_local(fs, bp0) : NULL;
   TyKind fsaved = flv ? flv->type : TY_UNKNOWN;
   int fnsaved = flv ? flv->nullable_int : 0;
-  if (flv) {
+  /* (one-String mode: a String Array's element is its handle, which a
+     parameter the scope holds as the handle takes as it is, so a bang in
+     the block changes the element; the loop reads and writes the handles) */
+  int one_h = g_one_string && et == TY_STRING && flv && repr_of_slot(c, flv).kind == RK_STRBUF &&
+              !block_binds_gathered(c, block) && !(g_face_live_box && g_face_live_recv == recv);
+  if (flv && !one_h) {
     /* a widened parameter shadowed at a numeric element type still holds
        the element's nil */
     if (fsaved == TY_POLY && (et == TY_INT || et == TY_FLOAT)) flv->nullable_int = 1;
@@ -5355,8 +5360,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   }
   else {
     snprintf(lenf, sizeof lenf, "sp_%sArray_length", kk);
-    snprintf(getf, sizeof getf, "sp_%sArray_%s", kk, ote ? "oget" : "get");
-    snprintf(setf, sizeof setf, "sp_%sArray_%s", kk, ote ? "oset" : "set");
+    snprintf(getf, sizeof getf, "sp_%sArray_%s", kk, ote ? "oget" : one_h ? "get_e" : "get");
+    snprintf(setf, sizeof setf, "sp_%sArray_%s", kk, ote ? "oset" : one_h ? "set_e" : "set");
   }
   Buf rb = expr_buf(c, recv);
   /* rooted: a receiver that is a temporary has no other holder once its own
@@ -5378,6 +5383,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tnv, tnv);
   emit_indent(b, indent);
   if (ote) buf_printf(b, "%s _t%d = %s;\n", oint_ctype(et), te, oint_nil(et));
+  else if (one_h) buf_printf(b, "sp_String *_t%d = NULL; SP_GC_ROOT(_t%d);\n", te, te);
   else {
     emit_ctype(c, et, b);
     if (et == TY_POLY) buf_printf(b, " _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", te, te);
@@ -5445,6 +5451,10 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_tuple_block_params(c, block, block, es, &pb);
     if (pb.p) { emit_indent(b, li + 1); buf_printf(b, "%s\n", pb.p + (pb.p[0] == ' ')); }
     free(pb.p);
+  }
+  else if (bp && one_h) {
+    emit_indent(b, li + 1);
+    buf_printf(b, "lv_%s = _t%d;\n", bp, te);
   }
   else if (bp) {
     /* a poly parameter is the hoisted local, rooted where it is declared; a

@@ -1966,6 +1966,12 @@ int call_answers_no_value(Compiler *c, int node) {
   if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   if (!nm) return 0;
+  /* (a setter's call answers the value it was given, whatever the method
+     returns: `x = (o.a = v)` is v) */
+  size_t nl = strlen(nm);
+  if (nl > 1 && nm[nl - 1] == '=' && (sp_streq(nm, "[]=") || nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') ||
+                                      (nm[0] >= 'A' && nm[0] <= 'Z')))
+    return 0;
   int recv = nt_ref(nt, node, "receiver");
   int mi = -1, cid = -1;
   if (recv < 0) {
