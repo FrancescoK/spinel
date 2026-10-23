@@ -6628,10 +6628,12 @@ int desugar_array_first_last(Compiler *c) {
    settled types, as desugar_symbol_string_methods does. */
 int desugar_interp_reopened_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
-  const char *const names[] = { "Integer", "Float", "Symbol" };
-  const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL };
-  int own[3], any = 0;
-  for (int k = 0; k < 3; k++) {
+  /* true and false: either class's own to_s makes the part a call, which
+     picks the side by value (cplan_bool_sides) */
+  const char *const names[] = { "Integer", "Float", "Symbol", "TrueClass", "FalseClass" };
+  const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL, TY_BOOL, TY_BOOL };
+  int own[5], any = 0;
+  for (int k = 0; k < 5; k++) {
     int ci = comp_class_index(c, names[k]);
     own[k] = ci >= 0 && comp_method_in_chain(c, ci, "to_s", NULL) >= 0;
     any |= own[k];
@@ -6651,7 +6653,7 @@ int desugar_interp_reopened_to_s(Compiler *c) {
       if (expr < 0) continue;
       TyKind t = infer_type(c, expr);
       int hit = 0;
-      for (int j = 0; j < 3; j++) if (own[j] && t == kinds[j]) hit = 1;
+      for (int j = 0; j < 5; j++) if (own[j] && t == kinds[j]) hit = 1;
       if (!hit) continue;
       int tsc = nt_new_node(nt, "CallNode");
       if (tsc < 0) continue;
@@ -6724,7 +6726,7 @@ int desugar_interp_elided_to_s(Compiler *c) {
     int st = nt_ref(nt, parts[0], "statements"), bn = 0;
     const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
     if (bn < 1) continue;
-    int last = an_unparen(nt, body[bn - 1]);
+    int last = nt_paren_single(nt, body[bn - 1]);
     NodeKind lk = last >= 0 ? nt_kind(nt, last) : NK_NONE;
     if (lk == NK_YieldNode || lk == NK_StringNode || lk == NK_InterpolatedStringNode) continue;
     TyKind t = infer_type(c, body[bn - 1]);
@@ -9172,6 +9174,8 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        blockless each_slice answering an Enumerator, say -- has a type, and
        rerouting it through to_a would answer an Array instead. */
     if (comp_ntype(c, id) != TY_UNKNOWN) continue;
+    /* a Hash or Range reopen's own method of the name is the call's target */
+    if (an_reopen_owner(c, id, ty_is_hash(rt) ? "Hash" : "Range") >= 0) continue;
     /* A blockless each_* over a Range has an arm already, and its Enumerator
        keeps the Range as its source (`(1..6).each_slice(2)` inspects as
        `1..6:each_slice(2)`); routing it would answer the elements instead. A
@@ -10023,7 +10027,7 @@ int desugar_empty_hash_compare_by_identity(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int r = nt_ref(nt, id, "receiver");
-    if (!nm || !sp_streq(nm, "compare_by_identity") || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
+    if (!is_compare_by_identity_name(nm) || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
     int en = 0; nt_arr(nt, r, "elements", &en);
     if (en != 0) continue;
     int k = nt_new_node(nt, "ConstantReadNode");
@@ -12393,6 +12397,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
         (sp_streq(name, "find") || sp_streq(name, "detect") ||
          sp_streq(name, "any?") || sp_streq(name, "all?") ||
          sp_streq(name, "none?") || sp_streq(name, "one?"))) continue;
+    /* an Array, Hash or Range reopen's own method of the name is the call's
+       target, as the call plan takes it (for an Integer Range: a Float or
+       String one has no route to the reopen yet) */
+    const char *reopen_cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" : NULL;
+    if (reopen_cn && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
     if (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
         rt == TY_STR_RANGE || (rt == TY_ENUMERATOR && !lazy_driven)) ok = 1;
     /* an empty `[]` / `{}` receiver has no type until its use decides one,
@@ -23376,16 +23385,27 @@ static int bscm_walk(NodeTable *nt, int n, const BscmNames *t, int consts_only) 
   }
   return changed;
 }
+/* `class << self`, or `class << Time` in `class Time`: the same singleton */
+static int bscm_own_sclass(const NodeTable *nt, int ex, const BscmNames *t) {
+  if (ex >= 0 && nt_kind(nt, ex) == NK_SelfNode) return 1;
+  return ex >= 0 && nt_kind(nt, ex) == NK_ConstantReadNode && nt_str(nt, ex, "name") &&
+         sp_streq(nt_str(nt, ex, "name"), t->cls);
+}
 static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) {
   int changed = 0, bn = 0;
   const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
   for (int k = 0; k < bn; k++) {
     int st = bs[k];
     NodeKind sk = nt_kind(nt, st);
-    if (sk == NK_DefNode && (in_sg || (nt_ref(nt, st, "receiver") >= 0 &&
-                                       nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)))
+    /* in a singleton body, `def self.m` belongs to the singleton's singleton */
+    if (sk == NK_DefNode && (in_sg ? nt_ref(nt, st, "receiver") < 0
+                                   : nt_ref(nt, st, "receiver") >= 0 &&
+                                     nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)) {
+      /* a parameter's default runs under the same self as the body */
+      changed |= bscm_walk(nt, nt_ref(nt, st, "parameters"), t, 0);
       changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t, 0);
-    else if (sk == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, st, "expression")) == NK_SelfNode)
+    }
+    else if (sk == NK_SingletonClassNode && bscm_own_sclass(nt, nt_ref(nt, st, "expression"), t))
       changed |= bscm_rewrite(nt, nt_ref(nt, st, "body"), 1, t);
     /* a statement of the class body, where self is the class itself */
     else if (!in_sg && sk != NK_DefNode) changed |= bscm_walk(nt, st, t, 1);

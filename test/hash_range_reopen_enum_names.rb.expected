@@ -1,0 +1,17 @@
+my-uniq
+my-minmax
+my-sort
+my-find
+my-tally
+[[:b, 2]]
+[:b, 2]
+my-sum
+my-reverse_each
+my-min
+my-take
+my-group_by
+[1, 2, 3]
+[1, 3]
+["my-uniq", "my-take"]
+:my_store
+1

@@ -169,6 +169,7 @@ void analyze_program(Compiler *c);
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);
 int an_prog_names_method(const char *nm);
+int an_prog_meta_by_value(void);
 /* 1 or -1 when `id` is that Integer literal, parenthesized or not; 0 otherwise */
 int an_unit_int_literal(const NodeTable *nt, int id);
 /* a push onto a typed Array a builtin call just built, given an element of
@@ -341,6 +342,7 @@ int masgn_const_elem_in_range(Compiler *c, int value, long long pos);
 int scalar_nil_only_call(Compiler *c, int id, TyKind rt);
 int nullable_scalar_nil_only_call(Compiler *c, int id);
 int nullable_int_elem_array(Compiler *c, int node);
+int elem_nil_reach_expr(Compiler *c, int v);
 TyKind tuple_elem_read_type(Compiler *c, int node);
 TyKind tuple_elem_read_unboxed(Compiler *c, int node);
 
@@ -373,6 +375,7 @@ TyKind block_next_value_ty(Compiler *c, int node);
    array). Excludes range-native methods (each/map/select/sum/min/count-no-arg). */
 int range_enum_redispatch(Compiler *c, int id);
 int hash_enum_redispatch(Compiler *c, int id);
+int an_reopen_owner(Compiler *c, int id, const char *cn);   /* a builtin class reopen's method of the call's name, or -1 */
 int range_lit_float_end(Compiler *c, int recv);   /* (1..5.5): the Float end node, else -1 */
 int range_lit_endless(Compiler *c, int recv);     /* (1..): an endless literal with a begin */
 int reduce_tail_from_acc(Compiler *c, int tail, const char *accp);

@@ -2411,6 +2411,12 @@ int recv_user_defines(Compiler *c, const char *name) {
      arm re-enters the call's emission for a genuine Array or Hash, and the
      user class owning the name (a Set#flatten) is not a candidate there */
   if (g_poly_builtin_arm) return 0;
+  /* the classes whose chain answers the name, on either side, or every
+     class while the chain memo cannot be trusted */
+  int ni, nc;
+  comp_name_responders(c, name, 0, &ni);
+  if (ni > 0) return 1;
+  if (ni == 0) { comp_name_responders(c, name, 1, &nc); if (nc >= 0) return nc > 0; }
   for (int uk = 0; uk < c->nclasses; uk++) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
     if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
@@ -9210,6 +9216,14 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
       if (repr_of_slot(c, pv).handle && emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
       if (pt == TY_POLY && pv && (pv->poly_lift & POLY_LIFT_APPENDED) &&
           emit_poly_boxed_shared_arg(c, A, L->arg[a], pa)) return;
+      /* an argument held as its bytes beside the handle it ran as (htmp: a
+         sequence in parentheses ending in a shared String variable) goes
+         over as that handle, boxed, nil as nil: the bytes boxed were a
+         copy, and the arm's changes stayed in it */
+      if (pt == TY_POLY && A->htmp && A->htmp[L->arg[a]] && A->atmp_ty[L->arg[a]] == TY_STRING) {
+        buf_printf(pa, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", A->htmp[L->arg[a]]);
+        return;
+      }
       emit_poly_temp_as(c, pt, pv, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], read_root, pa);
       return;
     }
@@ -11531,22 +11545,6 @@ int attr_writer_named(Compiler *c, int cls, const char *name) {
   return 0;
 }
 
-/* File::Stat's predicates, which the TY_IO arms answer for the handle a stat
-   is carried in: the mode predicates by their slot in sp_stat_pred (zero?,
-   slot 1, has its own poly arm), the type predicates by theirs in
-   sp_stat_type_pred plus 100. -1 for any other name. */
-int boxed_stat_pred(const char *name) {
-  static const char *const spred[] = { "pipe?", "", "readable?", "writable?",
-                                       "executable?", "blockdev?", "chardev?",
-                                       "size?", "executable_real?", NULL };
-  static const char *const tpred[] = { "file?", "directory?", "symlink?",
-                                       "owned?", "grpowned?", "setuid?",
-                                       "setgid?", "sticky?", "socket?", NULL };
-  for (int k = 0; spred[k]; k++) if (spred[k][0] && sp_streq(name, spred[k])) return k;
-  for (int k = 0; tpred[k]; k++) if (sp_streq(name, tpred[k])) return 100 + k;
-  return -1;
-}
-
 /* A File::Stat rides in the same boxed handle as an IO (its mode "stat" or
    "lstat") and answers none of the IO methods: CRuby's NoMethodError. */
 void emit_stat_handle_nomethod(int th, int tv, const char *name, Buf *b) {
@@ -11561,18 +11559,6 @@ void emit_stat_handle_only(int th, const char *name, Buf *b) {
                 "strcmp(_t%d->mode, \"lstat\") == 0))) "
                 "sp_raise_poly_nomethod(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_IO)); ",
              th, th, th, name, th);
-}
-
-/* File::Stat's numeric fields, which the TY_IO arms answer for the handle a
-   stat is carried in; a field's index is its slot in sp_stat_field. */
-const char *const boxed_stat_sfield[] = { "uid", "gid", "nlink", "dev", "ino",
-                                                 "blksize", "blocks", "rdev", "dev_major", "dev_minor", NULL };
-/* mode or one of those fields */
-int boxed_stat_name(const char *name) {
-  if (sp_streq(name, "mode")) return 1;
-  for (int k = 0; boxed_stat_sfield[k]; k++)
-    if (sp_streq(name, boxed_stat_sfield[k])) return 1;
-  return 0;
 }
 
 /* The descriptor controls a boxed IO answers, at CRuby's arities: pos= and
@@ -17460,8 +17446,15 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &inner);   /* emits the loop into g_pre, result expr into inner */
   }
   Buf boxed; memset(&boxed, 0, sizeof boxed);
+  /* A desugared block-form foreach (desugar_dir_surface) answers its break
+     value, and nil when the iteration runs out. */
+  int foreach_nil = nt_int(nt, id, "foreach_nil_result", 0);
+  if (foreach_nil && inner.p && inner.p[0])
+    buf_printf(&boxed, "((void)(%s), sp_box_nil())", inner.p);
+  else if (foreach_nil)
+    buf_puts(&boxed, "sp_box_nil()");
   /* a call answering its oint (node_is_oint) boxes with its nil */
-  if (inner.p && inner.p[0] && !stmt_form && !enum_walk && oint_kind(normal_ty) && node_is_oint(c, id))
+  else if (inner.p && inner.p[0] && !stmt_form && !enum_walk && oint_kind(normal_ty) && node_is_oint(c, id))
     buf_printf(&boxed, "%s(%s)", oint_box(normal_ty), inner.p);
   else if (inner.p && inner.p[0]) emit_boxed_text(c, normal_ty, inner.p, &boxed);
   /* --share-strings: a String method given a block that answers its
@@ -19696,9 +19689,14 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   int argc = 0, kwh, with_block = arity_call_block(nt, id, &argc, &kwh);
   if (with_block < 0) return 0;
   if (recv_user_defines(c, name) || comp_method_index(c, name) >= 0) return 0;
+  /* a method_missing anywhere: the classes whose chain answers it, or every
+     class while the chain memo cannot be trusted */
+  int nmm;
+  comp_name_responders(c, "method_missing", 0, &nmm);
+  if (nmm > 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
-        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
+        (nmm < 0 && comp_method_in_chain(c, k, "method_missing", NULL) >= 0)) return 0;
   return poly_arity_rows(c, name, with_block, argc, kwh, 0, tests, exps);
 }
 
@@ -27119,6 +27117,89 @@ int emit_env_args_before(Compiler *c, int id) {
 }
 
 static void emit_call_inner(Compiler *c, int id, Buf *b);
+/* One side of a call on a true-or-false receiver held in `_t<tb>`: the
+   class's own method (user side, mi >= 0), or the builtin's arm, as a poly
+   dispatch's builtin arm re-enters the call. Boxed when the call's two
+   sides answer different types. */
+static void emit_bool_side(Compiler *c, int id, int recv, int tb, int mi, int boxed, int ow, Buf *b) {
+  Buf nb; memset(&nb, 0, sizeof nb);
+  TyKind t;
+  if (mi >= 0) {
+    if (g_plan_check) ucall_observe(c, id, mi, c->scopes[mi].class_id, 1);
+    emit_method_cname(c, &c->scopes[mi], &nb);
+    buf_printf(&nb, "(_t%d", tb);
+    /* (a default that reads self reads the value held in _t<tb>) */
+    char self[32]; snprintf(self, sizeof self, "_t%d", tb);
+    const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+    int sv_arm_depth = g_arm_depth;
+    g_arm_self = self; g_arm_scope = &c->scopes[mi]; g_arm_depth = g_expr_depth;
+    emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", &nb);
+    g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+    buf_puts(&nb, ")");
+    /* (boxed, the method's answer is boxed as its own return is: an
+       Integer or Float that can be nil keeps its nil) */
+    if (boxed) {
+      emit_poly_user_box(c, id, &c->scopes[mi], nb.p ? nb.p : "0", b);
+      free(nb.p);
+      return;
+    }
+    t = c->scopes[mi].ret;
+    /* (the call answers an oint where a side's method does: the other
+       side's plain number is lifted into one) */
+    if (ow && !method_ret_is_oint(&c->scopes[mi])) {
+      buf_printf(b, "%s(%s)", oint_of(t), nb.p ? nb.p : "0");
+      free(nb.p);
+      return;
+    }
+  }
+  else {
+    t = an_builtin_answer(c, id);
+    int slot = view_bind(recv, "_t%d", tb);
+    int va = view_push_arm(id, g_prbd_skip, 1);
+    int vw = t != TY_UNKNOWN && t != TY_POLY ? view_push(c, id, t) : -1;
+    if (boxed && vw < 0) emit_boxed(c, id, &nb), t = TY_POLY;
+    else emit_call(c, id, &nb);
+    if (vw >= 0) view_pop(c, vw);
+    view_pop(c, va);
+    view_unbind(slot);
+  }
+  if (boxed && t != TY_POLY) emit_boxed_text(c, t, nb.p ? nb.p : "0", b);
+  else if (ow && mi < 0) buf_printf(b, "%s(%s)", oint_of(comp_ntype(c, id)), nb.p ? nb.p : "0");
+  else buf_puts(b, nb.p ? nb.p : "0");
+  free(nb.p);
+}
+
+/* A call on true or false where TrueClass or FalseClass defines the name
+   itself (the call plan's CP_SWITCH, cplan_bool_sides): the value picks the
+   side, as Ruby's lookup does. A side with no def of its own answers what
+   the builtin answers -- `true <=> true` with only TrueClass#<=> defined
+   calls it for true, and the builtin for false. */
+static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
+  int recv = nt_ref(c->nt, id, "receiver"), tmi, fmi;
+  if (recv < 0 || g_poly_builtin_arm || g_pd_skip == id || nt_ref(c->nt, id, "block") >= 0 ||
+      comp_ntype(c, recv) != TY_BOOL) return 0;
+  const CallPlan *pl = cplan_user(c, id);
+  if (pl->via != UC_REOPEN || pl->dispatch != CP_SWITCH || !cplan_bool_sides(c, id, &tmi, &fmi)) return 0;
+  int boxed = repr_of(c, id).kind == RK_BOXED;
+  int ow = !boxed && node_is_oint(c, id);
+  int tb = ++g_tmp;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf *sv = g_pre; g_pre = &pre;
+  Buf tv; memset(&tv, 0, sizeof tv);
+  Buf fv; memset(&fv, 0, sizeof fv);
+  emit_bool_side(c, id, recv, tb, tmi, boxed, ow, &tv);
+  Buf fpre; memset(&fpre, 0, sizeof fpre); g_pre = &fpre;
+  emit_bool_side(c, id, recv, tb, fmi, boxed, ow, &fv);
+  g_pre = sv;
+  /* each side's own hoisted lines run inside its branch */
+  buf_printf(b, "({ int _t%d = ", tb);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; _t%d ? ({ %s%s; }) : ({ %s%s; }); })", tb,
+             pre.p ? pre.p : "", tv.p ? tv.p : "0", fpre.p ? fpre.p : "", fv.p ? fv.p : "0");
+  free(pre.p); free(fpre.p); free(tv.p); free(fv.p);
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   /* one representation: the operands of a call with a block are held
      across the block (g_one_held) */
@@ -27159,6 +27240,7 @@ static void emit_call_inner(Compiler *c, int id, Buf *b) {
       view_pop(c, va);
       return;
     } }
+  if (emit_call_bool_sides(c, id, b)) return;
   /* A call on a receiver that never hands back a value (a method whose
      every path raises): Ruby evaluates the receiver first, it raises, and
      neither the arguments nor the method run. Evaluate it for effect and
@@ -29270,48 +29352,55 @@ int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kw
   return ta;
 }
 
-/* The (separator, limit, chomp) arguments of sp_File_gets_sep and
-   sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
-   typed Integer is the limit, a `chomp:` keyword the flag, anything else the
-   separator; an absent one is "\n", 0 or 0. Each comes out as its own C
-   expression, for a caller that has to bind them once. `strict` (the block
-   form of each_line) reads only a first argument typed String or nil as the
-   separator and leaves any other alone, as that form always did. */
-void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
+/* The role each argument takes: the separator, the limit, or a lone
+   boxed variable that is either as its value is an Integer or not. With
+   `glone`, a lone Integer that may be nil is set apart the same way: CRuby
+   takes its nil for the separator (read to the end), an Integer for the
+   limit. Without it (the iterators) that argument is the limit. */
+static void gets_arg_roles(Compiler *c, const int *argv, int argc, int strict, int *gsep, int *glim, int *gpoly, int *glone) {
   const NodeTable *nt = c->nt;
-  int gsep = -1, glim = -1, gpoly = -1;
-  Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  *gsep = -1; *glim = -1; *gpoly = -1;
+  if (glone) *glone = -1;
+  int npos = 0;
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) npos++;
   int pos = 0;   /* position among the positional arguments */
   for (int k = 0; k < argc; k++) {
-    const char *kty = nt_type(nt, argv[k]);
-    if (kty && sp_streq(kty, "KeywordHashNode")) {
-      int cv = struct_kwarg_value(c, argv[k], "chomp");
-      emit_kw_flag(c, cv, &gchomp);
-      continue;
-    }
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) continue;
     Repr ar = repr_of(c, argv[k]);
     TyKind at = ar.as_ty;
-    if (at == TY_INT) glim = argv[k];
+    if (at == TY_INT && glone && npos == 1 && node_has_oint_form(c, argv[k])) *glone = argv[k];
+    else if (at == TY_INT) *glim = argv[k];
     /* a lone boxed variable is the limit or the separator as its value is
        an Integer or not (an Integer parameter under --int-overflow=promote) */
-    else if (ar.kind == RK_BOXED && pos == 0 && argc == 1 && nt_kind(nt, argv[k]) == NK_LocalVariableReadNode) gpoly = argv[k];
+    else if (ar.kind == RK_BOXED && pos == 0 && argc == 1 && nt_kind(nt, argv[k]) == NK_LocalVariableReadNode) *gpoly = argv[k];
     /* a second positional argument is the limit, whatever its static type:
        `gets(sep, limit)` forwarded through a splat reads both boxed, and
        taking the second for the separator read to the end */
-    else if (!strict && pos == 1) glim = argv[k];
-    else if (!strict) gsep = argv[k];
-    else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
+    else if (!strict && pos == 1) *glim = argv[k];
+    else if (!strict) *gsep = argv[k];
+    else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) *gsep = argv[k];   /* a nil after it is no limit */
     /* a boxed limit after the separator (an Integer under
        --int-overflow=promote): it was dropped, and the line read whole */
-    else if (pos == 1 && ar.kind == RK_BOXED) glim = argv[k];
+    else if (pos == 1 && ar.kind == RK_BOXED) *glim = argv[k];
     pos++;
   }
+}
+
+/* gets_sep_arg_texts for the roles gets_arg_roles found. `optional` renders
+   the limit as an sp_oint, nil when there is none, so that an explicit 0
+   stays apart from an absent limit (IO#gets/readline). */
+static void gets_sep_arg_texts_impl(Compiler *c, const int *argv, int argc, int gsep, int glim, int gpoly, int strict, int optional, Buf *sep, Buf *lim, Buf *chomp) {
+  const NodeTable *nt = c->nt;
+  Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) emit_kw_flag(c, struct_kwarg_value(c, argv[k], "chomp"), &gchomp);
   if (gpoly >= 0) {
     int tmp; Buf *hb = conv_hold_begin(sep, &tmp);
     Buf *ob = hb ? hb : sep;
     buf_puts(ob, "sp_poly_gets_sep("); emit_expr(c, gpoly, ob); buf_puts(ob, ")");
     if (hb) conv_hold_end(tmp);
-    buf_puts(lim, "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
+    buf_puts(lim, optional ? "sp_poly_gets_olim(" : "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
   }
   else if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
   if (glim >= 0 && repr_of(c, glim).kind == RK_BOXED) {
@@ -29319,15 +29408,44 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     int tl = ++g_tmp;
     buf_printf(lim, "({ sp_RbVal _t%d = ", tl);
     emit_expr(c, glim, lim);
-    buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d); })", tl, tl);
+    if (optional)
+      buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_arg_int_chk(_t%d)); })", tl, tl);
+    else
+      buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d); })", tl, tl);
   }
   else if (glim >= 0) {
     /* the block form never raised for a nil limit, and keeps not raising */
-    if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
+    if (optional && repr_of(c, glim).as_ty == TY_NIL) {
+      buf_puts(lim, "({ (void)("); emit_expr(c, glim, lim); buf_puts(lim, "); sp_oint_nil(); })");
+    }
+    /* a limit after a separator that may be nil (a nilable Integer) is its
+       own sp_oint: nil there is no limit */
+    else if (optional && node_has_oint_form(c, glim))
+      emit_oint_expr(c, glim, TY_INT, lim);
+    else {
+      if (optional) buf_puts(lim, "sp_oint_of(");
+      if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
+      if (optional) buf_puts(lim, ")");
+    }
   }
-  else if (gpoly < 0) buf_puts(lim, "0");
+  else if (gpoly < 0) buf_puts(lim, optional ? "sp_oint_nil()" : "0");
   buf_puts(chomp, gchomp.p ? gchomp.p : "0");
   free(gchomp.p);
+}
+
+/* The (separator, limit, chomp) arguments of sp_File_gets_sep and
+   sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
+   typed Integer is the limit, a `chomp:` keyword the flag, anything else the
+   separator; an absent one is "\n", 0 or 0. Each comes out as its own C
+   expression, for a caller that has to bind them once. `strict` (the block
+   form of each_line) reads only a first argument typed String or nil as the
+   separator and leaves any other alone, as that form always did.
+   The limit is a plain integer, 0 for none, as the iterators that call
+   this take it. */
+void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
+  int gsep, glim, gpoly;
+  gets_arg_roles(c, argv, argc, strict, &gsep, &glim, &gpoly, NULL);
+  gets_sep_arg_texts_impl(c, argv, argc, gsep, glim, gpoly, strict, 0, sep, lim, chomp);
 }
 
 /* Do a line reader's arguments come through a splat or a `**`? Their count
@@ -29338,10 +29456,35 @@ int io_line_args_spread(const NodeTable *nt, const int *argv, int argc) {
   return nt_argv_has_splat(nt, argv, argc) || nt_argv_has_kwsplat(nt, argv, argc);
 }
 
-void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
+/* The sp_File_ reader for gets / readline: the limit pair when the call
+   can pass a limit (an sp_oint, which tells an explicit 0 from none), the
+   plain separator readers otherwise. */
+const char *io_line_reader(const char *name, int has_limit) {
+  if (sp_streq(name, "readline")) return has_limit ? "readline_limit" : "readline_sep";
+  return has_limit ? "gets_limit" : "gets_sep";
+}
+
+/* IO#gets / IO#readline on the handle `r`, `sp_File_<reader>(r, sep,
+   limit, chomp)`, the reader as io_line_reader picks it: an explicit 0
+   limit answers an empty String and reads nothing. readline raises
+   EOFError at end of file (#2817). */
+void emit_io_line_read(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  int gsep, glim, gpoly, glone;
+  gets_arg_roles(c, argv, argc, 0, &gsep, &glim, &gpoly, &glone);
+  int optional = glim >= 0 || gpoly >= 0 || glone >= 0;
   Buf s, l, k; memset(&s, 0, sizeof s); memset(&l, 0, sizeof l); memset(&k, 0, sizeof k);
-  gets_sep_arg_texts(c, argv, argc, 0, &s, &l, &k);
-  buf_printf(b, "%s, %s, %s", s.p, l.p, k.p);
+  gets_sep_arg_texts_impl(c, argv, argc, gsep, glim, gpoly, 0, optional, &s, &l, &k);
+  if (glone >= 0) {
+    /* the lone nilable Integer, read once after the handle: nil is the
+       separator that reads to the end, an Integer the limit */
+    int tr = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_oint _t%d = ", tr, r, tr, tn);
+    emit_oint_expr(c, glone, TY_INT, b);
+    buf_printf(b, "; sp_File_%s(_t%d, _t%d.nil ? NULL : \"\\n\", _t%d, %s); })",
+               io_line_reader(name, 1), tr, tn, tn, k.p);
+  }
+  else
+    buf_printf(b, "sp_File_%s(%s, %s, %s, %s)", io_line_reader(name, optional), r, s.p, l.p, k.p);
   free(s.p); free(l.p); free(k.p);
 }
 

@@ -467,7 +467,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
    rendered, so it supplies no handle. */
 static int share_plan_poly_base(Compiler *c, int v) {
   for (int depth = 0; depth < 16; depth++) {
-    int u = an_unparen(c->nt, v), o;
+    int u = nt_paren_single(c->nt, v), o;
     if (u < 0) return 0;
     int k = share_plan_producer_at(c, u, &o);
     if (k == SPK_POLY_ARMS) return 1;
@@ -640,7 +640,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
       if (ops[i] >= 0 && !share_plan_leaf_ok(c, ops[i], 0, depth)) return 0;
     return 1;
   }
-  case SPK_COND: return share_plan_arms_ok(c, an_unparen(c->nt, v), depth);
+  case SPK_COND: return share_plan_arms_ok(c, nt_paren_single(c->nt, v), depth);
   case SPK_BLOCK_VALUE: return share_plan_block_ok(c, v, depth);
   /* a String a store lifts into a handle (poly_strbuf_lift): the lift is
      the store's, which no other consumer applies (an argument's binder
@@ -921,8 +921,8 @@ int share_plan_store_renders(Compiler *c, int v) {
 int share_plan_recv_renders(Compiler *c, int call, int base) {
   const NodeTable *nt = c->nt;
   if (call < 0 || base < 0 || nt_kind(nt, call) != NK_CallNode) return 1;
-  int u = an_unparen(nt, base);
-  return u == an_unparen(nt, nt_ref(nt, call, "receiver")) || share_plan_producer(c, u, NULL) != SPK_POLY_ARMS;
+  int u = nt_paren_single(nt, base);
+  return u == nt_paren_single(nt, nt_ref(nt, call, "receiver")) || share_plan_producer(c, u, NULL) != SPK_POLY_ARMS;
 }
 
 /* The plan of value v for a consumer in `role`, v's own need known. */
@@ -989,8 +989,8 @@ int share_plan_box_handle(Compiler *c, int v) {
   /* ...and a route the emitters take: a value that hands on its handle, or
      a bang or an iterator given a block on a slot (`@s.upcase!`, `@s.tap { }`),
      whose handle form boxes that slot (emit_boxed_bang_self) */
-  int u = an_unparen(c->nt, v);
-  int r = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? an_unparen(c->nt, nt_ref(c->nt, u, "receiver")) : -1;
+  int u = nt_paren_single(c->nt, v);
+  int r = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_paren_single(c->nt, nt_ref(c->nt, u, "receiver")) : -1;
   return strbuf_value_carries(c, u) ||
          (r >= 0 && nt_kind(c->nt, r) != NK_CallNode && strbuf_bang_self_local(c, u) && strbuf_slot_has(c, r));
 }

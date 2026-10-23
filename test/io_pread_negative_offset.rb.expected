@@ -1,0 +1,16 @@
+[Errno::EINVAL, "Invalid argument @ rb_io_pread - <path>"]
+[Errno::EINVAL, true]
+"bc"
+""
+""
+""
+[IOError, "closed stream"]
+["w", IOError, "not opened for reading"]
+["w", "", ""]
+["a", IOError, "not opened for reading"]
+["a", "", ""]
+"yz"
+[Errno::ESPIPE, "Illegal seek"]
+""
+[IOError, "not opened for reading"]
+""

@@ -1,0 +1,5 @@
+[package]
+name = "did_you_mean"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "did_you_mean"` -- the spell checker of CRuby's did_you_mean.

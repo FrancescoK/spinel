@@ -424,7 +424,12 @@ int is_puts_name(const char *n); /* puts */
 int is_to_f_name(const char *n); /* to_f */
 int is_to_i_name(const char *n); /* to_i */
 int is_intersect_name(const char *n); /* intersect? */
+int is_compare_by_identity_name(const char *n); /* compare_by_identity */
 /* size, length, count, empty?: names the containers answer and an
    OpenStruct does not define, so its member (or nil) answers them */
 int ostruct_member_name(const char *n);
+/* File::Stat's names, as the TY_IO arms answer them for a stat's handle */
+int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a type predicate's sp_stat_type_pred kind + 100, else -1 */
+int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
+int boxed_stat_name(const char *n);   /* mode or a numeric field */
 #endif

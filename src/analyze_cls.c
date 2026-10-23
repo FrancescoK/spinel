@@ -1261,10 +1261,6 @@ static int cf_tail(CF *f, int st) {
   int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
   return n > 0 ? b[n - 1] : -1;
 }
-static int cf_unparen(CF *f, int v) {
-  for (int d = 0; v >= 0 && d < 16 && nt_kind(f->nt, v) == NK_ParenthesesNode; d++) v = cf_tail(f, nt_ref(f->nt, v, "body"));
-  return v;
-}
 
 /* a block's or a lambda's parameter names, into out; -1 for a splat, a
    keyword or a rest among them (the positions past it are unknown) */
@@ -1747,7 +1743,15 @@ static void cf_share_kind_rule(CF *f, int sh, int v, int recv_el, const int *pos
       if (sh == BSH_MERGE) { cf_share(f, recv_el, pos[i]); cf_share(f, v, pos[i]); }
       else cf_store(f, recv_el, pos[i]);
     }
-    if (sh == BSH_MERGE) { cf_add_set(f, v, cf_bv_set(f)); cf_share(f, v, recv_el); }
+    if (sh == BSH_MERGE) {
+      cf_add_set(f, v, cf_bv_set(f)); cf_share(f, v, recv_el);
+      /* concat, update, merge! and replace put the arguments' elements
+         into the receiver's own objects, not only into the answer's
+         (`a.concat([B.new]); a[0]` is a B) */
+      int t = cf_entry(f, -(v + 2), "#mg");
+      for (int i = 0; i < npos; i++) cf_load(f, pos[i], t);
+      cf_store(f, recv_el, t);
+    }
     break;
   case BSH_ELEM: case BSH_ITER_FIND:
     cf_load(f, recv_el, v); cf_add_set(f, v, cf_bv_set(f));
@@ -1907,11 +1911,16 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
      memo (inject), the block's value (then), an argument (p, clamp). Only
      the stores put an argument into the receiver. */
   int kinds[4], nk = bop_share_kinds(nm, kinds, 4), known = nk > 0;
-  int pos[64], npos = 0;
+  int pos[64], npos = 0, spl = -1;
   for (int i = 0; i < argc && npos < 64; i++) {
     NodeKind k = nt_kind(nt, argv[i]);
     if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
-    pos[npos++] = k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
+    if (k != NK_SplatNode) { pos[npos++] = argv[i]; continue; }
+    /* a splat's arguments are the elements of the Array it spreads
+       (`a.push(*[B.new])` stores a B, `a.concat(*[[B.new]])` a B's
+       container), one slot for every splat of the call */
+    if (spl < 0) { spl = cf_entry(f, -(v + 2), "#sp"); pos[npos++] = spl; }
+    cf_load(f, nt_ref(nt, argv[i], "expression"), spl);
   }
   int has_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   for (int i = 0; i < nk && known; i++) cf_share_kind_rule(f, kinds[i], v, recv_el, pos, npos, blk, has_blk, &known);
@@ -2221,6 +2230,8 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       /* the reader an alias names reads its own ivar (`alias loc location`) */
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
       cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
+      /* (an ivar reflection writes may hold anything, as a read of it) */
+      if (f->all_ivars) cf_all(f, v);
       continue;
     }
     if (is_w && comp_writer_in_chain(c, k, base, NULL)) {
@@ -2649,6 +2660,15 @@ static void cf_call(CF *f, int v) {
        a call on a value it reaches has the member read beside the classes'
        methods */
     if (v >= 0 && key && sp_streq(key, "OpenStruct") && sp_streq(nm, "new")) cf_add_set(f, v, cf_os_set(f));
+    /* a builtin class's new that holds what it is handed (its
+       BOP_CLASS_NEW row): Hash.new(x)'s default and Array.new(n, x)'s fill
+       value are elements of the new value (`Hash.new(B.new)[:k]` is a B) */
+    if (v >= 0 && key && sp_streq(nm, "new")) {
+      int sh = bop_share_named(BOP_CLASS_NEW, key);
+      int at = sh == BSH_NEW_DEFAULT ? 0 : sh == BSH_NEW_FILL ? 1 : -1;
+      NodeKind ak = at >= 0 && at < argc ? nt_kind(nt, argv[at]) : NK_SplatNode;
+      if (ak != NK_SplatNode && ak != NK_BlockArgumentNode && ak != NK_KeywordHashNode) cf_store(f, v, argv[at]);
+    }
     cf_builtin_rule(f, v, ce, argv, argc, blk, nm);
     return;
   }
@@ -2791,8 +2811,8 @@ static int cf_kfalsy_body(CF *f, int mi) {
   if (b < 0) return 1;   /* an empty body: nil */
   if (nt_kind(f->nt, b) == NK_StatementsNode) {
     int bn = 0; const int *bb = nt_arr(f->nt, b, "body", &bn);
-    if (bn != 1) return 0;
-    b = cf_unparen(f, bb[0]);
+    /* parentheses answer their last statement; `()` is not taken (0) */
+    if (bn != 1 || vp_one(f->nt, bb[0], VPS_NONE | VP_PARENS_ONLY, &b) != VP1_NODE) return 0;
   }
   return nt_kind(f->nt, b) == NK_FalseNode || nt_kind(f->nt, b) == NK_NilNode;
 }
@@ -2849,8 +2869,7 @@ static int cf_kpred_classes(CF *f, const char *nm, ClsSet *s) {
    the predicates, whose classes it adds to s? */
 static int cf_kcond(CF *f, int cond, const char *x, int el, int d, ClsSet *s, int depth) {
   const NodeTable *nt = f->nt;
-  cond = cf_unparen(f, cond);
-  if (cond < 0 || depth > 64) return 0;
+  if (depth > 64 || vp_one(nt, cond, VPS_NONE | VP_PARENS_ONLY, &cond) != VP1_NODE) return 0;
   NodeKind k = nt_kind(nt, cond);
   if (k == NK_OrNode)
     return cf_kcond(f, nt_ref(nt, cond, "left"), x, el, d, s, depth + 1) && cf_kcond(f, nt_ref(nt, cond, "right"), x, el, d, s, depth + 1);
@@ -2870,9 +2889,10 @@ static int cf_kcond(CF *f, int cond, const char *x, int el, int d, ClsSet *s, in
     return 0;
   }
   if (k != NK_CallNode || nt_ref(nt, cond, "arguments") >= 0 || nt_ref(nt, cond, "block") >= 0) return 0;
-  int r = cf_unparen(f, nt_ref(nt, cond, "receiver"));
+  int r;
   const char *nm = nt_str(nt, cond, "name");
-  if (!nm || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(cf_knode_name(f, r), x) || cf_kdef_of(f, r) != d ||
+  if (!nm || vp_one(nt, nt_ref(nt, cond, "receiver"), VPS_NONE | VP_PARENS_ONLY, &r) != VP1_NODE ||
+      nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(cf_knode_name(f, r), x) || cf_kdef_of(f, r) != d ||
       cf_lv(f, r, x) != el) return 0;
   return cf_kpred_classes(f, nm, s);
 }

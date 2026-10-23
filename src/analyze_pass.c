@@ -12606,12 +12606,14 @@ int desugar_dir_surface(Compiler *c) {
       rn = "File";
       changed = 1;
     }
-    /* File.foreach(path, *rest){|l|} -> (File.open(path){|f| f.each_line(*rest){|l|}}; nil):
+    /* File.foreach(path, *rest){|l|} -> (File.open(path){|f| f.each_line(*rest){|l|}}; nil),
+       or without the trailing nil when the block can break out of the call:
        the file is read a line at a time and closed however the block leaves.
        Only for arguments the IO's each_line takes as written -- positional
        ones and chomp: -- the rest keep the readlines form below. */
     if (sp_streq(rn, "File") && sp_streq(nm, "foreach") && file_foreach_streams(c, id)) {
       int fblk = nt_ref(nt, id, "block");
+      int breaks = call_breaks(c, id);
       int fargs = nt_ref(nt, id, "arguments");
       int fac = 0; const int *fav = nt_arr(nt, fargs, "arguments", &fac);
       int base = nt->count;
@@ -12677,6 +12679,11 @@ int desugar_dir_surface(Compiler *c) {
       nt_node_set_ref(nt, each, "receiver", fread);
       nt_node_set_ref(nt, each, "arguments", rargs);
       nt_node_set_ref(nt, each, "block", fblk);
+      /* A break's value is the answer, and nil when the lines run out
+         (emit_brk_wrapped_call). Not the nil_result marker: inference reads
+         that one as "this call answers nil", ahead of the break check that
+         types a breaking call poly, and the break value would be lost. */
+      if (breaks) nt_node_set_int(nt, each, "foreach_nil_result", 1);
       nt_node_set_arr(nt, ebody, "body", &each, 1);
       nt_node_set_str(nt, freq, "name", fnm);
       nt_node_set_arr(nt, fparams, "requireds", &freq, 1);
@@ -12688,7 +12695,8 @@ int desugar_dir_surface(Compiler *c) {
       nt_node_set_ref(nt, open, "receiver", recv);
       nt_node_set_ref(nt, open, "arguments", oargs);
       nt_node_set_ref(nt, open, "block", oblk);
-      hitems[nhi++] = open; hitems[nhi++] = nil2;
+      hitems[nhi++] = open;
+      if (!breaks) hitems[nhi++] = nil2;
       nt_node_set_arr(nt, fstmts, "body", hitems, nhi);
       nt_node_set_ref(nt, fparen, "body", fstmts);
       nt_node_set_str(nt, id, "name", "itself");
@@ -12703,10 +12711,11 @@ int desugar_dir_surface(Compiler *c) {
       changed = 1;
       continue;
     }
-    /* File.foreach(path){|l|} -> (File.readlines(path).each{|l|}; nil): the
-       block form returns nil, the blockless form an Enumerator (#2777, #2833) */
+    /* File.foreach(path){|l|} -> readlines.each: preserve a break result,
+       otherwise answer nil; blockless calls enumerate (#2777, #2833). */
     if (sp_streq(rn, "File") && sp_streq(nm, "foreach")) {
       int fblk = nt_ref(nt, id, "block");
+      int breaks = call_breaks(c, id);
       int ic = nt_new_node(nt, "CallNode");
       if (ic < 0) continue;
       nt_node_set_str(nt, ic, "name", "readlines");
@@ -12724,8 +12733,9 @@ int desugar_dir_surface(Compiler *c) {
         nt_node_set_ref(nt, ec, "receiver", ic);
         nt_node_set_ref(nt, ec, "arguments", -1);
         nt_node_set_ref(nt, ec, "block", fblk);
+        if (breaks) nt_node_set_int(nt, ec, "foreach_nil_result", 1);   /* as the streaming form */
         { int items2[2] = { ec, nil2 };
-          nt_node_set_arr(nt, fstmts, "body", items2, 2); }
+          nt_node_set_arr(nt, fstmts, "body", items2, breaks ? 1 : 2); }
         nt_node_set_ref(nt, fparen, "body", fstmts);
         nt_node_set_str(nt, id, "name", "itself");
         nt_node_set_ref(nt, id, "receiver", fparen);
@@ -15779,8 +15789,11 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
            there is genuinely untypable. */
         if (rt0 == TY_UNKNOWN && g_infer_optimistic) return changed | 2;
         int found = -1, ndef = 0;
-        for (int k = 0; k < c->nclasses; k++) {
-          int km = comp_method_in_chain(c, k, name, NULL);
+        /* (the classes whose chain answers the name, or every class while
+           the chain memo cannot be trusted) */
+        int nr; const int *rp = comp_name_responders(c, name, 0, &nr);
+        for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
+          int km = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
           if (km < 0) continue;
           Scope *ks = &c->scopes[km];
           int forwards = ks->yields || (ks->blk_param && ks->blk_param[0]) ||

@@ -219,7 +219,7 @@ static void emit_io_read_len_call(Compiler *c, const char *r, int len, Buf *b) {
    _t<lc>: the positional ones are gathered into a list and read as CRuby
    reads them (sp_io_line_args), and `chomp:` is looked up in the call's
    keywords merged in order. A limit of 0 is ArgumentError naming `who`;
-   with no `who` (gets, readline) it is left 0 and _t<ll>z says so. */
+   with no `who` (gets, readline) _t<ll> is an sp_oint, nil for no limit. */
 static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int ls, int ll, int lc,
                                      const char *who, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -230,9 +230,12 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
   /* every argument is evaluated before any of them is checked */
   int th = ++g_tmp, any = kwh >= 0 ? poly_kw_any_key(c, kwh) : 0;
   if (kwh >= 0) emit_poly_kw_all(c, kwh, th, any, 1, b);
-  buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d); sp_int _t%d = 0; "
-                "sp_bool _t%dz = sp_io_line_args(_t%d, &_t%d, &_t%d, %s%s%s); sp_bool _t%d = 0; ",
-             ls, ls, ll, ll, tpa, ls, ll, who ? "\"" : "", who ? who : "NULL", who ? "\"" : "", lc);
+  buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d); ", ls, ls);
+  if (who)
+    buf_printf(b, "sp_int _t%d = 0; sp_bool _t%dz = sp_io_line_args(_t%d, &_t%d, &_t%d, \"%s\"); ", ll, ll, tpa, ls, ll, who);
+  else
+    buf_printf(b, "sp_oint _t%d = sp_io_gets_args(_t%d, &_t%d); ", ll, tpa, ls);
+  buf_printf(b, "sp_bool _t%d = 0; ", lc);
   if (kwh >= 0) {
     int chs = comp_sym_intern(c, "chomp");
     if (any)
@@ -247,16 +250,13 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
 }
 
 /* gets / readline on the handle in _t<rf>, rooted across its arguments,
-   which a splat or a `**` carries (emit_io_line_args_spread). A limit of 0
-   answers "" without reading, as CRuby's does, once the stream is known to
-   be open: a closed one raises IOError first. */
+   which a splat or a `**` carries (emit_io_line_args_spread): the limit
+   readers take its sp_oint limit, an explicit 0 apart from none. */
 static void emit_io_line_read_spread(Compiler *c, const char *name, int rf, const int *argv, int argc, Buf *b) {
   int ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
   buf_printf(b, "SP_GC_ROOT(_t%d); ", rf);
   emit_io_line_args_spread(c, argv, argc, ls, ll, lc, NULL, b);
-  buf_printf(b, "if (_t%dz) SP_IO_OPEN(_t%d); ", ll, rf);
-  buf_printf(b, "_t%dz ? sp_str_empty : sp_File_%s(_t%d, _t%d, _t%d, _t%d)",
-             ll, sp_streq(name, "readline") ? "readline_sep" : "gets_sep", rf, ls, ll, lc);
+  buf_printf(b, "sp_File_%s(_t%d, _t%d, _t%d, _t%d)", io_line_reader(name, 1), rf, ls, ll, lc);
 }
 
 static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char *fn, const char *r, const int *argv,
@@ -1157,7 +1157,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          anything else goes on to the IO handle */
       const char *dirfn = NULL;
       if (argc == 0) {
-        if (is_path_reader(name)) dirfn = "sp_Dir_path";
+        if (is_path_reader(name)) dirfn = "sp_Dir_path_copy";
         else if (sp_streq(name, "read")) dirfn = "sp_Dir_read";
         else if (is_io_position(name)) dirfn = "sp_Dir_tell";
         else if (sp_streq(name, "fileno")) dirfn = "sp_Dir_fileno";
@@ -1320,8 +1320,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
       }
       else if (boxed_stat_name(name)) {
-        int k = 0;
-        while (boxed_stat_sfield[k] && !sp_streq(name, boxed_stat_sfield[k])) k++;
+        int k = stat_field_slot(name);
         emit_stat_handle_only(tio2, name, b);
         /* the field's nil (a failed stat) beside it, in the call's form */
         if (node_is_oint(c, id)) buf_printf(b, "sp_stat_field(_t%d, %d); })", tio2, k);
@@ -1479,10 +1478,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          them read `f.gets("o")` and `f.gets(3)` as a whole line. The handle
          is rooted across the arguments, which are evaluated after it. */
       else if (is_line_read(name)) {
-        buf_printf(b, "SP_GC_ROOT(_t%d); sp_File_%s(_t%d, ", tio2,
-                   sp_streq(name, "readline") ? "readline_sep" : "gets_sep", tio2);
-        emit_gets_sep_args(c, argv, argc, b);
-        buf_puts(b, "); })");
+        char hv[24]; snprintf(hv, sizeof hv, "_t%d", tio2);
+        buf_printf(b, "SP_GC_ROOT(_t%d); ", tio2);
+        emit_io_line_read(c, name, hv, argv, argc, b);
+        buf_puts(b, "; })");
       }
       /* readpartial takes a count and an optional buffer, nothing else:
          count-less, the arm below was skipped and the fallback answered
@@ -1659,11 +1658,15 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   }
   if (bufn) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_str_check_mutable(_t%d.v.s); ", th[2], th[2]);
   int tpr = ++g_tmp;
-  buf_printf(b, "const char *_t%d = %s(_t%d, _t%d, _t%d); ", tpr, io_pread_entry(argc), tio, tfirst, toff);
+  /* a rebound buffer reads through the output-buffer form and is written
+     back before the EOFError, as the typed arm does: the end of the stream
+     leaves it "". Its length 0 then takes no shortcut (sp_pread_check) */
+  buf_printf(b, "const char *_t%d = %s(_t%d, _t%d, _t%d); ", tpr, bufn ? "sp_File_pread_or_nil" : io_pread_entry(argc), tio, tfirst, toff);
   if (bufn) {
     emit_local_ref(c, argv[2], bufn, b);
-    if (bt == TY_STRING) buf_printf(b, " = _t%d; ", tpr);
-    else buf_printf(b, " = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", tpr, tpr);
+    if (bt == TY_STRING) buf_printf(b, " = _t%d ? _t%d : sp_str_empty; ", tpr, tpr);
+    else buf_printf(b, " = sp_box_str(_t%d ? _t%d : sp_str_empty); ", tpr, tpr);
+    buf_printf(b, "if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); ", tpr);
   }
   buf_printf(b, "_t%d; })", tpr);
   return 1;
@@ -1854,11 +1857,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       free(rb.p); return 1;
     }
     if (is_line_read(name)) {
-      /* readline raises EOFError at end of file (#2817) */
-      int is_rdl = sp_streq(name, "readline");
-      buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
-      emit_gets_sep_args(c, argv, argc, b);
-      buf_puts(b, ")");
+      emit_io_line_read(c, name, r, argv, argc, b);
       free(rb.p); return 1;
     }
     if ((sp_streq(name, "close_on_exec=") || sp_streq(name, "autoclose=")) && argc == 1) {
@@ -2452,7 +2451,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   /* ARGF pseudo-IO methods: read the ARGV files (or stdin) in sequence. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ARGF) {
     if (sp_streq(name, "read")) { buf_puts(b, "sp_argf_read()"); return 1; }
-    /* `chomp:` read as IO#gets reads it (emit_gets_sep_args): the flag
+    /* `chomp:` read as IO#gets reads it (emit_io_line_read): the flag
        first, then the line, whose ending "\n" or "\r\n" goes when the flag
        holds (a last line without "\n" keeps its "\r") */
     int chomp_kw = argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode
@@ -2503,7 +2502,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     const char *dr = drb.p ? drb.p : "NULL";
     if (sp_streq(name, "read") && argc == 0) { buf_printf(b, "sp_Dir_read(%s)", dr); free(drb.p); return 1; }
     if ((is_path_reader(name)) && argc == 0) {
-      buf_printf(b, "sp_Dir_path(%s)", dr); free(drb.p); return 1;
+      buf_printf(b, "sp_Dir_path_copy(%s)", dr); free(drb.p); return 1;
     }
     /* Dir#inspect renders as #<Dir:PATH> (#3250). */
     if (sp_streq(name, "inspect") && argc == 0) {

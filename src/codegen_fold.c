@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* One representation: a block parameter bound to a typed String Array's
    element holds the handle the Array keeps (the element is one), so its
@@ -812,6 +813,9 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   TyKind rt = rr.as_ty;
   const char *hn = ty_hash_cname(rt);
   if (!hn) return 0;
+  /* a Hash reopen's own method of the name is the call's target, as the
+     inference takes it (an_reopen_owner): its call takes the block */
+  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
   if (bn < 1) return 0;
@@ -1968,6 +1972,10 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d += _t%d; }\n", tpos, tme);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  /* the result of a binary subject is binary, as CRuby's gsub and the
+     non-block form's (sp_re_gsub) */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (sp_str_is_binary(_t%d) && !_t%d->binary) { _t%d->binary = 1; sp_fd_publish(_t%d); }\n", ts, tout, tout, tout);
   buf_printf(b, "_t%d->data", tout);
   if (tsm) g_sub_bang_tm = tsm;
   return 1;
@@ -9086,6 +9094,14 @@ static int arg_bang_on_handle(Compiler *c, int v) {
   const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
   return nm && nm[0] && nm[strlen(nm) - 1] == '!' && strbuf_bang_self_local(c, u);
 }
+/* See codegen_internal.h. */
+void emit_paren_lead(Compiler *c, int v, int tail, Buf *b, int indent) {
+  for (int w = v; w != tail && nt_kind(c->nt, w) == NK_ParenthesesNode;) {
+    int n = 0; const int *bd = nt_arr(c->nt, nt_ref(c->nt, w, "body"), "body", &n);
+    for (int i = 0; i < n - 1; i++) emit_stmt(c, bd[i], b, indent);
+    w = bd[n - 1];
+  }
+}
 static void emit_arg_temp(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   int fresh = repr_handle_apart(c, v, r);
@@ -9113,11 +9129,7 @@ static void emit_arg_temp(Compiler *c, int v) {
      their statements first, once, and their value is the route's. */
   int stail = conversion ? strbuf_srange_tail(c, v) : -1, srange = stail >= 0, tr = -1;
   if (srange) {
-    for (int w = v; w != stail && nt_kind(c->nt, w) == NK_ParenthesesNode;) {
-      int n = 0; const int *bd = nt_arr(c->nt, nt_ref(c->nt, w, "body"), "body", &n);
-      for (int i = 0; i < n - 1; i++) emit_stmt(c, bd[i], g_pre, g_indent);
-      w = bd[n - 1];
-    }
+    emit_paren_lead(c, v, stail, g_pre, g_indent);
     int recv = nt_ref(c->nt, stail, "receiver");
     tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -9144,6 +9156,22 @@ static void emit_arg_temp(Compiler *c, int v) {
     ran_first_bind_o(v, t, t, 0);
     return;
   }
+  /* A String variable's read in parentheses after other statements
+     (`f((x; t))`) is that read once they ran (vp_one): they run here,
+     ahead, and the variable's handle is taken as a bare read's is. Read as
+     the parentheses, a shared slot handed on its bytes. */
+  int rd = v;
+  if (!wshare && !conversion && !fresh && !srange && vk == NK_ParenthesesNode &&
+      (at == TY_STRING || at == TY_STRBUF)) {
+    int u;
+    if (vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &u) == VP1_NODE &&
+        (nt_kind(c->nt, u) == NK_LocalVariableReadNode || nt_kind(c->nt, u) == NK_InstanceVariableReadNode ||
+         repr_static_read_kind(nt_kind(c->nt, u)))) {
+      emit_paren_lead(c, v, u, g_pre, g_indent);
+      rd = u;
+      vk = nt_kind(c->nt, u);
+    }
+  }
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, nt_paren_single(c->nt, v), &hw);
   else if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
@@ -9151,7 +9179,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
-                 strbuf_slot_text(c, v, &sref))) {
+                 strbuf_slot_text(c, rd, &sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, wshare ? hw.p : sref.p, th);
@@ -9192,7 +9220,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     emit_str_expr(c, v, &hb);
     view_pop(c, mark);
   }
-  else emit_expr(c, v, &hb);
+  else emit_expr(c, rd, &hb);
   emit_indent(g_pre, g_indent);
   /* (one representation: a String of either face is held as it is, the C
      compiler naming the type, and read where it is used, SP_STR_B: a handle
@@ -11241,8 +11269,12 @@ typedef struct {
 
 static void arg_bind_begin(Compiler *c, Scope *m, const int *argv, int argc, ArgBind *B) {
   const NodeTable *nt = c->nt;
-  memset(B, 0, sizeof *B);
+  /* the layout is left as it lies: arg_layout sets every field of it when
+     a binding takes it (state 2), and nothing reads it otherwise. Zeroing
+     its keyword plan (1.4 KB) per parameter ask was 4% of a sampled window
+     of a Rails program's share pass. */
   B->argv = argv; B->argc = argc; B->pos_argc = argc; B->kwh = -1; B->splat = -1;
+  B->nsplat = 0; B->state = 0;
   if (!m) return;
   if (nt_argv_kwh(nt, argv, argc) >= 0) { B->kwh = argv[argc - 1]; B->pos_argc--; }
   for (int k = 0; k < B->pos_argc; k++) {

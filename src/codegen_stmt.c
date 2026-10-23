@@ -298,7 +298,8 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
   TyKind t = tr.as_ty;
   emit_indent(b, indent);
   /* `print n.chr`: write the byte directly. Going through the C-string
-     path would drop a NUL byte (the P4/P6 image benchmarks emit those). */
+     path would drop a NUL byte (the P4/P6 image benchmarks emit those).
+     Outside 0..255, sp_int_chr raises Integer#chr's RangeError. */
   {
     const NodeTable *nt = c->nt;
     const char *aty = nt_type(nt, arg);
@@ -308,9 +309,10 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
       int cargs = nt_ref(nt, arg, "arguments");
       int can = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &can);
       if (crecv >= 0 && can == 0 && comp_ntype(c, crecv) == TY_INT) {
-        buf_puts(b, "putchar((int)((");
+        int t = ++g_tmp;
+        buf_printf(b, "{ sp_int _t%d = ", t);
         emit_expr(c, crecv, b);
-        buf_puts(b, ") & 0xff));\n");
+        buf_printf(b, "; if (_t%d < 0 || _t%d > 255) (void)sp_int_chr(_t%d); putchar((int)_t%d); }\n", t, t, t, t);
         return;
       }
     }
@@ -3325,7 +3327,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_puts(b, "({ ");
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
     int pickup = repr_call_returns_handle(c, v);
-    buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
+    /* (to_s of a String subclass instance is a new String, #9968) */
+    buf_printf(b, is_to_s_name(nt_str(nt, v, "name")) && program_has_strsub(c)
+                  ? "sp_poly_is_strbuf(_t%d) ? sp_poly_to_s_strbuf(_t%d) : "
+                  : "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
     /* `s&.to_s` on a nil box answers nil; the guard is this test, not one
        hoisted ahead of the held box. */
     int sn = nt_safe_nav(nt, v), sn_skip = g_sn_skip;
@@ -5108,7 +5113,12 @@ static int strbuf_dup_call(Compiler *c, int v) {
   if (cplan_user(c, v)->dispatch != CP_NONE) return 0;
   return sp_streq(nm, "dup") ? 1 : 2;
 }
+static void emit_strbuf_seq_nil(Compiler *c, int v, Buf *b);
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  /* a parenthesized sequence whose value is nil is the slot's NULL, after
+     its statements, as `nil` is: wrapped as a String, its nil was an
+     integer handed to the new handle */
+  if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
   /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
   { int w = nt_paren_single(c->nt, v);
     if (repr_share_rule(c) && repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
@@ -5415,12 +5425,19 @@ static int paren_tail(const NodeTable *nt, int v) {
   }
   return v;
 }
-/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`)?
-   A String slot takes NULL for it, after the statements before the nil. */
+/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`,
+   `()`)? A String slot takes NULL for it, after the statements before the
+   nil. */
 int strbuf_seq_nil_tail(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  int t = v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode ? paren_tail(nt, v) : -1;
-  return t >= 0 && nt_kind(nt, t) == NK_NilNode;
+  int t;
+  if (v < 0 || nt_kind(nt, v) != NK_ParenthesesNode) return 0;
+  switch (vp_one(nt, v, VPS_NONE | VP_PARENS_ONLY, &t)) {
+  case VP1_NODE: return nt_kind(nt, t) == NK_NilNode;
+  case VP1_NIL: return 1;
+  case VP1_MANY: return 0;
+  }
+  return 0;
 }
 /* The slot's nil for sequence v (strbuf_seq_nil_tail): the statements
    before the nil run first, in order, as an expression. */
@@ -13341,7 +13358,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
+  if (ts && ts->ret_pub_fresh && share_return_owned(c, nt_paren_single(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;
@@ -13372,7 +13389,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     return;
   }
   if (!ts || !ts->ret_pub_fresh ||
-      !(share_tail_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
+      !(share_tail_fresh(c, nt_paren_single(c->nt, node)) || share_call_fresh(c, nt_paren_single(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;

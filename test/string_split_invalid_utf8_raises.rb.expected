@@ -1,0 +1,13 @@
+split: ArgumentError: invalid byte sequence in UTF-8
+split nil: ArgumentError: invalid byte sequence in UTF-8
+split space: ArgumentError: invalid byte sequence in UTF-8
+split space limit: ArgumentError: invalid byte sequence in UTF-8
+split comma: ArgumentError: invalid byte sequence in UTF-8
+split comma -1: ArgumentError: invalid byte sequence in UTF-8
+split comma 2: ArgumentError: invalid byte sequence in UTF-8
+split empty: ArgumentError: invalid byte sequence in UTF-8
+split limit 1: ["a\xFF b,c"]
+split space limit 1: ["a\xFF b,c"]
+split empty string: []
+split binary: ["a\xFF", "b,c"]
+split valid: ["é", "b,c"]

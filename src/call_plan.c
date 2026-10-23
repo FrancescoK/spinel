@@ -54,9 +54,25 @@ static const char *cplan_reopen_class(TyKind rt) {
   case TY_FIBER:  return "Fiber";
   case TY_RANDOM: return "Random";
   case TY_CLASS:  return "Class";
-  case TY_BOOL:   return "TrueClass";
   default:        return NULL;
   }
+}
+
+/* The methods a TrueClass and a FalseClass reopen define of a call's name,
+   each -1 where that class has none of its own. A true or false receiver
+   reaches its own class's method; the other value keeps the builtin (or
+   CRuby's NoMethodError). 1 when either class has one. */
+int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi) {
+  *tmi = *fmi = -1;
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || nt_int(c->nt, id, "builtin_only", 0)) return 0;
+  static const char *const CN[2] = { "TrueClass", "FalseClass" };
+  for (int k = 0; k < 2; k++) {
+    int ci = comp_class_index(c, CN[k]);
+    int mi = ci >= 0 ? comp_method_in_chain(c, ci, name, NULL) : -1;
+    if (mi >= 0 && c->scopes[mi].class_id == ci) *(k ? fmi : tmi) = mi;
+  }
+  return *tmi >= 0 || *fmi >= 0;
 }
 
 /* a program's own Object method, for a name Object's builtin surface does
@@ -398,6 +414,15 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
     if (emi >= 0) {
       cplan_set(p, emi, eci, UC_REOPEN, io_reopen_ret_mixed(c, name) ? CP_SWITCH : CP_DIRECT);
+      return;
+    }
+  }
+  /* true and false: each value's own class (cplan_bool_sides) */
+  if (rt == TY_BOOL) {
+    int tmi, fmi;
+    if (cplan_bool_sides(c, id, &tmi, &fmi)) {
+      int mi = tmi >= 0 ? tmi : fmi;
+      cplan_set(p, mi, c->scopes[mi].class_id, UC_REOPEN, CP_SWITCH);
       return;
     }
   }

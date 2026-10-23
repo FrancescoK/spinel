@@ -839,14 +839,6 @@ int str_in(const char *s, const char *const *set) {
   for (int i = 0; set[i]; i++) if (sp_streq(s, set[i])) return 1;
   return 0;
 }
-int an_unparen(const NodeTable *nt, int n) {
-  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
-    int pb = nt_ref(nt, n, "body"); int pn = 0;
-    const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    n = pn == 1 ? pd[0] : -1;
-  }
-  return n;
-}
 /* A construct whose VALUE is an empty container. Its type reads UNKNOWN
    because it carries no element type, which is not the same as producing no
    value -- and the two were conflated wherever an expression's type decides
@@ -855,7 +847,7 @@ int an_unparen(const NodeTable *nt, int n) {
    the value unified to the handler's Integer and the array pointer went into
    an sp_int slot (#3495, #3496). */
 int node_is_empty_container(const NodeTable *nt, int node) {
-  node = an_unparen(nt, node);   /* `([])` is as empty as `[]` */
+  node = nt_paren_single(nt, node);   /* `([])` is as empty as `[]` */
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
@@ -1884,7 +1876,7 @@ int scope_body_value(Compiler *c, int mi) {
    other body. */
 const char *an_memo_reader_ivar(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
-  int last = an_unparen(nt, scope_body_last(c, mi));
+  int last = nt_paren_single(nt, scope_body_last(c, mi));
   if (last < 0 || nt_kind(nt, last) != NK_InstanceVariableOrWriteNode) return NULL;
   return nt_str(nt, last, "name");
 }
@@ -2040,6 +2032,11 @@ static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
    prepend shadow (named `__prep_N_m`), are left to the full resolution. */
 static int *yvt_nm_head = NULL, *yvt_nm_next = NULL, *yvt_always = NULL;
 static int yvt_nb = 0, yvt_always_n = 0;
+/* the alias-named entries by the names their alias may stand for: name t's
+   are yvt_tg_ii[yvt_tg_off[t] .. yvt_tg_off[t + 1]), ascending (yvt_tg_build) */
+static ANameHash yvt_tg_names;
+static int *yvt_tg_off = NULL, *yvt_tg_ii = NULL, yvt_tg_nn = 0;
+static void yvt_tg_build(Compiler *c);
 static unsigned char *yvt_alias_name = NULL;   /* per yvt_ids entry: its name is an alias somewhere */
 static unsigned char *yvt_fwd = NULL;          /* per yvt_ids entry: yvt_call_forwards_block */
 static int yvt_name_is_alias(Compiler *c, const char *cn) {
@@ -2111,42 +2108,183 @@ static void yvt_build(Compiler *c) {
     yvt_nm_next[ii] = yvt_nm_head[b]; yvt_nm_head[b] = ii;
   }
   for (int ii = 0; ii < yvt_n; ii++)
-    if (!nt_str(nt, yvt_ids[ii], "name") || (yvt_alias_name && yvt_alias_name[ii]))
-      yvt_always[yvt_always_n++] = ii;
+    if (!nt_str(nt, yvt_ids[ii], "name")) yvt_always[yvt_always_n++] = ii;
+  yvt_tg_build(c);
+}
+/* The alias-named entries, by the names their alias may stand for: the
+   alias tables' edges (new -> old, every class's, as the chain resolution
+   hops them) followed from the entry's name to every name they reach. Such
+   an entry was on the always-list, walked by every yielding method per
+   ask; on a Rails program most block calls are named like some alias
+   (each, map, call ...), so the list was most of the entries, and walking
+   it was 12% of a sampled window. An entry named like an alias of no
+   method's name resolves to that method along no path: the lookup matches
+   names, and only an alias edge changes the name it matches. */
+static void yvt_tg_build(Compiler *c) {
+  anh_free(&yvt_tg_names); memset(&yvt_tg_names, 0, sizeof yvt_tg_names);
+  free(yvt_tg_off); free(yvt_tg_ii); yvt_tg_off = NULL; yvt_tg_ii = NULL; yvt_tg_nn = 0;
+  const NodeTable *nt = c->nt;
+  /* the edges, chained by their new name */
+  ANameHash en; memset(&en, 0, sizeof en);
+  int *ehead = NULL, *enext = NULL, ne = 0, ecap = 0, hcap = 0;
+  const char **eold = NULL;
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++) {
+      const char *a = c->classes[k].alias_new[i], *o = c->classes[k].alias_old[i];
+      if (!a || !o) continue;
+      int e = anh_find(&en, a);
+      if (e < 0) { anh_add(&en, a); e = anh_find(&en, a); }
+      if (e >= hcap) {
+        int nc = e + 64;
+        ehead = realloc(ehead, sizeof(int) * (size_t)nc);
+        if (!ehead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int j = hcap; j < nc; j++) ehead[j] = -1;
+        hcap = nc;
+      }
+      if (ne == ecap) {
+        ecap = ecap ? ecap * 2 : 64;
+        enext = realloc(enext, sizeof(int) * (size_t)ecap);
+        eold = realloc(eold, sizeof(const char *) * (size_t)ecap);
+        if (!enext || !eold) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      enext[ne] = ehead[e]; eold[ne] = o; ehead[e] = ne; ne++;
+    }
+  /* each alias-named call name's closure, once: the target name ids it
+     reaches (its own name excluded: that chain the entry is on already) */
+  ANameHash yn; memset(&yn, 0, sizeof yn);
+  int *yoff = NULL, *ylen = NULL, ycap = 0, *tpool = NULL, tn = 0, tcap = 0;
+  int *pair_t = NULL, *pair_ii = NULL, np = 0, pcap = 0;
+  for (int ii = 0; ii < yvt_n; ii++) {
+    if (!yvt_alias_name || !yvt_alias_name[ii]) continue;
+    const char *cn = nt_str(nt, yvt_ids[ii], "name");
+    if (!cn) continue;
+    int y = anh_find(&yn, cn);
+    if (y < 0) {
+      anh_add(&yn, cn); y = anh_find(&yn, cn);
+      if (y >= ycap) {
+        int nc = y + 64;
+        yoff = realloc(yoff, sizeof(int) * (size_t)nc); ylen = realloc(ylen, sizeof(int) * (size_t)nc);
+        if (!yoff || !ylen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        ycap = nc;
+      }
+      yoff[y] = tn; ylen[y] = 0;
+      /* breadth-first over the edges; `seen` holds the names reached */
+      ANameHash seen; memset(&seen, 0, sizeof seen);
+      const char **q = NULL; int qn = 0, qcap = 0, qh = 0;
+      anh_add(&seen, cn);
+      q = realloc(q, sizeof(const char *) * 16); qcap = 16; q[qn++] = cn;
+      while (qh < qn) {
+        const char *nm = q[qh++];
+        int e = anh_find(&en, nm);
+        for (int j = e >= 0 ? ehead[e] : -1; j >= 0; j = enext[j]) {
+          if (anh_has(&seen, eold[j])) continue;
+          anh_add(&seen, eold[j]);
+          if (qn == qcap) { qcap *= 2; q = realloc(q, sizeof(const char *) * (size_t)qcap); if (!q) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+          q[qn++] = eold[j];
+          int t = anh_find(&yvt_tg_names, eold[j]);
+          if (t < 0) { anh_add(&yvt_tg_names, eold[j]); t = anh_find(&yvt_tg_names, eold[j]); }
+          if (t >= yvt_tg_nn) yvt_tg_nn = t + 1;
+          if (tn == tcap) { tcap = tcap ? tcap * 2 : 64; tpool = realloc(tpool, sizeof(int) * (size_t)tcap); if (!tpool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+          tpool[tn++] = t; ylen[y]++;
+        }
+      }
+      free(q); anh_free(&seen);
+    }
+    for (int j = 0; j < ylen[y]; j++) {
+      if (np == pcap) {
+        pcap = pcap ? pcap * 2 : 256;
+        pair_t = realloc(pair_t, sizeof(int) * (size_t)pcap); pair_ii = realloc(pair_ii, sizeof(int) * (size_t)pcap);
+        if (!pair_t || !pair_ii) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      pair_t[np] = tpool[yoff[y] + j]; pair_ii[np] = ii; np++;
+    }
+  }
+  /* the pairs by target name, each name's entries ascending (they were
+     met ascending): counting sort */
+  yvt_tg_off = calloc((size_t)yvt_tg_nn + 1, sizeof(int));
+  yvt_tg_ii = malloc(sizeof(int) * (size_t)(np > 0 ? np : 1));
+  if (!yvt_tg_off || !yvt_tg_ii) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int p = 0; p < np; p++) yvt_tg_off[pair_t[p] + 1]++;
+  for (int t = 0; t < yvt_tg_nn; t++) yvt_tg_off[t + 1] += yvt_tg_off[t];
+  int *fill = malloc(sizeof(int) * (size_t)(yvt_tg_nn > 0 ? yvt_tg_nn : 1));
+  if (!fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int t = 0; t < yvt_tg_nn; t++) fill[t] = yvt_tg_off[t];
+  for (int p = 0; p < np; p++) yvt_tg_ii[fill[pair_t[p]]++] = pair_ii[p];
+  free(fill); free(pair_t); free(pair_ii); free(tpool); free(yoff); free(ylen); anh_free(&yn);
+  free(ehead); free(enext); free(eold); anh_free(&en);
 }
 /* The entries that may reach `mi`, ascending: its name's chain, `new`'s for
-   an initialize, and the always-list, merged. A method with no name, or a
-   prepend shadow, takes every entry (see yvt_may_reach). */
-typedef struct { int s[3]; int ai; int all; int next_all; int last; } YvtIt;
+   an initialize, the alias-named entries whose alias may stand for its
+   name, and the always-list, merged. A method with no name, or a prepend
+   shadow, takes every entry (see yvt_may_reach). */
+typedef struct { int s[3]; int ai; int tp, te; int all; int next_all; int last; } YvtIt;
 static void yvt_it_init(Compiler *c, YvtIt *it, int mi) {
   const char *mn = c->scopes[mi].name;
   it->all = !mn || strncmp(mn, "__prep_", 7) == 0 || !yvt_nm_head;
-  it->next_all = 0; it->last = -1; it->ai = 0;
+  it->next_all = 0; it->last = -1; it->ai = 0; it->tp = it->te = 0;
   it->s[0] = it->s[1] = -1;
   if (it->all) return;
   it->s[0] = yvt_nm_head[sp_strhash(mn) % (unsigned)yvt_nb];
   if (sp_streq(mn, "initialize")) it->s[1] = yvt_nm_head[sp_strhash("new") % (unsigned)yvt_nb];
+  int t = yvt_tg_off ? anh_find(&yvt_tg_names, mn) : -1;
+  if (t >= 0 && t < yvt_tg_nn) { it->tp = yvt_tg_off[t]; it->te = yvt_tg_off[t + 1]; }
 }
 static int yvt_it_next(YvtIt *it) {
   if (it->all) return it->next_all < yvt_n ? it->next_all++ : -1;
   for (;;) {
     int a = it->s[0], b = it->s[1];
     int c3 = it->ai < yvt_always_n ? yvt_always[it->ai] : -1;
+    int d = it->tp < it->te ? yvt_tg_ii[it->tp] : -1;
     int m = -1;
     if (a >= 0) m = a;
     if (b >= 0 && (m < 0 || b < m)) m = b;
     if (c3 >= 0 && (m < 0 || c3 < m)) m = c3;
+    if (d >= 0 && (m < 0 || d < m)) m = d;
     if (m < 0) return -1;
     if (a == m) it->s[0] = yvt_nm_next[a];
     if (b == m) it->s[1] = yvt_nm_next[b];
     if (c3 == m) it->ai++;
+    if (d == m) it->tp++;
     if (m > it->last) { it->last = m; return m; }
   }
 }
 /* Which method does block-passing call site `cid` reach? Shared by
    yield_value_type and yield_block_tails so the two agree on what counts as a
    call site of a given method. */
+static int yvt_callee_index_scan(Compiler *c, int cid);
+/* Each site's callee, kept as long as infer_type's memo keeps the types it
+   was resolved from (infer_memo_edits), and only while that memo is in use.
+   A yielding method's value asks the callee of every block call that may
+   reach it -- those of its name, and every one whose name is an alias
+   somewhere (yvt_may_reach) -- so on a Rails program, where the common
+   names are aliases in some class, each ask resolved thousands of sites,
+   and the asks of a round resolved the same site over and over: the
+   resolution was 10% of a sampled window late in the fixpoint. */
+static int *yci_ans; static unsigned *yci_stamp; static int yci_cap;
+static unsigned yci_gen = 1; static unsigned long yci_edits = (unsigned long)-1;
 static int yvt_callee_index(Compiler *c, int cid) {
+  if (cid < 0 || !infer_memo_usable()) return yvt_callee_index_scan(c, cid);
+  unsigned long edits = infer_memo_edits(c);
+  if (edits != yci_edits || cid >= yci_cap) {
+    if (cid >= yci_cap) {
+      int cap = c->nt->count > cid + 1 ? c->nt->count : cid + 1;
+      free(yci_ans); free(yci_stamp);
+      yci_ans = malloc(sizeof(int) * (size_t)cap);
+      yci_stamp = calloc((size_t)cap, sizeof(unsigned));
+      if (!yci_ans || !yci_stamp) { free(yci_ans); free(yci_stamp); yci_ans = NULL; yci_stamp = NULL; yci_cap = 0; return yvt_callee_index_scan(c, cid); }
+      yci_cap = cap;
+    }
+    yci_edits = edits;
+    if (++yci_gen == 0) { memset(yci_stamp, 0, sizeof(unsigned) * (size_t)yci_cap); yci_gen = 1; }
+  }
+  if (yci_stamp[cid] == yci_gen) return yci_ans[cid];
+  int rmi = yvt_callee_index_scan(c, cid);
+  /* the scan's inferences may have moved the memo on (a type found, a
+     local interned): an answer from before that is not kept */
+  if (infer_memo_edits(c) == yci_edits) { yci_ans[cid] = rmi; yci_stamp[cid] = yci_gen; }
+  return rmi;
+}
+static int yvt_callee_index_scan(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
   int crecv = nt_ref(nt, cid, "receiver");
@@ -2208,9 +2346,12 @@ static int yvt_poly_recv_may_reach(Compiler *c, int cid, int mi) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
   const char *mn = c->scopes[mi].name;
-  int crecv = nt_ref(nt, cid, "receiver");
-  if (!cn || !mn || !sp_streq(cn, mn) || crecv < 0) return 0;
+  if (!cn || !mn || !sp_streq(cn, mn)) return 0;
   if (c->scopes[mi].class_id < 0 || c->scopes[mi].is_cmethod) return 0;
+  /* the receiver is read once the names agree: nearly every site of the
+     list is of another name, and its field scan was 7% of a Rails window */
+  int crecv = nt_ref(nt, cid, "receiver");
+  if (crecv < 0) return 0;
   return infer_type(c, crecv) == TY_POLY;
 }
 
@@ -2225,12 +2366,15 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
       sp_streq(comp_prep_user_name(m->name), "initialize") && ctor_site_on_cycle(c, cid, mi))
     return 0;
   if (yvt_callee_index(c, cid) == mi) return 1;
+  /* the rest is a `new` reaching an initialize: the method's side first,
+     before the site's fields are read (every site asks this of every
+     yielding method) */
+  const char *mn = c->scopes[mi].name;
+  if (!mn || !sp_streq(mn, "initialize") || !c->scopes[mi].yields) return 0;
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
-  const char *mn = c->scopes[mi].name;
   int crecv = nt_ref(nt, cid, "receiver");
-  if (!cn || !sp_streq(cn, "new") || crecv < 0 || !mn || !sp_streq(mn, "initialize") ||
-      !c->scopes[mi].yields || nt_ref(nt, cid, "block") < 0) return 0;
+  if (!cn || !sp_streq(cn, "new") || crecv < 0 || nt_ref(nt, cid, "block") < 0) return 0;
   NodeKind rk = nt_kind(nt, crecv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
   TyKind rt = infer_type(c, crecv);
@@ -2363,7 +2507,6 @@ TyKind yield_value_type(Compiler *c, int mi) {
   YvtIt yit; yvt_it_init(c, &yit, mi);
   for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
     int cid = yvt_ids[ii];
-    int blk = nt_ref(nt, cid, "block");
     /* A `callee(...)` forward carries its block implicitly inside the `...`
        (no explicit block node); treat it as a forwarded block too. */
     if (!yvt_may_reach(c, ii, mi)) continue;
@@ -2375,6 +2518,9 @@ TyKind yield_value_type(Compiler *c, int mi) {
       if (yvt_poly_recv_may_reach(c, cid, mi)) poly_site = 1;
       continue;
     }
+    /* read once the site is known to reach: the sites that do not are
+       nearly all of the list */
+    int blk = nt_ref(nt, cid, "block");
     /* `mi(&b)` / `mi(...)`: the call forwards the block of its enclosing
        method rather than passing a literal. The value `mi` yields is then
        whatever that forwarded block produces -- the enclosing method's
@@ -2506,6 +2652,44 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
     int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
     if (bd && bn > 0) out[n++] = bd[bn - 1];
     if (yield_block_tails_next && bb >= 0 && n < max) n += ybt_collect_next(nt, bb, out + n, max - n, 0);
+  }
+  g_yvt_depth--;
+  return n;
+}
+/* The calls whose literal block reaches `mi`'s yield, as yield_block_tails
+   finds them (a forwarded block delegating to the enclosing method's
+   calls), into out; how many, or -1 when a chain of forwarded blocks runs
+   past the walk's depth (the list is then not known to be complete). A
+   method already on the walk is being listed by the frame that holds it.
+   A proc handed in (`m(&pr)`) has no literal block whose parameters the
+   yield binds, and is left out. */
+int yield_block_calls(Compiler *c, int mi, int *out, int max) {
+  if (max <= 0) return 0;
+  for (int i = 0; i < g_yvt_depth; i++)
+    if (g_yvt_mi[i] == mi) return 0;
+  if (g_yvt_depth >= MAX_YVT_DEPTH) return -1;
+  g_yvt_mi[g_yvt_depth++] = mi;
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
+  YvtIt yit; yvt_it_init(c, &yit, mi);
+  for (int ii; n < max && (ii = yvt_it_next(&yit)) >= 0; ) {
+    int cid = yvt_ids[ii];
+    if (!yvt_may_reach(c, ii, mi)) continue;
+    int fwd_args = yvt_fwd ? yvt_fwd[ii] : yvt_call_forwards_block(nt, cid);
+    if (!yvt_reaches(c, cid, mi)) continue;
+    if (fwd_args || nt_call_has_block_arg(nt, cid)) {
+      /* (a call in mi itself forwarding mi's own block is mi's caller's) */
+      if ((int)(comp_scope_of(c, cid) - c->scopes) == mi || !call_forwards_own_block(c, cid)) continue;
+      Scope *encl = comp_scope_of(c, cid);
+      int emi = encl ? (int)(encl - c->scopes) : -1;
+      int k = emi >= 0 && emi != mi ? yield_block_calls(c, emi, out + n, max - n) : 0;
+      if (k < 0) { g_yvt_depth--; return -1; }
+      n += k;
+      continue;
+    }
+    /* a recursive call with a literal block reaches the yield too */
+    out[n++] = cid;
   }
   g_yvt_depth--;
   return n;
@@ -2788,8 +2972,9 @@ int an_user_defines_method(Compiler *c, const char *name) {
 
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int n = an_unparen(nt, node);
-  if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
+  /* the value parentheses answer: `(x; yield)` is the yield's */
+  int n;
+  if (vp_one(nt, node, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NODE && nt_kind(nt, n) == NK_YieldNode) {
     Scope *sc = comp_scope_of(c, n);
     int mi = sc ? (int)(sc - c->scopes) : -1;
     if (mi >= 0 && yield_value_diverges(c, mi)) return TY_POLY;
@@ -3360,6 +3545,12 @@ int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
            ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
   if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 1;
   if (srt == TY_POLY) {
+    /* any class's chain, from the by-name lists while the chain memo can
+       be trusted, class by class otherwise */
+    int nr;
+    comp_name_responders(c, name, 0, &nr);
+    if (nr > 0) return 1;
+    if (nr == 0) return comp_name_reader_any(c, name);
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 1;
     return 0;

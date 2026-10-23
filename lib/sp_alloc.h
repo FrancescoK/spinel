@@ -566,6 +566,14 @@ static inline char *sp_str_empty_binary(void) {
   sp_str_mark_binary(r);
   return r;
 }
+/* A new empty String in the encoding of s: the empty fields of a partition
+   that found nothing */
+static inline char *sp_str_empty_like(const char *s) {
+  char *r = sp_str_alloc_raw(1);
+  r[0] = 0;
+  sp_str_set_len(r, 0);
+  return sp_str_bin_like(s, r);
+}
 
 /* Byte count for the binary-safe return modes (FFI `:binstr`, native binding
    `:cbinstr`). A C function returning bytes rather than a NUL-terminated

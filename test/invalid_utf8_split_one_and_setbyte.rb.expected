@@ -1,0 +1,5 @@
+["a\xFF,b"]
+["a\xFF,b"]
+1
+ArgumentError
+ArgumentError

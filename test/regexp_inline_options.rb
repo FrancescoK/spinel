@@ -1,3 +1,6 @@
+# spinel: not-cruby -- Regexp.new("[a\xE3]") below: CRuby refuses a truncated
+# multi-byte character class (RegexpError), the engine taken from mruby-regexp
+# reads the byte; the rest of the file answers as CRuby does.
 # Inline option groups, imported from mruby-regexp: the toggle form (?i)
 # applies to the rest of the enclosing group; the scoped form (?i:...) applies
 # only to its body; negation (?-i) switches off. m is DOTALL (Ruby /m).
@@ -47,12 +50,17 @@ end
   end
 end
 
-# Truncated UTF-8 at the end of the subject must not disturb matching (and,
-# under ASAN, must not read past the buffer). CRuby raises ArgumentError on
-# an invalid-encoding subject; spinel matches over the bytes.
+# Truncated UTF-8 at the end of the subject: a search raises ArgumentError
+# before it matches, as CRuby's does. The same bytes as ASCII-8BIT are
+# searched, and must not read past the buffer under ASAN.
 s = "abc\xE3"
-p(/c/ =~ s)
-p(/z/ =~ s)
+begin
+  p(/c/ =~ s)
+rescue ArgumentError => e
+  puts e.message
+end
+p(/c/ =~ s.b)
+p(/z/ =~ s.b)
 # truncated multi-byte leader at the end of a character class
 r = Regexp.new("[a\xE3]")
 p(r =~ "za")

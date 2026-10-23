@@ -1329,6 +1329,8 @@ static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
 /* IO#gets with separator / limit / chomp (#2809, #2810, #2820). sep NULL
    reads to EOF; limit <= 0 means unlimited. NULL at EOF. */
 const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool chomp);
+const char *sp_File_gets_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp);
+const char *sp_File_readline_limit(sp_File *f, const char *sep, sp_oint limit, sp_bool chomp);
 /* IO#readlines with separator / chomp (#2820) */
 sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, sp_bool chomp);
 sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, sp_bool chomp);
@@ -1352,11 +1354,11 @@ const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n);
 /* IO#pread(len, offset): read without moving the file position. Inline
    because it allocates from this TU's string heap (#3038). */
 static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
-  SP_IO_OPEN(f);
+  sp_pread_check(f, len, 0);
   if (len < 0) len = 0;
   char *buf = (char *)sp_str_alloc((size_t)len);
-  ssize_t got = pread(fileno(f->fp), buf, (size_t)len, (off_t)off);
-  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  ssize_t got = len ? pread(fileno(f->fp), buf, (size_t)len, (off_t)off) : 0;
+  if (got < 0) sp_pread_raise_errno(f);
   if (got == 0 && len > 0) sp_raise_cls("EOFError", "end of file reached");
   buf[got] = '\0';
   sp_str_set_len(buf, (size_t)got);
@@ -1373,11 +1375,11 @@ static inline const char *sp_File_pread_checked(sp_File *f, sp_int len, sp_int o
 /* IO#pread answering NULL at EOF instead of raising, for the same reason as
    sp_File_readpartial_or_nil. */
 static inline const char *sp_File_pread_or_nil(sp_File *f, sp_int len, sp_int off) {
-  SP_IO_OPEN(f);
+  sp_pread_check(f, len, 1);
   if (len < 0) len = 0;
   char *buf = (char *)sp_str_alloc((size_t)len);
   ssize_t got = pread(fileno(f->fp), buf, (size_t)len, (off_t)off);
-  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  if (got < 0) sp_pread_raise_errno(f);
   if (got == 0 && len > 0) return NULL;
   buf[got] = '\0';
   sp_str_set_len(buf, (size_t)got);
@@ -2222,8 +2224,9 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   static const char *const statm[] = { "blksize", "blockdev?", "blocks", "chardev?",
     "dev", "dev_major", "dev_minor", "directory?", "executable?", "executable_real?",
     "file?", "gid", "grpowned?", "ino", "mode",
-    "nlink", "owned?", "pipe?", "rdev", "readable?", "setgid?", "setuid?", "size",
-    "size?", "socket?", "sticky?", "symlink?", "uid", "writable?", "zero?", NULL };
+    "nlink", "owned?", "pipe?", "rdev", "readable?", "readable_real?", "setgid?",
+    "setuid?", "size", "size?", "socket?", "sticky?", "symlink?", "uid",
+    "world_readable?", "world_writable?", "writable?", "writable_real?", "zero?", NULL };
   static const char *const statm_t[] = { "atime", "birthtime", "ctime", "ftype",
     "mtime", NULL };
   static const char *const statm_b[] = { "<", "<=", ">", ">=", "between?", "clamp",
@@ -3337,12 +3340,26 @@ static inline sp_RbVal sp_poly_strbuf_lift(sp_RbVal v) {
    itself: its own box (the shared handle's, where it has one); anything
    else answers its to_s String (sp_poly_to_s), boxed. */
 static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v);
+/* to_s of an instance of a String subclass is a new String of its bytes,
+   not the instance, as CRuby's String#to_s: a later dup or class then
+   answers String. A plain handle is not one (sp_bsub_cls_fn). */
+static inline int sp_poly_is_str_subclass(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p &&
+         sp_bsub_cls_fn && sp_bsub_cls_fn(v) >= 0;
+}
+/* ...and the handle a String box's to_s answers: its own, or that new
+   String's for a subclass instance */
+static inline sp_String *sp_poly_to_s_strbuf(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_String_new_fresh(sp_String_cstr((sp_String *)v.v.p));
+  return (sp_String *)v.v.p;
+}
 /* --share-strings: to_s of a shared String handle that may be nil (NULL)
    as a box: the handle's own box, or nil's "" */
 static inline sp_RbVal sp_strbuf_to_s_box(sp_String *h) {
   return h ? sp_box_nullable_obj(h, SP_BUILTIN_STRBUF) : sp_box_str(sp_str_frozen_empty);
 }
 static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_box_str_new(sp_str_dup(sp_String_cstr((sp_String *)v.v.p)));
   if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
   return sp_box_str_new(sp_poly_to_s(v));
 }
@@ -3351,6 +3368,7 @@ static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
    sp_poly_to_s_box does, anything else its to_s boxed as bytes, with no
    handle made around it */
 static inline sp_RbVal sp_poly_to_s_box_plain(sp_RbVal v) {
+  if (sp_poly_is_str_subclass(v)) return sp_box_str(sp_str_dup(sp_String_cstr((sp_String *)v.v.p)));
   if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
   return sp_box_str(sp_poly_to_s(v));
 }
@@ -3726,6 +3744,7 @@ static SP_INLINE const char *sp_poly_sep_str(sp_RbVal v) {
    default separator, anything else the separator with no limit */
 static SP_INLINE const char *sp_poly_gets_sep(sp_RbVal v) { return v.tag == SP_TAG_INT ? "\n" : sp_poly_sep_str(v); }
 static SP_INLINE sp_int sp_poly_gets_lim(sp_RbVal v) { return v.tag == SP_TAG_INT ? v.v.i : 0; }
+static SP_INLINE sp_oint sp_poly_gets_olim(sp_RbVal v) { return v.tag == SP_TAG_INT ? sp_oint_of(v.v.i) : sp_oint_nil(); }
 /* The object half of the check below, split out and kept off the inlined path
    for the reason sp_poly_arg_str_obj is: the object case is the rare one.
 
@@ -4155,6 +4174,14 @@ static SP_NOINLINE sp_bool sp_io_line_args(sp_PolyArray *a, const char **sep, sp
     if (*lim < 0) *lim = 0;
   }
   return 0;
+}
+
+/* gets / readline's form of sp_io_line_args: the limit as an sp_oint,
+   nil for none, so an explicit 0 (CRuby's "" without reading) stays apart */
+static SP_UNUSED sp_oint sp_io_gets_args(sp_PolyArray *a, const char **sep) {
+  sp_int lim = 0;
+  if (sp_io_line_args(a, sep, &lim, NULL)) return sp_oint_of(0);
+  return lim > 0 ? sp_oint_of(lim) : sp_oint_nil();
 }
 
 /* A boxed value where a Float is wanted, by Kernel#Float's rules: a real
@@ -18024,6 +18051,7 @@ const char *sp_dir_pwd(void);
    Windows _-prefixed variants take a single path argument); each returns
    0 on success, matching CRuby's `Dir.mkdir` etc. */
 sp_int sp_dir_mkdir(const char *path);
+sp_int sp_dir_mkdir_mode(const char *path, sp_int mode);
 sp_int sp_dir_rmdir(const char *path);
 sp_int sp_dir_chdir(const char *path);
 sp_int sp_dir_chdir0(const char *path);  /* the block form's label */
@@ -18070,6 +18098,7 @@ sp_StrArray *sp_Dir_entries_h(sp_Dir *d, sp_int children);
 sp_int sp_Dir_fchdir(sp_int fd);
 const char *sp_Dir_read(sp_Dir *d);
 const char *sp_Dir_path(sp_Dir *d);
+const char *sp_Dir_path_copy(sp_Dir *d);
 sp_RbVal sp_Dir_close(sp_Dir *d);
 sp_Dir *sp_Dir_rewind(sp_Dir *d);
 sp_int sp_Dir_tell(sp_Dir *d);

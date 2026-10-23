@@ -82,6 +82,16 @@ typedef struct {
                           `node` is then the rule's subject (the default) or -1 */
 } SlotWhy;
 
+/* The bits of nullable_int_elem / ivar_nullable_int_elem. NIE_MARKED types
+   the elements read out (an oint where it is set). NIE_REACH: a nil can be in
+   the array at run time through some other name of it -- a store through a
+   parameter it was passed as, a local assigned from it, what a method
+   answered, or a gap a write past the end left -- which the mark of this
+   name does not see; the loop read hc_index_in_range proves in range asks
+   it (repr elem_nil_reach) before it reads the element untested. NIE_STORED:
+   such a nil can be stored THROUGH this name, so the names it was assigned
+   or bound from reach it too (mark_elem_slot). */
+enum { NIE_MARKED = 1, NIE_STORED = 2, NIE_REACH = 4 };
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */
   SP_TY_FIELD TyKind type; /* inferred type, written by lv_set_type */
@@ -170,7 +180,8 @@ typedef struct {
   int nullable_int_elem; /* the same, one level in: an int/float ARRAY local
                        some element of which can be nil (its nil bit), so
                        reading an element or binding a block parameter from
-                       it carries the nil out (#3505) */
+                       it carries the nil out (#3505): NIE_MARKED. The other
+                       NIE_ bits say where a nil can come from at run time. */
   int bounded_counter; /* (codegen, lazily) 1: an Integer local that only ever
                           takes a small literal or `+= / -= <small literal>`
                           inside iterator blocks over containers (never a
@@ -1725,8 +1736,6 @@ const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symb
 int sp_str_mutator(const char *nm, unsigned want);
 /* 1 iff call node `id` is a String method whose value is its receiver. */
 int str_self_call(const NodeTable *nt, int id);
-/* `n` through single-expression parentheses (analyze_util.c). */
-int an_unparen(const NodeTable *nt, int n);
 /* The RegularExpressionNode a Regexp local read at `read` always holds, or -1 (analyze_util.c). */
 int an_regex_local_lit(Compiler *c, int read);
 int fiber_storage_recv(const NodeTable *nt, int recv);
@@ -1806,6 +1815,8 @@ int        comp_scope_index_is_frozen(void);
 unsigned   comp_scope_index_gen(void);
 /* An alias or a class's parent changed: drops what the chain lookups memoized. */
 void       comp_class_shape_changed(void);
+/* ... and how many times it has: a memo over the chain's answers stamps it. */
+unsigned   comp_class_shape_gen(void);
 /* Find the class (singleton) method scope for class_id + name, or -1 (no chain). */
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */
@@ -1833,6 +1844,11 @@ int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int
    name for each; at every boxed comparison site, every round, that was a
    third of a Rails program's re-narrow round (1,299 classes). */
 const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n);
+/* Whether some class's chain answers `name` with a reader
+   (comp_reader_in_chain), kept per name while the reader and alias tables
+   and the class shape stand still. A retargeted send on a boxed receiver
+   asked it class by class at every resolution of its plan. */
+int        comp_name_reader_any(Compiler *c, const char *name);
 /* does class_id's chain define the method call id names, and does the call reach it? A call
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */

@@ -79,6 +79,7 @@ CallPlan cplan_method_call(Compiler *c, int id);
 CallPlan cplan_send_arm(Compiler *c, int id);
 CallPlan cplan_exception_render(Compiler *c, int id, int ci);
 const CallPlan *cplan_user(Compiler *c, int id);
+int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
    the analysis, before the memo is codegen's to fill (the nil facts,

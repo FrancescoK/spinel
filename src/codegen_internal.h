@@ -468,6 +468,8 @@ enum {
   RW_YIELD,          /* a yield boxed by the block of this call site */
   RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
   RW_RAN_FIRST,      /* an argument that already ran: its temp */
+  RW_PAREN_TAIL,     /* parentheses boxed as the handle of the variable
+                        they end in, after their statements */
   RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
@@ -1212,6 +1214,10 @@ int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_stmt(Compiler *c, int id, Buf *b, int indent);
+/* The statements of parentheses v that run before `tail`, the node their
+   value comes from (through nested parentheses: vp_one's answer), into b,
+   in order (codegen_fold.c). */
+void emit_paren_lead(Compiler *c, int v, int tail, Buf *b, int indent);
 void emit_stmts(Compiler *c, int id, Buf *b, int indent);
 void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
@@ -2247,6 +2253,7 @@ const char *arysub_array_ctype(Compiler *c, int cid);   /* codegen.c: an Array s
 void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b);
 void arysub_box_id(Compiler *c, TyKind t, Buf *b);   /* the cls_id an object's box carries */
 int program_has_arysub(Compiler *c);
+int program_has_strsub(Compiler *c);   /* a class of the program that subclasses String */
 void emit_obj_switch_key(Compiler *c, int tv, Buf *b);   /* codegen.c: a class switch's key, Array subclasses included */
 void emit_arysub_machinery(Compiler *c, Buf *b);
 /* a call Array answers on an Array subclass instance (#7449), as an

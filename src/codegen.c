@@ -1,6 +1,7 @@
 #include <limits.h>
 #include "codegen_internal.h"
 #include "call_plan.h"
+#include "value_pos.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -598,6 +599,7 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
   else if (why == RW_YIELD) cls = "yield-site";
   else if (why == RW_TRANSPLANT) cls = "transplant";
   else if (why == RW_RAN_FIRST) cls = "ran-first";
+  else if (why == RW_PAREN_TAIL) cls = "paren-tail";
   else if (why == RW_HANDLE_ROUTE) cls = "handle-route";
   else if (why == RW_LITERAL) cls = "literal";
   else if ((form == RF_INT_NIL || form == RF_FLT_NIL) &&
@@ -2815,6 +2817,31 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     /* --share-strings: a String a bang method answers off a variable's
        handle is that handle, boxed as it (a copy forked the box off it) */
     if (t == TY_STRING && emit_boxed_bang_self(c, node, b)) return;
+    /* a sequence in parentheses ending in a variable that holds the handle
+       (vp_one): its statements, then that variable's box, as the bare read
+       is boxed; one that ran ahead (emit_arg_temp) is the handle it took
+       there, or, where it took none, its temp as any other's */
+    if (t == TY_STRING && nt_kind(c->nt, node) == NK_ParenthesesNode) {
+      int u;
+      if (vp_one(c->nt, node, VPS_NONE | VP_PARENS_ONLY, &u) == VP1_NODE && u != node &&
+          repr_of(c, u).kind == RK_STRBUF) {
+        if (ran_first_handle(node) >= 0) {
+          str_box_handle_tmp(b, ran_first_handle(node));
+          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+          return;
+        }
+        if (!arg_ran_first(node, 0)) {
+          Buf pre; memset(&pre, 0, sizeof pre);
+          emit_paren_lead(c, node, u, &pre, 0);
+          buf_printf(b, "({ %s", pre.p ? pre.p : "");
+          emit_boxed(c, u, b);
+          buf_puts(b, "; })");
+          free(pre.p);
+          RC(RF_STRBUF_HANDLE, RW_PAREN_TAIL);
+          return;
+        }
+      }
+    }
     /* --share-strings: a mutator on a narrowed box (`a << x` where an
        is_a? guard narrows a boxed a) answers that box, read as one */
     if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {
@@ -11080,7 +11107,7 @@ static int program_has_hashsub(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_hash) return 1;
   return 0;
 }
-static int program_has_strsub(Compiler *c) {
+int program_has_strsub(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_str) return 1;
   return 0;
 }
@@ -16385,7 +16412,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_RbVal sp_arysub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled);\n");
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
-  buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
+  buf_puts(b, "static inline void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
   if (program_has_arysub(c)) {
     buf_puts(b, "static int sp_bsub_cls_of(sp_RbVal v);\n");
     buf_puts(b, "static void *sp_bsub_unbox(sp_RbVal v, int cls, const char *want);\n");
@@ -19046,12 +19073,22 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
   buf_puts(b, "static int sp_class_le_ids(int a,int b){return sp_class_is_ancestor((sp_Class){b},(sp_Class){a});}\n");
   buf_puts(b, "static int sp_class_gt(sp_Class a,sp_Class b){return sp_class_lt(b,a);}\n");
   buf_puts(b, "static int sp_class_ge(sp_Class a,sp_Class b){return sp_class_le(b,a);}\n");
-  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437). */
-  buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
+  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437).
+     A value of exactly the wanted class -- every read of a one-class Hash's
+     or poly slot's boxed object -- is answered inline by its tag and class
+     id; only nil, a subclass instance or a wrong value takes the chain walk
+     (sp_class_le, a call per step) and the raise. Without the inline path
+     `h[k].n` on a String-keyed Hash of one class spent a quarter of its
+     instructions in the call (~48 of ~228 per read), and in a split build
+     (csplit.c) the whole check was a call into another part. */
+  buf_puts(b, "static SP_NOINLINE SP_COLD void *sp_poly_unbox_cls_slow(sp_RbVal v, int cls, const char *want){\n"
                "  if(v.tag==SP_TAG_NIL)return NULL;\n"
                "  if(v.tag==SP_TAG_OBJ&&sp_class_le((sp_Class){v.cls_id},(sp_Class){cls}))return v.v.p;\n"
                "  sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %s (expected %s)\", sp_poly_class_name(v), want));\n"
                "  return NULL;\n}\n");
+  buf_puts(b, "static inline void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
+               "  if(SP_LIKELY(v.tag==SP_TAG_OBJ&&v.cls_id==cls))return v.v.p;\n"
+               "  return sp_poly_unbox_cls_slow(v, cls, want);\n}\n");
   emit_arysub_machinery(c, b);
   emit_cls_visible_fn(c, b);
   /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
@@ -19781,6 +19818,22 @@ static void emit_anon_class_select(Compiler *c, Buf *b) {
   buf_puts(b, "if(id==-1000)return c.name;}switch(id){");
 }
 
+/* The symbol hash: FNV-1a over the name's bytes, then a short avalanche so
+   the low bits a table mask keeps depend on every byte ("a1".."a2000" differ
+   only at the end). The emitted runtime's sp_sym_hash_n (SP_SYM_HASH_SRC) is
+   the same function; the static table is laid out with this one, so the two
+   must stay identical. */
+static uint32_t sym_hash_n(const char *s, size_t n) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 16777619u; }
+  h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
+  return h;
+}
+#define SP_SYM_HASH_SRC \
+  "static inline uint32_t sp_sym_hash_n(const char *s, size_t n){uint32_t h=2166136261u;" \
+  "for(size_t i=0;i<n;i++){h^=(unsigned char)s[i];h*=16777619u;}" \
+  "h^=h>>16;h*=0x7feb352du;h^=h>>15;return h;}\n"
+
 /* The symbol table runtime (under g_emit_sym_rt) and sp_class_to_s, the class names the poly render arms print (under g_emit_class_names) (codegen_program's steps, in their order) */
 static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
   if (g_emit_sym_rt) {
@@ -19811,6 +19864,33 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       }
       buf_puts(b, "};\n");
     }
+    /* sp_sym_intern_n finds a static name through this open-addressing table
+       rather than by comparing it with every name: a slot holds the name's
+       hash in its high half and its id + 1 in its low half (0 is empty). It
+       is laid out here, at compile time, at most half full, so every probe
+       ends at an empty slot. Names go in in id order, so of two equal names
+       the lower id sits earlier on the probe path and wins, as it did in the
+       linear scan. */
+    buf_puts(b, SP_SYM_HASH_SRC);
+    if (ns > 0) {
+      uint32_t hsz = 8;
+      while (hsz < (uint32_t)ns * 2u) hsz <<= 1;
+      uint64_t *ht = (uint64_t *)calloc(hsz, sizeof(uint64_t));
+      for (int i = 0; i < ns; i++) {
+        size_t sl = c->symbol_lens ? c->symbol_lens[i] : strlen(c->symbols[i]);
+        uint32_t h = sym_hash_n(c->symbols[i], sl), j = h & (hsz - 1);
+        while (ht[j]) j = (j + 1) & (hsz - 1);
+        ht[j] = ((uint64_t)h << 32) | (uint64_t)(uint32_t)(i + 1);
+      }
+      buf_printf(b, "#define SP_SYM_HMASK %uu\nstatic const uint64_t sp_sym_htab[%u] = {", hsz - 1, hsz);
+      for (uint32_t j = 0; j < hsz; j++) {
+        if (j) buf_puts(b, (j & 7) ? "," : ",\n");
+        if (ht[j]) buf_printf(b, "0x%016llxull", (unsigned long long)ht[j]);
+        else buf_puts(b, "0");
+      }
+      buf_puts(b, "};\n");
+      free(ht);
+    }
     /* dynamic intern pool: symbols minted at runtime (Symbol#upcase,
        :"interp", String#to_sym) get ids >= the static count. */
     buf_puts(b, "static const char *sp_dyn_syms0[SP_DYN_SYMS_MAX]; static const char **sp_dyn_syms = sp_dyn_syms0;"
@@ -19821,14 +19901,30 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        name made two Symbols one. The block it leaves is kept: a Thread that
        read the pool's address before the move still finds its Symbol's name
        there, and the heap blocks left behind sum to less than the one in use. */
+    /* The pool is found by name through sp_dsym_ix, an open-addressing index
+       beside it: element 0 is the mask, and each slot after it is two words,
+       its name's pool index + 1 (0 is empty) and the name's hash. The slot
+       is published by a release store of the index word, after its hash is
+       written; a 32-bit word, which a 32-bit target stores atomically without
+       libatomic (a 64-bit entry did not link there). Scanning the pool made String#to_sym linear in the number of
+       Symbols a program had made. The index is kept at most half full; when
+       an entry would pass that, a new index twice the size is built from the
+       old one and its address stored in sp_dsym_ix. The mask travels inside
+       the block, so a reader that loads the address has the mask that goes
+       with it. The block left behind is kept when the program has Threads,
+       as the pool's are: a reader may still be probing it, and finding
+       nothing there sends it to the locked add, which looks again in the
+       current index. The blocks left behind sum to less than the one in use. */
     /* Threads run on several OS workers, and two that make a new Symbol at
        once both stored it in the slot at sp_ndyn and both counted it: the
        slot after it stayed NULL and the next lookup read through it. In a
        program that uses Threads a miss takes this lock to add its entry.
        Nothing allocates and nothing polls a safepoint while it is held, so a
        collection never waits on a worker that waits for the lock. A lookup
-       takes no lock: it reads the count, then the pool's address, and an
-       entry is stored before the count that covers it. */
+       takes no lock: it loads the index's address, then each slot it probes.
+       An entry is stored in the pool, and the count that covers it, before
+       its slot is published with a release store, so a reader that sees the
+       slot sees the pool block holding the entry. */
     int mt = g_uses_threads;
     if (mt)
       buf_puts(b, "#ifdef SP_THREADS\n"
@@ -19838,16 +19934,44 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
                   "#else\n"
                   "#define SP_DYN_SYMS_LOCK() ((void)0)\n"
                   "#define SP_DYN_SYMS_UNLOCK() ((void)0)\n"
-                  "#endif\n");
+                  "#endif\n"
+                  "#define SP_DSYM_LD(p) SP_ATOMIC_LOAD(p,__ATOMIC_ACQUIRE)\n"
+                  "#define SP_DSYM_ST(p,v) SP_ATOMIC_STORE(p,v,__ATOMIC_RELEASE)\n");
+    else
+      buf_puts(b, "#define SP_DSYM_LD(p) (*(p))\n"
+                  "#define SP_DSYM_ST(p,v) ((void)(*(p)=(v)))\n");
+    const char *oom_raise = mt
+      ? "{SP_DYN_SYMS_UNLOCK();sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");}"
+      : "sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");";
     buf_printf(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
                   "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
                   "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
                   "if(!np)%s"
                   "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
                   "%s;sp_dyn_cap=nc;}\n",
-               mt ? "{SP_DYN_SYMS_UNLOCK();sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");}"
-                  : "sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");",
-               mt ? "SP_ATOMIC_STORE(&sp_dyn_syms,np,__ATOMIC_RELEASE)" : "sp_dyn_syms=np");
+               oom_raise, mt ? "SP_ATOMIC_STORE(&sp_dyn_syms,np,__ATOMIC_RELEASE)" : "sp_dyn_syms=np");
+    buf_puts(b, "static uint32_t sp_dsym_ix0[1+2*64]={63}; static uint32_t *sp_dsym_ix=sp_dsym_ix0;\n");
+    buf_printf(b, "static SP_NOINLINE SP_COLD void sp_dsym_ix_grow(void){"
+                  "uint32_t *o=sp_dsym_ix;uint32_t om=o[0],nm=om*2u+1u;"
+                  "uint32_t *nx=(uint32_t *)calloc(1u+2u*((size_t)nm+1u),sizeof(uint32_t));"
+                  "if(!nx)%s"
+                  "nx[0]=nm;"
+                  "for(uint32_t i=0;i<=om;i++){uint32_t d=o[1+2*i];if(d){uint32_t hh=o[2+2*i],j=hh&nm;while(nx[1+2*j])j=(j+1)&nm;nx[2+2*j]=hh;nx[1+2*j]=d;}}"
+                  "SP_DSYM_ST(&sp_dsym_ix,nx);%s}\n",
+               oom_raise, mt ? "" : "if(o!=sp_dsym_ix0)free(o);");
+    /* Called with the lock held (or without Threads): the index it writes is
+       the current one, and only a writer stores into it. */
+    buf_puts(b, "static void sp_dsym_ix_put(int id,uint32_t h){"
+                "uint32_t *ix=sp_dsym_ix;uint32_t m=ix[0],i=h&m;"
+                "while(ix[1+2*i])i=(i+1)&m;"
+                "ix[2+2*i]=h;SP_DSYM_ST(&ix[1+2*i],(uint32_t)(id+1));}\n");
+    /* The pool index of the name s[0,n) whose hash is h, or -1. */
+    buf_puts(b, "static inline int sp_dsym_find(const char *s,size_t n,uint32_t h){"
+                "uint32_t *ix=SP_DSYM_LD(&sp_dsym_ix);uint32_t m=ix[0],i=h&m;"
+                "for(;;){uint32_t d=SP_DSYM_LD(&ix[1+2*i]);if(!d)return -1;"
+                "if(ix[2+2*i]==h){int id=(int)d-1;const char*_c=SP_DSYM_LD(&sp_dyn_syms)[id];"
+                "if(sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return id;}"
+                "i=(i+1)&m;}}\n");
     /* Those entries are string-heap strings (sp_str_dup_external) held only by
        this static array, which the collector does not walk: the string sweep
        freed them and the next intern compared against a corpse. Emitted here,
@@ -19879,14 +20003,14 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     /* Byte-exact interning: a name may hold a NUL, which strcmp cannot see
        past. The stored entries carry their length (a 0xf1 struct entry in its
        header, a 0xff literal through strlen, a dyn entry through its heap
-       header), so sp_str_byte_len answers for all three.
+       header), so sp_str_byte_len answers for all three. It is asked only of
+       a candidate whose hash matched.
 
        sp_sym_intern keeps strlen semantics for its argument: generated code
        calls it with BARE C literals, which have no marker byte in front, and
        asking sp_str_byte_len for one reads past the object. A caller that HAS
        a spinel string -- String#to_sym -- calls the _n form with the real
-       length. The first-byte test keeps strcmp's early exit: without it every
-       candidate paid a full length walk before the compare could fail.
+       length.
 
        A miss copies the name into the pool, and a copy made by sp_str_alloc
        can collect the String being copied when nothing else holds it
@@ -19895,34 +20019,35 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        its string. So the pool's String is allocated by sp_str_alloc_nogc,
        which is for a pointer that cannot be rooted. */
     /* With Threads a miss is added by sp_dyn_syms_add. The pool's String is
-       made before the lock is taken, and under the lock the entries added
-       since the lookup are compared with it: another Thread may have made
-       the same name meanwhile, and one name is one Symbol. The lookup counts
-       up to the end of the entries it read: written so, gcc and clang both
-       compile it to the loop a program without Threads has. */
+       made before the lock is taken, and under the lock the current index is
+       searched again: another Thread may have made the same name meanwhile,
+       and one name is one Symbol. The index grows before the entry is
+       stored, so a failed growth leaves no entry the index cannot find. */
     if (mt)
-      buf_printf(b, "static SP_NOINLINE sp_sym sp_dyn_syms_add(const char *s, size_t n, int _k){"
+      buf_printf(b, "static SP_NOINLINE sp_sym sp_dyn_syms_add(const char *s, size_t n, uint32_t h){"
                      "char *_e=sp_str_alloc_nogc(n);if(n)memcpy(_e,s,n);"
                      "SP_DYN_SYMS_LOCK();"
-                     "for(int i=_k;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==_e[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,_e,n)==0){SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+i);}}"
+                     "int _f=sp_dsym_find(_e,n,h);if(_f>=0){SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+_f);}"
                      "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                     "if((uint32_t)sp_ndyn+1u>((uint32_t)sp_dsym_ix[0]+1u)/2u)sp_dsym_ix_grow();"
                      "int _id=sp_ndyn;sp_dyn_syms[_id]=_e;SP_ATOMIC_STORE(&sp_ndyn,_id+1,__ATOMIC_RELEASE);"
+                     "sp_dsym_ix_put(_id,h);"
                      "SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+_id);}\n", ns, ns);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
+    buf_puts(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){uint32_t h=sp_sym_hash_n(s,n);");
+    if (ns > 0)
+      buf_puts(b, "{uint32_t i=h&SP_SYM_HMASK;uint64_t e;"
+                  "while((e=sp_sym_htab[i])!=0){if((uint32_t)(e>>32)==h){int id=(int)(uint32_t)e-1;const char*_c=sp_sym_names[id];"
+                  "if(sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)id;}"
+                  "i=(i+1)&SP_SYM_HMASK;}}");
+    buf_printf(b, "int _f=sp_dsym_find(s,n,h);if(_f>=0)return (sp_sym)(%d+_f);", ns);
     if (mt)
-      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
-                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
-                     "int _k=SP_ATOMIC_LOAD(&sp_ndyn,__ATOMIC_ACQUIRE);const char **_pe=SP_ATOMIC_LOAD(&sp_dyn_syms,__ATOMIC_ACQUIRE)+_k;"
-                     "for(long i=-(long)_k;i<0;i++){const char*_c=_pe[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+_k+(int)i);}"
-                     "return sp_dyn_syms_add(s,n,_k);}\n",
-                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns);
+      buf_puts(b, "return sp_dyn_syms_add(s,n,h);}\n");
     else
-      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
-                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
-                     "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
-                     "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
-                     "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
-                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
+      buf_printf(b, "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                    "if((uint32_t)sp_ndyn+1u>((uint32_t)sp_dsym_ix[0]+1u)/2u)sp_dsym_ix_grow();"
+                    "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);"
+                    "int _id=sp_ndyn++;sp_dyn_syms[_id]=_d;sp_dsym_ix_put(_id,h);return (sp_sym)(%d+_id);}\n", ns);
     buf_printf(b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
                g_ext_init_name ? "" : "static ");
   }

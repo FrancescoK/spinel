@@ -183,6 +183,12 @@ static int node_is_oint_asked(Compiler *c, int node) {
     if (!nm) return 0;
     /* a File::Stat field and File.size?: the runtime answers the oint */
     if (file_stat_nil_call(c, node)) return 1;
+    /* a call on true or false where TrueClass or FalseClass defines the
+       name: the oint where a side's method answers one (emit_call_bool_sides) */
+    { int br = nt_ref(nt, node, "receiver"), btm, bfm;
+      if (br >= 0 && comp_ntype(c, br) == TY_BOOL && cplan_bool_sides(c, node, &btm, &bfm) &&
+          ((btm >= 0 && method_ret_is_oint(&c->scopes[btm])) || (bfm >= 0 && method_ret_is_oint(&c->scopes[bfm]))))
+        return 1; }
     /* `o.x = v` as a value answers v, whatever the writer returns */
     if (call_is_setter_assign(nt, node)) {
       int sa = nt_ref(nt, node, "arguments"), san = 0;
@@ -1280,6 +1286,7 @@ Repr repr_of(const Compiler *c, int node) {
   if (r.elem == TY_INT || r.elem == TY_FLOAT) {
     an_pure_read_begin();
     r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, nullable_int_elem_array((Compiler *)c, node), 0);
+    r.elem_nil_reach = (unsigned)(r.elem_nil_marked || elem_nil_reach_expr((Compiler *)c, node));
     an_pure_read_end();
   }
   else r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, 0, nil_elem_fact_node(c, node));
@@ -1688,7 +1695,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   /* under the rule, that handle is the one it assigned */
   r.share = r.handle && c->share_strings;
   r.elems_handle = lv->elems_shared && lv->type == TY_POLY_ARRAY;
-  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem, lv->obj_elem_may_nil);
+  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem & NIE_MARKED, lv->obj_elem_may_nil);
+  r.elem_nil_reach = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem & (NIE_MARKED | NIE_REACH), 0);
   repr_slot_storage(&r, lv);
   r.kind = (unsigned char)k;
   repr_set_class_facts(c, &r, lv->type);
@@ -2240,9 +2248,10 @@ Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
     if (k < 0) break;
     ec = p; ek = k;
   }
-  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek],
+  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek] & NIE_MARKED,
                                                iv < ci->n_ivar_obj_may_nil && ci->ivar_elem_may_nil &&
                                                ci->ivar_elem_may_nil[iv]);
+  r.elem_nil_reach = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek] & (NIE_MARKED | NIE_REACH), 0);
   repr_set_class_facts(c, &r, r.ty);
   return r;
 }

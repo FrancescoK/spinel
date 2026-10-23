@@ -464,8 +464,10 @@ the whole IO surface a handle carries (`#gets`, `#read`, `#readpartial`,
 `Kernel#select` (bare `select`, `Kernel.select`, or `::Kernel.select`) uses
 `IO.select`'s readiness implementation for one to four positional arguments,
 including nil or omitted descriptor arrays and a timeout written as nil or
-omitted. A nil timeout held in a variable or a defaulted parameter can raise
-TypeError, as `IO.select` does.
+omitted. The timeout converts as CRuby's time interval does, in both: nil
+waits, written or held in a variable, a parameter, a keyword or a box (one
+that can hold a number too included), and a value that is not a number
+raises TypeError ("can't convert String into time interval").
 `#addr` / `#peeraddr` return CRuby's numeric 4-element form. `#accept` parks
 cooperatively on the green-thread scheduler, so a thread-per-connection server
 does not stall its siblings, and socket writes bypass stdio (`#sync` is true,

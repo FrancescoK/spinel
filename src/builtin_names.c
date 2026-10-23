@@ -1604,6 +1604,42 @@ int is_to_i_name(const char *n) { return n && sp_streq(n, "to_i"); }
 
 int is_intersect_name(const char *n) { return n && sp_streq(n, "intersect?"); }
 
+int is_compare_by_identity_name(const char *n) { return n && sp_streq(n, "compare_by_identity"); }
+
 int ostruct_member_name(const char *n) {
   return n && (sp_streq(n, "size") || sp_streq(n, "length") || sp_streq(n, "count") || sp_streq(n, "empty?"));
+}
+
+/* File::Stat's predicates, which the TY_IO arms answer for the handle a stat
+   is carried in: the mode predicates by their slot in sp_stat_pred (zero?,
+   slot 1, has its own poly arm), the type predicates by theirs in
+   sp_stat_type_pred plus 100. -1 for any other name. */
+int boxed_stat_pred(const char *name) {
+  static const char *const spred[] = { "pipe?", "", "readable?", "writable?",
+                                       "executable?", "blockdev?", "chardev?",
+                                       "size?", "executable_real?", "readable_real?",
+                                       "writable_real?", NULL };
+  static const char *const tpred[] = { "file?", "directory?", "symlink?",
+                                       "owned?", "grpowned?", "setuid?",
+                                       "setgid?", "sticky?", "socket?", NULL };
+  for (int k = 0; spred[k]; k++) if (spred[k][0] && sp_streq(name, spred[k])) return k;
+  for (int k = 0; tpred[k]; k++) if (sp_streq(name, tpred[k])) return 100 + k;
+  return -1;
+}
+
+/* File::Stat's numeric fields, which the TY_IO arms answer for the handle a
+   stat is carried in; a field's index is its slot in sp_stat_field. The
+   world_*? pair answer the permission bits or nil, as a field may. */
+static const char *const boxed_stat_sfield[] = { "uid", "gid", "nlink", "dev", "ino",
+                                                 "blksize", "blocks", "rdev", "dev_major", "dev_minor",
+                                                 "world_readable?", "world_writable?", NULL };
+/* a field's slot in sp_stat_field, or -1 */
+int stat_field_slot(const char *name) {
+  for (int k = 0; boxed_stat_sfield[k]; k++)
+    if (sp_streq(name, boxed_stat_sfield[k])) return k;
+  return -1;
+}
+/* mode or one of those fields */
+int boxed_stat_name(const char *name) {
+  return sp_streq(name, "mode") || stat_field_slot(name) >= 0;
 }

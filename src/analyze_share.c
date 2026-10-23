@@ -1646,9 +1646,10 @@ static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap) {
   comp_poly_candidates(c, name, &n);
   if (n == 0) return 0;
   n = 0;
-  for (int k = 0; k < c->nscopes; k++) {
+  /* (the body's copies, by def_node; every scope was read for them) */
+  for (int k = an_scopes_same_def_first(c, si); k >= 0; k = an_scopes_same_def_next(c, k)) {
     const Scope *cp = &c->scopes[k];
-    if (k == si || cp->def_node != s->def_node || cp->class_id < 0 || cp->is_cmethod) continue;
+    if (k == si || cp->class_id < 0 || cp->is_cmethod) continue;
     int mi = comp_method_in_chain(c, cp->class_id, name, NULL);
     if (mi < 0) return 0;
     int seen = 0;
@@ -1882,7 +1883,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
      the same new Strings, in the receiver's class, which an iterator over
      it walks as handles as it walks the receiver's (share_node_fresh_elems).
      Not where a reopening or a module may answer the name instead. */
-  int rcv = an_unparen(nt, nt_ref(nt, n, "receiver"));
+  int rcv = nt_paren_single(nt, nt_ref(nt, n, "receiver"));
   if (container == 1 && blk < 0 && rcv >= 0 && rcv < F->nnodes && F->fresh_cont[rcv] &&
       c->ntype[n] == TY_STR_ARRAY && sh_answers_elems_run(share, argc) &&
       !share_builtin_overridden(c, "Array", nt_str(nt, n, "name")))
@@ -2803,10 +2804,10 @@ static int sh_ostruct_call(ShareFacts *F, Compiler *c, int n, const char *name, 
    links walked from each of them was n^2/2 steps. */
 static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  int start = an_unparen(nt, n);
+  int start = nt_paren_single(nt, n);
   for (n = start; n >= 0 && nt_kind(nt, n) == NK_CallNode; ) {
     if (n < F->nnodes && F->scb[n] >= 0 && F->scb[n] != n) { n = F->scb[n]; continue; }
-    int r = an_unparen(nt, nt_ref(nt, n, "receiver"));
+    int r = nt_paren_single(nt, nt_ref(nt, n, "receiver"));
     TyKind rt = r >= 0 ? c->ntype[r] : TY_VOID;
     const char *nm = nt_str(nt, n, "name");
     if ((rt != TY_STRING && rt != TY_STRBUF) || !nm ||
@@ -6227,7 +6228,7 @@ static int sh_answers_elems_run(int share, int argc) {
    new? */
 static int sh_fresh_elems(Compiler *c, int r, int depth) {
   const NodeTable *nt = c->nt;
-  r = an_unparen(nt, r);
+  r = nt_paren_single(nt, r);
   if (r < 0 || depth > 8) return 0;
   if (nt_kind(nt, r) == NK_ArrayNode) {
     int en = 0; const int *el = nt_arr(nt, r, "elements", &en);
@@ -6338,8 +6339,9 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
    String with a part to evaluate is built each time: neither is one. */
 int share_frozen_literal(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  n = nt_paren_single(nt, n);
-  if (n < 0) return 0;
+  /* parentheses are the frozen literal their value is (vp_one), as
+     share_value_fresh reads them: `(x; "lit")` is "lit" */
+  if (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n) != VP1_NODE) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
   if (k == NK_InterpolatedStringNode) return nt_int(nt, n, "fzl", 0) != 0 && interp_is_literal_fold(nt, n);
@@ -6472,10 +6474,10 @@ static int sh_fresh_arm_bad(const VpLeaf *lf, void *ud) {
 }
 /* Is value n a new String or nil: a conditional each of whose arms is one
    (or nil), a rescue modifier whose expression and fallback are, or such a
-   leaf? The arms of the conditional are read through the iterator. `depth`
-   bounds the leaves' own chains of calls, not the shapes. */
+   leaf? The arms of the conditional are read through the iterator, and so
+   are parentheses: `(x; s.dup)` is as new as `s.dup`, and `()` is nil.
+   `depth` bounds the leaves' own chains of calls, not the shapes. */
 int share_value_fresh(Compiler *c, int n, int depth) {
-  n = an_unparen(c->nt, n);
   if (n < 0 || depth > 8) return 0;
   ShFresh f = { c, depth };
   return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
@@ -6729,7 +6731,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
       cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
     int r = nt_ref(c->nt, u, "receiver");
     if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) {
-      *op = an_unparen(c->nt, r);
+      *op = nt_paren_single(c->nt, r);
       return SPK_SELF;
     }
   }
@@ -6810,7 +6812,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
      (emit_strbuf_value) */
   if (by_repr && (r.kind == RK_STRBUF || r.strbuf_src != RS_NONE)) return SPK_SLOT;
   if (sh_bang_self_slot(c, n)) {
-    *op = an_unparen(c->nt, nt_ref(c->nt, n, "receiver"));
+    *op = nt_paren_single(c->nt, nt_ref(c->nt, n, "receiver"));
     return SPK_SELF;
   }
   /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */

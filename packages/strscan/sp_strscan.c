@@ -36,6 +36,9 @@
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
 extern int spinel_re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
 extern int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary, int *attempt);
+/* ArgumentError for a subject that is not valid UTF-8, as CRuby's scanner
+   raises before a regexp search (lib/sp_re.c) */
+extern void sp_re_check_subject(const char *str);
 
 /* The scanner struct lives in spinel's GC heap. `source` is a GC-tracked
    string; the scan function below marks it so it survives collection. The
@@ -123,6 +126,7 @@ static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *lit, c
     *ncap_out = sc_lit_at(lit, str, slen, pos, caps);
     return *ncap_out ? caps[1] - pos : -1;
   }
+  sp_re_check_subject(str);
   int at;
   int n = re_exec_attempt(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0, &at);
   *ncap_out = sc_clamp_ncaps(n);
@@ -140,6 +144,7 @@ static int64_t sc_match_forward(const mrb_regexp_pattern *pat, const char *lit, 
     *ncap_out = 0;
     return -1;
   }
+  sp_re_check_subject(str);
   int n = spinel_re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0);
   *ncap_out = sc_clamp_ncaps(n);
   if (n <= 0 || caps[0] < 0) { *ncap_out = 0; return -1; }
