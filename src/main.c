@@ -522,12 +522,12 @@ static const char *runtime_archive(const char *csrc, int threads, int wasi, int 
     fprintf(stderr, "spinel: C extensions currently require the native exception runtime\n");
     return NULL;
   }
-  int one = strstr(csrc, "/* SPINEL_ONE_STRING */") != NULL;
-  if (one && (*cext || wasi)) {
-    fprintf(stderr, "spinel: --string-repr=handle does not link with C extensions or wasm yet\n");
+  /* the runtime archives hold the one representation of String
+     (-DSP_ONE_STRING); a program compiled --string-repr=bytes is C only */
+  if (!strstr(csrc, "/* SPINEL_ONE_STRING */")) {
+    fprintf(stderr, "spinel: a program compiled with --string-repr=bytes does not link with this runtime; compile it with -c\n");
     return NULL;
   }
-  if (one) return threads ? "libspinel_rt_one_mt.a" : "libspinel_rt_one.a";
   return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 

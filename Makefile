@@ -26,6 +26,11 @@ COPT += -DSP_PORTABLE
 endif
 # Machine-local overrides (gitignored config.mk is a common dev pattern).
 -include config.mk
+# One representation of String: every String slot holds the handle
+# (docs/internals/string-one-repr-design.md), so the runtime and the native
+# objects of the packages are compiled with -DSP_ONE_STRING, as the generated
+# C defines it. `override` keeps it under a command-line COPT.
+override COPT += -DSP_ONE_STRING
 
 # Shared toolchain configuration (CC wrapping, CFLAGS, stamps, …).
 include common.mk
