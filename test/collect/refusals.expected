@@ -662,6 +662,10 @@ spinel: test/reject/enumerator_own_with_object.rb:17: Enumerator#with_object of 
 spinel: test/reject/enumerator_own_with_object_reader.rb:16: Enumerator#with_object of the program's own (an Enumerator reopening, or a module it prepends or includes) is not supported
 == test/reject/enumerator_own_with_object_reader.rb [promote] rc=1
 spinel: test/reject/enumerator_own_with_object_reader.rb:16: Enumerator#with_object of the program's own (an Enumerator reopening, or a module it prepends or includes) is not supported
+== test/reject/enumerator_with_object_builtin_alias.rb [default] rc=1
+spinel: test/reject/enumerator_with_object_builtin_alias.rb:17: Enumerator#with_object of the program's own (an Enumerator reopening, or a module it prepends or includes) is not supported
+== test/reject/enumerator_with_object_builtin_alias.rb [promote] rc=1
+spinel: test/reject/enumerator_with_object_builtin_alias.rb:17: Enumerator#with_object of the program's own (an Enumerator reopening, or a module it prepends or includes) is not supported
 == test/reject/exception_ivar_set_nil_numeric_slot.rb [default] rc=1
 spinel: test/reject/exception_ivar_set_nil_numeric_slot.rb:10: unsupported instance_variable_set of a value that may be nil into an exception's Integer or Float ivar: node N (CallNode `instance_variable_set`) recv=LocalVariableReadNode/ty18 argc=2 arg0ty8
 spinel: 1 refusal, nothing written
