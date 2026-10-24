@@ -22830,9 +22830,10 @@ static int text_uses_tmp(const char *txt, int n) {
   return 0;
 }
 
-/* Does `txt` store into the temp `_t<n>`: `_t<n> = ...`, not `_t<n> == ...`?
-   Text inside a C string or character literal is a program's data, not a
-   store (`"_t1 = "` from a Ruby string), and `lv_x_t1` is another name. */
+/* Does `txt` store into `_t<n>`, directly or through SP_STR_B, rather than
+   compare it with ==? Text inside a C string or character literal is a
+   program's data, not a store (`"_t1 = "` from a Ruby string), and
+   `lv_x_t1` is another name. */
 static int text_assigns_tmp(const char *txt, int n) {
   if (!txt) return 0;
   char want[24];
@@ -22850,6 +22851,7 @@ static int text_assigns_tmp(const char *txt, int n) {
                     (q[-1] >= 'a' && q[-1] <= 'z') || (q[-1] >= 'A' && q[-1] <= 'Z'))) continue;
     const char *r = q + wl;
     if (*r >= '0' && *r <= '9') continue;
+    if (q - txt >= 9 && strncmp(q - 9, "SP_STR_B(", 9) == 0 && *r == ')') r++;
     while (*r == ' ') r++;
     if (r[0] == '=' && r[1] != '=') return 1;
   }
