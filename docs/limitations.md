@@ -1645,9 +1645,12 @@ end
 
 The result is poly (any constant), so what follows is the boxed-value
 surface: `.new`, `.name`, `::CONST` on a class value all work. The
-candidates are the program's constants by their own name in the flat
-namespace the literal form resolves in, so a `"Outer::Inner"` path string is
-not matched and raises. The call needs a class or module receiver, explicit
+candidates are the constants the receiver can reach, by their own name: those
+the receiver, its superclasses and the modules they include hold, the
+top-level ones, and the paths of nested classes and modules (`"Outer::Inner"`)
+that start at one of them. A receiver known only at run time takes every
+constant of the program. A path to a value constant (`"Outer::LIMIT"`) is not
+matched and raises. The call needs a class or module receiver, explicit
 or the implicit self of a class method or class body; in an instance method
 an instance has no `const_get`, and the call is refused where it is written.
 
