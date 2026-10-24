@@ -131,6 +131,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, g_one_string ? "{ const char *_ps = SP_STR_B(" : "{ const char *_ps = (const char *)("); emit_expr(c, arg, b);
     buf_puts(b, "); sp_puts_str_line(_ps); }\n");
   }
+  /* a String the plan holds as its handle (an argument a user `puts(s = "")` shares) prints its bytes */
+  else if (t == TY_STRBUF) {
+    buf_puts(b, "{ const char *_ps = sp_strbuf_read_pub("); emit_strbuf_handle_of(c, arg, b);
+    buf_puts(b, "); sp_puts_str_line(_ps); }\n");
+  }
   else if (t == TY_BOOL) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
   }
@@ -336,6 +341,10 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_STRING) {
     buf_puts(b, "sp_print_str_bin("); emit_expr(c, arg, b);
     buf_puts(b, ");\n");
+  }
+  else if (t == TY_STRBUF) {
+    buf_puts(b, "sp_print_str_bin(sp_strbuf_read_pub("); emit_strbuf_handle_of(c, arg, b);
+    buf_puts(b, "));\n");
   }
   else if (t == TY_BIGINT) {
     /* a nil (NULL) prints as nothing, the way `print nil` does */
