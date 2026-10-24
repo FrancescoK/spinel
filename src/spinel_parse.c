@@ -2984,6 +2984,52 @@ static int sp_require_find(char *buf, char *from, const char *word, SpReqHit *ou
    top to bottom: the library loads where the code needing it stands, not at
    the very start, ahead of the definitions its own body calls (ffi-rzmq-core
    requires libzmq4 under `if LibZMQ.version4?`, and libzmq4 reopens LibZMQ). */
+/* Is the line starting at `ls` inside a heredoc body, its terminator
+   included? The lines are read from the start of `buf` with
+   sp_require_find's view of strings, comments and heredoc openers. */
+static int sp_line_in_heredoc(const char *buf, size_t ls) {
+  char term[128];
+  term[0] = 0;
+  const char *line = buf, *stop = buf + ls;
+  while (*line && line <= stop) {
+    const char *line_end = strchr(line, '\n');
+    if (!line_end) line_end = line + strlen(line);
+    if (term[0]) {
+      if (line == stop) return 1;
+      const char *t = line;
+      while (t < line_end && (*t == ' ' || *t == '\t')) t++;
+      size_t tl = strlen(term);
+      if ((size_t)(line_end - t) == tl && strncmp(t, term, tl) == 0) term[0] = 0;
+    }
+    else {
+      if (line == stop) return 0;
+      for (const char *p = line; p < line_end; p++) {
+        if (*p == '#') break;
+        if (*p == '"' || *p == '\'') {
+          char q = *p++;
+          while (p < line_end && *p != q) { if (*p == '\\') p++; p++; }
+          if (p >= line_end) break;
+          continue;
+        }
+        if (p[0] == '<' && p + 1 < line_end && p[1] == '<' && (p == line || !sp_req_ident_char(p[-1]))) {
+          const char *t = p + 2;
+          if (t < line_end && (*t == '~' || *t == '-')) t++;
+          char tq = 0;
+          if (t < line_end && (*t == '"' || *t == '\'')) tq = *t++;
+          const char *ts = t;
+          while (t < line_end && sp_req_ident_char(*t)) t++;
+          if (t > ts && (!tq || (t < line_end && *t == tq))) {
+            size_t tl = (size_t)(t - ts);
+            if (tl < sizeof term) { memcpy(term, ts, tl); term[tl] = 0; }
+          }
+        }
+      }
+    }
+    if (*line_end != '\n') break;
+    line = line_end + 1;
+  }
+  return 0;
+}
 static size_t sp_toplevel_stmt_start(const char *buf, size_t pos) {
   size_t ls = pos;
   while (ls > 0 && buf[ls - 1] != '\n') ls--;
@@ -2998,7 +3044,9 @@ static size_t sp_toplevel_stmt_start(const char *buf, size_t pos) {
         size_t n = strlen(cont[i]);
         if (strncmp(l, cont[i], n) == 0 && (cont[i][n - 1] == ' ' || !sp_req_ident_char(l[n]))) { is_cont = 1; break; }
       }
-      if (!is_cont) return ls;
+      /* (a heredoc's body line or terminator at the margin is no
+         statement: content spliced ahead of it went into the String) */
+      if (!is_cont && !sp_line_in_heredoc(buf, ls)) return ls;
     }
     if (ls == 0) return 0;
     ls--;                                   /* onto the previous line's newline */

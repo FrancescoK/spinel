@@ -1,0 +1,5 @@
+
+typeset -A opt_args
+_arguments -s -S \
+"lib"
+3
