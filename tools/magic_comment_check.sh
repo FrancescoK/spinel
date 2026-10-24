@@ -1,7 +1,7 @@
 #!/bin/sh
 # Magic comments, read from each file's own Prism parse (#9898): a source
-# encoding other than UTF-8 warns at its file and line and is ignored, in a
-# required file as in the entry; a `frozen_string_literal: false` pragma
+# encoding other than UTF-8 warns at its file and line that the file's
+# literals take UTF-8 as their encoding, in a required file as in the entry; a `frozen_string_literal: false` pragma
 # warns at its file and line and is ignored; prose that only mentions the
 # pragma is not one.
 # Both programs still compile; make test checks what they print.
@@ -13,9 +13,9 @@ fail() { echo "magic-comment-test: FAIL ($1)"; ok=0; }
 
 t=test/source_encoding_magic_comment.rb
 if "$SPINEL" "$t" -c --no-line-map -o "$tmp/e.c" >"$tmp/e.out" 2>&1; then
-  grep -qF "spinel: test/source_encoding_magic_comment/sjis.rb:1: warning: the source encoding Shift_JIS is not supported in Spinel (every source file is read as UTF-8); the magic comment is ignored" "$tmp/e.out" ||
+  grep -qF "spinel: test/source_encoding_magic_comment/sjis.rb:1: warning: source encoding Shift_JIS: Spinel's Strings are UTF-8, so this file's literals keep the bytes they are written with but take UTF-8 as their encoding" "$tmp/e.out" ||
     fail "no warning naming the Shift_JIS comment's file and line"
-  [ "$(grep -c 'warning: the source encoding' "$tmp/e.out")" = 1 ] ||
+  [ "$(grep -c 'warning: source encoding' "$tmp/e.out")" = 1 ] ||
     { fail "expected one encoding warning (the utf-8 comments warn nothing)"; cat "$tmp/e.out"; }
 else
   fail "$t did not compile"; sed -n 1,5p "$tmp/e.out"
