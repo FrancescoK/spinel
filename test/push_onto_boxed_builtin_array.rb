@@ -104,3 +104,15 @@ def extended(x)
 end
 
 p extended(Words.new), extended(Numbers.new)
+
+# A method a subclass overrides is still one the dispatch runs, for an
+# instance of the class itself: its Array widens as the others do.
+class Shape
+  def parts = ["shape"]
+end
+
+class Circle < Shape
+  def parts = ["circle"]
+end
+
+p extended(Shape.new), extended(Circle.new)
