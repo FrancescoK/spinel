@@ -23,6 +23,12 @@
 #define SP_TAG_BOOL 3
 #define SP_TAG_NIL 4
 #define SP_TAG_OBJ 5
+/* Not 0xfd in the one-String build: there 0xfd marks a handle payload, which sp_gc_mark follows to its owner. */
+#ifdef SP_ONE_STRING
+#define SP_STATIC_GUARD 0xff
+#else
+#define SP_STATIC_GUARD 0xfd
+#endif
 #define SP_TAG_SYM 6
 #define SP_TAG_CLASS 7
 #define SP_TAG_ENCODING 8

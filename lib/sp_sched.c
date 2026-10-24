@@ -1149,7 +1149,7 @@ static void sp_stw_collect_impl(int force) {
    the root fiber uses, exactly one alignment unit wide so no padding can slip
    in between. */
 static struct { char guard[_Alignof(sp_thread)]; sp_thread t; } g_main_thread_box
-    = { .guard = { [_Alignof(sp_thread) - 1] = (char)0xfd }, .t = {0} };
+    = { .guard = { [_Alignof(sp_thread) - 1] = (char)SP_STATIC_GUARD }, .t = {0} };
 #define g_main_thread (g_main_thread_box.t)   /* the main thread: runs on root, fiber == NULL */
 static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread this worker runs now */
 /* Run queues (design 3.1). A worker requeues a thread it just ran onto its OWN
