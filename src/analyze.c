@@ -16773,7 +16773,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          and constant slots apply. */
       { int dn = recv_hash_new_default_arg(c, recv);
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
-      if (g_one_string && wv == TY_STRBUF) wv = TY_STRING;   /* (one-String mode: the typed Hash holds the handle) */
+      if (wv == TY_STRBUF) wv = TY_STRING;   /* (one-String mode: the typed Hash holds the handle) */
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_STRING, wv)
                                                : TY_STR_POLY_HASH;
       break;
@@ -16796,7 +16796,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
          and constant slots apply. */
       { int dn = recv_hash_new_default_arg(c, recv);
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
-      if (g_one_string && wv == TY_STRBUF) wv = TY_STRING;
+      if (wv == TY_STRBUF) wv = TY_STRING;
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_INT, wv)
                                                : TY_POLY_POLY_HASH;
       break;
@@ -34902,7 +34902,7 @@ int make_yield_proc_forms(Compiler *c) {
    slot), bigint (int converts at the boundary), a by-value object or a
    shared-string handle (neither is a plain pointer). */
 static int seed_repr_family(Compiler *c, TyKind t) {
-  if (g_one_string && t == TY_STRBUF) t = TY_STRING;   /* (one-String mode: a String slot is the handle) */
+  if (t == TY_STRBUF) t = TY_STRING;   /* (one-String mode: a String slot is the handle) */
   switch (t) {
     case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: return 1;
     case TY_STRING: case TY_PROC: return 2;
@@ -34918,7 +34918,7 @@ static int seed_repr_family(Compiler *c, TyKind t) {
    layouts. Anything else that is a pointer (a Proc, an object -- which may
    carry to_s / to_ary conversions the emitter knows) is left unjudged. */
 static int seed_ptr_kind(TyKind t) {
-  if (g_one_string && t == TY_STRBUF) t = TY_STRING;
+  if (t == TY_STRBUF) t = TY_STRING;
   if (ty_is_array(t)) return 1;
   if (ty_is_hash(t))  return 2;
   if (t == TY_STRING) return 3;
@@ -48188,7 +48188,7 @@ static void refuse_string_read_copies(Compiler *c) {
              subject the facts cannot vouch for takes the run-time length
              check instead of the refusal) */
           int ok_one = 0;
-          if (g_one_string && !trusted && q.rt_site < 0) {
+          if (!trusted && q.rt_site < 0) {
             /* (a block that rebinds the subject's variable changes no String:
                no check; any other takes the length check) */
             if (subj) { q.rt_site = u; q.rt_grow = 1; }
@@ -53934,7 +53934,7 @@ static void an_phase_storage(Compiler *c) {
     Scope *s = vn ? comp_scope_of(c, recv) : NULL;
     LocalVar *lv = s ? scope_local(s, vn) : NULL;
     /* (one-String mode: a String local is the handle) */
-    if (!lv || lv->is_param || (lv->type != TY_STRING && !(g_one_string && lv->type == TY_STRBUF))) continue;
+    if (!lv || lv->is_param || (lv->type != TY_STRING && !(lv->type == TY_STRBUF))) continue;
     /* Only promote when every write to this local is a bare string literal:
        such a value is a fresh mutable string. A `.freeze`/`.dup`/method-result
        write may carry runtime frozen state that sp_String_new would discard,
@@ -54489,7 +54489,7 @@ static void an_phase_value_types(Compiler *c) {
       /* (one String representation: a String ivar is its handle, a pointer
          as a String's bytes are; the pass below keeps it by value only when
          every write gives it a frozen literal) */
-      int one_str = g_one_string && t == TY_STRBUF;
+      int one_str = t == TY_STRBUF;
       if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING && !one_str) { scalar = 0; break; }
       if (one_str) continue;
       /* an in-place-mutated string ivar (`@s << x` in a method) needs the
@@ -54553,7 +54553,7 @@ static void an_phase_value_types(Compiler *c) {
     }
     /* (one String representation: a String ivar is by value only when
        every write gives it a frozen literal, which no name can change) */
-    if (g_one_string && sp_streq(ty, "InstanceVariableWriteNode")) {
+    if (sp_streq(ty, "InstanceVariableWriteNode")) {
       Scope *s = comp_scope_of(c, id);
       int q = s ? s->class_id : -1;
       const char *ivn = nt_str(c->nt, id, "name");

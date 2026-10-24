@@ -1382,7 +1382,7 @@ int repr_store_fits(Compiler *c, TyKind from, TyKind to) {
      handle: a typed container's element is the handle (sp_strelem), and a
      bytes slot reads it through SP_STR_B, which the C compiler holds the
      emitter to (string-one-repr-design.md). */
-  if (g_one_string && from == TY_STRBUF && to == TY_STRING) return 1;
+  if (from == TY_STRBUF && to == TY_STRING) return 1;
   int fc = repr_store_class(c, from), tc = repr_store_class(c, to);
   if (from == TY_NIL) return 0;   /* see store_nil_fits */
   if (fc == SC_NONE) return 0;
@@ -1749,10 +1749,8 @@ int repr_static_share(const Compiler *c, int node) {
 int repr_str_class_shares(unsigned flags, int holders) {
   /* one representation (--string-repr=handle): every String holder is the
      handle; the share facts then decide nothing about layout */
-  if (g_one_string) return 1;
-  if (flags & SHF_IDENTITY) return 1;
-  if (!(flags & SHF_MUT)) return 0;
-  return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT | SHF_MULTI)) != 0;
+  (void)flags; (void)holders;
+  return 1;
 }
 
 int repr_str_shares(const Compiler *c, int holder) {
@@ -1855,8 +1853,8 @@ static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
    Under the one-String mode there is none: the typed containers hold the
    handle (sp_strelem, string-one-repr-design.md). */
 int repr_typed_str_container(TyKind t) {
-  if (g_one_string) return 0;
-  return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH;
+  (void)t;
+  return 0;
 }
 
 int repr_str_literal_shares(Compiler *c, int node) {
@@ -1999,14 +1997,7 @@ static int repr_flow_checked(Compiler *c, int v) {
    or a route codegen does not know is refused too. */
 static void repr_flow_refuse(Compiler *c, int u, int kind) {
   /* one representation: every route hands the handle on as it is */
-  if (g_one_string) return;
-  char rn[160];
-  repr_flow_route_name(c, u, rn, sizeof rn);
-  char msg[512];
-  snprintf(msg, sizeof msg, "the String %s hands on as %s is shared with another "
-           "name and changed in place, and that route cannot carry the shared handle yet: it would hand "
-           "on a copy (#9258)", rn, repr_flow_kind_name(kind));
-  unsupported_feature_collect(c, u, msg);
+  (void)c; (void)u; (void)kind;
 }
 /* The values the n flows lend to a parameter that is no byref slot
    (SHFL_LEND, whose route always carries them), marked by node; NULL

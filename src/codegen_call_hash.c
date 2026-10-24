@@ -321,7 +321,7 @@ int emit_op_hash_default(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; (_t%d && !_t%d->default_nil) ? sp_box_int(_t%d->default_v) : sp_box_nil(); })", t, t, t);
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-    buf_printf(b, "; (_t%d && _t%d->default_v) ? %s_t%d->default_v) : sp_box_nil(); })", t, t, g_one_string ? "SP_SEBOX(" : "sp_box_str(", t);
+    buf_printf(b, "; (_t%d && _t%d->default_v) ? %s_t%d->default_v) : sp_box_nil(); })", t, t, "SP_SEBOX(", t);
   }
   else {
     buf_printf(b, "; (void)_t%d; sp_box_nil(); })", t);
@@ -607,7 +607,7 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
     buf_printf(b, is_nil ? " if (_t%d) _t%d->default_v = " : " if (_t%d) { _t%d->default_v = ", t, t);
     /* (one representation: the values' slot holds the element, the handle) */
-    int one_h = g_one_string && !is_nil;
+    int one_h = !is_nil;
     if (one_h) buf_puts(b, "SP_STR_HDL(");
     if (is_nil) buf_puts(b, "NULL");
     else if (held && at == TY_POLY) buf_printf(b, "sp_poly_hval_s(%s)", av);
@@ -720,8 +720,8 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   else
     /* (one representation: a String value is the handle, read here as its bytes face) */
     buf_printf(b, "; %s _t%d = sp_%sHash_has_key%s(_t%d, _t%d) ? %ssp_%sHash_get%s(_t%d, _t%d)%s : %s;",
-               c_type_name(vt), tv, hn, ks, th, tk, g_one_string && vt == TY_STRING ? "SP_STR_B(" : "", hn, ks, th, tk,
-               g_one_string && vt == TY_STRING ? ")" : "",
+               c_type_name(vt), tv, hn, ks, th, tk, vt == TY_STRING ? "SP_STR_B(" : "", hn, ks, th, tk,
+               vt == TY_STRING ? ")" : "",
                vt == TY_POLY ? "sp_box_nil()" : vt == TY_STRING ? "NULL" : default_value_from_compiler(c, vt));
   buf_printf(b, " sp_%sHash_delete%s(_t%d, _t%d); ", hn, rt == TY_STR_POLY_HASH ? "_bytes" : ks, th, tk);
   if (vt == TY_INT) { oint_open(c, x->id, TY_INT, b); buf_printf(b, "_t%d", tv); oint_close(c, x->id, b); buf_puts(b, "; })"); }
@@ -985,7 +985,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   /* store argument */
   /* (one-String mode: ENV.assoc's pair holds the argument itself, which
      the caller can change, so its handle is held and boxed) */
-  int one_k = g_one_string && env && !is_rassoc && comp_ntype(c, argv[0]) == TY_STRING;
+  int one_k = env && !is_rassoc && comp_ntype(c, argv[0]) == TY_STRING;
   int tk = one_k ? ++g_tmp : 0;
   if (one_k) {
     buf_printf(b, " sp_String *_t%d = SP_STR_HDL(", tk); emit_expr(c, argv[0], b);

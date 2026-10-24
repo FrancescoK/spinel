@@ -125,7 +125,7 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     if (p[0] == '$' && p[1] == 'r') {
       /* (one-String mode: a String row's receiver is its bytes face,
          whichever face its text has -- an `a || b` of handles) */
-      int rface = g_one_string && x->rt == TY_STRING;
+      int rface = x->rt == TY_STRING;
       if (!r && x->rtext) {
         if (rface) { Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "SP_STR_B(%s)", x->rtext); r = fb.p; }
         else r = strdup(x->rtext);

@@ -57,7 +57,7 @@ static TyTraits trait_from_functions(Compiler *c, TyKind t) {
   int sv_tmp = g_tmp;
   /* (one-String mode boxes a String of either face through SP_STR_BOX,
      ahead of the table: the rows keep the two representations' boxes) */
-  if (g_one_string && (t == TY_STRING || t == TY_STRBUF)) {
+  if ((t == TY_STRING || t == TY_STRBUF)) {
     r.box_text = ty_traits[t].box_text;
     r.box_form = ty_traits[t].box_form;
   }

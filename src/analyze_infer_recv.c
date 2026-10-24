@@ -456,9 +456,6 @@ TyKind infer_map_block_ty(Compiler *c, int id, int block) {
      in only to unbox it again on each read. */
   if (c->arr_want && id < c->node_cap && ty_is_ptr_array(c->arr_want[id]))
     return c->arr_want[id];
-  /* A temporary result has no holder to select boxed element storage.
-     Its shared block values need the same layout as a stored result. */
-  if (c->share_strings && !g_one_string && share_node_elems_share(c, id)) return TY_POLY_ARRAY;   /* (one-String mode: the String Array holds the handle) */
   return ty_array_of(bt);
 }
 
@@ -662,7 +659,7 @@ static int fill_value_fits(Compiler *c, int call, TyKind rt) {
     if (an < 1) return 1;
     fv = infer_type(c, av[0]);
   }
-  if (g_one_string && fv == TY_STRBUF) fv = TY_STRING;   /* (one-String mode: the String Array holds the handle) */
+  if (fv == TY_STRBUF) fv = TY_STRING;   /* (one-String mode: the String Array holds the handle) */
   return fe == TY_POLY || fv == TY_UNKNOWN || fv == TY_POLY || fv == TY_VOID || fv == fe;
 }
 
@@ -708,17 +705,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        unknown until the caller supplies a predicate. */
     if (sp_streq(name, "bsearch") && block < 0 && argc == 0) {
       *out = TY_ENUMERATOR;
-      return 1;
-    }
-    /* --share-strings: a retaining iterator over a fresh String Array whose
-       elements the rule shares answers the handles its block saw, the
-       PolyArray a local's Array of them would be (a temporary result has no
-       holder to select boxed element storage). The in-place filters answer
-       self or nil, boxed, and keep their type. (One-String mode: the String
-       Array holds the handles.) */
-    if (c->share_strings && !g_one_string && rt == TY_STR_ARRAY && !is_select_reject_bang(name) &&
-        share_iter_answers_handles(c, id)) {
-      *out = TY_POLY_ARRAY;
       return 1;
     }
     /* dig(*keys) walks a runtime key list: the depth, and so the value's
@@ -1107,7 +1093,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           TyKind at = infer_type(c, argv[ai]);
           /* (one-String mode: a String Array holds a handle as it holds
              the bytes) */
-          if (g_one_string && elem_t == TY_STRING && at == TY_STRBUF) continue;
+          if (elem_t == TY_STRING && at == TY_STRBUF) continue;
           if (at != TY_UNKNOWN && at != elem_t) { *out = TY_POLY_ARRAY; return 1; }
         }
       }
@@ -1702,8 +1688,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (argc <= 2 && argc >= 1 &&
         (sp_streq(name, "byteindex") || sp_streq(name, "byterindex"))) { *out = TY_INT; return 1; }
     if (argc == 1 && (is_partition_family(name)))
-      { *out = c->share_strings && !g_one_string && (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF || infer_type(c, argv[0]) == TY_REGEX) && share_node_elems_share(c, id)
-                   ? TY_POLY_ARRAY : TY_STR_ARRAY; return 1; }
+      { *out = TY_STR_ARRAY; return 1; }
     if (argc == 2 && sp_streq(name, "tr_s")) { *out = TY_STRING; return 1; }
     if (argc == 1 && sp_streq(name, "crypt")) { *out = TY_STRING; return 1; }
     /* try_convert on a class-tagged boxed value: the value or nil, as the

@@ -135,7 +135,7 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (ugv) {
         if (ugv->type == TY_STRING) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, gv_%s)", rre, urn);
         /* (one representation: a String global held as the handle) */
-        else if (g_one_string && ugv->type == TY_STRBUF) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, SP_STR_B(gv_%s))", rre, urn);
+        else if (ugv->type == TY_STRBUF) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, SP_STR_B(gv_%s))", rre, urn);
         else buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, sp_poly_to_s(gv_%s))", rre, urn);
       }
       else {
@@ -1185,9 +1185,6 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
-    /* (one-String mode: the receiver's handle is what the block takes) */
-    if (is_line && argc >= 1 && repr_of(c, argv[0]).as_ty == TY_NIL && share_node_shares(c, recv) && !g_one_string)
-      unsupported_feature(c, id, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
     int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes");
     int is_cp = sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
@@ -1211,7 +1208,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     int th_ech = 0;
     NodeKind rk_ech = nt_kind(nt, recv);
     Buf hb_ech; memset(&hb_ech, 0, sizeof hb_ech);
-    if (g_one_string && (rk_ech == NK_InstanceVariableReadNode || rk_ech == NK_ClassVariableReadNode ||
+    if ((rk_ech == NK_InstanceVariableReadNode || rk_ech == NK_ClassVariableReadNode ||
                          rk_ech == NK_GlobalVariableReadNode) && strbuf_slot_text(c, recv, &hb_ech)) {
       th_ech = ++g_tmp;
       buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); ", th_ech, hb_ech.p, th_ech);
@@ -1227,7 +1224,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       tsv_ech = ++g_tmp;
       Buf sv_ech; memset(&sv_ech, 0, sizeof sv_ech); emit_ctype(c, clv_ech->type, &sv_ech);
       /* (one representation: the slot's own type, whichever face it holds) */
-      buf_printf(b, "%s _t%d = lv_%s; ", g_one_string ? "__auto_type" : sv_ech.p ? sv_ech.p : "sp_RbVal", tsv_ech, p0); free(sv_ech.p);
+      buf_printf(b, "%s _t%d = lv_%s; ", "__auto_type", tsv_ech, p0); free(sv_ech.p);
     }
     if (is_line) {
       int tl = ++g_tmp;
@@ -1243,7 +1240,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       int eline_sep = (argc >= 1 && argv && argv[0] != kwh && lines_sep_ty(c, argv[0])) ? argv[0] : -1;
       /* (one-String mode: a nil separator yields the receiver itself, as
          CRuby does, a String it holds the handle of; none for an empty one) */
-      int eline_whole = g_one_string && eline_sep >= 0 && eline_chomp == 0 &&
+      int eline_whole = eline_sep >= 0 && eline_chomp == 0 &&
                         repr_of(c, argv[0]).as_ty == TY_NIL;
       if (eline_whole)
         buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_new(); if (sp_str_byte_len(_t%d) > 0) sp_StrArray_push(_t%d, _t%d); ",
@@ -1275,7 +1272,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = %ssp_StrArray_get%s(_t%d, _t%d)); ", p0, ONE_SA_BOXO, ONE_SA_GE, tl, ti);
         else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
-        else buf_printf(b, g_one_string ? "lv_%s = SP_STR_B(sp_StrArray_get(_t%d, _t%d)); " : "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);   /* (one representation: the line is a handle, the parameter's slot bytes) */
+        else buf_printf(b, "lv_%s = SP_STR_B(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);   /* (one representation: the line is a handle, the parameter's slot bytes) */
       }
     }
     /* codepoints yields each character's codepoint, not each byte: the String
@@ -1401,7 +1398,7 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
     int hnd = !box && plv && repr_of_slot(c, plv).handle;
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d, _t%d, _t%d)%s;\n",
-               rename_local(p0), box ? "sp_box_str(" : hnd ? (g_one_string ? "SP_STR_HDL(" : "sp_String_new_fresh(") : "", ts, tb, tn,
+               rename_local(p0), box ? "sp_box_str(" : hnd ? "SP_STR_HDL(" : "", ts, tb, tn,
                (box || hnd) ? ")" : "");
   }
   int save = g_indent; g_indent++;
@@ -1503,9 +1500,8 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
     Buf ref; memset(&ref, 0, sizeof ref);
     if (strbuf_recv_handle(c, id, nt_paren_single(c->nt, recv), &ref)) {
       int t = ++g_tmp;
-      buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); if (sp_String_is_frozen(_t%d)) "
-                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); " : "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
-                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); "), t, ref.p, t, t);
+      buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); if (sp_String_is_frozen(_t%d)) "
+                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref.p, t, t);
       free(ref.p);
       if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", t);
       else buf_printf(b, "sp_String_cstr(_t%d); })", t);

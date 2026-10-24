@@ -110,7 +110,7 @@ static int str_handle_route(Compiler *c, int v, StrForm *sf) {
 static int str_handle_slot(Compiler *c, int v, StrForm *sf) {
   /* (one-String mode: a variable read that ran first holds the handle, or
      a view of it, in its temp: the String the variable had) */
-  if (g_one_string && arg_ran_first(v, 0) && str_var_read(c, v))
+  if (arg_ran_first(v, 0) && str_var_read(c, v))
     for (int i = g_n_argov - 1; i >= 0; i--)
       if (g_argov_node[i] == v) { buf_printf(&sf->expr, "SP_STR_HDL(%s)", g_argov_text[i]); return 1; }
   if ((arg_ran_first(v, 0) && str_var_read(c, v)) || !strbuf_slot_text(c, v, &sf->expr)) return 0;
@@ -398,12 +398,11 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
 /* (one representation: the text may be of either face, a handle or a view
    of one; sp_box_nullable_str / sp_box_str box the handle either way) */
 void str_box_open(Buf *b, int nullable) {
-  if (g_one_string) { buf_puts(b, "SP_STR_BOX("); return; }
-  buf_puts(b, nullable ? "sp_box_nullable_obj(" : "sp_box_obj(");
+  (void)nullable;
+  buf_puts(b, "SP_STR_BOX(");
 }
 void str_box_close(Buf *b) {
-  if (g_one_string) { buf_puts(b, ")"); return; }
-  buf_puts(b, ", SP_BUILTIN_STRBUF)");
+  buf_puts(b, ")");
 }
 void str_box_handle(Buf *b, const char *h) {
   str_box_open(b, 1);
@@ -424,7 +423,7 @@ void str_box_handle_tmp(Buf *b, int tmp) {
    written, str_read_handle_tmp a temp. */
 /* (one representation: a read held across a block is a copy, g_one_held) */
 static const char *str_read_face(int pub) {
-  if (g_one_string && g_one_held) return pub ? "sp_strbuf_read_pub_own" : "sp_strbuf_read_own";
+  if (g_one_held) return pub ? "sp_strbuf_read_pub_own" : "sp_strbuf_read_own";
   return pub ? "sp_strbuf_read_pub" : "sp_strbuf_read";
 }
 void str_read_handle(Buf *b, const char *h, int pub) {
@@ -450,7 +449,7 @@ void str_read_handle_close(Buf *b) {
    converts has no handle. */
 void str_new_handle_open(Buf *b) {
   /* (one representation: the operand may be of either face, SP_STR_HDL) */
-  buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_String_new_shared(");
+  buf_puts(b, "SP_STR_HDL(");
 }
 void str_new_handle_close(Buf *b) {
   buf_puts(b, ")");
@@ -470,8 +469,7 @@ void str_new_handle_open_of(Compiler *c, int v, Buf *b) {
 void str_box_bytes(Buf *b, const char *e) {
   /* (one representation: the text may be the handle whatever the plan
      read it as, so it is boxed through its face) */
-  if (g_one_string) { buf_printf(b, "SP_STR_BOX(%s)", e); return; }
-  buf_printf(b, "%s(%s)", ty_box_fn(TY_STRING), e);
+  buf_printf(b, "SP_STR_BOX(%s)", e);
 }
 
 /* The box of a String Range's endpoint held in temp `t` (an sp_StrRange):
@@ -508,8 +506,7 @@ void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b) {
   }
   /* (one representation: the leaf's text may be the handle, boxed through
      its face) */
-  else if (g_one_string) buf_puts(&sf.expr, "SP_STR_BOX(");
-  else buf_printf(&sf.expr, "%s(", ty_box_fn(TY_STRING));
+  else buf_puts(&sf.expr, "SP_STR_BOX(");
   emit_expr(c, v, &sf.expr);
   buf_puts(&sf.expr, ")");
   str_form_settle(c, &sf, b);
@@ -757,7 +754,7 @@ static void str_identity_operand_form(Compiler *c, int v, StrForm *sf) {
 static void str_identity_box_text(const StrForm *sf, const char *e, Buf *b) {
   if (sf->cty == TY_POLY) buf_puts(b, e);
   else if (sf->cty == TY_STRBUF) str_box_handle(b, e);
-  else buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_str(%s)"), e);
+  else buf_printf(b, "SP_STR_BOX(%s)", e);
 }
 
 /* Node v, a String, as the box a dispatch answers it in (an arm of a

@@ -728,7 +728,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       TyKind cs_vt = repr_of(c, argv[1]).as_ty;
       /* (one-String mode: a String of the other face, through SP_STR_HDL /
          SP_STR_B) */
-      const char *cs_face = !g_one_string || !cv ? NULL
+      const char *cs_face = !cv ? NULL
                           : cv->type == TY_STRBUF && cs_vt == TY_STRING ? "SP_STR_HDL("
                           : cv->type == TY_STRING && cs_vt == TY_STRBUF ? "SP_STR_B(" : NULL;
       if (cv && cv->type != TY_UNKNOWN && (cs_vt == cv->type || cs_face)) {
@@ -1106,7 +1106,7 @@ static int ffi_arg_allocates(Compiler *c, int node) {
    of its bytes where Ruby code can run during the call, as the argument's
    emission below has it: the copy is made where it stands) */
 static int ffi_str_arg_copied(Compiler *c, int node) {
-  return g_one_string && comp_ntype(c, node) != TY_POLY && !c->strbuf_read_raw[node] && strbuf_slot_has(c, node);
+  return comp_ntype(c, node) != TY_POLY && !c->strbuf_read_raw[node] && strbuf_slot_has(c, node);
 }
 static int ffi_str_arg_fresh(Compiler *c, int fi, int ai, const int *argv, int fixed_argc, int is_vararg) {
   int str = ai < fixed_argc ? ffi_spec_is_str(c->ffi_funcs[fi].args[ai])
@@ -1743,7 +1743,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
            to the deep-return channel, which a caller's pickup would take for
            this new String; the answer clears it, as the method's own body
            does (sp_strface_unpub) */
-        int nv_unpub = g_one_string && (nv_cstr_ret || nv_bin_ret);
+        int nv_unpub = (nv_cstr_ret || nv_bin_ret);
         if (nv_unpub) buf_puts(b, "sp_strface_unpub(");
         if (nv_cstr_ret) buf_puts(b, "sp_str_dup_external(");
         /* Sequence the call before the sp_ffi_bin_len read: C leaves argument
@@ -1941,7 +1941,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                the call (mark_native_str_operands, strbuf_read_raw); a
                callback or a trap could grow the String and free the buffer,
                so elsewhere C reads a copy, as the default mode's read is) */
-            else if (g_one_string && !c->strbuf_read_raw[argv[ai]] && strbuf_slot_has(c, argv[ai])) {
+            else if (!c->strbuf_read_raw[argv[ai]] && strbuf_slot_has(c, argv[ai])) {
               buf_puts(&call_buf, "sp_str_dup(SP_STR_B("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
             }
             else {
@@ -2092,7 +2092,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else if (is_str_ret) {
           /* (one representation: the answer clears the channel a handle
              argument's read published, as a native_func's does) */
-          buf_printf(b, g_one_string ? "sp_strface_unpub(sp_str_dup_external(%s))" : "sp_str_dup_external(%s)", call_buf.p);
+          buf_printf(b, "sp_strface_unpub(sp_str_dup_external(%s))", call_buf.p);
         }
         else if (is_binstr_ret) {
           /* Binary-safe: build the String from the exact byte count the callee
@@ -2103,7 +2103,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           int tp = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = %s; %s"
                         "sp_str_as_binary(sp_str_from_bytes(_t%d, (size_t)(sp_ffi_bin_len < 0 ? 0 : sp_ffi_bin_len))); })",
-                     tp, call_buf.p, g_one_string ? "_sp_ret_strbuf = NULL; " : "", tp);
+                     tp, call_buf.p, "_sp_ret_strbuf = NULL; ", tp);
         }
         else {
           /* numeric / bool: cast to sp_int or sp_float */
@@ -2353,7 +2353,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               if (_avt == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", _asr);
               /* (one representation: an assignment whose value is boxed,
                  a writer a subclass overrides, boxes the handle) */
-              else if (g_one_string && _avt == TY_POLY) buf_printf(b, "SP_STR_BOX(%s)", _asr);
+              else if (_avt == TY_POLY) buf_printf(b, "SP_STR_BOX(%s)", _asr);
               else emit_strbuf_node_read(c, id, _asr, b);
               buf_puts(b, "; })");
             }

@@ -2395,7 +2395,7 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         }
         /* (one representation: a value held as the handle answers the
            String the expression is typed as) */
-        else if (g_one_string && decl_type == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING) {
+        else if (decl_type == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING) {
           buf_printf(b, "); SP_STR_B(_t%d); })", tv);
         }
         else {
@@ -2516,7 +2516,7 @@ int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
   if (repr_of(c, argv[1]).kind == RK_BOXED) return 1;
   /* an Integer or Float that can be nil splices and stores with its nil */
   TyKind vt = comp_ntype(c, argv[1]);
-  if (g_one_string && vt == TY_STRBUF) vt = TY_STRING;   /* (one-String mode: a String held as its handle) */
+  if (vt == TY_STRBUF) vt = TY_STRING;   /* (one-String mode: a String held as its handle) */
   return vt == et || (vt == TY_NIL && et != TY_STRING);
 }
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
@@ -2562,7 +2562,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
   /* (one-String mode: the splice answers the element, the handle, and the
      store the String's bytes; both arms answer the bytes) */
-  int one_s = g_one_string && ty_array_elem(rt) == TY_STRING;
+  int one_s = ty_array_elem(rt) == TY_STRING;
   if (one_s) buf_puts(b, "SP_STR_B(");
   int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
   int v = view_push(c, argv[0], TY_RANGE);
@@ -2616,7 +2616,7 @@ static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt,
   TyKind et = ty_array_elem(rt);
   const char *e = ab.p ? ab.p : "";
   if (rt == TY_POLY_ARRAY) buf_puts(b, e);
-  else if (et == TY_STRING) buf_printf(b, (g_one_string ? "SP_STR_BOX(%s)" : "sp_box_nullable_str(%s)"), e);
+  else if (et == TY_STRING) buf_printf(b, "SP_STR_BOX(%s)", e);
   else buf_printf(b, "%s(%s)", oint_box(et), e);
   free(ab.p);
   buf_puts(b, "; })");
@@ -2836,7 +2836,7 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
     /* (one representation: the read face is the payload itself, which a
        String slot takes back to the instance; the copy is made here, or
        `m.to_s` answered m) */
-    return view_bind(n, g_one_string ? "sp_strbuf_read_own(_t%d)" : "sp_strbuf_read(_t%d)", t);
+    return view_bind(n, "sp_strbuf_read_own(_t%d)", t);
   }
   /* a variable is read through the cast where the call reads it; one whose
      cast is longer than a bound text holds (a long name: a fixed buffer cut

@@ -3987,11 +3987,6 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
    the handle, as a literal's element does (#6765). */
 static TyKind infer_array_new_fill(Compiler *c, int fill) {
   TyKind ft = infer_type(c, fill);
-  /* (one-String mode: the String Array holds the handle) */
-  if (ft == TY_STRBUF && c->share_strings && !g_one_string) ft = TY_POLY;
-  /* Static slots keep their String type after their storage is shared. */
-  /* A demanded reader or a late-promoted local also keeps that type. */
-  if (ft == TY_STRING && c->share_strings && !g_one_string && repr_of(c, fill).kind == RK_STRBUF) ft = TY_POLY;
   return ty_array_of(ft);
 }
 /* A constructor call: a class's .new, and the builtin constructors (infer_call_inner's rules, in their order) */
@@ -5003,9 +4998,6 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
-    if (c->share_strings && argc == 1 && is_partition_family(name) &&
-        (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF || infer_type(c, argv[0]) == TY_REGEX) &&
-        !g_one_string && share_node_elems_share(c, id)) { *out = TY_POLY_ARRAY; return 1; }
     /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
        It reads the mode, so it sits ahead of the to_i row. */
     if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
@@ -6197,7 +6189,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (at == TY_FLOAT)  { *out = TY_FLOAT_ARRAY; return 1; }  /* Array(float) -> [float] */
       /* The scalar String is one fill element, with Array.new's layout. */
       if (at == TY_STRING && c->share_strings) {
-        *out = !g_one_string && share_node_elems_share(c, id) ? TY_POLY_ARRAY : infer_array_new_fill(c, argv[0]);
+        *out = infer_array_new_fill(c, argv[0]);
         return 1;
       }
       if (at == TY_STRING) { *out = TY_STR_ARRAY; return 1; }    /* Array(str)   -> [str]   */
@@ -10499,15 +10491,12 @@ static TyKind infer_array_literal(Compiler *c, int id) {
       if (et == TY_NIL) et = TY_POLY;
       /* --share-strings: an element stored as the shared handle settles the
          literal in its poly form, whose boxes hold the handle (#6765) */
-      if (et == TY_STRBUF && c->share_strings && !g_one_string) et = TY_POLY;   /* (one-String mode: the String Array holds the handle) */
       e = ty_unify(e, et);
     }
     /* ...unless its Strings are all held as handles: the literal is a
        String Array of handles (#8328 step 5) when a local holds it, where its
        container class can take that form (share_strh_gate refuses it
        otherwise, for good) */
-    if (strh_all && !g_one_string && (strh_has || share_strh_literal_slot(c, id)) && !share_strh_node_no(c, id) && strh_literal_held(c, id))
-      return TY_STRH_ARRAY;
     if (c->arr_want && id < c->node_cap && ty_is_obj_array(c->arr_want[id]) &&
         e == ty_array_elem(c->arr_want[id]))
       return c->arr_want[id];
@@ -11205,13 +11194,12 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (vt_elem == TY_NIL) vt_elem = TY_POLY;   /* a nil value keeps the hash poly-valued (see the array literal) */
       /* --share-strings: a value stored as the shared handle settles the
          hash in its poly form, whose boxes hold the handle (#6765) */
-      if (vt_elem == TY_STRBUF && c->share_strings && !g_one_string) vt_elem = TY_POLY;   /* (one-String mode: the typed Hash holds the handle) */
       vt = ty_unify(vt, vt_elem);
     }
     /* symbol keys -> SymPolyHash (boxed values), regardless of value type */
     if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
     /* (one-String mode: a handle keys the String-keyed Hash, ty_hash_of) */
-    if (g_one_string && kt == TY_STRBUF) kt = TY_STRING;
+    if (kt == TY_STRBUF) kt = TY_STRING;
     TyKind hv = ty_hash_of(kt, vt);
     /* No scalar (key,val) variant: the value is poly-stored (a nested hash/
        array/object, or a mix). The key type still selects the hash variant --

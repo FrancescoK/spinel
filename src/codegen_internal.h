@@ -587,25 +587,25 @@ TyKind one_elem_decl_type(const char *k, TyKind et);
 const char *one_elem_get_sfx(const char *k);
 /* a walk's String Array element `_sa->data[_si]` as the bytes the push or the box takes
    (the element is the handle under the mode; the text is unchanged otherwise) */
-#define ONE_SA_ELEM (g_one_string ? "SP_SEB(_sa->data[_si])" : "_sa->data[_si]")
+#define ONE_SA_ELEM ("SP_SEB(_sa->data[_si])")
 /* ...and boxed: the element's own box (a handle box under the mode, which keeps
    the String's identity where a box of its bytes made a second object) */
-#define ONE_SA_BOX (g_one_string ? "SP_SEBOX(_sa->data[_si])" : "sp_box_str(_sa->data[_si])")
+#define ONE_SA_BOX ("SP_SEBOX(_sa->data[_si])")
 /* a String value stored into a Hash of String values (`hn` "StrStr" or
    "IntStr"), of either face, as the bytes the set takes; the text is
    unchanged otherwise */
-#define ONE_HV_O(hn) (g_one_string && strstr((hn), "Str") && sp_streq((hn) + strlen(hn) - 3, "Str") ? "SP_STR_B(" : "")
+#define ONE_HV_O(hn) (strstr((hn), "Str") && sp_streq((hn) + strlen(hn) - 3, "Str") ? "SP_STR_B(" : "")
 #define ONE_HV_C(hn) (ONE_HV_O(hn)[0] ? ")" : "")   /* "_e" for a typed String Array under the mode (the element itself) */
 /* An element of a typed String Array / a String Hash's value, boxed: under
    the mode the element's own box (SP_SEBOX of the _e read, a handle box that
    keeps its identity), else the box of its bytes. Spelled
    "%ssp_StrArray_get%s(" with these two. */
-#define ONE_SA_BOXO (g_one_string ? "SP_SEBOX(" : "sp_box_str(")
-#define ONE_SA_GE (g_one_string ? "_e" : "")
+#define ONE_SA_BOXO ("SP_SEBOX(")
+#define ONE_SA_GE ("_e")
 #define ONE_HV_BOXO(hn) (ONE_HV_O(hn)[0] ? "SP_SEBOX(" : "sp_box_str(")
 #define ONE_HV_GE(hn) (ONE_HV_O(hn)[0] ? "_e" : "")
 /* ...and a typed Array kind `k`'s element form: "_e" for the String Array under the mode */
-#define ONE_SA_KE(k) (g_one_string && sp_streq((k), "Str") ? "_e" : "")
+#define ONE_SA_KE(k) (sp_streq((k), "Str") ? "_e" : "")
 extern int g_one_elem_raw;   /* the element read emit_expr renders as the handle itself (strh_elem_handle_text) */
 extern int g_one_arm_bytes_node;   /* the dispatch whose arms answer into a bytes slot (emit_strbuf_pickup) */
 void one_face_mark(int t, int node);   /* temp t holds node's String by face (__auto_type): its bound reads are SP_STR_B */

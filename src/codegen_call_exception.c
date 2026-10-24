@@ -420,7 +420,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "sp_box_obj(");
       if (hm) buf_puts(b, "sp_exc_attach_msg(");
       buf_printf(b, "sp_exc_exception((sp_Exception *)_t%d.v.p, ", t);
-      if (sm) { buf_puts(b, g_one_string ? "sp_exc_msg_given(SP_STR_B(" : "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, g_one_string ? "))" : ")"); }
+      if (sm) { buf_puts(b, "sp_exc_msg_given(SP_STR_B("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
       else buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given(sp_poly_to_s(_t%d))", ta, ta);
       buf_puts(b, ")");
       if (hm) buf_printf(b, ", %s)", mh.p);
@@ -1073,17 +1073,16 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
             /* the exception is built here, holding the handle, as the
                rescue would build it (sp_exc_new_for_catch) */
             buf_printf(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"%s\", "
-                          "sp_exc_msg_given(%s", effn, g_one_string ? "SP_STR_B(" : "");
+                          "sp_exc_msg_given(%s", effn, "SP_STR_B(");
             emit_expr(c, av[1], b);
-            buf_printf(b, "%s)), %s))", g_one_string ? ")" : "", mh.p);
+            buf_printf(b, "%s)), %s))", ")", mh.p);
             exc_msg_release(b, mk);
             free(mh.p);
           }
           else if (comp_ntype(c, av[1]) == TY_STRING) {
-            buf_printf(b, "sp_raise_cls(\"%s\", sp_exc_msg_given(%s", effn, g_one_string ? "SP_STR_B(" : "");
+            buf_printf(b, "sp_raise_cls(\"%s\", sp_exc_msg_given(%s", effn, "SP_STR_B(");
             emit_expr(c, av[1], b);
-            if (g_one_string) buf_puts(b, ")");
-            buf_puts(b, "))");
+            buf_puts(b, ")))");
           }
           else {
             /* nil is not a message, so the class name answers (#3812) */
@@ -1140,13 +1139,13 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         }
         else if (exc_msg_hold(c, av[0], b, &mh, &mk)) {
           buf_printf(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"RuntimeError\", "
-                      "sp_exc_msg_given(%s", g_one_string ? "SP_STR_B(" : "");
+                      "sp_exc_msg_given(%s", "SP_STR_B(");
           emit_expr(c, av[0], b);
-          buf_printf(b, "%s)), %s))", g_one_string ? ")" : "", mh.p);
+          buf_printf(b, "%s)), %s))", ")", mh.p);
           exc_msg_release(b, mk);
           free(mh.p);
         }
-        else { buf_puts(b, g_one_string ? "sp_raise(sp_exc_msg_given(SP_STR_B(" : "sp_raise(sp_exc_msg_given("); emit_expr(c, av[0], b); buf_puts(b, g_one_string ? ")))" : "))"); }
+        else { buf_puts(b, "sp_raise(sp_exc_msg_given(SP_STR_B("); emit_expr(c, av[0], b); buf_puts(b, ")))"); }
       }
       else if (at == TY_POLY || at == TY_CLASS) {
         /* the runtime value may be a string, an exception object, an exception

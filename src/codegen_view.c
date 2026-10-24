@@ -114,7 +114,7 @@ static int view_bind_v(int node, int oint, const char *fmt, va_list ap) {
   }
   else n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
   /* (one representation: a node bound to a temp held by face reads it as bytes) */
-  if (g_one_string && n > 2 && g_argov_text[slot][0] == '_' && g_argov_text[slot][1] == 't') {
+  if (n > 2 && g_argov_text[slot][0] == '_' && g_argov_text[slot][1] == 't') {
     char *end = NULL;
     long tn = strtol(g_argov_text[slot] + 2, &end, 10);
     if (end && *end == '\0' && one_face_is((int)tn, node))

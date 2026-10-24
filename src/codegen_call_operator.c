@@ -651,17 +651,13 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int boxed = repr_of(c, id).kind == RK_BOXED;
       if (boxed) buf_puts(b, "sp_box_oint("); else oint_open(c, id, TY_INT, b);
       /* (one representation: an operand of either face is held as it is and compared through its bytes) */
-      buf_printf(b, g_one_string ? "({ __auto_type _t%d = (" : "({ const char *_t%d = ", tr); emit_coerce(c, recv, TY_STRING, CO_HOLD, "a comparison operand", b);
-      buf_puts(b, g_one_string ? "); " : "; ");
-      if (operand_may_allocate(c, argv[0])) buf_printf(b, g_one_string ? "SP_GC_ROOT(_t%d); " : "SP_GC_ROOT_STR(_t%d); ", tr);
-      buf_printf(b, g_one_string ? "__auto_type _t%d = (" : "const char *_t%d = ", ta);
+      buf_printf(b, "({ __auto_type _t%d = (", tr); emit_coerce(c, recv, TY_STRING, CO_HOLD, "a comparison operand", b);
+      buf_puts(b, "); ");
+      if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tr);
+      buf_printf(b, "__auto_type _t%d = (", ta);
       emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a comparison operand", b);
-      if (g_one_string)
-        buf_printf(b, "); !_t%d || !_t%d ? ((const void *)_t%d == (const void *)_t%d ? sp_oint_of(0) : sp_oint_nil())"
-                      " : sp_oint_of((sp_int)sp_str_cmp_bytes(SP_STR_B(_t%d), SP_STR_B(_t%d))); })", tr, ta, tr, ta, tr, ta);
-      else
-      buf_printf(b, "; !_t%d || !_t%d ? (_t%d == _t%d ? sp_oint_of(0) : sp_oint_nil())"
-                    " : sp_oint_of((sp_int)sp_str_cmp_bytes(_t%d, _t%d)); })", tr, ta, tr, ta, tr, ta);
+      buf_printf(b, "); !_t%d || !_t%d ? ((const void *)_t%d == (const void *)_t%d ? sp_oint_of(0) : sp_oint_nil())"
+                    " : sp_oint_of((sp_int)sp_str_cmp_bytes(SP_STR_B(_t%d), SP_STR_B(_t%d))); })", tr, ta, tr, ta, tr, ta);
       if (boxed) buf_puts(b, ")"); else oint_close(c, id, b);
       return 1;
     }
@@ -1538,7 +1534,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         int tC2 = ++g_tmp;
         /* marked to hand out the handle (`r = obj.buf.clear`): the
            receiver itself, as for the appends */
-        buf_printf(b, (g_one_string ? "({ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));" : "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));"),
+        buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
                    tC2, srefC.p, tC2);
         free(srefC.p);
         if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tC2);

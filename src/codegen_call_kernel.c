@@ -673,7 +673,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", tf, fb.p ? fb.p : "", tf);
       free(fb.p);
       emit_pre_format_args(c, av, ac, ta);
-      buf_printf(b, g_one_string ? "sp_str_format_polyarr(SP_STR_B(_t%d), _t%d)" : "sp_str_format_polyarr(_t%d, _t%d)", tf, ta);
+      buf_printf(b, "sp_str_format_polyarr(SP_STR_B(_t%d), _t%d)", tf, ta);
       return 1;
     }
     if (sp_streq(name, "rand")) {
@@ -1205,28 +1205,21 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            the same only-this-invocation matching). Rooted for the body's
            duration -- the body can allocate. */
         emit_indent(g_pre, g_indent);
-        if (g_one_string) {
-          /* (one representation: the tag is a handle, which the block
-             parameter holds and a throw hands on as one, so the catch
-             registers the handle itself, matched by identity as a handle) */
-          buf_printf(g_pre, "sp_String *_ctagh%d = sp_String_new_shared(sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq)); SP_GC_ROOT(_ctagh%d);\n", t, t);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "const char *_ctag%d = (const char *)(void *)_ctagh%d; (void)_ctag%d;\n", t, t, t);
-        }
-        else {
-        buf_printf(g_pre, "const char *_ctag%d = sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq);\n", t);
-        emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_STR(_ctag%d);\n", t);
-        }
+        /* (the tag is a handle, which the block parameter holds and a
+           throw hands on as one, so the catch registers the handle itself,
+           matched by identity as a handle) */
+        buf_printf(g_pre, "sp_String *_ctagh%d = sp_String_new_shared(sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq)); SP_GC_ROOT(_ctagh%d);\n", t, t);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_ctag%d = (const char *)(void *)_ctagh%d; (void)_ctag%d;\n", t, t, t);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_catch_tag[sp_catch_top] = _ctag%d;\n", t);
         /* matched by identity, as the block parameter holding this very tag
            is: a copy of it (`tag.dup`) is another object */
-        tag_kind = g_one_string ? 3 : 2;
+        tag_kind = 3;
         const char *bp0 = block_param_name(c, blk, 0);
         if (bp0) {
           emit_indent(g_pre, g_indent);
           /* (one representation: in the parameter slot's face) */
-          if (g_one_string) buf_printf(g_pre, "lv_%s = SP_STR_TO(lv_%s, _ctagh%d);\n", rename_local(bp0), rename_local(bp0), t);
-          else buf_printf(g_pre, "lv_%s = _ctag%d;\n", rename_local(bp0), t);
+          buf_printf(g_pre, "lv_%s = SP_STR_TO(lv_%s, _ctagh%d);\n", rename_local(bp0), rename_local(bp0), t);
         }
       }
       if (tag_kind >= 0) {
@@ -1710,7 +1703,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         }
         /* the name is checked after the default evaluates, as CRuby does */
         buf_printf(b, "; const char *_t%d = getenv(%s%s_t%d%s%s); ", tk, env_str_checked(c, argv[0]) ? "sp_env_chk(" : "",
-                   g_one_string ? "SP_STR_B(" : "", tky, g_one_string ? ")" : "", env_str_checked(c, argv[0]) ? ", 0)" : "");
+                   "SP_STR_B(", tky, ")", env_str_checked(c, argv[0]) ? ", 0)" : "");
         emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
         buf_printf(b, " _t%d = _t%d ? ", tv, tk);
         if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_env_str(_t%d)) : ", tk);

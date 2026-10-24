@@ -369,7 +369,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         Buf hb; memset(&hb, 0, sizeof hb);
         emit_strbuf_handle_of(c, expr, &hb);
         int hv = ++g_tmp, tv3 = ++g_tmp;
-        buf_printf(&decls, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); "), hv, hb.p ? hb.p : "NULL", hv);
+        buf_printf(&decls, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); ", hv, hb.p ? hb.p : "NULL", hv);
         buf_printf(&late, "const char *_t%d = sp_str_or_empty(sp_strbuf_read(_t%d)); SP_GC_ROOT(_t%d); "
                    "size_t _l%d = sp_str_byte_len(_t%d); ", tv3, hv, tv3, tv3, tv3);
         free(hb.p);
@@ -432,10 +432,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (late_call) EMIT_IV();
         /* (one-String mode: a value of either face, `"#{file || "-"}"`
            with file a String-or-nil handle) */
-        else if (g_one_string) { buf_puts(&conv, "sp_str_or_empty(SP_STR_B("); EMIT_IV(); buf_puts(&conv, "))"); }
-        else { buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")"); }
+        else { buf_puts(&conv, "sp_str_or_empty(SP_STR_B("); EMIT_IV(); buf_puts(&conv, "))"); }
       }
-      else if (g_one_string && t == TY_STRBUF) {
+      else if (t == TY_STRBUF) {
         /* (one representation: a part whose value is a handle, a write's in
            value position; read through its face) */
         buf_puts(&conv, "sp_str_or_empty(SP_STR_B("); EMIT_IV(); buf_puts(&conv, "))");
@@ -658,7 +657,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         buf_printf(&decls, "(void)(%s); ", conv.p ? conv.p : "0");
         tv2 = -1;
       }
-      else if (g_one_string && t == TY_STRING && !vexpr[0] && repr_of(c, expr).strbuf_src == RS_HANDLE &&
+      else if (t == TY_STRING && !vexpr[0] && repr_of(c, expr).strbuf_src == RS_HANDLE &&
                (nt_kind(nt, expr) == NK_LocalVariableReadNode || nt_kind(nt, expr) == NK_InstanceVariableReadNode) &&
                /* (not a define_method loop variable the literal stands in for) */
                !(g_dm_subst_name && nt_kind(nt, expr) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, expr, "name"), g_dm_subst_name))) {
@@ -672,7 +671,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
            its bare lv_ name) */
         if (nt_kind(nt, expr) == NK_LocalVariableReadNode) emit_local_ref(c, expr, nt_str(nt, expr, "name"), &hb);
         else emit_strbuf_handle_of(c, expr, &hb);
-        buf_printf(&decls, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); " : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); "), th, hb.p ? hb.p : "NULL", th);
+        buf_printf(&decls, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); ", th, hb.p ? hb.p : "NULL", th);
         buf_printf(&late, "const char *_t%d = sp_str_or_empty(SP_STR_B(_t%d)); SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
                    tv2, th, tv2, tv2, tv2);
         free(hb.p);
@@ -1102,7 +1101,7 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
       /* (one representation: a String arm's nil is typed bytes; an untyped
          NULL made the conditional a void *, which the face macros read as
          the handle) */
-      if (g_one_string && res == TY_STRING) nv = "((const char *)0)";
+      if (res == TY_STRING) nv = "((const char *)0)";
       /* a bare `nil` arm emits nothing at all; only a call needs sequencing */
       if (ab.p && ab.p[0]) buf_printf(b, "(%s, %s)", ab.p, nv);
       else buf_puts(b, nv);
@@ -1802,8 +1801,8 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     else if (rdt == want) buf_puts(b, sv);
     else if (want == TY_POLY) emit_boxed_text(c, rdt, sv, b);
     /* (one-String mode: the other face of the same String) */
-    else if (g_one_string && rdt == TY_STRBUF && want == TY_STRING) buf_printf(b, "SP_STR_B(%s)", sv);
-    else if (g_one_string && rdt == TY_STRING && want == TY_STRBUF) buf_printf(b, "SP_STR_HDL(%s)", sv);
+    else if (rdt == TY_STRBUF && want == TY_STRING) buf_printf(b, "SP_STR_B(%s)", sv);
+    else if (rdt == TY_STRING && want == TY_STRBUF) buf_printf(b, "SP_STR_HDL(%s)", sv);
     /* nil-preserving: the reader can answer nil, and this arm is exactly the
        one taken when it did (`&&=` on a nil attribute). Plain unboxing lands
        on the payload under the tag -- 0 for an int slot, where nil is
@@ -2068,8 +2067,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   /* (a node an emitter has bound to a temp reads as that temp, in the face
      its binder chose) */
   int one_bound = 0;
-  if (g_one_string) for (int i = g_n_argov - 1; i >= 0 && !one_bound; i--) if (g_argov_node[i] == id) one_bound = 1;
-  if (g_one_string && !one_bound && id != g_one_elem_raw && one_str_elem_call(c, id, TY_UNKNOWN)) {
+  for (int i = g_n_argov - 1; i >= 0 && !one_bound; i--) if (g_argov_node[i] == id) one_bound = 1;
+  if (!one_bound && id != g_one_elem_raw && one_str_elem_call(c, id, TY_UNKNOWN)) {
     int save = g_one_elem_raw;
     g_one_elem_raw = id;
     buf_puts(b, "SP_STR_B(");
@@ -3204,7 +3203,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     Buf ref; memset(&ref, 0, sizeof ref);
     holder_slot_buf(c, &h, &ref);
     /* (one representation: a handle slot takes the new String in its face) */
-    if (g_one_string && ct == TY_STRBUF && op && sp_streq(op, "+")) {
+    if (ct == TY_STRBUF && op && sp_streq(op, "+")) {
       buf_printf(b, "(%s = SP_STR_TO(%s, sp_str_plus(SP_STR_B(%s), ", ref.p, ref.p, ref.p);
       emit_str_expr(c, v, b); buf_puts(b, ")))");
     }
@@ -4092,7 +4091,7 @@ static void emit_str_lit_late(Compiler *c, const int *els, int n, int t) {
     hnd[j] = (char)lit_elem_carries_handle(c, els[j]);
     /* (one representation: the element's text may be bytes whatever
        carries the handle, so the handle is taken through its face) */
-    if (hnd[j] && g_one_string) emit_expr_face(c, els[j], TY_STRBUF, &el);
+    if (hnd[j]) emit_expr_face(c, els[j], TY_STRBUF, &el);
     else if (hnd[j]) emit_strbuf_handle_of(c, els[j], &el);
     else emit_coerce(c, els[j], TY_STRING, CO_HOLD, "an Array literal's element", &el);
     emit_indent(g_pre, g_indent);
@@ -4553,11 +4552,11 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       emit_cond(c, pred, b);
       if (is_unless) buf_puts(b, ")");
       buf_puts(b, " ? ");
-      int hw = g_one_string && res == TY_STRBUF;   /* (#10021: either face into the handle result) */
+      int hw = res == TY_STRBUF;   /* (#10021: either face into the handle result) */
       /* ...and a handle arm into the bytes result as its bytes, which
          beside a bytes arm (nil's) made the C conditional a void * read
          through as bytes (`(s ? s : nil) || :done`) */
-      int bw = g_one_string && res == TY_STRING && !res_o;
+      int bw = res == TY_STRING && !res_o;
       int bwt = bw && repr_of(c, tb[0]).as_ty == TY_STRBUF, bwe = bw && repr_of(c, eb[0]).as_ty == TY_STRBUF;
       buf_printf(b, hw ? "SP_STR_HDL(%s)" : bwt ? "SP_STR_B(%s)" : "%s", ta.p ? ta.p : "0");
       buf_puts(b, " : ");
@@ -4580,8 +4579,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          temp keeps its default (never read, since the arm never returns) */
       /* (one representation: a String arm of either face lands in the bytes result as its view) */
       /* ...and a String arm of either face lands in a handle result as its handle (#10021) */
-      const char *fo = g_one_string && res == TY_STRING && !res_o ? "SP_STR_B("
-                     : g_one_string && res == TY_STRBUF ? "SP_STR_HDL(" : "", *fc = fo[0] ? ")" : "";
+      const char *fo = res == TY_STRING && !res_o ? "SP_STR_B("
+                     : res == TY_STRBUF ? "SP_STR_HDL(" : "", *fc = fo[0] ? ")" : "";
       if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
       else buf_printf(b, " _t%d = %s%s%s;\n", tr, fo, ta.p ? ta.p : "0", fc);
       buf_puts(b, "}\nelse {\n");
@@ -4697,7 +4696,7 @@ static int logic_left_carries(Compiler *c, int left) {
 
 /* See codegen_internal.h. */
 int logic_value_handle(Compiler *c, int v) {
-  int u = g_one_string ? nt_paren_single(c->nt, v) : -1;
+  int u = nt_paren_single(c->nt, v);
   NodeKind k = u >= 0 ? nt_kind(c->nt, u) : NK_NONE;
   if (k != NK_OrNode && k != NK_AndNode) return 0;
   int left = nt_ref(c->nt, u, "left");
@@ -4819,7 +4818,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        parameter s): an arm left as it was, nil's `(0, NULL)` or a literal's
        bytes, made the chain a void * that SP_STR_B read the handle through
        as bytes. */
-    int lhandle = g_one_string && ((lt == TY_STRING && repr_of(c, left).strbuf_src == RS_HANDLE) ||
+    int lhandle = ((lt == TY_STRING && repr_of(c, left).strbuf_src == RS_HANDLE) ||
                                    (lt == TY_STRBUF && res == TY_STRING) ||
                                    ((lt == TY_STRING || lt == TY_STRBUF) && res == TY_STRBUF));
     /* An unresolved left emits a poly fallback. One that diverges -- a bare
@@ -4870,7 +4869,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     else if (lt_hbox) emit_boxed(c, left, b);
     else if (lhandle) emit_strbuf_handle_of(c, left, b);
     /* (one representation: a String left of either face held as its bytes) */
-    else if (g_one_string && lt == TY_STRING) { buf_puts(b, "SP_STR_B("); emit_unresolved_coerced(c, left, lt, b); buf_puts(b, ")"); }
+    else if (lt == TY_STRING) { buf_puts(b, "SP_STR_B("); emit_unresolved_coerced(c, left, lt, b); buf_puts(b, ")"); }
     else emit_unresolved_coerced(c, left, lt, b);
     free(lunk.p);
     buf_puts(b, "; ");
@@ -4883,7 +4882,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     else if (oint_kind(lt)) buf_printf(&tcond, lo ? "(!_t%d.nil)" : "(1)", t);  /* a nullable scalar reads falsy at nil; a plain one is always truthy */
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
              lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION ||
-             lt == TY_BIGINT || ty_nullable_builtin_id(lt) || (g_one_string && lt == TY_STRBUF))
+             lt == TY_BIGINT || ty_nullable_builtin_id(lt) || (lt == TY_STRBUF))
       buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
     else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
     else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(&tcond, "_t%d", t);  /* temp holds sp_poly_truthy(left) (#3276) */
@@ -4908,7 +4907,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                if (oint_kind(lt) && lo) buf_printf((TB), "%s(_t%d)", oint_box(lt), t); \
                else if (lt==TY_INT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
                                  else buf_printf((TB), "sp_box_int(_t%d)", t); } \
-               else if (lt==TY_STRING) buf_printf((TB), g_one_string ? "SP_STR_BOX(_t%d)" : "sp_box_nullable_str(_t%d)", t); \
+               else if (lt==TY_STRING) buf_printf((TB), "SP_STR_BOX(_t%d)", t); \
                else if (lt==TY_FLOAT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
                                         else buf_printf((TB), "sp_box_float(_t%d)", t); } \
                else if (lt==TY_BOOL) buf_printf((TB), "sp_box_bool(_t%d)", t); \
@@ -4955,11 +4954,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     #undef EMIT_ARM
     if (lhandle && (res == TY_STRING || res == TY_STRBUF) && rarm.p) {
       Buf hr; memset(&hr, 0, sizeof hr);
-      buf_printf(&hr, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_fresh(%s)"), rarm.p);
+      buf_printf(&hr, "SP_STR_HDL(%s)", rarm.p);
       free(rarm.p); rarm = hr;
     }
     /* (one representation: a right arm of either face beside a bytes left) */
-    else if (g_one_string && !lhandle && !lo && lt == TY_STRING && res == TY_STRING && rarm.p) {
+    else if (!lhandle && !lo && lt == TY_STRING && res == TY_STRING && rarm.p) {
       Buf hr; memset(&hr, 0, sizeof hr);
       buf_printf(&hr, "SP_STR_B(%s)", rarm.p);
       free(rarm.p); rarm = hr;
@@ -5781,7 +5780,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       /* (one representation: the capture, new bytes, into the variable's face) */
       Scope *nsc = comp_scope_of(c, tv[ti]);
       LocalVar *nlv = nsc ? scope_local(nsc, rename_local(tnm)) : NULL;
-      int one_to = g_one_string && nlv && (nlv->type == TY_STRING || nlv->type == TY_STRBUF);
+      int one_to = nlv && (nlv->type == TY_STRING || nlv->type == TY_STRBUF);
       if (one_to) buf_printf(b, "lv_%s = SP_STR_TO(lv_%s, sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), rename_local(tnm), reidx);
       else buf_printf(b, "lv_%s = sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), reidx);
       emit_str_literal(b, tnm);
@@ -5911,7 +5910,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (irr.elem == TY_STRING) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; sp_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
-      buf_printf(b, g_one_string ? "; const char *_t%d = SP_STR_B(sp_StrArray_get(_t%d, _t%d));" : "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, "; const char *_t%d = SP_STR_B(sp_StrArray_get(_t%d, _t%d));", tc2, ta2, tb2);
       buf_printf(b, " if (%s_t%d) { ", is_or2 ? "!" : "", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
       buf_printf(b, "; sp_StrArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
@@ -6315,7 +6314,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         emit_str_form_handle(c, v, &hw);
         int th = ++g_tmp;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, hw.p ? hw.p : "NULL", th);
+        buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, hw.p ? hw.p : "NULL", th);
         free(hw.p);
         ran_first_bind_read(v, th);
         held++;

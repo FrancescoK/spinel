@@ -644,7 +644,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (g_plan_check) pa_box_text(t);
   if (g_repr_check) { rc_text_form = -1; rc_text_ty = t; }
   /* (one representation: a String text may be of either face, SP_STR_BOX) */
-  if (g_one_string && (t == TY_STRING || t == TY_STRBUF)) { buf_printf(b, "SP_STR_BOX(%s)", expr ? expr : "NULL"); return; }
+  if ((t == TY_STRING || t == TY_STRBUF)) { buf_printf(b, "SP_STR_BOX(%s)", expr ? expr : "NULL"); return; }
   const TyTraits *tr = ty_traits_of(t);
   if (tr) {
     if (!tr->box_text) {
@@ -1763,9 +1763,9 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     /* one representation: the operand may be the handle (an element read,
        a slot) where this wants bytes; SP_STR_B resolves the face on the
        expression's C type (spinel_rt.h) */
-    if (g_one_string) buf_puts(b, g_one_held ? "SP_STR_BC(" : "SP_STR_B(");
+    buf_puts(b, g_one_held ? "SP_STR_BC(" : "SP_STR_B(");
     emit_coerce_text(c, node, store_value_kind(c, node), TY_STRING, CO_HOLD, txt, "a String operand", b);
-    if (g_one_string) buf_puts(b, ")");
+    buf_puts(b, ")");
   }
   free(tmp.p);
 }
@@ -1913,14 +1913,9 @@ void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
   *tr = ++g_tmp; *to = ++g_tmp; *ts = ++g_tmp;
   /* (one representation: the receiver's text may be of either face; it is
      held as it is and compared through its bytes) */
-  if (g_one_string) {
-    int th = ++g_tmp;
-    buf_printf(b, "({ __auto_type _t%d = (%s); SP_GC_ROOT(_t%d); const char *_t%d = SP_STR_B(_t%d); sp_RbVal _t%d = ",
-               th, rtxt, th, *tr, th, *to);
-  }
-  else
-  buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_RbVal _t%d = ",
-             *tr, rtxt, *tr, *to);
+  int th = ++g_tmp;
+  buf_printf(b, "({ __auto_type _t%d = (%s); SP_GC_ROOT(_t%d); const char *_t%d = SP_STR_B(_t%d); sp_RbVal _t%d = ",
+             th, rtxt, th, *tr, th, *to);
   emit_boxed(c, operand, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); const char *_t%d = ", *to, *ts);
   emit_str_cmp_conv(c, operand, *to, b);
@@ -2299,7 +2294,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      the container's own string rather than a fresh copy of it (#3941) */
   if (rp->strbuf_src == RS_ELEM) {
     str_box_open(b, 1);
-    buf_puts(b, g_one_string ? "SP_STR_HDL(" : "sp_poly_as_strbuf(");   /* (one representation: the read's face) */
+    buf_puts(b, "SP_STR_HDL(");   /* (one representation: the read's face) */
     int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_expr(c, node, b);
     view_pop(c, sv_m2);
@@ -3092,7 +3087,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     emit_expr(c,node,b);
     buf_puts(b, "; _sp_ret_strbuf ? ");
     str_box_open(b, 0);
-    buf_puts(b, g_one_string ? "(sp_String *)_sp_ret_strbuf" : "_sp_ret_strbuf");   /* (one representation: the handle, typed) */
+    buf_puts(b, "(sp_String *)_sp_ret_strbuf");   /* (one representation: the handle, typed) */
     str_box_close(b);
     buf_printf(b, " : _cext_string%d ? sp_box_str(_cext_string%d) : sp_box_nil(); })", temp, temp);
     if(g_repr_check)repr_channel_boxed(c,node,frame);
@@ -3164,7 +3159,7 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     th = ++g_tmp;
     size_t at = g_pre->len;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, (g_one_string ? "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n" : "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n"), th, sb.p ? sb.p : "NULL", th);
+    buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
     /* (the base's read held ahead of the statement is its handle, as
        emit_bang_held_open declares the receiver reads it holds there) */
     if (g_share_check) share_check_declare_reads(g_pre, at, base);
@@ -3244,7 +3239,7 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
   if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, nt_paren_single(c->nt, node), b))
     return 1;
   /* Not the dispatch again: an argument the call ran first renders as its held temp, unboxed. */
-  if (g_one_string && strbuf_poly_user_boxes(c, node) && ran_first_temp_of(node) >= 0) {
+  if (strbuf_poly_user_boxes(c, node) && ran_first_temp_of(node) >= 0) {
     str_box_handle_tmp(b, ran_first_temp_of(node));
     return 1;
   }
@@ -11693,11 +11688,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       int insidx = comp_ivar_index(ci, insiv);
       if (comp_method_in_chain(c, cid, "inspect", NULL) < 0 &&
           insidx >= 0 && (ci->ivar_types[insidx] == TY_STRING ||
-                          (g_one_string && ci->ivar_types[insidx] == TY_STRBUF)) &&
+                          (ci->ivar_types[insidx] == TY_STRBUF)) &&
           comp_resolve_member(c, cid, "inspect", 0, NULL, NULL) == SP_MEMBER_ATTR) {
         /* (one-String mode: the member is the handle, answered as its bytes face) */
-        buf_printf(b, g_one_string ? "static const char *sp_%s_inspect(sp_%s *self) { return SP_STR_B(self->iv_inspect); }\n"
-                                   : "static const char *sp_%s_inspect(sp_%s *self) { return self->iv_inspect; }\n",
+        buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) { return SP_STR_B(self->iv_inspect); }\n",
                    ci->name, ci->name);
       }
       else if (comp_method_in_chain(c, cid, "inspect", NULL) < 0) {
@@ -11778,10 +11772,9 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       char tosiv[64]; snprintf(tosiv, sizeof tosiv, "@%s", "to_s");
       int tosidx = comp_ivar_index(ci, tosiv);
       if (tosidx >= 0 && (ci->ivar_types[tosidx] == TY_STRING ||
-                          (g_one_string && ci->ivar_types[tosidx] == TY_STRBUF)) &&
+                          (ci->ivar_types[tosidx] == TY_STRBUF)) &&
           comp_resolve_member(c, cid, "to_s", 0, NULL, NULL) == SP_MEMBER_ATTR)
-        buf_printf(b, g_one_string ? "static const char *sp_%s_to_s(sp_%s *self) { return SP_STR_B(self->iv_to_s); }\n"
-                                   : "static const char *sp_%s_to_s(sp_%s *self) { return self->iv_to_s; }\n",
+        buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return SP_STR_B(self->iv_to_s); }\n",
                    ci->name, ci->name);
       else
         buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return sp_%s_inspect(self); }\n",
@@ -15257,8 +15250,6 @@ void emit_super(Compiler *c, int id, Buf *b) {
              String member holds its bytes, copied, since the handle's next
              growing append moves them */
           /* (one representation: the member is the handle itself, as CRuby's member is the String) */
-          else if (ivt == TY_STRING && at == TY_STRBUF && !g_one_string)
-            buf_printf(b, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", src.p, src.p);
           else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src.p, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
           else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src.p, b);
           else buf_puts(b, src.p);
@@ -18504,7 +18495,7 @@ static void reject_time_parse(Compiler *c) {
 /* Is parameter lv held as the String's handle (one-String mode)? The
    shim converts a Ruby String into one, as the entry's C signature takes. */
 static int ext_param_is_handle(Compiler *c, LocalVar *lv) {
-  return g_one_string && lv && (lv->type == TY_STRING || lv->type == TY_STRBUF) &&
+  return lv && (lv->type == TY_STRING || lv->type == TY_STRBUF) &&
          repr_of_slot(c, lv).kind == RK_STRBUF;
 }
 static const char *ext_rb_in(TyKind t) {
@@ -20363,7 +20354,7 @@ static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode
   if (mode == 2) {
     buf_puts(b, "return _sp_ret_strbuf ? ");
     str_box_open(b, 0);
-    buf_puts(b, g_one_string ? "(sp_String *)_sp_ret_strbuf" : "_sp_ret_strbuf");   /* (one representation: the handle, typed) */
+    buf_puts(b, "(sp_String *)_sp_ret_strbuf");   /* (one representation: the handle, typed) */
     str_box_close(b);
     buf_puts(b, " : _v ? ");
     str_box_bytes(b, "_v");
@@ -20648,7 +20639,7 @@ static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
   /* the one-representation String: the runtime's headers lay the typed
      containers out over the handle, so the define comes before them (the
      marker the driver reads to pick the archive is beside the thread one) */
-  if (g_one_string) buf_puts(b, "#define SP_ONE_STRING 1\n");
+  buf_puts(b, "#define SP_ONE_STRING 1\n");
   /* sp_feature_required, not the require gate: without SPINEL_REQUIRE_GATE,
      respond_to?'s io/console answer must still follow the program's require,
      as CRuby's does. */
@@ -20959,7 +20950,7 @@ char *codegen_program(const NodeTable *nt) {
      the byte-identical single-threaded archive. Emitted only when the program
      references Thread/Mutex/Queue/... -- so it must follow the feature scan. */
   if (g_uses_threads) buf_puts(&b, "/* SPINEL_USES_THREADS */\n");
-  if (g_one_string) buf_puts(&b, "/* SPINEL_ONE_STRING */\n");
+  buf_puts(&b, "/* SPINEL_ONE_STRING */\n");
   /* Ask the C compiler for a brake the frame estimate cannot provide: on a
      program that runs user code on a fiber stack, any frame past that stack is
      a guard-page crash waiting for the right input, so it is worth a warning
@@ -21568,15 +21559,12 @@ char *codegen_program(const NodeTable *nt) {
   if (g_uses_argv)
     /* (one String representation: the runtime keeps ARGV's and $0's Strings,
        so a slot that takes one copies it, sp_str_retained) */
-    buf_puts(body, g_one_string
-      ? "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_retained(sp_str_dup_external(argv[_ai + 1])); }\n"
-      : "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
+    buf_puts(body, "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_retained(sp_str_dup_external(argv[_ai + 1])); }\n");
   if (g_uses_program_name)
     /* argv[0] lives in the process's argument block, not the string heap, so it
      carries no marker byte -- and `$0` is an ordinary Ruby String the caller
      roots. Copy it in. */
-    buf_puts(body, g_one_string ? "    sp_program_name = _sp_main_argc > 0 ? sp_str_retained(sp_str_dup_external(_sp_main_argv[0])) : sp_str_empty;\n"
-                                : "    sp_program_name = _sp_main_argc > 0 ? sp_str_dup_external(_sp_main_argv[0]) : sp_str_empty;\n");
+    buf_puts(body, "    sp_program_name = _sp_main_argc > 0 ? sp_str_retained(sp_str_dup_external(_sp_main_argv[0])) : sp_str_empty;\n");
   /* Enable the backtrace substrate (Exception#backtrace, Kernel#caller) in
      debug builds only: --debug compiles at -O0 with non-inlined methods, so
      the captured frames demangle to Class#method. Optimized/release builds

@@ -2483,7 +2483,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
     cpoly_flags0(c, id, name, p, &ps);
     /* (one-String mode: a String answer the arms hand on as its bytes, as
        the emitter's slot takes it: a handle ivar's reader reads it out) */
-    cpoly_user_arms0(c, id, name, g_one_string && p->ret == TY_STRBUF ? TY_STRING : p->ret, p);
+    cpoly_user_arms0(c, id, name, p->ret == TY_STRBUF ? TY_STRING : p->ret, p);
     if (!full) return;
     int cap = p->n;
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
@@ -2868,7 +2868,7 @@ int cplan_nil(Compiler *c, int id) {
      first where CRuby raises NoMethodError, having run the arguments. (A
      mutator writes back into the slot the head would hold.) */
   /* (one-String mode: every String slot is the handle, TY_STRBUF) */
-  int conv = (rt == TY_STRING || (g_one_string && rt == TY_STRBUF)) && !an_str_mutator_name(nm) &&
+  int conv = (rt == TY_STRING || (rt == TY_STRBUF)) && !an_str_mutator_name(nm) &&
              cplan_nil_arg_converts(c, id);
   /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
@@ -2892,7 +2892,7 @@ int cplan_nil(Compiler *c, int id) {
      (one-String mode: an ivar's is its slot's, held by the head as a
      local's is; every ivar String is the handle there, where the
      default mode tests one the plan leaves untested in its arms) */
-  else if (rr.kind == RK_STRBUF && !(g_one_string && (ivar_tested || conv))) return CN_NONE;
+  else if (rr.kind == RK_STRBUF && !((ivar_tested || conv))) return CN_NONE;
   /* a nil the program writes (an element of an Array it stores one into
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which

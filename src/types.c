@@ -277,10 +277,8 @@ TyKind ty_hash_of(TyKind key, TyKind val) {
   /* Under the one-String mode a String handle keys and fills the same Hash
      kinds as the bytes: the typed containers hold the handle
      (string-one-repr-design.md). */
-  if (g_one_string) {
-    if (key == TY_STRBUF) key = TY_STRING;
-    if (val == TY_STRBUF) val = TY_STRING;
-  }
+  if (key == TY_STRBUF) key = TY_STRING;
+  if (val == TY_STRBUF) val = TY_STRING;
   for (unsigned i = 0; i < sizeof hash_tbl / sizeof hash_tbl[0]; i++)
     if (hash_tbl[i].key == key && hash_tbl[i].val == val) return hash_tbl[i].kind;
   return TY_UNKNOWN;
@@ -329,7 +327,7 @@ TyKind ty_array_of(TyKind elem) {
     case TY_FLOAT:  return TY_FLOAT_ARRAY;
     case TY_STRING: return TY_STR_ARRAY;
     /* under the one-String mode the String Array holds the handle */
-    case TY_STRBUF: return g_one_string ? TY_STR_ARRAY : TY_POLY_ARRAY;
+    case TY_STRBUF: return TY_STR_ARRAY;
     /* An element type that is not yet known is not the same as an element
        type that is anything: while the fixpoint runs, keep the array at
        bottom so the slots it flows into wait for the real element type
@@ -696,8 +694,8 @@ TyKind ty_unify(TyKind a, TyKind b) {
   if (b == TY_NIL && a == TY_STRING) return a;
   /* (one-String mode: the handle every String slot holds is nil as NULL,
      as the bytes are) */
-  if (g_one_string && a == TY_NIL && b == TY_STRBUF) return b;
-  if (g_one_string && b == TY_NIL && a == TY_STRBUF) return a;
+  if (a == TY_NIL && b == TY_STRBUF) return b;
+  if (b == TY_NIL && a == TY_STRBUF) return a;
   /* An Integer or a Float that also sees nil stays a (nullable) scalar: the
      slot's nil rides beside the value (sp_oint / sp_ofloat), which the
      search misses already leave there, and every consumer that can carry
