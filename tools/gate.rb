@@ -9,9 +9,9 @@ module Gate
     cache="vendor/prism vendor/rbs build/rubyspec build/optcarrot build/rubyboy"
     for d in $cache; do [ -d /cache/$d ] && mkdir -p $(dirname $d) && cp -a /cache/$d $d; done
     chown -R gate:gate /src
-    runuser -u gate -- env HOME=/home/gate PATH="$PATH" bash -c 'cd /src && git init -q && git add -A &&
+    runuser -u gate -- env HOME=/home/gate PATH="$PATH" GATE_JOBS="$GATE_JOBS" bash -c 'cd /src && git init -q && git add -A &&
       git -c user.email=gate@local -c user.name=gate commit -qm gate &&
-      for i in 1 2 3 4 5; do make deps >/dev/null 2>&1 && break; sleep 5; done; make -j$(nproc) gate 2>&1'
+      for i in 1 2 3 4 5; do make deps >/dev/null 2>&1 && break; sleep 5; done; make -j${GATE_JOBS:-$(nproc)} gate 2>&1'
     rc=$?
     for d in $cache; do [ -d $d ] && [ ! -d /cache/$d ] && mkdir -p /cache/$(dirname $d) && cp -a $d /cache/$d; done
     echo "@@platform linux-$(uname -m) gcc-$(gcc -dumpfullversion)"
@@ -169,7 +169,7 @@ module Gate
     log = ENV["GATE_LOG"] || File.join(git("rev-parse", "--git-dir"), "gate-linux.log")
     puts "gate: tree #{tree[0, 12]} merged with master #{base[0, 12]} -> #{log}"
     ok = IO.popen(["git", "archive", tree]) do |archive|
-      system("docker", "run", "--rm", "-i", "-v", "spinel-gate-cache:/cache", IMAGE, "bash", "-c", CONTAINER,
+      system("docker", "run", "--rm", "-i", "-e", "GATE_JOBS", "-v", "spinel-gate-cache:/cache", IMAGE, "bash", "-c", CONTAINER,
              in: archive, out: log, err: [:child, :out])
     end
     text = File.read(log)
