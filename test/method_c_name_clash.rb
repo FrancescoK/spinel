@@ -4,7 +4,7 @@
 # both sp_A_a_p -- "conflicting types" and the program did not compile. The
 # later of the two takes another name; calls reach each from its own class,
 # from a subclass, from inside the class, and through a receiver that is
-# either class.
+# either class. A_B#c__2 then meets the renamed c, which is renamed again.
 class A
   def B_c = "A#B_c"
   def s_make = "A#s_make"
@@ -22,6 +22,7 @@ class A
   def tag = "a"
 end
 class A_B
+  def c__2 = "A_B#c__2"
   def c = "A_B#c"
   def tag = "a_b"
 end
@@ -32,7 +33,7 @@ end
 a = A.new
 a.x = 3
 p a.all, a.x, A.make
-p A_B.new.c
+p A_B.new.c, A_B.new.c__2
 s = Sub.new
 p s.B_c, s.a_p, s.c
 [A.new, A_B.new].each { |o| p o.tag }
