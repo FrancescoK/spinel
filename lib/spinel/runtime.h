@@ -22,6 +22,10 @@
  *     sp_int_to_s, sp_float_to_s
  *     sp_oom_die
  *
+ *   Float digits (sp_dtoa.h):
+ *     sp_float_shortest  (the shortest round-trip digits and exponent, for a
+ *                         package with a layout of its own, as JSON's)
+ *
  *   Errors:
  *     sp_raise_cls   (raise a named exception class)
  *
@@ -50,5 +54,6 @@
 
 #include "sp_gc.h"      /* sp_RbVal, SP_TAG_*, container + sym reflection hooks */
 #include "sp_alloc.h"   /* sp_str_alloc, sp_str_set_len, sp_int_to_s, sp_float_to_s, sp_oom_die */
+#include "sp_dtoa.h"    /* sp_float_shortest */
 
 #endif /* SPINEL_RUNTIME_H */
