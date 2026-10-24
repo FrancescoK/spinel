@@ -7684,6 +7684,13 @@ static SP_UNUSED sp_int sp_poly_elem_i_v(sp_RbVal v) { return sp_oint_arg(sp_pol
 static SP_UNUSED sp_float sp_poly_elem_f_v(sp_RbVal v) { return sp_ofloat_arg(sp_poly_elem_f(v)); }
 static const char *sp_poly_elem_s(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
+#ifdef SP_ONE_STRING
+  /* one representation: no slot keeps bytes, so a handle's read face is
+     its payload, which a String slot takes back to the handle (marker
+     0xfd): `a.push(*xs)` keeps xs's Strings themselves, where a copy
+     made each element a second String */
+  if (sp_poly_is_strbuf(v)) return sp_strbuf_read((sp_String *)v.v.p);
+#endif
   /* a shared handle's bytes live in its own buffer, which a later append
      moves: a typed container keeps a copy of the contents, not that buffer
      (a GC scan of the container read the freed one) */
