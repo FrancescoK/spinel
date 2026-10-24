@@ -2368,6 +2368,7 @@ static int sp_File_tail_incomplete(const unsigned char *s, size_t len) {
 
 const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool chomp) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sep);
   SP_IO_OPEN(f);
+  sp_io_check_readable(f);
   sp_io_wait_readable(f);
   SP_IO_OPEN(f);   /* the park can return after another thread closed the handle */
   /* an empty separator is paragraph mode, a nil one (NULL) reads to the end;

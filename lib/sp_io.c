@@ -598,6 +598,28 @@ SP_NORETURN SP_COLD void sp_io_raise_closed(void) {
   sp_raise_cls("IOError", "closed stream");
 }
 
+/* Whether the handle's mode takes this direction. The access part ends
+   before an encoding suffix; a "+" in it takes both. A socket carries a
+   kind label instead of an fopen mode and takes both; a handle with no
+   mode reads. */
+static int sp_io_mode_allows(sp_File *f, int writing) {
+  if (f->is_sock) return 1;
+  const char *m = f->mode && f->mode[0] ? f->mode : "r";
+  for (const char *p = m; *p && *p != ':'; p++)
+    if (*p == '+') return 1;
+  return writing ? (m[0] == 'w' || m[0] == 'a') : m[0] == 'r';
+}
+void sp_io_check_writable(sp_File *f) {
+  SP_IO_OPEN(f);
+  if (!sp_io_mode_allows(f, 1))
+    sp_raise_cls("IOError", (&("\xff" "not opened for writing")[1]));
+}
+void sp_io_check_readable(sp_File *f) {
+  SP_IO_OPEN(f);
+  if (!sp_io_mode_allows(f, 0))
+    sp_raise_cls("IOError", (&("\xff" "not opened for reading")[1]));
+}
+
 static sp_int sp_File_write_len(sp_File *f, const char *s, size_t n) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
   if (f->is_sock) return sp_sock_write(f, s, n);
   /* An IO.pipe write end is sync, so setvbuf left it unbuffered and stdio
@@ -609,7 +631,8 @@ static sp_int sp_File_write_len(sp_File *f, const char *s, size_t n) {SP_GC_ROOT
 
 sp_int sp_File_write(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
   SP_IO_OPEN(f);
-  if (!s) return 0;
+  if (!s || !s[0]) return 0;
+  sp_io_check_writable(f);
   return sp_File_write_len(f, s, strlen(s));
 }
 
@@ -623,7 +646,10 @@ sp_int sp_File_write(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s)
 sp_int sp_File_write_bin(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
   SP_IO_OPEN(f);
   if (!s) return 0;
-  return sp_File_write_len(f, s, sp_str_byte_len(s));
+  size_t n = sp_str_byte_len(s);
+  if (n == 0) return 0;
+  sp_io_check_writable(f);
+  return sp_File_write_len(f, s, n);
 }
 
 /* IO#syswrite: the same write core as sp_File_write_bin, but the byte
@@ -1915,7 +1941,7 @@ const char *sp_File_inspect(sp_File *f) {SP_GC_ROOT(f);
 }
 
 static void sp_File_puts_n(sp_File *f, const char *s, size_t n) {
-  SP_IO_OPEN(f);
+  sp_io_check_writable(f);
   if (f->is_sock) {
     sp_sock_write(f, s, n);
     if (n == 0 || s[n - 1] != '\n') sp_sock_write(f, "\n", 1);
@@ -1941,7 +1967,8 @@ void sp_File_puts_bin(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s
 
 void sp_File_print(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
   SP_IO_OPEN(f);
-  if (!s) return;
+  if (!s || !s[0]) return;
+  sp_io_check_writable(f);
   if (f->is_sock) { sp_sock_write(f, s, strlen(s)); return; }
   fputs(s, f->fp);
 }
@@ -2013,13 +2040,7 @@ SP_NORETURN void sp_file_raise_errno(const char *op, const char *path) {SP_GC_RO
 
 void sp_pread_check(sp_File *f, sp_int len, sp_bool outbuf) {
   if (len == 0 && f && !outbuf) return;
-  SP_IO_OPEN(f);
-  const char *m = f->mode;
-  if (m && (m[0] == 'w' || m[0] == 'a')) {
-    for (const char *q = m + 1; *q && *q != ':'; q++)
-      if (*q == '+') return;
-    sp_raise_cls("IOError", "not opened for reading");
-  }
+  sp_io_check_readable(f);
 }
 
 SP_NORETURN void sp_pread_raise_errno(sp_File *f) {
@@ -2164,7 +2185,7 @@ void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; f->ext_en
 /* The handle flags codegen used to read straight off the struct (#2792,
    #3131): a closed handle answers IOError for them as for everything else.
    #sync= keeps the flush a truthy value implies (#4229). */
-sp_int sp_File_lineno(sp_File *f) { SP_IO_OPEN(f); return f->lineno; }
+sp_int sp_File_lineno(sp_File *f) { sp_io_check_readable(f); return f->lineno; }
 sp_int sp_File_set_lineno(sp_File *f, sp_int n) { SP_IO_OPEN(f); f->lineno = n; return n; }
 sp_bool sp_File_sync_p(sp_File *f) { SP_IO_OPEN(f); return (f->is_sock || f->sync_on) ? 1 : 0; }
 sp_bool sp_File_set_sync(sp_File *f, sp_bool on) {
