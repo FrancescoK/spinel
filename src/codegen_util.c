@@ -6652,6 +6652,13 @@ static int mc_find_clash(Compiler *c, int *first, int *later) {
 static void mc_rename(const char *name, int n) {
   char part[300];
   snprintf(part, sizeof part, "%s__%d", mc(name), n);
+  /* a name renamed before (c__2 met a method of that name) is renamed again */
+  for (int i = 0; i < mc_ren_n; i++)
+    if (sp_streq(mc_ren_name[i], name)) {
+      free(mc_ren_part[i]);
+      mc_ren_part[i] = strdup(part);
+      return;
+    }
   if (mc_ren_n >= mc_ren_cap) {
     mc_ren_cap = mc_ren_cap ? mc_ren_cap * 2 : 8;
     mc_ren_name = realloc(mc_ren_name, sizeof(char *) * (size_t)mc_ren_cap);
