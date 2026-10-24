@@ -3123,6 +3123,17 @@ const int *codegen_node_parents(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   return node >= 0 && node < nt->count ? codegen_parents(c, node, 0) : NULL;
 }
+/* Is `node` a statement of a block's body, its tail among them? An emitter
+   that inlines the block renders it inside the call that holds its operands
+   across the block, and none of its own is one of those (g_one_held). */
+int node_is_block_stmt(Compiler *c, int node) {
+  const int *par = codegen_node_parents(c, node);
+  if (!par) return 0;
+  int p = par[node];
+  if (p >= 0 && nt_kind(c->nt, p) == NK_StatementsNode) p = par[p];
+  if (p >= 0 && nt_kind(c->nt, p) == NK_BeginNode) p = par[p];
+  return p >= 0 && nt_kind(c->nt, p) == NK_BlockNode;
+}
 /* A write of the C global `slot` (ivar_global_slot, gvar_global_slot,
    cvar_global_slot) that can run while a call lent `slot` at `arg` is
    running: one in another

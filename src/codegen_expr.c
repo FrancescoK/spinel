@@ -2027,6 +2027,15 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
 }
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
+  /* a block's statement an emitter inlines (gsub!'s `{ |m| m + m }`): its
+     operands are not held across the block, and two copies of one live
+     String, neither rooted, let the second's allocation collect the first */
+  if (g_one_held && node_is_block_stmt(c, id)) {
+    g_one_held = 0;
+    emit_expr(c, id, b);
+    g_one_held = 1;
+    return;
+  }
   /* --defer-refusals: an identity Set's value checked where it arrives */
   if (g_idset_marks && emit_idset_checked(c, id, b, 0)) return;
   /* an argument of a call re-emitted as its builtin sees the reopenings */

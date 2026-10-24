@@ -1762,7 +1762,7 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     /* one representation: the operand may be the handle (an element read,
        a slot) where this wants bytes; SP_STR_B resolves the face on the
        expression's C type (spinel_rt.h) */
-    buf_puts(b, g_one_held ? "SP_STR_BC(" : "SP_STR_B(");
+    buf_puts(b, g_one_held && !node_is_block_stmt(c, node) ? "SP_STR_BC(" : "SP_STR_B(");
     emit_coerce_text(c, node, store_value_kind(c, node), TY_STRING, CO_HOLD, txt, "a String operand", b);
     buf_puts(b, ")");
   }

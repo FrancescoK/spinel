@@ -134,6 +134,7 @@ void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const ch
 int strbuf_ivar_owner(Compiler *c, int node);
 int attr_assign_slot(Compiler *c, int id, int *cid, int *iv);
 const int *codegen_node_parents(Compiler *c, int node);
+int node_is_block_stmt(Compiler *c, int node);
 int user_assign_handle(Compiler *c, int id);
 const NativeMethod *native_assign_keeps(Compiler *c, int id);
 void emit_native_assign_read(Compiler *c, int id, const char *href, Buf *b);
