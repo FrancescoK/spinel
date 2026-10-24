@@ -9595,10 +9595,12 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   else if (sp_streq(name, "divmod") && argc == 1 &&
            comp_ntype(c, argv[0]) != TY_RATIONAL) {
-    int tb = ++g_tmp, o = ++g_tmp;
-    buf_printf(b, "({ sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
-    buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
-                  " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
+    /* the quotient and the modulo each read the receiver, so hold it in a
+       temp: a receiver with a side effect ran twice */
+    int tr = ++g_tmp, tb = ++g_tmp, o = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); sp_int _t%d = ", tr, r, tb); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(_t%d, _t%d));"
+                  " sp_IntArray_push(_t%d, sp_imod(_t%d, _t%d)); _t%d; })", o, o, tr, tb, o, tr, tb, o);
   }
   else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
     /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425);
