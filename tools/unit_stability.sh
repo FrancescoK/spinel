@@ -85,5 +85,6 @@ keep() {
 }
 LONG=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 keep "${LONG}1" "${LONG}2" "one whose name differs only past 60 characters"
+keep "éxc3xa9" "xc3xa9é" "one whose escaped name spells like it"
 if [ $fail = 0 ]; then echo "unit-stability: all edits stay local"; else echo "unit-stability: FAILED"; fi
 exit $fail

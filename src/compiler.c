@@ -241,12 +241,17 @@ void comp_node_pbases(Compiler *c) {
       char sp[64];
       /* cut at 60, the spelling can lose all that tells two names apart */
       int cut = key_spell(sp, 60, 0, nw) > 60;
+      /* an escaped byte in a name that also holds a literal `x` can spell
+         like another name of its length (éxc3xa9 and xc3xa9é both spell
+         xc3xa9xc3xa9): the key then takes a hash of the name itself */
+      int odd = nw[strspn(nw, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")] && strchr(nw, 'x');
       o += (size_t)snprintf(key + o, sizeof key - o, "%zu%s", strlen(nw), sp);
-      if (o > 24) {
+      if (o > 24 || odd) {
         unsigned h = 2166136261u;
         for (const char *q = key; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
-        if (cut) for (const char *q = nw; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
-        snprintf(key + 15, sizeof key - 15, "_%08x", h);
+        if (cut || odd) for (const char *q = nw; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+        if (o > 15) o = 15;
+        snprintf(key + o, sizeof key - o, "_%08x", h);
       }
       int dup = pbase_key_count(c, key);
       if (dup) {
