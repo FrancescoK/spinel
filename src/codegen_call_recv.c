@@ -5192,6 +5192,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int tH = ++g_tmp;
         Buf armb; memset(&armb, 0, sizeof armb);
         ren_push(sbn, "_sb%d", tH);
+        /* (a receiver bound to its held handle's read, `s&.slice!(f(1))`
+           after the argument ran, reads as the shadow too: the binding
+           comes before the rename) */
+        if (ran_first_read_handle(recvS) >= 0 && g_n_argov < MAX_ARG_OVERRIDE) view_bind(recvS, "lv__sb%d", tH);
         SbShimSave sv_sh = sb_shim_enter(shlv);
         int handled = emit_array_call(c, id, &armb);
         sb_shim_leave(shlv, sv_sh);
