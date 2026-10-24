@@ -159,6 +159,20 @@ static int sp_src_file_fsl(const SpSrcFile *f) {
   return 1;
 }
 
+/* How much of a file's text is code: up to its `__END__` line, which
+   Prism found (data_loc), or all of it. Nothing after that line is code.
+   In a required file, spliced into the buffer as text, it ended Prism's
+   reading of the whole program there: every file spliced after it and the
+   rest of the program were dropped without a word (#9898); in any file the
+   require scanners read it as code. The entry file is cut the same way:
+   DATA, which would read its data section, is still not defined (a
+   compile-time warning, then NameError when reached), as on master; it is
+   left for later. The length is the parser's, which saw the whole text. */
+static size_t sp_src_file_code_len(const SpSrcFile *f) {
+  const uint8_t *end = f->parser.data_loc.start ? f->parser.data_loc.start : f->parser.end;
+  return (size_t)(end - f->parser.start);
+}
+
 /* Spinel reads every source file as UTF-8 (#9898): a magic comment naming
    another encoding, which CRuby would give the file's literals, is ignored
    with a warning at its line. */
@@ -3801,7 +3815,7 @@ static char *sp_rewrite_dead_requires(SpSrcFile *f) {
    program gives a class has to take the answer as unknown where this is set.
    It stays clear only where the text proves there is no such file, read as
    written (ahead of every rewrite below) in each file handed to
-   resolve_requires:
+   resolve_requires, up to the file's `__END__` line:
      - none of $LOAD_PATH, $:, $-I, $LOADED_FEATURES, $" is written, so a
        name is looked up where this compiler looks;
      - nothing named load or autoload is written;
@@ -3813,7 +3827,7 @@ static char *sp_rewrite_dead_requires(SpSrcFile *f) {
    Text the class macros write (sp_expand_class_macros) is read once they
    have, for the words that set the flag: the parts a macro joins need not
    spell one. The flag is final when the parser returns.
-   The words are counted, not parsed, and no character of the text is passed
+   The words are counted, not parsed, and no character of the code is passed
    over: one in a string or in a comment sets the flag, and all that gives up
    is an optimisation. Declared extern in compiler.h. */
 int g_require_unread = 0;
@@ -3838,8 +3852,8 @@ static int sp_req_word_at(const char *p, const char *w, size_t n) {
   return strncmp(p, w, n) == 0 && !sp_req_ident_char(p[n]);
 }
 
-static void sp_require_note_text(const char *text) {
-  for (const char *p = text; *p; p++) {
+static void sp_require_note_text(const char *text, size_t len) {
+  for (const char *p = text; p < text + len; p++) {
     if (*p == '$') {
       if (p[1] == ':' || p[1] == '"' || strncmp(p + 1, "-I", 2) == 0 || strncmp(p + 1, "LOAD_PATH", 9) == 0 ||
           strncmp(p + 1, "LOADED_FEATURES", 15) == 0) g_require_unread = 1;
@@ -4133,7 +4147,6 @@ static const char *sp_defer_runtime(char **content, const char *canonical, const
 
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
-  sp_require_note_text(source);
   /* Get base directory */
   char *path_copy = strdup(source_path);
   char *dir = strdup(path_copy);
@@ -4149,9 +4162,12 @@ static char *resolve_requires(const char *source, const char *source_path,
   sp_src_file_parse(&file, source, source_path);
   int file_fsl = sp_src_file_fsl(&file);
   sp_src_file_warn_encoding(&file);
+  size_t code_len = sp_src_file_code_len(&file);
+  sp_require_note_text(source, code_len);
   /* computed requires spelling a literal path (#5700), then autoloads with
      a literal path (#5696): each answers a fresh copy of what it reads */
   char *reachable = sp_rewrite_dead_requires(&file);
+  reachable[code_len] = '\0';   /* the blanking keeps every byte's place */
   sp_src_file_free(&file);
   char *pre_auto = sp_rewrite_computed_requires(reachable, dir);
   char *result = sp_rewrite_autoloads(pre_auto, dir);
@@ -4587,7 +4603,7 @@ static char *sp_prepend_require(char *source, const char *exe_path, const char *
   char *ns = (char *)malloc(sl + hl + 1);
   if (!ns) return source;
   memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
-  sp_require_note_text(head);
+  sp_require_note_text(head, strlen(head));
   sp_src_lex_drop();
   free(source);
   ns = resolve_plain_requires(ns, exe_path, fsl, fsl_n);
@@ -5568,7 +5584,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
          statement is dropped ahead of the table, so g_require_unread reads
          the text here, past the count (the resolver's own stubs hold the
          word require) */
-      sp_require_note_text(mx);
+      sp_require_note_text(mx, strlen(mx));
       free(source); source = mx;
     } }
 
