@@ -522,12 +522,6 @@ static const char *runtime_archive(const char *csrc, int threads, int wasi, int 
     fprintf(stderr, "spinel: C extensions currently require the native exception runtime\n");
     return NULL;
   }
-  /* the runtime archives hold the one representation of String
-     (-DSP_ONE_STRING); a program compiled --string-repr=bytes is C only */
-  if (!strstr(csrc, "/* SPINEL_ONE_STRING */")) {
-    fprintf(stderr, "spinel: a program compiled with --string-repr=bytes does not link with this runtime; compile it with -c\n");
-    return NULL;
-  }
   return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 
@@ -694,10 +688,9 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
     else if (!strncmp(a, "-I", 2) && a[2]) { sp_add_feature_root(a + 2); i++; }
     else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
-    /* the one-representation String (in progress, string-one-repr-design.md):
-       every String slot is the handle, linked against the archive built for it */
-    else if (sp_streq(a, "--string-repr=handle")) { g_one_string = 1; i++; }
-    else if (sp_streq(a, "--string-repr=bytes"))  { g_one_string = 0; i++; }
+    /* every String slot is the handle, the only representation: the
+       option that chose it is accepted and ignored */
+    else if (sp_streq(a, "--string-repr=handle")) { i++; }
     else if (sp_streq(a, "--print-build")) { print_build = 1; i++; }
     else if (sp_streq(a, "-E"))            { run_mode = 1; i++; }
     else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }

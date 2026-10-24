@@ -767,45 +767,6 @@ RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
-# ---- One-representation String runtime variant (-DSP_ONE_STRING) ----
-# Same sources, compiled with -DSP_ONE_STRING: every String slot is the
-# handle (docs/internals/string-one-repr-design.md). Linked when the program
-# was compiled with --string-repr=handle (the SPINEL_ONE_STRING marker, see
-# runtime_archive in src/main.c). Temporary: it goes when the mode is the
-# only one.
-SP_RT_ONE_LIB = lib/libspinel_rt_one.a
-ONE_DEF = -DSP_ONE_STRING
-
-build/one/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
-	@mkdir -p $(@D)
-	$(CC) -c $(COPT) $(SEC_FLAGS) $(ONE_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
-
-build/one/%.o: lib/%.c $(RT_HDRS)
-	@mkdir -p $(@D)
-	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(ONE_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
-
-RE_ONE_OBJ = $(patsubst lib/regexp/%.c,build/one/regexp/%.o,$(RE_SRC))
-
-$(SP_RT_ONE_LIB): $(RE_ONE_OBJ) $(addprefix build/one/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
-	$(AR_DET) ar rcs $@ $^
-
-# ...and its threaded twin, for a program that uses Thread & co. under the
-# mode (-DSP_ONE_STRING with the mt archive's -DSP_THREADS)
-SP_RT_ONE_MT_LIB = lib/libspinel_rt_one_mt.a
-
-build/one-mt/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
-	@mkdir -p $(@D)
-	$(CC) -c $(COPT) $(SEC_FLAGS) $(ONE_DEF) $(MT_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
-
-build/one-mt/%.o: lib/%.c $(RT_HDRS)
-	@mkdir -p $(@D)
-	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(ONE_DEF) $(MT_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
-
-RE_ONE_MT_OBJ = $(patsubst lib/regexp/%.c,build/one-mt/regexp/%.o,$(RE_SRC))
-
-$(SP_RT_ONE_MT_LIB): $(RE_ONE_MT_OBJ) $(addprefix build/one-mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
-	$(AR_DET) ar rcs $@ $^
-
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
@@ -1020,7 +981,7 @@ wasm-test: $(SPINEL) wasm-rt
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
-regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_ONE_LIB) $(SP_RT_ONE_MT_LIB)
+regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 # ---- In-tree developer tools ----
 
@@ -5704,7 +5665,6 @@ install: all bin/spin
 	fi
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
-	install -m 644 lib/libspinel_rt_one.a lib/libspinel_rt_one_mt.a $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a $(SPNLDIR)/lib/
 	install -d $(SPNLDIR)/include/ruby $(SPNLDIR)/tools/cext $(SPNLDIR)/tools/spin
 	install -m 644 include/ruby.h $(SPNLDIR)/include/

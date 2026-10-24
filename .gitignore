@@ -14,8 +14,6 @@ lib/libspinel_rt.a
 lib/libspinel_cext_rt.a
 lib/libspinel_cext_rec.a
 lib/libspinel_rt_mt.a
-lib/libspinel_rt_one.a
-lib/libspinel_rt_one_mt.a
 lib/libspinel_rt_mt_tsan.a
 lib/wasm32-wasi/
 lib/libspbi.a
