@@ -215,19 +215,27 @@ void comp_node_pbases(Compiler *c) {
     int is_def = ty && !strcmp(ty, "DefNode");
     int is_cls = ty && (!strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode") || !strcmp(ty, "SingletonClassNode"));
     if ((is_def || is_cls) && nt_int(nt, k, "node_bi", 0) == 0) {
-      char key[64]; size_t o = 0;
-      if (base >= 0 && c->bi_base_key[base]) { o = key_spell(key, 40, 0, c->bi_base_key[base]); key[o++] = '_'; key[o] = 0; }
+      /* the base's key, `_`, then the name after its length in the source
+         (5Cloud_3sum, 2ax3f for a?): a name holds `_` and `x` too, no name
+         starts with a digit, and the length tells an `x3f` spelled for one
+         byte from three, so no two definitions spell one key */
+      char key[128]; size_t o = 0;
+      if (base >= 0 && c->bi_base_key[base]) o = (size_t)snprintf(key, 64, "%s_", c->bi_base_key[base]);
+      if (o > 63) o = 63;
       const char *nm = NULL;
       if (is_def) {
         nm = nt_str(nt, k, "name");
-        if (nt_ref(nt, k, "receiver") >= 0) { key[o++] = 's'; key[o++] = '_'; key[o] = 0; }
+        if (nt_ref(nt, k, "receiver") >= 0) key[o++] = 's';
       }
       else if (ty[0] == 'S') nm = "sclass";
       else {
         int cp = nt_ref(nt, k, "constant_path");
         nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
       }
-      o = key_spell(key, 60, o, nm && *nm ? nm : ty);
+      const char *nw = nm && *nm ? nm : ty;
+      char sp[64];
+      key_spell(sp, 60, 0, nw);
+      o += (size_t)snprintf(key + o, sizeof key - o, "%zu%s", strlen(nw), sp);
       if (o > 24) {
         unsigned h = 2166136261u;
         for (const char *q = key; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
@@ -235,8 +243,7 @@ void comp_node_pbases(Compiler *c) {
       }
       int dup = pbase_key_count(c, key);
       if (dup) {
-        /* the whole key (at most 24 here) and a `_dN` no key has taken: a
-           class spelled Foo_d1 and a second Foo get two */
+        /* the whole key (at most 24 here) and a `_dN` no key has taken */
         char root[sizeof key];
         snprintf(root, sizeof root, "%s", key);
         do snprintf(key, sizeof key, "%s_d%d", root, dup++);
@@ -348,7 +355,7 @@ int comp_node_ord(Compiler *c, int id, int *builtin) {
 }
 
 /* comp_node_ord as the text a name carries: "12" for a program node outside
-   every def and class, "pModel_label_3" for one in a method (its base's key
+   every def and class, "p5Model_5label_3" for one in a method (its base's key
    and its number there), and for a builtin's "q", its method's name and its
    number there ("qmin_by_12"), so no two name the same thing. The text lives
    until eight more have been asked for. */
