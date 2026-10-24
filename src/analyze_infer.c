@@ -8367,10 +8367,14 @@ int an_push_widens_fresh(Compiler *c, int id) {
    push of another kind could not store into it. That Array is new and held
    by nothing else, so it is widened to the general Array first, at run time,
    when its kind cannot take what the push stores (sp_ary_lift_kinds). Only
-   where every way the call can answer a typed Array is such a builtin: a
-   method or reader of the program's with the name answers no typed Array
-   (the push widens what a method of the program answers already). Answers
-   the kinds the push stores (AN_LIFT_*), 0 for any other call. */
+   where every way the call can answer a typed Array is such a builtin: each
+   method of the program's with the name answers the general Array or no
+   Array at all, as its type shows. One answering a box (TY_POLY) may hand
+   back an Array something else holds, which a copy would leave without the
+   push, so it keeps the call as it was, and so do a reader of the name, a
+   method_missing, and a name the program defines, aliases or sends by a
+   Symbol or computes. Answers the kinds the push stores (AN_LIFT_*), 0 for
+   any other call. */
 int an_push_lifts_boxed(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
@@ -8387,10 +8391,13 @@ int an_push_lifts_boxed(Compiler *c, int id) {
   if (!nt_int(nt, id, "builtin_only", 0) &&
       (array_hash_reopen_owner(c, id, TY_STR_ARRAY, nm) >= 0 || array_hash_reopen_owner(c, id, TY_POLY_ARRAY, nm) >= 0))
     return 0;
+  if (an_prog_names_method(rn) || an_prog_meta_by_value()) return 0;
   for (int s = 0; s < c->nscopes; s++) {
-    if (!c->scopes[s].name || !sp_streq(c->scopes[s].name, rn)) continue;
+    const char *sn = c->scopes[s].name;
+    if (!sn || (!sp_streq(sn, rn) && !sp_streq(sn, "method_missing"))) continue;
     TyKind st = (TyKind)c->scopes[s].ret;
-    if ((ty_is_array(st) || ty_is_obj_array(st)) && st != TY_POLY_ARRAY) return 0;
+    if (sp_streq(sn, "method_missing") || st == TY_POLY || st == TY_UNKNOWN ||
+        ((ty_is_array(st) || ty_is_ptr_array(st)) && st != TY_POLY_ARRAY)) return 0;
   }
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], rn)) return 0;
