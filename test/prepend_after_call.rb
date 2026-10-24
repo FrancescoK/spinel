@@ -1,7 +1,7 @@
 # A module prepended by a later reopening is not there when an earlier
 # statement calls the method: CRuby prints "woof", then "LOUD woof". Spinel
-# has one method chain per class, the last, so the first call would print
-# "LOUD woof" too; refused, not answered wrongly.
+# has one method chain per class, the last; the call picks the class's own
+# method or the module's by whether the prepend has run (#9982).
 module Loud
   def speak = "LOUD " + super
 end

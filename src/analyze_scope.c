@@ -9005,8 +9005,91 @@ void specialize_inherited_cls_new(Compiler *c) {
    was, and a `prepend` in `class B ... end; class B; prepend Guard; end`
    compiled and did nothing -- while being the very form the explicit-receiver
    diagnostic recommends (#4200). */
+/* The top-level statement index of the class body `body` where that
+   statement reopens a class an earlier top-level statement defines (`class
+   Dog; ...; end; d.speak; class Dog; prepend Loud; end`), or -1. */
+static int prepend_late_stmt(const NodeTable *nt, int body) {
+  int root = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1, n = 0;
+  const int *st = root >= 0 ? nt_arr(nt, root, "body", &n) : NULL;
+  for (int j = 0; j < n; j++) {
+    if (nt_kind(nt, st[j]) != NK_ClassNode || nt_ref(nt, st[j], "body") != body) continue;
+    int cp = nt_ref(nt, st[j], "constant_path");
+    const char *cn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    for (int q = 0; cn && q < j; q++) {
+      if (nt_kind(nt, st[q]) != NK_ClassNode) continue;
+      int qp = nt_ref(nt, st[q], "constant_path");
+      if (qp >= 0 && nt_kind(nt, qp) == NK_ConstantReadNode && sp_streq(nt_str(nt, qp, "name"), cn)) return j;
+    }
+    return -1;
+  }
+  return -1;
+}
+/* The body of a method a later prepend copies in front of the class's own
+   (prepend_late_stmt), with `return super unless $flag` ahead of it: until
+   the reopening's statement has run and set the flag, a call reaches the
+   method the class had then, as in CRuby. Spinel has one method chain per
+   class, the last, so the call reaches this copy either way, and the
+   copy's super is the class's own method, renamed by the prepend. */
+static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line) {
+  int rd = nt_new_node(nt, "GlobalVariableReadNode");
+  nt_node_set_str(nt, rd, "name", flag);
+  int sup = nt_new_node(nt, "ForwardingSuperNode");
+  int args = nt_new_node(nt, "ArgumentsNode");
+  nt_node_set_arr(nt, args, "arguments", &sup, 1);
+  int ret = nt_new_node(nt, "ReturnNode");
+  nt_node_set_ref(nt, ret, "arguments", args);
+  int then = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, then, "body", &ret, 1);
+  int un = nt_new_node(nt, "UnlessNode");
+  nt_node_set_ref(nt, un, "predicate", rd);
+  nt_node_set_ref(nt, un, "statements", then);
+  int made[] = { rd, sup, args, ret, then, un };
+  for (int i = 0; i < 6; i++) nt_node_set_int(nt, made[i], "node_line", line);
+  if (nt_kind(nt, body) == NK_StatementsNode) {
+    int bn = 0;
+    const int *bb = nt_arr(nt, body, "body", &bn);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nb[0] = un;
+    memcpy(nb + 1, bb, sizeof(int) * (size_t)bn);
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    free(nb);
+    return body;
+  }
+  int seq = nt_new_node(nt, "StatementsNode");
+  int two[] = { un, body };
+  nt_node_set_arr(nt, seq, "body", two, 2);
+  nt_node_set_int(nt, seq, "node_line", line);
+  return seq;
+}
+/* ...and the write that sets the flag, after top-level statement j */
+static void mixin_guard_flag_write(Compiler *c, int j, const char *flag) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int root = nt_ref(nt, nt->root_id, "statements"), n = 0;
+  const int *st = nt_arr(nt, root, "body", &n);
+  int line = (int)nt_int(nt, st[j], "node_line", 0);
+  int tv = nt_new_node(nt, "TrueNode");
+  int w = nt_new_node(nt, "GlobalVariableWriteNode");
+  nt_node_set_str(nt, w, "name", flag);
+  nt_node_set_ref(nt, w, "value", tv);
+  nt_node_set_int(nt, tv, "node_line", line);
+  nt_node_set_int(nt, w, "node_line", line);
+  st = nt_arr(nt, root, "body", &n);
+  int *ns = malloc(sizeof(int) * (size_t)(n + 1));
+  if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(ns, st, sizeof(int) * (size_t)(j + 1));
+  ns[j + 1] = w;
+  memcpy(ns + j + 2, st + j + 1, sizeof(int) * (size_t)(n - j - 1));
+  nt_node_set_arr(nt, root, "body", ns, n + 1);
+  free(ns);
+  comp_gvar_intern(c, flag + 1);
+  comp_grow_node_arrays(c);
+}
+
 static void process_prepend_body(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
+  int late = prepend_late_stmt(nt, body);
+  char flag[64] = "";
   /* a module's prepend goes wherever the module is mixed in, which
      desugar_module_prepends has written out already */
   if (comp_class_is_module(c, &c->classes[ci])) return;
@@ -9040,6 +9123,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           if (sc->class_id != mod_id || sc->is_cmethod || !sc->name) continue;
           const char *method_name = sc->name;
           int active_mi = comp_method_in_class(c, ci, method_name);
+          int guard = active_mi >= 0 && late >= 0;
           if (active_mi >= 0) {
             Scope *active = &c->scopes[active_mi];
             char shadow[256];
@@ -9095,6 +9179,13 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
                 desugar_included_self_class(c, nb, c->classes[ci].name);
                 desugar_included_bare_builtin(c, nb, c->classes[ci].name);
               }
+              if (nb >= 0 && guard) {
+                if (!flag[0]) snprintf(flag, sizeof flag, "$__spinel_mixin_ran_%d", ++c->n_mixin_flags);
+                nb = mixin_guard_body((NodeTable *)nt, nb, flag, (int)nt_int(nt, sc->def_node, "node_line", 0));
+                comp_grow_node_arrays(c);
+                sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
+                dst->mixin_guarded = 1;
+              }
               if (nb >= 0) { dst->body = nb; walk_scope(c, nb, dst_i, ci); }
               else dst->body = sc->body;
             }
@@ -9128,6 +9219,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       }
     }
   }
+  if (flag[0]) mixin_guard_flag_write(c, late, flag);
 }
 
 /* For each class, find `prepend M` in ALL class bodies, the reopenings

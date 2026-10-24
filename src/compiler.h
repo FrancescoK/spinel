@@ -401,6 +401,10 @@ typedef struct {
   int is_prepend_copy;        /* the instance method a `prepend` copied in, in
                                  front of the class's own (its super reaches
                                  that one -- the builtin's, for a builtin) */
+  int mixin_guarded;          /* such a copy of a prepend a later top-level
+                                 reopening makes: it hands the call to the
+                                 class's own method until that statement has
+                                 run (mixin_guard_body) */
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
@@ -1497,6 +1501,9 @@ typedef struct {
      receivers are typed (-1 once resolved) */
   int *redef_calls;
   int nredef_calls;
+  /* the flags of the later prepends that guard their copies
+     (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
+  int n_mixin_flags;
   /* the operand-local reads splat_dispatch_on_length marked splat_view,
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
   int *splat_views;

@@ -43549,6 +43549,22 @@ static int mixin_earlier_reaches(Compiler *c, const int *st, int j, int k, const
   return 0;
 }
 
+/* Does every method call `name` reaches on a receiver of type rt, among
+   class cid and its subclasses, guard itself as a later prepend's copy
+   (Scope.mixin_guarded)? */
+static int mixin_call_guarded(Compiler *c, TyKind rt, int cid, const char *name) {
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != cid && !is_descendant(c, k, cid)) continue;
+    if (ty_is_object(rt) ? ty_object_class(rt) != k : rt != TY_POLY) continue;
+    int mi = comp_method_in_chain(c, k, name, NULL);
+    if (mi < 0) continue;
+    if (!c->scopes[mi].mixin_guarded) return 0;
+    any = 1;
+  }
+  return any;
+}
+
 /* A module the program mixes into a class by a top-level statement after
    one that calls a method on the class's objects (`d.speak; class Dog;
    prepend Loud; end`) is not there yet when that call runs: the call
@@ -43628,6 +43644,9 @@ static void refuse_mixin_after_calls(Compiler *c) {
       if (hit < 0) continue;
       /* the module's own methods run only once it is mixed in */
       if (in_def && ms->class_id == hit) continue;
+      /* a copy that hands the call to the class's own method until the
+         prepend has run (mixin_guard_body) */
+      if (mixin_call_guarded(c, rt, cid, name)) continue;
       char msg[600];
       snprintf(msg, sizeof msg,
                "a later statement mixes module %s into class %s (include or prepend), after this call, so "

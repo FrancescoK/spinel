@@ -1,7 +1,7 @@
 # The call ahead of the later prepend is a receiverless call in the class's
 # own method, a call on self: CRuby prints "woofwoof", then
-# "LOUD woofLOUD woof". Spinel's one chain, the last, would answer the
-# module's method both times; refused.
+# "LOUD woofLOUD woof". The call picks the class's own method until the
+# prepend has run (#9982).
 module Loud
   def speak = "LOUD " + super
 end

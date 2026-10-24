@@ -1,7 +1,7 @@
 # The call that runs ahead of the later prepend sits in a method body:
-# `talk(d)` runs it before the module is there (CRuby prints "woof", then
-# "LOUD woof"). A method body may run at any time, so its call is refused
-# too.
+# `talk(d)` runs it before the module is there and after it (CRuby prints
+# "woof", then "LOUD woof"). The call picks its method by whether the
+# prepend has run when it runs (#9982).
 module Loud
   def speak = "LOUD " + super
 end

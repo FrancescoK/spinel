@@ -1164,18 +1164,6 @@ spinel: 1 refusal, nothing written
 == test/reject/object_receiver_include_alias.rb [promote] rc=1
 spinel: test/reject/object_receiver_include_alias.rb:8: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
-== test/reject/prepend_after_call.rb [default] rc=1
-spinel: test/reject/prepend_after_call.rb:12: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
-== test/reject/prepend_after_call.rb [promote] rc=1
-spinel: test/reject/prepend_after_call.rb:12: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
-== test/reject/prepend_after_call_in_method.rb [default] rc=1
-spinel: test/reject/prepend_after_call_in_method.rb:11: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
-== test/reject/prepend_after_call_in_method.rb [promote] rc=1
-spinel: test/reject/prepend_after_call_in_method.rb:11: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
-== test/reject/prepend_after_self_call.rb [default] rc=1
-spinel: test/reject/prepend_after_self_call.rb:10: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
-== test/reject/prepend_after_self_call.rb [promote] rc=1
-spinel: test/reject/prepend_after_self_call.rb:10: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
 == test/reject/range_prepended_alias_chain_endpoint_write.rb [default] rc=1
 spinel: test/reject/range_prepended_alias_chain_endpoint_write.rb:17: a method the program defines in Range, called on a Range of Strings: only an Integer Range runs it
 == test/reject/range_prepended_alias_chain_endpoint_write.rb [promote] rc=1
