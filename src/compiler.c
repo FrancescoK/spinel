@@ -145,16 +145,21 @@ static void bi_base_reserve(Compiler *c, int b) {
   c->bi_base_cnt = gc; c->bi_base_key = gk; c->bi_base_cap = cap;
 }
 
-/* A C-safe spelling of `nm` of at most `max` characters, into key. */
+/* A C-safe spelling of `nm` of at most `max` characters, into key; returns
+   the length the whole spelling takes, so a larger one says it was cut. */
 static size_t key_spell(char *key, size_t max, size_t o, const char *nm) {
-  for (const char *q = nm; *q && o < max; q++) {
-    if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')
-      key[o++] = *q;
-    else if (o + 3 <= max) o += (size_t)snprintf(key + o, 4, "x%02x", (unsigned char)*q);
-    else break;
+  size_t whole = o;
+  for (const char *q = nm; *q; q++) {
+    if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_') {
+      if (o == whole && o < max) key[o++] = *q;
+      whole++;
+    } else {
+      if (o == whole && o + 3 <= max) o += (size_t)snprintf(key + o, 4, "x%02x", (unsigned char)*q);
+      whole += 3;
+    }
   }
   key[o] = '\0';
-  return o;
+  return whole;
 }
 
 /* How many times `key` has been given to a program base before this one:
@@ -234,11 +239,13 @@ void comp_node_pbases(Compiler *c) {
       }
       const char *nw = nm && *nm ? nm : ty;
       char sp[64];
-      key_spell(sp, 60, 0, nw);
+      /* cut at 60, the spelling can lose all that tells two names apart */
+      int cut = key_spell(sp, 60, 0, nw) > 60;
       o += (size_t)snprintf(key + o, sizeof key - o, "%zu%s", strlen(nw), sp);
       if (o > 24) {
         unsigned h = 2166136261u;
         for (const char *q = key; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+        if (cut) for (const char *q = nw; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
         snprintf(key + 15, sizeof key - 15, "_%08x", h);
       }
       int dup = pbase_key_count(c, key);
