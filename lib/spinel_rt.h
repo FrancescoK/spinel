@@ -16579,6 +16579,11 @@ static sp_Proc *sp_poly_to_proc(sp_RbVal v) {
    as CRuby's Proc#>> says. */
 static sp_Proc *sp_poly_to_block(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
+  /* a value that is no Proc, curried Proc or Method: CRuby's `&x` says
+     the conversion it tried (`m(&7)`) */
+  if (!(v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_PROC || v.cls_id == SP_BUILTIN_CURRY ||
+                                v.cls_id == SP_BUILTIN_METHOD)))
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Proc", sp_poly_class_name(v)));
   return sp_poly_to_proc(v);
 }
 
