@@ -24136,13 +24136,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   }
   /* One observable operand has no sibling to be ordered against or collected by:
      it is the only thing running, and the call consumes it immediately. */
-  if ((observable < 2 && !(converts && observable >= 1) && !nheld) || nb < 1 ||
-      g_n_argov + nb > MAX_ARG_OVERRIDE) return 0;
+  if ((observable < 2 && !(converts && observable >= 1) && !nheld) || nb < 1) return 0;
 
   size_t pre_mark = g_pre->len;
   int saved_tmp = g_tmp;
-  Buf opb[MAX_ARG_OVERRIDE], opp[MAX_ARG_OVERRIDE];
-  int th[MAX_ARG_OVERRIDE], used[MAX_ARG_OVERRIDE], late[MAX_ARG_OVERRIDE];
+  Buf opb[nb], opp[nb];
+  int th[nb], used[nb], late[nb];
   for (int i = 0; i < nb; i++)
     late[i] = !copy[i] && !fresh[i] && !oo[i] && node[i] != harg && ty[i] == TY_STRING &&
               operand_reads_handle_late(c, node[i], operand, nop);
@@ -24164,9 +24163,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
-  int tmp[MAX_ARG_OVERRIDE];
+  int tmp[nb];
   if (ok) {
-    int held[MAX_ARG_OVERRIDE], nh = 0;
+    int held[nb], nh = 0;
     for (int i = 0; i < nb; i++) {
       if (copy[i]) {
         char thr[24];
