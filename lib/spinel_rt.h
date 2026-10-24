@@ -4893,7 +4893,11 @@ static SP_UNUSED double sp_poly_time_sec_f(sp_RbVal v) {
    answer, and *nsec is the fraction of the exact value truncated to
    nanoseconds, so it stays below 1_000_000_000. */
 static SP_UNUSED int64_t sp_time_sec_split_f(double s, int32_t *nsec) {
-  double w = floor(s), f = s - w, n = floor(f * 1e9);
+  if (SP_UNLIKELY(!isfinite(s))) sp_raise_cls("FloatDomainError", isnan(s) ? "NaN" : s > 0 ? "Infinity" : "-Infinity");
+  double w = floor(s);
+  if (SP_UNLIKELY(w >= 9223372036854775808.0 || w < -9223372036854775808.0))
+    sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  double f = s - w, n = floor(f * 1e9);
   /* f * 1e9 rounds, so the floor of the exact product may be one off */
   if (fma(f, 1e9, -n) < 0) n -= 1;
   else if (fma(f, 1e9, -(n + 1)) >= 0) n += 1;
@@ -4901,10 +4905,17 @@ static SP_UNUSED int64_t sp_time_sec_split_f(double s, int32_t *nsec) {
   return (int64_t)w;
 }
 static SP_UNUSED int64_t sp_time_sec_split_r(sp_Rational r, int32_t *nsec) {
-  if (r.den > INT64_MAX / 1000000000) return sp_time_sec_split_f((double)r.num / (double)r.den, nsec);
-  sp_int q = r.num / r.den, m = r.num % r.den;
+  int64_t q = (int64_t)r.num / r.den, m = (int64_t)r.num % r.den;
   if (m < 0) { m += r.den; q -= 1; }
+  /* m < den, so m * 10**9 needs 128 bits only for a den past INT64_MAX / 10**9 */
+#if defined(__SIZEOF_INT128__)
+  *nsec = (int32_t)((__int128)m * 1000000000 / r.den);
+#elif INTPTR_MAX <= INT32_MAX
+  *nsec = (int32_t)(m * 1000000000 / r.den);   /* a 32-bit den: the product fits */
+#else
+  if (r.den > INT64_MAX / 1000000000) { (void)sp_time_sec_split_f((double)m / (double)r.den, nsec); return q; }
   *nsec = (int32_t)(m * 1000000000 / r.den);
+#endif
   return q;
 }
 static SP_UNUSED int64_t sp_poly_time_sec_split(sp_RbVal v, int32_t *nsec) {
