@@ -188,7 +188,12 @@ typedef struct {
 } sp_slab_worker;
 
 static sp_slab_worker sp_slab_wk[SP_SLAB_NWK];
-uintptr_t sp_slab_base = 0;   /* the reservation (read inline by sp_slab_owns) */
+/* the workers that cut a run since the last sp_slab_runs_release, the only
+   ones it walks: under SPINEL_GC_STRESS=1 a collection runs at every
+   allocation, and walking every class of all SP_SLAB_NWK workers was most
+   of its cost (gc_minor_thread_local_slot, 410k collections) */
+static uint64_t sp_slab_cut[(SP_SLAB_NWK + 63) / 64];
+uintptr_t sp_slab_base = 0;  /* the reservation (read inline by sp_slab_owns) */
 static uintptr_t sp_slab_brk = 0;   /* how much of it is in use */
 size_t sp_slab_cap = 0;
 static sp_slab_chunk *sp_slab_empty = NULL;   /* chunks holding no class */
@@ -536,6 +541,11 @@ static inline void *sp_slab_take(sp_slab_worker *wk, int cls, sp_slab_chunk *ch,
     /* the word, for the fast path: its claim word (this epoch's parity,
        or pin for a payload), its free bits, its first slot */
     wk->wmask[cls] = ~used;
+    {
+      unsigned wi = (unsigned)(wk - sp_slab_wk);
+      uint64_t bit = (uint64_t)1 << (wi & 63);
+      if (!(bm_load(&sp_slab_cut[wi >> 6]) & bit)) bm_or(&sp_slab_cut[wi >> 6], bit);
+    }
     wk->wyoung[cls] = &bm->young[e][w];
     wk->wpin[cls] = &bm->pin[w];
     wk->wfin[cls] = &bm->fin[w];
@@ -1177,24 +1187,29 @@ void sp_slab_unmark(const void *p) {
 /* Under the barrier: every worker's claimed-and-not-handed-out run is
    unclaimed, and its cache dropped. Before the collector walks the young
    bits (they would name slots holding garbage) and before the epoch flips
-   (the claim words name the parity that is about to close). */
+   (the claim words name the parity that is about to close). A worker that
+   cut no run since the last release has none, and no cached word: only a
+   cut (sp_slab_take) gives it either. */
+static void sp_slab_runs_release_worker(sp_slab_worker *wk) {
+  for (int c = 0; c < SP_SLAB_NCLS; c++) {
+    for (int k = 0; k < 2; k++) {
+      char *p = wk->rnext[k][c], *end = wk->rend[k][c];
+      if (p && p < end) {
+        unsigned i = (unsigned)(((uint64_t)(size_t)(p - wk->rbase[k][c]) * sp_slab_recip[c]) >> 32);
+        unsigned n = (unsigned)(((uint64_t)(size_t)(end - p) * sp_slab_recip[c]) >> 32);
+        uint64_t mask = (n >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1)) << i;
+        bm_and(wk->rclaim[k][c], ~mask);
+      }
+      wk->rnext[k][c] = wk->rend[k][c] = NULL;
+    }
+    wk->wmask[c] = 0;
+  }
+}
 void sp_slab_runs_release(void) {
   if (sp_slab_on <= 0) return;
-  for (int w = 0; w < SP_SLAB_NWK; w++) {
-    sp_slab_worker *wk = &sp_slab_wk[w];
-    for (int c = 0; c < SP_SLAB_NCLS; c++) {
-      for (int k = 0; k < 2; k++) {
-        char *p = wk->rnext[k][c], *end = wk->rend[k][c];
-        if (p && p < end) {
-          unsigned i = (unsigned)(((uint64_t)(size_t)(p - wk->rbase[k][c]) * sp_slab_recip[c]) >> 32);
-          unsigned n = (unsigned)(((uint64_t)(size_t)(end - p) * sp_slab_recip[c]) >> 32);
-          uint64_t mask = (n >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1)) << i;
-          bm_and(wk->rclaim[k][c], ~mask);
-        }
-        wk->rnext[k][c] = wk->rend[k][c] = NULL;
-      }
-      wk->wmask[c] = 0;
-    }
+  for (int g = 0; g < (SP_SLAB_NWK + 63) / 64; g++) {
+    for (uint64_t cut = bm_and(&sp_slab_cut[g], 0); cut; cut &= cut - 1)
+      sp_slab_runs_release_worker(&sp_slab_wk[g * 64 + (int)SP_CTZ64(cut)]);
   }
 }
 /* Under the barrier, at the start of a collection, before any sweep or free
