@@ -6525,9 +6525,10 @@ int share_value_unobserved(Compiler *c, int n) {
   return share_value_fresh(c, n, 0) || share_node_one_name(c, n) || an_local_read_once(c, n);
 }
 int share_node_shares(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 0);
-  return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+  /* one representation: every String is its handle, so the class of any
+     String value is shared */
+  (void)c; (void)n;
+  return 1;
 }
 
 /* Does the rule share the class of element e (a flow's destination)? */
