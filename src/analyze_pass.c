@@ -6797,11 +6797,37 @@ static int widen_proc_call_hash_args(Compiler *c, int lit, const char *pn, TyKin
    parameter pj the receiver reads, and cands its candidate callers that pass
    the literal somewhere. All of it is names and writes, no inferred type,
    and the walk asked it for each literal at every visit, scanning every call
-   of the program: kept per literal until the table is edited. Whether a
-   candidate resolves to the method is a type question, asked at the visit. */
+   of the program: kept until the table, or the alias table the candidates
+   are read through, is edited. Whether a candidate resolves to the method
+   is a type question, asked at the visit.
+
+   The entries of every literal are made together, from the calls' side.
+   Each call that can run a proc (a receiver, and a name of
+   proc_call_name's) names the literals its receiver carries
+   (proc_lit_carrier: the receiver itself, or a value some write of the
+   local it reads holds) and, where the receiver reads a method's
+   parameter, the literals each of the method's candidate callers passes;
+   every (literal, call, caller) is one record, and the records sorted by
+   literal are the entries. Made per literal, an entry resolved the method's
+   callers and read every caller's arguments for that one literal, and on a
+   Rails application (thousands of literals, 2.3 million nodes) that was
+   most of the storage phase. The records come in call order, the callers
+   of one call in an_scope_call_candidates' order, and the sort is stable,
+   so an entry reads as the per-literal scan wrote it; a call whose
+   receiver reads a parameter and whose callers pass the literal nowhere
+   made a run with no callers before, which the walk skipped, and makes
+   none now. Only a proc or lambda literal (is_proc_create) gets records:
+   the walk asks for nothing else. */
 static const NodeTable *pcs_nt;
-static unsigned pcs_ver;
-static int pcs_cnt, pcs_nsc, pcs_cap, *pcs_off, *pcs_pool, pcs_pn, pcs_pcap;
+static unsigned pcs_ver, pcs_tgen;
+static int pcs_cnt, pcs_nsc, pcs_ncl, pcs_cap, *pcs_off, *pcs_pool, pcs_pn, pcs_pcap;
+/* records, PCS_REC ints each: literal, call, caller (-1: the receiver
+   carries it), the call's method-and-parameter slot (-1 for a receiver's) */
+#define PCS_REC 4
+static int *pcs_rec, pcs_nrec, pcs_rcap;
+static int *pcs_ms, *pcs_pj, pcs_nslot, pcs_scap;   /* the slots: method scope and parameter index */
+static unsigned *pcs_mark, pcs_mgen;   /* per node: the carrier list that last took it, so each takes a literal once */
+static signed char *pcs_isp;           /* per node: is_proc_create, -1 unasked */
 static void pcs_push(int v) {
   if (pcs_pn == pcs_pcap) {
     pcs_pcap = pcs_pcap ? pcs_pcap * 2 : 1024;
@@ -6810,67 +6836,148 @@ static void pcs_push(int v) {
   }
   pcs_pool[pcs_pn++] = v;
 }
+/* the record (lit, u, u2, slot), unless `lit` is no literal, or the list
+   `g` or the receiver's own list `dg` of this call has it: proc_lit_carrier
+   answers once however many writes hold the literal, and a call whose
+   receiver carries the literal is not asked about its callers */
+static void pcs_note(Compiler *c, int lit, int u, int u2, int slot, unsigned dg, unsigned g) {
+  if (lit < 0 || lit >= pcs_cnt) return;
+  if (pcs_mark[lit] == dg || pcs_mark[lit] == g) return;
+  if (pcs_isp[lit] < 0) pcs_isp[lit] = (signed char)(is_proc_create(c, lit) != 0);
+  if (!pcs_isp[lit]) return;
+  pcs_mark[lit] = g;
+  if (pcs_nrec + PCS_REC > pcs_rcap) {
+    pcs_rcap = pcs_rcap ? pcs_rcap * 2 : 4096;
+    pcs_rec = realloc(pcs_rec, sizeof(int) * (size_t)pcs_rcap);
+    if (!pcs_rec) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  pcs_rec[pcs_nrec++] = lit; pcs_rec[pcs_nrec++] = u; pcs_rec[pcs_nrec++] = u2; pcs_rec[pcs_nrec++] = slot;
+}
+/* the literals `v` carries, as proc_lit_carrier decides it for each */
+static void pcs_carriers(Compiler *c, int v, int u, int u2, int slot, unsigned dg, unsigned g) {
+  const NodeTable *nt = c->nt;
+  v = nt_paren_single(nt, v);
+  pcs_note(c, v, u, u2, slot, dg, g);
+  if (v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) return;
+  const char *vn = nt_str(nt, v, "name");
+  Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+  int si = vs ? (int)(vs - c->scopes) : -1;
+  for (int w = si >= 0 ? comp_lvw_first_sc(c, si, vn) : -1; w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+    if (nt_kind(nt, w) == NK_LocalVariableWriteNode)
+      pcs_note(c, nt_paren_single(nt, nt_ref(nt, w, "value")), u, u2, slot, dg, g);
+  }
+}
+static void pcs_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  if (pcs_cap < n) {
+    pcs_cap = n * 2;
+    pcs_off = realloc(pcs_off, sizeof(int) * (size_t)pcs_cap);
+    pcs_mark = realloc(pcs_mark, sizeof(unsigned) * (size_t)pcs_cap);
+    pcs_isp = realloc(pcs_isp, (size_t)pcs_cap);
+    if (!pcs_off || !pcs_mark || !pcs_isp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  memset(pcs_mark, 0, sizeof(unsigned) * (size_t)n);
+  memset(pcs_isp, -1, (size_t)n);
+  pcs_mgen = 0; pcs_nrec = 0; pcs_pn = 0; pcs_nslot = 0;
+  pcs_nt = nt; pcs_ver = nt->version; pcs_cnt = n; pcs_nsc = c->nscopes;
+  pcs_tgen = comp_table_gen; pcs_ncl = c->nclasses;
+  /* the records, call by call */
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    int r = nt_ref(nt, u, "receiver");
+    if (r < 0 || !proc_call_name(nt_str(nt, u, "name"))) continue;
+    unsigned dg = ++pcs_mgen;
+    pcs_carriers(c, r, u, -1, -1, dg, dg);
+    /* a method's parameter its callers hand the literal in */
+    if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *rnm = nt_str(nt, r, "name");
+    Scope *ms = comp_scope_of(c, r);
+    int pj = -1;
+    for (int i = 0; ms && ms->name && i < ms->nparams && pj < 0; i++)
+      if (ms->pnames[i] && sp_streq(ms->pnames[i], rnm)) pj = i;
+    if (pj < 0) continue;
+    if (pcs_nslot == pcs_scap) {
+      pcs_scap = pcs_scap ? pcs_scap * 2 : 256;
+      pcs_ms = realloc(pcs_ms, sizeof(int) * (size_t)pcs_scap); pcs_pj = realloc(pcs_pj, sizeof(int) * (size_t)pcs_scap);
+      if (!pcs_ms || !pcs_pj) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    int slot = pcs_nslot++;
+    pcs_ms[slot] = (int)(ms - c->scopes); pcs_pj[slot] = pj;
+    /* the method's callers, among the calls that can name it, that pass
+       the literal somewhere: resolving every call of the program for
+       each `.call` on a parameter was most of a fixpoint round */
+    int nc2 = 0;
+    int *c2 = an_scope_call_candidates(c, ms, &nc2);
+    for (int i = 0; i < nc2; i++) {
+      int u2 = c2[i];
+      if (nt_kind(nt, u2) != NK_CallNode) continue;
+      int a2 = nt_ref(nt, u2, "arguments"), ac2 = 0;
+      const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &ac2) : NULL;
+      unsigned g = ++pcs_mgen;
+      for (int q = 0; q < ac2; q++) pcs_carriers(c, av2[q], u, u2, slot, dg, g);
+    }
+    free(c2);
+  }
+  /* the records in literal order, stably: a count per literal, each
+     literal's start, then the records dealt in their own order */
+  int nr = pcs_nrec / PCS_REC;
+  int *ord = malloc(sizeof(int) * (size_t)(nr > 0 ? nr : 1));
+  if (!ord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(pcs_off, 0, sizeof(int) * (size_t)n);
+  for (int k = 0; k < pcs_nrec; k += PCS_REC) pcs_off[pcs_rec[k]]++;
+  for (int lit = 0, s = 0; lit < n; lit++) { int cnt = pcs_off[lit]; pcs_off[lit] = s; s += cnt; }
+  for (int k = 0; k < pcs_nrec; k += PCS_REC) ord[pcs_off[pcs_rec[k]]++] = k;
+  /* pcs_off[lit] is now one past its group; the entries are written walking
+     the literals in order, each from its group, and pcs_off[lit] becomes
+     the entry's place, or -1 for a literal with no record */
+  for (int lit = 0, s = 0; lit < n; lit++) {
+    int e = pcs_off[lit];
+    if (e == s) { pcs_off[lit] = -1; continue; }
+    int at = pcs_pn;
+    pcs_push(0);
+    int cur = -1, nat = -1;   /* the parameter-receiver call whose run is open, and its count's place */
+    for (int i = s; i < e; i++) {
+      int k = ord[i], u = pcs_rec[k + 1], u2 = pcs_rec[k + 2], slot = pcs_rec[k + 3];
+      if (u2 < 0) {   /* the receiver carries the literal */
+        pcs_push(u); pcs_push(-1); pcs_push(-1); pcs_push(0);
+        pcs_pool[at]++;
+        cur = -1;
+        continue;
+      }
+      if (u != cur) {
+        pcs_push(u); pcs_push(pcs_ms[slot]); pcs_push(pcs_pj[slot]);
+        nat = pcs_pn;
+        pcs_push(0);
+        pcs_pool[at]++;
+        cur = u;
+      }
+      pcs_push(u2); pcs_pool[nat]++;
+    }
+    pcs_off[lit] = at;
+    s = e;
+  }
+  free(ord);
+}
 /* the entry for `lit`, copied out (the walk the caller runs may ask for
    another literal, or edit the table); *n its length. The caller frees it. */
 static int *proc_call_sites(Compiler *c, int lit, int *n) {
   const NodeTable *nt = c->nt;
   *n = 0;
   if (lit < 0 || lit >= nt->count) return NULL;
-  if (pcs_nt != nt || pcs_ver != nt->version || pcs_cnt != nt->count || pcs_nsc != c->nscopes) {
-    if (pcs_cap < nt->count) {
-      pcs_cap = nt->count * 2;
-      pcs_off = realloc(pcs_off, sizeof(int) * (size_t)pcs_cap);
-      if (!pcs_off) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
-    memset(pcs_off, -1, sizeof(int) * (size_t)nt->count);
-    pcs_pn = 0;
-    pcs_nt = nt; pcs_ver = nt->version; pcs_cnt = nt->count; pcs_nsc = c->nscopes;
-  }
+  if (pcs_nt != nt || pcs_ver != nt->version || pcs_cnt != nt->count || pcs_nsc != c->nscopes ||
+      pcs_tgen != comp_table_gen || pcs_ncl != c->nclasses)
+    pcs_build(c);
+  int *cp;
   if (pcs_off[lit] < 0) {
-    int at = pcs_pn;
-    pcs_push(0);
-    NT_FOREACH_KIND(nt, NK_CallNode, u) {
-      int r = nt_ref(nt, u, "receiver");
-      if (r < 0 || !proc_call_name(nt_str(nt, u, "name"))) continue;
-      if (proc_lit_carrier(c, r, lit)) {
-        pcs_push(u); pcs_push(-1); pcs_push(-1); pcs_push(0);
-        pcs_pool[at]++;
-        continue;
-      }
-      /* a method's parameter its callers hand the literal in */
-      if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
-      const char *rnm = nt_str(nt, r, "name");
-      Scope *ms = comp_scope_of(c, r);
-      int pj = -1;
-      for (int i = 0; ms && ms->name && i < ms->nparams && pj < 0; i++)
-        if (ms->pnames[i] && sp_streq(ms->pnames[i], rnm)) pj = i;
-      if (pj < 0) continue;
-      pcs_push(u); pcs_push((int)(ms - c->scopes)); pcs_push(pj);
-      int nat = pcs_pn;
-      pcs_push(0);
-      /* the method's callers, among the calls that can name it, that pass
-         the literal somewhere: resolving every call of the program for
-         each `.call` on a parameter was most of a fixpoint round */
-      int nc2 = 0;
-      int *c2 = an_scope_call_candidates(c, ms, &nc2);
-      for (int i = 0; i < nc2; i++) {
-        int u2 = c2[i];
-        if (nt_kind(nt, u2) != NK_CallNode) continue;
-        int a2 = nt_ref(nt, u2, "arguments"), ac2 = 0;
-        const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &ac2) : NULL;
-        int passes = 0;
-        for (int q = 0; q < ac2 && !passes; q++) passes = proc_lit_carrier(c, av2[q], lit);
-        if (passes) { pcs_push(u2); pcs_pool[nat]++; }
-      }
-      free(c2);
-      pcs_pool[at]++;
-    }
-    pcs_off[lit] = at;
+    cp = malloc(sizeof(int));
+    if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    return cp;
   }
   int at = pcs_off[lit], end = at + 1;
   for (int r = 0; r < pcs_pool[at]; r++) end += 4 + pcs_pool[end + 3];
   *n = end - at - 1;
-  int *cp = malloc(sizeof(int) * (size_t)(*n > 0 ? *n : 1));
+  cp = malloc(sizeof(int) * (size_t)(*n > 0 ? *n : 1));
   if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(cp, pcs_pool + at + 1, sizeof(int) * (size_t)*n);
   return cp;
