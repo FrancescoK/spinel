@@ -19272,12 +19272,17 @@ static int mo_object_defines(const NodeTable *nt, int n0, const char *mname) {
 /* A builtin class body left with nothing in it disappears, so no user class
    of a builtin's name is defined (`class Time` would clash with the runtime's
    Time). */
+static int mo_params_sig(const NodeTable *nt, int def, char *out, size_t cap);
 int desugar_builtin_reopen_methods(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   int root = nt->root_id;
   int rst = root >= 0 ? nt_ref(nt, root, "statements") : -1;
   if (rst < 0) return 0;
+  /* a name two of these classes add becomes one Object method, a branch per
+     class: a second `def` on Object replaced the first class's method */
+  int nmv = 0, cmv = 0;
+  struct { const char *name; int def, head, tail; char sig[512]; } *mv = NULL;
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ClassNode) continue;
     int cp = nt_ref(nt, m, "constant_path");
@@ -19298,6 +19303,26 @@ int desugar_builtin_reopen_methods(Compiler *c) {
       const char *mname = nt_str(nt, d, "name");
       /* Object's own method of the name would be replaced: left as it was */
       if (!mname || mo_object_defines(nt, n0, mname)) { keep[nk++] = d; continue; }
+      char dsig[512];
+      int prev = -1;
+      int sig_ok = mo_params_sig(nt, d, dsig, sizeof dsig);
+      for (int q = 0; q < nmv && prev < 0; q++) if (sp_streq(mv[q].name, mname)) prev = q;
+      /* the same class again replaces its own branch, as a redefinition does */
+      int same = -1;
+      for (int x = prev >= 0 ? mv[prev].head : -1; x >= 0 && nt_kind(nt, x) == NK_IfNode && same < 0;
+           x = nt_ref(nt, x, "subsequent")) {
+        int pa = nt_ref(nt, nt_ref(nt, x, "predicate"), "arguments"), pn = 0;
+        const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;
+        const char *pc = pn == 1 ? nt_str(nt, pv[0], "name") : NULL;
+        if (pc && sp_streq(pc, g)) same = x;
+      }
+      /* the only branch so far: the redefinition takes its parameters too */
+      int alone = same >= 0 && mv[prev].head == mv[prev].tail;
+      if (prev >= 0 && !alone && (!sig_ok || !sp_streq(mv[prev].sig, dsig))) {
+        unsupported_feature_collect(c, d, "a method of one name added to two of Regexp, Proc, Date, DateTime, "
+                                          "Rational and Complex with different parameters");
+        continue;
+      }
       int body = nt_ref(nt, d, "body");
       int st = body;
       if (st >= 0 && nt_kind(nt, st) != NK_StatementsNode) {
@@ -19326,6 +19351,31 @@ int desugar_builtin_reopen_methods(Compiler *c) {
       nt_node_set_arr(nt, est, "body", &rc, 1);
       nt_node_set_ref(nt, els, "statements", est);
       nt_node_set_ref(nt, ifn, "subsequent", els);
+      if (prev >= 0) {
+        if (same >= 0) {
+          nt_node_set_ref(nt, same, "statements", st);
+          if (alone) {
+            nt_node_set_ref(nt, mv[prev].def, "parameters", nt_ref(nt, d, "parameters"));
+            snprintf(mv[prev].sig, sizeof mv[prev].sig, "%s", dsig);
+          }
+          changed = 1;
+          continue;
+        }
+        /* the new branch goes before the raise the earlier class's ends in */
+        nt_node_set_ref(nt, ifn, "subsequent", nt_ref(nt, mv[prev].tail, "subsequent"));
+        nt_node_set_ref(nt, mv[prev].tail, "subsequent", ifn);
+        mv[prev].tail = ifn;
+        changed = 1;
+        continue;
+      }
+      if (nmv == cmv) {
+        cmv = cmv ? cmv * 2 : 8;
+        mv = realloc(mv, sizeof *mv * (size_t)cmv);
+        if (!mv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      mv[nmv].name = mname; mv[nmv].def = d; mv[nmv].head = mv[nmv].tail = ifn;
+      snprintf(mv[nmv].sig, sizeof mv[nmv].sig, "%s", dsig);
+      nmv++;
       int nb = fwd_new_node_like(nt, d, "StatementsNode");
       nt_node_set_arr(nt, nb, "body", &ifn, 1);
       nt_node_set_ref(nt, d, "body", nb);
@@ -19353,6 +19403,7 @@ int desugar_builtin_reopen_methods(Compiler *c) {
       changed = 1;
     }
   }
+  free(mv);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
@@ -23216,6 +23267,65 @@ static int bsc_walk(NodeTable *nt, int n, const char *cn) {
 int desugar_included_self_class(Compiler *c, int body, const char *cn) {
   if (!cn || !bsc_builtin_one_class(cn)) return 0;
   return bsc_walk((NodeTable *)c->nt, body, cn);
+}
+
+int builtin_instance_method_known(const char *cls, const char *m);
+/* Whether the program defines instance method `nm` in the reopened builtin
+   cn or in a module (which may be mixed into it): the bare call is left to
+   the ordinary resolution then. */
+static int bib_user_defines(Compiler *c, const char *cn, const char *nm) {
+  for (int k = 0; k < c->nscopes; k++) {
+    const Scope *s = &c->scopes[k];
+    if (s->is_cmethod || !s->name || s->def_node < 0 || !sp_streq(s->name, nm)) continue;
+    if (s->class_id < 0 || s->class_id >= c->nclasses) continue;
+    ClassInfo *k2 = &c->classes[s->class_id];
+    if (comp_class_is_module(c, k2) || (k2->name && sp_streq(k2->name, cn))) return 1;
+  }
+  return 0;
+}
+static int bib_walk(Compiler *c, int n, const char *cn) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_DefNode && nt_ref(nt, n, "receiver") >= 0) return 0;
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  int changed = 0;
+  if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && builtin_instance_method_known(cn, nm) && !builtin_instance_method_known("Object", nm) &&
+        !bib_user_defines(c, cn, nm)) {
+      int self = nt_new_node(nt, "SelfNode");
+      nt_node_set_int(nt, self, "node_line", nt_int(nt, n, "node_line", 0));
+      nt_node_set_int(nt, self, "node_file", nt_int(nt, n, "node_file", 0));
+      nt_node_set_int(nt, self, "node_col", nt_int(nt, n, "node_col", 0));
+      nt_node_set_ref(nt, n, "receiver", self);
+      changed = 1;
+    }
+  }
+  const SpNode *nd = &nt->nodes[n];
+  int nr = nd->nr; int refs[64]; if (nr > 64) nr = 64;
+  for (int j = 0; j < nr; j++) refs[j] = nd->r[j].ref;
+  for (int j = 0; j < nr; j++) changed |= bib_walk(c, refs[j], cn);
+  for (int j = 0; j < nt->nodes[n].na; j++) {
+    int an = nt->nodes[n].a[j].n;
+    if (an <= 0) continue;
+    int *ids = malloc(sizeof(int) * (size_t)(an + 1));
+    memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
+    for (int q = 0; q < an; q++) changed |= bib_walk(c, ids[q], cn);
+    free(ids);
+  }
+  return changed;
+}
+/* A bare call of the builtin's own method (`strip`) in a module method an
+   include or prepend copied into the reopened builtin cn names it on self, as
+   a def written in the reopening resolves it; the module's own body, run on
+   its other includers, keeps the bare call. */
+int desugar_included_bare_builtin(Compiler *c, int body, const char *cn) {
+  if (!cn || !bsc_builtin_one_class(cn)) return 0;
+  int changed = bib_walk(c, body, cn);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
 }
 
 /* Mark the class bodies not nested in another class or module: a

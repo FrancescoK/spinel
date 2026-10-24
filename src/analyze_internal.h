@@ -427,6 +427,7 @@ void process_include_body(Compiler *c, int ci, int body_node);
 void desugar_module_prepends(Compiler *c);
 void register_includes(Compiler *c);
 int desugar_included_self_class(Compiler *c, int body, const char *cn);
+int desugar_included_bare_builtin(Compiler *c, int body, const char *cn);
 void register_include_attrs(Compiler *c);
 void rewrite_attr_supers(Compiler *c);
 void rewrite_self_attr_empty_writes(Compiler *c);

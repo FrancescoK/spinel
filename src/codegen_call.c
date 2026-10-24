@@ -18247,6 +18247,49 @@ int any_class_responds(Compiler *c, const char *qm) {
     if (class_implicit_responds(c, k, qm)) return 1;
   return 0;
 }
+const char *builtin_class_of_type(TyKind t);
+/* The builtin classes and modules a value of builtin kind `rt` has among
+   its ancestors; NULL where the kind alone does not name its class. */
+static const char *const *builtin_value_ancestry(TyKind rt) {
+  static const char *const num[][7] = {
+    { "Integer", "Numeric", "Comparable", "Object", "Kernel", "BasicObject", NULL },
+    { "Float", "Numeric", "Comparable", "Object", "Kernel", "BasicObject", NULL } };
+  static const char *const cmp[][6] = {
+    { "String", "Comparable", "Object", "Kernel", "BasicObject", NULL },
+    { "Symbol", "Comparable", "Object", "Kernel", "BasicObject", NULL },
+    { "Time", "Comparable", "Object", "Kernel", "BasicObject", NULL } };
+  static const char *const en[][6] = {
+    { "Array", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
+    { "Hash", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
+    { "Range", "Enumerable", "Object", "Kernel", "BasicObject", NULL } };
+  static const char *const nil[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  const char *cn = rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE ? "Range" : builtin_class_of_type(rt);
+  if (!cn) return NULL;
+  for (int i = 0; i < 2; i++) if (sp_streq(cn, num[i][0])) return num[i];
+  for (int i = 0; i < 3; i++) if (sp_streq(cn, cmp[i][0])) return cmp[i];
+  for (int i = 0; i < 3; i++) if (sp_streq(cn, en[i][0])) return en[i];
+  return sp_streq(cn, "NilClass") ? nil : NULL;
+}
+/* Whether a respond_to? probe's yes for `qm` on a builtin `rt` value has no
+   basis: CRuby's surface for the value's class lacks the name and no class
+   among its ancestors in the program defines it, while the probe typed only
+   through a predicate name (`zork?` reads as a bool) or through a method the
+   program adds to another builtin (`class Integer; include M; end` asked of
+   a String). */
+static int rt_probe_unfounded(Compiler *c, TyKind rt, const char *qm) {
+  const char *const *anc = builtin_value_ancestry(rt);
+  if (!anc || !qm || builtin_instance_method_known(anc[0], qm) ||
+      builtin_instance_method_known("Object", qm)) return 0;
+  int foreign = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *kn = c->classes[k].name;
+    if (!kn || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
+    for (int a = 0; anc[a]; a++) if (sp_streq(anc[a], kn)) return 0;
+    if (is_builtin_reopen(kn)) foreign = 1;
+  }
+  size_t ql = strlen(qm);
+  return foreign || (ql > 0 && qm[ql - 1] == '?');
+}
 /* Read the analyze-time `recv.<qm>` probes stashed on a respond_to? node: a
    recognized method infers a concrete type, an unrecognized one stays UNKNOWN.
    Reading the cached type is side-effect free (unlike emitting, which mutates
@@ -21014,7 +21057,6 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
 }
 
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b);
-const char *builtin_class_of_type(TyKind t);
 /* A private (or protected) method of a program's Object reopening, called
    with an explicit receiver whose own class does not define the name: the
    method is Object's, so the call is refused as CRuby refuses it, with the
@@ -22211,6 +22253,15 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
       }
+/* a method a module mixed into Rational or Complex adds has no arm on
+   their values (a def in the class body has, through Object): refused
+   rather than raising where CRuby calls it */
+if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
+  int kci = comp_class_index(c, grt == TY_RATIONAL ? "Rational" : "Complex");
+  if (kci >= 0 && comp_method_in_chain(c, kci, nm, NULL) >= 0)
+    unsupported(c, id, "a method of a module included or prepended into Rational or Complex "
+                       "(define it in the class body instead)");
+}
       if (warn_unresolved_pos(c, id)) {
         fprintf(stderr, "unresolved call '%s' on %s receiver -> %s\n",
                 nm ? nm : "?", ty_name(grt),
@@ -30692,6 +30743,7 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
          lists -- K-028 follow-up, kilau docs/CATALOG.md -- so it never
          reaches here unresolved.) */
       if (rt_probe_answer(c, id, &yes)) {
+        if (yes && recv >= 0 && rt_probe_unfounded(c, rt, qm)) yes = 0;
         /* a class value that answers yes is the site's to emit: nil responds
            to nothing, so the answer is the value's non-nilness, not a fold */
         if (yes && rt == TY_CLASS && recv >= 0) return -1;

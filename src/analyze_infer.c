@@ -10147,6 +10147,8 @@ TyKind infer_builtin_self(Compiler *c, int self_cls) {
   if (sp_streq(cn, "Integer")) return TY_INT;
   if (sp_streq(cn, "Float"))   return TY_FLOAT;
   if (sp_streq(cn, "Symbol"))  return TY_SYMBOL;
+  /* a NilClass reopen runs on nil only: self reads as nil, not a bool */
+  if (sp_streq(cn, "NilClass")) return TY_NIL;
   if (is_immediate_class_name(cn)) return TY_BOOL;
   /* an Array / Hash reopen takes self boxed (sp_RbVal): the receiver may
      be any element kind. Typing it as the unboxed poly array handed
