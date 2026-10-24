@@ -4648,6 +4648,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_PolyArray \* iv_banks;' "$$tmp/and.c" || { echo "infer-test: FAIL (a table stored a boxed row must stay boxed)"; ok=0; }; \
 	grep -q 'sp_IntArray \* iv_alias_i;' "$$tmp/and.c" && grep -q 'sp_FloatArray \* iv_alias_f;' "$$tmp/and.c" && grep -q 'sp_StrArray \* iv_seed_s;' "$$tmp/and.c" || { echo "infer-test: FAIL (an ivar written another ivar and pushed its own kind stayed boxed)"; ok=0; }; \
 	grep -q 'sp_PolyArray \* iv_seed_w;' "$$tmp/and.c" || { echo "infer-test: FAIL (an ivar whose alias was pushed another kind kept its typed Array)"; ok=0; }; \
+	grep -q 'sp_IntArray \* iv_kept_r;' "$$tmp/and.c" && grep -q 'sp_IntArray \* iv_kept_m;' "$$tmp/and.c" && grep -q 'sp_IntArray \* lv_kept_a = NULL;' "$$tmp/and.c" || { echo "infer-test: FAIL (an Array read out of a reader, a Struct member or an element and pushed its own kind stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/index_op_write_int_operand_float_elem.rb -c --no-line-map -o "$$tmp/iow.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_op_write_int_operand_float_elem: -c)"; ok=0; }; \
 	grep -q 'sp_FloatArray \* iv_acc;' "$$tmp/iow.c" && grep -q 'sp_FloatArray \* lv_acc = ' "$$tmp/iow.c" || { echo "infer-test: FAIL (a Float Array written a[i] op= <Integer> widened to a boxed PolyArray)"; ok=0; }; \
 	grep -q 'sp_PolyArray \* lv_ia = ' "$$tmp/iow.c" || { echo "infer-test: FAIL (an Integer Array written a[i] /= <Float> must widen)"; ok=0; }; \

@@ -1785,14 +1785,57 @@ static TyRef named_array_slot(Compiler *c, int recv) {
    slot of the variable a read or write names, as the holder rule resolves
    it (holder_of_node); whether it is a local, which infer_write_types
    resets and re-derives each round; and for an ivar its class and index. */
-typedef struct { TyRef slot; unsigned char local; int cid, iv; } AliasSide;
+typedef struct { TyRef slot; unsigned char local, reader; int cid, iv; } AliasSide;
+
+/* May an attribute's ivar `ivn` of class `cls` be set other than by the
+   class's own writes: its writer is called (`b.items = v`, a Struct
+   member's setter), or any send or instance_variable_set may. */
+static int reader_ivar_set_outside(Compiler *c, int cls, const char *ivn) {
+  static const char *const dyn[] = { "send", "public_send", "__send__", "instance_variable_set", NULL };
+  if (comp_resolve_member(c, cls, ivn + 1, 1, NULL, NULL) == SP_MEMBER_NONE) return 0;
+  char setter[300];
+  snprintf(setter, sizeof setter, "%s=", ivn + 1);
+  /* a call of the writer's name whose receiver may be an object of the
+     class or of one sharing its slot (a boxed or unknown one may) */
+  for (int k = an_calls_named_first(c, setter); k >= 0; k = an_calls_named_next(k)) {
+    int r = nt_ref(c->nt, k, "receiver");
+    Scope *ks = comp_scope_of(c, k);
+    TyKind rt = r >= 0 ? infer_type(c, r) : TY_UNKNOWN;
+    int rc = r < 0 ? (ks ? ks->class_id : -1) : ty_is_object(rt) ? ty_object_class(rt) : -2;
+    if (rc == -2 && rt != TY_POLY && rt != TY_UNKNOWN) continue;
+    if (rc < 0 || rc == cls || is_descendant(c, rc, cls) || is_descendant(c, cls, rc)) return 1;
+  }
+  for (int k = 0; dyn[k]; k++) if (an_calls_named_first(c, dyn[k]) >= 0) return 1;
+  return 0;
+}
+static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn, int apply, int *ch);
 
 /* Resolves `n` into *out; 0 for a parameter or a block parameter (typed
    from their call sites), an ivar a seed pins or a narrowed int table
-   holds, and any node that names no variable. */
+   holds, and any node that names no variable or reader. */
 static int alias_side(Compiler *c, int n, AliasSide *out) {
   HolderRef h;
-  out->slot = NULL; out->local = 0; out->cid = out->iv = -1;
+  out->slot = NULL; out->local = out->reader = 0; out->cid = out->iv = -1;
+  /* a reader's call names the ivar it answers (`o.items`, a Struct
+     member), resolved as the array source walk resolves it
+     (ivar_src_slot), and taken on the source walk's terms: no writer
+     called from outside, and every write of the ivar a new Array or a
+     parameter (ivar_writes_fresh) */
+  if (nt_kind(c->nt, n) == NK_CallNode) {
+    const char *ivn = NULL;
+    int cls = ivar_src_slot(c, n, &ivn), dc = -1;
+    if (cls < 0 || comp_resolve_member(c, cls, ivn + 1, 0, &dc, NULL) != SP_MEMBER_ATTR || dc < 0) return 0;
+    ClassInfo *ci = &c->classes[dc];
+    int iv = comp_ivar_index(ci, ivn);
+    /* a Struct member of a Struct with no initialize of its own is set by
+       the constructor's arguments, which struct_new_types_members_at widens
+       with it or, where they cannot widen, keeps the member boxed */
+    int member = ci->is_struct && iv >= 0 && iv < ci->nmembers && comp_method_in_chain(c, dc, "initialize", NULL) < 0;
+    if (iv < 0 || class_ivar_pinned(ci, ivn) || ci->ivar_int_table[iv] ||
+        reader_ivar_set_outside(c, dc, ivn) || (!member && !ivar_writes_fresh(c, dc, ivn, 0, NULL))) return 0;
+    out->slot = &ci->ivar_types[iv]; out->cid = dc; out->iv = iv; out->reader = 1;
+    return 1;
+  }
   if (!holder_of_node(c, n, &h)) return 0;
   switch (h.kind) {
     case HK_LOCAL:
@@ -1824,9 +1867,36 @@ static int alias_read_kind(NodeKind k) {
          k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode;
 }
 
+static int widen_ivar_array_params(Compiler *c, const LWIndex *ivw, int cls, const char *inm);
+/* An ivar side the alias widening made the general container: marked for
+   the re-narrow (ivar_alias_wide), and the parameters it is assigned hold
+   their callers' Arrays, so they widen with it (a reader's ivar: in every
+   class that shares the slot, ivar_writes_fresh). */
+static int alias_ivar_widened(Compiler *c, const LWIndex *ivw, const AliasSide *w, TyKind top) {
+  int ch = 0;
+  const char *ivn = c->classes[w->cid].ivars[w->iv];
+  c->classes[w->cid].ivar_alias_wide[w->iv] = 1;
+  /* a reader's ivar is one slot with its ancestors' and subclasses' (the
+     layouts are copied down): they widen together, or the inherited merge
+     joins the two kinds into a boxed value */
+  for (int k = 0; w->reader && k < c->nclasses; k++) {
+    int kv = k != w->cid && (is_descendant(c, k, w->cid) || is_descendant(c, w->cid, k))
+             ? comp_ivar_index(&c->classes[k], ivn) : -1;
+    if (kv < 0 || class_ivar_pinned(&c->classes[k], ivn) || c->classes[k].ivar_types[kv] == top) continue;
+    ivar_set_type(&c->classes[k], kv, top);
+    c->classes[k].ivar_alias_wide[kv] = 1;
+    ch = 1;
+  }
+  if (top != TY_POLY_ARRAY) return ch;
+  if (w->reader) ivar_writes_fresh(c, w->cid, ivn, 1, &ch);
+  else if (ivw) ch |= widen_ivar_array_params(c, ivw, w->cid, ivn);
+  return ch;
+}
+
 /* Propagates container widening across direct aliases (`b = a`, and the
    same between ivars, globals, class variables and constants: `@b = @a`,
-   `$b = a`, `M = L`). Two names of one Array or Hash must agree on its
+   `$b = a`, `M = L`; a reader's call names its ivar: `@mine = o.items`,
+   `k = s.member`). Two names of one Array or Hash must agree on its
    kind: where they do not, the write between them converts, which is a
    copy, and a push or a store through the wider name never reaches the
    other. Whichever side is the general Array (the poly-keyed Hash) wins,
@@ -1837,7 +1907,7 @@ static int alias_read_kind(NodeKind k) {
    direction, so a chain written in either order settles in two. Answers 1
    when a slot that keeps its type across rounds changed; a local is reset
    and re-derived each round, and infer_write_types' sweep reports it. */
-static int propagate_alias_widening(Compiler *c) {
+static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
   static const NodeKind alias_writes[] = {
     NK_LocalVariableWriteNode, NK_InstanceVariableWriteNode, NK_GlobalVariableWriteNode,
     NK_ClassVariableWriteNode, NK_ConstantWriteNode };
@@ -1850,7 +1920,7 @@ static int propagate_alias_widening(Compiler *c) {
          [1]`, is not taken: an ivar write read as a value is emitted at its
          value's type, not its slot's) */
       int v = nt_paren_single(nt, nt_ref(nt, id, "value"));
-      if (v < 0 || !alias_read_kind(nt_kind(nt, v))) continue;
+      if (v < 0 || !(alias_read_kind(nt_kind(nt, v)) || nt_kind(nt, v) == NK_CallNode)) continue;
       AliasSide d, r;
       if (!alias_side(c, v, &r) || !alias_side(c, id, &d) || d.slot == r.slot) continue;
       if (n == cap) {
@@ -1875,7 +1945,8 @@ static int propagate_alias_widening(Compiler *c) {
       prop = 1;
       if (w->local) continue;
       changed = 1;
-      if (w->iv >= 0) c->classes[w->cid].ivar_alias_wide[w->iv] = 1;
+      if (w->iv < 0) continue;
+      alias_ivar_widened(c, ivw, w, top);
     }
   }
   free(ev);
@@ -3074,6 +3145,10 @@ static int push_widens_arrays(const NodeTable *nt, int call, TyKind t);
 static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind vt) {
   if (!is_push || g_infer_optimistic || vt == TY_UNKNOWN || vt == TY_POLY) return 0;
   TyKind rt = infer_type(c, recv);
+  /* a boxed element (`e[0] << :t` over `e = [a]`, `h[:k] << "s"`): the
+     Arrays it can be widen where they are built, as a boxed local's do */
+  if (rt == TY_POLY)
+    return push_widens_arrays(c->nt, id, vt) ? widen_boxed_array_sources(c, recv, vt, 0) : 0;
   if (!ty_is_array(rt) || rt == TY_POLY_ARRAY || ty_is_ptr_array(rt)) return 0;
   TyKind el = ty_array_elem(rt);
   if (el == vt || (el == TY_FLOAT && vt == TY_INT) || !push_widens_arrays(c->nt, id, vt)) return 0;
@@ -5035,7 +5110,7 @@ int infer_write_types(Compiler *c) {
   /* Container widening across direct aliases (`b = a`): the fold above
      runs AFTER the write-site unification, so an alias assigned before its
      source widened would keep the narrower container kind. */
-  changed |= propagate_alias_widening(c);
+  changed |= propagate_alias_widening(c, &ivw_ix);
 
   /* The container-usage fold above can widen a hash's value layout after the
      main write-site scan has already typed a destination local. Reconcile the
@@ -9316,6 +9391,24 @@ static int struct_with_types_members(Compiler *c, int id, int ci) {
   return changed;
 }
 
+/* The argument `v` (of type at) a Struct member that is the general
+   container `mt` is built from: an attribute's ivar (`S.new(o.items)`)
+   widens as the alias step widens it, anything else is followed back to
+   where its containers are built (widen_arg_array, widen_arg_hash).
+   Answers 1 on a change, 0 when nothing had to change, -1 when the
+   argument's containers cannot widen. */
+static int struct_member_widens_arg(Compiler *c, int v, TyKind mt, TyKind at) {
+  if (at == mt) return 0;
+  AliasSide sd;
+  if (nt_kind(c->nt, v) == NK_CallNode && alias_side(c, v, &sd)) {
+    ty_ref_set(sd.slot, mt);
+    alias_ivar_widened(c, NULL, &sd, mt);
+    return 1;
+  }
+  int w = mt == TY_POLY_ARRAY ? widen_arg_array(c, v) : widen_arg_hash(c, v);
+  return w ? 1 : -1;
+}
+
 /* given_only: only the members the call's arguments supply (a `new` on a
    class value, whose omitted members the nullable pass makes nil) */
 static int struct_new_types_members_at(Compiler *c, int id, int ci, int given_only);
@@ -9388,6 +9481,18 @@ static int struct_new_types_members_at(Compiler *c, int id, int ci, int given_on
     }
     TyKind at = vnode >= 0 ? struct_member_arg_type(c, vnode) : TY_NIL;
     TyKind m = ty_unify(cls->ivar_types[a], at);
+    /* A member another name of its Array made the general Array (the alias
+       step, a push through its reader) holds the argument's Array itself:
+       the argument's Arrays widen with it, as a parameter a method stores
+       into an ivar does (widen_ivar_array_params); a poly-keyed Hash member
+       its argument's Hashes. Unified, the two kinds made the member a boxed
+       value and the argument a copy. An argument whose containers cannot
+       widen keeps the boxed member. */
+    if (vnode >= 0 && ((cls->ivar_types[a] == TY_POLY_ARRAY && ty_is_array(at)) ||
+                       (cls->ivar_types[a] == TY_POLY_POLY_HASH && ty_is_hash(at)))) {
+      int w = struct_member_widens_arg(c, vnode, cls->ivar_types[a], at);
+      if (w >= 0) { m = cls->ivar_types[a]; changed |= w; }
+    }
     /* Any other literal key may bind the member too: its name written
        again, whose last value CRuby binds, or a key that is not a Symbol,
        which names a member only at run time, a String by name and a
