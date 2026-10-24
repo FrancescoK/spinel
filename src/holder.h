@@ -40,7 +40,6 @@ typedef struct {
   int cid, idx;            /* HK_IVAR / HK_CVAR: the class and its slot
                               index, -1 when the class has no entry */
   LocalVar *lv;            /* HK_LOCAL / HK_GVAR / HK_CONST: the slot */
-  int share_h;             /* the --share-strings holder (share.h), or -1 */
   Repr r;                  /* repr_of_holder */
 } HolderRef;
 

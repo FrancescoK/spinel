@@ -60,7 +60,6 @@ void holder_ivar(const Compiler *c, int node, int cid, int cls_slot, HolderRef *
   out->cid = cid;
   out->cls_slot = (unsigned char)(cls_slot != 0);
   out->idx = cid >= 0 && out->name ? comp_ivar_index(&c->classes[cid], out->name) : -1;
-  out->share_h = cid >= 0 ? share_ivar_holder(c, cid, out->name) : -1;
   out->r = repr_of_holder(c, out);
 }
 
@@ -75,7 +74,7 @@ int holder_of_node_in(const Compiler *c, int node, int body, HolderRef *out) {
   /* *out is defined on every answer: a caller may spell it whatever this
      answered */
   memset(out, 0, sizeof *out);
-  out->cid = out->idx = out->share_h = -1;
+  out->cid = out->idx = -1;
   if (!nm) return 0;
   if (hk == HK_IVAR) {
     /* the read side's rule, which repr_of and the String-handle readers
@@ -98,7 +97,6 @@ int holder_of_node_in(const Compiler *c, int node, int body, HolderRef *out) {
     Scope *s = comp_scope_of(mc, node);
     out->lv = s ? scope_local(s, nm) : NULL;
     if (!out->lv) return 0;
-    out->share_h = share_local_holder(c, (int)(s - c->scopes), (int)(out->lv - s->locals));
     break;
   }
   case HK_GVAR: {

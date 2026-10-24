@@ -20272,7 +20272,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
            that handle (`each { |e| acc << e }` over a yielding each) */
         int yo = block_param_user_yield_only(c, snm, sns);
         if (yo && c->share &&
-            repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
+            repr_local_shares(c, sns, snv)) {
           if (snv->type != TY_STRBUF || !snv->str_shared) { lv_set_type(snv, TY_STRBUF); snv->str_shared = 1; ch = 1; }
           if (!c->strbuf_box[sn]) { comp_set_strbuf_box(c, sn, 1); ch = 1; }
         }
@@ -21214,7 +21214,7 @@ static int strbuf_static_store_walk(Compiler *c, NodeKind kind, const char *grn,
       Scope *svs = sv >= 0 && nt_kind(nt, sv) == NK_LocalVariableReadNode ? comp_scope_of(c, sv) : NULL;
       LocalVar *slv = svs ? scope_local(svs, nt_str(nt, sv, "name")) : NULL;
       if (slv && slv->is_block_param &&
-          repr_str_shares(c, share_local_holder(c, (int)(svs - c->scopes), (int)(slv - svs->locals))))
+          repr_local_shares(c, svs, slv))
         continue;
       changed |= strbuf_store_leaf(c, stores.v[k], depth, SB_DEMAND);
     }

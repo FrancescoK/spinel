@@ -782,7 +782,7 @@ const NativeMethod *repr_super_native_keeps(Compiler *c, int n) {
   int nm = comp_native_method_find_typed(c, root, ms->name, 1, 0, &at);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
   if (!m || m->kind != 0 || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest || m->nargs != 1) return NULL;
-  return repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) ? m : NULL;
+  return m;
 }
 
 /* repr.h: does method mi answer no value -- every path of its body ends in
@@ -978,8 +978,7 @@ static int scope_self_is_string(const Compiler *c, int scope) {
 
 int repr_self_handle(const Compiler *c, int scope) {
   if (!scope_self_is_string(c, scope)) return 0;
-  int h = share_self_holder(c, scope);
-  return share_self_used(c, h) && repr_str_shares(c, h);
+  return share_self_used(c, share_self_holder(c, scope));
 }
 
 int repr_self_shared(const Compiler *c, int node) {
@@ -1001,7 +1000,7 @@ static int repr_user_answers_self(Compiler *c, int v) {
     if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) nt_arr(nt, body, "body", &nb);
     int last = scope_body_last(c, tg[i]);
     if (m->def_node < 0 || m->nparams != 0 || nb != 1 || last < 0 || nt_kind(nt, last) != NK_SelfNode ||
-        !scope_self_is_string(c, tg[i]) || share_self_holder(c, tg[i]) < 0)
+        !scope_self_is_string(c, tg[i]))
       return 0;
   }
   return 1;
@@ -1030,8 +1029,8 @@ int repr_env_store_operand(Compiler *c, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_env_const(nt_str(nt, r, "name")) &&
          !comp_const(c, "ENV") && argc == 2 && bop_share_named(BOP_ENV, nt_str(nt, v, "name")) == BSH_LAST &&
          (repr_of(c, argv[1]).kind != RK_BOXED || share_value_unobserved(c, argv[1])) &&
-         (!(share_node_flags(c, argv[0]) & SHF_MUT) || repr_of(c, argv[0]).handle ||
-          share_value_fresh(c, argv[0], 0) || !subtree_has_side_effect(c, argv[1])) ? argv[1] : -1;
+         (repr_of(c, argv[0]).handle || share_value_fresh(c, argv[0], 0) || !subtree_has_side_effect(c, argv[1]))
+         ? argv[1] : -1;
 }
 /* Does string conversion `node` hand on a handle: the operand it ends in,
    through further conversions, is a boxed value or a route that carries
@@ -1737,6 +1736,14 @@ int repr_str_class_shares(unsigned flags, int holders) {
   return 1;
 }
 
+/* Does local lv of scope s hold a String the rule shares: one whose type
+   can hold a String, but the loop variable a define_method unroll
+   substitutes (collect_dm_each_unroll), which is no slot? */
+int repr_local_shares(const Compiler *c, const Scope *s, const LocalVar *lv) {
+  if (!s || !lv) return 0;
+  if (s->dm_subst_name && lv->name && sp_streq(lv->name, s->dm_subst_name)) return 0;
+  return sh_may_hold(c, lv->type);
+}
 int repr_str_shares(const Compiler *c, int holder) {
   if (!c->share || holder < 0) return 0;
   return repr_str_class_shares(share_class_flags(c, holder), share_class_holders(c, holder));

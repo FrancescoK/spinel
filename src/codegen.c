@@ -9296,7 +9296,7 @@ static void emit_param_string_lift(const char *prefix, const char *name, Buf *pb
 }
 void emit_block_param_share(Compiler *c, Scope *bs, LocalVar *lv, const char *name, Buf *pb, int rooted) {
   if (!lv || repr_of_slot(c, lv).kind != RK_BOXED ||
-      !repr_str_shares(c, share_local_holder(c, (int)(bs - c->scopes), (int)(lv - bs->locals)))) return;
+      !repr_local_shares(c, bs, lv)) return;
   emit_param_string_lift("lv_", name, pb, rooted);
 }
 /* A rest binds each argument into a fresh container. Its element holder,
@@ -9304,7 +9304,7 @@ void emit_block_param_share(Compiler *c, Scope *bs, LocalVar *lv, const char *na
 static void emit_proc_rest_bind(Compiler *c, Scope *bs, const char *name, int arity, Buf *pb) {
   LocalVar *lv = scope_local(bs, name);
   int lift = lv &&
-             repr_str_elems_share(c, share_local_holder(c, (int)(bs - c->scopes), (int)(lv - bs->locals)));
+             repr_local_shares(c, bs, lv);
   buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", name, name);
   /* (every argument the call passed, past the channel's slots too) */
   buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps;\n", arity);

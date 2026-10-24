@@ -3607,7 +3607,7 @@ int strbuf_builtin_tail(Compiler *c, int v) {
       strbuf_boxed_local(c, v) && (repr_of(c, v).narrowed == TY_STRING || repr_of(c, v).narrowed == TY_STRBUF)) {
     Scope *s = comp_scope_of(c, v);
     LocalVar *lv = scope_local(s, nt_str(c->nt, v, "name"));
-    return lv && repr_str_shares(c, share_local_holder(c, (int)(s - c->scopes), (int)(lv - s->locals)));
+    return lv && repr_local_shares(c, s, lv);
   }
   if (!c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;

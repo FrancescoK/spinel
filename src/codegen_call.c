@@ -10562,8 +10562,8 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
      holder tells whether the String it keeps is shared, a super statement's
      value being unrecorded, #9258) */
   Scope *ms = g_native_into && nt_kind(c->nt, id) == NK_SuperNode ? comp_scope_of(c, id) : NULL;
-  int shares = ms ? repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) : 1;
-  if (!(m->share & NSH_KEEPS) || !m->share_csym || m->rest || !shares)
+  (void)ms;
+  if (!(m->share & NSH_KEEPS) || !m->share_csym || m->rest)
     return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
   if (m->nargs > 0 && (argc < 1 || !emit_handle_var_ref(c, argv[0], &hb))) { free(hb.p); return 0; }
