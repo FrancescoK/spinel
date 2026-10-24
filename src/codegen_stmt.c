@@ -24837,13 +24837,9 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
   unsupported(c, id, is_or ? "index-or-write" : "index-and-write");
 }
 
-/* ---- the routes the seal requires (--share-strings, #6765) ----
-   repr_share_flows_check asks, for every flow the share walk recorded into
-   a class the rule shares (share.h's ShareFlowKind), whether the consumer
-   that takes the String hands the shared handle along. These answer by
-   the emitters' own tests, consumer by consumer; a route a consumer does
-   not carry yet answers 0, and the program is refused instead of compiled
-   with a copy. A route fixed in an emitter is added here with it. */
+/* ---- the routes a String's handle takes (#6765) ----
+   Whether the consumer that takes a String hands its handle along, by the
+   emitters' own tests, consumer by consumer. */
 
 /* Does a box take value v as the handle it is? An element or a block's
    value is boxed (the box face), which renders every producer kind but

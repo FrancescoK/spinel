@@ -1,101 +1,41 @@
-/* share.h -- the share classes --share-strings decides by (#6765).
+/* share.h -- the questions the String rule asks of the program (#6765).
 
-   A union-find over the places a String object can be held (holders: a
-   local or parameter, an ivar, a global, a class variable, a constant, the
-   elements of a container) and the values flowing between them, built by
-   one walk over the node table (analyze_share.c). Two holders in one class
-   may hold the same String object. A class records whether an in-place
-   String mutation reaches it (SHF_MUT), whether it meets anything the walk
-   does not follow (SHF_UNKNOWN), and whether a mutation reaches it through a
-   receiver that is no holder of its own, so no slot can take the new
-   pointer back (SHF_INDIRECT).
-
-   The facts only describe; the questions below read them. */
+   Every slot that can hold a String holds its handle (slot_holders and
+   share_default_apply in analyze.c enumerate them as ShareHolders). The
+   questions below are what codegen and the analysis still ask: whether a
+   value is a new String no other name holds, which literal blocks a method
+   can run, whether a node hands on a String's handle, and plain questions
+   of names, targets and literals (analyze_share.c). */
 #ifndef SPINEL_SHARE_H
 #define SPINEL_SHARE_H
 
 #include "compiler.h"
 
 typedef enum {
-  SHK_VALUE,    /* an expression's value: a container literal, a join */
   SHK_LOCAL,    /* a local or a parameter: scope, local */
   SHK_IVAR,     /* cid, name */
   SHK_GVAR,     /* name */
   SHK_CVAR,     /* name */
   SHK_CONST,    /* name */
-  SHK_ELEM,     /* the elements of the containers of one class */
-  SHK_RET,      /* a method's value: scope */
-  SHK_YIELD,    /* what a method yields: scope */
-  SHK_BLKRET,   /* what the blocks a method yields to answer: scope */
-  SHK_SELF,     /* a String instance method's receiver: scope */
-  SHK_UNKNOWN   /* anything the walk does not follow */
+  SHK_RET       /* a method's value: scope */
 } ShareKind;
-
-enum {
-  SHF_MUT      = 1,   /* an in-place String mutation reaches the class */
-  SHF_UNKNOWN  = 2,   /* the class meets UNKNOWN */
-  SHF_INDIRECT = 4,   /* mutated through a receiver that is no holder */
-  SHF_MULTI    = 16,  /* an ivar of the class is written a String it did not
-                         make (a call's answer, a member read): the holder is
-                         one per class but a slot per object, so it can be
-                         several names at once (sh_ivar_store) */
-  SHF_IDENTITY = 32   /* a reopening's receiver is compared by identity or
-                         handed to a consumer that keeps or mutates it */
-};
-/* The facts are kept in one byte per class (ShareFacts.flags): with SHF_OUT
-   (8), SHF_CHG (64) and SHF_FRZ (128) of analyze_share.c, bits 1 to 128 are
-   all taken. The next flag has to widen the field first. */
 
 typedef struct {
   unsigned char kind;   /* ShareKind */
   int scope, local;     /* SHK_LOCAL: the scope and its local's index;
-                           SHK_RET/YIELD/BLKRET: the method scope */
+                           SHK_RET: the method scope */
   int cid;              /* SHK_IVAR: the owning class */
   const char *name;     /* SHK_IVAR/GVAR/CVAR/CONST */
   int node;             /* a node that names the holder, for a message */
 } ShareHolder;
 
-/* The flows the walk follows from a value into the place that takes it:
-   the node that takes it (the site) and the node whose value it is. Where
-   the rule shares the value's class, codegen has to hand the shared handle
-   along the flow; a copy there is a second String the other names never
-   see. Only flows into a slot (a variable, a parameter, an element) or an
-   in-place change are kept: a method's, a block's or a jump's value is a
-   value until it reaches one, and that flow is the call's, the yield's or
-   the loop's. The seal checks each against the routes codegen carries the
-   handle along (strbuf_flow_carries); a holder's read hands on its slot,
-   which the seal checks as a holder, wherever codegen reads it as one. */
-typedef enum {
-  SHFL_WRITE,    /* a variable's write, an optional parameter's default:
-                    site the write (the parameter) */
-  SHFL_MEMBER,   /* an attribute writer's, a Struct member's or
-                    instance_variable_set's store: site the call */
-  SHFL_ARG,      /* an argument bound to a user method's parameter: site
-                    the call */
-  SHFL_ELEM,     /* a container's element: site the container (a literal,
-                    the receiver a call stores into, Array.new's value) */
-  SHFL_BLOCK,    /* a block's value a call stores (map, map!, Array.new and
-                    Hash.new blocks): site the call, or the `next` that
-                    answers it */
-  SHFL_YIELD,    /* what a yield hands its block's parameters: site the
-                    yield */
-  SHFL_PARAM,    /* an iterator's receiver bound to its block's parameter
-                    (then, tap): site the call */
-  SHFL_LEND,     /* an argument whose slot a parameter is lent (sh_lend):
-                    site the parameter's holder, not a node */
-  SHFL_MULTI,    /* a multiple write's value taken by one target: site the
-                    write */
-  SHFL_MUTATE    /* the receiver an in-place String change goes through:
-                    site the call */
-} ShareFlowKind;
-
-/* (Re)build c->share from the current types and tables. */
+/* (Re)build c->share's tables from the current types and calls. */
 void share_facts_build(Compiler *c);
 void share_facts_free(Compiler *c);
 
 /* Is multiple write n a plain one (`a, b = x, y`): an Array literal value
    with no splat, and no rest or post target -- each target takes its own
-   value (SHFL_MULTI)? */
+   value? */
 int share_masgn_plain(const NodeTable *nt, int n);
 /* Does call n store its literal block's values into a container it
    answers or changes (an Array's or a Hash's map, map!, zip with a block,
@@ -121,8 +61,8 @@ int share_mark_borrows(Compiler *c);
 
 /* Does method scope mi answer no String: each expression its value can be
    (a nil among them) is none a String can be, by its type or form or by what
-   is written to an instance variable it reads? Asked of the final facts; a
-   method whose values the walk does not follow answers 0. */
+   is written to an instance variable it reads? A method whose values are
+   not followed answers 0. */
 int share_scope_answers_no_string(Compiler *c, int mi);
 /* Can a method of the program's own (a reopening of builtin class cls, or
    a module a prepend can put ahead of it) stand in for cls's method name
@@ -131,7 +71,7 @@ int share_builtin_overridden(Compiler *c, const char *cls, const char *name);
 
 
 /* The literal blocks method scope mi yields to, as a list in *blocks:
-   their count, or -1 when a block the walk does not list reaches its
+   their count, or -1 when a block the table does not list reaches its
    yields (a block passed as a value, a zsuper's, a dynamic call's). */
 int share_method_blocks(const Compiler *c, int mi, const int **blocks);
 /* The literal blocks that can reach method scope mi's yields: its own
@@ -163,7 +103,7 @@ int share_block_returns(const Compiler *c, int blk);
 /* The builtin arms of a boxed call, before checking its user targets. */
 int share_builtin_fresh(Compiler *c, int call);
 /* The methods call can run where its plan lists no members -- more than
-   CPT_MAX, or a receiver of no settled type -- and the walk sees every
+   CPT_MAX, or a receiver of no settled type -- and the program shows every
    method of its name (no method_missing, no computed definer, no String
    evaluated, the name no alias's, singleton def's or module_function's):
    their count into out (at most cap), or -1 (#9258). */

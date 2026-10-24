@@ -1,25 +1,14 @@
-/* analyze_share.c -- the share classes --share-strings decides by (#6765).
+/* analyze_share.c -- the questions the String rule asks of the program
+   (#6765): whether a value is a new String no other name holds
+   (share_value_fresh), which literal blocks a method can run
+   (share_method_blocks), whether a node hands on a String's handle
+   (share_node_carry_kind), and the plain questions of names, targets and
+   literals beside them. See share.h.
 
-   See share.h. One walk over the node table gives every node a value (an
-   element of the union-find, or none) and unifies what flows together:
-   each write with its target, each container store with the container's
-   elements, each argument with the parameter it binds, each yield with the
-   blocks the method is called with, each return with the method's value,
-   each break or next with the call, loop or block it leaves (sh_jumps),
-   each throw with its lexical catch or UNKNOWN,
-   each pattern variable with the part it matches (sh_pattern).
-   A builtin call is read off its builtin-op share row (bop_share); a user
-   call off its call plan (cplan_user_fresh). What the walk does not follow
-   -- a proc or Method call, a runtime `send`, a builtin with no row -- joins
-   UNKNOWN, so a case it misses costs a handle, never a silent copy. Not
-   yet followed: the parts a pattern reads off an object's deconstruct, a
-   user Enumerable's generator (Fiber.yield), and a String a native class
-   keeps (its C copies it).
-
-   A parameter its method only reads and mutates is lent, as the lent slot
-   is: binding it does not unify, and its mutation marks each argument's
-   class instead. That keeps `grow(buf)` on a local accumulator a
-   `const char *` lent by address, as without the flag. */
+   The tables they keep (ShareFacts) are read from the calls when the
+   rule is applied (share_facts_build): the blocks each method can be
+   given, the methods a method hands its own block on to, the names a
+   send or a Method may reach, and the memos the questions fill. */
 
 #include <stdlib.h>
 #include <string.h>
@@ -32,92 +21,13 @@
 #include "codegen_internal.h"
 #include "value_pos.h"
 
-/* element-own flags (not merged by a union). SHE_COMPARED: the value is
-   compared by identity, or handed to a consumer that keeps or mutates it
-   (sh_finalize reads it for a String reopening's receiver) */
-enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4,
-       SHE_IVARS = 8, /* the value keeps instance variables: the runtime's
-                         table is keyed by its handle, so its class is the
-                         shared object whatever holds it (SHF_IDENTITY) */
-       SHE_ENVDEF = 16,
-       SHE_STR_COMPARED = 32 /* the value, typed a String, is compared by
-                                identity (an exception's message is shared
-                                for it, sh_finalize) */ };
-/* a class flag beside share.h's SHF_*: a value of the class leaves a call
-   to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
-   so a container of the class can be reached again (sh_finalize) */
-enum { SHF_OUT = 8 };
-/* a class flag: a mutation other than freeze reaches the class (SHF_MUT
-   alone may be a freeze, which changes no bytes), and the input marker
-   sh_mark_at takes off again: this mutation is a freeze */
-enum { SHF_CHG = 64, SHF_FRZ = 128 };
-/* per-node marks: a statement whose value is dropped (SHU_STMT), and a value
-   its construct drops that the walk itself still follows -- a loop body's
-   last statement, the tail of a block whose iterator keeps none of its
-   values (SHU_TAIL). Only the method reads (sh_settle_reads) take the
-   second. SHU_SPLIT marks an Array literal a multiple write splits into its
-   targets (share_masgn_plain): no container holds its elements. SHU_PEEK
-   marks a container literal handed to a builtin that only reads it and
-   keeps none of it (`puts [a, b]`, `p [a, b]` as a statement), and such a
-   `p a, b` itself: no name sees its elements again (sh_settle_peeks).
-   It also marks transient arguments and receivers whose builtin keeps
-   none of their value, including fresh call results needing no handle. */
-enum { SHU_STMT = 1, SHU_TAIL = 2, SHU_SPLIT = 4, SHU_PEEK = 8 };
-/* per-node answers built from the flows (ShareFacts.into) */
-enum { SHI_INTO = 1, SHI_MUTATED = 2, SHI_LITOUT = 4 };
-
-/* The builtin side of a mixed boxed String call can be fresh even when its
-   joined user result is not. Keep the exact selected row and call-shape fact
-   from the share walk so the later return-tail proof can revalidate it without
-   replaying sh_builtin's effects. */
-typedef struct {
-  int call, share, family, container, recv_type, result_type, plan_ret;
-  int argc, ntg;
-  const BuiltinOp *row;
-  int *arg_types;
-  int *targets;
-} ShBoxedFreshFact;
-
 typedef struct ShareFacts {
-  int n, cap;
-  /* key: per element, the keys a Hash's lookups ask for, which its default
-     proc is handed (sh_key; -1 none) */
-  int *key;
-  int *parent, *elem, *nhold, *nmem, *nelem, *hidx, *owner;
-  /* alt: the elements a value may be one of, a second union-find that only
-     sh_join feeds (the arms of a conditional, `a || b`, a fetch's default
-     beside the elements): unlike the classes above it does not take a
-     parameter and the method's answer, or the arguments of two calls, into
-     one. share_param_kept asks it which parameter a stored value may be. */
-  int *alt;
-  /* the values handed to a place that keeps them with no flow to show for it
-     (an argument of a call the walk does not follow, an exception's
-     message): share_param_kept counts a read of a parameter among them */
-  int *kp_e, nkp, ckp;
-  /* per root: the method scope every holder of the class is a plain local
-     of (no parameter, no captured local), or -1 none yet, or -2 when some
-     member is anything else */
-  int *lsc;
-  /* a method's return of a value, held back until the classes settle: one
-     whose class is still only that method's own locals hands the caller a
-     String nobody else names, and joins no class (sh_settle_rets) */
-  int *ret_m, *ret_v, nret, cret;
-  unsigned char *ret_done;
-  unsigned char *unused;   /* per node: SHU_* */
-  /* the call and super nodes that reach a user method, whose value is the
-     method's then, and per method scope, once settled, whether a caller
-     may read its value (sh_settle_reads) */
-  int *rsite, nrsite, crsite;
-  unsigned char *mread;
-  /* per method scope: a String it answers joined its value (sh_settle_rets,
-     a multiple return, a dynamic call): one it does not answers only
-     Strings no other name holds (share_call_fresh) */
-  unsigned char *ret_joined;
-  /* the literal blocks each yielding method is given (sh_block_to_method):
-     pairs, then once built, per method scope its run (mb_start..mb_start+1)
-     of mb_blk; blk_dyn per method scope: a block the walk does not list
-     reaches its yields (a block passed as a value, a zsuper's, a dynamic
-     call's), bit 2 set for the last two */
+  int nnodes;
+  /* the literal blocks each method can be given (sh_mb_add): pairs, then
+     once built, per method scope its run (mb_start..mb_start+1) of mb_blk;
+     blk_dyn per method scope: a block the table does not list reaches its
+     yields (a block passed as a value, a zsuper's, a dynamic call's), bit 2
+     set for the last two */
   int *mb_m, *mb_b, nmb, cmb;
   int *mb_start, *mb_blk;
   unsigned char *blk_dyn;
@@ -133,167 +43,23 @@ typedef struct ShareFacts {
   /* per node, once asked: a `call` on a callable whose every value is a
      new String or no String (1), not (0), not asked (-1); NULL until then */
   signed char *fresh_call;
-  /* the methods the default build may lend a parameter's slot
-     (an_byref_eligible_scopes), and per method scope, the parameters it
-     passes by value (byval), once asked (byval_done) */
-  char *byref_elig;
-  int own_elig;        /* byref_elig is this build's own, not c->byref_elig */
-  unsigned *byval, *byval_done;
-  /* the mutation sites, for SPINEL_SHARE_STATS=3: node, value */
-  int *mut_n, *mut_v, nmut, cmut;
-  /* the value of an explicit writer's attribute assignment and the right-hand
-     side's class, joined once something observes the value as that String
-     (sh_settle_assign_joins) */
-  int *aj_v, *aj_s, naj, caj;
-  unsigned char *aj_done;
-  /* the flows (sh_flow): per flow, the node that takes the value (site),
-     the node whose value it takes, and the kind (ShareFlowKind) */
-  int *fl_site, *fl_val, nfl, cfl;
-  unsigned char *fl_kind;
-  /* per flow, the union-find element that takes the value -- the holder of
-     a variable, a parameter, an ivar or a block parameter, or the elements
-     of a container -- or -1 when the walk made none (sh_flow) */
-  int *fl_dest;
-  /* per node, once asked (sh_into_build): SHI_INTO when a flow takes its
-     value into a holder whose class the rule shares, SHI_MUTATED when it is
-     the receiver of an in-place String change, SHI_LITOUT when it is an
-     element of a container literal whose Strings the rule does not hand
-     out; NULL until then */
-  unsigned char *into;
-  /* the calls sh_peek_args recorded: n for one that only reads its
-     arguments, -n-1 for one that answers them */
-  int *pk, npk, cpk;
-  /* per node, a lambda a local holds and only calls (sh_mark_local_lambdas):
-     the lambda node itself, and each `f.call(...)` of that local; -1 for
-     any other node, or NULL when the program has none (read by
-     share_value_fresh) */
-  int *lam;
-  int *hcount;         /* per root, once built: holders storing a String */
-  unsigned char *pkept;   /* per element, built when first asked (share_param_kept):
-                             a flow takes the value of a read of it */
-  unsigned char *anchored;   /* per root, once built: a container of the class
-                                can be reached again (sh_finalize) */
-  unsigned char *kind, *flags, *own;
-  /* the holders, and their element */
-  ShareHolder *h;
-  int *helem, nh, ch;
-  /* holder keys: a hash over (kind, a, name) */
-  int *bucket, *hnext;
-  int nbucket;
-  /* each node's value: -2 not yet computed, -1 none */
-  int *nval, nnodes;
-  /* per node: the base sh_self_chain_base found last from it, -1 none yet
-     (a link it passed stays passable: classes only merge) */
-  int *scb;
-  /* per node: a blockless builtin call answering a new String Array of
-     new Strings (`s.scan(re)`, `s.split`), whose value is a class of its
-     own (sh_builtin) */
-  unsigned char *fresh_cont;
-  /* per node: inside a method the program never names (sh_dead_nodes) */
-  unsigned char *dead;
-  /* mixed boxed-String calls whose selected builtin row actually answered
-     with no carried identity (`sh_builtin` returned -1), alongside the
-     selected row and input signature used to revalidate the proof */
-  ShBoxedFreshFact *boxed_fresh;
-  int nboxed_fresh, cboxed_fresh;
-  /* lazily allocated per-node index into boxed_fresh (stored as index + 1) */
-  int *boxed_fresh_index;
-  /* `break v` and `next v` (sh_jumps): per node, the value the breaks out
-     of a call's block or a loop hand the call or the loop, or the nexts of
-     a block hand the block (-1 none); and the nodes the walk that finds
-     them reached */
-  int *jump;
-  int catch_unknown;   /* a throw whose dynamic target the walk cannot name */
-  unsigned char *jseen;
-  /* per node, a `Fiber.yield` in an Enumerator.new block (the yielder a
-     desugared `y << v` is): that Enumerator.new call, or -1 (sh_jumps) */
-  int *fgen;
-  /* the Hash lookups' containers and keys (sh_lookup_key) */
-  int *lk_c, *lk_k, nlk, clk;
-  unsigned char *lk_done;
-  /* lent bindings: argument value -> parameter holder element, and the
-     argument's node */
-  int *lend_arg, *lend_par, *lend_node;
-  unsigned char *lend_direct, *lend_done;
-  int nlend, clend;
-  /* the method names a Method, `send` or define_method can reach */
+  /* the method names a Method, `send` or `&:name` can reach; dyn_all when
+     one is computed */
   const char **dyn;
-  int ndyn, cdyn, dyn_all, dyn_ivars, dyn_args;
-  /* the receivers `env.m(...)` of a parameter defaulting to ENV stand in
-     as a class of their own (env_st), merged into the parameter's after
-     the walk unless nothing but its default reaches it (sh_settle_env) */
-  int *env_st, *env_p, nenv, cenv;
-  const char **mconst;
-  int nmconst, cmconst;
-  int unknown;
-  /* the Strings handed to an exception (an exception class's new, raise,
-     an exception's super into Exception#initialize), which its message
-     answers (sh_exc), or -1 before the first */
-  int exc;
+  int ndyn, cdyn, dyn_all;
   int ostruct;         /* the program names OpenStruct, whose fields a poly
                           receiver's call may read */
-  int singleton_accessors; /* some class has singleton readers/writers whose
-                               class-side holder edges are not in this graph */
-  int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
-  int union_stack_cap;
-  int *union_stack;
-  /* `k.new(...)` with k a class held in a variable reaches any initialize:
-     its arguments join any_new_pos (by position; the 16th and later share
-     the last) and any_new_kw (its keywords), and its literal blocks
-     any_new_blk, which every initialize takes once after the walk
-     (sh_settle_any_new) */
-  int any_new_pos[16], any_new_kw, any_new_used;
-  /* the values of every user deconstruct (0) and deconstruct_keys (1), a
-     pattern over a value that may be any object reads its parts off
-     (sh_deconstructed; -2 not made yet, -1 none) */
-  int any_dec[2];
-  /* does the program make a Lazy (a `lazy` call): -1 not asked yet */
-  int any_lazy;
-  /* does the program make a proc or a Method a box could hold (a lambda,
-     a proc literal, a block taken as &blk, a Method, a to_proc): -1 not
-     asked yet */
-  int any_callable;
-  int *any_new_blk, nany_blk, cany_blk;
-  /* the attr readers and writers of every class by name, and the method
-     scopes by name, sorted for a binary search (built on first use) */
-  struct ShNamed { const char *name; int k, yielder; } *attr_r, *attr_w;
-  int nattr_r, nattr_w, named_built;
-  /* the variables a literal block or a lambda binds (its parameters and
-     block-locals), by name, k the scope they live in, yielder when it is
-     Enumerator.new's yielder; built on first use (sh_blk_bound) */
-  struct ShNamed *blkp;
+  struct ShNamed { const char *name; int k, yielder; } *blkp;
+  /* the block parameters by name: a literal block's and a lambda's, with
+     the method that yields to them or Enumerator.new's yielder; built on
+     first use (sh_blk_bound) */
   int nblkp, cblkp, blkp_built;
-  /* the writes of an instance variable no write node shows, by the name
-     they write (sh_ivar_writes_build): an attribute writer's call `o.x = v`,
-     its `||=`, `&&=` and multiple-write target, a send or a Method naming
-     the writer, all as "x=" (an `||=`, `&&=` or `+=` that names only the
-     reader as "x"), and instance_variable_set(:@x, v) as "@x"; k the node.
-     ivw_all: a call writes an ivar it does not name (a dynamic
-     instance_variable_set or send, Marshal.load, an alias of a writer).
-     Built on first use. ivs: the answers of sh_ivar_string so far, as
-     (name, k 0 or 1). */
+  /* the writes of an ivar by name, for sh_ivar_string: an attr writer's as
+     "x=", a reader as "x", and instance_variable_set(:@x, v) as "@x"; k the
+     node. ivs: the answers given, by name */
   struct ShNamed *ivw, *ivs;
   int nivw, civw, ivw_built, ivw_all, nivs, civs;
 } ShareFacts;
-
-/* ---- the union-find ---- */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* ---- holders ---- */
-
-
 
 /* Can a value of type t hold a String, or a container of them? An object's
    Strings sit in its ivars, which are holders of their own. */
@@ -322,8 +88,6 @@ int sh_may_hold(const Compiler *c, TyKind t) {
   }
 }
 
-
-
 /* the class whose ivar slot an ivar node names, as the emitters store it */
 static int sh_ivar_owner(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
@@ -331,23 +95,10 @@ static int sh_ivar_owner(Compiler *c, int node) {
   return comp_class_index(c, "Toplevel");
 }
 
-
-
-
-
-
-
 static int sh_method_index(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
   return s && s->def_node >= 0 ? (int)(s - c->scopes) : -1;
 }
-
-/* A reopening's receiver is a binding, just as an explicit parameter is.
-   Its byte-only uses do not require a handle ABI. */
-
-
-
-
 
 static void sh_dyn_name(ShareFacts *F, const char *name) {
   if (!name) { F->dyn_all = 1; return; }
@@ -359,47 +110,6 @@ static void sh_dyn_name(ShareFacts *F, const char *name) {
 }
 
 static const char *sh_lit_name(const NodeTable *nt, int n);
-/* The methods a method reference with a computed name can reach (#9627):
-   `method(x)`, `public_method(x)`, `instance_method(x)` and
-   `singleton_method(x)` reach the receiver's class's methods alone, so
-   their names go to F->dyn when that class is known (a constant, self in a
-   method, a value of one class), as a literal name does; a module's
-   instance methods are its own and its included modules', a class's its
-   chain's and the top level's (Object's). `define_method(x)` and
-   `define_singleton_method(x)` with a literal block make a new method of
-   the block, whose parameters and value already meet UNKNOWN, and with a
-   body expression (a Proc, an instance_method) that expression's own call
-   decides what it reaches: neither makes a method the program defines
-   reachable by name. Anything else (a receiver of unknown class, a name no
-   argument gives) keeps every method reachable (dyn_all), as before. */
-/* The method references whose reach is being resolved (a stack): one that
-   leads back to itself through a parameter's sources is taken to reach
-   what the other sources give (the least answer that holds) */
-static int g_ref_stack[16], g_ref_top;
-
-
-
-
-/* ---- node values ---- */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /* the literal name a `send`, `method` or `instance_variable_*` names */
 static const char *sh_lit_name(const NodeTable *nt, int a) {
   if (a < 0) return NULL;
@@ -428,10 +138,6 @@ static int sh_plain_operand(Compiler *c, int n);
    shares its argument's class instead. */
 enum { SHL_UNSOUND = -1, SHL_READ = 0, SHL_HOLDS = 1 };
 
-
-/* A block literal handed to user method mi: its parameters take what mi
-   yields, its value is what mi's yields answer; a block mi keeps as &blk
-   may be called from anywhere. */
 /* Method from hands the block it was given on to method to (share_value_fresh) */
 static void sh_fwd_edge(ShareFacts *F, int from, int to) {
   if (from < 0 || to < 0) return;
@@ -460,22 +166,8 @@ static void sh_block_value_to(ShareFacts *F, Compiler *c, int n, int blk, int mi
   else F->blk_unk[mi] = 1;
 }
 
-
 static int sh_named_first(const struct ShNamed *a, int n, const char *name);
 static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap);
-/* the user methods a call reaches (cplan_targets: the plan's method and, for
-   a switch, every member); -1 when they are more than cap or not knowable
-   yet (the caller then treats the call as one the walk does not follow,
-   never as fewer methods). The answers are held for one build of the facts,
-   dropped at its start. */
-/* Is user method mi, a target cplan_targets lists for boxed call `call`,
-   one the dispatch arms: a class the receiver's fact does not rule out
-   reaches it (comp_poly_candidates_at, which the arms are counted from,
-   #8530)? Every target is for a direct call, a class method (which
-   share_target_reachable bounds), or a receiver the fact bounds nothing of.
-   Listing every class's method joined the new String `[:a].map(&:inspect)`
-   answers with the ivar a class's own inspect publishes, which no Symbol
-   reaches (#9258). The fresh walk bounds its targets the same way. */
 /* ... with the call's fresh plan `p` in hand: the facts' target walk asks
    this of every target of a call, and resolved the plan again for each
    (cplan_user_fresh keeps nothing), which on a Rails program was 7% of a
@@ -604,37 +296,9 @@ static int sh_named_first(const struct ShNamed *a, int n, const char *name) {
   return lo;
 }
 
-
-
-
-
-/* The share-row semantics of builtin call n. Answers its value. */
-
-
-
 static int sh_answers_elems_run(int share, int argc);
 
-
-
-
-
-typedef struct {
-  Compiler *c;
-  const int *argv;
-  int argc;
-} ShBopArgs;
-
-
-
-
 static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *name);
-
-
-
-
-
-
-
 
 /* The class that `K.new(...)` (through parentheses) builds, whatever else
    the program has for the class to be: the instance of exactly K, when K is
@@ -692,17 +356,6 @@ static int sh_string_conv_arg(Compiler *c, int n) {
       nt_kind(nt, argv[0]) == NK_BlockArgumentNode || sh_has_targets(c, n)) return -1;
   return argv[0];
 }
-
-
-
-
-/* The receiver a mutation through node n reaches: n itself, or, past a
-   chain of builtin String calls whose row answers their receiver itself
-   (`line << a << b`, `s.strip!.upcase!`: BOPF_SELF, BOPF_SELF_OR_NIL), the
-   chain's first receiver. The chain's value is that receiver's String, so
-   a mutation of it is one of that receiver's, direct when it is a holder's
-   read; the walk gave each link its receiver's class (BSH_RECV), which the
-   class test confirms. */
 
 /* The names parameter node p binds (a block's ParametersNode, or one of
    its parameters, destructured or not), into F->blkp under scope si. */
@@ -927,11 +580,6 @@ int share_scope_answers_no_string(Compiler *c, int mi) {
   return 1;
 }
 
-
-
-
-
-
 static int sh_builtin_fresh(Compiler *c, int call, int ostruct);
 /* Under --share-strings, is call n an attribute assignment (`obj.x = v`,
    call_is_setter_assign) of one plain value? Its value is the right-hand
@@ -946,17 +594,7 @@ static int sh_assign_call(const Compiler *c, int n) {
          nt_kind(c->nt, argv[0]) != NK_BlockArgumentNode;
 }
 
-
-
-
 static int sh_uplus_copies(Compiler *c, int n);
-
-
-
-
-
-
-
 
 /* `a, b = x, y`: a multiple write of an Array literal with no splat into
    targets with no rest; each target takes its own value. */
@@ -1002,97 +640,18 @@ int share_masgn_plain(const NodeTable *nt, int n) {
   return nr == 0;
 }
 
-
-
-/* ---- lending ---- */
-
-
-
-
-
-
-
-
-
-
-
-
-/* ---- the build ---- */
-
-
-
-
-
-
-
 static void sh_free(ShareFacts *F) {
   if (!F) return;
-  for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
-  free(F->parent); free(F->alt); free(F->kp_e); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
-  free(F->owner); free(F->hcount); free(F->pkept); free(F->anchored); free(F->mconst);
-  free(F->mut_n); free(F->mut_v);
-  free(F->aj_v); free(F->aj_s); free(F->aj_done);
-  free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
-  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont); free(F->dead);
-  if (F->own_elig) free(F->byref_elig);
-  free(F->byval); free(F->byval_done);
-  free(F->rsite); free(F->mread); free(F->ret_joined);
   free(F->mb_m); free(F->mb_b); free(F->mb_start); free(F->mb_blk); free(F->blk_dyn);
   free(F->fw_from); free(F->fw_to); free(F->blk_unk); free(F->fresh_blk); free(F->fresh_call);
-  free(F->kind); free(F->flags); free(F->own);
-  free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval); free(F->scb);
-  free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
-  free(F->dyn); free(F->union_stack);
-  free(F->any_new_blk); free(F->env_st); free(F->env_p); free(F->attr_r); free(F->attr_w); free(F->blkp); free(F->ivw);
+  free(F->dyn); free(F->blkp); free(F->ivw);
   for (int i = 0; i < F->nivs; i++) free((char *)F->ivs[i].name);
   free(F->ivs);
-  free(F->jump); free(F->jseen); free(F->fgen);
-  free(F->key); free(F->lk_c); free(F->lk_k); free(F->lk_done);
-  for (int i = 0; i < F->nboxed_fresh; i++) {
-    free(F->boxed_fresh[i].arg_types);
-    free(F->boxed_fresh[i].targets);
-  }
-  free(F->boxed_fresh);
-  free(F->boxed_fresh_index);
   free(F);
 }
 
-
-
-/* ---- break and next ----
-   `break v` makes v the value of the call whose block it leaves (`loop {
-   break s }` answers s itself), or of the while, until or for loop it
-   leaves; `next v` makes v the value its block answers, and a lambda's
-   break is its value too. One walk from the root, and from each method
-   (one the desugar made may hang from no statement), finds each one's
-   target. A jump element per target is made before any value is computed,
-   so a call valued before the walk reaches its block's break still joins
-   it. A break with no target (outside any block or loop) joins UNKNOWN, as
-   does one the walk does not reach (sh_val_compute). */
-/* Catch context is lexical only. A method or deferred block starts a new
-   context; an unmatched throw meets every catch through UNKNOWN. Symbol
-   tags can be compared by value; other tags fall back rather than infer
-   object identity. The bounded lookup adds constant work per throw. */
-typedef struct ShCatch { int node, tag; struct ShCatch *outer; } ShCatch;
-typedef struct {
-  int *t, *n, np, cp;
-  Compiler *c;
-  int gen;   /* the Enumerator.new call whose block the walk is in, or -1 */
-  int captures_self;   /* a block keeps the enclosing method's receiver */
-  ShCatch *caught;
-} ShJumps;
-
-
-
-
-
-
-
-
-
-
 /* The literal blocks by method (mb_start/mb_blk), a counting sort of the
-   pairs sh_block_to_method recorded. */
+   pairs sh_mb_add recorded. */
 static void sh_index_blocks(ShareFacts *F, Compiler *c) {
   size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
   F->mb_start = calloc(ns + 1, sizeof(int));
@@ -1106,8 +665,6 @@ static void sh_index_blocks(ShareFacts *F, Compiler *c) {
   for (int i = 0; i < F->nmb; i++) F->mb_blk[at[F->mb_m[i]]++] = F->mb_b[i];
   free(at);
 }
-
-
 
 /* The nodes of the methods the program never names. Such a method runs
    nothing, so its body's reads and writes are no facts about the Strings the
@@ -1321,13 +878,6 @@ void share_facts_free(Compiler *c) {
   sh_free(c->share);
   c->share = NULL;
 }
-
-
-
-
-
-
-
 
 int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   const ShareFacts *F = c->share;
@@ -1755,12 +1305,6 @@ int share_block_returns(const Compiler *c, int blk) {
   return n == 0 || nt_kind(nt, st[n - 1]) != NK_BreakNode || sh_has_next(nt, body);
 }
 
-/* share.h: can a method of the program's own stand in for builtin class
-   cls's method `name` where the call plan does not see it: one a reopening
-   of cls defines, or a module's that a prepend or an extend the program
-   calls can put ahead of cls's own (sh_module_put_ahead)? A reopened builtin's methods are not called for its values (an old
-   dispatch gap), so such a call answers the builtin's, not the program's;
-   the facts that take the builtin's answer for granted stand aside. */
 /* Can a `prepend` or an `extend` the program calls put module mname ahead
    of a builtin's own methods: a call of either naming it, or one whose
    argument is no constant? A module only included, which a class's own
@@ -1933,9 +1477,6 @@ int share_frozen_literal(Compiler *c, int n) {
       (bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN && !is_freeze_name(nt_str(nt, n, "name")))) return 0;
   return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
 }
-/* share.h: is node n a frozen String, a literal (share_frozen_literal) or
-   a read of a builtin String constant no constant of the program's own
-   shadows (is_engine_string_const)? */
 /* Is unary `+` of n a new String: n a builtin String constant
    (share_frozen_string), or what the builtin freeze answers, frozen
    whatever its receiver (`+RUBY_ENGINE.freeze`, `+s.freeze`)? */
@@ -2073,7 +1614,6 @@ int share_value_unobserved(Compiler *c, int n) {
   return share_value_fresh(c, n, 0) || an_local_read_once(c, n);
 }
 
-
 /* Does the String (or a box that may hold one) node v evaluates to have to
    be the String's handle where it is emitted -- stored, boxed, mutated --
    and not its bytes? Under the one representation every String does, but
@@ -2095,9 +1635,6 @@ int share_value_needs_handle(Compiler *c, int v) {
   return SHN_YES;
 }
 int share_store_needs_handle(Compiler *c, int v) { return share_value_needs_handle(c, v); }
-
-/* ---- master's route refusals under the flag (share.h) ---- */
-
 
 static int sh_ivar_owner(Compiler *c, int node);
 /* A String method answering its receiver or nil (bop_share_self_answer:
@@ -2276,7 +1813,6 @@ int share_node_carries_handle(const Compiler *c, int n) {
 int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 1, op); }
 int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 0, op); }
 
-
 /* ---- a Hash key borrows a handle's bytes ----
 
    A String the rule shares is an sp_String * handle, and a String-keyed
@@ -2341,7 +1877,6 @@ static int sh_handle_read(Compiler *c, int a) {
   return 0;
 }
 
-
 /* Is call n a builtin String-keyed Hash call whose first argument is a key
    it only compares, or copies to store? */
 static int sh_hash_key_call(Compiler *c, int n) {
@@ -2355,7 +1890,6 @@ static int sh_hash_key_call(Compiler *c, int n) {
   if (is_store_alias(name)) return 1;
   return is_hash_key_lookup(name);
 }
-
 
 int share_mark_borrows(Compiler *c) {
   const NodeTable *nt = c->nt;
