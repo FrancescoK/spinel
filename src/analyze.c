@@ -41868,9 +41868,12 @@ static int splat_local_len(Compiler *c, int ex, int callid) {
   if (!nm || callid >= c->node_cap) return -1;
   int sc = c->nscope[callid];
   int len = -1, writes = 0, reads = 0, seen = 0;
+  /* (the scope first: the scan is of every node of the program, once per
+     splat of a local, and reading each node's type was most of it) */
   for (int id = 0; id < nt->count && id < c->node_cap; id++) {
+    if (c->nscope[id] != sc) continue;
     const char *ty = nt_type(nt, id);
-    if (!ty || c->nscope[id] != sc) continue;
+    if (!ty) continue;
     if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, id, "name");
       if (rn && sp_streq(rn, nm)) reads++;
