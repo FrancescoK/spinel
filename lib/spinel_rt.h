@@ -8161,6 +8161,20 @@ static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
   return r;
 }
 
+/* The Array a builtin just built for a boxed receiver, before a push of
+   elements of `kinds` (1 Integer, 2 Float, 4 String, 8 Symbol, 16 another
+   value): an Integer, Float, String or Symbol Array that cannot hold them is
+   copied into the general Array, which nothing else holds either (the
+   analysis asks for this only there, an_push_lifts_boxed), so the push
+   stores what CRuby's Array stores. Any other value as it is. */
+static SP_UNUSED sp_RbVal sp_ary_lift_kinds(sp_RbVal a, int kinds) {
+  if (a.tag != SP_TAG_OBJ || !a.v.p) return a;
+  int fits = a.cls_id == SP_BUILTIN_INT_ARRAY ? 1 : a.cls_id == SP_BUILTIN_FLT_ARRAY ? (1 | 2)
+           : a.cls_id == SP_BUILTIN_STR_ARRAY ? 4 : a.cls_id == SP_BUILTIN_SYM_ARRAY ? 8 : -1;
+  if (fits < 0 || !(kinds & ~fits)) return a;
+  return sp_box_poly_array(sp_poly_to_poly_array(a));
+}
+
 /* A boxed value an --rbs `Array[untyped]` seed reads as the poly array: an
    Array of another kind (an Integer array passed on through an `untyped`
    parameter) is copied into one, where reading its header as a poly array's

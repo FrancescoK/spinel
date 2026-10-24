@@ -8358,6 +8358,54 @@ int an_push_widens_fresh(Compiler *c, int id) {
   return 0;
 }
 
+/* A push onto the Array a builtin call built for a boxed receiver
+   (`name.to_s.scan(/\d+/) << 99`, where another class's to_s and scan make
+   the call a dispatch): the String arm answers a typed Array, boxed, and the
+   push of another kind could not store into it. That Array is new and held
+   by nothing else, so it is widened to the general Array first, at run time,
+   when its kind cannot take what the push stores (sp_ary_lift_kinds). Only
+   where every way the call can answer a typed Array is such a builtin: a
+   method or reader of the program's with the name answers no typed Array
+   (the push widens what a method of the program answers already). Answers
+   the kinds the push stores (AN_LIFT_*), 0 for any other call. */
+int an_push_lifts_boxed(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || !is_push_alias(nm) || nt_ref(nt, id, "block") >= 0 || nt_safe_nav(nt, id)) return 0;
+  int r = nt_paren_single(c->nt, recv);
+  if (nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "receiver") < 0 || nt_safe_nav(nt, r)) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  if (!fresh_array_builtin_name(rn) || infer_type(c, recv) != TY_POLY) return 0;
+  /* (an Array subclass's `dup` is an instance of that class, boxed as its builtin) */
+  if (c->has_arysub) return 0;
+  /* a program's own Array#push (or <<) answers what it answers */
+  if (!nt_int(nt, id, "builtin_only", 0) &&
+      (array_hash_reopen_owner(c, id, TY_STR_ARRAY, nm) >= 0 || array_hash_reopen_owner(c, id, TY_POLY_ARRAY, nm) >= 0))
+    return 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    if (!c->scopes[s].name || !sp_streq(c->scopes[s].name, rn)) continue;
+    TyKind st = (TyKind)c->scopes[s].ret;
+    if ((ty_is_array(st) || ty_is_obj_array(st)) && st != TY_POLY_ARRAY) return 0;
+  }
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_is_reader(&c->classes[k], rn)) return 0;
+  int a = nt_ref(nt, id, "arguments"), ac = 0, kinds = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
+    TyKind at = infer_type(c, av[k]);
+    if (at == TY_INT) kinds |= AN_LIFT_INT;
+    else if (at == TY_FLOAT) kinds |= AN_LIFT_FLOAT;
+    else if (at == TY_STRING || at == TY_STRBUF) kinds |= AN_LIFT_STRING;
+    else if (at == TY_SYMBOL) kinds |= AN_LIFT_SYMBOL;
+    else if (at == TY_BOOL || at == TY_BIGINT) kinds |= AN_LIFT_OTHER;
+    else if (at != TY_NIL) return 0;
+  }
+  return kinds;
+}
+
 /* The receiverless calls the Enumerator desugaring emits, each with one
    argument: __enum_chain_of([*sources]) is Enumerator::Chain.new,
    __enum_pairs an Enumerator, __enum_count_int the Integer a count converts to. */
