@@ -4206,8 +4206,10 @@ static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int 
   }
   if (key >= 0 && c->send_param_memo && c->send_param_memo[key]) return c->send_param_memo[key] == 2;
   int res = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (res) continue;
+  /* the calls of the method's name, off the calls-by-name index: every
+     call of the program was read for each parameter asked about */
+  for (int id = an_calls_named_first(c, sc->name); id >= 0 && !res; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *cn = nt_str(nt, id, "name");
     if (!cn || !sp_streq(cn, sc->name)) continue;
     int a = nt_ref(nt, id, "arguments");

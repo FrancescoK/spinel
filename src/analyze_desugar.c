@@ -5507,9 +5507,14 @@ static int dsend_class_names(Compiler *c, int cls, char ***out) {
 /* Does every definition of `name` in the program refuse `argc` positional
    arguments? A name the program does not define (a builtin's) is never
    excluded; an attr reader takes none, an attr writer exactly one. */
+/* The scopes of the name come off the scopes-by-name index (every named
+   scope from 1 up; scope 0 is asked by itself): asked per candidate name of
+   every send site, each ask compared the name with every scope of the
+   program, 118,000 on a Rails application, a fifth of the pass. */
 static int dsend_defined_arity_excludes(Compiler *c, const char *name, int argc) {
   int defined = 0;
-  for (int s = 0; s < c->nscopes; s++) {
+  for (int s = c->nscopes > 0 ? 0 : -1; s >= 0;
+       s = s == 0 ? an_scopes_named_first(c, name) : an_scopes_named_next(c, name, s)) {
     Scope *sc = &c->scopes[s];
     if (!sc->name || !sp_streq(sc->name, name)) continue;
     defined = 1;
