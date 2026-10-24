@@ -469,8 +469,6 @@ static void usage(void) {
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext cruby        Also generate the CRuby extension shim (<out>_ext.c)\n"
-    "  --share-strings  Accepted and ignored: a mutable String is always\n"
-    "              shared by reference (#6765)\n"
     "  --no-inline-hot  Do not force small leaf methods inline (default: do).\n"
     "                 Forcing is worth a sixth of optcarrot's frame rate and\n"
     "                 costs up to twice the C compile time\n"
