@@ -21686,8 +21686,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
       else buf_printf(b, "\"undefined local variable or method '%s' for %s%s\")",
                       vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "");
-      buf_printf(b, ", %s)",
-                 (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()");
+      const char *vdef = (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()";
+      /* (a pointer's NULL cast to its type: a reader inlined over the
+         placeholder, `current_part.id`, dereferences it, and a void *
+         had no member to read; #10079) */
+      if (vdef && sp_streq(vdef, "NULL") && ty_is_object(vret) && !comp_ty_value_obj(c, vret)) {
+        buf_puts(b, ", (("); emit_ctype(c, vret, b); buf_puts(b, ")NULL))");
+      }
+      else buf_printf(b, ", %s)", vdef);
       return 1;
     }
   }
