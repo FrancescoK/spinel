@@ -1202,6 +1202,21 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
        between two turns may allocate. A temporary receiver (`array.join.
        each_char { }`) has no other holder at that point, so the temp is a
        root, the way the array iterators root their hoisted receiver. */
+    /* One representation: the iterator answers its receiver, which for a
+       variable the block can rebind (an ivar, a class variable, a global)
+       is read as a copy of its bytes (sp_strbuf_read_pub_own): the handle
+       is held ahead of the loop and its payload's view answered, which
+       is the String itself where it is stored (`[@s.each_char { }]`
+       stored the copy) */
+    int th_ech = 0;
+    NodeKind rk_ech = nt_kind(nt, recv);
+    Buf hb_ech; memset(&hb_ech, 0, sizeof hb_ech);
+    if (g_one_string && (rk_ech == NK_InstanceVariableReadNode || rk_ech == NK_ClassVariableReadNode ||
+                         rk_ech == NK_GlobalVariableReadNode) && strbuf_slot_text(c, recv, &hb_ech)) {
+      th_ech = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d); ", th_ech, hb_ech.p, th_ech);
+    }
+    free(hb_ech.p);
     buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); ", ts, rb.p ? rb.p : "", ts); free(rb.p);
     /* Save outer variable before loop to restore it afterward */
     int tsv_ech = 0;
@@ -1297,6 +1312,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     emit_iter_loop_stmts(c, body, b, 0);
     if (p0 && tsv_ech > 0) buf_printf(b, " lv_%s = _t%d;", p0, tsv_ech);
     buf_printf(b, " } _t%d; })", ts);
+    if (th_ech) buf_printf(b, "; sp_strbuf_read_pub(_t%d); })", th_ech);
     return 1;
   }
 
