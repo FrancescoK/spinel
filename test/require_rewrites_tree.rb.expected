@@ -1,0 +1,9 @@
+autoload :Foo, "require_rewrites_tree/foo"
+require File.join("require_rewrites_tree", "b")
+"foo"
+[1, 1]
+[1, 1]
+[1, 1]
+[1, 1, 1, 1]
+{j: [1, 1]}
+6
