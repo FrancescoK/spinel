@@ -46516,32 +46516,6 @@ static void refuse_set_identity_members(Compiler *c) {
 
 
 
-/* Does some class answer `mn` with a String instance variable as it is (an
-   attr_reader, a Struct or Data member, `def mn = @iv`)? A boxed receiver
-   may be an instance of any instantiated one. */
-static int rd_string_reader_anywhere(Compiler *c, const char *mn) {
-  const NodeTable *nt = c->nt;
-  for (int cid = 0; cid < c->nclasses; cid++) {
-    /* a class no value is ever an instance of is no boxed receiver's */
-    if (!c->classes[cid].instantiated) continue;
-    int defc = -1;
-    const char *ivn = NULL;
-    char buf[256];
-    if (comp_reader_in_chain(c, cid, mn, &defc)) {
-      snprintf(buf, sizeof buf, "@%s", comp_resolve_alias(c, cid, mn));
-      ivn = buf;
-    }
-    else {
-      int rmi = comp_method_in_chain(c, cid, mn, &defc);
-      int last = rmi >= 0 ? scope_body_last(c, rmi) : -1;
-      if (last >= 0 && nt_kind(nt, last) == NK_InstanceVariableReadNode) ivn = nt_str(nt, last, "name");
-    }
-    int iv = ivn ? comp_ivar_index(&c->classes[cid], ivn) : -1;
-    if (iv >= 0 && (c->classes[cid].ivar_types[iv] == TY_STRING || c->classes[cid].ivar_types[iv] == TY_STRBUF))
-      return 1;
-  }
-  return 0;
-}
 int builtin_instance_method_known(const char *cls, const char *m);
 /* Does a String answer `nm` with its built-in method: one String has, that
    the program defines nowhere on String's chain (a reopen, an include, a
@@ -46552,84 +46526,6 @@ static int rd_builtin_string_method(Compiler *c, const char *nm) {
   int sci = comp_class_index(c, "String");
   return sci < 0 || (comp_method_in_chain(c, sci, nm, NULL) < 0 &&
                      comp_method_in_chain(c, sci, "method_missing", NULL) < 0);
-}
-/* Is `call` a query on local `wn`: no block, a built-in String method that
-   is no mutator? Its answer must not carry the String on either: it is a
-   branch's condition, or it answers no String (a String answer could be the
-   same object, `s.to_s`). */
-static int rd_query_on(Compiler *c, int call, const char *wn, int as_condition) {
-  const NodeTable *nt = c->nt;
-  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return 0;
-  int r = nt_paren_single(nt, nt_ref(nt, call, "receiver"));
-  const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
-  const char *nm = nt_str(nt, call, "name");
-  if (!rn || !sp_streq(rn, wn) || !nm || nt_ref(nt, call, "block") >= 0 || sp_str_mutator(nm, SP_MUT_LOCAL) ||
-      !rd_builtin_string_method(c, nm))
-    return 0;
-  size_t nl = strlen(nm);
-  if (nl > 0 && nm[nl - 1] == '!') return 0;
-  int ty = comp_ntype(c, call);
-  return as_condition || (ty != TY_STRING && ty != TY_STRBUF && ty != TY_POLY);
-}
-/* Does `node` read local `wn` only as the receiver of a query
-   (rd_query_on), so the String is neither changed nor handed on? */
-static int rd_only_queried(Compiler *c, int node, const char *wn) {
-  const NodeTable *nt = c->nt;
-  if (node < 0) return 1;
-  NodeKind k = nt_kind(nt, node);
-  const char *nm = nt_str(nt, node, "name");
-  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) && nm && sp_streq(nm, wn)) return 0;
-  /* the query itself (its arguments are walked below), or a branch on one */
-  int skip = -1;
-  if (k == NK_CallNode && rd_query_on(c, node, wn, 0)) skip = nt_paren_single(nt, nt_ref(nt, node, "receiver"));
-  else if (k == NK_IfNode || k == NK_UnlessNode) {
-    int pred = nt_paren_single(nt, nt_ref(nt, node, "predicate"));
-    if (rd_query_on(c, pred, wn, 1)) {
-      int args = nt_ref(nt, pred, "arguments");
-      if (!rd_only_queried(c, args, wn)) return 0;
-      skip = pred;
-    }
-  }
-  int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) {
-    int ch = nt_ref_at(nt, node, i);
-    if (ch != skip && nt_paren_single(nt, ch) != skip && !rd_only_queried(c, ch, wn)) return 0;
-  }
-  int na = nt_num_arrs(nt, node);
-  for (int i = 0; i < na; i++) {
-    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) if (!rd_only_queried(c, ids[j], wn)) return 0;
-  }
-  return 1;
-}
-/* `s = r.m` read through a reader, then only queried until the next
-   statement of the same body rebinds it to a copy, `s = s.dup` (String's own
-   dup, rd_builtin_string_method)
-   (Shellwords.escape: `str = str.to_s ... str = str.dup; str.gsub!`): the
-   mutations after that change the copy, never the member. Statement order
-   is the list order, so "until" is exact. */
-static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
-  const NodeTable *nt = c->nt;
-  Scope *sc = comp_scope_of(c, w);
-  if (!sc || sc->body < 0 || nt_kind(nt, sc->body) != NK_StatementsNode) return 0;
-  int sn = 0; const int *stmts = nt_arr(nt, sc->body, "body", &sn);
-  int k = 0;
-  while (k < sn && stmts[k] != w) k++;
-  for (int i = k + 1; i < sn; i++) {
-    int s = stmts[i];
-    const char *sname = nt_kind(nt, s) == NK_LocalVariableWriteNode ? nt_str(nt, s, "name") : NULL;
-    if (sname && sp_streq(sname, wn)) {
-      int v = nt_paren_single(nt, nt_ref(nt, s, "value"));
-      if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_plain_argc(c, v) != 0)
-        return 0;
-      const char *vn = nt_str(nt, v, "name");
-      int vr = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
-      const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_LocalVariableReadNode ? nt_str(nt, vr, "name") : NULL;
-      return vn && sp_streq(vn, "dup") && vrn && sp_streq(vrn, wn) && rd_builtin_string_method(c, "dup");
-    }
-    if (!rd_only_queried(c, s, wn)) return 0;
-  }
-  return 0;
 }
 /* A scan block's matches are new Strings, but CRuby raises "string modified"
    when the String the scan walks changes under it, and the compiled loop,
@@ -46877,15 +46773,6 @@ static int scan_subject_trusted(Compiler *c, int blk, int subj, ScanNamed *nm) {
   free(used.v);
   return ok;
 }
-/* Is call v, on a boxed receiver, a name no builtin answers whose dispatch
-   has only methods the program defines (no attr reader's arm)? */
-static int rd_dispatch_of_defs(Compiler *c, int v) {
-  const NodeTable *nt = c->nt;
-  if (ty_poly_face_owners(nt_str(nt, v, "name"), 0, 0, 1, 1)) return 0;
-  const PolyPlan *p = cplan_poly_arms(c, v);
-  for (int i = 0; i < p->n; i++) if (p->arm[i].kind != PA_USER) return 0;
-  return p->n > 0;
-}
 /* String routes the settled types show copying where CRuby hands over the
    one object (#6765), refused rather than compiled with the change lost:
    - `t = obj.text; t << x` on a boxed obj: the reader's dispatch answers a
@@ -46895,45 +46782,12 @@ static int rd_dispatch_of_defs(Compiler *c, int v) {
      match as a plain String, and the C did not build;
    - `kept[i] << x` with a String x, where kept stores a boxed block
      parameter no element iterator binds (refuse_stored_block_param). */
-static void refuse_string_read_copies(Compiler *c) {
+/* The scans with a block (`s.scan(re) { |m| ... }`) that take the run-time
+   length check (scan_rtcheck): a subject the block could grow or clear
+   under the scan, whose change CRuby reports as "string modified" at the
+   turn the block returns from (emit_scan_rtcheck_open). */
+static void mark_scan_rtchecks(Compiler *c) {
   const NodeTable *nt = c->nt;
-  HandleArgTab hat;
-  int hat_built = 0;
-  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
-    int v = nt_paren_single(nt, nt_ref(nt, w, "value"));
-    const char *wn = nt_str(nt, w, "name");
-    if (!wn || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 ||
-        call_plain_argc(c, v) != 0 || !strbuf_any_str_mut(c, wn, comp_scope_of(c, w)))
-      continue;
-    int r = nt_paren_single(nt, nt_ref(nt, v, "receiver"));
-    const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
-    if (!rn || comp_ntype(c, r) != TY_POLY || !nt_str(nt, v, "name") ||
-        !rd_string_reader_anywhere(c, nt_str(nt, v, "name")) || rd_read_dropped_for_copy(c, w, wn))
-      continue;
-    /* --share-strings: the reader hands over a copy, right where the rule
-       does not share the member's String */
-    ShareRoute q = share_route(w, v, 0);
-    q.to = w;
-    q.carry = SHARE_CARRY_COPY;
-    /* A reader whose settled plan carries shared fields uses that route, and
-       so does an exception's #message beside such readers
-       (exc_message_boxed_call). */
-    if (repr_boxed_reader_handle(c, v) || (c->share_strings && exc_message_boxed_call(c, v))) q.carry = v;
-    /* The methods' answers are not settled while the analysis runs, so a
-       dispatch of methods the program defines (`def m = @iv`, a new String)
-       is asked at the seal, from the final plan (share_node_carries_handle). */
-    else if (c->share_strings && rd_dispatch_of_defs(c, v)) q.carry = v;
-    /* A boxed to_s has a builtin face, so the reader plan declines it. The
-       seal asks repr_boxed_to_s_operand once the targets' returns settle:
-       every arm's own answer (a field's handle, a fresh String, the handle
-       in the box) is kept, and a target that settles otherwise still copies. */
-    else if (c->share_strings && is_to_s_name(nt_str(nt, v, "name"))) {
-      /* the receiver's callers must pass what the lift can make a handle */
-      if (!hat_built) { handle_arg_tab_init(c, &hat); hat_built = 1; }
-      if (boxed_to_s_recv_ok(c, &hat, r)) q.carry = v;
-    }
-  }
-  StoreVals st = {0};
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *un = nt_str(nt, u, "name");
     int blk = nt_ref(nt, u, "block"), r = nt_ref(nt, u, "receiver");
@@ -46945,24 +46799,16 @@ static void refuse_string_read_copies(Compiler *c) {
         const char *bp = block_param_name(c, blk, k);
         LocalVar *bv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
         if (bv && (bv->type == TY_STRBUF || (bv->type == TY_POLY && strbuf_any_str_mut(c, bp, comp_scope_of(c, blk))))) {
-          const char *sc_msg =
-            "a match `scan` hands its block is kept and mutated in place (a String "
-            "is not yet shared by reference through `scan`'s block parameter). Mutate a "
-            "copy (`m = +m.dup`) and keep that.";
-          /* the matches the call iterates are new Strings no other name
-             holds, so each reaches only the parameter */
-          ShareRoute q = share_route(u, u, 1);
-          q.fresh_elems = 1;
-          q.to = blk;
-          q.to_name = bp;
-          /* the matches are new, but a subject the block could change under
-             the scan keeps the refusal (scan_subject_trusted) */
+          /* The matches are new Strings, each held by the parameter alone.
+             A block that grows or clears a String in place may grow or
+             clear the subject under the scan, which CRuby notices at the
+             turn it returns from ("string modified"): such a scan takes
+             the run-time length check, unless the subject is vouched for
+             with no name the block reaches (scan_subject_trusted) or the
+             block never returns to the scan (share_block_returns). */
           ScanNamed nm = {{0}, 0};
           int trusted = scan_subject_trusted(c, blk, nt_paren_single(nt, r), &nm);
-          /* a block that changes no String in place but by growing or
-             clearing one leaves a subject the facts cannot vouch for to a
-             run-time length check, as CRuby's own (rt_site) */
-          int grow = 0, clear = 0, rs = nt_paren_single(nt, r);
+          int grow = 0, clear = 0, rs = nt_paren_single(nt, r), rt = 0, rt_grow = 0;
           const char *subj = nt_kind(nt, rs) == NK_LocalVariableReadNode ? nt_str(nt, rs, "name") : NULL;
           /* (a subject the block rebinds is another String once it does,
              and so is one the scan's own pattern rebinds, which runs
@@ -46970,63 +46816,23 @@ static void refuse_string_read_copies(Compiler *c) {
           if (subj && (scan_local_written(nt, nt_ref(nt, blk, "body"), subj) ||
                        scan_local_written(nt, nt_ref(nt, u, "arguments"), subj)))
             subj = NULL;
-          /* a raise out of a watched scan leaves $~ at the last match the
-             loop took before the first turn, where CRuby's is the turn's:
-             a method that reads it keeps the refusal */
+          /* (a raise out of a watched scan leaves $~ at the last match the
+             loop took before the first turn, where CRuby's is the turn's) */
           Scope *us = comp_scope_of(c, u);
           int uroot = us && us->body >= 0 ? us->body : nt->root_id;
           if (!scan_block_changes(c, blk, nt_ref(nt, blk, "body"), subj, &grow, &clear) && !(grow && clear) &&
               !((grow || clear) && subtree_reads_match_globals(c, uroot))) {
-            q.rt_site = u;
-            q.rt_grow = grow || clear;
+            rt = 1;
+            rt_grow = grow || clear;
           }
-          /* (one representation: the matches are the Array's handles; a
-             subject the facts cannot vouch for takes the run-time length
-             check instead of the refusal) */
-          int ok_one = 0;
-          if (!trusted && q.rt_site < 0) {
-            /* (a block that rebinds the subject's variable changes no String:
-               no check; any other takes the length check) */
-            if (subj) { q.rt_site = u; q.rt_grow = 1; }
-            ok_one = 1;
-          }
-          int ok = trusted || q.rt_site >= 0 || ok_one;
-          if (!trusted) nm.n = 0;
-          /* each local whose String the subject can be is a route's sole */
-          for (int i = 0; ok && i < (nm.n > 0 ? nm.n : 1); i++) {
-            q.sole = nm.n > 0 ? nm.v[i] : trusted ? -1 : SHARE_SOLE_UNVOUCHED;
-            ok = share_route_defer(c, &q, sc_msg);
-          }
-          if (!ok) unsupported_feature(c, u, sc_msg);
+          /* (a block that rebinds the subject's variable changes no String:
+             no check; any other takes the length check) */
+          if (!trusted && !rt && subj) { rt = 1; rt_grow = 1; }
+          if (rt && rt_grow && !(trusted && nm.n == 0) && share_block_returns(c, blk))
+            nt_node_set_int((NodeTable *)nt, u, "scan_rtcheck", 1);
         }
       }
-    /* `kept[0] << "b"`: a String mutation through an element read of a
-       local container */
-    int ar = nt_ref(nt, u, "arguments"), an = 0;
-    const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
-    int str_arg = 0;
-    for (int k = 0; k < an; k++) str_arg |= comp_ntype(c, av[k]) == TY_STRING || comp_ntype(c, av[k]) == TY_STRBUF;
-    if (r < 0 || !sp_str_mutator(un, SP_MUT_CONTAINER) || (array_mutator_name(un) && !str_arg) ||
-        nt_kind(nt, r) != NK_CallNode || !container_elem_read_p(nt, r))
-      continue;
-    int cont = nt_ref(nt, r, "receiver");
-    const char *cn = cont >= 0 && nt_kind(nt, cont) == NK_LocalVariableReadNode ? nt_str(nt, cont, "name") : NULL;
-    if (!cn || hash_element_no_string(c, r, cont)) continue;
-    int ns = 0;
-    const int *sn = sb_store_nodes(c, cn, comp_scope_of(c, cont), &ns);
-    for (int i = 0; i < ns; i++) {
-      int n = strbuf_container_store_values(c, sn[i], cn, comp_scope_of(c, cont), 0, &st);
-      for (int e = 0; e < n; e++) {
-        int l = nt_paren_single(nt, st.v[e]), bound = 0;
-        const char *ln = nt_kind(nt, l) == NK_LocalVariableReadNode ? nt_str(nt, l, "name") : NULL;
-        LocalVar *lv = ln ? scope_local(comp_scope_of(c, l), ln) : NULL;
-        if (!lv || !lv->is_block_param || lv->type != TY_POLY || lv->poly_ctr) continue;
-        strbuf_block_param_source_walk(c, ln, comp_scope_of(c, l), 0, SB_HAS_STRING, 1, &bound);
-      }
-    }
   }
-  free(st.v);
-  if (hat_built) handle_arg_tab_free(&hat);
 }
 
 /* A multiple assignment's index target that a Struct's own `[]=` can take
@@ -53891,7 +53697,7 @@ static void an_phase_reconcile_check(Compiler *c) {
     if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)) && an_reopen_owner(c, sid, "Hash") < 0)
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
-  refuse_string_read_copies(c);
+  mark_scan_rtchecks(c);
   mark_struct_aset_targets(c);
   share_struct_aset_handles(c);
 
