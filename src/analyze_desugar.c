@@ -15755,10 +15755,9 @@ typedef struct {
   int *seen, gen;                     /* by node: the walk that entered it */
 } RodIndex;
 static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper);
-static int rod_index_build(RodIndex *x, const NodeTable *nt, int n0) {
-  memset(x, 0, sizeof *x);
+static int *an_build_parent_index(const NodeTable *nt, int n0) {
   int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
-  if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (!parent) return NULL;
   for (int i = 0; i < n0; i++) parent[i] = -1;
   for (int p = 0; p < n0; p++) {
     int nr = nt_num_refs(nt, p);
@@ -15769,6 +15768,12 @@ static int rod_index_build(RodIndex *x, const NodeTable *nt, int n0) {
       for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
     }
   }
+  return parent;
+}
+static int rod_index_build(RodIndex *x, const NodeTable *nt, int n0) {
+  memset(x, 0, sizeof *x);
+  int *parent = an_build_parent_index(nt, n0);
+  if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   x->qn = inh_qualified_names(nt, parent, n0, &x->qs);
   free(parent);
   if (!x->qn || !x->qs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -16407,18 +16412,8 @@ int desugar_inline_struct_blocks(Compiler *c) {
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     if (!parent) {
-      parent = malloc(sizeof(int) * (size_t)n0);
+      parent = an_build_parent_index(nt, n0);
       if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      for (int i = 0; i < n0; i++) parent[i] = -1;
-      for (int p = 0; p < n0; p++) {
-        int nr = nt_num_refs(nt, p);
-        for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
-        int na = nt_num_arrs(nt, p);
-        for (int i = 0; i < na; i++) {
-          int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
-          for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
-        }
-      }
     }
     int par = parent[id];
     NodeKind pk = par >= 0 ? nt_kind(nt, par) : NK_NilNode;
@@ -16924,18 +16919,8 @@ int desugar_singleton_class_meta(Compiler *c) {
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
-  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  int *parent = an_build_parent_index(nt, n0);
   if (!parent) return 0;
-  for (int i = 0; i < n0; i++) parent[i] = -1;
-  for (int p = 0; p < n0; p++) {
-    int nr = nt_num_refs(nt, p);
-    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
-    int na = nt_num_arrs(nt, p);
-    for (int i = 0; i < na; i++) {
-      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
-      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
-    }
-  }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -17500,19 +17485,9 @@ static int incl_find_hook_at(const NodeTable *nt, const int *parent, char *const
 /* Each node's parent, and each class and module node's qualified name, for
    incl_find_hook_at. */
 static void incl_names_build(const NodeTable *nt, int n0, int **parent_out, char ***qn_out) {
-  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  int *parent = an_build_parent_index(nt, n0);
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
   if (!parent || !qn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int i = 0; i < n0; i++) parent[i] = -1;
-  for (int p = 0; p < n0; p++) {
-    int nr = nt_num_refs(nt, p);
-    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
-    int na = nt_num_arrs(nt, p);
-    for (int i = 0; i < na; i++) {
-      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
-      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
-    }
-  }
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ClassNode && nt_kind(nt, m) != NK_ModuleNode) continue;
     if (nt_ref(nt, m, "constant_path") < 0) continue;
@@ -18391,18 +18366,8 @@ int desugar_inherited_hooks(Compiler *c) {
   /* no class or Struct has a hook, its own or through `extend`: nothing
      below has a `super` to drop or a call to place */
   if (!ix.any_hook) { inh_index_free(&ix); return 0; }
-  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  int *parent = an_build_parent_index(nt, n0);
   if (!parent) { inh_index_free(&ix); return 0; }
-  for (int i = 0; i < n0; i++) parent[i] = -1;
-  for (int p = 0; p < n0; p++) {
-    int nr = nt_num_refs(nt, p);
-    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
-    int na = nt_num_arrs(nt, p);
-    for (int i = 0; i < na; i++) {
-      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
-      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
-    }
-  }
   /* the hooks first: a `super` that finds no ancestor's hook. A class's own
      hook reaches a module it extends next; a Struct's reaches Struct's. */
   for (int id = 0; id < n0; id++) {
