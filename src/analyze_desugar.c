@@ -19004,6 +19004,45 @@ static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***name
   }
 }
 
+/* The same names for the module group G of Q (qualified), when the
+   receiver resolves to one: the constants the bodies of G's nodes assign,
+   the classes and modules whose qualified name is one segment under G's
+   (a nested header, or `class G::B` anywhere), and a top-level `G::X = v`
+   whose path resolves to G. Another module of the same leaf (`Other::M`)
+   is not G, and its constants are not G's. */
+static void cg_collect_qual(const NodeTable *nt, const int *parent, const ScgQual *q, int g, int n0,
+                            char ***names, int *nn, int *cap) {
+  const char *qg = q->names.key[g];
+  size_t ql = strlen(qg);
+  for (int m = q->head[g]; m >= 0; m = q->next[m]) {
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      NodeKind sk = nt_kind(nt, st[k]);
+      if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode) {
+        const char *cn = nt_str(nt, st[k], "name");
+        if (cn) cg_add_name(cn, names, nn, cap);
+      }
+    }
+  }
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if ((mk != NK_ModuleNode && mk != NK_ClassNode) || !q->qn[m]) continue;
+    const char *x = q->qn[m];
+    if (strncmp(x, qg, ql) || x[ql] != ':' || x[ql + 1] != ':' || strstr(x + ql + 2, "::")) continue;
+    cg_add_name(x + ql + 2, names, nn, cap);
+  }
+  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
+  int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+  for (int k = 0; k < sn; k++) {
+    if (nt_kind(nt, ts[k]) != NK_ConstantPathWriteNode) continue;
+    int tg = nt_ref(nt, ts[k], "target");
+    int par = tg >= 0 && nt_kind(nt, tg) == NK_ConstantPathNode ? nt_ref(nt, tg, "parent") : -1;
+    const char *cn = tg >= 0 ? nt_str(nt, tg, "name") : NULL;
+    if (par >= 0 && cn && scg_qual_resolve(nt, parent, q, -1, par) == g) cg_add_name(cn, names, nn, cap);
+  }
+}
+
 /* def self.<mname>(__cg_n) = {<table>}.<op>(__cg_n.to_s) */
 static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
                   char **names, int nn, const char *mod) {
@@ -19134,6 +19173,8 @@ int desugar_dynamic_const_get(Compiler *c) {
   int n0 = nt->count;
   int changed = 0;
   char **done = NULL; int ndone = 0;
+  int *parent = NULL;   /* and q, built at the first call to resolve */
+  ScgQual q; memset(&q, 0, sizeof q);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -19152,44 +19193,63 @@ int desugar_dynamic_const_get(Compiler *c) {
     /* Object's constants are the top-level ones, not those a reopening's
        body assigns: its lookup stays with the top-level table (#9468) */
     if (sp_streq(mn, "Object") && nt_kind(nt, recv) == NK_ConstantReadNode) continue;
-    /* the module's first body carries the generated methods */
-    int first = -1;
-    for (int m = 0; m < n0 && first < 0; m++) {
-      NodeKind mk = nt_kind(nt, m);
-      if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
-      int cp = nt_ref(nt, m, "constant_path");
-      const char *bn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      if (bn && sp_streq(bn, mn) && nt_ref(nt, m, "body") >= 0) first = m;
+    /* the receiver, resolved to the module it names from where the call
+       stands (scg_qual_resolve): its first body carries the generated
+       methods, and its own bodies give the table. Found by its leaf alone,
+       the table of a module went into another of the same leaf, whose
+       constants it then named. A receiver that names none of the program's
+       modules by its path is taken by its leaf as before. */
+    if (!parent) {
+      parent = an_parent_map(nt);
+      if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      scg_qual_build(nt, parent, n0, &q);
     }
+    int g = scg_qual_resolve(nt, parent, &q, inh_scope_of(nt, parent, id), recv);
+    const char *key = g >= 0 ? q.names.key[g] : mn;
+    int first = -1;
+    if (g >= 0)
+      for (int m = q.head[g]; m >= 0 && first < 0; m = q.next[m]) { if (nt_ref(nt, m, "body") >= 0) first = m; }
+    else
+      for (int m = 0; m < n0 && first < 0; m++) {
+        NodeKind mk = nt_kind(nt, m);
+        if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
+        int cp = nt_ref(nt, m, "constant_path");
+        const char *bn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+        if (bn && sp_streq(bn, mn) && nt_ref(nt, m, "body") >= 0) first = m;
+      }
     if (first < 0) continue;
     int seen = 0;
-    for (int q = 0; q < ndone; q++) if (sp_streq(done[q], mn)) seen = 1;
+    for (int k = 0; k < ndone; k++) if (sp_streq(done[k], key)) seen = 1;
     if (!seen) {
       char **names = NULL; int nn = 0, cap = 0;
-      cg_collect(nt, mn, n0, &names, &nn, &cap);
+      if (g >= 0) cg_collect_qual(nt, parent, &q, g, n0, &names, &nn, &cap);
+      else cg_collect(nt, mn, n0, &names, &nn, &cap);
       int body = nt_ref(nt, first, "body");
       int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
       int *out = malloc(sizeof(int) * (size_t)(bn + 2));
       memcpy(out, bs, sizeof(int) * (size_t)bn);
-      int d1 = cg_def(nt, id, "__const_get__", "[]", names, nn, mn);
+      int d1 = cg_def(nt, id, "__const_get__", "[]", names, nn, key);
       int d2 = cg_def(nt, id, "__const_defined__", "key?", names, nn, NULL);
       int no = bn;
       if (d1 >= 0) out[no++] = d1;
       if (d2 >= 0) out[no++] = d2;
       nt_node_set_arr(nt, body, "body", out, no);
       free(out);
-      for (int q = 0; q < nn; q++) free(names[q]);
+      for (int k = 0; k < nn; k++) free(names[k]);
       free(names);
       done = realloc(done, sizeof(char *) * (size_t)(ndone + 1));
-      done[ndone++] = strdup(mn);
+      if (!done) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      done[ndone++] = strdup(key);
     }
     nt_node_set_str(nt, id, "name", is_get ? "__const_get__" : "__const_defined__");
     /* a second argument (inherit) has no meaning for the table */
     if (an > 1) nt_node_set_arr(nt, args, "arguments", av, 1);
     changed = 1;
   }
-  for (int q = 0; q < ndone; q++) free(done[q]);
+  for (int k = 0; k < ndone; k++) free(done[k]);
   free(done);
+  if (parent) scg_qual_free(&q, n0);
+  free(parent);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
