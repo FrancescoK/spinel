@@ -12606,6 +12606,20 @@ int desugar_builtin_enum_calls(Compiler *c) {
          dispatch below, under the builtin's name */
       else if (irt == TY_POLY) bname = "find_index";
     }
+    /* Enumerator#with_object(memo) { } on a value known only at run time
+       (a method's blockless `to_enum` beside its `self`) is
+       each_with_object's walk when the value is an Enumerator, and the
+       call as written for anything else (another class's own with_object,
+       or the NoMethodError CRuby raises): the dispatch below, under
+       each_with_object's copy */
+    int wo_arm = 0;
+    if (name && sp_streq(name, "with_object") && !nt_int(nt, id, "enum_wo_own", 0) &&
+        nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0 && !nt_safe_nav(nt, id) &&
+        builtin_enum_name_index("each_with_object") >= 0) {
+      int wa = nt_ref(nt, id, "arguments"), wn = 0;
+      if (wa >= 0) nt_arr(nt, wa, "arguments", &wn);
+      if (wn == 1 && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY) { bname = "each_with_object"; wo_arm = 1; }
+    }
     if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
@@ -12809,7 +12823,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
        inlining, closures and all. */
     int range_arm = rt == TY_POLY && ndef == 0 && !safe_nav && blk < 0 && an == 0 &&
                     sp_streq(name, "minmax");
-    if (ndef > 0 || safe_nav || range_arm) {
+    if (wo_arm) ndef = 0;   /* the arm as written answers every other class */
+    if (ndef > 0 || safe_nav || range_arm || wo_arm) {
       char rn[64]; snprintf(rn, sizeof rn, "__enumrecv_%s", comp_node_tag(c, id));
       int w = nt_new_node(nt, "LocalVariableWriteNode");
       int own = nt_new_node(nt, "CallNode");
@@ -12838,7 +12853,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
         nt_node_set_ref(nt, nq, "receiver", nr);
         pred = nq;
       }
-      if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range") : enum_is_a_chain(c, rn, defcls, ndef);
+      if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
+                          : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, ndef);
       if (pred < 0) { free(chained); free(in_default); return changed; }
       /* the class's own method, on the same receiver, with the block; under
          a safe navigation the nil arm answers nil and the class arm, when
@@ -12875,14 +12891,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
       else {
         nt_node_set_str(nt, own, "name", qn);
         nt_node_set_ref(nt, own, "receiver", ownr);
-        /* the class's method: a user arm; a Range's, the poly dispatch's */
-        nt_node_set_int(nt, own, range_arm ? "enum_range_own" : "enum_own", 1);
+        /* the class's method: a user arm; a Range's, the poly dispatch's;
+           with_object as written, for what is no Enumerator */
+        nt_node_set_int(nt, own, range_arm ? "enum_range_own" : wo_arm ? "enum_wo_own" : "enum_own", 1);
         if (args >= 0) nt_node_set_ref(nt, own, "arguments", args);
         if (blk >= 0) nt_node_set_ref(nt, own, "block", blk);
-        nt_node_set_arr(nt, ts, "body", &own, 1);
+        nt_node_set_arr(nt, wo_arm ? es : ts, "body", &own, 1);
       }
       /* the builtin's copy, with a copy of the block */
-      if (!(safe_nav && ndef > 0)) nt_node_set_arr(nt, es, "body", &gen, 1);
+      if (!(safe_nav && ndef > 0)) nt_node_set_arr(nt, wo_arm ? ts : es, "body", &gen, 1);
       nt_node_set_ref(nt, eln, "statements", es);
       nt_node_set_ref(nt, ifn, "predicate", pred);
       nt_node_set_ref(nt, ifn, "statements", ts);
