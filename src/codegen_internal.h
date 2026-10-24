@@ -1929,6 +1929,7 @@ const char *bigint_arith_fn(const char *op);
    `=`->_set, anything else non-identifier -> `_`. Returns a static buffer
    (one live result at a time -- fine since each use is consumed inline). */
 const char *mc(const char *name);
+void mc_resolve_clashes(Compiler *c);   /* before any method is named (codegen_program) */
 /* The class stem to compose a REOPENED builtin's method name with: the
    plain c_name, or one with an `_oc` suffix where the runtime already has a
    function of that exact spelling (sp_String_length). */
