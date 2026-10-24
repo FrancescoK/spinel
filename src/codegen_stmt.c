@@ -10475,9 +10475,16 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
    the class's #== for it (`when b` matched where Strict#=== said false).
    Each arm takes the subject as emit_when_user_eq does, boxed or as the
    type the subject alone gave the parameter; another shape is refused. */
+/* (a module's own: no object has a module for its class, and the module's
+   methods are emitted in the classes that include it, which have arms of
+   their own) */
+static int when_boxed_arm_class(Compiler *c, int k) {
+  return !c->classes[k].is_native_class && !comp_class_is_module(c, &c->classes[k]) &&
+         comp_method_in_chain(c, k, "===", NULL) >= 0;
+}
 static void emit_when_boxed_user_arms(Compiler *c, int cond, int t, TyKind pt, int tpw, Buf *b) {
   for (int k = 0; k < c->nclasses; k++) {
-    if (c->classes[k].is_native_class) continue;
+    if (!when_boxed_arm_class(c, k)) continue;
     int wdef = -1;
     int weq = comp_method_in_chain(c, k, "===", &wdef);
     if (weq < 0 || wdef < 0) continue;
@@ -10503,7 +10510,7 @@ static void emit_when_boxed_user_arms(Compiler *c, int cond, int t, TyKind pt, i
 
 static int when_boxed_has_user_arm(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++)
-    if (!c->classes[k].is_native_class && comp_method_in_chain(c, k, "===", NULL) >= 0) return 1;
+    if (when_boxed_arm_class(c, k)) return 1;
   return 0;
 }
 
