@@ -189,6 +189,7 @@ fi
 NEWDIR=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cident-new.XXXXXX")
 emit "$NEW" "$ROOT" "$NEWDIR"
 
+fzl_seq() { perl -pe 'BEGIN { %n = (); $k = 0 } s/\b_fzl_([0-9a-f]{8}(?:_[0-9a-f]+)?)(?![0-9a-zA-Z])/"_fzl_q" . ($n{$1} \/\/= $k++)/ge'; }
 NORM='s/[0-9]{4}\.[0-9]{2}\.[0-9]{2}\+[0-9]+ revision [0-9a-f]+/REV/g'
 same=0; diffn=0; refch=0; refused=0; fresh=0
 for f in $(list); do
@@ -204,8 +205,14 @@ for f in $(list); do
   fi
   # RUBY_DESCRIPTION names the compiler's own commit; a commit made after
   # the reference was cached changes it and nothing else
+  # A frozen literal is named by a hash of its bytes (#10073); one that
+  # holds a path (__FILE__, a file read in) is named after the tree it was
+  # compiled in, which the reference's is not, though its bytes compare
+  # equal once the path is rewritten above. The names are numbered in the
+  # order they appear before the second comparison; the bytes still are
+  # compared.
   if cmp -s "$a.c" "$b.c" ||
-     cmp -s <(sed -E "$NORM" "$a.c") <(sed -E "$NORM" "$b.c"); then same=$((same+1))
+     cmp -s <(sed -E "$NORM" "$a.c" | fzl_seq) <(sed -E "$NORM" "$b.c" | fzl_seq); then same=$((same+1))
   else
     diffn=$((diffn+1))
     echo "DIFFERS: $f"
