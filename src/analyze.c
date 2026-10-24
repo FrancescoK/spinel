@@ -5133,6 +5133,47 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
   return changed;
 }
 
+/* An implicit-self call inside a class or module method, of a name the
+   program defines as an instance method of Object that no class method of
+   the chain answers: self is the class or module, an Object, so CRuby finds
+   Object's method (`def self.go = current_part` beside `class Object; def
+   current_part`). It was the NameError for a bare identifier, where
+   `self.current_part` already answered. Give it that receiver, as the
+   native surface's implicit self gets one above. Module's own private
+   methods come before Object's and keep their bare form. */
+static int module_private_builtin(const char *nm) {
+  static const char *const names[] = {
+    "attr", "attr_accessor", "attr_reader", "attr_writer", "define_method", "include", "extend",
+    "prepend", "private", "public", "protected", "module_function", "private_constant",
+    "public_constant", "alias_method", "remove_method", "undef_method", "private_class_method",
+    "public_class_method", "refine", "using", "new", NULL
+  };
+  for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
+static int give_object_methods_a_class_self(Compiler *c) {
+  int ob = comp_class_index(c, "Object");
+  if (ob < 0) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || module_private_builtin(nm)) continue;
+    Scope *osc = comp_scope_of(c, id);
+    if (!osc || osc->class_id < 0 || osc->class_id == ob || !osc->is_cmethod) continue;
+    if (comp_cmethod_in_chain(c, osc->class_id, nm, NULL) >= 0) continue;
+    if (comp_method_in_class(c, ob, nm) < 0) continue;
+    int selfn = nt_new_node(nt, "SelfNode");
+    if (selfn < 0) continue;
+    nt_set_self_receiver(nt, id, selfn);
+    comp_grow_node_arrays(c);
+    c->nscope[selfn] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* The same missing receiver, for the universal Object predicates. `is_a?` and
    friends are dispatched through the receiver, so written on an implicit self
    they had no receiver node and were rejected outright:
@@ -50975,6 +51016,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_enum_walk_calls", desugar_enum_walk_calls(c));          /* enum.map { break } -> __enumw_map(enum) { } */
     ch |= AN_PASS("desugar_enum_method_recv", desugar_enum_method_recv(c));         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= AN_PASS("give_native_self_calls_a_receiver", give_native_self_calls_a_receiver(c));  /* native class: implicit self -> self.m */
+    ch |= AN_PASS("give_object_methods_a_class_self", give_object_methods_a_class_self(c));    /* class method: Object#m on implicit self -> self.m */
     ch |= AN_PASS("give_self_predicates_a_receiver", give_self_predicates_a_receiver(c));    /* is_a?(X) on implicit self -> self.is_a?(X) */
     ch |= AN_PASS("desugar_for_enumerable", desugar_for_enumerable(c));           /* for x in obj -> for x in obj.__enum_to_a */
     ch |= AN_PASS("desugar_lazy_terminal", desugar_lazy_terminal(c));            /* lz.sum -> lz.to_a.sum */
