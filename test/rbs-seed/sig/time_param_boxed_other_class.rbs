@@ -1,0 +1,3 @@
+class TimeSeedSchedule
+  def self.schedule: (Class job, Time at, ?untyped payload) -> untyped
+end

@@ -1,0 +1,3 @@
+TypeError: wrong argument type Integer (expected Time)
+5
+TypeError: wrong argument type String (expected Time)

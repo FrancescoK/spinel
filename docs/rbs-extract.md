@@ -22,10 +22,14 @@ widening and reset passes that make up the inference fixpoint are
 forbidden to touch it. So a seed does not lose to inference; it
 constrains inference from the start.
 
-**Seeds are trusted, never verified.** No runtime check is generated. A
-signature that disagrees with what the program actually stores does not
-degrade to the inferred type -- it makes the emitted C reinterpret the
-value:
+**Seeds are trusted, never verified**, but for two kinds of slot. A
+container's (below) and a builtin class's with no subclass (Time, Thread,
+Fiber, Random, IO) check a boxed value's class where it is narrowed into
+the slot, in every build, and raise `TypeError` for another class (nil
+passes): read as that class, the value would crash. For any other slot no
+runtime check is generated. A signature that disagrees with what the
+program actually stores does not degrade to the inferred type -- it makes
+the emitted C reinterpret the value:
 
 ```ruby
 class C

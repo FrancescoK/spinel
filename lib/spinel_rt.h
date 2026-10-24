@@ -20551,8 +20551,10 @@ static inline void sp_proc_fill(sp_int P, sp_int O, sp_int Q, int R, sp_int n, s
    program contradicts silently reinterprets the value rather than degrading to
    the inferred type. Under -DSP_RBS_CHECK every narrowing of a boxed value
    into a seeded slot carries a tag assertion and aborts at the store instead.
-   Without the define the macro is the value itself, so a release build is
-   unchanged -- which is the point: the check costs nothing to leave emitted.
+   Without the define the tag macro is the value itself, so a release build
+   is unchanged -- which is the point: the check costs nothing to leave
+   emitted. A builtin class's (SP_RBS_CHECK_CLS) is checked in every build,
+   with a TypeError: read as that class, another value would crash.
 
    Tag level only. A nil always passes: an unset slot reads nil, and a
    non-nullable seed still sees `@x = nil` in an initialize. Object identity
@@ -20583,7 +20585,19 @@ static sp_RbVal sp_rbs_check_cls(sp_RbVal v, int cls, const char *slot, const ch
 #define SP_RBS_CHECK_CLS(v, cls, slot, wantname) sp_rbs_check_cls((v), (cls), (slot), (wantname))
 #else
 #define SP_RBS_CHECK_TAG(v, want, slot, wantname) (v)
-#define SP_RBS_CHECK_CLS(v, cls, slot, wantname) (v)
+/* A box narrowed into a slot a seed types as a builtin class with no
+   subclass (Time, Thread, Fiber, Random, IO) is checked in every build, as
+   a container's is: a value of another class raises TypeError rather than
+   be read as that class's object (#10154). nil passes, as above. */
+static SP_UNUSED sp_RbVal sp_rbs_need_cls(sp_RbVal v, int cls, const char *wantname) {
+  if (SP_LIKELY(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && v.cls_id == cls))) return v;
+  /* ("a Time" names the class as "Time") */
+  if (wantname[0] == 'a' && wantname[1] == ' ') wantname += 2;
+  else if (wantname[0] == 'a' && wantname[1] == 'n' && wantname[2] == ' ') wantname += 3;
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected %s)", sp_poly_class_name(v), wantname));
+  return v;
+}
+#define SP_RBS_CHECK_CLS(v, cls, slot, wantname) sp_rbs_need_cls((v), (cls), (wantname))
 #endif
 
 #ifdef SPINEL_EXT_HOST

@@ -802,10 +802,11 @@ void emit_array_store_value(Compiler *c, TyKind slot, int v, Buf *b) {
 
 /* Wrap a boxed expression in the --rbs seed assertion before it is narrowed
    into a seeded slot. Emits the plain expression for a slot with no tag of its
-   own (poly, or a by-value type), and for every slot when the program is built
-   without -DSP_RBS_CHECK the macro itself collapses to the expression -- so
-   this is free to emit unconditionally and is only about WHERE a seed's truth
-   is checkable at all: the moment a dynamic value becomes a static type. */
+   own (poly, or a by-value type). Built without -DSP_RBS_CHECK, the tag
+   macro collapses to the expression, so it is free to emit unconditionally
+   and is only about WHERE a seed's truth is checkable at all: the moment a
+   dynamic value becomes a static type. A builtin class's (SP_RBS_CHECK_CLS)
+   checks the class in every build and raises TypeError (#10154). */
 void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
                            const char *expr, Buf *b) {
   const char *tag = NULL, *want = NULL, *cls = NULL;
