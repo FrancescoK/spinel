@@ -2962,6 +2962,22 @@ static int push_chain_base(Compiler *c, int recv) {
    same way from a store or a merge! of keys or values it cannot hold
    (`TABLE["k"] = v` into a Symbol-keyed one, `TABLE.merge!(other)` of a
    Hash keyed by anything). 1 when the slot widened. */
+/* #10058: a push onto a typed Array that a call answers, where no getter's
+   ivar takes the evidence (a method's literal answer, a constant a getter
+   reads, a path inference does not follow), given an element the Array
+   cannot hold: the Arrays the call can answer become the general Array.
+   One rule for every such path, not a walk of each. */
+static int widen_arg_array(Compiler *c, int arg);
+static int push_widens_arrays(const NodeTable *nt, int call, TyKind t);
+static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind vt) {
+  if (!is_push || g_infer_optimistic || vt == TY_UNKNOWN || vt == TY_POLY) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (!ty_is_array(rt) || rt == TY_POLY_ARRAY || ty_is_ptr_array(rt)) return 0;
+  TyKind el = ty_array_elem(rt);
+  if (el == vt || (el == TY_FLOAT && vt == TY_INT) || !push_widens_arrays(c->nt, id, vt)) return 0;
+  return widen_arg_array(c, recv);
+}
+
 static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
                                     int is_idx_write, TyKind kt, TyKind vt) {
   /* a qualified constant (`Codes::T["k"] = v`, `H::L << 64`) is the
@@ -3768,7 +3784,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int recv_args = nt_ref(nt, recv, "arguments");
       int recv_argc = 0;
       if (recv_args >= 0) nt_arr(nt, recv_args, "arguments", &recv_argc);
-      if (recv_argc != 0) continue;
+      if (recv_argc != 0) { changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
       const char *mname = nt_str(nt, recv, "name");
       if (!mname) continue;
       /* The class the getter belongs to: the RECEIVER's when the push names one
@@ -3845,6 +3861,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
                 changed = 1;
               }
             }
+            changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt);
             continue;
           }
           gcid = owner;
@@ -3880,7 +3897,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           if (!seen) { tcls[ntg] = gcls[j]; tiv[ntg] = giv[j]; ntg++; }
         }
       }
-      if (ntg <= 0) { free(tcls); free(tiv); continue; }
+      if (ntg <= 0) { free(tcls); free(tiv); changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
       /* a shared-mutable string spends its handle at a typed array's boundary,
          so the element slot stays a plain string (#3227) */
       if (is_push && vt == TY_STRBUF) vt = TY_STRING;
@@ -6414,6 +6431,36 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
       ch |= got;
     }
     return apply ? ch : 1;
+  }
+  /* #10058: a call no one target is resolved for, on a receiver of a
+     program's class or of a class only known at run time (`self.class::L`'s
+     getter, a boxed receiver): any method of the program of that name may
+     answer it, and each one's value is followed and pinned, as a method
+     defined again is. A builtin value's call is no program method's. */
+  int cr = nt_ref(nt, v, "receiver");
+  TyKind crt = cr >= 0 ? infer_type(c, cr) : TY_UNKNOWN;
+  if (mi < 0 && cn && cr >= 0 && tblk < 0 &&
+      (crt == TY_CLASS || crt == TY_POLY || crt == TY_UNKNOWN || ty_is_object(crt))) {
+    int ch = 0, any = 0;
+    for (int t = 1; t < c->nscopes; t++) {
+      Scope *o = &c->scopes[t];
+      if (!o->name || !sp_streq(o->name, cn) || o->class_id < 0) continue;
+      for (int d = 0; d < depth; d++) if (stack[d] == t) return !apply;
+      int ol[16];
+      int on = method_value_leaves(c, t, ol, 16);
+      if (o->ret_rbs_seeded || o->ret_specialized || o->cs_synth || o->is_lowered_yield ||
+          o->ret_oa_pin != TY_UNKNOWN || on <= 0) return 0;
+      stack[depth] = t;
+      for (int i = 0; i < on; i++) {
+        if (nt_kind(nt, ol[i]) == NK_YieldNode) return 0;
+        int got = array_src_walk(c, ol[i], 1, apply, stack, depth + 1);
+        if (!apply && !got) return 0;
+        ch |= got;
+      }
+      if (apply && !o->ret_poly_array_pin) { o->ret_poly_array_pin = 1; ch = 1; }
+      any = 1;
+    }
+    if (any) return apply ? ch : 1;
   }
   if (mi < 0) return 0;
   for (int d = 0; d < depth; d++) if (stack[d] == mi) return !apply;
