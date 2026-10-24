@@ -159,6 +159,7 @@ static const char*sp_str_case_map(const char*s,uint32_t(*fn)(uint32_t),int up){S
   size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;
   for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;
     if(up&&cp==0xDF){r[oi++]='S';r[oi++]='S';continue;}
+    if(!up&&fn==sp_uc_tolower&&cp==0x130){r[oi++]='i';oi+=(size_t)sp_utf8_encode(0x307,r+oi);continue;}
     oi+=(size_t)sp_utf8_encode(fn(cp),r+oi);}
   r[oi]=0;sp_str_set_len(r,oi);return r;
 }
@@ -195,8 +196,11 @@ sp_bool sp_str_casecmp_p(const char*a,const char*b){if(!a)sp_nil_recv("casecmp?"
 }
 const char*sp_str_upcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");return sp_str_case_map(s,sp_uc_toupper,1);}
 const char*sp_str_downcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");return sp_str_case_map(s,sp_uc_tolower,0);}
-static const char*sp_str_swapcase_f(const char*s,uint32_t(*fu)(uint32_t),uint32_t(*fl)(uint32_t)){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");if(sp_str_is_binary(s))return sp_str_case_bin(s,2);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;uint32_t up=fu(cp),lo=fl(cp);if(up!=cp){/* cp is lowercase -> uppercase */if(cp==0xDF){r[oi++]='S';r[oi++]='S';}
-else oi+=(size_t)sp_utf8_encode(up,r+oi);}
+static const char*sp_str_swapcase_f(const char*s,uint32_t(*fu)(uint32_t),uint32_t(*fl)(uint32_t)){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");if(sp_str_is_binary(s))return sp_str_case_bin(s,2);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;
+    if(cp==0xDF){r[oi++]='S';r[oi++]='S';continue;}
+    if(fl==sp_uc_tolower&&cp==0x130){r[oi++]='i';oi+=(size_t)sp_utf8_encode(0x307,r+oi);continue;}
+    uint32_t up=fu(cp),lo=fl(cp);if(up!=cp){/* cp is lowercase -> uppercase */
+oi+=(size_t)sp_utf8_encode(up,r+oi);}
 else if(lo!=cp){/* cp is uppercase -> lowercase */oi+=(size_t)sp_utf8_encode(lo,r+oi);}
 else oi+=(size_t)sp_utf8_encode(cp,r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
 const char*sp_str_swapcase(const char*s){return sp_str_swapcase_f(s,sp_uc_toupper,sp_uc_tolower);}
@@ -297,8 +301,9 @@ const char*sp_str_chop(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chop")
    is none. Unlike sub it sets no `$~`, as CRuby's slice! sets none. */
 const char*sp_str_remove_first(const char*s,const char*pat){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);if(!s||!pat)return SP_ONE_ANSWER(s);size_t pl=sp_str_byte_len(pat),sl=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl,pat,pl);if(!f)return SP_ONE_ANSWER(s);size_t n=(size_t)(f-s);char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,n);memcpy(r+n,f+pl,sl-n-pl);r[sl-pl]=0;sp_str_set_len(r,sl-pl);return r;}
 const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return SP_ONE_ANSWER(s);size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return sp_str_dup(s);}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);const char*rp=rep_exp?rep_exp:rep;size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rp),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rp,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return sp_str_bin_like(s,r);}
-static const char*sp_str_capitalize_f(const char*s,uint32_t(*fu)(uint32_t),uint32_t(*fl)(uint32_t)){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");if(sp_str_is_binary(s))return sp_str_case_bin(s,3);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=fu(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='S';}
+static const char*sp_str_capitalize_f(const char*s,uint32_t(*fu)(uint32_t),uint32_t(*fl)(uint32_t)){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");if(sp_str_is_binary(s))return sp_str_case_bin(s,3);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=fu(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='s';}
 else oi+=(size_t)sp_utf8_encode(u,r+oi);first=0;}
+else if(fl==sp_uc_tolower&&cp==0x130){r[oi++]='i';oi+=(size_t)sp_utf8_encode(0x307,r+oi);}
 else oi+=(size_t)sp_utf8_encode(fl(cp),r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
 const char*sp_str_capitalize(const char*s){return sp_str_capitalize_f(s,sp_uc_toupper,sp_uc_tolower);}
 static uint32_t sp_uc_toupper_tr(uint32_t c){return c==0x69?0x130:c==0x131?0x49:sp_uc_toupper(c);}

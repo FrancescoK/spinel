@@ -1,0 +1,17 @@
+p "ı".upcase
+p "İ".downcase
+p "İ".downcase.bytes
+p "ı".swapcase
+p "İ".swapcase
+p "İ".swapcase.bytes
+p "ı".capitalize
+p "İ".capitalize
+p "İ".upcase
+p "aİ".downcase
+p "aİ".downcase.bytes
+p "ıİ".capitalize
+p "ß".capitalize
+p "ß".swapcase
+p "SSß".capitalize
+p "straße".capitalize
+p "Straße".swapcase
