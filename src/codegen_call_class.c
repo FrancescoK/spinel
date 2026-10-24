@@ -1751,6 +1751,11 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (sp_streq(spec, "any")) emit_boxed(c, argv[ai], b);
           else if (sp_streq(spec, "string")) emit_str_expr(c, argv[ai], b);
           else if (sp_streq(spec, "int")) emit_int_expr(c, argv[ai], b);
+          /* a :float, :bool or :string? from a value of any representation
+             (a boxed parameter of the def that stands for the function when
+             the module is held as a value), as a native class's binding
+             takes it */
+          else if (emit_native_value_arg(c, spec, argv[ai], b)) ;
           else emit_expr(c, argv[ai], b);
         }
         buf_puts(b, ")");
