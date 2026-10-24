@@ -2213,6 +2213,149 @@ static const char *dyn_const_arms_stash(const char *nm, int user_get, int user_d
   return NULL;
 }
 
+/* The candidate names of a runtime-name const_get: each constant the
+   program writes or opens as a class or module, by its own (last) name --
+   the flat namespace the literal rule resolves in -- with the classes that
+   hold it (`own`, -1 for the top level, -2 for a holder not known here),
+   and each nested class or module by its whole path ("A::B", `path`),
+   which the literal rule reads segment by segment (const_get_resolve). */
+typedef struct { char *name; int *own; int nown, cown, path; } CgCand;
+typedef struct { CgCand *v; int n, cap; ANameHash by_name; } CgCands;
+
+static void cg_cand_add(CgCands *cs, const char *name, int owner, int path) {
+  if (!name || !*name) return;
+  int at = anh_find(&cs->by_name, name);
+  if (at < 0) {
+    if (cs->n == cs->cap) {
+      cs->cap = cs->cap ? cs->cap * 2 : 64;
+      cs->v = realloc(cs->v, sizeof(CgCand) * (size_t)cs->cap);
+      if (!cs->v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    at = cs->n++;
+    cs->v[at] = (CgCand){ strdup(name), NULL, 0, 0, path };
+    anh_add(&cs->by_name, cs->v[at].name);
+  }
+  CgCand *cd = &cs->v[at];
+  if (path) return;
+  for (int i = 0; i < cd->nown; i++) if (cd->own[i] == owner) return;
+  if (cd->nown == cd->cown) {
+    cd->cown = cd->cown ? cd->cown * 2 : 2;
+    cd->own = realloc(cd->own, sizeof(int) * (size_t)cd->cown);
+    if (!cd->own) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  cd->own[cd->nown++] = owner;
+}
+
+/* The class whose Ruby name is RN, or -2 when the program has none. */
+static int cg_class_by_ruby_name(Compiler *c, const char *rn) {
+  for (int k = 0; rn && k < c->nclasses; k++) {
+    const char *qn = class_ruby_name(c, k);
+    if (qn && sp_streq(qn, rn)) return k;
+  }
+  return -2;
+}
+
+static void cg_cands_collect(Compiler *c, int n0, CgCands *cs) {
+  const NodeTable *nt = c->nt;
+  /* A constant or class whose leaf collided carries a qualified key
+     (`Mod__NAME`); a runtime name is the leaf as written, which the literal
+     rule finds under the receiver's qualified key. A path header (`class
+     Mod::B`) and a path write (`Mod::X = v`) give their leaf too. */
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *v = NULL;
+    int owner = -2;
+    if (k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode) {
+      int w = k == NK_ConstantWriteNode ? id : nt_ref(nt, id, "target");
+      v = w >= 0 ? nt_str(nt, w, "qc_orig_name") : NULL;
+      if (!v && w >= 0) v = nt_str(nt, w, "name");
+      if (k == NK_ConstantWriteNode && c->node_cbody) owner = c->node_cbody[id];
+      else if (w >= 0 && nt_str(nt, w, "qc_owner")) owner = cg_class_by_ruby_name(c, nt_str(nt, w, "qc_owner"));
+    }
+    else if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;
+      if (!rn) rn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+      const char *rl = rn ? strrchr(rn, ':') : NULL;
+      v = rl ? rl + 1 : rn;
+      int ci = cp >= 0 && nt_str(nt, cp, "name") ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+      if (ci >= 0) owner = c->classes[ci].enclosing_class;
+    }
+    cg_cand_add(cs, v, owner, 0);
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *qn = class_ruby_name(c, k);
+    if (qn && strstr(qn, "::")) cg_cand_add(cs, qn, -2, 1);
+  }
+}
+
+/* Mark class K, its superclasses and the modules they include in VIS. */
+static void cg_mark_ancestors(Compiler *c, int k, unsigned char *vis, int depth) {
+  for (int n = 0; k >= 0 && k < c->nclasses && n < 64 && depth < 16; k = c->classes[k].parent, n++) {
+    if (vis[k]) return;
+    vis[k] = 1;
+    for (int i = 0; i < c->classes[k].nincluded_mods; i++)
+      cg_mark_ancestors(c, c->classes[k].included_mods[i], vis, depth + 1);
+  }
+}
+
+/* Is class K the class A or one below it? */
+static int cg_class_below(Compiler *c, int k, int a) {
+  for (int n = 0; k >= 0 && k < c->nclasses && n < 64; k = c->classes[k].parent, n++)
+    if (k == a) return 1;
+  return 0;
+}
+
+/* The candidates a const_get on the module named RNM (NULL when it is not
+   known here) can answer, into *out (pointers into CS): the constants RNM,
+   its ancestors and the modules they include hold, the top-level ones, and
+   the paths whose first segment is one of those -- what CRuby's lookup
+   reaches. A `self` receiver (SELF) can be a subclass at run time, in an
+   inherited class method: each class below RNM adds its own. A receiver
+   not known here takes them all. Answers the count. */
+static int cg_cands_for_recv(Compiler *c, const CgCands *cs, const char *rnm, int self, char ***out) {
+  *out = malloc(sizeof(char *) * (size_t)(cs->n > 0 ? cs->n : 1));
+  if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int rk = rnm ? comp_class_index(c, rnm) : -1;
+  int known = rk >= 0 || (rnm && sp_streq(rnm, "Object"));
+  unsigned char *vis = calloc((size_t)c->nclasses + 1, 1);
+  unsigned char *ok = calloc((size_t)cs->n + 1, 1);
+  if (!vis || !ok) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (rk >= 0) cg_mark_ancestors(c, rk, vis, 0);
+  for (int k = 0; self && rk >= 0 && k < c->nclasses; k++)
+    if (k != rk && cg_class_below(c, k, rk)) cg_mark_ancestors(c, k, vis, 0);
+  int n = 0;
+  for (int i = 0; i < cs->n; i++) {
+    const CgCand *cd = &cs->v[i];
+    if (cd->path) continue;
+    ok[i] = !known;
+    for (int j = 0; j < cd->nown && !ok[i]; j++) {
+      int o = cd->own[j];
+      ok[i] = o < 0 || (o < c->nclasses && vis[o]);
+    }
+  }
+  for (int i = 0; i < cs->n; i++) {
+    const CgCand *cd = &cs->v[i];
+    if (cd->path && known) {
+      char head[256];
+      snprintf(head, sizeof head, "%.*s", (int)strcspn(cd->name, ":"), cd->name);
+      int h = anh_find(&cs->by_name, head);
+      ok[i] = h >= 0 && ok[h];
+    }
+    else if (cd->path) ok[i] = 1;
+    if (ok[i]) (*out)[n++] = cd->name;
+  }
+  free(vis);
+  free(ok);
+  return n;
+}
+
+static void cg_cands_free(CgCands *cs) {
+  for (int i = 0; i < cs->n; i++) { free(cs->v[i].name); free(cs->v[i].own); }
+  free(cs->v);
+  anh_free(&cs->by_name);
+}
+
 /* `recv.const_get(name)` with a NAME known only at run time (a variable, a
    method result, an interpolated string -- activesupport's constantize is
    `Object.const_get(camel_cased_word)`). Every constant the program defines is
@@ -2253,48 +2396,10 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     any = 1;
   }
   if (!any) return 0;
-  /* the candidates: every constant the program writes or opens as a class or
-     module, by its own (last) name -- the flat namespace the literal rule
-     resolves in. A constant or class whose leaf collided carries a qualified
-     key (`Mod__NAME`); a runtime name is the leaf as written, which the
-     literal rule finds under the receiver's qualified key. A path header
-     (`class Mod::B`) and a path write (`Mod::X = v`) give their leaf too. */
-  char **cand = NULL; int ncand = 0, candcap = 0;
-  for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    const char *v = NULL;
-    if (k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode) {
-      int w = k == NK_ConstantWriteNode ? id : nt_ref(nt, id, "target");
-      v = w >= 0 ? nt_str(nt, w, "qc_orig_name") : NULL;
-      if (!v && w >= 0) v = nt_str(nt, w, "name");
-    }
-    else if (k == NK_ClassNode || k == NK_ModuleNode) {
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;
-      if (!rn) rn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
-      const char *rl = rn ? strrchr(rn, ':') : NULL;
-      v = rl ? rl + 1 : rn;
-    }
-    if (!v || !*v) continue;
-    int dup = 0;
-    for (int j = 0; j < ncand && !dup; j++) if (sp_streq(cand[j], v)) dup = 1;
-    if (dup) continue;
-    if (ncand == candcap) { candcap = candcap ? candcap * 2 : 32; cand = (char **)realloc(cand, sizeof(char *) * (size_t)candcap); }
-    cand[ncand++] = strdup(v);
-  }
-  /* ...and each nested class or module by its whole path ("A::B"), which
-     the literal rule reads segment by segment (const_get_resolve) */
-  for (int k = 0; k < c->nclasses; k++) {
-    const char *qn = class_ruby_name(c, k);
-    if (!qn || !strstr(qn, "::")) continue;
-    int dup = 0;
-    for (int j = 0; j < ncand && !dup; j++) if (sp_streq(cand[j], qn)) dup = 1;
-    if (dup) continue;
-    if (ncand == candcap) { candcap = candcap ? candcap * 2 : 32; cand = (char **)realloc(cand, sizeof(char *) * (size_t)candcap); }
-    cand[ncand++] = strdup(qn);
-  }
-  if (ncand > 512) { for (int k = 512; k < ncand; k++) free(cand[k]); ncand = 512; }
-  for (int id = 0; id < n0 && ncand > 0; id++) {
+  CgCands cs = {0};
+  cg_cands_collect(c, n0, &cs);
+  char **cand = NULL;
+  for (int id = 0; id < n0 && cs.n > 0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     const char *stash = nm ? dyn_const_arms_stash(nm, user_get, user_def) : NULL;
@@ -2314,9 +2419,12 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     int nrest = argc - 1;
     if (nrest > 8) continue;
     int rest[8]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];
+    free(cand);
+    int ncand = cg_cands_for_recv(c, &cs, const_get_recv_name(c, id, recv), nt_kind(nt, recv) == NK_SelfNode, &cand);
+    if (ncand == 0) continue;
     int base = nt->count;
     int *arms = (int *)malloc(sizeof(int) * (size_t)ncand);
-    if (!arms) break;
+    if (!arms) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     int narm = 0;
     for (int k = 0; k < ncand; k++) {
       int sym = nt_new_node(nt, "SymbolNode"); if (sym < 0) break;
@@ -2341,8 +2449,8 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     for (int j = base; j < nt->count; j++) { c->nscope[j] = encl; if (c->node_cbody) c->node_cbody[j] = cb; }
     changed = 1;
   }
-  for (int k = 0; k < ncand; k++) free(cand[k]);
   free(cand);
+  cg_cands_free(&cs);
   return changed;
 }
 

@@ -4659,8 +4659,8 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
 }
 
 /* Runtime-name `recv.const_get(name)`: desugar_dynamic_const_get stashed one
-   literal `recv.const_get(:Name)` arm per constant the program defines. Emit
-   `strcmp(name, "N1") == 0 ? arm1 : ... : NameError`, boxing each arm (a class
+   literal `recv.const_get(:Name)` arm per constant the receiver can reach.
+   Emit `strcmp(name, "N1") == 0 ? arm1 : ... : NameError`, boxing each arm (a class
    or a value: the result is poly). The name is compared as TEXT, not as a
    symbol id: the candidates are constant names, not symbol literals, so they
    have no entry in the symbol table the prologue sized before this call was
@@ -4690,7 +4690,10 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   else if (st == TY_STRING) emit_expr(c, sym, b);
   else if (st == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, sym, b); buf_puts(b, ")"); }
   else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, sym, b); buf_puts(b, ")"); }
-  buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; ", t, t, def ? "sp_bool" : "sp_RbVal", t);
+  /* the arms are a flat run of `if (...) { ...; break; }` in one do-while,
+     not an else-if chain: thousands of candidates nest that chain as deep,
+     past what the C compiler's parser takes */
+  buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; do { ", t, t, def ? "sp_bool" : "sp_RbVal", t);
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4735,23 +4738,35 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
       if (def && at == TY_BOOL) buf_printf(b, "(%s)", body.p ? body.p : "0");
       else if (def) { buf_puts(b, "sp_poly_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
       else emit_boxed_text(c, at, body.p ? body.p : "0", b);
-      buf_puts(b, "; }\nelse ");
+      buf_puts(b, "; break; }\n");
     }
     free(pre.p); free(body.p);
   }
   const char *rvt = recv >= 0 ? nt_type(nt, recv) : NULL;
   const char *rnm = (rvt && (sp_streq(rvt, "ConstantReadNode") || sp_streq(rvt, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
+  /* the receiver's class (`self` in a class method too) by its Ruby name */
+  const char *rkn = recv >= 0 ? const_get_recv_name(c, id, recv) : NULL;
+  int rk = rkn ? comp_class_index(c, rkn) : -1;
+  if (rk >= 0 && class_ruby_name(c, rk)) rnm = class_ruby_name(c, rk);
   if (rnm && sp_streq(rnm, "Object")) rnm = NULL;
   if (def) {
     buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
-                  "_r%d = 0; } _r%d; })", t, t, t, t, t);
+                  "_r%d = 0; } } while (0); _r%d; })", t, t, t, t, t);
     return 1;
   }
-  buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
-                "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); "
-                "_r%d = sp_box_nil(); } _r%d; })",
-             t, t, t, rnm ? rnm : "", rnm ? "::" : "", t, t, t);
+  /* `self` in a class method is the class it runs on, a subclass too */
+  Buf sv = {0, 0, 0};
+  if (rvt && sp_streq(rvt, "SelfNode") && rk >= 0 && repr_of(c, recv).as_ty == TY_CLASS) emit_expr(c, recv, &sv);
+  buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); ", t, t, t);
+  if (sv.p)
+    buf_printf(b, "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %%s::%%s\", sp_class_val_name(sp_box_class(%s)), _n%d)); ",
+               sv.p, t);
+  else
+    buf_printf(b, "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); ",
+               rnm ? rnm : "", rnm ? "::" : "", t);
+  buf_printf(b, "_r%d = sp_box_nil(); } } while (0); _r%d; })", t, t);
+  free(sv.p);
   return 1;
 }
 
