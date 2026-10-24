@@ -17460,6 +17460,10 @@ int masgn_boxed_index_keeps(Compiler *c, int t, int e) {
 int masgn_face_elem(Compiler *c, int mw, int el) {
   const NodeTable *nt = c->nt;
   if (!c->share_plan || !share_masgn_plain(nt, mw)) return 0;
+  /* only a String has the handle face: a value of any class (an Integer
+     under promote) is held as itself */
+  TyKind elt = repr_of(c, el).as_ty;
+  if (elt != TY_STRING && elt != TY_STRBUF) return 0;
   int u = nt_paren_single(c->nt, el);
   NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NONE;
   if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
@@ -18996,6 +19000,16 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       if (sc >= 0 && class_ivar_pinned(&c->classes[sc], nm))
         emit_rbs_checked_text(c, ivt, nm, _rb.p ? _rb.p : "sp_box_nil()", &_ck);
       else buf_puts(&_ck, _rb.p ? _rb.p : "sp_box_nil()");
+      /* a general Array slot given a box that may hold a typed Array (an
+         Array of Integers beside one of anything, met in a parameter)
+         takes it converted, nil kept: the cast read the IntArray's
+         elements as boxed values */
+      if (ivt == TY_POLY_ARRAY) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = %s; _t%d.tag == SP_TAG_NIL ? NULL : sp_poly_to_poly_array(_t%d); })",
+                   tv, _ck.p ? _ck.p : "sp_box_nil()", tv, tv);
+      }
+      else
       emit_unbox_nilable_text(c, ivt, _ck.p ? _ck.p : "sp_box_nil()", b);
       free(_ck.p);
       free(_rb.p);
