@@ -22584,7 +22584,21 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   ClassInfo *ci = &c->classes[cid];
   int m = ci->is_struct && !ci->is_data ? comp_member_index(ci, name) : -1;
   if (m < 0) return changed;
-  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+  /* the calls of the three names that can write a member -- `new`, `[]`
+     (is_struct_constructor) and `[]=` -- off the calls-by-name index, merged
+     into node order; every call of the program was read for each member of
+     each boxed Struct holder, every round. The rest of the body acts on no
+     other name. */
+  static const char *const member_writers[3] = { "new", "[]", "[]=" };
+  int heads[3];
+  for (int q = 0; q < 3; q++) heads[q] = an_calls_named_first(c, member_writers[q]);
+  for (;;) {
+    int q = -1;
+    for (int k = 0; k < 3; k++) if (heads[k] >= 0 && (q < 0 || heads[k] < heads[q])) q = k;
+    if (q < 0) break;
+    int w = heads[q];
+    heads[q] = an_calls_named_next(w);
+    if (nt_kind(nt, w) != NK_CallNode) continue;
     const char *cn = nt_str(nt, w, "name");
     int r = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
