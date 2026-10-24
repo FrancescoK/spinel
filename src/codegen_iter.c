@@ -2131,38 +2131,6 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     for (int e = 0; e < en; e++) {
       if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
         ykw_splat = 1;
-        int hash = nt_ref(nt, els[e], "value"), hn = 0;
-        const int *he = hash >= 0 && nt_kind(nt, hash) == NK_HashNode ? nt_arr(nt, hash, "elements", &hn) : NULL;
-        for (int h = 0; h < hn; h++) {
-          int value;
-          const char *key = dyn_kw_elem_key(c, he[h], &value);
-          if (!key || value < 0) continue;
-          int overridden = 0;
-          for (int j = e + 1; j < en; j++) {
-            int later_value;
-            const char *later_key = dyn_kw_elem_key(c, els[j], &later_value);
-            if (later_key && sp_streq(later_key, key)) { overridden = 1; break; }
-          }
-          if (overridden) continue;
-          NodeKind vk = nt_kind(nt, value);
-          TyKind vt = comp_ntype(c, value);
-          DynReach r;
-          dyn_value_kw_reach(c, blk, key, &r);
-          if ((vt == TY_STRING || vt == TY_STRBUF) &&
-              (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
-               vk == NK_GlobalVariableReadNode || vk == NK_ClassVariableReadNode) &&
-              r.app) {
-            static const char kw_msg[] =
-              "a String variable is passed through a splatted Hash literal "
-              "(`**{ k: v }`) to a block's appending keyword parameter "
-              "(a String is not yet shared by reference through a splatted Hash literal "
-              "(`**{ k: v }`)). Return the String from the block and assign it, or append to it in the caller.";
-            ShareRoute q = share_route(value, value, 0);
-            q.to = blk;
-            q.to_name = key;
-            q.carry = value;
-          }
-        }
       }
       /* so is one whose key is an expression: what it names is the run
          time's (`yield(key(1) => v)`) */

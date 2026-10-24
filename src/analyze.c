@@ -10328,7 +10328,6 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     if (erecv >= 0) {
       TyKind ert = infer_type(c, erecv);
       if (ert == TY_UNKNOWN) {
-        if (!g_infer_optimistic) { /* settled and still unknown: leave it */ }
       }
       else if (ty_is_array(ert) || ty_is_hash(ert) || ert == TY_RANGE ||
                ert == TY_ENUMERATOR || ert == TY_DIR) {
@@ -20263,10 +20262,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
        e << x }`) is lost or finds no method. Refused (#6765) rather than
        compiled with the change lost; a container flowing in is left out,
        its own mutations reach it. */
-    static const char boxed_msg[] =
-      "a String a boxed local holds is stored into a container and mutated in place through it (a "
-      "String is not yet shared by reference through a boxed local's container element). Mutate the "
-      "String through the local itself.";
     if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
       /* Under --share-strings the stored read is lifted into the handle
          (lift_poly_read: it boxes the local's String as the handle and
@@ -20278,8 +20273,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       int ch = 0;
       if (c->share_strings) {
         ch = lift_poly_read_store(c, sn);
-        ShareRoute q = share_route(sn, sn, 0);
-        q.carry = sn;
         return ch;
       }
     }
@@ -24001,16 +23994,6 @@ static int promote_local_alias_pairs(Compiler *c) {
   for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
     int value = nt_ref(nt, w, "value");
-    if (value >= 0 && nt_kind(nt, value) == NK_CallNode &&
-        sp_streq(nt_str(nt, value, "name"), "scrub!") &&
-        (infer_type(c, value) == TY_STRING || infer_type(c, value) == TY_STRBUF) &&
-        strbuf_mut_kind(c, nt_str(nt, w, "name"), comp_scope_of(c, w)) == 1) {
-      static const char scrub_msg[] =
-        "a String is not yet shared by reference through a retained scrub! result that is appended to";
-      ShareRoute q = share_route(w, value, 0);
-      q.to = w;
-      q.carry = value;
-    }
     /* the aliasing shapes: `s2 = s1`, the value-position append chain
        `s2 = (s1 << x)`, whose value IS the base object, and each arm of a
        conditional (an_strbuf_alias_leaves) */
@@ -24037,15 +24020,7 @@ static int promote_local_alias_pairs(Compiler *c) {
     for (int mw = comp_kind_first(c, NK_MultiWriteNode); mw >= 0; mw = comp_kind_next(c, mw)) {
       if (comp_scope_of(c, mw) != ts || an_masgn_alias_source(c, mw, t) >= 0) continue;
       int source = an_masgn_alias_in(c, mw, nt_ref(nt, mw, "value"), t, 0);
-      static const char masgn_msg[] =
-        "a nested multiple-assignment target appends to a String variable "
-        "from an Array literal (a String is not yet shared by reference through "
-        "a nested multiple-assignment target). Append to the source String instead.";
       if (source < 0 || (comp_ntype(c, source) != TY_STRING && comp_ntype(c, source) != TY_STRBUF)) continue;
-      ShareRoute q = share_route(t, source, 0);
-      q.to = t;
-      q.to_name = tn;
-      q.carry = source;
     }
   }
   /* `t, u = s, 1` names s as t, as `t = s` does (an_masgn_alias_source) */
@@ -24201,10 +24176,6 @@ static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const c
       /* A frozen literal already raises FrozenError on this route. */
       if (st != TY_STRING && st != TY_STRBUF) continue;
       if (nt_kind(nt, stores.v[e]) == NK_StringNode) continue;
-      ShareRoute q = share_route(at, hr, 1);
-      q.to = blk;
-      q.to_name = bp;
-      q.carry = stores.v[e];
     }
   }
   free(stores.v);
@@ -24275,37 +24246,6 @@ static int an_hash_chain_is_unobserved_literal(Compiler *c, int hrecv) {
   return 1;
 }
 
-/* A call answering a fresh Array of Strings a String builtin builds
-   (split, scan, lines, chars), or its `to_a`. */
-static int an_fresh_string_array_call(const NodeTable *nt, int v) {
-  v = nt_paren_single(nt, v);
-  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
-  const char *mn = nt_str(nt, v, "name");
-  if (!mn) return 0;
-  if (sp_streq(mn, "split") || sp_streq(mn, "scan") || sp_streq(mn, "lines") || sp_streq(mn, "chars")) return 1;
-  int a = nt_ref(nt, v, "arguments");
-  return sp_streq(mn, "to_a") && a < 0 && nt_ref(nt, v, "block") < 0 &&
-         an_fresh_string_array_call(nt, nt_ref(nt, v, "receiver"));
-}
-/* Such a call's result carries ordinary String copies whose elements are
-   not visible to the store walk. Do not promote the block parameter alone
-   and silently mutate a detached copy. */
-static int an_local_string_array_has_untracked_call_store(Compiler *c,
-                                                            const char *name, Scope *scope) {
-  const NodeTable *nt = c->nt;
-  StoreVals stores = {0};
-  for (int w = comp_lvw_first(c, name); w >= 0; w = comp_lvw_next(c, w)) {
-    const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, w) != scope ||
-        nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    int value = nt_paren_single(nt, nt_ref(nt, w, "value"));
-    if (value < 0 || infer_type(c, value) != TY_STR_ARRAY || !an_fresh_string_array_call(nt, value))
-      continue;
-    if (strbuf_container_store_values(c, w, name, scope, 1, &stores) == 0) { free(stores.v); return 1; }
-  }
-  free(stores.v);
-  return 0;
-}
 
 /* Detect the direct block-local sequence `t = element; t << ...; t = other`.
    The alias analysis deliberately excludes rebound locals, so the element
@@ -25954,13 +25894,6 @@ static int sb_split_local_iter(Compiler *c, int w, int recv, const char *itn, in
       (comp_value_dropped(c, w) || bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP) &&
       sb_iter_local_unobserved(c, w, recv, vn, vs))
     return 1;
-  if (an_local_string_array_has_untracked_call_store(c, vn, vs)) {
-    static const char sa_msg[] =
-      "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block";
-    ShareRoute q = share_route(w, recv, 1);
-    q.to = blk;
-    q.to_name = bp;
-  }
   return 0;
 }
 /* Does the subtree at n hold a node that leaves a block iteration early
@@ -26678,10 +26611,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           !an_hash_chain_is_unobserved_literal(c, hrecv)) {
         static const char hc_msg[] =
           "a String is not yet shared by reference through a Hash's chained index into an appending block";
-        ShareRoute q = share_route(w, hrecv, 1);
-        q.to = blk4;
-        q.to_name = block_param_name(c, blk4, value_param);
-        an_hash_store_routes(c, hrecv, w, blk4, q.to_name, hc_msg);
+        an_hash_store_routes(c, hrecv, w, blk4, block_param_name(c, blk4, value_param), hc_msg);
       }
       const char *it = inner >= 0 ? nt_str(nt, inner, "name") : NULL;
       int src = inner >= 0 ? nt_ref(nt, inner, "receiver") : -1;
@@ -26691,10 +26621,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           dyn_block_appends(c, blk4, 0)) {
         static const char ac_msg[] =
           "a String is not yet shared by reference through an Array's chained index into an appending block";
-        ShareRoute q = share_route(w, src, 1);
-        q.to = blk4;
-        q.to_name = block_param_name(c, blk4, 0);
-        an_hash_store_routes(c, src, w, blk4, q.to_name, ac_msg);
+        an_hash_store_routes(c, src, w, blk4, block_param_name(c, blk4, 0), ac_msg);
       }
     }
     /* the builtin's own copy, once the call has been rewritten onto it:
@@ -26759,9 +26686,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
             an_block_rebinds_appended_element_alias(c, blk4, bp4)) {
           static const char ra_msg[] =
             "a String appended to through a rebound iterator alias is not yet shared by reference with its Array";
-          ShareRoute q = share_route(w, recv4, 1);
-          q.to = blk4;
-          q.to_name = bp4;
           an_hash_store_routes(c, recv4, w, blk4, bp4, ra_msg);
         }
         continue;
@@ -26810,18 +26734,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
          bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP ||
          bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP_BANG))
       continue;
-    if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) &&
-        (nt_kind(nt, recv4) == NK_InstanceVariableReadNode || nt_kind(nt, recv4) == NK_CallNode) &&
-        (infer_type(c, recv4) == TY_STR_ARRAY || infer_type(c, recv4) == TY_POLY_ARRAY)) {
-      static const char ia_msg[] =
-        "a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block";
-      ShareRoute q = share_route(w, recv4, 1);
-      q.to = blk4;
-      q.to_name = bp4;
-      /* an element iterator answering its receiver (its share row, BSH_ITER)
-         whose value is dropped hands each element to the block alone */
-      q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER && comp_value_dropped(c, w);
-    }
     /* An Array read out of a boxed slot -- a Hash's value, through `h.each
        { |k, vs| }`, `h[k]` or `vs = h[k]` -- is iterated as a boxed value,
        so its elements bind the parameter boxed. Only a handle element takes
@@ -46630,29 +46542,6 @@ static int rd_string_reader_anywhere(Compiler *c, const char *mn) {
   }
   return 0;
 }
-/* Is local `rn`, read at `r` as a reader's receiver, read again in its
-   scope where its members can show: anything but the receiver of a query
-   that reads no instance variable (`o.class`, `o.nil?`). */
-static int rd_receiver_observed(Compiler *c, int r, const char *rn) {
-  const NodeTable *nt = c->nt;
-  Scope *rs = comp_scope_of(c, r);
-  SaName ra = { NK_LocalVariableReadNode, rn, rs, -1 };
-  /* the calls on it, in node order, that read no member (the first 64) */
-  int blind[64], nb = 0;
-  for (int e = sa_site_first(c, &ra, VS_RECV); e >= 0 && nb < 64; e = sa_site_next(c, &ra, e)) {
-    int u = comp_vsite_node(c, e), q = comp_vsite_var(c, e);
-    const char *un = nt_str(nt, u, "name");
-    if (q != r && un && is_member_blind_query(un)) blind[nb++] = q;
-  }
-  for (int e = sa_site_first(c, &ra, VS_READ); e >= 0; e = sa_site_next(c, &ra, e)) {
-    int o = comp_vsite_node(c, e);
-    if (o == r) continue;
-    int b = 0;
-    for (int i = 0; i < nb && !b; i++) b = blind[i] == o;
-    if (!b) return 1;
-  }
-  return 0;
-}
 int builtin_instance_method_known(const char *cls, const char *m);
 /* Does a String answer `nm` with its built-in method: one String has, that
    the program defines nowhere on String's chain (a reopen, an include, a
@@ -47021,10 +46910,6 @@ static void refuse_string_read_copies(Compiler *c) {
     if (!rn || comp_ntype(c, r) != TY_POLY || !nt_str(nt, v, "name") ||
         !rd_string_reader_anywhere(c, nt_str(nt, v, "name")) || rd_read_dropped_for_copy(c, w, wn))
       continue;
-    static const char rd_msg[] =
-      "a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def "
-      "m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed "
-      "receiver). Assign the changed String back to the member.";
     /* --share-strings: the reader hands over a copy, right where the rule
        does not share the member's String */
     ShareRoute q = share_route(w, v, 0);
@@ -47047,7 +46932,6 @@ static void refuse_string_read_copies(Compiler *c) {
       if (!hat_built) { handle_arg_tab_init(c, &hat); hat_built = 1; }
       if (boxed_to_s_recv_ok(c, &hat, r)) q.carry = v;
     }
-    if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
   StoreVals st = {0};
   NT_FOREACH_KIND(nt, NK_CallNode, u) {

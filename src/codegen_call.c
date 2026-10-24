@@ -25820,10 +25820,7 @@ static void refuse_string_copy(Compiler *c, int arg, const char *target,
    scope of node `to` (a block, a method's body): under --share-strings the
    route is the rule's first (share_route_defer). */
 static int refuse_string_copy_routed(Compiler *c, int arg, int to, const char *pname) {
-  ShareRoute q = share_route(arg, arg, 0);
-  q.to = to;
-  q.to_name = pname;
-  q.carry = arg;
+  (void)c; (void)arg;
   return to >= 0 && pname;
 }
 static void refuse_string_copy_to(Compiler *c, int arg, int to, const char *target,
@@ -26569,9 +26566,6 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
      literal: the route is from the Array's elements to its parameter */
   if (repr_share_rule(c) && !mname) {
     int lam = refuse_local_lambda(c, recv);
-    ShareRoute q = share_route(sp, nt_ref(nt, sp, "expression"), 1);
-    q.to = lam;
-    q.to_name = pname;
     if (lam >= 0) return;
   }
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);

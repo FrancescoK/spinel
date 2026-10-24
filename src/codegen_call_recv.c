@@ -951,13 +951,7 @@ static int fetch_blk_param_routes_key(Compiler *c, int id, int blk, LocalVar *lv
   if (ac < 1) return 0;
   Repr kr = repr_of(c, av[0]);
   if (kr.ty != TY_STRING && kr.kind != RK_STRBUF) return 0;
-  ShareRoute q = share_route(id, av[0], 0);
-  q.to = blk;
-  q.to_name = p0;
-  /* A fresh key needs its own handle. A variable's handle survives the
-     argument temp; a String-valued call's temp can hold only its bytes. */
-  if (!share_node_fresh(c, av[0]))
-    q.carry = strbuf_var_handle(c, av[0], NULL) ? av[0] : SHARE_CARRY_COPY;
+  (void)blk; (void)p0;
   return 1;
 }
 

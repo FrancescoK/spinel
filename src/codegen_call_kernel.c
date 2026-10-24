@@ -1542,14 +1542,6 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (dpoly) buf_printf(b, "sp_RbVal _t%d = sp_box_str(_t%d); ", result, t2);
         if (dblk >= 0) {
           const char *dp0 = block_param_name(c, dblk, 0);
-          if (repr_share_rule(c) && dp0 && share_node_shares(c, eav[0])) {
-            ShareRoute q = share_route(id, eav[0], 0);
-            /* a key no other name can see a copy of (a new String) takes
-               a new handle of its own */
-            q.to = dblk; q.to_name = dp0;
-            q.carry = key_handle ? eav[0] : strbuf_flow_unseen(c, eav[0]) ? SHARE_CARRY_NONE : SHARE_CARRY_COPY;
-            const char *msg = "ENV.delete is not supported: its block would receive a copy of a shared String key; see docs/limitations.md";
-          }
           int dbody = nt_ref(nt, dblk, "body");
           int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
           int dval = dbn > 0 ? dbb[dbn - 1] : -1;

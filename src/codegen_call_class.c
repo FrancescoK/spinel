@@ -1331,106 +1331,8 @@ static int assign_is_returned(Compiler *c, int id, const int *par) {
   return 0;
 }
 
-/* Is call id (through parentheses) the receiver of a String mutator or of
-   freeze, whose emitter takes the receiver as the handle it changes
-   (strbuf_recv_handle, the freeze arm), so the text a copy would give is
-   never read? */
-static int assign_mutated_receiver(Compiler *c, int id, int explicit_writer) {
-  const NodeTable *nt = c->nt;
-  int q = comp_recv_parent(c, id);
-  /* through the links that answer the receiver itself (`itself`, `to_s`) */
-  for (int d = 0; d < 8 && q >= 0 && nt_kind(nt, q) == NK_CallNode && str_self_call(nt, q) &&
-                  is_receiver_conversion(nt_str(nt, q, "name")) && !nt_safe_nav(nt, q); d++)
-    q = comp_recv_parent(c, q);
-  const char *nm = q >= 0 && nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
-  /* a safe-navigation mutator takes no route over the handle (it must skip a
-     nil): an attr writer's value stays refused there, an explicit writer's
-     keeps its emission without the handle */
-  int argc = 0;
-  if (q >= 0) call_args(nt, q, &argc);
-  /* (a mutator given nothing to append, `concat`, answers its receiver
-     without the route taking a handle) */
-  return nm && (is_string_rebind_mutator(nm) || is_freeze_family(nm)) && !(argc == 0 && is_append_concat(nm)) &&
-         (explicit_writer || !nt_safe_nav(nt, q));
-}
 
-/* Is call id, as a call's receiver, only read: the call changes nothing,
-   does not answer its receiver and keeps none of its value (the share walk
-   peeked it, or it answers a count, a flag or the like: `size`, `bytes`,
-   `start_with?`, `upcase`; not `<<`, `freeze`, `to_s`, `itself`)? */
-static int assign_peeked_reader(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  int q = comp_recv_parent(c, id);
-  if (q < 0 || nt_kind(nt, q) != NK_CallNode) return 0;
-  const char *nm = nt_str(nt, q, "name");
-  int argc = 0;
-  call_args(nt, q, &argc);
-  TyKind qt = comp_ntype(c, q);
-  /* (a blockless iterator's Enumerator keeps its receiver) */
-  if (qt == TY_ENUMERATOR) return 0;
-  /* (an argument that runs code can change the String after the receiver's
-     read was taken: `(o.a = s) + (s << "3")`) */
-  const int *qav = nt_ref(nt, q, "arguments") >= 0 ? call_args(nt, q, &argc) : NULL;
-  for (int i = 0; qav && i < argc; i++)
-    if (subtree_has_side_effect(c, qav[i])) return 0;
-  int keeps_none = share_node_peeked(c, id) || (qt != TY_STRING && qt != TY_STRBUF && qt != TY_POLY && qt != TY_UNKNOWN);
-  return nm && keeps_none && nt_ref(nt, q, "block") < 0 && !is_string_rebind_mutator(nm) && !is_freeze_family(nm) &&
-         !bop_name_mutates(nm, 0) && bop_answers_self(TY_STRING, nm, argc, 0) == 0 &&
-         cplan_user(c, q)->dispatch == CP_NONE;
-}
 
-/* Is the value of call id thrown away: the share walk found it unread, or a
-   builtin that keeps none only prints it (`p x`; never one that changes its
-   receiver, whose mutation the aliases must see), or it is a statement that
-   is not the last of its sequence, or the value of a conditional, begin or
-   parenthesized expression that is itself dropped, or the value of a block
-   whose call just answers the yield (`def y = yield`) and is itself
-   dropped, or the value of a tap's block? What ends the climb (a loop
-   body, a block of an iterator) is an_value_dropped's, unless a user class
-   defines a method of the block call's name, which can answer the block's
-   value. The tail or `return` of a method that answers nothing (a `void` C
-   function, as an --rbs `-> nil` seed makes it) is thrown away too. */
-static int assign_value_dropped(Compiler *c, int id, const int *par) {
-  const NodeTable *nt = c->nt;
-  int n = id;
-  Scope *ms = comp_scope_of(c, id);
-  if (ms && ms->def_node >= 0 && method_is_void(ms) && (assign_is_tail(c, id, par) || assign_is_returned(c, id, par))) return 1;
-  for (int p = par[n]; ; p = par[n]) {
-    /* (a node can be a call's receiver and a statement's value both: the
-       parent map keeps one of them, comp_recv_parent the receiver) */
-    if (share_node_unread(c, n) || (share_node_peeked(c, n) && comp_recv_parent(c, n) < 0) || assign_peeked_reader(c, n)) return 1;
-    /* a String Hash key is copied (frozen) by CRuby: no identity is asked of it */
-    if (p >= 0 && nt_kind(nt, p) == NK_AssocNode && nt_ref(nt, p, "key") == n) return 1;
-    if (p < 0) return 0;
-    NodeKind k = nt_kind(nt, p);
-    if (k == NK_StatementsNode) {
-      int sn = 0;
-      const int *sb = nt_arr(nt, p, "body", &sn);
-      if (sn > 0 && sb[sn - 1] != n) return 1;
-      int gp = par[p];
-      NodeKind gk = gp >= 0 ? nt_kind(nt, gp) : NK_NONE;
-      if (gk == NK_BlockNode && par[gp] >= 0 && nt_kind(nt, par[gp]) == NK_CallNode) {
-        /* the block's value is its call's when the method only yields */
-        const CallPlan *pl = cplan_user(c, par[gp]);
-        int mb = pl->dispatch == CP_DIRECT && pl->mi > 0 ? c->scopes[pl->mi].body : -1;
-        int mn = 0;
-        const int *mbb = mb >= 0 && nt_kind(nt, mb) == NK_StatementsNode ? nt_arr(nt, mb, "body", &mn) : NULL;
-        if (mn == 1 && nt_kind(nt, mbb[0]) == NK_YieldNode) { n = par[gp]; continue; }
-      }
-      if (gp >= 0 && vp_is_value_edge(nt, gp, p, ASSIGN_CLIMB)) {
-        n = p;
-        continue;
-      }
-      /* tap answers its receiver, never its block's value */
-      const char *bn = gk == NK_BlockNode && par[gp] >= 0 && nt_kind(nt, par[gp]) == NK_CallNode
-                       ? nt_str(nt, par[gp], "name") : NULL;
-      if (bn && sp_streq(bn, "tap") && !cow_user_block_value(c, par, n)) return 1;
-      return an_value_dropped(nt, par, n) && !cow_user_block_value(c, par, n);
-    }
-    if (!vp_is_value_edge(nt, p, n, ASSIGN_CLIMB)) return 0;
-    n = p;
-  }
-}
 
 /* An attribute assignment's value that is taken as a String, not as the
    handle (the call is not marked to hand it out), is a copy of the one
@@ -1481,29 +1383,6 @@ int writers_change_param(Compiler *c, int id) {
   return 0;
 }
 
-static void assign_value_route(Compiler *c, int id, int value, int as_string, int explicit_writer) {
-  static const char msg[] =
-    "an attribute assignment in value position (kept, passed on, or a method's last expression, "
-    "which the method answers) stores into an instance variable that is mutated in place through "
-    "another name, and its value would be a copy (a String is not yet shared by reference through "
-    "an assignment's value). Make the assignment a statement of its own, or read the String back "
-    "through the reader.";
-  /* a dropped value (a statement) is no consumer of a copy */
-  const int *par = codegen_node_parents(c, id);
-  if (c->share_strings && par && (assign_value_dropped(c, id, par) || assign_mutated_receiver(c, id, explicit_writer))) return;
-  /* nor is a String iterator's Enumerator walked where it is made, which
-     reads the String as it is there (one kept holds the handle:
-     str_each_enum_keeps) */
-  if (c->share_strings && str_each_enum_walked_here(c, comp_recv_parent(c, id))) return;
-  ShareRoute q = share_route(id, value, 0);
-  q.to = id;
-  Scope *sc = comp_scope_of(c, id);
-  int mi = sc ? (int)(sc - c->scopes) : -1;
-  int tail = mi > 0 && par && sc->def_node >= 0 && sc->ret_handle &&
-             (assign_is_tail(c, id, par) || assign_is_returned(c, id, par));
-  Repr mk = repr_of(c, id);
-  q.carry = ((mk.handle || mk.demand) && !as_string) || tail ? id : SHARE_CARRY_COPY;
-}
 
 /* The value of a native binding's attribute assignment (native_assign_keeps)
    that is taken as a String, not as the handle: href is the binding's
@@ -1556,7 +1435,6 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
      the value is taken as the handle it is that handle (hv) */
   Repr hr = repr_of(c, id);
   int shr = user_assign_handle(c, id), hv = shr && (hr.handle || hr.demand);
-  if (shr && !hv) assign_value_route(c, id, argv[0], 0, 1);
   if (simple) {
     buf_puts(b, "({ (void)(");
     emit_setter_call_for_effect(c, id, shr, b);
@@ -2342,12 +2220,6 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             /* a tail emitted into a String result slot takes a String, the
                handle mark or not */
             int _ahv = _avt == TY_STRBUF && !(g_result_var && g_result_ty == TY_STRING && !g_result_poly);
-            /* --share-strings: the copy is right where the rule does not
-               share the String; where it does, the value has to be the
-               handle, which the route check asks of every consumer, the
-               mark or not (assign_value_route) */
-            if (_aci->ivar_str_shared[_aiv] && (c->share_strings || _avt != TY_STRBUF))
-              assign_value_route(c, id, argv[0], _avt == TY_STRBUF && !_ahv, 0);
             buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
             emit_strbuf_ivar_store(c, _aci->ivar_str_shared[_aiv], argv[0], b);
             if (_ahv) buf_printf(b, "; %s_t%d->iv_%s; })", _amsp, _atmp, iv_c(_abase));
