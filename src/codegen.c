@@ -18328,7 +18328,10 @@ static void reject_runtime_send(Compiler *c) {
 }
 
 /* Time.parse / Time.strptime (docs/limitations.md, K-001): the `require
-   "time"` string-parsing additions spinel does not implement. Time's other
+   "time"` string-parsing additions, which CRuby defines only once "time" is
+   required. With the require, a program that calls them by name has CRuby's
+   time.rb spliced in (packages/time), whose class methods then answer the
+   call and this limit steps aside. Time's other
    `require "time"` additions -- iso8601, httpdate, rfc2822 -- are supported
    (sp_feature_enabled("time"), gated in analyze_infer.c and codegen_call.c),
    so leaving `parse`/`strptime` to the generic unresolved-method path reads
@@ -18343,9 +18346,8 @@ static void reject_runtime_send(Compiler *c) {
    the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
 /* The class-method parsers iso8601, xmlschema, httpdate, rfc2822 and
    rfc822 are the same limit without `require "time"`, as CRuby has them
-   only once it is required. With it, Time.parse(str) is read for its
-   numeric ISO 8601 forms (sp_time_s_parse); Time.parse(str, now) and
-   Time.strptime remain this limit. */
+   only once it is required. With it, they are read for one String argument
+   (time_strict_parser_call). */
 static int is_time_string_parser(const char *name) {
   static const char *const names[] = { "parse", "strptime", "iso8601", "xmlschema",
                                        "httpdate", "rfc2822", "rfc822" };
@@ -18369,12 +18371,16 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   if (!rn || !sp_streq(rn, "Time")) return 0;
   int time_ci = comp_class_index(c, "Time");
   if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) return 0;
-  snprintf(msg, cap,
-           "Time.%s is not supported: spinel implements Time's other `require "
-           "\"time\"` additions (the instance methods iso8601, httpdate, rfc2822) "
-           "but not the "
-           "string-parsing ones. Store times as epoch seconds and read them with "
-           "Time.at instead (see docs/limitations.md)", name);
+  if (!sp_feature_required("time"))
+    snprintf(msg, cap,
+             "Time.%s is not supported without `require \"time\"`, which defines "
+             "it in CRuby (see docs/limitations.md)", name);
+  else
+    snprintf(msg, cap,
+             "Time.%s is not supported in this form: spinel reads Time.httpdate, "
+             "rfc2822, xmlschema and iso8601 with one String argument, and "
+             "Time.parse and Time.strptime through CRuby's time.rb where the "
+             "program's code calls them by name (see docs/limitations.md)", name);
   return 1;
 }
 

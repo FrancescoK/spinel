@@ -2460,7 +2460,10 @@ static int sp_set_word_at(const char *src, const char *p) {
                   (next >= '0' && next <= '9') || next == '_');
   return prev_ok && next_ok;
 }
-static int source_references_set(const char *src) {
+/* Whether hit(src, p) answers true at some p in CODE: comments, =begin
+   blocks and the text of quoted strings are passed over, and a #{...} inside
+   double quotes is scanned as the code it is. */
+static int sp_src_code_any(const char *src, int (*hit)(const char *src, const char *p)) {
   const char *p = src;
   int bol = 1;   /* at the beginning of a line, for =begin/=end */
   while (*p) {
@@ -2490,9 +2493,7 @@ static int source_references_set(const char *src) {
           int depth = 1;
           while (*q && depth) { if (*q == '{') depth++; else if (*q == '}') depth--; q++; }
           for (const char *r = p + 2; r < q; r++)
-            if (strncmp(r, "Set", 3) == 0 && sp_set_word_at(src, r)) return 1;
-          for (const char *r = p + 2; r + 7 <= q; r++)
-            if (strncmp(r, ".to_set", 7) == 0) return 1;
+            if (hit(src, r)) return 1;
           p = q;
           continue;
         }
@@ -2501,12 +2502,17 @@ static int source_references_set(const char *src) {
       if (*p) p++;
       continue;
     }
-    if (strncmp(p, "Set", 3) == 0 && sp_set_word_at(src, p)) return 1;
-    if (strncmp(p, ".to_set", 7) == 0) return 1;
+    if (hit(src, p)) return 1;
     if (*p == '\n') bol = 1;
     p++;
   }
   return 0;
+}
+static int sp_set_hit(const char *src, const char *p) {
+  return (strncmp(p, "Set", 3) == 0 && sp_set_word_at(src, p)) || strncmp(p, ".to_set", 7) == 0;
+}
+static int source_references_set(const char *src) {
+  return sp_src_code_any(src, sp_set_hit);
 }
 
 /* Whether `src` references `IO::Buffer` in CODE, with the same
@@ -2526,50 +2532,38 @@ static int sp_iob_word_at(const char *src, const char *p) {
                   (next >= '0' && next <= '9') || next == '_');
   return prev_ok && next_ok;
 }
+static int sp_iob_hit(const char *src, const char *p) {
+  return strncmp(p, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, p);
+}
 static int source_references_io_buffer(const char *src) {
-  const char *p = src;
-  int bol = 1;
-  while (*p) {
-    if (bol && strncmp(p, "=begin", 6) == 0) {
-      const char *e = strstr(p, "\n=end");
-      if (!e) return 0;
-      p = e + 5;
-      continue;
-    }
-    bol = 0;
-    if (*p == '#') {
-      while (*p && *p != '\n') p++;
-      continue;
-    }
-    if (*p == '\'') {
-      p++;
-      while (*p && *p != '\'') { if (*p == '\\' && p[1]) p++; p++; }
-      if (*p) p++;
-      continue;
-    }
-    if (*p == '"') {
-      p++;
-      while (*p && *p != '"') {
-        if (*p == '\\' && p[1]) { p += 2; continue; }
-        if (p[0] == '#' && p[1] == '{') {
-          const char *q = p + 2;
-          int depth = 1;
-          while (*q && depth) { if (*q == '{') depth++; else if (*q == '}') depth--; q++; }
-          for (const char *r = p + 2; r < q; r++)
-            if (strncmp(r, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, r)) return 1;
-          p = q;
-          continue;
-        }
-        p++;
-      }
-      if (*p) p++;
-      continue;
-    }
-    if (strncmp(p, "IO::Buffer", 10) == 0 && sp_iob_word_at(src, p)) return 1;
-    if (*p == '\n') bol = 1;
-    p++;
-  }
-  return 0;
+  return sp_src_code_any(src, sp_iob_hit);
+}
+
+/* Whether `src` calls Time.parse or Time.strptime in CODE (the skipping of
+   sp_src_code_any). `Time` starts a word that no `.` or `::` qualifies, so
+   DateTime.parse and Foo::Time.parse do not count, though a top-level
+   ::Time.parse does; the method name ends there, so Time.parser does not.
+   `Time::parse` and a `.` on the next line count too. Drives the time.rb
+   splice below; a receiver held in a variable (`k = Time; k.parse(s)`) is
+   not seen. */
+static int sp_req_ident_char(char ch);
+static int sp_time_parser_hit(const char *src, const char *p) {
+  if (strncmp(p, "Time", 4) != 0) return 0;
+  const char *b = p;
+  if (b - src >= 2 && b[-1] == ':' && b[-2] == ':') b -= 2;   /* ::Time */
+  if (b > src && (sp_req_ident_char(b[-1]) || b[-1] == '.' || b[-1] == ':')) return 0;
+  const char *q = p + 4;
+  while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+  if (q[0] == '&' && q[1] == '.') q += 2;
+  else if (q[0] == '.') q++;
+  else if (q[0] == ':' && q[1] == ':') q += 2;
+  else return 0;
+  while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+  size_t n = strncmp(q, "parse", 5) == 0 ? 5 : strncmp(q, "strptime", 8) == 0 ? 8 : 0;
+  return n && !sp_req_ident_char(q[n]);
+}
+static int source_calls_time_parser(const char *src) {
+  return sp_src_code_any(src, sp_time_parser_hit);
 }
 
 /* ---- require-gate: features enabled by a `require "name"` ----
@@ -4401,6 +4395,21 @@ static int sp_require_preloaded(const char *name) {
   return 0;
 }
 
+/* The name a plain require looks up under packages/, or NULL to skip the
+   lookup. packages/time/time.rb is CRuby's time.rb, for Time.parse and
+   Time.strptime: a plain `require "time"` stays the runtime's, whose
+   formatters and strict parsers are C, so a program that does not parse
+   keeps the C it had (#9946). The file is reached only through
+   SP_TIME_PARSERS_FEATURE, the name the time.rb splice requires it by:
+   `require "time"` itself is already resolved by then, and a second one
+   would be skipped as a repeat. */
+#define SP_TIME_PARSERS_FEATURE "spinel/time_parsers"
+static const char *sp_package_feature(const char *lib_name) {
+  if (strcmp(lib_name, "time") == 0) return NULL;
+  if (strcmp(lib_name, SP_TIME_PARSERS_FEATURE) == 0) return "time";
+  return lib_name;
+}
+
 /* ---- Plain require resolution ---- */
 static char *resolve_plain_requires(char *source, const char *exe_path,
                                     unsigned char **fsl, size_t *fsl_n);
@@ -5071,11 +5080,12 @@ else {
            packages/erb/erb/util.rb. */
         char gp[1024];
         char first[256];
+        const char *pkg = sp_package_feature(lib_name);
         {
-          const char *sl = strchr(lib_name, '/');
-          size_t fl2 = sl ? (size_t)(sl - lib_name) : strlen(lib_name);
+          const char *sl = pkg ? strchr(pkg, '/') : NULL;
+          size_t fl2 = !pkg ? 0 : sl ? (size_t)(sl - pkg) : strlen(pkg);
           if (fl2 >= sizeof(first)) fl2 = sizeof(first) - 1;
-          memcpy(first, lib_name, fl2);
+          if (pkg) memcpy(first, pkg, fl2);
           first[fl2] = 0;
         }
         int base_len = (int)strlen(lib_dir);
@@ -5092,11 +5102,13 @@ else {
           }
           if (content) sp_note_builtin_path(gp);
         }
-        if (!content) snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
-        if (!content) content = read_file(gp);
-        if (!content) {
+        if (!content && pkg) {
+          snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, pkg);
+          content = read_file(gp);
+        }
+        if (!content && pkg) {
           /* dev binary one level below the repo root (build/spinel) */
-          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
+          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, pkg);
           content = read_file(gp);
         }
         /* the ffi package is glue over the system libffi, built only where
@@ -5562,6 +5574,11 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     source = sp_prepend_require(source, argv0, "require \"set\"\n", &fsl, &fsl_n);
   if (!sp_feature_required("io/buffer") && source_references_io_buffer(source))
     source = sp_prepend_require(source, argv0, "require \"io/buffer\"\n", &fsl, &fsl_n);
+  /* CRuby's time.rb (packages/time) for a program that requires "time" and
+     calls Time.parse or Time.strptime; any other program keeps the
+     runtime's C (#9946). */
+  if (sp_feature_required("time") && source_calls_time_parser(source))
+    source = sp_prepend_require(source, argv0, "require \"" SP_TIME_PARSERS_FEATURE "\"\n", &fsl, &fsl_n);
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
