@@ -12274,6 +12274,9 @@ else {
         emit_ctype(c, at, g_pre);
         /* (one-String mode: the bytes face of a String of either face) */
         if (g_one_string && at == TY_STRING && hb.p) buf_printf(g_pre, " _t%d = SP_STR_B(%s);", ht, hb.p);
+        /* ...and the handle of one a handle temp takes (a splat's element
+           spread into a String parameter, read as its bytes) */
+        else if (g_one_string && at == TY_STRBUF && hb.p) buf_printf(g_pre, " _t%d = SP_STR_HDL(%s);", ht, hb.p);
         else buf_printf(g_pre, " _t%d = %s;", ht, hb.p ? hb.p : "0");
         if (root && at == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, ht, g_pre); }
         else if (root) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
