@@ -3254,7 +3254,6 @@ static void sh_assign_join_later(ShareFacts *F, int v, int s) {
   F->aj_done[F->naj++] = 0;
 }
 
-int share_assign_call(const Compiler *c, int n) { return sh_assign_call(c, n); }
 /* Is node n (through parentheses, a unary plus and the branches of a
    conditional) an attribute assignment, or a chain over one? */
 static int sh_freeze_recv_assign(const Compiler *c, int n);
@@ -5484,10 +5483,6 @@ void share_facts_free(Compiler *c) {
   c->share = NULL;
 }
 
-/* the same facts with what the walk does not follow left out: the stats'
-   count of holders shared only because of UNKNOWN */
-ShareFacts *share_facts_build_closed(Compiler *c) { return sh_build(c, 1); }
-void share_facts_drop(ShareFacts *F) { sh_free(F); }
 
 int share_holder_count(const Compiler *c) { return c->share ? c->share->nh : 0; }
 const ShareHolder *share_holder(const Compiler *c, int h) {
@@ -6432,10 +6427,6 @@ int share_node_peeked(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & SHU_PEEK);
 }
-int share_node_unread(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL));
-}
 int share_node_transient(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
@@ -6444,23 +6435,7 @@ int share_node_transient(const Compiler *c, int n) {
 int share_value_unobserved(Compiler *c, int n) {
   return share_value_fresh(c, n, 0) || an_local_read_once(c, n);
 }
-int share_node_shares(const Compiler *c, int n) {
-  /* one representation: every String is its handle, so the class of any
-     String value is shared */
-  (void)c; (void)n;
-  return 1;
-}
 
-/* Does the rule share the class of element e (a flow's destination)? */
-static int sh_elem_shares(const ShareFacts *F, int e) {
-  int r = sh_root(F, e);
-  return repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
-}
-int share_flow_dest_shares(const Compiler *c, int i) {
-  const ShareFacts *F = c->share;
-  int d = i >= F->nfl ? F->lend_par[i - F->nfl] : F->fl_dest[i];
-  return d < 0 ? -1 : sh_elem_shares(F, d);
-}
 
 
 
@@ -6702,29 +6677,10 @@ int share_assign_shares(const Compiler *c, int n) {
 
 
 
-/* Is node n inside a method the program never names (sh_dead_nodes)? Such a
-   node runs nothing: the walk leaves it out, and a route recorded there, or
-   one that ends there (its value never reaches the end), is not refused. */
-int share_node_dead(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  return F && F->dead && n >= 0 && n < F->nnodes && F->dead[n];
-}
 
 
 
 
-/* Under SPINEL_SHARE_STATS, a holder of `closed` (a build without UNKNOWN)
-   with the same key as holder h of c->share: its class's facts. */
-int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
-  if (!F || !h) return 0;
-  int i = h->kind == SHK_LOCAL ? sh_lookup(F, SHK_LOCAL, h->scope, h->local, NULL)
-        : h->kind == SHK_IVAR ? sh_lookup(F, SHK_IVAR, h->cid, -1, h->name) : -1;
-  if (i < 0) return 0;
-  int x = F->helem[i];
-  while (F->parent[x] != x) x = F->parent[x];
-  unsigned f = F->flags[x];
-  return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & SHF_INDIRECT));
-}
 
 /* ---- a Hash key borrows a handle's bytes ----
 
@@ -6841,19 +6797,3 @@ int share_mark_borrows(Compiler *c) {
   return marked;
 }
 
-/* SPINEL_SHARE_STATS=3: each in-place mutation whose class is UNKNOWN's,
-   which makes every String that meets what the walk does not follow a
-   handle (#6765's never-mutated proof under dynamic calls) */
-void share_dump_unknown_mutations(Compiler *c) {
-  const ShareFacts *F = c->share;
-  if (!F) return;
-  int ru = sh_root(F, F->unknown);
-  for (int i = 0; i < F->nmut; i++) {
-    if (sh_root(F, F->mut_v[i]) != ru) continue;
-    int n = F->mut_n[i];
-    int recv = nt_ref(c->nt, n, "receiver");
-    fprintf(stderr, "share-unknown-mut: line %d `%s` on %s (%s)\n", (int)nt_int(c->nt, n, "node_line", 0),
-            nt_str(c->nt, n, "name") ? nt_str(c->nt, n, "name") : "?",
-            recv >= 0 ? nt_type(c->nt, recv) : "-", recv >= 0 ? ty_name(c->ntype[recv]) : "-");
-  }
-}

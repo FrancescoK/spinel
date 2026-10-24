@@ -106,10 +106,6 @@ int share_plan_form(int need, int supply) {
   return need == SPN_NEW ? SPF_WRAP : SPF_REFUSE;
 }
 
-const char *share_plan_form_name(int form) {
-  static const char *const names[] = { "bytes", "handle", "wrap", "refuse" };
-  return form >= SPF_BYTES && form <= SPF_REFUSE ? names[form] : "?";
-}
 
 /* The String receiver call v answers (a String method that answers self,
    or self or nil, and no program method of the name), or -1. itself, and
@@ -237,14 +233,6 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
 
 static int share_plan_producer_at(Compiler *c, int v, int *op) { return share_plan_producer_core(c, v, op, 0); }
 
-const char *share_plan_kind_name(int kind) {
-  static const char *const names[] = { "none", "box", "slot", "demanded", "elem", "slot_poly", "frozen", "self",
-                                       "bang_box", "proc_call", "poly_arms", "exc_message", "exc_super", "published",
-                                       "reader", "write", "assign", "operand", "block_value", "yield", "cond",
-                                       "sequence", "lift" };
-  _Static_assert(sizeof names / sizeof names[0] == SPK__COUNT, "a name for each producer kind");
-  return kind >= 0 && kind < SPK__COUNT ? names[kind] : "?";
-}
 
 int share_plan_producer_unlifted(Compiler *c, int v, int *operand) {
   int rv, k = share_plan_producer_core(c, v, &rv, 1);
@@ -979,16 +967,11 @@ int share_plan_box_handle(Compiler *c, int v) {
          (r >= 0 && nt_kind(c->nt, r) != NK_CallNode && strbuf_bang_self_local(c, u) && strbuf_slot_has(c, r));
 }
 
-const char *share_plan_role_name(int role) {
-  static const char *const names[] = { "take", "read", "test", "store", "identity", "box" };
-  return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";
-}
 
 int share_plan_role(Compiler *c, int v) {
   return c->share_plan && v >= 0 && v < c->share_plan_n ? c->share_plan[v] >> SPM_ROLE_SHIFT : SPR_TAKE;
 }
 
-int share_plan_second_role(Compiler *c, int v) { return share_plan_self_recv(c, v) >= 0 ? SPR_TEST : -1; }
 
 /* Give node n's consumer `role`, and through parentheses and a statement
    list's last statement, the node whose value n is. */

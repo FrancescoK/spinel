@@ -120,8 +120,6 @@ int share_elem_holder(const Compiler *c, int h);
 int share_class_count(const Compiler *c);
 int share_holder_class(const Compiler *c, int h);
 int share_node_class(const Compiler *c, int n);
-/* n is inside a method the program never names: the walk left it out (sh_dead_nodes) */
-int share_node_dead(const Compiler *c, int n);
 
 /* The facts of holder h's class. */
 unsigned share_class_flags(const Compiler *c, int h);
@@ -155,12 +153,6 @@ int share_builtin_overridden(Compiler *c, const char *cls, const char *name);
    0..share_flow_count-1: the kind, the site and the value node. */
 int share_flow_count(const Compiler *c);
 int share_flow_at(const Compiler *c, int i, int *site, int *value);
-/* Does the rule share the class of flow i's destination: the holder of the
-   variable, parameter, ivar or block parameter, or the elements of the
-   container, that takes the value (-1 when the walk made none)? A new
-   String joins no class, so its own class never says whether the holder it
-   is stored into shares. */
-int share_flow_dest_shares(const Compiler *c, int i);
 /* The literal blocks method scope mi yields to, as a list in *blocks:
    their count, or -1 when a block the walk does not list reaches its
    yields (a block passed as a value, a zsuper's, a dynamic call's). */
@@ -223,16 +215,10 @@ int share_frozen_string(Compiler *c, int n);
 int share_node_peeked(const Compiler *c, int n);
 /* Is node n's result dropped or only read by a builtin that keeps none? */
 int share_node_transient(const Compiler *c, int n);
-/* Is call n an attribute assignment of one plain value, under --share-strings? */
-int share_assign_call(const Compiler *c, int n);
-/* Is node n's value dropped (a statement, or a tail no caller reads)? */
-int share_node_unread(const Compiler *c, int n);
 /* The facts (SHF_*) of the class of node n's value. */
 unsigned share_node_flags(const Compiler *c, int n);
 /* A fresh value or a single-use local whose destination is its only live name. */
 int share_value_unobserved(Compiler *c, int n);
-/* Does the rule share the class of node n's value? */
-int share_node_shares(const Compiler *c, int n);
 
 /* Must the String node v evaluates to be its handle where it is emitted,
    and not its bytes: SHN_YES for every String but nil, a literal, a frozen
@@ -312,7 +298,6 @@ enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY, SPR_BOX };
 enum { SPK_NONE, SPK_BOX, SPK_SLOT, SPK_DEMANDED, SPK_ELEM, SPK_SLOT_POLY, SPK_FROZEN, SPK_SELF, SPK_BANG_BOX,
        SPK_PROC_CALL, SPK_POLY_ARMS, SPK_EXC_MESSAGE, SPK_EXC_SUPER, SPK_PUBLISHED, SPK_READER, SPK_WRITE,
        SPK_ASSIGN, SPK_OPERAND, SPK_BLOCK_VALUE, SPK_YIELD, SPK_COND, SPK_SEQUENCE, SPK_LIFT, SPK__COUNT };
-const char *share_plan_kind_name(int kind);
 /* Can a store's target take value v as a handle (share_plan.c)? */
 int share_plan_store_renders(Compiler *c, int v);
 /* ...which, for an element of multiple write mw, the seal asks of the write */
@@ -348,8 +333,6 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need);
    for a node made after seal), and the role of its second consumer, or -1:
    a call answering its receiver's String has its own answer tested. */
 int share_plan_role(Compiler *c, int v);
-int share_plan_second_role(Compiler *c, int v);
-const char *share_plan_form_name(int form);
 /* The producer of node v's handle where codegen is (SPK_*), asked live as
    the supply is, whatever a consumer needs; *operand (may be NULL) is the
    node whose supply an SPK_SELF, SPK_OPERAND or SPK_SEQUENCE value hands
@@ -374,7 +357,6 @@ int share_plan_call_answers_literal(Compiler *c, int v);
    arguments or block, every value of whose receiver answers the name by
    the program's own methods? */
 int share_plan_literal_pickup_clean(Compiler *c, int v, int mi);
-const char *share_plan_role_name(int role);
 /* Is node v, a String call a store lifts into a handle (poly_strbuf_lift),
    boxed by the handle its producer supplies (the plan's SPR_BOX form
    with the object a lift needs), not from its bytes? A call whose route
@@ -383,13 +365,6 @@ int share_plan_box_handle(Compiler *c, int v);
 /* Does the rule share the String attribute assignment n hands on? */
 int share_assign_shares(const Compiler *c, int n);
 
-/* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
-void share_dump_unknown_mutations(Compiler *c);
 
-/* The stats' second build, with every union with UNKNOWN dropped: would
-   the holder with h's key share without what the walk does not follow? */
-struct ShareFacts *share_facts_build_closed(Compiler *c);
-void share_facts_drop(struct ShareFacts *F);
-int share_closed_shares(const struct ShareFacts *F, const ShareHolder *h);
 
 #endif
