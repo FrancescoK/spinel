@@ -65,5 +65,24 @@ check b 4 "constant a method returns"
 # a leaked counter renumbered thousands of lines here before (2,808 of the
 # 8,426 that differed were temps renumbered after the edit)
 check c 60 "return type Integer -> Float"
-if [ $fail = 0 ]; then echo "unit-stability: all three edits stay local"; else echo "unit-stability: FAILED"; fi
+# A definition added before another must leave the other's names alone: a
+# node is named after its definition's key, and a key two names spell alike
+# goes to the first, the other taking _d1. Each pair is two names a key
+# could confuse; the second method's block parameter (y) is named after
+# its key, so its names must be the same with the first method and without.
+keep() {
+  first=$1; second=$2; what=$3
+  printf 'class A\n  def %s(x) = [x].map { |y| y }.map { |y| y }\nend\np A.new.%s(1)\n' \
+    "$second" "$second" > "$T/one.rb"
+  printf 'class A\n  def %s(x) = [x].map { |u| u }.map { |u| u }\n  def %s(x) = [x].map { |y| y }.map { |y| y }\nend\np A.new.%s(1), A.new.%s(1)\n' \
+    "$first" "$second" "$first" "$second" > "$T/both.rb"
+  for v in one both; do
+    "$SP" "$T/$v.rb" -c --no-line-map -o "$T/$v.c" > "$T/$v.log" 2>&1 || { echo "unit-stability: $what: $v.rb does not compile" >&2; fail=1; return; }
+    grep -o 'lv_y__bp[A-Za-z0-9_]*' "$T/$v.c" | sort -u > "$T/$v.names"
+  done
+  if [ -s "$T/one.names" ] && cmp -s "$T/one.names" "$T/both.names"; then verdict=ok; else verdict=FAIL; fail=1; fi
+  echo "unit-stability: a method added before $what keeps its names $verdict"
+}
+keep "éxc3xa9" "xc3xa9é" "one whose escaped name spells like it"
+if [ $fail = 0 ]; then echo "unit-stability: all edits stay local"; else echo "unit-stability: FAILED"; fi
 exit $fail
