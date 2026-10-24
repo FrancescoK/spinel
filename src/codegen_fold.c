@@ -3,7 +3,6 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
-#include "value_pos.h"
 
 /* One representation: a block parameter bound to a typed String Array's
    element holds the handle the Array keeps (the element is one), so its
@@ -9166,22 +9165,6 @@ static void emit_arg_temp(Compiler *c, int v) {
     ran_first_bind_o(v, t, t, 0);
     return;
   }
-  /* A String variable's read in parentheses after other statements
-     (`f((x; t))`) is that read once they ran (vp_one): they run here,
-     ahead, and the variable's handle is taken as a bare read's is. Read as
-     the parentheses, a shared slot handed on its bytes. */
-  int rd = v;
-  if (!wshare && !conversion && !fresh && !srange && vk == NK_ParenthesesNode &&
-      (at == TY_STRING || at == TY_STRBUF)) {
-    int u;
-    if (vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &u) == VP1_NODE &&
-        (nt_kind(c->nt, u) == NK_LocalVariableReadNode || nt_kind(c->nt, u) == NK_InstanceVariableReadNode ||
-         repr_static_read_kind(nt_kind(c->nt, u)))) {
-      emit_paren_lead(c, v, u, g_pre, g_indent);
-      rd = u;
-      vk = nt_kind(c->nt, u);
-    }
-  }
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, nt_paren_single(c->nt, v), &hw);
   else if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
@@ -9189,7 +9172,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
-                 strbuf_slot_text(c, rd, &sref))) {
+                 strbuf_slot_text(c, v, &sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref.p, th);
@@ -9229,7 +9212,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     emit_str_expr(c, v, &hb);
     view_pop(c, mark);
   }
-  else emit_expr(c, rd, &hb);
+  else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
   /* (one representation: a String of either face is held as it is, the C
      compiler naming the type, and read where it is used, SP_STR_B: a handle
