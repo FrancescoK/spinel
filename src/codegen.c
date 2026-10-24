@@ -2528,20 +2528,6 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
     }
   }
-  /* --share-strings: a new String Array whose elements the rule shares (a
-     builtin's answer stored straight into a container, `h = { k: s.split }`
-     with `h[:k][0] << x`) is boxed as the PolyArray of handles a local's
-     Array becomes (emit_str_array_handles); boxed as its bytes, a change
-     through an element went to a copy (#9258) */
-  if (node >= 0 && comp_ntype(c, node) == TY_STR_ARRAY && !arg_ran_first(node, 0)) {
-    int u = nt_paren_single(c->nt, node);
-    if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && share_node_fresh_elems(c, u)) {
-      buf_puts(b, "sp_box_nullable_obj((void *)");
-      emit_str_array_handles(c, node, b);
-      buf_puts(b, ", SP_BUILTIN_POLY_ARRAY)");
-      return;
-    }
-  }
   Repr tr = repr_of(c, node);
   if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && tr.as_ty == TY_STRING && tr.poly_lift)
     unsupported_feature(c, node, "a String is not yet shared by reference through a narrowed boxed iterator element into an appending parameter");
@@ -4135,25 +4121,6 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
   free(arms.p);
 }
 
-/* The type the method's own yield nodes were compiled against. */
-static TyKind pf_yield_ty(Compiler *c, int id, int *found) {
-  if (id < 0) return TY_UNKNOWN;
-  if (nt_kind(c->nt, id) == NK_YieldNode) { *found = 1; return repr_of(c, id).as_ty; }
-  int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) {
-    TyKind t = pf_yield_ty(c, nt_ref_at(c->nt, id, i), found);
-    if (*found) return t;
-  }
-  int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
-    for (int j = 0; j < n; j++) {
-      TyKind t = pf_yield_ty(c, ids[j], found);
-      if (*found) return t;
-    }
-  }
-  return TY_UNKNOWN;
-}
 /* Should this method carry an `inline` hint?
 
    The C compiler sizes a function by the machine code it has after our runtime

@@ -2985,17 +2985,10 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
 
   int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
-  /* (--share-strings: a new String Array whose Strings the rule shares is
-     walked as the Array of their handles, so a run holds the Strings
-     themselves: iter_src_as_handles) */
-  int src_handles = !pr_empty_lit && prr.elem == TY_STRING && prr.kind != RK_BOXED && iter_src_as_handles(c, pr);
-  if (src_handles) emit_str_array_handles(c, pr, &rb);
-  else if (!pr_empty_lit) emit_expr(c, pr, &rb);
+  if (!pr_empty_lit) emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
   if (pr_empty_lit)
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ta, ta);
-  else if (src_handles)
-    buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
   else if (prr.elem == TY_POLY)
     buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
   /* A boxed receiver (a container-read row, a boxed Hash) walks the elements
@@ -4515,10 +4508,6 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   if (poly_src && sp_streq(nt_str(nt, nt_ref(nt, id, "receiver"), "name"), "each_with_index") &&
       program_defines_ewi(c)) return 0;
   if (poly_src) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
-  /* a fresh String Array whose elements the rule shares is walked as the
-     PolyArray of handles a local's would be */
-  int as_handles = !poly_src && iter_src_as_handles(c, arr);
-  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   if (!ty_is_array(rt)) return 0;
   const char *k = rr.elem == TY_POLY ? "Poly" : array_kind(rt);
   if (!k) return 0;
@@ -4558,7 +4547,6 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, arr, &bx);
     buf_printf(&rb, "sp_poly_ewi_items(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
   }
-  else if (as_handles) emit_str_array_handles(c, arr, &rb);
   else emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
@@ -4753,20 +4741,14 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 }
 
 /* each_slice(n).map / each_cons(n).map with one block parameter that the
-   analysis made a box (a slice of Strings the share rule shares): the
-   parameter takes the slice boxed, over the receiver walked as the PolyArray
-   of handles where it is a fresh String Array whose elements the rule shares
-   (iter_src_as_handles), so its elements are those handles. Bound as the
+   analysis made a box: the parameter takes the slice boxed. Bound as the
    typed slice, the C did not build. Answers whether the parameter is such a
-   box; *as_handles says whether the receiver is walked as handles. */
-static int slice_param_boxed(Compiler *c, int block, int arr, TyKind arr_t, int *as_handles) {
+   box. */
+static int slice_param_boxed(Compiler *c, int block) {
   const char *p0 = block_param_name(c, block, 0);
   Scope *bsc = p0 ? comp_scope_of(c, block) : NULL;
   LocalVar *plv = bsc ? scope_local(bsc, p0) : NULL;
-  *as_handles = 0;
-  if (!plv || plv->type != TY_POLY || block_param_is_multi(c, block, 0) || block_param_name(c, block, 1)) return 0;
-  *as_handles = arr_t == TY_STR_ARRAY && iter_src_as_handles(c, arr);
-  return 1;
+  return plv && plv->type == TY_POLY && !block_param_is_multi(c, block, 0) && !block_param_name(c, block, 1);
 }
 /* sort_by { |x| key } as an expression: a stable bubble sort of a copy of
    the receiver, ordering by the block's computed (scalar) key. Returns 1 if
@@ -4783,12 +4765,6 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   Repr rr = repr_of(c, recv);
   TyKind rt = rr.as_ty;
   if (!ty_is_array(rt)) return 0;
-  /* --share-strings: over a fresh String Array whose elements the rule
-     shares, the PolyArray of handles a local's would be: the block's
-     parameter names each handle, and the answer keeps them
-     (iter_filter_src_as_handles types it so) */
-  int as_handles = !is_bang && iter_filter_src_as_handles(c, id, recv);
-  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = (rr.elem == TY_POLY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
   const char *p0_orig = block_param_name(c, block, 0);
@@ -4823,7 +4799,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      the receiver is read by sorted index into a fresh result, never reordered. */
   int trv = ++g_tmp, tn = ++g_tmp, tkeys = ++g_tmp, tidx = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tg = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (as_handles) emit_str_array_handles(c, recv, &rb); else emit_expr(c, recv, &rb);
+  emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trv, rb.p ? rb.p : ""); free(rb.p);
   /* root the receiver: the key loop allocates (boxing keys, growing the key/index
@@ -4948,10 +4924,6 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
      sort! is not valid on a Hash, so only the non-bang form applies. */
   int hash_sort = ty_is_hash(rt) && !is_bang;
   if (!ty_is_array(rt) && !hash_sort) return 0;
-  /* --share-strings: over a fresh String Array whose elements the rule
-     shares, the PolyArray of handles (as emit_sortby_expr) */
-  int as_handles = !is_bang && !hash_sort && iter_filter_src_as_handles(c, id, recv);
-  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = hash_sort ? "Poly" : (rr.elem == TY_POLY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
   TyKind et = hash_sort ? TY_POLY : rr.elem;
@@ -4989,7 +4961,6 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   if (hash_sort) emit_hash_pairs_expr(c, recv, rt, hn, &rb);
-  else if (as_handles) emit_str_array_handles(c, recv, &rb);
   else emit_expr(c, recv, &rb);
   rt = eff_rt;
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -5451,8 +5422,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (es_argc == 1 && es_recv >= 0) {
       Repr arr_r = repr_of(c, es_recv);
       TyKind arr_rt = arr_r.as_ty;
-      int es_handles = 0, es_boxed = ty_is_array(arr_rt) && slice_param_boxed(c, block, es_recv, arr_rt, &es_handles);
-      if (es_handles) { arr_rt = TY_POLY_ARRAY; arr_r.elem = TY_POLY; }
+      int es_boxed = ty_is_array(arr_rt) && slice_param_boxed(c, block);
       if (ty_is_array(arr_rt)) {
         const char *k = (arr_r.elem == TY_POLY) ? "Poly" : array_kind(arr_rt);
         if (k) {
@@ -5467,7 +5437,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
           if (bn_es >= 1) {
             int ta_es = ++g_tmp, ts_es = ++g_tmp, tres_es = ++g_tmp, ti_es = ++g_tmp;
             Buf rb_es; memset(&rb_es, 0, sizeof rb_es);
-            if (es_handles) emit_str_array_handles(c, es_recv, &rb_es); else emit_expr(c, es_recv, &rb_es);
+            emit_expr(c, es_recv, &rb_es);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_rt, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_es, rb_es.p ? rb_es.p : ""); free(rb_es.p);
             /* rooted like the result array below: the length is the loop
@@ -5543,8 +5513,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (ec_argc == 1 && ec_recv >= 0) {
       Repr arr_r_ec = repr_of(c, ec_recv);
       TyKind arr_ec = arr_r_ec.as_ty;
-      int ec_handles = 0, ec_boxed = ty_is_array(arr_ec) && slice_param_boxed(c, block, ec_recv, arr_ec, &ec_handles);
-      if (ec_handles) { arr_ec = TY_POLY_ARRAY; arr_r_ec.elem = TY_POLY; }
+      int ec_boxed = ty_is_array(arr_ec) && slice_param_boxed(c, block);
       if (ty_is_array(arr_ec)) {
         const char *kec = (arr_r_ec.elem == TY_POLY) ? "Poly" : array_kind(arr_ec);
         if (kec) {
@@ -5558,7 +5527,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
           if (bn_ec >= 1) {
             int ta_ec = ++g_tmp, tn_ec = ++g_tmp, tres_ec = ++g_tmp, ti_ec = ++g_tmp;
             Buf rb_ec; memset(&rb_ec, 0, sizeof rb_ec);
-            if (ec_handles) emit_str_array_handles(c, ec_recv, &rb_ec); else emit_expr(c, ec_recv, &rb_ec);
+            emit_expr(c, ec_recv, &rb_ec);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_ec, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_ec, rb_ec.p ? rb_ec.p : ""); free(rb_ec.p);
             /* rooted like the result array below, for the same reason as the
@@ -5991,10 +5960,6 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (!ty_is_array(rt) && !ty_is_ptr_array(rt) && !range_recv) return 0;
-  /* a retaining iterator over a fresh sharing String Array walks the
-     PolyArray of handles a local's would be, and answers one */
-  int as_handles = iter_filter_src_as_handles(c, id, recv);
-  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = range_recv ? "Int" : array_iter_kind(rt);
   if (!k) return 0;
 
@@ -6067,7 +6032,6 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     rt = TY_INT_ARRAY;
     rr.elem = TY_INT;
   }
-  else if (as_handles) emit_str_array_handles(c, recv, &rb);
   else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   emit_ctype(c, rt, g_pre);
@@ -6093,7 +6057,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
      The handles of a fresh String Array are Strings, not sub-arrays: the
      first parameter binds one and the others stay nil. */
   int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
-  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0) && !as_handles);
+  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0));
 
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
@@ -6154,7 +6118,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     snprintf(es_r, sizeof es_r, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
     /* the handles of a fresh String Array are Strings, which never spread:
        a rest beside a required parameter binds empty */
-    if (emit_iter_bind_rest(c, block, np_cl, as_handles && np_cl >= 1 ? TY_STRING : et_elem, es_r, g_pre,
+    if (emit_iter_bind_rest(c, block, np_cl, et_elem, es_r, g_pre,
                             use_shadow ? innerIndent : bodyIndent) < 0) {
       unsupported(c, id, "block splat parameter alongside required params over a poly element");
       return 1;

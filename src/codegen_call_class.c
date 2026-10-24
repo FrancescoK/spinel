@@ -1293,8 +1293,7 @@ const NativeMethod *native_assign_keeps(Compiler *c, int id) {
   if (nk < 0 || !c->classes[nk].native_share_keeps) return NULL;
   int nm = comp_native_method_find_typed(c, nk, nt_str(nt, id, "name"), 1, 0, &at);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
-  return m && m->kind == 0 && (m->share & NSH_KEEPS) && m->share_csym && !m->rest && m->nargs == 1 &&
-         share_node_elems_share(c, recv) ? m : NULL;
+  return m && m->kind == 0 && (m->share & NSH_KEEPS) && m->share_csym && !m->rest && m->nargs == 1 ? m : NULL;
 }
 
 /* The edges the assignment walkers climb: the conditionals, a begin and its

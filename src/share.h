@@ -134,41 +134,18 @@ int share_elem_holders(const Compiler *c, int e);
    instead of a copy. Answers how many it marked. */
 int share_mark_borrows(Compiler *c);
 
-/* Is node n's value a String the walk reached and found no identity in (a
-   fresh one no other name holds)? */
-int share_node_fresh(const Compiler *c, int n);
 /* Does method scope mi answer no String: each expression its value can be
    (a nil among them) is none a String can be, by its type or form or by what
    is written to an instance variable it reads? Asked of the final facts; a
    method whose values the walk does not follow answers 0. */
 int share_scope_answers_no_string(Compiler *c, int mi);
-/* Does the rule share the elements of node n's value (a container)? */
-int share_node_elems_share(const Compiler *c, int n);
 /* Is node n an element read (`a[i]`, `a.first`) out of a general Array
    whose String elements the rule shares? */
 int share_str_elem_read(Compiler *c, int n);
-/* Is node n a blockless builtin's new Array of new Strings whose elements
-   the rule shares? Its one evaluation is the only source of those Strings,
-   so where it is consumed each can be wrapped as a handle of its own. */
-int share_node_fresh_elems(const Compiler *c, int n);
 /* Can a method of the program's own (a reopening of builtin class cls, or
    a module a prepend can put ahead of it) stand in for cls's method name
    where the call plan does not see it? */
 int share_builtin_overridden(Compiler *c, const char *cls, const char *name);
-/* Is call node `call` a retaining iterator (select, reject, find_all, the
-   in-place filters, partition) with a literal block over a fresh Array of
-   new Strings (as share_node_fresh_elems has it, before the rule is asked
-   whether they share)? Its answer keeps elements the block's parameter
-   names. */
-int share_iter_fresh_elems(const Compiler *c, int call);
-/* ... and the rule shares those elements: the answer holds the handles its
-   block saw, so the receiver is consumed as the PolyArray of handles a
-   local's would be and the answer is one too. */
-int share_iter_answers_handles(const Compiler *c, int call);
-/* Can node n's value (a container) be reached again once its expression
-   is done: a holder keeps it, it leaves a call to be read after, or it
-   meets what the walk does not follow? */
-int share_node_anchored(const Compiler *c, int n);
 
 
 /* The flows the walk recorded (ShareFlowKind), by index
@@ -232,20 +209,12 @@ int an_target_answers_new(Compiler *c, int mi);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
-/* Is return tail n a String no name holds, which the method's return
-   clears the side channel for (ret_pub_fresh, emit_tail_value): one the walk
-   found no identity in (share_node_fresh), or a String call
-   share_value_fresh proves new, such as an element read of a temporary
-   container of new Strings (`s.split(".").last`) or a conversion over one,
-   which the walk joins to the slot it reaches. */
-int share_tail_fresh(Compiler *c, int n);
 /* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
    dedup of one)? Its handle is the literal's own, never a new one. */
 int share_frozen_literal(Compiler *c, int n);
 /* ...or a read of a builtin String constant (RUBY_ENGINE ...), one frozen
    object too (share_frozen_string) */
 int share_frozen_string(Compiler *c, int n);
-int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
 int share_node_peeked(const Compiler *c, int n);
@@ -257,17 +226,10 @@ int share_assign_call(const Compiler *c, int n);
 int share_node_unread(const Compiler *c, int n);
 /* The facts (SHF_*) of the class of node n's value. */
 unsigned share_node_flags(const Compiler *c, int n);
-/* Does the class of node n's value hold one name at most: no more than one
-   holder stores its String, and nothing the walk does not follow meets it
-   (its other values are transients a call or a mutator made)? */
-int share_node_one_name(const Compiler *c, int n);
 /* A fresh value or a single-use local whose destination is its only live name. */
 int share_value_unobserved(Compiler *c, int n);
 /* Does the rule share the class of node n's value? */
 int share_node_shares(const Compiler *c, int n);
-/* Is node v the receiver of an in-place String change the walk recorded, or
-   a link of the chain of self-answering calls down to it? */
-int share_node_mutated(Compiler *c, int v);
 
 /* Must the String node v evaluates to be its handle where it is emitted,
    and not its bytes: SHN_YES for every String but nil, a literal, a frozen
@@ -415,10 +377,6 @@ const char *share_plan_role_name(int role);
    with the object a lift needs), not from its bytes? A call whose route
    boxes cannot render (strbuf_box_unrendered) is not. Asked live. */
 int share_plan_box_handle(Compiler *c, int v);
-/* Is node n an explicit writer's attribute assignment whose value the facts
-   keep apart from its right-hand side's String (nothing observes them as one
-   object)? */
-int share_assign_unjoined(const Compiler *c, int n);
 /* Does the rule share the String attribute assignment n hands on? */
 int share_assign_shares(const Compiler *c, int n);
 

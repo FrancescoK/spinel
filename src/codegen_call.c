@@ -10547,7 +10547,7 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
      holder tells whether the String it keeps is shared, a super statement's
      value being unrecorded, #9258) */
   Scope *ms = g_native_into && nt_kind(c->nt, id) == NK_SuperNode ? comp_scope_of(c, id) : NULL;
-  int shares = ms ? repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) : share_node_elems_share(c, id);
+  int shares = ms ? repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) : 1;
   if (!(m->share & NSH_KEEPS) || !m->share_csym || m->rest || !shares)
     return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
@@ -10573,7 +10573,7 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
    0 otherwise. */
 int emit_native_share_keeps(Compiler *c, int id, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b) {
   if (m->kind != 0 || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest || m->nargs != 1 ||
-      argc != 1 || !share_node_elems_share(c, recv))
+      argc != 1)
     return 0;
   Repr hr = repr_of(c, id);
   int shr = native_assign_keeps(c, id) != NULL, hv = shr && (hr.handle || hr.demand);
@@ -20916,7 +20916,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     }
     else if (sp_streq(name, "each_with_index")) {
       buf_puts(b, "sp_Enumerator_new_ewi(");
-      emit_boxed_iter_src(c, recv, b);
+      emit_boxed(c, recv, b);
       buf_puts(b, ", 0)");
     }
     else {

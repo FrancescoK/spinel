@@ -3621,7 +3621,7 @@ int strbuf_builtin_tail(Compiler *c, int v) {
   return (t == TY_STRING || t == TY_STRBUF) &&
          (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v) ||
           repr_boxed_to_s_operand(c, v) >= 0) &&
-         !share_node_fresh(c, v) && (strbuf_value_carries(c, v) || strbuf_bang_tail(c, v)) &&
+         (strbuf_value_carries(c, v) || strbuf_bang_tail(c, v)) &&
          (!built || strbuf_tail_answer_kept(c, v));
 }
 /* --share-strings: an operator write (`$g += x`) whose slot holds the
@@ -13298,15 +13298,6 @@ static void emit_logic_tail_pub(Compiler *c, int node, Buf *b) {
   buf_printf(b, "%s_t%d = %s; } _t%d; })", rpre.p ? rpre.p : "", t, rval.p ? rval.p : "NULL", t);
   free(lpre.p); free(lval.p); free(rpre.p); free(rval.p);
 }
-static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
-  int t = ++g_tmp;
-  buf_printf(b, "({ const char *_t%d = ", t);
-  if (g_repr_check) repr_channel_clearing(c, 1);
-  emit_tail_value_1(c, node, b);
-  if (g_repr_check) repr_channel_clearing(c, -1);
-  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
-  if (g_repr_check) repr_channel_note(c, node, RCH_CLEAR);
-}
 /* --share-strings: a method a deep-return pickup takes the value of, one of
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
@@ -13387,11 +13378,6 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (ts && ts->ret_pub_fresh && share_return_owned(c, nt_paren_single(c->nt, node), (int)(ts - c->scopes))) {
-    emit_fresh_tail_value(c, node, b);
-    if (g_repr_check) repr_channel_end(c, frame);
-    return;
-  }
   if (ts && (ts->ret_pub_fresh || ts->ret_pub_bang) && (k == NK_ParenthesesNode || k == NK_IfNode ||
                                                         k == NK_UnlessNode || k == NK_CaseMatchNode)) {
     int t = ++g_tmp;
@@ -13417,13 +13403,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (!ts || !ts->ret_pub_fresh ||
-      !share_tail_fresh(c, nt_paren_single(c->nt, node))) {
-    emit_tail_value_1(c, node, b);
-    if (g_repr_check) repr_channel_end(c, frame);
-    return;
-  }
-  emit_fresh_tail_value(c, node, b);
+  emit_tail_value_1(c, node, b);
   if (g_repr_check) repr_channel_end(c, frame);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
@@ -25034,7 +25014,7 @@ int strbuf_poly_user_base(Compiler *c, int v) {
    (strbuf_flow_unseen_arms)? */
 int strbuf_flow_unseen(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
+  if (share_value_fresh(c, v, 0)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
   const char *rname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   return is_argv_const(rname) || (is_env_const(rname) &&
@@ -25118,12 +25098,10 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
        for a copy; a typed String container keeps a copy of each String it
        is handed (bad_lit refuses its literal) */
     if (kind == SHFL_ELEM && share_node_peeked(c, site)) return 1;
-    /* nor does a typed one no holder keeps and UNKNOWN does not reach:
-       its copies die with it (repr_str_literal_shares demands only an
-       anchored literal's), as in `w.attributes` when the call's value, the
-       Hash literal the method answers, is dropped */
+    /* nor is a typed String container's element, which a holder may keep
+       (repr_str_literal_shares) */
     if (kind == SHFL_ELEM && site >= 0 && repr_typed_str_container(comp_ntype(c, site)))
-      return (nt_kind(nt, site) == NK_ArrayNode || nt_kind(nt, site) == NK_HashNode) && !share_node_anchored(c, site);
+      return 0;
     return strbuf_box_carries(c, v);
   case SHFL_ARG:
     /* an argument is bound by the handle face (a parameter that is the

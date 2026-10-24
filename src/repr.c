@@ -727,7 +727,7 @@ const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k) {
     return NULL;
   int nm = comp_native_method_find(c, k, nt_str(nt, v, "name"), 0, 0);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
-  return m && (m->share & NSH_ANSWERS) && m->share_csym && share_node_elems_share(c, recv) ? m : NULL;
+  return m && (m->share & NSH_ANSWERS) && m->share_csym ? m : NULL;
 }
 /* Is v a boxed receiver's call whose arm, for each class the receiver can
    hold, is such a native binding (`o.string` where o holds a StringIO or a
@@ -837,12 +837,6 @@ int repr_call_returns_handle(Compiler *c, int v) {
     return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && scope_ret_handle(c, p->mi);
   }
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
-  /* an attribute assignment answers its right-hand side, not what the
-     writer returns: where the facts keep its value apart from the
-     right-hand side's String (share_assign_unjoined), that value is the
-     right-hand side's own pointer, and a writer that dups publishes its
-     own copy */
-  if (share_assign_unjoined(c, v)) return 0;
   /* a String's value, or one the pickup marks to be stored as the handle */
   TyKind t = c->ntype[v];
   if (t != TY_STRING && !(t == TY_STRBUF && (c->strbuf_box[v] || c->n_cext_extensions))) return 0;
@@ -1600,19 +1594,12 @@ void repr_channel_end(Compiler *c, int frame) {
   }
   ChannelLeaf *l = &q->leaf[f.node];
   if (q->clearing) f.form = RCH_CLEAR;
-  /* The early pickup walk can precede the owned-return proof. Its local
-     read still publishes, but the settled ownership fact permits clearing.
-     A call returning a fresh bound argument has the same permission once
-     its parameter-return fact has settled. */
-  int fresh = share_return_owned(c, f.node, l->mi) ||
-              share_node_fresh(c, f.node);
-  int want = fresh ? RCH_CLEAR : l->want;
+  int want = l->want;
   l->seen = 1;
   q->checked++;
   /* nil is decided by the returned bytes, before any pickup reads the
      channel. A handle-valued view/boxed return carries the value itself. */
-  if (want != RCH_NIL && f.form != RCH_HANDLE && f.form != RCH_BOXED && f.form != want &&
-      !(fresh && f.form == RCH_PUBLISH)) {
+  if (want != RCH_NIL && f.form != RCH_HANDLE && f.form != RCH_BOXED && f.form != want) {
     int conflict = want == RCH_CLEAR || f.form != RCH_NONE;
     const char *cls = conflict ? "channel-conflict" : "channel-unobserved";
     if (conflict) q->conflicts++;
@@ -1860,8 +1847,7 @@ int repr_str_literal_shares(Compiler *c, int node) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(c->nt, node);
   return (k == NK_ArrayNode || k == NK_HashNode) &&
-         repr_typed_str_container(c->ntype[node]) && comp_scope_of(c, node)->reachable &&
-         share_node_elems_share(c, node) && share_node_anchored(c, node);
+         repr_typed_str_container(c->ntype[node]) && comp_scope_of(c, node)->reachable;
 }
 
 static const char *repr_share_kind_name(int kind) {
@@ -1983,9 +1969,6 @@ static int repr_flow_checked(Compiler *c, int v) {
   if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) return 0;
   /* a container literal is no String */
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_RangeNode) return 0;
-  /* an explicit writer's assignment whose value nothing sees as its
-     right-hand side's object: the value a holder wraps is its own */
-  if (share_assign_unjoined(c, v)) return 0;
   return 1;
 }
 

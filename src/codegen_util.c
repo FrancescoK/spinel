@@ -3842,7 +3842,7 @@ const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
   if (a >= 0) nt_arr(nt, a, "arguments", &argc);
   int nm = comp_native_method_find(c, nk, nt_str(nt, n, "name"), argc, 0);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
-  if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return NULL;
+  if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0) return NULL;
   return m;
 }
 /* The handle text of recv's slot, appended to b of any length, and with b
@@ -6250,28 +6250,6 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
                 " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
                 " SP_BUILTIN_STRBUF)); _t%d; })",
              ta, tp, ta, tp, ti, ta, ti, ta, ti, tp, ta, ti, tp);
-}
-/* An iterator's receiver n: a fresh String Array whose elements the rule
-   shares (share_node_fresh_elems)? Then it is consumed as the PolyArray of
-   handles a local's Array would be. (One-String mode: the String Array
-   holds the handles.) */
-int iter_src_as_handles(Compiler *c, int n) {
-  (void)c; (void)n;
-  return 0;
-}
-/* A retaining iterator call `id` (select, reject, find_all, the in-place
-   filters) over a fresh sharing String Array `recv`: the receiver is
-   consumed as the PolyArray of handles, and the answer is one too
-   (share_iter_answers_handles types it so). */
-int iter_filter_src_as_handles(Compiler *c, int id, int recv) {
-  return share_iter_answers_handles(c, id) && iter_src_as_handles(c, recv);
-}
-/* emit_boxed for an Enumerator's source, as iter_src_as_handles has it */
-void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {
-  if (!iter_src_as_handles(c, n)) { emit_boxed(c, n, b); return; }
-  buf_puts(b, "sp_box_nullable_obj((void *)(");
-  emit_str_array_handles(c, n, b);
-  buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)");
 }
 /* --share-strings: is block parameter lv, bound to an element of kind et, a
    slot the scope holds as the shared handle (TY_STRBUF) over a String

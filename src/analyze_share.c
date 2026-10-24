@@ -5566,73 +5566,14 @@ int share_node_class(const Compiler *c, int n) { return sh_node_root(c->share, n
 
 
 static int sh_node_root(const ShareFacts *F, int n, int elems);
-/* The same ownership fact that keeps a method's local String returns
-   apart from its borrowed returns. This is a return-tail fact: a local
-   read elsewhere is still the local's own String, not a fresh value. */
-int share_return_owned(const Compiler *c, int n, int mi) {
-  return c->share && mi > 0 && sh_return_owned(c->share, sh_node_root(c->share, n, 0), mi);
-}
-int share_node_fresh(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  if (!F || n < 0 || n >= F->nnodes || F->nval[n] != -1) return 0;
-  TyKind t = c->ntype[n];
-  return t == TY_STRING || t == TY_STRBUF;
-}
-int share_node_anchored(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 0);
-  return r >= 0 && F->anchored && F->anchored[r];
-}
-int share_node_elems_share(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 1);
-  return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
-}
 int share_str_elem_read(Compiler *c, int n) {
   if (!c->share || n < 0) return 0;
   n = nt_paren_single(c->nt, n);
   if (!container_elem_read_p(c->nt, n)) return 0;
   int r = nt_ref(c->nt, n, "receiver");
-  return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY && share_node_elems_share(c, r);
-}
-int share_node_fresh_elems(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  return F && n >= 0 && n < F->nnodes && F->fresh_cont[n] && share_node_elems_share(c, n);
+  return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY;
 }
 
-/* The receiver of a retaining iterator call (select, reject, find_all and
-   the in-place filters, or partition, whose call is rewritten onto the
-   builtin definition __enum_partition__N(array); sort and sort_by, whose
-   answer is all of them reordered) with a literal block, or -1. */
-static int sh_retaining_iter_recv(const Compiler *c, int call) {
-  const NodeTable *nt = c->nt;
-  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
-  const char *nm = nt_str(nt, call, "name");
-  int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
-  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
-  if (recv < 0 && is_enum_partition_def(nm)) {
-    int args = nt_ref(nt, call, "arguments"), an = 0;
-    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    return an >= 1 ? av[0] : -1;
-  }
-  /* (sort and sort_by stand aside where a reopening of Array or a module
-     may answer them in the builtin's place, share_builtin_overridden) */
-  if (is_reorder_iter(nm)) return share_builtin_overridden((Compiler *)c, "Array", nm) ? -1 : recv;
-  return is_retaining_filter(nm) ? recv : -1;
-}
-/* Is `call` a retaining iterator over a fresh Array of new Strings (a
-   builtin's, as share_node_fresh_elems has it, before the rule is asked
-   whether the elements share)? Its answer keeps elements the block's
-   parameter names. */
-int share_iter_fresh_elems(const Compiler *c, int call) {
-  int recv = sh_retaining_iter_recv(c, call);
-  return recv >= 0 && c->share && recv < c->share->nnodes && c->share->fresh_cont[recv];
-}
-/* ... and the rule shares those elements: the answer holds the handles the
-   block saw, as a local's Array would. */
-int share_iter_answers_handles(const Compiler *c, int call) {
-  return share_iter_fresh_elems(c, call) && share_node_fresh_elems(c, sh_retaining_iter_recv(c, call));
-}
 
 int share_flow_count(const Compiler *c) { return c->share ? c->share->nfl + c->share->nlend : 0; }
 int share_flow_at(const Compiler *c, int i, int *site, int *value) {
@@ -6234,9 +6175,6 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
     for (int i = 0; i < en; i++) if (!share_value_fresh(c, el[i], depth + 1)) return 0;
     return 1;
   }
-  /* The walk already records a builtin's new String elements (split,
-     scan): a read of that temporary container owns the element too. */
-  if (share_node_fresh_elems(c, r)) return 1;
   if (nt_kind(nt, r) != NK_CallNode || sh_has_targets(c, r)) return 0;
   int blk = nt_ref(nt, r, "block"), recv = nt_ref(nt, r, "receiver");
   const char *nm = nt_str(nt, r, "name");
@@ -6481,12 +6419,6 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   ShFresh f = { c, depth };
   return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
 }
-int share_tail_fresh(Compiler *c, int n) {
-  if (share_node_fresh(c, n)) return 1;
-  if (!c->share || n < 0 || nt_kind(c->nt, n) != NK_CallNode) return 0;
-  TyKind t = c->ntype[n];
-  return (t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, n, 0);
-}
 
 unsigned share_node_flags(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
@@ -6505,14 +6437,9 @@ int share_node_transient(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
 }
-int share_node_one_name(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 0);
-  return r >= 0 && sh_class_holders(F, r) <= 1 && !(F->flags[r] & (SHF_UNKNOWN | SHF_MULTI));
-}
 /* A fresh value, or a local's fresh value handed on at its only read. */
 int share_value_unobserved(Compiler *c, int n) {
-  return share_value_fresh(c, n, 0) || share_node_one_name(c, n) || an_local_read_once(c, n);
+  return share_value_fresh(c, n, 0) || an_local_read_once(c, n);
 }
 int share_node_shares(const Compiler *c, int n) {
   /* one representation: every String is its handle, so the class of any
@@ -6532,74 +6459,8 @@ int share_flow_dest_shares(const Compiler *c, int i) {
   return d < 0 ? -1 : sh_elem_shares(F, d);
 }
 
-/* Mark node n and the nodes inside the parentheses around it, which are the
-   ones a flow's value or an emitter's value can name. */
-static void sh_into_mark(const NodeTable *nt, ShareFacts *F, int n, unsigned char bit) {
-  for (; n >= 0 && n < F->nnodes; ) {
-    F->into[n] |= bit;
-    if (nt_kind(nt, n) != NK_ParenthesesNode) break;
-    int pb = nt_ref(nt, n, "body"), pn = 0;
-    const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    n = pn == 1 ? pd[0] : -1;
-  }
-}
 
-/* Build ShareFacts.into from the flows, once the facts are final: a node
-   that is the value of a flow into a holder whose class the rule shares
-   (its own class may not: a new String joins none), the receiver chain of
-   an in-place change, and an element of a container literal whose Strings
-   the rule does not hand out. */
-static void sh_into_build(const Compiler *c) {
-  ShareFacts *F = c->share;
-  const NodeTable *nt = c->nt;
-  F->into = calloc((size_t)F->nnodes + 1, 1);
-  if (!F->into) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int i = 0, nf = share_flow_count(c); i < nf; i++) {
-    int site, v;
-    int kind = share_flow_at(c, i, &site, &v);
-    if (v < 0) continue;
-    /* (a bang method the program defines on String is a call of its own, not
-       the builtin's change in place: the walk records the flow by the name,
-       which the seal keeps; this query does not take it for one) */
-    if (kind == SHFL_MUTATE && cplan_user((Compiler *)c, site)->mi < 0) {
-      /* the call's receiver, and each link of the chain of self-answering
-         calls down to the base the flow names (sh_self_chain_base) */
-      for (int r = nt_ref(nt, site, "receiver"); r >= 0; ) {
-        /* a link the walk from another change of the chain took: the links
-           below it lead to the same base and are marked, so each link is
-           walked once, not once per change above it. The base a flow names
-           (sh_self_chain_base) is a function of the link it starts from:
-           each link's class is joined when the walk reaches it, before any
-           flow above it is recorded, so two walks through one link end at
-           one base */
-        if (r < F->nnodes && (F->into[r] & SHI_MUTATED)) break;
-        sh_into_mark(nt, F, r, SHI_MUTATED);
-        int u = nt_paren_single(nt, r);
-        if (u == v || u < 0 || nt_kind(nt, u) != NK_CallNode) break;
-        r = nt_ref(nt, u, "receiver");
-      }
-    }
-    if (share_flow_dest_shares(c, i) > 0) sh_into_mark(nt, F, v, SHI_INTO);
-  }
-  static const NodeKind lits[] = { NK_ArrayNode, NK_HashNode };
-  for (int k = 0; k < 2; k++)
-    NT_FOREACH_KIND(nt, lits[k], lit) {
-      if (lit >= F->nnodes || (share_node_elems_share(c, lit) && share_node_anchored(c, lit))) continue;
-      int en = 0; const int *el = nt_arr(nt, lit, "elements", &en);
-      for (int e = 0; e < en; e++) {
-        if (nt_kind(nt, el[e]) != NK_AssocNode) { sh_into_mark(nt, F, el[e], SHI_LITOUT); continue; }
-        sh_into_mark(nt, F, nt_ref(nt, el[e], "key"), SHI_LITOUT);
-        sh_into_mark(nt, F, nt_ref(nt, el[e], "value"), SHI_LITOUT);
-      }
-    }
-}
 
-int share_node_mutated(Compiler *c, int v) {
-  ShareFacts *F = c->share;
-  if (!F || v < 0 || v >= F->nnodes) return 0;
-  if (!F->into) sh_into_build(c);
-  return (F->into[v] & SHI_MUTATED) != 0;
-}
 
 /* Does the String (or a box that may hold one) node v evaluates to have to
    be the String's handle where it is emitted -- stored, boxed, mutated --
@@ -6835,16 +6696,6 @@ int share_assign_shares(const Compiler *c, int n) {
   return 1;
 }
 
-int share_assign_unjoined(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  const NodeTable *nt = c->nt;
-  n = nt_paren_single(nt, n);
-  if (!F || n < 0 || n >= F->nnodes || !sh_assign_call(c, n)) return 0;
-  int args = nt_ref(nt, n, "arguments"), argc = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  if (argc != 1 || argv[0] < 0 || argv[0] >= F->nnodes || F->nval[n] < 0 || F->nval[argv[0]] < 0) return 0;
-  return sh_find((ShareFacts *)F, F->nval[n]) != sh_find((ShareFacts *)F, F->nval[argv[0]]);
-}
 
 
 

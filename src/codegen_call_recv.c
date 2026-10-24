@@ -766,10 +766,6 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
 static const char *typed_elem_box_or_null(Compiler *c, int node, TyKind ty, int t, int *tnf, Buf *b) {
   (void)t; (void)b;
   *tnf = 0;
-  /* (--share-strings: a new String Array whose Strings the rule shares
-     gives each row its element's handle, as the Array of handles a local's
-     becomes would: iter_src_as_handles) */
-  if (ty == TY_STR_ARRAY && iter_src_as_handles(c, node)) return "sp_StrArray_box_handle";
   return ty == TY_INT_ARRAY ? "sp_IntArray_box_elem" : ty == TY_FLOAT_ARRAY ? "sp_FloatArray_box_elem" : NULL;
 }
 
@@ -1983,13 +1979,6 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
   if (is_select_bang(name) && block >= 0) {
     const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
     int trecv, torig, twp;
-    /* --share-strings: over a fresh sharing String Array, the PolyArray of handles */
-    if (iter_filter_src_as_handles(c, id, recv) &&
-        emit_array_filter_loop_handles(c, recv, block, name, g_pre, g_indent, &trecv, &torig, &twp)) {
-      char box[64]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", trecv);
-      emit_filter_bang_result(name, trecv, torig, twp, box, b);
-      { *out = 1; return 1; }
-    }
     if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
       char box[64]; snprintf(box, sizeof box, "%s(_t%d)", array_box_fn(kk), trecv);
       emit_filter_bang_result(name, trecv, torig, twp, box, b);
@@ -2644,9 +2633,7 @@ else {
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
     emit_poly_push_elem(b, tpair, rt, ta, ti, rbox, tnf);
     for (int j = 0; j < nargs; j++)
-      emit_poly_push_elem(b, tpair, at[j], tb[j], ti,
-                          at[j] == TY_STR_ARRAY && iter_src_as_handles(c, argv[j]) ? "sp_StrArray_box_handle"
-                                                                                   : zip_pad_box(at[j]), 0);
+      emit_poly_push_elem(b, tpair, at[j], tb[j], ti, zip_pad_box(at[j]), 0);
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
     buf_printf(b, " } _t%d; })", tr);
     { *out = 1; return 1; }

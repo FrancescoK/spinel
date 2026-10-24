@@ -20192,7 +20192,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   /* --share-strings: a nested Array or Hash literal whose own elements the
      rule shares (`[[+"ab", 1], 2]` with `id(x[0][0]).upcase!`) */
   NodeKind snk = nt_kind(nt, nt_paren_single(nt, sn));
-  if ((snk == NK_ArrayNode || snk == NK_HashNode) && share_node_elems_share(c, nt_paren_single(nt, sn)))
+  if ((snk == NK_ArrayNode || snk == NK_HashNode))
     return strbuf_demand_nested_literal(c, nt_paren_single(nt, sn), depth + 1);
   /* `a << (s << "y")`, `a << +s`, `a << sb` with `def sb = @s`: the
      element would be a fresh handle over a copy of s's or @s's String
@@ -20330,11 +20330,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
 }
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
   if (mode >= SB_NEST1) return strbuf_container_source_walk(c, sn, depth + 1, mode - SB_NEST1);
-  /* An unanchored literal hands a fresh String to its reader alone. The
-     destination can lift it if needed; no other name sees a store copy. */
-  if (mode == SB_DEMAND_NAMED)
-    return share_node_fresh(c, sn) ? 0 : strbuf_demand_store_leaf(c, sn, depth);
-  if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn, depth);
+  if (mode == SB_DEMAND_NAMED || mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn, depth);
   TyKind st = sn >= 0 ? infer_type(c, sn) : TY_UNKNOWN;
   if (mode == SB_HAS_STRING) return st == TY_STRING || st == TY_STRBUF;
   return st != TY_UNKNOWN && st != TY_POLY && st != TY_STRING && st != TY_STRBUF;
@@ -22891,8 +22887,7 @@ static int share_demand_literal_arg(Compiler *c, int a) {
   }
   if (k == NK_SplatNode) a = nt_ref(nt, a, "expression");
   a = nt_paren_single(c->nt, a);
-  if (a < 0 || (nt_kind(nt, a) != NK_ArrayNode && nt_kind(nt, a) != NK_HashNode) ||
-      !share_node_elems_share(c, a))
+  if (a < 0 || (nt_kind(nt, a) != NK_ArrayNode && nt_kind(nt, a) != NK_HashNode))
     return 0;
   return strbuf_container_source_walk(c, a, 0, SB_DEMAND);
 }
@@ -22939,13 +22934,12 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
   if (nt_ref(c->nt, call, "block") >= 0 ||
       (!container_elem_read_p(c->nt, recv) && strbuf_map_block_tail(c, recv) < 0)) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (rt == TY_POLY && container_elem_read_p(c->nt, call) && share_node_elems_share(c, recv))
+  if (rt == TY_POLY && container_elem_read_p(c->nt, call))
     return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
   if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
   int sh = bop_share_named(ty_is_array(rt) ? BOP_ANY_ARRAY : BOP_ANY_HASH,
                            nt_str(c->nt, call, "name"));
   if (sh != BSH_ELEM && sh != BSH_FETCH && sh != BSH_ELEM_N) return 0;
-  if (!share_node_elems_share(c, recv)) return 0;
   return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
 }
 /* A String Array ivar the rule boxes (its elements shared) is boxed in the
@@ -23957,7 +23951,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
        each `next`'s) into a container whose elements the rule shares: a
        String one is boxed as its handle, as a boxed local's stores are
        (share_lift_value). The call's flow names the block's last value. */
-    if (fk == SHFL_BLOCK && value >= 0 && nt_kind(c->nt, site) == NK_CallNode && share_node_elems_share(c, site)) {
+    if (fk == SHFL_BLOCK && value >= 0 && nt_kind(c->nt, site) == NK_CallNode) {
       int blk = nt_ref(c->nt, site, "block");
       changed |= share_lift_value(c, nt_paren_single(c->nt, value));
       if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode)
@@ -23968,8 +23962,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     /* A fill constructor stores its argument as an element too. */
     int fill = recv >= 0 && (nt_kind(c->nt, recv) == NK_ConstantReadNode ||
                             nt_kind(c->nt, recv) == NK_ConstantPathNode) &&
-               is_array_new(nt_str(c->nt, recv, "name"), nt_str(c->nt, site, "name")) &&
-               share_node_elems_share(c, site);
+               is_array_new(nt_str(c->nt, recv, "name"), nt_str(c->nt, site, "name"));
     if (repr_str_literal_shares(c, site) || fill) {
       changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
       /* A known attribute's conditional write need not infer its RHS. */
@@ -23989,7 +23982,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   static const NodeKind kinds[] = { NK_CallNode, NK_CaseMatchNode, NK_MatchRequiredNode, NK_MatchPredicateNode };
   for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
   NT_FOREACH_KIND(c->nt, kinds[k], n) {
-    int r, blk = -1, mode = SB_DEMAND;
+    int r, blk = -1;
     if (kinds[k] == NK_CallNode) {
       blk = nt_ref(c->nt, n, "block");
       r = nt_ref(c->nt, n, "receiver");
@@ -23999,15 +23992,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     r = nt_paren_single(c->nt, r);
     if (kinds[k] == NK_CallNode) changed |= share_demand_nested_read(c, n, r);
     if (r < 0 || (nt_kind(c->nt, r) != NK_ArrayNode && nt_kind(c->nt, r) != NK_HashNode)) continue;
-    if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
-      int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
-                             nt_str(c->nt, n, "name"));
-      if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N && s != BSH_ITER_FIND) continue;
-      if (share_node_anchored(c, r)) continue;
-      mode = SB_DEMAND_NAMED;
-    }
-    if (share_node_elems_share(c, r))
-      changed |= strbuf_container_source_walk(c, r, 0, mode);
+    /* (a blockless builtin that reads an element of the literal: the
+       literal can be reached again, and its element is no store) */
+    if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) continue;
+    changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
   }
   /* The same holds when a literal is passed to a user method, whole or
      spread with `*` or `**`, and for each argument a rest parameter
@@ -24770,10 +24758,6 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
       tc->bangs++;
     }
     if (g_repr_check && tc->mi > 0 && ok) repr_channel_predict(c, node, tc->mi, RCH_PUBLISH);
-    if (!ok && tc->fresh_ok && share_tail_fresh(c, node)) {
-      if (g_repr_check && tc->mi > 0) repr_channel_predict(c, node, tc->mi, RCH_CLEAR);
-      tc->fresh++; ok = 1;
-    }
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
@@ -25298,10 +25282,6 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
       tc->reads++;return 1;
     }
   }
-  if (share_return_owned(c, n, tc->mi)) {
-    if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
-    tc->fresh++; return 1;
-  }
   /* the fresh walk: a local the method builds its answer up in */
   if (R->fresh && an_builder_local_fresh(c, tc->mi, n)) { tc->fresh++; return 1; }
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
@@ -25312,7 +25292,6 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && (k == NK_IfNode || k == NK_UnlessNode))
     return an_tail_arm(c, R, nt_ref(nt, n, "statements"), tc) &&
            an_tail_arm(c, R, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), tc);
-  if (R->fresh && k == NK_CallNode && share_node_fresh(c, n)) { tc->fresh++; return 1; }
   if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     /* a super into a native class's binding that keeps the String it is
