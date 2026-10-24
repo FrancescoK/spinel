@@ -222,22 +222,15 @@ static int sp_json_max_depth(const jbuf *b) {
    otherwise, the exponent unpadded -- "1e+20", "0.00000015", "1e-10".
    Float#to_s writes some of these differently ("1.0e+20", "1.5e-07"). */
 static const char *sp_json_float(double d) {
-  char tmp[40];
-  int p = 1;
-  for (; p <= 17; p++) {
-    snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
-    if (strtod(tmp, NULL) == d) break;
-  }
-  if (p > 17) p = 17;
-  snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
-  /* tmp is [-]D[.DDD]e[+-]XX: take the digits and the decimal exponent */
-  int neg = tmp[0] == '-';
-  const char *q = tmp + neg;
-  char digits[24]; int nd = 0;
-  for (; *q && *q != 'e'; q++) if (*q >= '0' && *q <= '9') digits[nd++] = *q;
-  int e10 = atoi(q + 1);
-  while (nd > 1 && digits[nd - 1] == '0') nd--;   /* "1.000e+20" -> "1" */
-  if (d == 0.0) { nd = 1; digits[0] = '0'; e10 = 0; }
+  /* the shortest digits that read back as d (Float#to_s's), and the decimal
+     exponent of the first: one integer computation where probing
+     snprintf("%.*e") with strtod at each precision took up to 17 of each,
+     which was most of a float-heavy JSON.generate */
+  int neg = signbit(d) != 0;
+  char digits[32]; int nd = 1, e10 = 0;
+  digits[0] = '0';
+  if (d != 0.0) e10 = sp_float_shortest(neg ? -d : d, digits, &nd);
+  while (nd > 1 && digits[nd - 1] == '0') nd--;   /* "1000" at 1e20 -> "1" */
   int K = e10 - (nd - 1);              /* value = digits * 10^K */
   int ex = K + nd - 1; if (ex < 0) ex = -ex;
   char out[64]; int o = 0;
