@@ -2802,7 +2802,7 @@ build/gc-minor-results/store_value_after_collect.chk: FORCE | $(SPINEL) $(SP_RT_
 build/gc-minor-results/byref_param_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
 	$(SPINEL) test/gc_minor_byref_param_same_name_cell.rb --no-line-map -c -o "$$tmp/bp.c" >/dev/null 2>&1; \
-	sed -n '/^[^ ].* sp_emit(\(const char \* \*_cell_io\|sp_String \* lv_io\)) {$$/,/^}$$/p' "$$tmp/bp.c" > "$$tmp/bp.emit"; \
+	sed -E -n '/^[^ ].* sp_emit\((const char \* \*_cell_io|sp_String \* lv_io)\) \{$$/,/^}$$/p' "$$tmp/bp.c" > "$$tmp/bp.emit"; \
 	if [ ! -s "$$tmp/bp.emit" ] || grep -q sp_gc_wb "$$tmp/bp.emit"; then \
 	  echo "gc-minor-test: FAIL (a by-reference parameter's store took a cell barrier: it reads a header off the caller's stack)"; ok=0; fi; \
 	rm -rf "$$tmp"; echo $$ok > $@
