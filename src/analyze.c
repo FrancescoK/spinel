@@ -36133,11 +36133,54 @@ static EsSeen *es_slot(int v, int tail) {
     h = (h + 1) & (unsigned)(es_seen_cap - 1);
   return &es_seen[h];
 }
+/* What the marking walks (mark_slot_fn) have marked since the last reset: by
+   value, tail and the bits asked, the depth the value was reached at. The
+   slots a value denotes are the node table's and the types' to decide,
+   which no mark changes, and a slot's bits only grow: a value marked with
+   the bits once, from no deeper, is marked, and a walk from it again would
+   set no bit, so it is not made. The table above keeps that rule within one
+   outermost walk; this one keeps it across them. mark_nullable_int_locals
+   asks it per round: a round marks the array every boxed argument of every
+   call denotes, and the method tails those reach are the same from each
+   call of the method -- a Rails application's round walked each in full
+   from every call, most of its reconcile phase. Reset as a round starts
+   (em_reset), and by itself when a type or a node has changed since. */
+typedef struct { int v, tail, bits, depth; unsigned gen; } EmSeen;
+static EmSeen *em_seen; static int em_seen_cap, em_seen_n; static unsigned em_gen = 1;
+static unsigned long em_ty_edits, em_nt_edits; static const NodeTable *em_nt;
+static void em_reset(void) {
+  em_seen_n = 0;
+  if (++em_gen == 0) { if (em_seen) memset(em_seen, 0, sizeof *em_seen * (size_t)em_seen_cap); em_gen = 1; }
+}
+static EmSeen *em_slot(int v, int tail, int bits) {
+  if (em_seen_n * 2 >= em_seen_cap) {
+    int oc = em_seen_cap; EmSeen *old = em_seen;
+    em_seen_cap = oc ? oc * 2 : 4096;
+    em_seen = calloc((size_t)em_seen_cap, sizeof *em_seen);
+    if (!em_seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < oc; i++)
+      if (old[i].gen == em_gen) *em_slot(old[i].v, old[i].tail, old[i].bits) = old[i];
+    free(old);
+  }
+  unsigned h = ((unsigned)v * 2654435761u + (unsigned)tail * 40503u + (unsigned)bits * 97u) & (unsigned)(em_seen_cap - 1);
+  while (em_seen[h].gen == em_gen && !(em_seen[h].v == v && em_seen[h].tail == tail && em_seen[h].bits == bits))
+    h = (h + 1) & (unsigned)(em_seen_cap - 1);
+  return &em_seen[h];
+}
+static int mark_slot_fn(Compiler *c, int *bits, int node, int tail, void *ud);
 static int elem_slots_walk(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud);
 static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
   int r = fn(c, NULL, v, tail, ud);
   if (v < 0) return r;
   if (depth >= 16) return r | fn(c, NULL, ELEM_SLOT_UNKNOWN, tail, ud);
+  int mbits = fn == mark_slot_fn ? *(const int *)ud : -1;
+  if (mbits >= 0) {
+    if (em_nt != c->nt || em_nt_edits != c->nt->edits || em_ty_edits != comp_ty_edits) {
+      em_reset(); em_nt = c->nt; em_nt_edits = c->nt->edits; em_ty_edits = comp_ty_edits;
+    }
+    EmSeen *m = em_slot(v, tail, mbits);
+    if (m->gen == em_gen && m->depth <= depth) return r;
+  }
   EsSeen *s = es_slot(v, tail);
   if (s->gen == es_gen) {
     if (s->depth <= depth) return r | (s->done ? s->res : 0);
@@ -36152,6 +36195,11 @@ static int elem_slots_d(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, 
     if (++es_gen == 0) { memset(es_seen, 0, sizeof *es_seen * (size_t)es_seen_cap); es_gen = 1; }
   }
   else { s = es_slot(v, tail); s->res = w; s->done = 1; }   /* found again: the table may have grown */
+  if (mbits >= 0) {
+    EmSeen *m = em_slot(v, tail, mbits);   /* (found again: the table may have grown) */
+    if (m->gen != em_gen) { m->gen = em_gen; m->v = v; m->tail = tail; m->bits = mbits; m->depth = depth; em_seen_n++; }
+    else if (depth < m->depth) m->depth = depth;
+  }
   return r | w;
 }
 static int elem_slots_walk(Compiler *c, int v, int tail, int depth, ElemSlotFn fn, void *ud) {
@@ -40955,6 +41003,7 @@ static void mark_nullable_int_locals(Compiler *c) {
   NamedMethod *imeth = instance_methods_by_name(c, &nimeth);
   for (long round = 0; round < rounds_max; round++) {
     int changed = 0;
+    em_reset();   /* the marking walks' memo lasts a round */
     nn_compute(c, (int)round);
     nie_boxed_store = boxed_nil_store(c);
     /* A method whose own return expression can be nil hands it to every
