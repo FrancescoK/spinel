@@ -1,3 +1,4 @@
+# spinel: int64
 # A builtin row reads its receiver once, whatever its own text does with it.
 # A row naming $r twice repeats the rendered text, so the receiver's call ran
 # for each place it stood: Integer#abs2, #magnitude, #polar and Float#abs2,
