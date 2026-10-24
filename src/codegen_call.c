@@ -10030,8 +10030,10 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          static-receiver twin is setter_value_open). */
       int is_setter_val = argc == 1 && !has_splat_arg && call_is_setter_assign(nt, id) &&
                           nt_ref(nt, id, "block") < 0;
-      int *atmp = malloc(sizeof(int) * argc);
-      TyKind *atmp_ty = malloc(sizeof(TyKind) * argc);
+      /* zeroed: a keyword Hash argument gets no temp of these, and an arm
+         that asks for one finds 0 (emit_poly_default_blk_arm) */
+      int *atmp = calloc((size_t)argc, sizeof(int));
+      TyKind *atmp_ty = calloc((size_t)argc, sizeof(TyKind));
       int *htmp = calloc((size_t)argc, sizeof(int));
       int takes_handle = -1;   /* poly_name_takes_handle, asked once when it matters */
       int arm_runs = -1;       /* poly_arm_runs_code, likewise */
