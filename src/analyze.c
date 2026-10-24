@@ -44448,6 +44448,14 @@ static char *an_ivar_nonscalar_table(Compiler *c, int *off) {
   for (int ci = 0; ci < c->nclasses; ci++) { off[ci] = total; total += c->classes[ci].nivars; }
   char *bad = (char *)calloc((size_t)(total > 0 ? total : 1), 1);
   if (!bad) return NULL;
+  /* A slot the alias propagation widened holds another name's Array
+     (propagate_alias_widening), which its own writes and pushes do not
+     show. Reset with the other name, the alias's push folded before the
+     other's write merged, took the pushed element's kind, and the merge
+     boxed the pair (`@a = [1]; @b = @a; @b << "x"`). */
+  for (int ci = 0; ci < c->nclasses; ci++)
+    for (int iv = 0; iv < c->classes[ci].nivars; iv++)
+      if (c->classes[ci].ivar_alias_wide[iv]) bad[off[ci] + iv] = 1;
   for (int u = 0; u < nt->count; u++) {
     NodeKind k = nt_kind(nt, u);
     const char *ivn = NULL; int owner_node = -1, val = -1, whole = 0;

@@ -9132,12 +9132,14 @@ void inherit_members(Compiler *c) {
        the C did not build (#4642, a controller under a superclass). */
     unsigned char *old_ss = ci->ivar_str_shared, *old_es = ci->ivar_elems_shared, *old_it = ci->ivar_int_table,
                   *old_oc = ci->ivar_oa_conflict, *old_ni = ci->ivar_nullable_int,
-                  *old_ne = ci->ivar_nullable_int_elem, *old_ae = ci->ivar_arr_elem_arr_or_nil;
+                  *old_ne = ci->ivar_nullable_int_elem, *old_ae = ci->ivar_arr_elem_arr_or_nil,
+                  *old_aw = ci->ivar_alias_wide;
     TyKind *old_oa = ci->ivar_oa_type; int *old_os = ci->ivar_oa_seed;
     ci->ivars = NULL; ci->ivar_types = NULL; ci->ivar_str_shared = NULL; ci->ivar_elems_shared = NULL;
     ci->ivar_int_table = NULL;
     ci->ivar_oa_type = NULL; ci->ivar_oa_seed = NULL; ci->ivar_oa_conflict = NULL;
     ci->ivar_nullable_int = NULL; ci->ivar_nullable_int_elem = NULL; ci->ivar_arr_elem_arr_or_nil = NULL;
+    ci->ivar_alias_wide = NULL;
     ci->nivars = ci->civars = 0;
     #define IV_SIDE_COPY(dst, di, src, si) do { \
       (dst)->ivar_str_shared[di] = (src)->ivar_str_shared[si]; \
@@ -9149,6 +9151,7 @@ void inherit_members(Compiler *c) {
       (dst)->ivar_nullable_int[di] = (src)->ivar_nullable_int[si]; \
       (dst)->ivar_nullable_int_elem[di] = (src)->ivar_nullable_int_elem[si]; \
       (dst)->ivar_arr_elem_arr_or_nil[di] = (src)->ivar_arr_elem_arr_or_nil[si]; \
+      (dst)->ivar_alias_wide[di] = (src)->ivar_alias_wide[si]; \
     } while (0)
     /* which of the child's slots the child's own seed pinned, read before
        the parent's pins are copied in below: the two are told apart when
@@ -9218,6 +9221,7 @@ void inherit_members(Compiler *c) {
         ci->ivar_oa_type[idx] = old_oa[k]; ci->ivar_oa_seed[idx] = old_os[k];
         ci->ivar_oa_conflict[idx] = old_oc[k]; ci->ivar_nullable_int[idx] = old_ni[k];
         ci->ivar_nullable_int_elem[idx] = old_ne[k]; ci->ivar_arr_elem_arr_or_nil[idx] = old_ae[k];
+        ci->ivar_alias_wide[idx] = old_aw[k];
       }
       free(old[k]);
     }
@@ -9225,7 +9229,7 @@ void inherit_members(Compiler *c) {
     /* the parent's ivars lead the rebuilt layout, so its members lead them */
     if (pc->is_struct && ci->nmembers < pc->nmembers) ci->nmembers = pc->nmembers;
     free(old); free(oldt); free(old_ss); free(old_es); free(old_it); free(old_oa); free(old_os);
-    free(old_oc); free(old_ni); free(old_ne); free(old_ae); free(own_pin);
+    free(old_oc); free(old_ni); free(old_ne); free(old_ae); free(old_aw); free(own_pin);
 
     /* An inherited attribute the child overrides with a `def` stops there: the
        def answers the name for the child and everything below it, so copying

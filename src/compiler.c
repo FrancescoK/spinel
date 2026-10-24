@@ -788,6 +788,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars);
     ci->ivar_nullable_int_elem = realloc(ci->ivar_nullable_int_elem, (size_t)ci->civars);
     ci->ivar_arr_elem_arr_or_nil = realloc(ci->ivar_arr_elem_arr_or_nil, (size_t)ci->civars);
+    ci->ivar_alias_wide = realloc(ci->ivar_alias_wide, (size_t)ci->civars);
   }
   ci->ivars[ci->nivars] = strdup(name);
   ((TyKind *)ci->ivar_types)[ci->nivars] = TY_UNKNOWN;
@@ -801,6 +802,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   ci->ivar_nullable_int[ci->nivars] = 0;
   ci->ivar_nullable_int_elem[ci->nivars] = 0;
   ci->ivar_arr_elem_arr_or_nil[ci->nivars] = 0;
+  ci->ivar_alias_wide[ci->nivars] = 0;
   return ci->nivars++;
 }
 
@@ -825,6 +827,7 @@ int comp_member_intern(ClassInfo *ci, const char *name) {
     IV_SWAP(ivar_nullable_int, unsigned char);
     IV_SWAP(ivar_nullable_int_elem, unsigned char);
     IV_SWAP(ivar_arr_elem_arr_or_nil, unsigned char);
+    IV_SWAP(ivar_alias_wide, unsigned char);
 #undef IV_SWAP
   }
   return ci->nmembers++;
