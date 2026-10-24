@@ -3040,12 +3040,14 @@ static int sg_binding(Compiler *c, int id, int recv, int *bk, const char **rn, S
   const NodeTable *nt = c->nt;
   if (recv < 0) return -1;
   NodeKind rk = nt_kind(nt, recv);
-  if (rk == NK_ConstantReadNode) *bk = SG_CONST;
-  else if (rk == NK_LocalVariableReadNode) *bk = SG_LOCAL;
-  else if (rk == NK_InstanceVariableReadNode) *bk = SG_IVAR;
-  else if (rk == NK_ClassVariableReadNode) *bk = SG_CVAR;
-  else if (rk == NK_GlobalVariableReadNode) *bk = SG_GVAR;
-  else return -1;
+  switch (rk) {
+    case NK_ConstantReadNode: *bk = SG_CONST; break;
+    case NK_LocalVariableReadNode: *bk = SG_LOCAL; break;
+    case NK_InstanceVariableReadNode: *bk = SG_IVAR; break;
+    case NK_ClassVariableReadNode: *bk = SG_CVAR; break;
+    case NK_GlobalVariableReadNode: *bk = SG_GVAR; break;
+    default: return -1;
+  }
   *rn = nt_str(nt, recv, "name");
   if (!*rn) return -1;
   if (*bk == SG_CONST && comp_class_index(c, *rn) >= 0) return -1;  /* class method */
