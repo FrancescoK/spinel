@@ -6571,7 +6571,12 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
   return stem;
 }
 
+/* Names mc_resolve_clashes gave a method in place of mc's spelling. */
+static char **mc_ren_name, **mc_ren_part; static int mc_ren_n, mc_ren_cap;
+
 const char *mc(const char *name) {
+  for (int i = 0; i < mc_ren_n; i++)
+    if (sp_streq(mc_ren_name[i], name)) return mc_ren_part[i];
   static char buf[256];
   int j = 0;
   for (const char *p = name; *p && j < (int)sizeof buf - 8; p++) {
@@ -6614,6 +6619,86 @@ const char *mc(const char *name) {
      named sp_<Class>__gc_scan for the same reason. */
   if (strcmp(buf, "new") == 0) return "new__m";
   return buf;
+}
+
+/* Two methods can spell one C name: sp_A_B_c is A#B_c and A_B#c, sp_A_s_make
+   is A#s_make and A.make, sp_A_a_p is A#a? and A#a_p, and the program does
+   not compile. Every site that names a method composes the class's c_name
+   and mc(name), so a clash is settled here, once the analysis is done, by
+   giving one of the two a new spelling that mc hands every site alike: the
+   later method's name (`c__2`, for every class's `c`), or, when the two
+   share a name, the later class's c_name. A program with no clash keeps
+   every name. The names a site spells out itself (sp_%s_new, _initialize,
+   _to_s ...) are never the one renamed. */
+static const char *const mc_fixed_names[] = {
+  "new", "initialize", "deconstruct_keys", "to_str", "to_hash", "coerce",
+  "to_s", "inspect", "new_blk", NULL };
+static int mc_name_fixed(const char *nm) {
+  for (int i = 0; mc_fixed_names[i]; i++) if (sp_streq(nm, mc_fixed_names[i])) return 1;
+  return 0;
+}
+static void mc_compose(Compiler *c, const Scope *s, char *out, size_t n) {
+  if (s->class_id < 0) snprintf(out, n, "sp_%s", mc_top(c, s->name));
+  else if (s->is_cmethod) snprintf(out, n, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
+  else {
+    char stem[256];
+    snprintf(stem, sizeof stem, "%s", mc_reopen_cls(c, s->class_id, s->name));
+    snprintf(out, n, "sp_%s_%s", stem, mc(s->name));
+  }
+}
+static int mc_same_method(const Scope *a, const Scope *b) {
+  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
+}
+static int mc_find_clash(Compiler *c, int *first, int *later) {
+  int cap = 64;
+  while (cap < c->nscopes * 2) cap *= 2;
+  char **key = calloc((size_t)cap, sizeof *key);
+  int *who = malloc(sizeof(int) * (size_t)cap);
+  int found = 0;
+  for (int i = 0; i < c->nscopes && !found; i++) {
+    const Scope *s = &c->scopes[i];
+    if (!s->name || s->c_name) continue;
+    char nm[600];
+    mc_compose(c, s, nm, sizeof nm);
+    unsigned h = 2166136261u;
+    for (const char *q = nm; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+    int j = (int)(h & (unsigned)(cap - 1));
+    while (key[j] && strcmp(key[j], nm)) j = (j + 1) & (cap - 1);
+    if (!key[j]) { key[j] = strdup(nm); who[j] = i; }
+    else if (!mc_same_method(&c->scopes[who[j]], s)) { *first = who[j]; *later = i; found = 1; }
+  }
+  for (int j = 0; j < cap; j++) free(key[j]);
+  free(key); free(who);
+  return found;
+}
+static void mc_rename(const char *name, int n) {
+  char part[300];
+  snprintf(part, sizeof part, "%s__%d", mc(name), n);
+  if (mc_ren_n >= mc_ren_cap) {
+    mc_ren_cap = mc_ren_cap ? mc_ren_cap * 2 : 8;
+    mc_ren_name = realloc(mc_ren_name, sizeof(char *) * (size_t)mc_ren_cap);
+    mc_ren_part = realloc(mc_ren_part, sizeof(char *) * (size_t)mc_ren_cap);
+  }
+  mc_ren_name[mc_ren_n] = strdup(name);
+  mc_ren_part[mc_ren_n] = strdup(part);
+  mc_ren_n++;
+}
+void mc_resolve_clashes(Compiler *c) {
+  int a, b;
+  /* each round renames one method or class; the bound only guards a loop */
+  for (int round = 0, n = 2; round < 4096 && mc_find_clash(c, &a, &b); round++, n++) {
+    const Scope *sa = &c->scopes[a], *sb = &c->scopes[b];
+    if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sb->name)) mc_rename(sb->name, n);
+    else if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sa->name)) mc_rename(sa->name, n);
+    else {
+      int ci = sb->class_id >= 0 && !c->classes[sb->class_id].is_builtin_const ? sb->class_id : sa->class_id;
+      if (ci < 0 || c->classes[ci].is_builtin_const) break;
+      char cn[300];
+      snprintf(cn, sizeof cn, "%s__%d", c->classes[ci].c_name, n);
+      free(c->classes[ci].c_name);
+      c->classes[ci].c_name = strdup(cn);
+    }
+  }
 }
 
 /* The names a top-level Ruby method must not take: generated from the runtime

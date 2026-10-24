@@ -20786,6 +20786,7 @@ char *codegen_program(const NodeTable *nt) {
   char *repr_text = g_dump_repr ? repr_dump(c) : NULL;
   if (g_check_traits) exit(ty_traits_check(c) ? 1 : 0);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
+  mc_resolve_clashes(c);   /* two methods spelling one C name get two */
   /* Only stack String slots selected by the existing setjmp policy seed
      borrowed volatility; a heap cell itself does not live across setjmp. */
   int borrowed_vol = 0;
