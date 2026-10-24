@@ -1525,6 +1525,49 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   nt_node_set_ref(nt, rn, "body", body);
   return rn;
 }
+/* `class << K` at the top level, K a class or module the program declares,
+   whose body includes or prepends a module: the same singleton class as
+   `class K; class << self; ... end; end`, which desugar_singleton_class_mixin
+   takes (its mixins hoisted as K's singleton_class.prepend). 2 for a module,
+   1 for a class, 0 when K is neither or the body mixes nothing in. */
+static int erm_sclass_const_decl(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_SingletonClassNode) return 0;
+  int ex = nt_ref(nt, st, "expression");
+  if (ex < 0 || nt_kind(nt, ex) != NK_ConstantReadNode) return 0;
+  const char *kn = nt_str(nt, ex, "name");
+  int sb = nt_ref(nt, st, "body"), sn = 0, mix = 0;
+  const int *ss = sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode ? nt_arr(nt, sb, "body", &sn) : NULL;
+  for (int j = 0; j < sn && !mix; j++) {
+    const char *nm = nt_kind(nt, ss[j]) == NK_CallNode && nt_ref(nt, ss[j], "receiver") < 0 ? nt_str(nt, ss[j], "name") : NULL;
+    mix = nm && (sp_streq(nm, "prepend") || sp_streq(nm, "include"));
+  }
+  if (!kn || !mix) return 0;
+  int decl = 0;
+  NT_FOREACH_KIND(nt, NK_ClassNode, k) {
+    int cp = nt_ref(nt, k, "constant_path");
+    if (cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode && sp_streq(nt_str(nt, cp, "name"), kn)) decl = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, k) {
+    int cp = nt_ref(nt, k, "constant_path");
+    if (cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode && sp_streq(nt_str(nt, cp, "name"), kn)) decl = decl ? decl : 2;
+  }
+  return decl;
+}
+static int erm_sclass_const_rewrite(NodeTable *nt, int st, int decl) {
+  int ex = nt_ref(nt, st, "expression");
+  int rn = nt_new_node(nt, decl == 2 ? "ModuleNode" : "ClassNode");
+  int body = nt_new_node(nt, "StatementsNode");
+  int path = nt_clone_subtree(nt, ex);
+  int self = nt_new_node(nt, "SelfNode");
+  if (rn < 0 || body < 0 || path < 0 || self < 0) return st;
+  nt_node_set_int(nt, rn, "node_line", nt_int(nt, st, "node_line", 0));
+  nt_node_set_int(nt, rn, "node_file", nt_int(nt, st, "node_file", 0));
+  nt_node_set_ref(nt, rn, "constant_path", path);
+  nt_node_set_ref(nt, st, "expression", self);
+  nt_node_set_arr(nt, body, "body", &st, 1);
+  nt_node_set_ref(nt, rn, "body", body);
+  return rn;
+}
 int desugar_explicit_receiver_mixin(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1546,6 +1589,8 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
       if (!self_leaf) { free(nb); continue; }
     }
     for (int i = 0; i < bn; i++) {
+      int sd = is_prog ? erm_sclass_const_decl(nt, bb[i]) : 0;
+      if (sd) { nb[i] = erm_sclass_const_rewrite(nt, bb[i], sd); any |= nb[i] != bb[i]; continue; }
       int r = erm_rewrite_stmt(c, bb[i], self_leaf);
       if (r == -2) { nb[i] = bb[i]; changed = 1; continue; }
       nb[i] = r; any |= r != bb[i];

@@ -1276,10 +1276,6 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
 == test/reject/scan_subject_stdin_gets.rb [promote] rc=1
 spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
-== test/reject/sclass_constant_prepend.rb [default] rc=1
-spinel: test/reject/sclass_constant_prepend.rb:11: include / prepend inside `class << x` is supported only in `class << self`: write `singleton_class.prepend M` or `extend M` in the body of the class (see docs/limitations.md)
-== test/reject/sclass_constant_prepend.rb [promote] rc=1
-spinel: test/reject/sclass_constant_prepend.rb:11: include / prepend inside `class << x` is supported only in `class << self`: write `singleton_class.prepend M` or `extend M` in the body of the class (see docs/limitations.md)
 == test/reject/scrub_bang_block.rb [default] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written
