@@ -1,0 +1,16 @@
+widget
+6
+[:m1, "widget"]
+[:m2, "widget"]
+[:m3, "widget"]
+[:m4, "widget"]
+[:m5, "widget!"]
+[:m6, "widget"]
+[:m8, "Widget"]
+[:m9, ">widget"]
+[:m10, "<widget"]
+[:m11, "z"]
+[:m12, "widget"]
+[:m13, "Widget"]
+[:m14, "WIDGET"]
+[:m15, "Widget"]

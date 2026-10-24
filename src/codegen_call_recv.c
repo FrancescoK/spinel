@@ -4630,9 +4630,9 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              handle is, read through its bytes face: a sink finds the handle
              again; the new bytes were a String of their own) */
           if (sb_nil_nc)
-            buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tchg, tsb);
+            buf_printf(b, "_t%d ? sp_strbuf_read_pub(_t%d) : NULL; })", tchg, tsb);
           else
-            buf_printf(b, "sp_String_cstr(_t%d); })", tsb);
+            buf_printf(b, "sp_strbuf_read_pub(_t%d); })", tsb);
           { *out = 1; return 1; }
         }
       }
@@ -4755,7 +4755,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
             emit_str_append_arg(c, arg, rt, b); }
           buf_puts(b, ");");
         }
-        buf_printf(b, " sp_String_cstr(_t%d); })", tb9);
+        buf_printf(b, " sp_strbuf_read_pub(_t%d); })", tb9);
         { *out = 1; return 1; }
       }
       if (nchain > 0 && repr_of_slot(c, blv).kind != RK_STRBUF && str_mut_var_recv(c, cur)) {
@@ -4845,7 +4845,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
              receiver itself, as for the appends */
           if (repr_of(c, id).handle) buf_printf(b, "); _t%d; })", tbR);
-          else buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
+          else buf_printf(b, "); sp_strbuf_read_pub(_t%d); })", tbR);
           { *out = 1; return 1; }
         }
       }
@@ -4878,7 +4878,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (!strbuf_recv_handle_any(c, id, recv, &sref0, &lb0)) return 0;
     int t0 = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
-                  " sp_String_cstr(_t%d); })", t0, lb0.p ? lb0.p : sref0.p, t0, t0, t0);
+                  " sp_strbuf_read_pub(_t%d); })", t0, lb0.p ? lb0.p : sref0.p, t0, t0, t0);
     free(lb0.p); free(sref0.p);
     { *out = 1; return 1; }
   }
@@ -4897,7 +4897,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_append_bytes_arg(c, argv[a9], b);
           buf_puts(b, ");");
         }
-        buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
+        buf_printf(b, " sp_strbuf_read_pub(_t%d); })", tm2);
         { *out = 1; return 1; }
       } }
     if (hrecv) return 0;
@@ -4949,7 +4949,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, " const char *_t%d = ", tn3);
         emit_bytesplice_bytes(c, argv, argc, rs, b);
         /* (one representation: bytesplice answers its receiver, read through its bytes face) */
-        buf_printf(b, "; sp_String_set_bin_enc(_t%d, _t%d); sp_String_cstr(_t%d); })", tm2, tn3, tm2);
+        buf_printf(b, "; sp_String_set_bin_enc(_t%d, _t%d); sp_strbuf_read_pub(_t%d); })", tm2, tn3, tm2);
         { *out = 1; return 1; }
       } }
     if (hrecv) return 0;
@@ -8006,7 +8006,7 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
   int done = 1;
   if (strbuf_pickup_nil_check(c, "scrub!", recv, &srefS))
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); const char *_t%dr = sp_str_scrub_bang(sp_String_cstr(_t%d), %s);"
-                  " if (_t%dr != sp_String_cstr(_t%d)) sp_String_set_bin(_t%d, _t%dr); _t%dr; })",
+                  " if (_t%dr != sp_String_cstr(_t%d)) sp_String_set_bin(_t%d, _t%dr); sp_strbuf_read_pub(_t%d); })",
                tsc, srefS.p, tsc, tsc, rp, tsc, tsc, tsc, tsc, tsc);
   else if (rt != TY_STRING) done = 0;
   else if (str_mut_var_recv(c, recv) || sb_shadowed_reader(recv)) {
@@ -12950,7 +12950,7 @@ static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char
   int ta = force_encoding_arg_hold(c, name, argv, argc, b);
   buf_printf(b, " if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, ", th, name, th);
   emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
-  buf_printf(b, "); sp_String_cstr(_t%d); })", th);
+  buf_printf(b, "); sp_strbuf_read_pub(_t%d); })", th);
 }
 /* The option among an encode call's keyword hash elements (`els`, `en` of
    them) that the runtime does not read and that changes the bytes (xml:,
@@ -13170,7 +13170,7 @@ static void emit_strbuf_encode_bang(Compiler *c, const char *ref, int hr, const 
                 " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                 " sp_String_encode_into(_t%d, sp_str_encode(sp_String_cstr(_t%d), ", th, th, th, th, th);
   emit_encode_args(ta, npos, b);
-  buf_printf(b, ")); sp_String_cstr(_t%d); })", th);
+  buf_printf(b, ")); sp_strbuf_read_pub(_t%d); })", th);
 }
 int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;

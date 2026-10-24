@@ -1504,7 +1504,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
                     "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref.p, t, t);
       free(ref.p);
       if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", t);
-      else buf_printf(b, "sp_String_cstr(_t%d); })", t);
+      else buf_printf(b, "sp_strbuf_read_pub(_t%d); })", t);
       return 1;
     }
   }
@@ -1567,7 +1567,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
         /* an append marked to hand out the handle (`r = obj.buf << x`)
            answers the receiver itself; otherwise its String read */
         if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tb2);
-        else buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
+        else buf_printf(b, " sp_strbuf_read_pub(_t%d); })", tb2);
         return 1;
       }
     }
