@@ -51180,6 +51180,11 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       for (int k = 0; k < nrrec; k++) rsrec[recRs[k]] = 1;
       AnRoundCap rc = { 128, 0, 0, NULL, 0 };
       unsettled = 1;
+      /* the type states the last iterations ended in, newest first, for the
+         periodic exit below; cyc_left counts the iterations still to run once
+         a period is found */
+      enum { CYC_KEEP = 8 };
+      uint64_t cyc_st[CYC_KEEP]; int cyc_wid[CYC_KEEP], cyc_nodes[CYC_KEEP], cyc_n = 0, cyc_p = 0, cyc_left = -1;
       for (int iter = 0; iter < rc.cap; iter++) {
         /* Parameters bind from the SETTLED state of the previous iteration,
            before this one's re-clear. Bound after it, a parameter sampled
@@ -51259,6 +51264,50 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            its readers still moved */
         int spreading = pivs_hash_stores_widened(c) != widened || (widened != widened0 && ch_other);
         widened = pivs_hash_stores_widened(c);
+        /* Periodic exit. The whole type state (every node's, each scope's
+           return and locals, the ivars, globals and constants) is digested
+           as each iteration ends, with the node count and the count of
+           widened Hash stores. The passes are deterministic over that state:
+           once an iteration ends in the state one p iterations back ended in,
+           and the one before it in that one's predecessor, every further
+           iteration repeats the cycle of p states, and the cap ends in the
+           one of them whose distance to the cap's last iteration is a
+           multiple of p. The loop runs on to that one and stops there, so what
+           it leaves is what the cap would have left.
+
+           The two exits below cannot always see a settled loop. The stability
+           test compares each reset slot with a snapshot taken after the bind
+           at the top, and a slot the bind re-widens re-derives narrower every
+           iteration, forever. The fixed-cycle exit, and the `spreading` term
+           the stability test shares with it, wait for every pass but the
+           re-derive pair to report no change, and the share pass re-promotes
+           the slots the re-clear zeroed every iteration -- the value it gave
+           them last time -- and so reports one every iteration. A Rails
+           application was down to one ivar and one return trading two states
+           by iteration 5 and ran the remaining 123 (19 seconds each) to the
+           cap on exactly that: a third of its analysis. */
+        {
+          uint64_t st = an_type_state(c);
+          int nodes = c->nt->count, stop = 0;
+          for (int q = CYC_KEEP - 1; q > 0; q--) { cyc_st[q] = cyc_st[q - 1]; cyc_wid[q] = cyc_wid[q - 1]; cyc_nodes[q] = cyc_nodes[q - 1]; }
+          cyc_st[0] = st; cyc_wid[0] = widened; cyc_nodes[0] = nodes;
+          if (cyc_n < CYC_KEEP) cyc_n++;
+#define CYC_SAME(a, b) (cyc_st[a] == cyc_st[b] && cyc_wid[a] == cyc_wid[b] && cyc_nodes[a] == cyc_nodes[b])
+          if (cyc_left > 0) {
+            /* on the way to the cap's state: still in the cycle? */
+            if (cyc_p < cyc_n && CYC_SAME(0, cyc_p)) { if (--cyc_left == 0) stop = 1; }
+            else cyc_left = -1;
+          }
+          if (cyc_left < 0)
+            for (int p = 1; p + 1 < cyc_n; p++)
+              if (CYC_SAME(0, p) && CYC_SAME(1, p + 1)) {
+                int r = (rc.cap - 1 - iter) % p;
+                if (r == 0) stop = 1; else { cyc_p = p; cyc_left = r; }
+                break;
+              }
+#undef CYC_SAME
+          if (stop) break;
+        }
         /* With reset ivars, the re-clear makes infer_ivar_types report change
            every iteration, so converge on ivar value-stability instead. With
            none (only poly params/returns reset), fall back to the normal
