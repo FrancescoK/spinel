@@ -1122,14 +1122,14 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           bxtmp[k] = ++g_tmp; bxo[k] = 1; any_bxo = 1;
           buf_printf(b, "sp_RbVal _t%d = %s(", bxtmp[k], pk == TY_FLOAT ? "sp_box_ofloat" : "sp_box_oint");
           emit_oint_expr(c, argv[k], pk, b); buf_puts(b, "); ");
-          buf_printf(b, "sp_int _t%d = sp_poly_to_i(_t%d)", atmp[k], bxtmp[k]);
+          buf_printf(b, "sp_int _t%d = _t%d.v.i", atmp[k], bxtmp[k]);
         }
         else if (bm_want_boxed && pk != TY_UNKNOWN && pk != TY_VOID && pk != TY_NIL) {
           bxtmp[k] = ++g_tmp;
           emit_ctype(c, pk, b); buf_printf(b, " _t%d = ", bxtmp[k]); emit_expr(c, argv[k], b); buf_puts(b, "; ");
           emit_named_root(c, pk, "_t", bxtmp[k], b); buf_puts(b, " ");
           buf_printf(b, "sp_int _t%d = ", atmp[k]);
-          if (pkr.kind == RK_BOXED) buf_printf(b, "sp_poly_to_i(_t%d)", bxtmp[k]);
+          if (pkr.kind == RK_BOXED) buf_printf(b, "_t%d.v.i", bxtmp[k]);
           else buf_printf(b, "(sp_int)(_t%d)", bxtmp[k]);
         }
         else {
