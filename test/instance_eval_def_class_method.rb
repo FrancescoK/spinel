@@ -46,3 +46,12 @@ module Right
 end
 Left::Part.instance_eval { def side = :left }
 p Left::Part.side, Right::Part.side
+
+# a compact header in a module body names the class its first segment
+# resolves to: `class Box::Lid` inside Wrap defines the top-level Box::Lid
+class Box; end
+module Wrap
+  class Box::Lid; end
+end
+Box::Lid.instance_eval { def fits = :lid }
+p Box::Lid.fits, Box::Lid.name

@@ -1195,12 +1195,15 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
 static int program_defines_name(const NodeTable *nt, int n0, const char *name);
 /* The paths the program writes, for the receiver of an instance_eval:
    each class or module header's full path ("A::B"), each value constant's,
-   and the lexical path (the headers around it) of each instance_eval call. */
+   and the lexical scopes (the full paths of the bodies around it,
+   innermost first, '\n'-separated) of each instance_eval call. */
 typedef struct {
   ANameHash classes, values;
   char **keep; int nkeep, ckeep;
-  char **lex;              /* [n0] an instance_eval call's lexical path, else NULL */
+  char **lex;              /* [n0] an instance_eval call's scopes, else NULL */
 } IedPaths;
+
+enum { IED_DEPTH = 32 };
 
 static const char *ied_keep(IedPaths *ip, const char *s) {
   if (ip->nkeep == ip->ckeep) {
@@ -1213,69 +1216,112 @@ static const char *ied_keep(IedPaths *ip, const char *s) {
   return ip->keep[ip->nkeep++] = d;
 }
 
-/* BASE (a path, "" at the top) joined with the constant path NODE as
-   written, into OUT; 0 when NODE is no plain constant path. A `::`-anchored
-   path starts at the top. */
-static int ied_join(const NodeTable *nt, const char *base, int node, char *out, size_t cap) {
-  char chain[QC_MAXDEPTH + 1][64];
-  int abs_anchor = 0, n = qc_read_chain(nt, node, chain, &abs_anchor);
-  if (n <= 0) return 0;
-  snprintf(out, cap, "%s", abs_anchor ? "" : base);
-  for (int i = 0; i < n; i++) {
-    if (out[0]) strncat(out, "::", cap - strlen(out) - 1);
-    strncat(out, chain[i], cap - strlen(out) - 1);
+static void ied_cat(char *out, size_t cap, const char *base, const char *seg) {
+  snprintf(out, cap, "%s%s%s", base, base[0] ? "::" : "", seg);
+}
+
+/* Resolve the segments SEG[0..n) of a constant path as Ruby does: the
+   first in the lexical scopes SCOPES[0..ns) (innermost first) and then
+   the top level, the first scope that holds it deciding; each other in
+   the one before it, with no search further out. Into OUT; answers 2
+   for a class or module, 1 for a value, 0 when a segment is undefined. */
+static int ied_resolve(const IedPaths *ip, char (*seg)[64], int n, const char *const *scopes, int ns,
+                       char *out, size_t cap) {
+  int kind = 0;
+  for (int i = 0; i <= ns && !kind; i++) {
+    ied_cat(out, cap, i < ns ? scopes[i] : "", seg[0]);
+    kind = anh_has(&ip->classes, out) ? 2 : anh_has(&ip->values, out) ? 1 : 0;
   }
+  for (int j = 1; j < n && kind == 2; j++) {
+    char next[1024];
+    ied_cat(next, sizeof next, out, seg[j]);
+    snprintf(out, cap, "%s", next);
+    kind = anh_has(&ip->classes, out) ? 2 : anh_has(&ip->values, out) ? 1 : 0;
+  }
+  return kind;
+}
+
+/* The full path a header or a path write PATH names in the scopes
+   SCOPES[0..ns): its leaf under what the segments before it resolve to
+   (a bare name under the innermost scope), into OUT; 0 when PATH is no
+   plain constant path. A prefix that resolves to nothing is taken from
+   the innermost scope, as written. */
+static int ied_define_path(const NodeTable *nt, const IedPaths *ip, int path, const char *const *scopes, int ns,
+                           char *out, size_t cap) {
+  char seg[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0, n = qc_read_chain(nt, path, seg, &abs_anchor);
+  if (n <= 0) return 0;
+  const char *inner = abs_anchor || ns == 0 ? "" : scopes[0];
+  char base[1024];
+  if (n == 1) snprintf(base, sizeof base, "%s", inner);
+  else if (ied_resolve(ip, seg, n - 1, scopes, abs_anchor ? 0 : ns, base, sizeof base) != 2) {
+    snprintf(base, sizeof base, "%s", inner);
+    for (int j = 0; j < n - 1; j++) { char t[1024]; ied_cat(t, sizeof t, base, seg[j]); snprintf(base, sizeof base, "%s", t); }
+  }
+  ied_cat(out, cap, base, seg[n - 1]);
   return 1;
 }
 
-static void ied_walk(const NodeTable *nt, int node, const char *path, int n0, IedPaths *ip) {
+static void ied_walk(const NodeTable *nt, int node, const char **scopes, int ns, int n0, IedPaths *ip) {
   if (node < 0 || node >= n0) return;
   NodeKind k = nt_kind(nt, node);
   char full[1024];
-  if ((k == NK_ClassNode || k == NK_ModuleNode) &&
-      ied_join(nt, path, nt_ref(nt, node, "constant_path"), full, sizeof full)) {
-    if (!anh_has(&ip->classes, full)) anh_add(&ip->classes, ied_keep(ip, full));
-    ied_walk(nt, nt_ref(nt, node, "superclass"), path, n0, ip);
-    ied_walk(nt, nt_ref(nt, node, "body"), full, n0, ip);
+  if ((k == NK_ClassNode || k == NK_ModuleNode) && ns < IED_DEPTH &&
+      ied_define_path(nt, ip, nt_ref(nt, node, "constant_path"), scopes, ns, full, sizeof full)) {
+    const char *kept = ied_keep(ip, full);
+    if (!anh_has(&ip->classes, full)) anh_add(&ip->classes, kept);
+    ied_walk(nt, nt_ref(nt, node, "superclass"), scopes, ns, n0, ip);
+    const char *inner[IED_DEPTH + 1];
+    inner[0] = kept;
+    for (int i = 0; i < ns; i++) inner[i + 1] = scopes[i];
+    ied_walk(nt, nt_ref(nt, node, "body"), inner, ns + 1, n0, ip);
     return;
   }
   if (k == NK_ConstantWriteNode && nt_str(nt, node, "name")) {
-    snprintf(full, sizeof full, "%s%s%s", path, path[0] ? "::" : "", nt_str(nt, node, "name"));
+    ied_cat(full, sizeof full, ns ? scopes[0] : "", nt_str(nt, node, "name"));
     if (!anh_has(&ip->values, full)) anh_add(&ip->values, ied_keep(ip, full));
   }
-  if (k == NK_ConstantPathWriteNode && ied_join(nt, path, nt_ref(nt, node, "target"), full, sizeof full) &&
+  if (k == NK_ConstantPathWriteNode && ied_define_path(nt, ip, nt_ref(nt, node, "target"), scopes, ns, full, sizeof full) &&
       !anh_has(&ip->values, full))
     anh_add(&ip->values, ied_keep(ip, full));
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, node, "name");
-    if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) ip->lex[node] = (char *)ied_keep(ip, path);
+    if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+      char lex[4096]; lex[0] = '\0';
+      for (int i = 0; i < ns; i++) {
+        if (i) strncat(lex, "\n", sizeof lex - strlen(lex) - 1);
+        strncat(lex, scopes[i], sizeof lex - strlen(lex) - 1);
+      }
+      ip->lex[node] = (char *)ied_keep(ip, lex);
+    }
   }
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) ied_walk(nt, nt_ref_at(nt, node, i), path, n0, ip);
+  for (int i = 0; i < nr; i++) ied_walk(nt, nt_ref_at(nt, node, i), scopes, ns, n0, ip);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
-    for (int j = 0; j < m; j++) ied_walk(nt, ids[j], path, n0, ip);
+    for (int j = 0; j < m; j++) ied_walk(nt, ids[j], scopes, ns, n0, ip);
   }
 }
 
-/* Does the constant RECV, written at lexical path LEX, name a class or
-   module the program opens? Looked up as Ruby does, from the innermost
-   enclosing path out to the top: the first path the program gives a
-   class or a value decides, and a value (`Two::Item = Object.new`) is no
-   class to reopen. */
+/* Does the constant RECV, written in the lexical scopes LEX, name a class
+   or module the program opens, as Ruby resolves it (ied_resolve)? A value
+   (`Two::Item = Object.new`) is no class to reopen, and a path whose
+   first segment a nearer scope holds is looked up there only. */
 static int ied_names_class(const NodeTable *nt, const IedPaths *ip, const char *lex, int recv) {
-  char base[1024], full[1024];
-  snprintf(base, sizeof base, "%s", lex ? lex : "");
-  for (;;) {
-    if (!ied_join(nt, base, recv, full, sizeof full)) return 0;
-    if (anh_has(&ip->values, full)) return 0;
-    if (anh_has(&ip->classes, full)) return 1;
-    if (!base[0]) return 0;
-    char *cut = strrchr(base, ':');
-    if (cut && cut > base) cut[-1] = '\0';
-    else base[0] = '\0';
+  char seg[QC_MAXDEPTH + 1][64], buf[4096], full[1024];
+  int abs_anchor = 0, n = qc_read_chain(nt, recv, seg, &abs_anchor);
+  if (n <= 0) return 0;
+  const char *scopes[IED_DEPTH + 1];
+  int ns = 0;
+  snprintf(buf, sizeof buf, "%s", lex ? lex : "");
+  for (char *p = buf; !abs_anchor && *p && ns < IED_DEPTH; ) {
+    scopes[ns++] = p;
+    char *nl = strchr(p, '\n');
+    if (!nl) break;
+    *nl = '\0'; p = nl + 1;
   }
+  return ied_resolve(ip, seg, n, scopes, ns, full, sizeof full) == 2;
 }
 
 static void ied_paths_free(IedPaths *ip) {
@@ -1324,7 +1370,7 @@ int desugar_instance_eval_defs(Compiler *c) {
   IedPaths ip = {0};
   ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
   if (!ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  ied_walk(nt, nt->root_id, "", n0, &ip);
+  ied_walk(nt, nt->root_id, NULL, 0, n0, &ip);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");

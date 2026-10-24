@@ -13,3 +13,5 @@ true
 false
 :left
 :right
+:lid
+"Box::Lid"
