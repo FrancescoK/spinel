@@ -50551,6 +50551,71 @@ static uint64_t an_type_state(Compiler *c) {
   return h;
 }
 
+/* FNV-1a over n bytes, continuing h. */
+static uint64_t an_ts_mix_bytes(uint64_t h, const void *p, size_t n) {
+  const unsigned char *b = p;
+  for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001B3ull;
+  return h;
+}
+
+/* A digest of the whole state the inference passes read, for the re-narrow's
+   periodic exit, which takes two equal digests for two equal states: the
+   types an_type_state digests, and with them the notes the passes keep
+   beside a type -- every per-node table but the memos (a memo computed or
+   not is no difference of state) and the structural ones, each local's
+   whole record but its name and its trace (why: where its type came from,
+   with the round it happened on), each scope's return block and flags, and
+   each class's ivar and cvar tables and flags. The records are zeroed when
+   made, so their padding is no noise. */
+static uint64_t an_loop_state(Compiler *c) {
+  uint64_t h = an_type_state(c);
+  int n = c->nt->count < c->node_cap ? c->nt->count : c->node_cap;
+#define AN_LS_ARR(a) do { if (c->a) h = an_ts_mix_bytes(h, c->a, (size_t)n * sizeof *c->a); } while (0)
+  AN_LS_ARR(norigin); AN_LS_ARR(strbuf_box); AN_LS_ARR(strbuf_handle_demand);
+  AN_LS_ARR(strbuf_read_raw); AN_LS_ARR(poly_strbuf_lift); AN_LS_ARR(nil_tested);
+  AN_LS_ARR(head_held); AN_LS_ARR(nilnarrow); AN_LS_ARR(empty_arr_recv);
+  AN_LS_ARR(empty_hash_recv); AN_LS_ARR(empty_hash_arg); AN_LS_ARR(store_misfit_arg);
+  AN_LS_ARR(ivar_widen_src); AN_LS_ARR(hash_want); AN_LS_ARR(arr_want);
+  AN_LS_ARR(lw_joined); AN_LS_ARR(poly_builtin_ty); AN_LS_ARR(bop_inf);
+#undef AN_LS_ARR
+  if (c->ucall_inf)
+    for (int id = 0; id < n; id++) {
+      UCallInf *u = &c->ucall_inf[id];
+      h = (h ^ (uint64_t)(uint32_t)u->mi) * 0x100000001B3ull;
+      h = (h ^ (uint64_t)(uint16_t)u->owner_ci) * 0x100000001B3ull;
+      h = (h ^ u->via) * 0x100000001B3ull;
+    }
+#define AN_LS_RANGE(p, T, from, to) h = an_ts_mix_bytes(h, (const char *)(p) + offsetof(T, from), offsetof(T, to) - offsetof(T, from))
+#define AN_LS_LV(lv) h = an_ts_mix_bytes(h, (const char *)(lv) + offsetof(LocalVar, last_src), sizeof(LocalVar) - offsetof(LocalVar, last_src))
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    AN_LS_RANGE(sc, Scope, def_node, blk_param);
+    AN_LS_RANGE(sc, Scope, ret_poly_ctr, locals);
+    for (int i = 0; i < sc->nlocals; i++) AN_LS_LV(&sc->locals[i]);
+  }
+  for (int i = 0; i < c->ngvars; i++) AN_LS_LV(&c->gvars[i]);
+  for (int i = 0; i < c->nconsts; i++) AN_LS_LV(&c->consts[i]);
+#undef AN_LS_LV
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+#define AN_LS_TAB(a, cnt) do { if (ci->a) h = an_ts_mix_bytes(h, ci->a, (size_t)ci->cnt * sizeof *ci->a); } while (0)
+    AN_LS_TAB(ivar_str_shared, nivars); AN_LS_TAB(ivar_elems_shared, nivars);
+    AN_LS_TAB(ivar_nullable_int, nivars); AN_LS_TAB(ivar_arr_elem_arr_or_nil, nivars);
+    AN_LS_TAB(ivar_nullable_int_elem, nivars); AN_LS_TAB(ivar_oa_type, nivars);
+    AN_LS_TAB(ivar_oa_seed, nivars); AN_LS_TAB(ivar_oa_conflict, nivars);
+    AN_LS_TAB(ivar_int_table, nivars);
+    /* the two nil tables are sized when they are built, by the ivars then */
+    AN_LS_TAB(ivar_obj_may_nil, n_ivar_obj_may_nil); AN_LS_TAB(ivar_elem_may_nil, n_ivar_obj_may_nil);
+    AN_LS_TAB(cvar_types, ncvars); AN_LS_TAB(cvar_nullable_int, ncvars);
+    AN_LS_TAB(cvar_str_shared, ncvars); AN_LS_TAB(cvar_elems_shared, ncvars);
+#undef AN_LS_TAB
+    AN_LS_RANGE(ci, ClassInfo, enum_yield_arity, c_struct);
+    AN_LS_RANGE(ci, ClassInfo, nsub_root, prep_from);
+  }
+#undef AN_LS_RANGE
+  return h;
+}
+
 /* The slots a type waits a round to cross: each scope's return and locals,
    each class's instance variables, the globals and the constants. */
 static int an_type_slots(Compiler *c) {
@@ -51324,10 +51389,12 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            its readers still moved */
         int spreading = pivs_hash_stores_widened(c) != widened || (widened != widened0 && ch_other);
         widened = pivs_hash_stores_widened(c);
-        /* Periodic exit. The whole type state (every node's, each scope's
-           return and locals, the ivars, globals and constants) is digested
-           as each iteration ends, with the node count and the count of
-           widened Hash stores. The passes are deterministic over that state:
+        /* Periodic exit. The whole state the passes read (an_loop_state:
+           every node's type and the per-node notes, each scope's return and
+           locals with the notes kept on them, the ivars, globals and
+           constants) is digested as each iteration ends, with the node count
+           and the count of widened Hash stores. The passes are deterministic
+           over that state:
            once an iteration ends in the state one p iterations back ended in,
            and the one before it in that one's predecessor, every further
            iteration repeats the cycle of p states, and the cap ends in the
@@ -51347,7 +51414,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            by iteration 5 and ran the remaining 123 (19 seconds each) to the
            cap on exactly that: a third of its analysis. */
         {
-          uint64_t st = an_type_state(c);
+          uint64_t st = an_loop_state(c);
           int nodes = c->nt->count, stop = 0;
           for (int q = CYC_KEEP - 1; q > 0; q--) { cyc_st[q] = cyc_st[q - 1]; cyc_wid[q] = cyc_wid[q - 1]; cyc_nodes[q] = cyc_nodes[q - 1]; }
           cyc_st[0] = st; cyc_wid[0] = widened; cyc_nodes[0] = nodes;
