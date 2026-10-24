@@ -944,16 +944,6 @@ typedef struct {
 static int cmethod_of_class(Compiler *c, const Scope *encl) {
   return encl->is_cmethod && encl->class_id >= 0 && !comp_class_is_module(c, &c->classes[encl->class_id]);
 }
-static int inline_string_self(Compiler *c, int id, InlineTarget *t) {
-  const CallPlan *p = cplan_user(c, id);
-  if (p->via != UC_REOPEN || !repr_self_handle(c, p->mi)) return 0;
-  /* (a block passed as a value runs through the proc-form clone) */
-  int blk = nt_ref(c->nt, id, "block");
-  if (blk >= 0 && nt_kind(c->nt, blk) != NK_BlockNode) return 0;
-  t->mi = p->mi; t->recv_class = p->owner_ci;
-  return 1;
-}
-
 static void emit_inline_receiver(Compiler *c, int mi, int recv, Buf *b) {
   if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
   else if (repr_self_handle(c, mi)) emit_strbuf_handle_of(c, recv, b);
@@ -963,7 +953,6 @@ static void emit_inline_receiver(Compiler *c, int mi, int recv, Buf *b) {
 static void inline_target_lookup(Compiler *c, int id, const char *name, int recv, InlineTarget *t) {
   const NodeTable *nt = c->nt;
   t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
-  if (inline_string_self(c, id, t)) return;
   if (recv < 0) {
     /* A bare call resolves to self first, as Ruby does and as the analyzer
        does (comp_self_call_mi): a top-level `def request` beside a class's
@@ -1051,7 +1040,6 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
                               InlineTarget *t) {
   const NodeTable *nt = c->nt;
   t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
-  if (inline_string_self(c, id, t)) return 1;
   const CallPlan *p;
   if (recv < 0 && g_ie_class_id >= 0) {
     /* inside an instance_eval/exec splice self is the rebound receiver: its

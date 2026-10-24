@@ -1487,8 +1487,7 @@ else {
          cell, where the method is spliced instead, is a missed optimization. */
       else if ((rt == TY_STRING || rt == TY_STRBUF) && comp_class_index(c, "String") >= 0 &&
                comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL) >= 0 &&
-               c->scopes[comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)].yields &&
-               !repr_self_handle(c, comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)))
+               c->scopes[comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)].yields)
         return 1;
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for

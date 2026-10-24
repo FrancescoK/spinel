@@ -11306,7 +11306,6 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
 }
 
 static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int recv, const char *name, Buf *b) {
-  if (repr_self_handle(c, mi) && c->scopes[mi].yields && emit_inline_expr(c, id, b)) return;
   if (ci == comp_class_index(c, "String") && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
   if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
   size_t at = b->len;
