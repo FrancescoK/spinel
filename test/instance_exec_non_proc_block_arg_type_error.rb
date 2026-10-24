@@ -32,3 +32,9 @@ r2 = ->(x) { log2 << :recv; x }
 a2 = ->(x) { log2 << :arg; x }
 try { r2.("y").instance_exec(a2.(1), &(log2 << :blk; true)) }
 p log2
+
+log3 = []
+r3 = ->(x) { log3 << :recv; x }
+a3 = ->(x) { log3 << :arg; x }
+try { r3.("y").instance_eval(a3.(1), &(log3 << :blk; true)) }
+p log3
