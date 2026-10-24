@@ -9756,6 +9756,9 @@ int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, c
                                      int blk_tmp2, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_argv_has_splat(nt, argv, argc)) return 0;
+  /* not an argument that ran into no temp: a keyword Hash is bound by the dispatch's own arms, not hoisted for these */
+  for (int a = 0; a < argc; a++)
+    if (atmp[a] <= 0) return 0;
   if (nt_ref(nt, id, "block") < 0) {
     if (!(is_sum_name(name) && argc == 1)) return 0;
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
