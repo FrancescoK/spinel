@@ -31,6 +31,8 @@ int sp_last_pid = 0;
 extern char **environ;
 #endif
 
+static int sp_system_run(const char *prog, int argc, const char *const *argv, char **envp);
+
 int sp_system_args(int argc, const char *const *argv) {
   return sp_system_envp(argc, argv, NULL);
 }
@@ -100,13 +102,26 @@ char **sp_cmdline_words(const char *line, int *argc_out) {
    and nil. A command the shell runs always runs; the shell's own exit 127
    for a missing program is a false. */
 int sp_system_envp(int argc, const char *const *argv, char **envp) {
+  return sp_system_run(NULL, argc, argv, envp);
+}
+
+/* system([program, argv0], ...): program runs with argv as its arguments,
+   argv[0] being the argv0 it sees; the shell never runs it and its name is
+   not split into words, as under CRuby */
+int sp_system_prog_envp(const char *prog, int argc, const char *const *argv, char **envp) {
+  return sp_system_run(prog, argc, argv, envp);
+}
+
+/* prog NULL: argv[0] is the program, and a lone command line goes through
+   CRuby's shell rule */
+static int sp_system_run(const char *prog, int argc, const char *const *argv, char **envp) {
   if (argc <= 0 || argv == NULL || argv[0] == NULL) {
     sp_last_status = -1;
     return -1;
   }
-  int via_shell = argc == 1 && sp_cmdline_shell_p(argv[0]);
+  int via_shell = !prog && argc == 1 && sp_cmdline_shell_p(argv[0]);
   char **words = NULL;
-  if (argc == 1 && !via_shell) {
+  if (!prog && argc == 1 && !via_shell) {
     int wn = 0;
     words = sp_cmdline_words(argv[0], &wn);
     if (!words) { sp_last_status = -1; return -1; }
@@ -128,7 +143,7 @@ int sp_system_envp(int argc, const char *const *argv, char **envp) {
       char *av[] = { (char *)"sh", (char *)"-c", (char *)argv[0], NULL };
       rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, av, envp ? envp : environ);
     }
-    else rc = posix_spawnp(&pid, argv[0], NULL, NULL, (char *const *)argv, envp ? envp : environ);
+    else rc = posix_spawnp(&pid, prog ? prog : argv[0], NULL, NULL, (char *const *)argv, envp ? envp : environ);
     free(words);
     if (rc != 0) { sp_last_status = 127 << 8; return -1; }
   }
@@ -155,7 +170,7 @@ int sp_system_envp(int argc, const char *const *argv, char **envp) {
       execl("/bin/sh", "sh", "-c", argv[0], (char *)NULL);
     }
     else {
-      execvp(argv[0], (char * const *)argv);
+      execvp(prog ? prog : argv[0], (char * const *)argv);
     }
     int e = errno;
     (void)!write(err_pipe[1], &e, sizeof e);

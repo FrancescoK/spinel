@@ -265,12 +265,15 @@ void sp_system_env_check(sp_RbVal env) {
   int owned[3] = { -1, -1, -1 };
   sp_spawn_env_check(env, owned);
 }
-int sp_system_env_args(sp_RbVal env, int argc, const char *const *argv) {
+/* prog, for system([program, argv0], ...), is the program and argv[0] the
+   argv0 it sees; NULL when argv[0] is the program. env is nil for none. */
+int sp_system_prog_env_args(sp_RbVal env, const char *prog, int argc, const char *const *argv) {
+  if (env.tag == SP_TAG_NIL) return sp_system_prog_envp(prog, argc, argv, NULL);
   SP_GC_ROOT_RBVAL(env);
   sp_system_env_check(env);
   char **envp = sp_spawn_envp(env);
   if (!envp) sp_raise_cls("NoMemoryError", "out of memory");
-  int ok = sp_system_envp(argc, argv, envp);
+  int ok = sp_system_prog_envp(prog, argc, argv, envp);
   free(envp);
   return ok;
 }
