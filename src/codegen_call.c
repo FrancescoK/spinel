@@ -25047,6 +25047,11 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     else {
       t = ++g_tmp;
       if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
+      /* (one representation: the handle temp takes a value of either face,
+         a boxed value's to_s answering bytes included) */
+      if (g_one_string && !ko && ob.p && (ty[i] == TY_STRING || ty[i] == TY_STRBUF))
+        buf_printf(b, " _t%d = SP_STR_HDL(%s);", t, ob.p);
+      else
       buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : ko ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
       if (later_alloc && ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
       else if (later_alloc && comp_ty_value_obj(c, ty[i])) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty[i], t, b); }
