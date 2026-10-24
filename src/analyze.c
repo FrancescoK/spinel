@@ -45526,6 +45526,19 @@ static int sid_alloc_is_source(Compiler *c, SidSources *S, int a) {
    (`attr_reader :seen`): no other Symbol or String of its name, no alias
    of it, and no method named by a name the program computes? And each
    place's ivar only where it reads or writes it by reflection? */
+/* Is literal lit the new name of an alias (`alias take twice`,
+   `alias_method :take, :twice`), whose parent is up and grandparent call?
+   That defines another method of the name, and reaches no reader under
+   another one: the reader's own calls are followed by its name, a call of
+   the alias among them. */
+static int sid_alias_new_name(const NodeTable *nt, int up, int call, int lit) {
+  if (up >= 0 && nt_kind(nt, up) == NK_AliasMethodNode) return nt_ref(nt, up, "new_name") == lit;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "arguments") != up) return 0;
+  const char *cn = nt_str(nt, call, "name");
+  if (!cn || !sp_streq(cn, "alias_method")) return 0;
+  int an = 0; const int *av = nt_arr(nt, up, "arguments", &an);
+  return an == 2 && av[0] == lit;
+}
 static int sid_readers_only_declared(Compiler *c, const SidSources *S) {
   const NodeTable *nt = c->nt;
   for (int i = 0; i < S->nreaders; i++) {
@@ -45539,6 +45552,7 @@ static int sid_readers_only_declared(Compiler *c, const SidSources *S) {
       NT_FOREACH_KIND(nt, h ? NK_StringNode : NK_SymbolNode, lit) {
         if (!sp_streq(nt_str(nt, lit, h ? "content" : "value"), r)) continue;
         int args = S->parent[lit], call = args >= 0 ? S->parent[args] : -1;
+        if (sid_alias_new_name(nt, args, call, lit)) continue;
         if (h || call < 0 || nt_ref(nt, call, "arguments") != args || !attr_decl_call(c, call)) return 0;
       }
   }
