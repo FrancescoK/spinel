@@ -550,10 +550,14 @@ static const char *jp_string(jrd *j) {
       case 'b': jb_c(&b, '\b'); break;  case 'f': jb_c(&b, '\f'); break;
       case 'u': {
         unsigned cp; jp_hex4(j, &b, &cp);
-        if (cp >= 0xD800 && cp <= 0xDBFF && j->end - j->p >= 2 && j->p[0] == '\\' && j->p[1] == 'u') {
+        /* a high surrogate needs a low one after it, as CRuby's parser has
+           it ("\ud800x" and "\ud800A" raise); a lone low surrogate is
+           written as its bytes, as there */
+        if (cp >= 0xD800 && cp <= 0xDBFF) {
+          if (j->end - j->p < 2 || j->p[0] != '\\' || j->p[1] != 'u') { free(b.p); jp_err("incomplete surrogate pair"); }
           j->p += 2; unsigned lo; jp_hex4(j, &b, &lo);
-          if (lo >= 0xDC00 && lo <= 0xDFFF) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-          else jp_utf8(&b, cp), cp = lo;   /* lone high surrogate: emit both raw */
+          if (lo < 0xDC00 || lo > 0xDFFF) { free(b.p); jp_err("invalid surrogate pair"); }
+          cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
         }
         jp_utf8(&b, cp);
         break;
