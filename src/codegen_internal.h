@@ -204,11 +204,6 @@ void strbuf_new_of_text(Compiler *c, int v, const char *t, Buf *b);
    handed (`+s`, `String(s)`, `s.then { |x| x }`) hands on: 1, or 0 with
    nothing emitted */
 int emit_strbuf_route(Compiler *c, int v, Buf *b);
-/* --share-strings: does codegen hand the shared handle along flow kind
-   `kind` (ShareFlowKind) at node site, from value node v?
-   The routes codegen carries, which the seal requires of every flow into a
-   shared class (repr_share_flows_check). */
-int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 /* --share-strings: is element el of plain multiple write mw rendered through the handle face into a held temp? */
 int masgn_face_elem(Compiler *c, int mw, int el);
 /* the leaf targets of multiple write (or nested target) node, in Ruby's order, a nested (a, b) where it stands: fills out (when given) and answers the count */

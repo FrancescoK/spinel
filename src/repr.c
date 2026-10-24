@@ -1549,9 +1549,6 @@ int repr_channel_begin(Compiler *c, int node) {
   return f;
 }
 
-void repr_channel_clearing(Compiler *c, int delta) {
-  if (c->repr_channel_check) c->repr_channel_check->clearing += delta;
-}
 
 int repr_channel_ensure(Compiler *c, int node) {
   struct ReprChannelCheck *q = c->repr_channel_check;
@@ -1713,7 +1710,6 @@ void repr_seal(Compiler *c) {
   share_plan_build(c);
 }
 
-int repr_sealed(void) { return repr_sealed_flag; }
 
 /* ---- --share-strings (#6765) ---- */
 

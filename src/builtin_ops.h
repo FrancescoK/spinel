@@ -523,10 +523,6 @@ int bop_share_pure_anywhere(const char *name, int argc, int has_block);
 int builtin_ops_share_check(void);
 /* Exact name lookup, including iterator contracts. */
 int bop_share_named(TyKind fam, const char *name);
-/* the share row every builtin receiver agrees on for the name: Object's own
-   row, else the String, Array and Hash rows when all three have one and
-   they agree; 0 when they differ or any is missing */
-int bop_share_uniform(const char *name);
 /* The distinct share kinds of `name` across Object's row and the String,
    Array and Hash rows, whichever of those the receiver turns out to be:
    written to out[0..max), their count answered, 0 when no row names it. */

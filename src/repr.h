@@ -217,8 +217,6 @@ int repr_local_nullable_int(Compiler *c, int node);
 int repr_typed_str_container(TyKind t);
 /* A retained typed literal whose String elements need shared handles. */
 int repr_str_literal_shares(Compiler *c, int node);
-/* Whether repr_seal has run for the current compile. */
-int repr_sealed(void);
 /* Does the share rule decide which Strings are the shared handle
    (--share-strings, #6765)? Codegen asks this, not the flag: where it is
    0, every emitter takes master's form. */
@@ -266,7 +264,6 @@ void repr_check_ask(const Compiler *c, int node);
    All callers guard these with g_repr_check; no shadow exists otherwise. */
 enum { RCH_NONE, RCH_PUBLISH, RCH_CLEAR, RCH_NIL, RCH_HANDLE, RCH_BYTES, RCH_BOXED };
 void repr_channel_predict(Compiler *c, int node, int mi, int form);
-void repr_channel_clearing(Compiler *c, int delta);
 int repr_channel_begin(Compiler *c, int node);
 int repr_channel_ensure(Compiler *c, int node);
 void repr_channel_note(Compiler *c, int node, int form);

@@ -5472,10 +5472,6 @@ void share_facts_free(Compiler *c) {
 }
 
 
-int share_holder_count(const Compiler *c) { return c->share ? c->share->nh : 0; }
-const ShareHolder *share_holder(const Compiler *c, int h) {
-  return c->share && h >= 0 && h < c->share->nh ? &c->share->h[h] : NULL;
-}
 
 static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *name) {
   if (!F || !F->bucket) return -1;
@@ -5491,9 +5487,6 @@ static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *na
 }
 int share_local_holder(const Compiler *c, int scope, int local) {
   return sh_lookup(c->share, SHK_LOCAL, scope, local, NULL);
-}
-int share_ivar_holder(const Compiler *c, int cid, const char *name) {
-  return name ? sh_lookup(c->share, SHK_IVAR, cid, -1, name) : -1;
 }
 int share_self_holder(const Compiler *c, int scope) {
   return sh_lookup(c->share, SHK_SELF, scope, -1, NULL);
@@ -5542,16 +5535,8 @@ int share_elem_holders(const Compiler *c, int e) {
   return sh_class_holders(F, e);
 }
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
-int share_class_count(const Compiler *c) { return c->share ? c->share->n : 0; }
-int share_holder_class(const Compiler *c, int h) {
-  const ShareFacts *F = c->share;
-  return F && h >= 0 && h < F->nh ? sh_root_of_holder(F, h) : -1;
-}
-static int sh_node_root(const ShareFacts *F, int n, int elems);
-int share_node_class(const Compiler *c, int n) { return sh_node_root(c->share, n, 0); }
 
 
-static int sh_node_root(const ShareFacts *F, int n, int elems);
 int share_str_elem_read(Compiler *c, int n) {
   if (!c->share || n < 0) return 0;
   n = nt_paren_single(c->nt, n);
@@ -6406,15 +6391,6 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
 }
 
-unsigned share_node_flags(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 0);
-  return r >= 0 ? F->flags[r] : 0;
-}
-int share_node_peeked(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  return F && n >= 0 && n < F->nnodes && (F->unused[n] & SHU_PEEK);
-}
 int share_node_transient(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
@@ -6630,13 +6606,6 @@ int share_node_carries_handle(const Compiler *c, int n) {
 int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 1, op); }
 int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 0, op); }
 
-/* The class of node n's value (with elems, of its elements), or -1. */
-static int sh_node_root(const ShareFacts *F, int n, int elems) {
-  if (!F || n < 0 || n >= F->nnodes || F->nval[n] < 0) return -1;
-  int r = sh_root(F, F->nval[n]);
-  if (elems) r = F->elem[r] >= 0 ? sh_root(F, F->elem[r]) : -1;
-  return r;
-}
 
 
 /* The route's answer from the final facts: 1 when it compiles as the rule

@@ -3797,14 +3797,6 @@ int bop_share_boxed(TyKind fam, const char *name) {
 int bop_share_named(TyKind fam, const char *name) {
   return name ? bop_share_find(fam, name) : 0;
 }
-int bop_share_uniform(const char *name) {
-  if (!name) return 0;
-  int s = bop_share_find(BOP_ANY_RECV, name);
-  if (s) return s;
-  s = bop_share_find(TY_STRING, name);
-  int a = bop_share_find(BOP_ANY_ARRAY, name), h = bop_share_find(BOP_ANY_HASH, name);
-  return s && s == a && s == h ? s : 0;
-}
 int bop_share_kinds(const char *name, int *out, int max) {
   static const TyKind fams[] = { BOP_ANY_RECV, TY_STRING, BOP_ANY_ARRAY, BOP_ANY_HASH };
   int n = 0;

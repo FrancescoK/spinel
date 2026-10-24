@@ -896,19 +896,6 @@ int share_plan_store_renders(Compiler *c, int v) {
   return mw < 0 || mw >= n || nt_ref(nt, mw, "value") != p || share_plan_multi_renders(c, mw, e);
 }
 
-/* Does the receiver path of in-place change `call` render the handle of
-   `base`, the String the change reaches (the base of the chain of
-   self-answering calls its receiver is)? emit_recv_route_handle renders a
-   boxed receiver's call whose arms answer a String (SPK_POLY_ARMS) through
-   the handle face when it is the receiver itself, but not as the base of a
-   chain (`px.pick(s).concat("2").concat("3")`): the outer change reaches the
-   bytes the inner one answered. */
-int share_plan_recv_renders(Compiler *c, int call, int base) {
-  const NodeTable *nt = c->nt;
-  if (call < 0 || base < 0 || nt_kind(nt, call) != NK_CallNode) return 1;
-  int u = nt_paren_single(nt, base);
-  return u == nt_paren_single(nt, nt_ref(nt, call, "receiver")) || share_plan_producer(c, u, NULL) != SPK_POLY_ARMS;
-}
 
 /* The plan of value v for a consumer in `role`, v's own need known. */
 SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {

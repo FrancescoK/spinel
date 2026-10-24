@@ -22970,18 +22970,6 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash)
   }
   return changed;
 }
-/* ---- --share-strings: String Arrays of handles (#8328 step 5) ----
-   An Array of Strings the share rule shares and changes in place holds
-   their handles (TY_STRH_ARRAY) when every name its container flows
-   between can take that form; otherwise it keeps the poly form, whose boxes
-   hold the handles. The form is decided per container class (the share
-   facts' class: the names a container value flows between), so no copy of
-   a container ever sits between two of its names. A class is refused once
-   and for good, its holders and literals alike, so the fixpoint ends. */
-static int strh_no_at(const Compiler *c, int n) {
-  return c->strh_no && n >= 0 && n < c->strh_no_cap && c->strh_no[n];
-}
-int share_strh_node_no(const Compiler *c, int n) { return strh_no_at(c, n); }
 /* The names a program reaches by a name it computes or a block that rebinds
    self (share_strh_gate): an instance variable, a class variable or a
    constant named to instance_variable_get and its kin, or used inside an
@@ -23052,54 +23040,6 @@ static void strh_reflect_scan(Compiler *c, StrhReflect *r) {
       else strh_reflect_add(r, NULL);
     }
   }
-}
-/* The Array type the holder's slot has now, UNKNOWN for a holder of the
-   gate that is not one */
-static TyKind strh_static_type(Compiler *c, const ShareHolder *sh) {
-  if (sh->kind == SHK_IVAR) {
-    int ki = comp_ivar_index(&c->classes[sh->cid], sh->name);
-    return ki < 0 ? TY_UNKNOWN : c->classes[sh->cid].ivar_types[ki];
-  }
-  if (sh->kind == SHK_CVAR) {
-    for (int k = 0; k < c->nclasses; k++) {
-      int ki = comp_cvar_index(&c->classes[k], sh->name);
-      if (ki >= 0) return c->classes[k].cvar_types[ki];
-    }
-    return TY_UNKNOWN;
-  }
-  const char *grn = sh->kind == SHK_GVAR ? comp_resolve_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name) : sh->name;
-  LocalVar *gv = !grn ? NULL : sh->kind == SHK_GVAR ? comp_gvar(c, grn) : comp_const(c, grn);
-  return gv ? gv->type : TY_UNKNOWN;
-}
-/* Is node p a write of node n into an instance variable, a global, a class
-   variable or a constant? */
-static int strh_static_write(const NodeTable *nt, int p, int n) {
-  NodeKind pk = nt_kind(nt, p);
-  return (pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode || pk == NK_ClassVariableWriteNode ||
-          pk == NK_ConstantWriteNode) && nt_paren_single(nt, nt_ref(nt, p, "value")) == n;
-}
-/* Is Array literal n written into a slot that holds the form already? Then
-   the literal is built as the Array of handles, as the slot is, whatever its
-   Strings are (infer_array_literal): a typed String Array has no conversion
-   into a global's or an instance variable's slot. */
-int share_strh_literal_slot(Compiler *c, int n) {
-  const int *par = comp_parent_map(c);
-  int p = n >= 0 && n < c->nt->count ? par[n] : -1;
-  if (p < 0 || !strh_static_write(c->nt, p, n)) return 0;
-  NodeKind pk = nt_kind(c->nt, p);
-  ShareHolder th;
-  memset(&th, 0, sizeof th);
-  th.name = nt_str(c->nt, p, "name");
-  th.kind = pk == NK_InstanceVariableWriteNode ? SHK_IVAR : pk == NK_GlobalVariableWriteNode ? SHK_GVAR
-          : pk == NK_ClassVariableWriteNode ? SHK_CVAR : SHK_CONST;
-  if (!th.name) return 0;
-  if (th.kind != SHK_IVAR) return strh_static_type(c, &th) == TY_STRH_ARRAY;
-  /* (a class body's write names no class: any with the name) */
-  for (int k = 0; k < c->nclasses; k++) {
-    th.cid = k;
-    if (comp_ivar_index(&c->classes[k], th.name) >= 0 && strh_static_type(c, &th) == TY_STRH_ARRAY) return 1;
-  }
-  return 0;
 }
 enum { STRH_CAND = 1, STRH_BAD = 2 };
 /* One-String mode: a container a reflective call reaches by its name

@@ -96,13 +96,7 @@ int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
 const int *comp_parent_map(Compiler *c);
-/* --share-strings: is node n an Array literal refused the String handle
-   Array form for good (share_strh_gate)? */
-int share_strh_node_no(const Compiler *c, int n);
-/* ...and is it written into a variable already holding the form? */
-int share_strh_literal_slot(Compiler *c, int n);
 int strh_method_open(const Scope *m);   /* analyze_util.c */
-int strh_value_returned(Compiler *c, const int *par, int n);
 /* The definite-assignment walk (analyze.c), shared with the nil facts
    (analyze_nil.c): the program's parent map, each statement's place in its
    list (filled one list at a time, -1 for a node not in its parent's list),
@@ -116,11 +110,6 @@ void du_memo_free(void);
    block it ends at) climbs: where a value is passed on to the statement or
    the block that holds it. */
 enum { AN_DROP_CLIMB = VPS_ALL };
-/* The edges the String handle Array walkers climb (strh_value_returned,
-   strh_value_ignored): `if`, `unless`, `case`, `case`/`in` and a begin, its
-   body beside an else too (the answer errs on the side of an Array that
-   escapes). */
-enum { STRH_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int cow_user_block_value(Compiler *c, const int *parent, int id);
 /* The methods the default build may lend a String parameter's slot by

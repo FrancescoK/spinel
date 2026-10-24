@@ -1903,8 +1903,8 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
     return;
   }
-  /* The share rows of the builtin-op table (bop_share_uniform: Object's
-     row, or the String, Array and Hash rows agreeing) say what a builtin of
+  /* The share rows of the builtin-op table (bop_share_kinds: Object's,
+     String's, Array's and Hash's rows) say what a builtin of
      the name answers: a value of its own (PURE: split, to_s), the receiver
      (RECV, each, the stores), an element (ELEM, find, fetch), a container
      of elements (SUB, select, flatten), of the block's values (map), the

@@ -83,7 +83,7 @@ typedef enum {
   SHFL_PARAM,    /* an iterator's receiver bound to its block's parameter
                     (then, tap): site the call */
   SHFL_LEND,     /* an argument whose slot a parameter is lent (sh_lend):
-                    site the parameter's holder (share_holder), not a node */
+                    site the parameter's holder, not a node */
   SHFL_MULTI,    /* a multiple write's value taken by one target: site the
                     write */
   SHFL_MUTATE    /* the receiver an in-place String change goes through:
@@ -102,24 +102,13 @@ int share_masgn_plain(const NodeTable *nt, int n);
 /* Can a slot of type t hold a String (a String, a box, a container that may
    hold one, an object whose native class keeps one)? */
 int sh_may_hold(const Compiler *c, TyKind t);
-/* The holders, by index 0..share_holder_count-1. */
-int share_holder_count(const Compiler *c);
-const ShareHolder *share_holder(const Compiler *c, int h);
 /* The holder of a local / an ivar, or -1 when the walk made none. */
 int share_local_holder(const Compiler *c, int scope, int local);
-int share_ivar_holder(const Compiler *c, int cid, const char *name);
 int share_self_holder(const Compiler *c, int scope);
 int share_self_used(const Compiler *c, int holder);
 /* The element of holder h's containers' elements, or -1 (not a holder:
    read it with share_elem_flags / share_elem_holders). */
 int share_elem_holder(const Compiler *c, int h);
-/* The class a value belongs to, as an index below share_class_count: holder
-   h's, or node n's (-1 when the walk gave n no value). Two names one
-   container flows between have one class; it is the unit the String handle
-   Array form is decided for (share_strh_gate, #8328 step 5). */
-int share_class_count(const Compiler *c);
-int share_holder_class(const Compiler *c, int h);
-int share_node_class(const Compiler *c, int n);
 
 /* The facts of holder h's class. */
 unsigned share_class_flags(const Compiler *c, int h);
@@ -210,13 +199,8 @@ int share_frozen_literal(Compiler *c, int n);
 /* ...or a read of a builtin String constant (RUBY_ENGINE ...), one frozen
    object too (share_frozen_string) */
 int share_frozen_string(Compiler *c, int n);
-/* Is node n a container literal a builtin only reads and keeps none of
-   (`puts [a, b]`)? */
-int share_node_peeked(const Compiler *c, int n);
 /* Is node n's result dropped or only read by a builtin that keeps none? */
 int share_node_transient(const Compiler *c, int n);
-/* The facts (SHF_*) of the class of node n's value. */
-unsigned share_node_flags(const Compiler *c, int n);
 /* A fresh value or a single-use local whose destination is its only live name. */
 int share_value_unobserved(Compiler *c, int n);
 
@@ -304,8 +288,6 @@ int share_plan_store_renders(Compiler *c, int v);
 int share_plan_multi_renders(Compiler *c, int mw, int e);
 /* ...and emit_expr gives it as the handle already (share_plan.c)? */
 int share_plan_emits_handle(Compiler *c, int e);
-/* ...and does an in-place change's receiver path render its base's handle? */
-int share_plan_recv_renders(Compiler *c, int call, int base);
 typedef struct {
   unsigned char need, supply, form;
   unsigned char kind;   /* SPK_*, which share_plan_of fills where the supply

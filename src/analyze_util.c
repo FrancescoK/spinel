@@ -4435,40 +4435,6 @@ int strh_method_open(const Scope *m) {
   return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
          !m->is_proc_form && !m->is_lowered_yield && !m->ret_rbs_seeded;
 }
-/* Is node n, a read of an Array of handles, the value its method answers: the
-   body's last statement (an `if`'s arm, a begin's body and parentheses
-   included) or the one argument of a `return`? The caller's name for it is
-   the method's value (a SHK_RET holder of its class). Climbs from the node
-   (vp_climb), so its cost is the nesting depth. */
-int strh_value_returned(Compiler *c, const int *par, int n) {
-  const NodeTable *nt = c->nt;
-  if (n < 0 || n >= nt->count) return 0;
-  VpUp up;
-  VpUpKind ended = vp_climb(nt, par, n, STRH_CLIMB | VP_FOLLOW_RETURN, &up);
-  if (ended == VPU_JUMP)
-    return comp_scope_of(c, up.parent)->def_node >= 0 && strh_method_open(comp_scope_of(c, up.parent));
-  return vp_up_def(nt, &up) >= 0 && strh_method_open(comp_scope_of(c, n));
-}
-/* Is Array literal n where a variable can hold it: a local's, an instance
-   variable's, a global's, a class variable's or a constant's write, an
-   argument of a call or a yield, a method's value? The String handle Array
-   form is given to a literal only there, and share_strh_gate asks the
-   places that name a holder of its class (strh_literal_valid). */
-int strh_literal_held(Compiler *c, int n) {
-  if (comp_lwrite_of_value(c, n) >= 0) return 1;
-  const int *par = comp_parent_map(c);
-  int p = n >= 0 && n < c->nt->count ? par[n] : -1;
-  if (p < 0) return 0;
-  NodeKind pk = nt_kind(c->nt, p);
-  if ((pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode || pk == NK_ClassVariableWriteNode ||
-       pk == NK_ConstantWriteNode) && nt_paren_single(c->nt, nt_ref(c->nt, p, "value")) == n)
-    return 1;
-  /* an argument of a call or a yield, the value of a method */
-  if (is_arguments_node_type(nt_type(c->nt, p)) && par[p] >= 0 &&
-      (nt_kind(c->nt, par[p]) == NK_CallNode || nt_kind(c->nt, par[p]) == NK_YieldNode))
-    return 1;
-  return strh_value_returned(c, par, n);
-}
 
 /* Is argument n's type want, or (unknown_ok, for the gate's early rounds)
    not settled yet? */
