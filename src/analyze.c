@@ -22888,17 +22888,35 @@ static int share_demand_literal_arg(Compiler *c, int a) {
     return 0;
   return strbuf_container_source_walk(c, a, 0, SB_DEMAND);
 }
+/* The methods that read their rest parameter: a read of it, or a zsuper,
+   which hands it on (per scope, 1 or 0). */
+static unsigned char *rest_param_reads(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  unsigned char *r = calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
+  if (!r) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, n) {
+    Scope *s = comp_scope_of(c, n);
+    const char *ln = nt_str(nt, n, "name");
+    if (s && ln && s->rest_idx >= 0 && s->pnames[s->rest_idx] && sp_streq(s->pnames[s->rest_idx], ln))
+      r[s - c->scopes] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, n) {
+    Scope *s = comp_scope_of(c, n);
+    if (s) r[s - c->scopes] = 1;
+  }
+  return r;
+}
 /* A user method's rest parameter holds its callers' arguments as its
-   elements: where the rule shares them, each argument the call's layout
+   elements: where the method reads them, each argument the call's layout
    leaves to the rest (`def first(*items)`, `first(self.text)`) is stored as
    its handle, as a literal's element is. A splat's elements are the
    literal's (share_demand_literal_arg) or the run time's. */
-static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc) {
+static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc, const unsigned char *rest_read) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
-  if (m->rest_idx < 0 || !m->pnames[m->rest_idx]) return 0;
+  if (m->rest_idx < 0 || !m->pnames[m->rest_idx] || !rest_read[mi]) return 0;
   LocalVar *rv = scope_local(m, m->pnames[m->rest_idx]);
-  if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
+  if (!rv) return 0;
   int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   int plain_argc = pos_argc;
@@ -23340,6 +23358,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      gathers: the callee's parameters name those elements again. A literal
      handed to a builtin (`p [a, b]`), a proc or a block's value is left as
      before. The call's targets are the plan's, as the facts read them. */
+  unsigned char *rest_read = rest_param_reads(c);
   NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
     int args = nt_ref(c->nt, n, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
@@ -23347,8 +23366,9 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     int mis[CPT_MAX], cnt = cplan_targets(c, n, mis, CPT_MAX);
     if (cnt <= 0) continue;
     for (int i = 0; i < an; i++) changed |= share_demand_literal_arg(c, av[i]);
-    for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an);
+    for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an, rest_read);
   }
+  free(rest_read);
   /* The next round must settle on the types AFTER these promotions.
      Comparing with the pre-promotion types asks for another inference
      round even when no dependent type moved. */
@@ -24267,18 +24287,6 @@ static int an_tail_param(Compiler *c, int n, TailCount *tc) {
   tc->param = pi;
   return 1;
 }
-/* A returned parameter takes the call's binding, including a default.
-   Defaults can call their own method again without revisiting its tail;
-   bound those expression queries as share_value_fresh does. */
-static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailCount *tc) {
-  Scope *m = &c->scopes[mi];
-  if (tc->arg_depth >= 8 || share_param_kept(c, mi, m->ret_param)) return 0;
-  int a = arg_layout_param_source(c, m, call, m->ret_param, NULL);
-  tc->arg_depth++;
-  int ok = an_tail_handle(c, R, a, tc);
-  tc->arg_depth--;
-  return ok;
-}
 /* A conditional's arm a in the fresh walk: what its statements end in, a
    nested conditional's arms, or nil when it is empty or missing. */
 static int an_tail_arm(Compiler *c, RetHandles *R, int a, TailCount *tc) {
@@ -24563,7 +24571,7 @@ static int an_tail_name_fresh(Compiler *c, RetHandles *R, int n, TailCount *tc) 
   for (int i = 0; ok && i < cnt; i++) {
     if (an_target_answers_new(c, mis[i])) continue;
     Scope *m = &c->scopes[mis[i]];
-    if (!an_ret_handle(c, R, mis[i]) || (!m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc))) ok = 0;
+    if (!an_ret_handle(c, R, mis[i]) || !m->ret_fresh) ok = 0;
   }
   free(mis);
   if (ok) tc->reads++;
@@ -24660,8 +24668,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
     if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
     tc->reads++;
-    if (!R->fresh || c->scopes[mi].ret_fresh) return 1;
-    return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
+    return !R->fresh || c->scopes[mi].ret_fresh;
   }
   if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
@@ -24691,7 +24698,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
       continue;
     }
     npub++;
-    if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
+    if (R->fresh && !m->ret_fresh) return 0;
   }
   if (nfresh > 0) {
     if (npub == 0) return 0;

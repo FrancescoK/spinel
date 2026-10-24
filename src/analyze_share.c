@@ -2433,36 +2433,6 @@ static void sh_record_boxed_fresh(ShareFacts *F, Compiler *c, int n,
   F->boxed_fresh_index[n] = at + 1;
 }
 
-/* Revalidate the selected builtin row and dispatch shape against the exact
-   effect signature captured by sh_builtin in the sharing walk. */
-static int sh_boxed_fresh_recorded(Compiler *c, int n) {
-  ShareFacts *F = c->share;
-  if (!F) return 0;
-  const ShBoxedFreshFact *fact = NULL;
-  int at = n >= 0 && n < F->nnodes && F->boxed_fresh_index
-    ? F->boxed_fresh_index[n] - 1 : -1;
-  if (at >= 0 && at < F->nboxed_fresh) fact = &F->boxed_fresh[at];
-  if (!fact || fact->call != n) return 0;
-
-  int tg[CPT_MAX], ntg = cplan_targets(c, n, tg, CPT_MAX);
-  int share = 0, family = 0, container = 1;
-  const BuiltinOp *row = NULL;
-  TyKind plan_ret = TY_UNKNOWN;
-  if (ntg < 0 || !sh_boxed_builtin_row(F, c, n, &share, &family, &container) ||
-      !sh_boxed_string_row_composable(F, c, n, ntg, tg, share, family, container,
-                                      &row, &plan_ret)) return 0;
-  const NodeTable *nt = c->nt;
-  int args = nt_ref(nt, n, "arguments"), argc = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int recv = nt_ref(nt, n, "receiver");
-  int recv_type = recv >= 0 ? c->ntype[recv] : TY_UNKNOWN;
-  if (share != fact->share || family != fact->family || container != fact->container ||
-      row != fact->row || plan_ret != fact->plan_ret || c->ntype[n] != fact->result_type ||
-      recv_type != fact->recv_type || argc != fact->argc || ntg != fact->ntg) return 0;
-  for (int i = 0; i < argc; i++) if (c->ntype[argv[i]] != fact->arg_types[i]) return 0;
-  for (int i = 0; i < ntg; i++) if (tg[i] != fact->targets[i]) return 0;
-  return 1;
-}
 
 /* A call the walk does not follow: what it is handed and what it answers
    are UNKNOWN. */
@@ -5462,51 +5432,8 @@ void share_facts_free(Compiler *c) {
 }
 
 
-static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *name) {
-  if (!F || !F->bucket) return -1;
-  unsigned hb = sh_key_hash(kind, a, name) & (unsigned)(F->nbucket - 1);
-  for (int i = F->bucket[hb]; i >= 0; i = F->hnext[i]) {
-    const ShareHolder *h = &F->h[i];
-    if (h->kind != kind) continue;
-    if (kind == SHK_SELF) { if (h->scope == a) return i; continue; }
-    if (kind == SHK_LOCAL ? (h->scope == a && h->local == b) : (h->cid == a && sp_streq(h->name, name)))
-      return i;
-  }
-  return -1;
-}
-int share_local_holder(const Compiler *c, int scope, int local) {
-  return sh_lookup(c->share, SHK_LOCAL, scope, local, NULL);
-}
 
-/* The holders of root r's class that store a String (sh_finalize). */
-static int sh_class_holders(const ShareFacts *F, int r) {
-  return F->hcount ? F->hcount[r] : F->nhold[r];
-}
 
-static int sh_root_of_holder(const ShareFacts *F, int h) {
-  int x = F->helem[h];
-  while (F->parent[x] != x) x = F->parent[x];
-  return x;
-}
-int share_elem_holder_root(const Compiler *c, int h) {
-  const ShareFacts *F = c->share;
-  if (!F || h < 0 || h >= F->nh) return -1;
-  return F->elem[sh_root_of_holder(F, h)];
-}
-/* the facts of an element (a container's elements), not a holder */
-unsigned share_elem_flags(const Compiler *c, int e) {
-  const ShareFacts *F = c->share;
-  if (!F || e < 0 || e >= F->n) return 0;
-  while (F->parent[e] != e) e = F->parent[e];
-  return F->flags[e];
-}
-int share_elem_holders(const Compiler *c, int e) {
-  const ShareFacts *F = c->share;
-  if (!F || e < 0 || e >= F->n) return 0;
-  while (F->parent[e] != e) e = F->parent[e];
-  return sh_class_holders(F, e);
-}
-int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
 
 
 
@@ -5617,10 +5544,6 @@ static int sh_arm_io_read_fresh(Compiler *c, int call, const PolyArm *a) {
 int share_builtin_fresh(Compiler *c, int call) {
   const char *name = nt_str(c->nt, call, "name");
   if (bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name)) return 1;
-  /* A mixed boxed call may have a fresh builtin String arm beside user
-     returns. Use only the effect recorded after sh_builtin actually returned
-     no carried identity, with the same row and full plan proof revalidated. */
-  if (sh_boxed_fresh_recorded(c, call)) return 1;
   /* The share walk's builtin surfaces exclude typed-only methods such
      as Thread#value; the settled plan below still checks every arm. */
   if (!sh_builtin_fresh(c, call, !c->share || c->share->ostruct)) return 0;
@@ -5653,72 +5576,6 @@ int share_builtin_fresh(Compiler *c, int call) {
     return 0;
   }
   return p->n > 0;
-}
-/* Is parameter pj of method mi read into a slot that takes it: a store of
-   it (`$g = x`, `@k = x`, an element) or an argument handed to a method?
-   A method answering such a parameter answers the String that slot keeps,
-   however new the argument is. These are the flows (sh_flow) from reads of
-   the parameter, not those of the names the caller gives the answer, and
-   an in-place change of it keeps nothing. Under --share-strings a read also
-   counts that is one of the alternatives of a value a flow takes (`$g = c ?
-   t : s`, `H.fetch(k, s)`: ShareFacts.alt), or that goes to a place with no
-   flow to show for it (a call the walk does not follow, an exception's
-   message: ShareFacts.kp_e). */
-/* Is v a call whose every target answers one of its parameters
-   (scope_ret_param)? Its value is the caller's own argument, which the
-   caller's flow keeps, not the parameter: share_value_fresh asks that
-   argument. (A method answering itself by recursion joins its parameter
-   with its answer as alternatives of one conditional.) */
-static int sh_call_answers_param(Compiler *c, int v) {
-  if (v < 0 || nt_kind(c->nt, v) != NK_CallNode) return 0;
-  int tg[8];
-  int n = cplan_targets(c, v, tg, 8);
-  if (n <= 0) return 0;
-  for (int i = 0; i < n; i++) if (tg[i] < 0 || scope_ret_param(c, tg[i]) < 0) return 0;
-  return 1;
-}
-/* Is flow (kind, site, v) a parameter's read handed back to that same
-   parameter by its own method calling itself (`pass(x, n - 1)` in `def
-   pass(x, n)`)? The call's only target is the method the read is in and
-   the read binds the parameter it reads: the slot it fills is the one it
-   came from, so it keeps the String nowhere new. */
-static int sh_param_self_pass(Compiler *c, int kind, int site, int v) {
-  const NodeTable *nt = c->nt;
-  if (kind != SHFL_ARG || site < 0 || v < 0 || nt_kind(nt, site) != NK_CallNode ||
-      nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
-  Scope *m = comp_scope_of(c, v);
-  int mi = m ? (int)(m - c->scopes) : -1;
-  const char *pn = nt_str(nt, v, "name");
-  int pj = -1;
-  for (int j = 0; m && pn && j < m->nparams && pj < 0; j++)
-    if (m->pnames[j] && sp_streq(m->pnames[j], pn)) pj = j;
-  if (mi <= 0 || pj < 0 || comp_scope_of(c, site) != m) return 0;
-  int tg[2];
-  int nt2 = cplan_targets(c, site, tg, 2);
-  if (nt2 != 1 || tg[0] != mi) return 0;
-  return arg_layout_param_source(c, m, site, pj, NULL) == v;
-}
-int share_param_kept(Compiler *c, int mi, int pj) {
-  ShareFacts *F = c->share;
-  Scope *m = &c->scopes[mi];
-  LocalVar *lv = pj >= 0 && pj < m->nparams && m->pnames[pj] ? scope_local(m, m->pnames[pj]) : NULL;
-  int h = lv && F ? share_local_holder(c, mi, (int)(lv - m->locals)) : -1;
-  if (h < 0) return 1;
-  /* (a build without the flag asks the elements themselves, as it always
-     has: the alternatives and the keeps below are the share rule's) */
-  int alt = 1;
-  if (!F->pkept) {
-    F->pkept = calloc((size_t)(F->n > 0 ? F->n : 1), 1);
-    if (!F->pkept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    for (int i = 0; i < F->nfl; i++) {
-      int e = F->fl_val[i] >= 0 && F->fl_val[i] < F->nnodes ? F->nval[F->fl_val[i]] : -1;
-      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE && !sh_param_self_pass(c, F->fl_kind[i], F->fl_site[i], F->fl_val[i]) &&
-          !(alt && sh_call_answers_param(c, F->fl_val[i])))
-        F->pkept[alt ? sh_alt_find(F, e) : e] = 1;
-    }
-    for (int i = 0; alt && i < F->nkp; i++) F->pkept[sh_alt_find(F, F->kp_e[i])] = 1;
-  }
-  return F->pkept[alt ? sh_alt_find(F, F->helem[h]) : F->helem[h]] || lv->cell_outlives;
 }
 /* ---- calls whose members the plan does not list (#9258) ----
    A call on a boxed receiver whose name more classes define than the plan
@@ -5988,13 +5845,8 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
     if (!cplan_target_binds(c, call, tg[i])) continue;
     /* (a class method of a class whose object no box holds) */
     if (!share_target_reachable(c, call, tg[i])) continue;
-    Scope *m = &c->scopes[tg[i]];
-    int rp = scope_ret_param(c, tg[i]);
-    if (rp >= 0) {
-      if (share_param_kept(c, tg[i], rp) ||
-          !share_value_fresh(c, arg_layout_param_source(c, m, call, rp, NULL), depth + 1)) return 0;
-    }
-    else if (F->ret_joined[tg[i]] && !scope_ret_fresh(c, tg[i])) return 0;
+    /* (a method that answers its parameter answers what the caller has) */
+    if (scope_ret_param(c, tg[i]) >= 0 || !scope_ret_fresh(c, tg[i])) return 0;
   }
   return 1;
 }
@@ -6238,24 +6090,34 @@ int share_frozen_string(Compiler *c, int n) {
   }
   return share_frozen_literal(c, n);
 }
-/* Is value n, a leaf of share_value_fresh's walk, a new String or nil: a call the walk
-   found answers no String any name holds, a conversion, a yield or a super
-   that answers one, an element read of a temporary container of them? */
+/* Is call n a builtin whose share row answers a new value (PURE), for its
+   receiver's family or any receiver, reaching no method of the program's? */
+static int sh_builtin_call_pure(Compiler *c, int n) {
+  const char *name = nt_str(c->nt, n, "name");
+  if (!name || is_receiver_conversion(name) || sh_has_targets(c, n)) return 0;
+  int recv = nt_ref(c->nt, n, "receiver");
+  int s = recv >= 0 ? bop_share_named(sh_family(c->ntype[recv]), name) : bop_share_named(BOP_KERNEL, name);
+  if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+  return s == BSH_PURE;
+}
+/* Is value n, a leaf of share_value_fresh's walk, a new String or nil: a
+   builtin that answers a new value, a conversion, a yield or a super that
+   answers one, an element read of a temporary container of them? */
 static int sh_value_fresh_leaf(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_NilNode) return 1;
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
-  /* a call the walk found answers no String any name holds (a share row's
-     new or frozen String) */
-  if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
+  /* a builtin whose share row answers a new value, reaching no method of
+     the program's */
+  if (k == NK_CallNode && sh_builtin_call_pure(c, n)) return 1;
   /* Kernel#String of a value whose #to_str or #to_s the program defines: a
      new String when each of them answers one */
-  int conv = k == NK_CallNode && c->share ? sh_string_conv_arg(c, n) : -1, mis[64];
+  int conv = k == NK_CallNode ? sh_string_conv_arg(c, n) : -1, mis[64];
   int nconv = conv >= 0 ? sh_string_conv_methods(c, conv, mis, 64) : 0;
   if (nconv > 0) {
     for (int i = 0; nconv <= 64 && i < nconv; i++)
-      if (mis[i] < 0 || scope_ret_param(c, mis[i]) >= 0 || (c->share->ret_joined[mis[i]] && !scope_ret_fresh(c, mis[i])))
+      if (mis[i] < 0 || scope_ret_param(c, mis[i]) >= 0 || !scope_ret_fresh(c, mis[i]))
         return 0;
     /* (a boxed argument may be a String, which Kernel#String answers itself) */
     return nconv <= 64 && (ty_is_object(c->ntype[conv]) || share_value_fresh(c, conv, depth + 1));
@@ -6273,7 +6135,7 @@ static int sh_value_fresh_leaf(Compiler *c, int n, int depth) {
     int mi = p->mi;
     if (!c->share || p->dispatch != CP_DIRECT || mi <= 0 || mi >= c->nscopes || scope_ret_param(c, mi) >= 0)
       return 0;
-    return !c->share->ret_joined[mi] || scope_ret_fresh(c, mi);
+    return scope_ret_fresh(c, mi);
   }
   if (k != NK_CallNode) return 0;
   if (sh_user_call_fresh(c, n, depth)) return 1;
@@ -6293,15 +6155,6 @@ static int sh_value_fresh_leaf(Compiler *c, int n, int depth) {
     if (bop_share_self_answer(cn, 0)) return share_value_fresh(c, rcv, depth + 1);
     /* a proc, a lambda or a Method the walk bounds to literals */
     if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
-  }
-  /* a call of a lambda a local holds and only calls, whose value (with no
-     next, break or return) is a new String */
-  const ShareFacts *F = c->share;
-  int lam = F && F->lam && n < F->nnodes ? F->lam[n] : -1;
-  if (lam >= 0 && lam != n) {
-    int body = nt_ref(nt, lam, "body");
-    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-    return bn > 0 && !sh_has_jump(nt, body) && share_value_fresh(c, bb[bn - 1], depth + 1);
   }
   /* an element read of a temporary container of new Strings */
   int recv = nt_ref(nt, n, "receiver");

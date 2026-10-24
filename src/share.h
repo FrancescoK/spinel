@@ -111,15 +111,7 @@ int share_literal_unkept(Compiler *c, int lit);
 /* Can a slot of type t hold a String (a String, a box, a container that may
    hold one, an object whose native class keeps one)? */
 int sh_may_hold(const Compiler *c, TyKind t);
-/* The holder of a local / an ivar, or -1 when the walk made none. */
-int share_local_holder(const Compiler *c, int scope, int local);
-/* The element of holder h's containers' elements, or -1 (not a holder:
-   read it with share_elem_flags / share_elem_holders). */
-int share_elem_holder(const Compiler *c, int h);
 
-/* the facts of an element (share_elem_holder's answer) */
-unsigned share_elem_flags(const Compiler *c, int e);
-int share_elem_holders(const Compiler *c, int e);
 
 /* Under --share-strings, once the analysis is final: mark each String-keyed
    Hash call's key that reads a shared handle, with nothing run between the
@@ -153,11 +145,6 @@ int share_method_reaching_blocks(const Compiler *c, int mi, int *out, int cap);
    of the program's with no `def self.new` in its chain. -1 for any other
    node. */
 int share_exact_new_class(Compiler *c, int n);
-/* Does parameter pj of method mi share its String with another holder (a
-   store of it, or a name the walk does not follow)? A method answering such
-   a parameter answers the String the other holder keeps, whatever its
-   argument. */
-int share_param_kept(Compiler *c, int mi, int pj);
 /* Can call `call` reach its target `mi`? Not a class method a boxed
    receiver's call lists for the class objects a box may hold, where no
    class reaching it by that name can be a value (comp_class_may_be_value):

@@ -1729,11 +1729,6 @@ int repr_local_shares(const Compiler *c, const Scope *s, const LocalVar *lv) {
   return sh_may_hold(c, lv->type);
 }
 
-int repr_str_elems_share(const Compiler *c, int holder) {
-  if (!c->share || holder < 0) return 0;
-  int e = share_elem_holder(c, holder);
-  return e >= 0 && repr_str_class_shares(share_elem_flags(c, e), share_elem_holders(c, e));
-}
 
 
 
