@@ -1256,8 +1256,12 @@ static const char *slot_zero(Compiler *c, TyKind t) {
 }
 
 /* The fallback of `x = expr rescue fallback` ends in a jump (`next`, or
-   `(n += 1; next)`): it leaves before x is written. */
-static int rescue_fallback_jumps(const NodeTable *nt, int r) {
+   `(n += 1; next)`): it leaves before x is written. A `next` that is the
+   block's value (`map { |s| Integer(s) rescue next 0 }`, next_is_block_value)
+   is not a jump here: the expression emitter answers it as its value, which
+   is the modifier's value and so the block's. */
+static int rescue_fallback_jumps(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
   while (r >= 0 && (nt_kind(nt, r) == NK_ParenthesesNode || nt_kind(nt, r) == NK_StatementsNode)) {
     if (nt_kind(nt, r) == NK_ParenthesesNode) { r = nt_ref(nt, r, "body"); continue; }
     int n = 0; const int *b = nt_arr(nt, r, "body", &n);
@@ -1265,7 +1269,8 @@ static int rescue_fallback_jumps(const NodeTable *nt, int r) {
   }
   if (r < 0) return 0;
   NodeKind k = nt_kind(nt, r);
-  return k == NK_NextNode || k == NK_BreakNode || k == NK_RedoNode ||
+  if (k == NK_NextNode) return !next_is_block_value(c, r);
+  return k == NK_BreakNode || k == NK_RedoNode ||
          k == NK_RetryNode || k == NK_ReturnNode;
 }
 
@@ -5081,7 +5086,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       /* a jump out of the fallback (`stat = File.stat(f) rescue next`)
          leaves before the temp is written, and the placeholder its
          expression form ends in is no value of the temp's type */
-      int r_jumps = rescue_fallback_jumps(nt, r);
+      int r_jumps = rescue_fallback_jumps(c, r);
       if (r_jumps) emit_expr(c, r, &rv);
       else if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
       else if (res_o) emit_oint_expr(c, r, rt, &rv);
