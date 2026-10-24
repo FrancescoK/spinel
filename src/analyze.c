@@ -44647,6 +44647,15 @@ static int super_reach(Compiler *c, Scope *s) {
                        : comp_method_in_chain(c, p, s->name, NULL);
 }
 
+static int super_new_init_keeps_block(Compiler *c, Scope *s) {
+  if (!s->is_cmethod || !sp_streq(comp_prep_user_name(s->name), "new") || super_reach(c, s) >= 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = k == s->class_id || is_descendant(c, k, s->class_id) ? comp_method_in_chain(c, k, "initialize", NULL) : -1;
+    if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] && !c->scopes[mi].yields) return 1;
+  }
+  return 0;
+}
+
 /* A node of the graph below: a yielding method, which is spliced where it
    is called. */
 static int ctor_graph_node(Compiler *c, int s) {
@@ -49335,9 +49344,8 @@ static void an_phase_class_structure(Compiler *c) {
             Scope *s = &c->scopes[i];
             if (s->yields || s->blk_param || !bare_super[i] || s->class_id < 0 || !s->name) continue;
             int mi = super_reach(c, s);
-            if (mi < 0 || mi >= ns) continue;
-            Scope *pm = &c->scopes[mi];
-            if (!pm->blk_param || !pm->blk_param[0] || pm->yields) continue;
+            Scope *pm = mi >= 0 && mi < ns ? &c->scopes[mi] : NULL;
+            if (!(pm ? pm->blk_param && pm->blk_param[0] && !pm->yields : super_new_init_keeps_block(c, s))) continue;
             s->blk_param = strdup("__sblk__");
             LocalVar *sblk = scope_local_intern(s, s->blk_param);
             if (sblk) { lv_set_type(sblk, TY_PROC); sblk->is_param = 1; }
