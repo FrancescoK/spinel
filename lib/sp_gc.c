@@ -1405,37 +1405,48 @@ static void sp_ivt_drain(void) { sp_gc_mark_drain_all(); sp_gc_mkl_fold(); }
    the mark stamps the payload with its cycle (sp_gc_mark), and the full
    cycle frees every one it did not stamp. A minor cycle frees none, as its
    mark does not walk the old objects a view may sit in. */
-static char **sp_fd_retired;
-static int sp_fd_nretired, sp_fd_cretired;
+/* One list per OS worker, which only that worker appends to, so a growth
+   takes no lock (a shared one under contention cost bm_threaded_render a
+   fifth more instructions); the collector reads them all with the world
+   stopped. */
+typedef struct { char **v; int n, cap; char _pad[64 - sizeof(char **) - 2 * sizeof(int)]; } sp_fd_retired_t;
 #ifdef SP_THREADS
-static pthread_mutex_t sp_fd_retire_lock = PTHREAD_MUTEX_INITIALIZER;
+static sp_fd_retired_t sp_fd_retired[SP_MAX_WORKERS];
+#define SP_FD_RETIRED_MINE (&sp_fd_retired[sp_worker_id])
+#define SP_FD_RETIRED_LISTS SP_MAX_WORKERS
+#else
+static sp_fd_retired_t sp_fd_retired[1];
+#define SP_FD_RETIRED_MINE (&sp_fd_retired[0])
+#define SP_FD_RETIRED_LISTS 1
 #endif
+static int sp_fd_nretired;   /* any list non-empty since the last full sweep */
 void sp_fd_retire(char *base) {
   sp_str_hdr *fh = (sp_str_hdr *)base;
   fh->hash = 0;
   base[sizeof(sp_str_hdr)] = (char)0xf9;
-#ifdef SP_THREADS
-  pthread_mutex_lock(&sp_fd_retire_lock);
-#endif
-  if (sp_fd_nretired == sp_fd_cretired) {
-    int nc = sp_fd_cretired ? sp_fd_cretired * 2 : 64;
-    char **nv = (char **)realloc(sp_fd_retired, sizeof(char *) * (size_t)nc);
+  sp_fd_retired_t *r = SP_FD_RETIRED_MINE;
+  if (r->n == r->cap) {
+    int nc = r->cap ? r->cap * 2 : 64;
+    char **nv = (char **)realloc(r->v, sizeof(char *) * (size_t)nc);
     if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    sp_fd_retired = nv; sp_fd_cretired = nc;
+    r->v = nv; r->cap = nc;
   }
-  sp_fd_retired[sp_fd_nretired++] = base;
-#ifdef SP_THREADS
-  pthread_mutex_unlock(&sp_fd_retire_lock);
-#endif
+  r->v[r->n++] = base;
+  if (!sp_fd_nretired) sp_fd_nretired = 1;
 }
 static void sp_fd_retired_sweep(void) {
-  int keep = 0;
-  for (int i = 0; i < sp_fd_nretired; i++) {
-    sp_str_hdr *fh = (sp_str_hdr *)sp_fd_retired[i];
-    if (fh->hash == (uint64_t)sp_gc_mark_gen) sp_fd_retired[keep++] = sp_fd_retired[i];
-    else free(sp_fd_retired[i]);
+  for (int w = 0; w < SP_FD_RETIRED_LISTS; w++) {
+    sp_fd_retired_t *r = &sp_fd_retired[w];
+    int keep = 0;
+    for (int i = 0; i < r->n; i++) {
+      sp_str_hdr *fh = (sp_str_hdr *)r->v[i];
+      if (fh->hash == (uint64_t)sp_gc_mark_gen) r->v[keep++] = r->v[i];
+      else free(r->v[i]);
+    }
+    r->n = keep;
   }
-  sp_fd_nretired = keep;
+  sp_fd_nretired = 0;
+  for (int w = 0; w < SP_FD_RETIRED_LISTS && !sp_fd_nretired; w++) sp_fd_nretired = sp_fd_retired[w].n > 0;
 }
 
 void sp_gc_collect(void){
