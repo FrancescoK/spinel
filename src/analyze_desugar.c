@@ -4073,22 +4073,23 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
   int sc = c->nscope[id], base = nt->count;
   Scope *scp = comp_scope_of(c, id);
   if (by_v < 0) { by_v = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, by_v, "value", 1); }
-  if (by_first && !nt_safe_nav(nt, id) && (subtree_has_side_effect(c, by_v) || subtree_has_side_effect(c, to_v))) {
-    int recv = nt_ref(nt, id, "receiver"), k = nt_kind(nt, recv), st[3], n = 0;
+  if (by_first && (subtree_has_side_effect(c, by_v) || subtree_has_side_effect(c, to_v))) {
+    int recv = nt_ref(nt, id, "receiver"), k = nt_kind(nt, recv), st[3], n = 0, sn = nt_safe_nav(nt, id);
     char rn[32], bn[32];
     snprintf(rn, sizeof rn, "__stpr%d", base);
     snprintf(bn, sizeof bn, "__stpb%d", base);
-    if (k != NK_IntegerNode && k != NK_FloatNode) {
+    if (!sn && k != NK_IntegerNode && k != NK_FloatNode) {
       st[n++] = step_kw_tmp(nt, scp, rn, recv);
       nt_node_set_ref(nt, id, "receiver", step_kw_tmp(nt, scp, rn, -1));
     }
     st[n++] = step_kw_tmp(nt, scp, bn, by_v);
     by_v = step_kw_tmp(nt, scp, bn, -1);
     int p = nt_new_node(nt, "ParenthesesNode"), body = nt_new_node(nt, "StatementsNode");
-    st[n++] = p;
+    st[n++] = sn ? to_v : p;
     nt_node_set_arr(nt, body, "body", st, n);
     nt_node_set_ref(nt, p, "body", body);
-    nt_swap_nodes(nt, id, p);
+    if (sn) to_v = p;
+    else nt_swap_nodes(nt, id, p);
   }
   int pos[2] = { step_kw_paren(nt, to_v), step_kw_paren(nt, by_v) };
   nt_node_set_arr(nt, args, "arguments", pos, 2);
