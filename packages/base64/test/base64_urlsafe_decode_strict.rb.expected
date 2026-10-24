@@ -1,0 +1,27 @@
+urlsafe "" => []
+urlsafe "YQ" => [97]
+urlsafe "YQ==" => [97]
+urlsafe "YWI" => [97, 98]
+urlsafe "YWI=" => [97, 98]
+urlsafe "YWJj" => [97, 98, 99]
+urlsafe "-_-_" => [251, 255, 191]
+urlsafe "+/+/" => [251, 255, 191]
+urlsafe "a+b/" => [107, 230, 255]
+urlsafe "_w" => [255]
+urlsafe "_w==" => [255]
+urlsafe "YQ=" => ArgumentError: invalid base64
+urlsafe "YQ===" => ArgumentError: invalid base64
+urlsafe "Y" => ArgumentError: invalid base64
+urlsafe "=YQ" => ArgumentError: invalid base64
+urlsafe "Y Q==" => ArgumentError: invalid base64
+urlsafe "YQ\n" => ArgumentError: invalid base64
+urlsafe "YQ!=" => ArgumentError: invalid base64
+urlsafe "YQ==YQ==" => ArgumentError: invalid base64
+urlsafe "8V==" => ArgumentError: invalid base64
+urlsafe "8V" => ArgumentError: invalid base64
+urlsafe "I2M2F3R=" => ArgumentError: invalid base64
+urlsafe "I2M2F3Q=" => [35, 99, 54, 23, 116]
+strict "8V==" => ArgumentError: invalid base64
+strict "8Q==" => [241]
+strict "I2M2F3R=" => ArgumentError: invalid base64
+strict "I2M2F3Q=" => [35, 99, 54, 23, 116]
