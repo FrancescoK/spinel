@@ -673,7 +673,7 @@ static char *sp_expand_table_loops(const char *source) {
   }
   size_t len = strlen(source);
   pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)source, len, NULL);
+  sp_pm_parser_init(&parser, source, len, NULL);
   pm_node_t *root = pm_parse(&parser);
   char *result = NULL;
   const pm_parser_t *sv = g_parser;
