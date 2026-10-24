@@ -42,3 +42,22 @@ p tagged("a1b22"), tagged(Piece.new)
 p same_kind("a1b22"), same_kind(Piece.new)
 p dropped("a1"), dropped(Piece.new)
 p keyed({ a: 1 }), keyed({ 1 => 2 }), keyed(Piece.new)
+
+# A method of the program that answers an Array it holds: the push goes
+# into that Array itself, which the program reads back.
+class Store
+  def initialize
+    @shared = ["a"]
+  end
+
+  def keys = @shared
+  attr_reader :shared
+end
+
+def counted(h)
+  (h.keys << 7).inspect
+end
+
+store = Store.new
+p counted(store), store.shared
+p counted({ b: 2 })
