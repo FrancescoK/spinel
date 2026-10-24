@@ -53356,6 +53356,19 @@ void analyze_program(Compiler *c) {
   an_pass_report();
   an_shadow_report();
   AN_PHASE("post_fixpoint", an_phase_post_fixpoint(c));
+  /* An Enumerable call whose receiver only the backstops above typed
+     (`out = []` with no typed push, defaulted to an Array there) was never
+     rewritten onto its builtins/enumerable.rb copy: the rewrite runs inside
+     the fixpoint, which saw the receiver untyped. Rewritten now, the copy
+     is a method the fixpoint has to type, so it runs again, and the
+     backstops after it. A program with no such call does neither. */
+  if (AN_PASS("desugar_builtin_enum_calls_late", desugar_builtin_enum_calls(c))) {
+    AN_PASS_V("mark_empty_literal_args", mark_empty_literal_args(c));
+    double tm_fp2 = sp_timing_now();
+    an_phase_infer_fixpoint(c);
+    { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp2, "analysis_fixpoint_late", ex); }
+    AN_PHASE("post_fixpoint_late", an_phase_post_fixpoint(c));
+  }
   AN_PHASE("procs", an_phase_procs(c));
   AN_PHASE("method_backstops", an_phase_method_backstops(c));
   NodeTypes promoted = { NULL, 0 };
