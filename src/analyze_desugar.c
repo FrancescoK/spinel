@@ -6331,7 +6331,7 @@ int desugar_method_call_runtime_name(Compiler *c) {
   return changed;
 }
 
-int desugar_dynamic_method(Compiler *c) {
+static int desugar_dynamic_method_inner(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   for (int id = 0; id < n0; id++) {
@@ -6367,6 +6367,19 @@ int desugar_dynamic_method(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
     changed = 1;
   }
+  return changed;
+}
+/* With the receiver-name memo on, as desugar_dynamic_send has it: the pass
+   asks the names a class's instances answer for every `method` call on a
+   receiver of the class, or on a boxed one for every module, and asked
+   them uncached, each ask walking every method of every class of the set.
+   On a Rails application one round's pass was two thirds of a sample. The
+   memo's stamps (the class and scope counts) hold here as there. */
+int desugar_dynamic_method(Compiler *c) {
+  g_dsn.on = 1;
+  int changed = desugar_dynamic_method_inner(c);
+  g_dsn.on = 0;
+  dsn_memo_free();
   return changed;
 }
 
