@@ -20682,6 +20682,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
                          nt_ref(nt, id, "block") < 0;
         buf_puts(b, "({ (void)("); emit_expr(c, nr, b); buf_puts(b, "); ");
         if (offk == NK_KeywordHashNode) { buf_puts(b, "(void)("); emit_boxed(c, off, b); buf_puts(b, "); "); }
+        else if (defer_lazy) { buf_puts(b, "(void)("); emit_expr(c, off, b); buf_puts(b, "); "); }
         if (cmpform) {
           /* CRuby names the operand: a class for a String/Array, the value
              itself for nil/true/false, the inspect form for a Symbol */

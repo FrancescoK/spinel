@@ -7,3 +7,5 @@ Enumerator
 [ArgumentError, "comparison of Integer with String failed"]
 Enumerator
 [ArgumentError, "comparison of Integer with nil failed"]
+true
+[ArgumentError, "comparison of Integer with Array failed"]

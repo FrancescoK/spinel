@@ -17,3 +17,12 @@ r5 = (1.upto("a").to_a rescue [$!.class, $!.message]); p r5
 e6 = 3.upto(nil)
 p e6.class
 r6 = (e6.to_a rescue [$!.class, $!.message]); p r6
+
+$called7 = false
+def mk7
+  $called7 = true
+  99
+end
+e7 = 2.upto([mk7])
+p $called7
+r7 = (e7.to_a rescue [$!.class, $!.message]); p r7
