@@ -175,6 +175,11 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
       emit_recv_rooted(c, x->recv, tn[0], "SP_GC_ROOT", b);
       p++;
     }
+    else if (p[0] == '$' && p[1] == 'C') {
+      const char *sfx = case_map_suffix(c, argc, argv);
+      buf_printf(b, "%s%s", sfx, sp_streq(sfx, "_turkic") ? "_sym" : "");
+      p++;
+    }
     else if (p[0] == '$' && p[1] == 'H') {
       buf_puts(b, ty_hash_cname(x->rt));
       p++;

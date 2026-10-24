@@ -7690,13 +7690,17 @@ else {
    C compiler merges) are excluded. */
 /* String#upcase and friends take an optional casemap symbol. `:ascii`
    restricts folding to A-Z/a-z; return the "_ascii" runtime suffix for it so
-   non-ASCII bytes pass through. Full-Unicode folding (no arg) returns "". */
+   non-ASCII bytes pass through. `:turkic` (alone or with `:lithuanian`) picks
+   "_turkic". Full-Unicode folding (no arg) returns "". */
 const char *case_map_suffix(Compiler *c, int argc, const int *argv) {
-  if (argc >= 1 && nt_type(c->nt, argv[0]) &&
-      sp_streq(nt_type(c->nt, argv[0]), "SymbolNode") &&
-      nt_str(c->nt, argv[0], "value") &&
-      sp_streq(nt_str(c->nt, argv[0], "value"), "ascii"))
-    return "_ascii";
+  const char *a[2] = { NULL, NULL };
+  for (int i = 0; i < argc && i < 2; i++)
+    if (nt_kind(c->nt, argv[i]) != NK_SymbolNode || !(a[i] = nt_str(c->nt, argv[i], "value"))) return "";
+  if (argc == 1 && sp_streq(a[0], "ascii")) return "_ascii";
+  if ((argc == 1 && sp_streq(a[0], "turkic")) ||
+      (argc == 2 && sp_streq(a[0], "turkic") && sp_streq(a[1], "lithuanian")) ||
+      (argc == 2 && sp_streq(a[0], "lithuanian") && sp_streq(a[1], "turkic")))
+    return "_turkic";
   return "";
 }
 
