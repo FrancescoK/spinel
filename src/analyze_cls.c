@@ -2303,13 +2303,17 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
      containers the readers answer, as on a known receiver. Without it the
      store went into no container, and an Array a reader answers kept only
      the classes its own writes gave it (#9777) */
-  if (argc == 0)
-    for (int k = 0; k < c->nclasses; k++) {
-      int dc = -1;
-      if (!comp_reader_in_chain(c, k, nm, &dc) || dc != k) continue;
+  if (argc == 0) {
+    /* (the classes that own such a reader, listed once per name: asked class
+       by class, each a chain walk, for every such call at every solve, this
+       was half of a Rails application's kinds walk) */
+    int nk = 0; const int *ks = comp_name_reader_owners(c, nm, &nk);
+    for (int i = 0; i < nk; i++) {
+      int k = ks[i];
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
       cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
     }
+  }
   if (argc > 0 && (sp_streq(nm, "resume") || sp_streq(nm, "transfer"))) cf_all(f, f->fiber_ch);
   CFByName *b = cf_byname(f, nm);
   for (int i = 0; i < b->n; i++) { cf_bind_args(f, b->mi[i], argv, argc); cf_bind_block(f, b->mi[i], blk); }
