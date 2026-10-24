@@ -12926,6 +12926,42 @@ static int file_foreach_streams(Compiler *c, int id) {
   return 1;
 }
 
+/* Keep a yielding boundary around a chdir body that exits nonlocally.
+   One builtin times iteration runs the body as statements: return leaves
+   its method, break answers this call, and the normal tail becomes break's
+   value. The enclosing chdir ensure still restores the saved directory. */
+static int dir_chdir_control_call(NodeTable *nt, int blk, int body) {
+  int n = 0; const int *items = nt_arr(nt, body, "body", &n);
+  if (!n) return -1;
+  int tail = items[n - 1];
+  NodeKind k = nt_kind(nt, tail);
+  if (k != NK_ReturnNode && k != NK_BreakNode && k != NK_NextNode) {
+    int brk = nt_new_node(nt, "BreakNode"), args = nt_new_node(nt, "ArgumentsNode");
+    if (brk < 0 || args < 0) return -1;
+    nt_node_set_arr(nt, args, "arguments", &tail, 1);
+    nt_node_set_ref(nt, brk, "arguments", args);
+    int *copy = (int *)malloc(sizeof(int) * (size_t)n);
+    if (!copy) { fprintf(stderr, "out of memory\n"); exit(1); }
+    memcpy(copy, items, sizeof(int) * (size_t)n); copy[n - 1] = brk;
+    nt_node_set_arr(nt, body, "body", copy, n); free(copy);
+  }
+  /* in a one-yield block, next finishes that yield with its value; nested
+     blocks and loops keep their own (once_block_jump stops at them) */
+  for (int nx; (nx = once_block_jump(nt, body, NK_NextNode, 0)) >= 0; )
+    nt_node_set_type(nt, nx, "BreakNode");
+  int call = nt_new_node(nt, "CallNode"), one = nt_new_node(nt, "IntegerNode");
+  if (call < 0 || one < 0) return -1;
+  nt_node_set_int(nt, one, "value", 1);
+  nt_node_set_str(nt, call, "name", "times");
+  nt_node_set_int(nt, call, "builtin_only", 1);
+  nt_node_set_ref(nt, call, "receiver", one);
+  nt_node_set_ref(nt, call, "arguments", -1);
+  nt_node_set_ref(nt, call, "block", blk);
+  nt_node_set_ref(nt, blk, "parameters", -1);
+  nt_node_set_ref(nt, blk, "body", body);
+  return call;
+}
+
 int desugar_dir_surface(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -13461,7 +13497,11 @@ int desugar_dir_surface(Compiler *c) {
         nt_node_set_arr(nt, pstmts, "body", items, ni); }
       nt_node_set_ref(nt, paren, "body", pstmts);
       nt_node_set_str(nt, wval, "name", valn);
-      nt_node_set_ref(nt, wval, "value", paren);
+      int value = paren;
+      if (subtree_has_kind(nt, body, NK_ReturnNode, 0) || once_block_jump(nt, body, NK_BreakNode, 0) >= 0)
+        value = dir_chdir_control_call(nt, blk, pstmts);
+      if (value < 0) continue;
+      nt_node_set_ref(nt, wval, "value", value);
       nt_node_set_str(nt, cd2r, "name", "Dir");
       nt_node_set_str(nt, cd2, "name", "chdir");
       nt_node_set_int(nt, cd2, "builtin_only", 1);
