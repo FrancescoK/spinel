@@ -6268,8 +6268,10 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
       if (rb >= 0) emit_forwarded_proc_arg(c, mblk, &pb);
       else if (g_yield_proc_ref) buf_puts(&pb, g_yield_proc_ref);
       if (!pb.p || sp_streq(pb.p, "NULL")) {
-        buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
-        buf_puts(b, ", "); emit_merge_arg_boxed(c, arg, b); buf_puts(b, ")");
+        int tr = ++g_tmp;
+        buf_puts(b, "({ "); tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
+        buf_printf(b, "sp_poly_hash_merge(_t%d, ", tr); emit_merge_arg_boxed(c, arg, b);
+        buf_puts(b, "); })");
         free(pb.p);
         return 1;
       }

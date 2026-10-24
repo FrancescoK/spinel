@@ -5,3 +5,4 @@
 {a: 1, b: 2, c: 3}
 {a: 1, b: 2, c: 3}
 {str: 1, sym: 0, a: 1}
+[:recv, :to_hash]
