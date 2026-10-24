@@ -194,6 +194,7 @@ extern int g_cls_value_recv;
 int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
 int obj_member_shadows(Compiler *c, TyKind rt, const char *nm);
 void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r);
+void refl_builtin_singleton_methods(const char *cls, int all, ReflNames *r);
 void refl_class_instance_methods(Compiler *c, int ci, int pub, int prot, ReflNames *r);
 void refl_module_instance_methods(Compiler *c, int m, int prot, ReflNames *r);
 void refl_module_own_methods(Compiler *c, int m, int pub, int prot, int priv, ReflNames *r);

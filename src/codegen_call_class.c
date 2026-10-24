@@ -3608,6 +3608,26 @@ void emit_class_value_constants(Compiler *c, const char *cv, int inherit, Buf *b
   buf_printf(b, " _t%d; })", ta);
 }
 
+/* ClassName.singleton_methods / singleton_methods(false): the class
+   methods the program defines, a compile-time list like the one above. */
+static int emit_class_value_singleton_methods(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  (void)id;
+  if (!sp_streq(name, "singleton_methods") || argc > 1) return 0;
+  const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+                    ? nt_str(nt, recv, "name") : NULL;
+  int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
+  int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
+  if (!cn2 || (argc == 1 && !all && nt_kind(nt, argv[0]) != NK_FalseNode) || !an_singleton_methods_foldable(c, cn2)) return 0;
+  ReflNames r = {0};
+  refl_builtin_singleton_methods(cn2, all, &r);
+  if (ci2 >= 0) refl_class_singleton_methods(c, ci2, all, &r);
+  buf_puts(b, "sp_box_poly_array(");
+  refl_emit_sym_array(c, -1, &r, b);
+  buf_puts(b, ")");
+  refl_free(&r);
+  return 1;
+}
+
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
@@ -4162,24 +4182,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         }
       }
     }
-    /* ClassName.singleton_methods / singleton_methods(false): the class
-       methods the program defines, a compile-time list like the one above. */
-    if (sp_streq(name, "singleton_methods") && argc <= 1) {
-      const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
-                        ? nt_str(nt, recv, "name") : NULL;
-      int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
-      int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
-      if (ci2 >= 0 && (argc == 0 || all || nt_kind(nt, argv[0]) == NK_FalseNode) &&
-          an_class_singleton_methods_listable(c, ci2)) {
-        ReflNames r = {0};
-        refl_class_singleton_methods(c, ci2, all, &r);
-        buf_puts(b, "sp_box_poly_array(");
-        refl_emit_sym_array(c, -1, &r, b);
-        buf_puts(b, ")");
-        refl_free(&r);
-        return 1;
-      }
-    }
+    if (emit_class_value_singleton_methods(c, id, b, nt, name, recv, argc, argv)) return 1;
     /* `equal?` joins them: a class is one object per name, so identity and
        equality are the same question here (#4271). */
     if (is_equality_name(name) && argc == 1) {
