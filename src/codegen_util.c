@@ -3858,7 +3858,12 @@ int one_tail_fresh(Compiler *c, int n) {
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
   if (k == NK_CallNode) {
     const CallPlan *pl = cplan_user(c, n);
-    return pl->mi < 0 && pl->dispatch == CP_NONE;
+    if (pl->mi >= 0 || pl->dispatch != CP_NONE) return 0;
+    /* (a builtin answering its receiver, `s.tap { }`, is that String: the
+       channel is how the caller finds its handle) */
+    int r = nt_ref(c->nt, n, "receiver"), argc = 0;
+    call_args(c->nt, n, &argc);
+    return !(r >= 0 && bop_answers_recv(comp_ntype(c, r), nt_str(c->nt, n, "name"), argc, nt_ref(c->nt, n, "block") >= 0));
   }
   return 0;
 }
