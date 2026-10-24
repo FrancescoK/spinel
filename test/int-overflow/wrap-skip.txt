@@ -15,6 +15,7 @@ test/stack_overflow_unhandled.rb
 # By design: their answer is the Bignum the default mode's loop-growth
 # promotion makes, which wrap does not make (an Integer stays a machine
 # integer there, #10094).
+test/bigint_float_mixed_arith.rb
 test/bigint_loop_local_through_ivar_getter.rb
 test/bigint_poly_container.rb
 test/bigint_return_int_literal.rb
