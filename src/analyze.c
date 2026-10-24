@@ -22180,9 +22180,59 @@ static int param_stored_in_appended_ivar(Compiler *c, Scope *m, int j) {
   if (!*e) *e = param_stored_in_appended_ivar_scan(c, m, pn) ? 2 : 1;
   return *e == 2;
 }
+/* Per node, the names of the local reads under it, each hashed to one bit
+   of a word. The walk below hands a local on only at a call whose own
+   argument reads it (arg_layout_call_param_map, defaults left out, answers
+   a node of the call's arguments or none), so a subtree with no read of the
+   name hands nothing and answers 0 whatever is in it: the walk passes such
+   a subtree by. Walking every node of a method's body for each parameter
+   asked about, and the bodies it hands on to, was a fifth of a Rails
+   application's share pass. Built from the children up over every node,
+   once per table (a name or a child can change only with an edit, which
+   nt->edits counts); a node reached again on its own path takes every bit,
+   so nothing below it is ever skipped. */
+static unsigned long long *g_hm; static unsigned char *g_hm_st; static int g_hm_n;
+static const NodeTable *g_hm_nt; static unsigned long g_hm_edits;
+static unsigned long long hm_bit(const char *nm) { return 1ULL << (sp_strhash(nm) & 63); }
+static unsigned long long hm_compute(const NodeTable *nt, int id) {
+  if (id < 0 || id >= g_hm_n) return 0;
+  if (g_hm_st[id] == 2) return g_hm[id];
+  if (g_hm_st[id] == 1) return ~0ULL;
+  g_hm_st[id] = 1;
+  unsigned long long m = 0;
+  if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm) m |= hm_bit(nm);
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) m |= hm_compute(nt, nt_ref_at(nt, id, i));
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) m |= hm_compute(nt, a[k]);
+  }
+  g_hm[id] = m; g_hm_st[id] = 2;
+  return m;
+}
+static void hm_ready(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_hm_nt == nt && g_hm_edits == nt->edits && g_hm_n == nt->count) return;
+  if (g_hm_n < nt->count || !g_hm) {
+    free(g_hm); free(g_hm_st);
+    g_hm = malloc(sizeof(unsigned long long) * (size_t)(nt->count > 0 ? nt->count : 1));
+    g_hm_st = malloc((size_t)(nt->count > 0 ? nt->count : 1));
+    if (!g_hm || !g_hm_st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_hm_n = nt->count;
+  memset(g_hm_st, 0, (size_t)g_hm_n);
+  for (int id = 0; id < g_hm_n; id++) hm_compute(nt, id);
+  g_hm_nt = nt; g_hm_edits = nt->edits;
+}
 static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 64) return 0;
+  hm_ready(c);
+  if (node < g_hm_n && !(g_hm[node] & hm_bit(vn))) return 0;
   NodeKind nk = nt_kind(nt, node);
   if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
   if (nk == NK_CallNode) {
