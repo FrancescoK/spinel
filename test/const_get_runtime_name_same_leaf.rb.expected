@@ -1,0 +1,16 @@
+["Hat", true, true]
+["Coat", true, true]
+["Shoe", true, true]
+["Bag", true, true]
+["KINDS", false, false]
+:hat
+Store::Item::Coat
+Store::Item::Bag
+true
+[:a, :b]
+false
+"uninitialized constant Store::Item::KINDS"
+[:a, :b]
+[true, false]
+[false, true]
+:red
