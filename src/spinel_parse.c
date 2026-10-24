@@ -545,6 +545,40 @@ static size_t sp_quoted_recv_sym(const pm_node_t *n, const char **s) {
 static int sp_word_char(char ch) {
   return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
 }
+/* The text of a String literal with no interpolation or escape (`"@io"`,
+   `'size'`), a slice of the source; 0 for any other node. Forwardable takes a
+   String wherever it takes a Symbol: an accessor is source text either way,
+   a method name the same name. */
+static size_t sp_plain_str(const pm_node_t *n, const char **s) {
+  if (!n || PM_NODE_TYPE(n) != PM_STRING_NODE) return 0;
+  const pm_string_node_t *y = (const pm_string_node_t *)n;
+  if (!y->opening_loc.start || y->opening_loc.end - y->opening_loc.start != 1 ||
+      (*y->opening_loc.start != '"' && *y->opening_loc.start != '\'') ||
+      !y->closing_loc.start || !y->content_loc.start) return 0;
+  for (const uint8_t *p = y->content_loc.start; p < y->content_loc.end; p++) if (*p == '\\') return 0;
+  *s = (const char *)y->content_loc.start;
+  return (size_t)(y->content_loc.end - y->content_loc.start);
+}
+/* A method name given as a String: word characters, with a trailing ?, ! or
+   = (the shapes a plain Symbol of a method name has besides operators). */
+static int sp_str_method_name(const char *s, size_t n) {
+  size_t e = n;
+  if (e > 1 && (s[e - 1] == '?' || s[e - 1] == '!' || s[e - 1] == '=')) e--;
+  if (e == 0 || (s[0] >= '0' && s[0] <= '9')) return 0;
+  for (size_t i = 0; i < e; i++)
+    if (!sp_word_char(s[i]) && (unsigned char)s[i] < 0x80) return 0;
+  return 1;
+}
+/* The source text of a constant accessor (`def_delegators ColorParser, ...`,
+   `Faraday::Utils`): Forwardable writes the Module's name where a Symbol
+   accessor's text goes. A path from the top (`::X`) is not taken. */
+static size_t sp_const_accessor(const pm_node_t *n, const char **s) {
+  const pm_node_t *p = n;
+  while (p && PM_NODE_TYPE(p) == PM_CONSTANT_PATH_NODE) p = ((const pm_constant_path_node_t *)p)->parent;
+  if (!p || PM_NODE_TYPE(p) != PM_CONSTANT_READ_NODE) return 0;
+  *s = (const char *)n->location.start;
+  return (size_t)(n->location.end - n->location.start);
+}
 
 /* `&:name` as a block argument: the block `{ |_spx| _spx.name }` (marked
    sym_proc_block, which a user's own `{ |_spx| _spx.m }` is not), for a
@@ -588,9 +622,25 @@ static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
 
 /* The receiver `def_delegators :recv` names, as Ruby reads `recv.m`: an
    ivar (`:@io`), a constant, self, nil, true, false, or a method of the
-   object (a vcall unless it ends in `?` or `!`). A new node per read; NULL
-   for any other spelling. */
+   object (a vcall unless it ends in `?` or `!`), or a chain of method calls
+   on one of those (`"@resolver.color"`, as pastel writes it: Forwardable
+   pastes the accessor's text in front of the call). A new node per read;
+   NULL for any other spelling. */
 static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
+  if (n == 0) return NULL;
+  /* `recv.name`: the last call of a chain, on the receiver before it */
+  size_t dot = 0;
+  for (size_t k = 1; k + 1 < n; k++) if (s[k] == '.') dot = k;
+  if (dot) {
+    const char *m = s + dot + 1;
+    size_t ml = n - dot - 1;
+    size_t me = ml > 1 && (m[ml - 1] == '?' || m[ml - 1] == '!') ? ml - 1 : ml;
+    if (m[0] >= '0' && m[0] <= '9') return NULL;
+    for (size_t j = 0; j < me; j++) if (!sp_word_char(m[j])) return NULL;
+    pm_node_t *recv = sp_fw_recv(s, dot, at);
+    if (!recv) return NULL;
+    return sp_made_call(recv, sp_made_id(m, ml), NULL, 0, at);
+  }
   /* a constant path (`:'Faraday::Utils'`): the last segment a constant
      name, on the path before it */
   size_t last = 0;
@@ -722,8 +772,9 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
 /* Forwardable's `def_delegator :recv, :meth[, :alias]` and
    `def_delegators :recv, :m1, :m2, ...` (and def_instance_delegator(s),
    their aliases, and SingleForwardable's def_single_delegator(s), which
-   delegate at the class level) over literal Symbols, or the names a
-   constant holds (`*NAMES`, sp_const_symbol_list, as Rack::Lint writes it),
+   delegate at the class level) over literal Symbols or Strings, or the names a
+   constant holds (`*NAMES`, sp_const_symbol_list, as Rack::Lint writes it);
+   the accessor may also be a constant (`ColorParser`, sp_const_accessor),
    as a statement on lines of its own: the forwarding defs it stands for,
    appended to `out`. 0 for any other statement; a def_delegators left as a
    call is refused where it is written (check_unrewritten_delegators). */
@@ -746,6 +797,8 @@ static int sp_lower_delegators(pm_node_t *stmt, pm_node_list_t *out) {
   const char *r;
   size_t rl = sp_plain_sym(args->nodes[0], &r);
   if (!rl) rl = sp_quoted_recv_sym(args->nodes[0], &r);
+  if (!rl) rl = sp_plain_str(args->nodes[0], &r);
+  if (!rl) rl = sp_const_accessor(args->nodes[0], &r);
   pm_node_t *probe = rl ? sp_fw_recv(r, rl, stmt) : NULL;
   if (!probe) return 0;
   pm_node_destroy((pm_parser_t *)g_parser, probe);
@@ -761,6 +814,7 @@ static int sp_lower_delegators(pm_node_t *stmt, pm_node_list_t *out) {
     char (*cs)[160] = NULL;
     int ncs = 0;
     if (sl && s[0] != '@' && s[0] != '$') ncs = 1;
+    else if (!sl && (sl = sp_plain_str(a, &s)) > 0 && sp_str_method_name(s, sl)) ncs = 1;
     else if (PM_NODE_TYPE(a) == PM_SPLAT_NODE && ((pm_splat_node_t *)a)->expression &&
              PM_NODE_TYPE(((pm_splat_node_t *)a)->expression) == PM_CONSTANT_READ_NODE) {
       char *cn = cstr(((pm_constant_read_node_t *)((pm_splat_node_t *)a)->expression)->name);
@@ -5159,7 +5213,8 @@ else {
    `before` splats, read from the source text. Its one definition in the
    file must be a line of its own at the call's (indented) indentation, in
    the same class body with no heredoc between, holding a literal Symbol
-   Array (`[:a, :b]` over any lines, or `%i[a b]`) followed by nothing but
+   or String Array (`[:a, :b]` or `["a", "b"]` over any lines, `%i[a b]` or
+   `%w[a b]`) followed by nothing but
    `.freeze` and a comment; every other use of the name must be a splat or a
    read (`.each`, `.include?`, ...). 0 for anything else, which the caller
    refuses. */
@@ -5231,7 +5286,8 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
   while (q < before && (src[q] == ' ' || src[q] == '\t')) q++;
   int pct = 0;
   char close = ']';
-  if (strncmp(src + q, "%i[", 3) == 0 || strncmp(src + q, "%i(", 3) == 0) {
+  /* `%w[...]` and Strings name the same methods: Forwardable takes either */
+  if (src[q] == '%' && (src[q + 1] == 'i' || src[q + 1] == 'w') && (src[q + 2] == '[' || src[q + 2] == '(')) {
     pct = 1; close = src[q + 2] == '[' ? ']' : ')'; q += 3;
   }
   else if (src[q] == '[') q++;
@@ -5244,7 +5300,12 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
                           (!pct && src[q] == ','))) q++;
     if (q >= before) { free(names); return 0; }
     if (src[q] == close) { q++; break; }
-    if (!pct) { if (src[q] != ':') { free(names); return 0; } q++; }
+    char quote = 0;
+    if (!pct) {
+      if (src[q] == '"' || src[q] == '\'') quote = src[q];
+      else if (src[q] != ':') { free(names); return 0; }
+      q++;
+    }
     /* a name, with a trailing ? ! or = (closed?, write!, v=), or :<< --
        the one operator the rewrite is known to delegate right */
     size_t s0 = q;
@@ -5253,15 +5314,17 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
       if (src[q] == '?' || src[q] == '!' || (src[q] == '=' && src[q + 1] != '>')) q++;
     }
     else if (src[q] == '<' && src[q + 1] == '<' && src[q + 2] != '<' && src[q + 2] != '=') q += 2;
-    if (q == s0 || q - s0 >= 160) { free(names); return 0; }
+    if (q == s0 || q - s0 >= 160 || (quote && src[q] != quote)) { free(names); return 0; }
+    size_t e0 = q;
+    if (quote) q++;
     if (n == cap) {
       cap *= 2;
       char (*nn)[160] = realloc(names, sizeof(*names) * (size_t)cap);
       if (!nn) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
       names = nn;
     }
-    memcpy(names[n], src + s0, q - s0);
-    names[n][q - s0] = 0;
+    memcpy(names[n], src + s0, e0 - s0);
+    names[n][e0 - s0] = 0;
     n++;
   }
   /* only `.freeze` and a comment may follow */
