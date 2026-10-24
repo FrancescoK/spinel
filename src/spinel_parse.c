@@ -173,17 +173,20 @@ static size_t sp_src_file_code_len(const SpSrcFile *f) {
   return (size_t)(end - f->parser.start);
 }
 
-/* Spinel reads every source file as UTF-8 (#9898): a magic comment naming
-   another encoding, which CRuby would give the file's literals, is ignored
-   with a warning at its line. */
+/* Spinel's Strings are UTF-8 (#9898). A magic comment naming another
+   encoding is honoured where Prism reads the text (a byte that encoding
+   allows in a literal parses), and each literal keeps the bytes it is
+   written with, but every String, literals included, takes UTF-8 as its
+   encoding, and so does `__ENCODING__`, where CRuby gives them the
+   comment's. The warning at the comment's line says so. */
 static void sp_src_file_warn_encoding(const SpSrcFile *f) {
   if (f->parser.encoding == PM_ENCODING_UTF_8_ENTRY) return;
   int32_t line = pm_newline_list_line(&f->parser.newline_list, f->parser.encoding_comment_start,
                                       f->parser.start_line);
   fprintf(stderr,
-          "spinel: %s:%d: warning: the source encoding %s is not supported in "
-          "Spinel (every source file is read as UTF-8); the magic comment is "
-          "ignored\n", f->path, (int)line, f->parser.encoding->name);
+          "spinel: %s:%d: warning: source encoding %s: Spinel's Strings are "
+          "UTF-8, so this file's literals keep the bytes they are written with "
+          "but take UTF-8 as their encoding\n", f->path, (int)line, f->parser.encoding->name);
 }
 
 /* Lines of `s` as the require splicers count them: one per '\n', plus one for

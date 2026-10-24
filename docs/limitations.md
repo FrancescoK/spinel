@@ -1431,11 +1431,17 @@ whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
 
-**Source files are read as UTF-8.** An `# encoding:` (or `coding:`) magic
-comment naming another encoding warns at compile time, naming the file and
-line, and is ignored, in the entry file and in every required file: the
-file's literals stay UTF-8 (`"abc".encoding` answers UTF-8 where CRuby
-answers the comment's encoding).
+**Strings are UTF-8, whatever the source encoding.** An `# encoding:` (or
+`coding:`) magic comment naming another encoding warns at compile time,
+naming the file and line, in the entry file and in every required file.
+The file's literals keep the bytes they are written with (`"\x89PNG"`
+under `# encoding: binary` is those four bytes, as in CRuby), but they
+take UTF-8 as their encoding, and so does `__ENCODING__`: `"abc".encoding`
+answers UTF-8 where CRuby answers the comment's encoding, and a literal
+whose bytes are not UTF-8 answers `false` to `valid_encoding?`. A required
+file's own comment does not reach the program's parse, so a byte only its
+encoding allows in a literal is a parse error there; in the entry file it
+parses.
 
 A note on identity: equal frozen literals are one object, as in CRuby
 with frozen string literals. `"abc".equal?("abc")` is `true`, the same
