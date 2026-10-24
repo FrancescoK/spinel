@@ -4697,7 +4697,8 @@ int logic_value_handle(Compiler *c, int v) {
   if (k != NK_OrNode && k != NK_AndNode) return 0;
   int left = nt_ref(c->nt, u, "left");
   Repr lr = repr_of(c, left);
-  return lr.as_ty == TY_STRING && lr.strbuf_src == RS_HANDLE && repr_of(c, u).as_ty == TY_STRING;
+  return ((lr.as_ty == TY_STRING && lr.strbuf_src == RS_HANDLE) || lr.as_ty == TY_STRBUF) &&
+         repr_of(c, u).as_ty == TY_STRING;
 }
 
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
@@ -4808,8 +4809,14 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     /* one representation: a String left that is a handle (a slot's read, an
        element) is held as the handle, so the chain's value keeps its identity
        (`v = h[k] || "d"` answers the Hash's own String); the right arm is
-       made a handle too (a literal's is its site's) */
-    int lhandle = g_one_string && lt == TY_STRING && repr_of(c, left).strbuf_src == RS_HANDLE;
+       made a handle too (a literal's is its site's). So is a left typed as
+       the handle, and a chain whose value is (`[(s || nil)]` of a String
+       parameter s): an arm left as it was, nil's `(0, NULL)` or a literal's
+       bytes, made the chain a void * that SP_STR_B read the handle through
+       as bytes. */
+    int lhandle = g_one_string && ((lt == TY_STRING && repr_of(c, left).strbuf_src == RS_HANDLE) ||
+                                   (lt == TY_STRBUF && res == TY_STRING) ||
+                                   ((lt == TY_STRING || lt == TY_STRBUF) && res == TY_STRBUF));
     /* An unresolved left emits a poly fallback. One that diverges -- a bare
        name nothing defines raises NameError -- makes the whole chain diverge:
        keep the raise and answer the result's own placeholder, so the slot
@@ -4936,7 +4943,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     EMIT_ARM(0, &larm);
     { Buf *sv_pre2 = g_pre; g_pre = &rpre; EMIT_ARM(1, &rarm); g_pre = sv_pre2; }
     #undef EMIT_ARM
-    if (lhandle && res == TY_STRING && rarm.p) {
+    if (lhandle && (res == TY_STRING || res == TY_STRBUF) && rarm.p) {
       Buf hr; memset(&hr, 0, sizeof hr);
       buf_printf(&hr, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_fresh(%s)"), rarm.p);
       free(rarm.p); rarm = hr;
