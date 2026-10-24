@@ -6,6 +6,7 @@
 [:step_order, ArgumentError, "unknown keyword: :foo"]
 [:r, :b, :f]
 [:step_float, ArgumentError, "unknown keyword: :foo"]
+[:step_other_class, {count: 1, mode: 2}]
 [:step_ok, [2, 4, 6]]
 [:safe_nil, nil]
 [:safe_nonnil, ArgumentError, "unknown keyword: :foo"]

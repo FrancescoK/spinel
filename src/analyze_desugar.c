@@ -4103,6 +4103,8 @@ int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args) {
   for (size_t i = 0; i < sizeof(step_owners) / sizeof(*step_owners); i++)
     if (an_reopen_owner(c, id, step_owners[i]) >= 0) return 0;
   int sn = nt_safe_nav(nt, id), recv = nt_ref(nt, id, "receiver");
+  TyKind rt = infer_type(c, recv);
+  if (rt != TY_INT && rt != TY_BIGINT && rt != TY_FLOAT && rt != TY_RANGE && rt != TY_FLOAT_RANGE) return 0;
   int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
   int en = 0; const int *els = ac ? nt_arr(nt, av[ac - 1], "elements", &en) : NULL;
   char names[600] = "", iv[300], msg[700];
