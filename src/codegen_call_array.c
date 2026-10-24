@@ -2833,7 +2833,10 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
       buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d);\n", bx, t, bx);
       return view_bind(n, "_t%d", bx);
     }
-    return view_bind(n, "sp_strbuf_read(_t%d)", t);
+    /* (one representation: the read face is the payload itself, which a
+       String slot takes back to the instance; the copy is made here, or
+       `m.to_s` answered m) */
+    return view_bind(n, g_one_string ? "sp_strbuf_read_own(_t%d)" : "sp_strbuf_read(_t%d)", t);
   }
   /* a variable is read through the cast where the call reads it; one whose
      cast is longer than a bound text holds (a long name: a fixed buffer cut
