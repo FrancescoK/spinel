@@ -4184,7 +4184,10 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           if (sp_streq(name, "class_variable_get")) { emit_boxed_text(c, ct, ref, b); return 1; }
           if (sp_streq(name, "class_variable_set") && argc == 2) {
             buf_printf(b, "(%s = ", ref);
-            if (ct == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
+            if (ct == TY_POLY) emit_boxed(c, argv[1], b);
+            /* (a slot that holds a String's handle takes the String's) */
+            else if (ct == TY_STRBUF) { buf_puts(b, "SP_STR_HDL("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+            else emit_expr(c, argv[1], b);
             buf_puts(b, ", ");
             emit_cvar_set_flag(c, ccid, cvn, 1, b);
             emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");

@@ -99,6 +99,9 @@ void share_facts_free(Compiler *c);
    value (SHFL_MULTI)? */
 int share_masgn_plain(const NodeTable *nt, int n);
 
+/* Can a slot of type t hold a String (a String, a box, a container that may
+   hold one, an object whose native class keeps one)? */
+int sh_may_hold(const Compiler *c, TyKind t);
 /* The holders, by index 0..share_holder_count-1. */
 int share_holder_count(const Compiler *c);
 const ShareHolder *share_holder(const Compiler *c, int h);

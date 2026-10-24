@@ -23748,6 +23748,53 @@ static int strh_sweep_slots(Compiler *c) {
   }
   return changed;
 }
+/* The places a String can be held, as the rule below asks them: every local
+   and parameter, every instance variable of every class, each name of a
+   class variable, every global and constant, and every method's value,
+   whose type can hold a String (sh_may_hold). Under the one representation
+   every String is shared, so each of them is one the rule shares. */
+static ShareHolder *slot_holders(Compiler *c, int *out_n) {
+  int cap = 64, n = 0;
+  ShareHolder *hs = malloc(sizeof *hs * (size_t)cap);
+  if (!hs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+#define SLOT_PUSH(k, s_, l_, cid_, nm_) do { \
+    if (n == cap) { cap *= 2; hs = realloc(hs, sizeof *hs * (size_t)cap); \
+                    if (!hs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } } \
+    hs[n].kind = (unsigned char)(k); hs[n].scope = (s_); hs[n].local = (l_); \
+    hs[n].cid = (cid_); hs[n].name = (nm_); hs[n].node = -1; n++; } while (0)
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int i = 0; i < sc->nlocals; i++) {
+      /* (the loop variable of a define_method an `each` over literals
+         unrolls is no slot: collect_dm_each_unroll) */
+      if (sc->dm_subst_name && sc->locals[i].name && sp_streq(sc->locals[i].name, sc->dm_subst_name)) continue;
+      if (sh_may_hold(c, sc->locals[i].type)) SLOT_PUSH(SHK_LOCAL, s, i, -1, NULL);
+    }
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int i = 0; i < ci->nivars; i++)
+      if (sh_may_hold(c, ci->ivar_types[i])) SLOT_PUSH(SHK_IVAR, -1, -1, k, ci->ivars[i]);
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int i = 0; i < ci->ncvars; i++) {
+      int seen = 0;
+      for (int q = 0; q < n && !seen; q++) seen = hs[q].kind == SHK_CVAR && sp_streq(hs[q].name, ci->cvars[i]);
+      if (!seen && sh_may_hold(c, ci->cvar_types[i])) SLOT_PUSH(SHK_CVAR, -1, -1, -1, ci->cvars[i]);
+    }
+  }
+  for (int i = 0; i < c->ngvars; i++)
+    if (sh_may_hold(c, c->gvars[i].type)) SLOT_PUSH(SHK_GVAR, -1, -1, -1, c->gvars[i].name);
+  for (int i = 0; i < c->nconsts; i++)
+    if (sh_may_hold(c, c->consts[i].type)) SLOT_PUSH(SHK_CONST, -1, -1, -1, c->consts[i].name);
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].def_node >= 0 && sh_may_hold(c, c->scopes[s].ret)) SLOT_PUSH(SHK_RET, s, -1, -1, NULL);
+#undef SLOT_PUSH
+  *out_n = n;
+  return hs;
+}
+
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   unsigned d_in = 0;
   if (in_fixpoint) {
@@ -23764,41 +23811,23 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   share_facts_build(c);
   int changed = share_strh_gate(c);
   changed |= strh_sweep_slots(c);
-  int nh = share_holder_count(c);
+  int nh = 0;
+  ShareHolder *slots = slot_holders(c, &nh);
   for (int h = 0; h < nh; h++) {
-    const ShareHolder *sh = share_holder(c, h);
+    const ShareHolder *sh = &slots[h];
     if (sh->kind == SHK_LOCAL) {
       Scope *s = &c->scopes[sh->scope];
       LocalVar *lv = &s->locals[sh->local];
       /* (an Array of handles: what is stored into it is demanded as the
          handle, as a poly Array's stores are) */
       if (lv->type == TY_STRH_ARRAY) {
-        if (repr_str_elems_share(c, h)) changed |= strbuf_demand_container_stores(c, lv->name, s);
+        changed |= strbuf_demand_container_stores(c, lv->name, s);
         continue;
       }
       if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
-        /* a typed String Array settles in its poly form, whose boxes hold
-           the handle; a String written in is boxed as one. A parameter
-           an --rbs seed types Array[String] takes it too. (Under the
-           one-String mode the typed container holds the handle itself and
-           keeps its kind: string-one-repr-design.md.) */
-        if (!g_one_string && (lv->type == TY_STR_ARRAY || lv->type == TY_POLY_ARRAY) && repr_str_elems_share(c, h) &&
-            (!lv->rbs_seeded || lv->rbs_type == TY_STR_ARRAY) && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
-          lv_set_type(lv, TY_POLY_ARRAY);
-          lv->elems_shared = 1;
-          changed = 1;
-        }
-        /* and so does a Hash an --rbs seed types Hash[String, String]:
-           its values are boxes of the handles */
-        if (!g_one_string && lv->type == TY_STR_STR_HASH && lv->rbs_seeded && lv->rbs_type == TY_STR_STR_HASH &&
-            repr_str_elems_share(c, h)) {
-          lv_set_type(lv, TY_STR_POLY_HASH);
-          changed = 1;
-        }
-        if (repr_str_elems_share(c, h)) changed |= strbuf_demand_container_stores(c, lv->name, s);
+        changed |= strbuf_demand_container_stores(c, lv->name, s);
         continue;
       }
-      if (!repr_str_shares(c, h)) continue;
       /* a box holds the handle: each String written into it is boxed as
          its handle, as an ivar's are (share_lift_poly_ivar_stores) */
       if (lv->type == TY_POLY) {
@@ -23834,11 +23863,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       /* an Array of handles: what is stored into it is demanded as the
          handle, as a poly Array's stores are */
       if (it == TY_STRH_ARRAY) {
-        if (repr_str_elems_share(c, h)) changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
+        changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
         continue;
       }
       if (ty_is_array(it) || ty_is_hash(it)) {
-        if (!repr_str_elems_share(c, h)) continue;
         changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
         /* a poly Array holds its Strings as handles, as a local's does: a
            String Array written into it is wrapped element by element */
@@ -23848,18 +23876,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
           changed = 1;
           changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
         }
-        /* An externally written String Array uses that same form even
-           when the source walk cannot reach a direct ivar write. */
-        if (!g_one_string && it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
-        if (!g_one_string && it == TY_STR_STR_HASH && class_ivar_pinned(ci, sh->name))
-          changed |= share_box_ivar_family(c, sh->cid, sh->name, 1);
         continue;
       }
-      if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
-      if (it == TY_POLY && repr_str_shares(c, h)) changed |= share_lift_poly_ivar_stores(c, sh->cid, sh->name);
+      changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
+      if (it == TY_POLY) changed |= share_lift_poly_ivar_stores(c, sh->cid, sh->name);
     }
     /* a class variable, in each class with one of the name, as an ivar does */
-    else if (sh->kind == SHK_CVAR && repr_str_shares(c, h)) {
+    else if (sh->kind == SHK_CVAR) {
       for (int k = 0; k < c->nclasses; k++) {
         ClassInfo *ci = &c->classes[k];
         int i = sh->name ? comp_cvar_index(ci, sh->name) : -1;
@@ -23874,14 +23897,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       /* the facts key a class variable by name: a String one class holds
          and a container another holds of the same name are one holder, so
          the container's elements are converted here too */
-      if (repr_str_elems_share(c, h)) changed |= share_static_container(c, SHK_CVAR, sh->name);
+      changed |= share_static_container(c, SHK_CVAR, sh->name);
     }
     /* a global's or a constant's Array or Hash whose elements the rule
        shares holds them as handles, as a local's does: a String Array
        settles in its poly form, and what its writes and stores give it is
        demanded into the handle */
-    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST || sh->kind == SHK_CVAR) &&
-             repr_str_elems_share(c, h) && share_static_container(c, sh->kind, sh->name)) {
+    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST || sh->kind == SHK_CVAR) && share_static_container(c, sh->kind, sh->name)) {
       changed = 1;
     }
     /* a method's value whose elements the rule shares, when they would be
@@ -23893,41 +23915,20 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     /* An empty Hash factory return can follow its construction context into
        the boxed-value variant. Other return producer shapes keep their
        existing inferred layout and downstream sharing behavior. */
-    /* (one-String mode: the typed Hash holds the handles) */
-    else if (!g_one_string && sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
-             !c->scopes[sh->scope].ret_rbs_seeded &&
-             (c->scopes[sh->scope].ret == TY_STR_STR_HASH ||
-              c->scopes[sh->scope].ret == TY_STR_POLY_HASH) &&
-             share_ret_empty_hash_factory(c, sh->scope)) {
-      Scope *m = &c->scopes[sh->scope];
-      if (m->ret == TY_STR_STR_HASH) { scope_set_ret(m, TY_STR_POLY_HASH); changed = 1; }
-      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
-    }
-    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+    else if (sh->kind == SHK_RET &&
              (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
       changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND) | share_ret_demand_literals(c, sh->scope);
-    /* a String Array an --rbs seed pins the return to, whose Strings are
-       shared: the return settles in its poly form, the boxes holding the
-       handles, as a seeded local does above; the seed keeps its Ruby type
-       (Scope.ret_elems_shared, #9626) */
-    else if (!g_one_string && sh->kind == SHK_RET && repr_str_elems_share(c, h) && c->scopes[sh->scope].ret_rbs_seeded &&
-             (c->scopes[sh->scope].ret == TY_STR_ARRAY ||
-              (c->scopes[sh->scope].ret == TY_POLY_ARRAY && c->scopes[sh->scope].ret_elems_shared))) {
-      Scope *m = &c->scopes[sh->scope];
-      if (m->ret == TY_STR_ARRAY) { scope_set_ret(m, TY_POLY_ARRAY); m->ret_elems_shared = 1; changed = 1; }
-      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
-    }
     /* a method answering a box the rule shares: the Strings it answers are
        boxed as handles (share_lift_poly_returns) */
-    else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY && repr_str_shares(c, h))
+    else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY)
       changed |= share_lift_poly_returns(c, sh->scope);
     /* and one whose Arrays' elements it shares: what a multiple return
        gathers (share_lift_multi_returns) */
-    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h))
+    else if (sh->kind == SHK_RET)
       changed |= share_lift_multi_returns(c, sh->scope);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
-    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
+    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST)) {
       LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
                                            : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
       /* a box holds the handle: its Strings are stored as the handle */
@@ -23939,6 +23940,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       changed = 1;
     }
   }
+  free(slots);
   /* A retained literal can be nested in a box instead of named by a
      holder. Its recorded stores demand the same handles as a holder's
      stores; inference then selects the existing boxed-element form.

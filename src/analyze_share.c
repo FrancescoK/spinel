@@ -552,7 +552,7 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
 
 /* Can a value of type t hold a String, or a container of them? An object's
    Strings sit in its ivars, which are holders of their own. */
-static int sh_may_hold(const Compiler *c, TyKind t) {
+int sh_may_hold(const Compiler *c, TyKind t) {
   /* an object holds its Strings in ivars, which are holders of their own;
      a native class's object keeps the String its binding declares, and so
      does a subclass's, which is built by the class's constructor */

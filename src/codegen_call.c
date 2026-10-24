@@ -29912,9 +29912,12 @@ int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *na
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
     int ivx = comp_ivar_index(cls, ivn);
     int plain = ivx >= 0 && civ_is_oint(c, ci, ivx) && id >= 0 && !node_is_oint(c, id);
+    /* (a slot that holds a String's handle, read where its bytes go) */
+    int bytes = ivx >= 0 && cls->ivar_types[ivx] == TY_STRBUF && id >= 0 && repr_of(c, id).as_ty == TY_STRING;
     if (plain) buf_printf(b, "%s(", oint_arg(cls->ivar_types[ivx] == TY_FLOAT ? TY_FLOAT : TY_INT));
+    else if (bytes) buf_puts(b, "SP_STR_B(");
     buf_printf(b, "civ_%s_%s", cn, iv_c(rn));
-    if (plain) buf_puts(b, ")");
+    if (plain || bytes) buf_puts(b, ")");
   }
   else buf_printf(b, "sg_%s_%s", cn, rn);
   return 1;
