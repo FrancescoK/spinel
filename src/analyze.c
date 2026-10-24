@@ -45045,7 +45045,11 @@ static int sid_no_collection_kind(TyKind t) {
 }
 /* Is v a call of a reflective list that answers method, variable or
    constant names, Symbols each (`nil.methods`, `instance_variables`), in a
-   program that defines no method of that name? */
+   program that defines no method of that name in any form: an instance
+   method, a class method (`def self.constants`, one in `class << self`, a
+   module's that a class extends), a singleton method (`def o.methods`,
+   `define_singleton_method(:methods)`), or one it may define or alias by
+   a name it computes or names by a literal? */
 static int sid_symbol_list_call(Compiler *c, int v) {
   static const char *const names[] = {
     "methods", "public_methods", "private_methods", "protected_methods", "singleton_methods",
@@ -45056,7 +45060,12 @@ static int sid_symbol_list_call(Compiler *c, int v) {
   if (!nm || nt_ref(nt, v, "block") >= 0) return 0;
   int hit = 0;
   for (int k = 0; names[k] && !hit; k++) hit = sp_streq(nm, names[k]);
-  return hit && !an_user_recv_defines_method(c, nm);
+  if (!hit || an_user_recv_defines_method(c, nm) || an_prog_names_method(nm)) return 0;
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    if (dn && sp_streq(dn, nm)) return 0;
+  }
+  return 1;
 }
 static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   const NodeTable *nt = c->nt;
