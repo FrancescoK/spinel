@@ -187,7 +187,7 @@ static bool sp_snippet_visit(const pm_node_t *n, void *data) {
 static int sp_snippet_graftable(const char *src) {
   if (!src) return 0;
   pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
+  sp_pm_parser_init(&parser, src, strlen(src), NULL);
   pm_node_t *root = pm_parse(&parser);
   int ok = parser.error_list.size == 0;
   if (ok) {
@@ -2086,7 +2086,7 @@ static bool mx_gen_visit(const pm_node_t *n, void *data) {
 
 static void mx_note_generated(const char *code, MxNames *out) {
   pm_parser_t p;
-  pm_parser_init(&p, (const uint8_t *)code, strlen(code), NULL);
+  sp_pm_parser_init(&p, code, strlen(code), NULL);
   pm_node_t *root = pm_parse(&p);
   const pm_parser_t *sv = g_parser;
   g_parser = &p;
@@ -2609,7 +2609,7 @@ static bool mx_tpl_visit(const pm_node_t *n, void *data) {
    writes poison the ivar) */
 static int mx_template_writes(const char *code) {
   pm_parser_t p;
-  pm_parser_init(&p, (const uint8_t *)code, strlen(code), NULL);
+  sp_pm_parser_init(&p, code, strlen(code), NULL);
   pm_node_t *root = pm_parse(&p);
   const pm_parser_t *sv = g_parser;
   g_parser = &p;
@@ -2824,7 +2824,7 @@ static bool mx_lit_visit(const pm_node_t *n, void *data) {
 static char *mx_join_residual(const char *t) {
   size_t tl = strlen(t);
   pm_parser_t tp;
-  pm_parser_init(&tp, (const uint8_t *)t, tl, NULL);
+  sp_pm_parser_init(&tp, t, tl, NULL);
   pm_node_t *tr = pm_parse(&tp);
   int bad = tp.error_list.size != 0;
   MxLitScan ls = { (const uint8_t *)t, 0 };
@@ -2856,7 +2856,7 @@ static char *mx_join_residual(const char *t) {
   free(drop);
   if (first) mxb_puts(&rep, "nil");
   pm_parser_t cp;
-  pm_parser_init(&cp, (const uint8_t *)rep.p, rep.len, NULL);
+  sp_pm_parser_init(&cp, rep.p, rep.len, NULL);
   pm_node_t *cr = pm_parse(&cp);
   bad = cp.error_list.size != 0;
   pm_node_destroy(&cp, cr);
@@ -3197,7 +3197,7 @@ static char *sp_expand_class_macros(const char *source) {
     if (df) { fputs(source, df); fclose(df); }
   }
   pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)source, len, NULL);
+  sp_pm_parser_init(&parser, source, len, NULL);
   pm_node_t *root = pm_parse(&parser);
   char *result = NULL;
   const pm_parser_t *sv = g_parser;

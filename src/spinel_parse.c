@@ -64,60 +64,99 @@ static int g_src_map = 1;
    and `.inspect` all start at one column. Only then: two more attributes on
    every node are node-table fields the ordinary compile has no use for (#4522). */
 static int g_emit_end = 0;
-/* Set from the ENTRY file's `# frozen_string_literal: true` magic comment.
-   The pragma is per-file in Ruby: the require resolvers build g_fsl_lines
-   (one flag byte per line of the final spliced buffer, from each spliced
-   file's own head), and flatten() stamps an `fzl` field on string-literal
-   nodes from it. This global is the fallback -- used when the per-line
-   table is unavailable (an expansion changed the line count) -- and the
-   whole-program gate read by the analyzer's mutable-string-buffer pass. */
-int g_frozen_string_literal = 0;
-/* Files with NO frozen_string_literal pragma default to 1: Spinel declares
-   fsl:true semantics unconditionally (there is no chilled mode; an explicit
-   `false` pragma warns and is ignored -- see docs/limitations.md). */
-int g_fsl_default = 1;
-/* Per-line pragma flags for the final spliced buffer (0-based line index). */
+/* Per-line frozen_string_literal flags for the final spliced buffer (0-based
+   line index): the require resolvers build it, one byte per line, from each
+   spliced file's own flag (sp_src_file_fsl), and flatten() stamps an `fzl`
+   field on string-literal nodes from it. */
 static unsigned char *g_fsl_lines = NULL;
 static size_t g_fsl_nlines = 0;
 
-/* `# frozen_string_literal: true` on the first line (or the second when the
-   first is a shebang); scanning stops at the first non-comment line. */
-static int sp_scan_fsl_pragma(const char *src) {
-  const char *p = src;
-  for (int line = 0; line < 2 && p && *p; line++) {
-    const char *nl = strchr(p, '\n');
-    size_t len = nl ? (size_t)(nl - p) : strlen(p);
-    const char *q = p; while (*q == ' ' || *q == '\t') q++;
-    if (*q != '#') break;                      /* code reached: stop scanning */
-    if (line == 0 && q[1] == '!') { p = nl ? nl + 1 : NULL; continue; }  /* shebang */
-    char linebuf[512];
-    size_t rem = len - (size_t)(q - p);
-    size_t cl = rem < sizeof(linebuf) - 1 ? rem : sizeof(linebuf) - 1;
-    memcpy(linebuf, q, cl); linebuf[cl] = '\0';
-    const char *m = strstr(linebuf, "frozen_string_literal:");
-    if (m) {
-      m += strlen("frozen_string_literal:");
-      while (*m == ' ' || *m == '\t') m++;
-      if (strncmp(m, "true", 4) == 0) {
-        char c = m[4];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_')) return 1;
-      }
-      else {
-        /* Spinel has no chilled mode: string literals are always frozen
-           (the mutable-string machinery needs the whole-program guarantee;
-           see docs/limitations.md). An explicit opt-out is ignored loudly
-           rather than honored partially. */
-        fprintf(stderr,
-                "warning: frozen_string_literal: false is not supported in "
-                "Spinel (string literals are always frozen); the pragma is "
-                "ignored\n");
-      }
-      return 1;
-    }
-    p = nl ? nl + 1 : NULL;
+/* ---- Prism, told Spinel's policy ----
+   Every Prism parser the front end makes is created here (#9898), with the
+   options a CRuby 4.0 run of the program has: string literals frozen
+   (Spinel has no chilled mode; see docs/limitations.md), the 4.0 grammar
+   (with no options Prism parses as its latest version), the file's path
+   when the text is one file's (NULL for a buffer of several, or a
+   class_eval string; a hoisted file's, with what it required inlined, is
+   that file's). Prism keeps `path` (not a copy) for the parser's life.
+   No parser is the main script, the entry file's included: in Prism 1.9.0
+   that flag makes a main script whose first line is a shebang not naming
+   ruby (`#!/usr/bin/env spinel`) a search for one that does, as `ruby -x`
+   would, and a parse error when there is none, which Spinel, compiling the
+   file as written, must not take (the dead-require fold reads that parse).
+   It would buy nothing else here: Spinel reads no shebang options. */
+static void sp_pm_parser_init(pm_parser_t *parser, const char *src, size_t len,
+                              const char *path) {
+  pm_options_t opts;
+  memset(&opts, 0, sizeof opts);
+  pm_options_line_set(&opts, 1);
+  pm_options_frozen_string_literal_set(&opts, true);
+  pm_options_version_set(&opts, "4.0", 3);
+  if (path) pm_options_filepath_set(&opts, path);
+  pm_parser_init(parser, (const uint8_t *)src, len, &opts);
+  pm_options_free(&opts);
+}
+
+/* One file's text parsed by itself, before anything is spliced into it: the
+   facts of the file (its frozen_string_literal pragma, the requires its
+   dead branches hold) are read from this parse. */
+typedef struct {
+  const char *path;
+  const char *text;
+  pm_parser_t parser;
+  pm_node_t *root;
+} SpSrcFile;
+
+static void sp_src_file_parse(SpSrcFile *f, const char *text, const char *path) {
+  f->path = path;
+  f->text = text;
+  sp_pm_parser_init(&f->parser, text, strlen(text), path);
+  f->root = pm_parse(&f->parser);
+}
+
+static void sp_src_file_free(SpSrcFile *f) {
+  pm_node_destroy(&f->parser, f->root);
+  pm_parser_free(&f->parser);
+}
+
+/* Does the magic comment say `frozen_string_literal: false`? Prism lists
+   every `key: value` comment as written; it takes a key case-insensitively,
+   with `-` for `_`, and the value case-insensitively. */
+static bool sp_magic_comment_fsl_false(const pm_magic_comment_t *mc) {
+  static const char key[] = "frozen_string_literal";
+  if (mc->key_length != sizeof key - 1 || mc->value_length != 5) return false;
+  for (uint32_t i = 0; i < mc->key_length; i++) {
+    char ch = (char)tolower(mc->key_start[i]);
+    if ((ch == '-' ? '_' : ch) != key[i]) return false;
   }
-  return g_fsl_default;
+  for (uint32_t i = 0; i < 5; i++)
+    if (tolower(mc->value_start[i]) != "false"[i]) return false;
+  return true;
+}
+
+/* The frozen_string_literal flag of the file's literals: 1, in every file.
+   Prism reads the pragma wherever CRuby does (any comment ahead of the
+   first token) and starts from Spinel's frozen default, so it answers
+   DISABLED only for a `false` pragma. Spinel has no chilled mode (the
+   mutable-string machinery needs the whole-program guarantee; see
+   docs/limitations.md): an explicit opt-out is ignored loudly rather than
+   honored partially, with a warning at the pragma's line each time the
+   file is read. */
+static int sp_src_file_fsl(const SpSrcFile *f) {
+  if (f->parser.frozen_string_literal != PM_OPTIONS_FROZEN_STRING_LITERAL_DISABLED) return 1;
+  int32_t line = 1;
+  for (const pm_list_node_t *n = f->parser.magic_comment_list.head; n; n = n->next) {
+    const pm_magic_comment_t *mc = (const pm_magic_comment_t *)n;
+    if (sp_magic_comment_fsl_false(mc)) {
+      line = pm_newline_list_line(&f->parser.newline_list, mc->key_start, f->parser.start_line);
+      break;
+    }
+  }
+  fprintf(stderr,
+          "spinel: %s:%d: warning: frozen_string_literal: false is not supported "
+          "in Spinel (string literals are always frozen); the pragma is "
+          "ignored\n", f->path, (int)line);
+  return 1;
 }
 
 /* Lines of `s` as the require splicers count them: one per '\n', plus one for
@@ -411,14 +450,15 @@ static char *pm_int_text(pm_integer_t *integer) {
 }
 
 /* frozen_string_literal flag for the file `node`'s source line came from:
-   the per-line table when available, else the entry file's pragma. */
+   the per-line table when available, else 1, the flag every file's
+   literals get (sp_src_file_fsl). */
 static int sp_node_fsl(pm_node_t *node) {
   if (g_fsl_lines) {
     int32_t bl = pm_newline_list_line(&g_parser->newline_list,
                                       node->location.start, g_parser->start_line);
     if (bl >= 1 && (size_t)bl <= g_fsl_nlines) return g_fsl_lines[bl - 1];
   }
-  return g_frozen_string_literal;
+  return 1;
 }
 
 /* `__FILE__` (1), `$0` / `$PROGRAM_NAME` (2), either one under a single
@@ -3628,18 +3668,16 @@ static bool sp_skip_dead_require(const pm_node_t *node, void *data) {
   return true;
 }
 
-static char *sp_rewrite_dead_requires(const char *source) {
+/* The file's text with its dead requires blanked, read from the file's own
+   parse. */
+static char *sp_rewrite_dead_requires(SpSrcFile *f) {
+  const char *source = f->text;
   char *result = strdup(source);
   if (!strstr(source, "require")) return result;
-  pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)source, strlen(source), NULL);
-  pm_node_t *root = pm_parse(&parser);
-  if (parser.error_list.size == 0) {
-    SpDeadRequire ctx = { &parser, source, result, 0, !sp_source_writes_engine(source) };
-    pm_visit_node(root, sp_skip_dead_require, &ctx);
+  if (f->parser.error_list.size == 0) {
+    SpDeadRequire ctx = { &f->parser, source, result, 0, !sp_source_writes_engine(source) };
+    pm_visit_node(f->root, sp_skip_dead_require, &ctx);
   }
-  pm_node_destroy(&parser, root);
-  pm_parser_free(&parser);
   return result;
 }
 
@@ -3926,7 +3964,7 @@ static const char *sp_defer_runtime(char **content, const char *canonical, const
   }
   const char *src = *content;
   pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
+  sp_pm_parser_init(&parser, src, strlen(src), canonical);
   pm_node_t *root = pm_parse(&parser);
   SpDefer d;
   memset(&d, 0, sizeof d);
@@ -3990,9 +4028,15 @@ static char *resolve_requires(const char *source, const char *source_path,
   else { free(dir); dir = strdup("."); }
   free(path_copy);
 
+  /* The file parsed by itself, each time it is read: its pragma and its
+     dead requires are read from this parse. */
+  SpSrcFile file;
+  sp_src_file_parse(&file, source, source_path);
+  int file_fsl = sp_src_file_fsl(&file);
   /* computed requires spelling a literal path (#5700), then autoloads with
      a literal path (#5696): each answers a fresh copy of what it reads */
-  char *reachable = sp_rewrite_dead_requires(source);
+  char *reachable = sp_rewrite_dead_requires(&file);
+  sp_src_file_free(&file);
   char *pre_auto = sp_rewrite_computed_requires(reachable, dir);
   char *result = sp_rewrite_autoloads(pre_auto, dir);
   if (strcmp(reachable, result) != 0) g_require_unread = 1;   /* a require the two made */
@@ -4002,7 +4046,7 @@ static char *resolve_requires(const char *source, const char *source_path,
   /* One pragma flag per line of `result`, kept in lockstep with every text
      splice below so each literal keeps its own file's flag. */
   size_t fsl_n;
-  unsigned char *fsl = sp_fsl_make(result, sp_scan_fsl_pragma(source), &fsl_n);
+  unsigned char *fsl = sp_fsl_make(result, file_fsl, &fsl_n);
   /* Same scan the plain requires use: wherever the call stands, and never the
      word as it appears inside a string, comment or heredoc body. */
   for (;;) {
@@ -4316,7 +4360,7 @@ static SpSrcLex *sp_src_lex_of(const char *source) {
   lx->src = source;
   pm_parser_t parser;
   pm_lex_callback_t cb = { lx, sp_src_lex_token };
-  pm_parser_init(&parser, (const uint8_t *)source, strlen(source), NULL);
+  sp_pm_parser_init(&parser, source, strlen(source), NULL);
   parser.lex_callback = &cb;
   pm_node_t *root = pm_parse(&parser);
   int cap = 0;
@@ -5320,11 +5364,6 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     return NULL;
   }
 
-  /* `# frozen_string_literal: true` magic comment, per file: the entry file's
-     flag is the whole-program fallback; the require resolvers below build the
-     per-line table each spliced file's literals are stamped from. */
-  g_frozen_string_literal = sp_scan_fsl_pragma(source);
-
   /* Set the debug flag before resolving requires so the resolvers insert the
      PUSH/POP markers used to rebuild the multi-file source map. */
   {
@@ -5410,7 +5449,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
 
   /* Adopt the per-line pragma table only while it provably still lines up
      with the buffer (the expansions above keep the line count); on mismatch
-     fall back to the entry file's flag rather than misattribute. */
+     every literal gets the flag every file's literals get (sp_node_fsl). */
   if (sp_count_lines(source) == fsl_n) {
     g_fsl_lines = fsl;
     g_fsl_nlines = fsl_n;
@@ -5429,7 +5468,7 @@ else {
 
   /* Parse with Prism */
   pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)source, source_len, NULL);
+  sp_pm_parser_init(&parser, source, source_len, NULL);
   pm_node_t *root = pm_parse(&parser);
 
   if (parser.error_list.size > 0) {
@@ -5557,7 +5596,7 @@ NodeTable *sp_parse_snippet(const char *src) {
   NodeTable *res = NULL;
   if (buf) {
     pm_parser_t parser;
-    pm_parser_init(&parser, (const uint8_t *)buf, strlen(buf), NULL);
+    sp_pm_parser_init(&parser, buf, strlen(buf), NULL);
     pm_node_t *root = pm_parse(&parser);
     if (parser.error_list.size == 0) {
       g_parser = &parser;
