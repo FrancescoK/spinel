@@ -1,0 +1,8 @@
+in data_tail
+after the first require
+helper
+first,__END__,last
+true
+:value
+"EndAuto"
+done
