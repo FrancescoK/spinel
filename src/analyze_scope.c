@@ -628,8 +628,12 @@ TyKind dm_lit_type(Compiler *c, int lit) {
 /* Detect `[lit, ...].each { |v| define_method("m_#{v}") { body } }` in a
    class body and synthesize one method scope per literal element, each with
    a compile-time substitution of `v`. In a Struct.new block class_id is
-   still -1; fix_struct_block_scopes homes the scopes. Returns 1 if handled. */
-int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
+   still -1; fix_struct_block_scopes homes the scopes. The loop itself still
+   runs in scope_idx, binding `v` to each element there, so `v` is a local
+   of that scope too: a class body's is the program's, but a method's (a
+   class method that defines them when called) had no such local. Returns 1
+   if handled. */
+int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "each")) return 0;
@@ -685,6 +689,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     }
     names[k] = mname;
   }
+  if (scope_idx >= 0 && scope_idx < c->nscopes) scope_local_intern(&c->scopes[scope_idx], bv);
   for (int k = 0; k < en; k++) {
     /* each method gets its own copy of the block: the methods' bodies are
        typed apart (`|v| options[n] = v` stores an Integer in one and false
@@ -1620,7 +1625,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     /* [lits].each { |v| define_method("m_#{v}") { body } } -- unroll into one
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
-    if ((class_id >= 0 || g_struct_direct) && collect_dm_each_unroll(c, id, class_id)) return;
+    if ((class_id >= 0 || g_struct_direct) && collect_dm_each_unroll(c, id, class_id, scope_idx)) return;
     /* compiler_state_int/str/sa/ia :fields -- declare ivars + synthesize the
        init/dump/set methods (the metaprogramming is native, not define_method). */
     if (class_id >= 0 && cs_macro_kind(nt_str(c->nt, id, "name"))) {

@@ -579,6 +579,9 @@ static int sh_may_hold(const Compiler *c, TyKind t) {
 
 static int sh_local_of(ShareFacts *F, Compiler *c, Scope *s, const char *name, int node) {
   if (!s || !name) return -1;
+  /* the loop variable of a define_method an `each` over literals unrolls is
+     no slot: each read of it is the element's literal (collect_dm_each_unroll) */
+  if (s->dm_subst_name && sp_streq(name, s->dm_subst_name)) return -1;
   LocalVar *lv = scope_local(s, name);
   if (!lv || !sh_may_hold(c, lv->type)) return -1;
   int e = sh_holder(F, SHK_LOCAL, (int)(s - c->scopes), (int)(lv - s->locals), NULL, node);
