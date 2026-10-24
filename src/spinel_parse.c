@@ -4462,6 +4462,7 @@ static void sp_builtin_names_from(const char *content) {
 typedef struct {
   const char *src;            /* the text this was read from, NULL for none */
   size_t *com; int com_n;     /* each comment's start and end offset, in order */
+  size_t *mods; int mods_n, mods_cap; /* each `module` keyword's offset, in order */
   int brk, fin, evals, popen, popen_str;
 } SpSrcLex;
 static SpSrcLex sp_src_lex;
@@ -4481,6 +4482,14 @@ static void sp_src_lex_token(void *data, pm_parser_t *parser, pm_token_t *tok) {
   SpSrcLex *lx = (SpSrcLex *)data;
   (void)parser;
   if (tok->type == PM_TOKEN_KEYWORD_BREAK) lx->brk = 1;
+  if (tok->type == PM_TOKEN_KEYWORD_MODULE) {
+    if (lx->mods_n == lx->mods_cap) {
+      lx->mods_cap = lx->mods_cap ? lx->mods_cap * 2 : 64;
+      lx->mods = (size_t *)realloc(lx->mods, sizeof(size_t) * (size_t)lx->mods_cap);
+      if (!lx->mods) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    }
+    lx->mods[lx->mods_n++] = (size_t)(tok->start - (const uint8_t *)lx->src);
+  }
   for (const uint8_t *q = tok->start; tok->type == PM_TOKEN_STRING_CONTENT && q + 8 <= tok->end; q++)
     if (!memcmp(q, "IO.popen", 8)) lx->popen_str = 1;
   if (tok->type != PM_TOKEN_IDENTIFIER) return;
@@ -4494,7 +4503,13 @@ static void sp_src_lex_token(void *data, pm_parser_t *parser, pm_token_t *tok) {
 /* The text is about to be freed or replaced: what was read from it goes. */
 static void sp_src_lex_drop(void) {
   free(sp_src_lex.com);
+  free(sp_src_lex.mods);
   memset(&sp_src_lex, 0, sizeof sp_src_lex);
+}
+
+static int sp_src_off_cmp(const void *a, const void *b) {
+  size_t x = *(const size_t *)a, y = *(const size_t *)b;
+  return (x > y) - (x < y);
 }
 
 static SpSrcLex *sp_src_lex_of(const char *source) {
@@ -4518,6 +4533,9 @@ static SpSrcLex *sp_src_lex_of(const char *source) {
     lx->com[lx->com_n++] = (size_t)(c->location.end - (const uint8_t *)source);
   }
   if (parser.error_list.size > 0) lx->evals = 1;
+  /* the lexer reads a heredoc's body before the rest of its opening line,
+     so a `module` in the body's code comes before one later on that line */
+  if (lx->mods_n > 1) qsort(lx->mods, (size_t)lx->mods_n, sizeof(size_t), sp_src_off_cmp);
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   return lx;
@@ -4602,11 +4620,39 @@ static int sp_src_opens(const char *source, const char *kw) {
   return 0;
 }
 
+/* Was the `module` at `at` lexed as the keyword? */
+static int sp_src_module_keyword_at(const char *source, const char *at) {
+  SpSrcLex *lx = sp_src_lex_of(source);
+  size_t off = (size_t)(at - source);
+  int lo = 0, hi = lx->mods_n;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    if (lx->mods[mid] < off) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < lx->mods_n && lx->mods[lo] == off;
+}
+
+/* Does the program open module `cname` itself (`module RbConfig`, the
+   name ending there)? A `module RbConfig` in a comment opens nothing: a
+   library's documentation comment kept builtins/rbconfig.rb out, and
+   RbConfig::CONFIG was an uninitialized constant. Nor does one in a string
+   literal or a heredoc, where the lexer read no keyword. A program that
+   evaluates a string, or that prism could not parse, counts the text
+   outside comments, as sp_src_lex_of says. */
 static int sp_src_defines_module(const char *source, const char *cname) {
-  char def1[80], def2[80];
-  snprintf(def1, sizeof def1, "module %s\n", cname);
-  snprintf(def2, sizeof def2, "module %s ", cname);
-  return strstr(source, def1) || strstr(source, def2);
+  char def[80];
+  int dl = snprintf(def, sizeof def, "module %s", cname);
+  if (dl <= 0 || (size_t)dl >= sizeof def) return 0;
+  for (const char *p = strstr(source, def); p; p = strstr(p + 1, def)) {
+    char after = p[dl];
+    if (after != '\n' && after != ' ' && after != '\t' && after != '\r' && after != ';') continue;
+    if (p > source && sp_req_ident_char(p[-1])) continue;
+    if (sp_src_in_comment(source, p)) continue;
+    if (!sp_src_lex_of(source)->evals && !sp_src_module_keyword_at(source, p)) continue;
+    return 1;
+  }
+  return 0;
 }
 
 static char *sp_prepend_require(char *source, const char *exe_path, const char *head,
