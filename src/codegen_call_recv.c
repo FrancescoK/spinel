@@ -6640,6 +6640,14 @@ static int emit_hash_compare_by_identity(Compiler *c, int id, int recv, TyKind r
   buf_puts(b, ")");
   return 1;
 }
+static int emit_hash_merge_to_hash_widen(Compiler *c, int recv, int arg, TyKind mk, int mdef, Buf *b) {
+  Buf cb = {0, 0, 0};
+  emit_obj_container_conv(c, arg, mdef, "to_hash", &cb);
+  buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+  emit_boxed_text(c, mk, cb.p ? cb.p : "NULL", b); buf_puts(b, ")");
+  free(cb.p);
+  return 1;
+}
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -7495,13 +7503,7 @@ else {
             emit_obj_container_conv(c, argv[0], mdef, "to_hash", b); buf_puts(b, ")");
             return 1;
           }
-          if (mk != TY_UNKNOWN) {
-            /* the analysis typed this call as the receiver's layout; a
-               #to_hash of another layout would widen it, which is an
-               inference question, so say so rather than miscompile */
-            unsupported_feature(c, id, "Hash#merge with a #to_hash of another layout than the receiver");
-            return 0;
-          }
+          if (mk != TY_UNKNOWN) return emit_hash_merge_to_hash_widen(c, recv, argv[0], mk, mdef, b);
           /* conv_cls_name_of leaves a Complex and a Rational to the numeric
              slots, which convert them; neither has a #to_hash */
           const char *mcn = at == TY_COMPLEX || at == TY_RATIONAL ? conv_builtin_class_name(at)
