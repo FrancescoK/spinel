@@ -319,14 +319,6 @@ int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_o
 int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how);
 const char *repr_coerce_form_name(int form);
 
-/* ---- --share-strings (#6765) ----
-   The one rule: under the flag, a String holder (share.h) is the shared
-   handle unless the analysis proves it local. Proven local: no in-place
-   mutation reaches its class, or the class has this one holder and every
-   mutation goes through it, so the new pointer can be written back into
-   that slot. The analysis applies the answer to the flags repr_of reads
-   (share_default_apply); codegen follows repr_of. */
-int repr_str_shares(const Compiler *c, int holder);
 /* Does local lv of scope s hold a String the rule shares (a slot whose type
    can hold one)? */
 int repr_local_shares(const Compiler *c, const Scope *s, const LocalVar *lv);

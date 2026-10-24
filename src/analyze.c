@@ -22440,9 +22440,9 @@ static unsigned share_types_digest(Compiler *c) {
   return h;
 }
 
-/* --share-strings (#6765): apply the one rule. repr_str_shares says which
-   String holders are the shared handle; this sets the flags repr_of reads
-   for them, through each holder kind's own representation: a local or a
+/* --share-strings (#6765): apply the one rule. Every slot that can hold a
+   String is the shared handle (slot_holders); this sets the flags repr_of
+   reads for them, through each holder kind's own representation: a local or a
    parameter takes STRBUF + str_shared (a lent parameter gives up its slot,
    and convert_byref_handle_params then pulls its callers), an ivar or a
    global the shared slot, and a container whose elements share demands the

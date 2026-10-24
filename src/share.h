@@ -10,8 +10,7 @@
    receiver that is no holder of its own, so no slot can take the new
    pointer back (SHF_INDIRECT).
 
-   The facts only describe; repr_str_shares (repr.c) is the rule that reads
-   them. They are built only under --share-strings. */
+   The facts only describe; the questions below read them. */
 #ifndef SPINEL_SHARE_H
 #define SPINEL_SHARE_H
 
@@ -114,16 +113,10 @@ int share_literal_unkept(Compiler *c, int lit);
 int sh_may_hold(const Compiler *c, TyKind t);
 /* The holder of a local / an ivar, or -1 when the walk made none. */
 int share_local_holder(const Compiler *c, int scope, int local);
-int share_self_holder(const Compiler *c, int scope);
-int share_self_used(const Compiler *c, int holder);
 /* The element of holder h's containers' elements, or -1 (not a holder:
    read it with share_elem_flags / share_elem_holders). */
 int share_elem_holder(const Compiler *c, int h);
 
-/* The facts of holder h's class. */
-unsigned share_class_flags(const Compiler *c, int h);
-/* the number of holders in it that store a String (not a method's value) */
-int share_class_holders(const Compiler *c, int h);
 /* the facts of an element (share_elem_holder's answer) */
 unsigned share_elem_flags(const Compiler *c, int e);
 int share_elem_holders(const Compiler *c, int e);

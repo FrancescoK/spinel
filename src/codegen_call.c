@@ -31673,7 +31673,6 @@ static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, cons
   int reread = rt == TY_STRING && ((subtree_is_pure_read(c, recv) && sn_arg_runs_nothing(c, recv)) ||
                                    nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_GlobalVariableReadNode);
   if (rt == TY_STRING && !reread) {
-    if (repr_self_handle(c, mi)) return 0;
     int given = argc - (nt_argv_kwh(c->nt, argv, argc) >= 0);
     for (int i = 0; i < argc; i++) if (!sn_arg_runs_nothing(c, argv[i])) return 0;
     for (int i = 0; m->pdefault && i < m->nparams; i++) {

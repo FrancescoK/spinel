@@ -947,6 +947,9 @@ static int cmethod_of_class(Compiler *c, const Scope *encl) {
 static int inline_string_self(Compiler *c, int id, InlineTarget *t) {
   const CallPlan *p = cplan_user(c, id);
   if (p->via != UC_REOPEN || !repr_self_handle(c, p->mi)) return 0;
+  /* (a block passed as a value runs through the proc-form clone) */
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk >= 0 && nt_kind(c->nt, blk) != NK_BlockNode) return 0;
   t->mi = p->mi; t->recv_class = p->owner_ci;
   return 1;
 }

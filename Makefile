@@ -1435,8 +1435,8 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	fi; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_self.rb -c --no-line-map -o "$$tmp/self.c" >"$$tmp/out" 2>&1 || \
 	   ! grep -q 'sp_String_receiver_return(sp_String \*self)' "$$tmp/self.c" || \
-	   ! grep -q 'sp_String_receiver_bytes(const char \*self)' "$$tmp/self.c"; then \
-	  echo "share-strings-test: FAIL (String self does not select its receiver ABI)"; ok=0; \
+	   ! grep -q 'sp_String_receiver_bytes(sp_String \*self)' "$$tmp/self.c"; then \
+	  echo "share-strings-test: FAIL (a String reopening's method does not take self as its handle)"; ok=0; \
 	fi; \
 	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! $(SPINEL) --share-strings test/share/share_strings_self_forwarding.rb -c --no-line-map -o "$$tmp/forward.c" >"$$tmp/out" 2>&1 || \
 	   grep -q 'sp_String_self_bytes_[a-z_]*(sp_String \*self' "$$tmp/forward.c" || \

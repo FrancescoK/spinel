@@ -1385,10 +1385,9 @@ typedef struct {
      (itself, for one of those), or -1 at the top level (comp_node_pbases) */
   int *node_pbase; int node_pbase_n;
   char **pbase_keys; int *pbase_key_cnt; int pbase_key_slots, pbase_key_n;   /* key -> times seen */
-  /* --share-strings (SPINEL_SHARE_STRINGS): a mutable String is the shared
-     handle unless the analysis proves it local (repr_str_shares, #6765),
-     and the share classes that rule reads (share.h), rebuilt as the
-     analysis goes. Off, nothing builds them and the C is unchanged. */
+  /* --share-strings (SPINEL_SHARE_STRINGS): every String slot is the
+     shared handle (#6765); the share classes (share.h) are rebuilt as the
+     analysis goes for the questions still asked of them. */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
   /* the program's parent map, for the emitter's questions about where a node
      sits (codegen_util.c's codegen_parents); rebuilt when the node table

@@ -977,8 +977,7 @@ static int scope_self_is_string(const Compiler *c, int scope) {
 }
 
 int repr_self_handle(const Compiler *c, int scope) {
-  if (!scope_self_is_string(c, scope)) return 0;
-  return share_self_used(c, share_self_holder(c, scope));
+  return scope_self_is_string(c, scope);
 }
 
 int repr_self_shared(const Compiler *c, int node) {
@@ -1728,10 +1727,6 @@ int repr_local_shares(const Compiler *c, const Scope *s, const LocalVar *lv) {
   if (!s || !lv) return 0;
   if (s->dm_subst_name && lv->name && sp_streq(lv->name, s->dm_subst_name)) return 0;
   return sh_may_hold(c, lv->type);
-}
-int repr_str_shares(const Compiler *c, int holder) {
-  if (!c->share || holder < 0) return 0;
-  return repr_str_class_shares(share_class_flags(c, holder), share_class_holders(c, holder));
 }
 
 int repr_str_elems_share(const Compiler *c, int holder) {

@@ -5454,49 +5454,6 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
 void share_facts_build(Compiler *c) {
   share_facts_free(c);
   c->share = sh_build(c, 0);
-  ShareFacts *F = c->share;
-  /* Argument flows depend on the parameter's representation. The walk's
-     other flows already mark direct identity uses of self. */
-  for (int i = 0; i < F->nfl; i++) {
-    int v = F->nval[F->fl_val[i]];
-    if (F->fl_kind[i] != SHFL_ARG || v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_COMPARED)) continue;
-    int tg[64], n = F->fl_site[i];
-    int ntg = sh_targets(c, n, tg, 64), used = ntg <= 0;
-    for (int t = 0; t < ntg && !used; t++) {
-      Scope *m = &c->scopes[tg[t]];
-      int bound = 0;
-      for (int j = 0; j < m->nparams; j++) {
-        if (arg_layout_param_node(c, m, n, j, NULL) != F->fl_val[i]) continue;
-        bound = 1;
-        LocalVar *lv = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
-        Repr r = repr_of_slot(c, lv);
-        if (j == m->rest_idx || j == m->kwrest_idx || r.kind == RK_BOXED || r.kind == RK_STRBUF ||
-            r.cell == RC_BYREF || (lv && repr_str_shares(c, share_local_holder(c, tg[t], (int)(lv - m->locals)))))
-          used = 1;
-      }
-      if (!bound) used = 1;
-    }
-    if (used) F->own[v] |= SHE_IDENTITY | SHE_COMPARED;
-  }
-  /* Forwarding self needs identity only when the callee does. Settle the
-     existing per-method bit over the walk's call sites, including cycles:
-     a byte-only cycle stays byte-only; a handle use propagates backwards. */
-  for (int changed = 1; changed; ) {
-    changed = 0;
-    for (int i = 0; i < F->nrsite; i++) {
-      int n = F->rsite[i], recv = nt_ref(c->nt, n, "receiver");
-      int h = recv >= 0 ? -1 : share_self_holder(c, sh_method_index(c, n));
-      int v = recv >= 0 ? F->nval[recv] : h >= 0 ? F->helem[h] : -1;
-      if (v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_COMPARED)) continue;
-      int tg[64], ntg = sh_targets(c, n, tg, 64);
-      for (int t = 0; t < ntg; t++) {
-        if (!repr_self_handle(c, tg[t])) continue;
-        F->own[v] |= SHE_IDENTITY | SHE_COMPARED;
-        changed = 1;
-        break;
-      }
-    }
-  }
 }
 
 void share_facts_free(Compiler *c) {
@@ -5520,13 +5477,6 @@ static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *na
 int share_local_holder(const Compiler *c, int scope, int local) {
   return sh_lookup(c->share, SHK_LOCAL, scope, local, NULL);
 }
-int share_self_holder(const Compiler *c, int scope) {
-  return sh_lookup(c->share, SHK_SELF, scope, -1, NULL);
-}
-int share_self_used(const Compiler *c, int holder) {
-  const ShareFacts *F = c->share;
-  return F && holder >= 0 && (F->own[F->helem[holder]] & SHE_IDENTITY) != 0;
-}
 
 /* The holders of root r's class that store a String (sh_finalize). */
 static int sh_class_holders(const ShareFacts *F, int r) {
@@ -5542,16 +5492,6 @@ int share_elem_holder_root(const Compiler *c, int h) {
   const ShareFacts *F = c->share;
   if (!F || h < 0 || h >= F->nh) return -1;
   return F->elem[sh_root_of_holder(F, h)];
-}
-unsigned share_class_flags(const Compiler *c, int h) {
-  const ShareFacts *F = c->share;
-  if (!F || h < 0 || h >= F->nh) return 0;
-  return F->flags[sh_root_of_holder(F, h)];
-}
-int share_class_holders(const Compiler *c, int h) {
-  const ShareFacts *F = c->share;
-  if (!F || h < 0 || h >= F->nh) return 0;
-  return sh_class_holders(F, sh_root_of_holder(F, h));
 }
 /* the facts of an element (a container's elements), not a holder */
 unsigned share_elem_flags(const Compiler *c, int e) {
