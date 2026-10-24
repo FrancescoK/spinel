@@ -96,15 +96,39 @@ Adds the calling frame as an outer folded frame, so a type allocated from three
 places appears three times:
 
 ```
-alloc;./app(+0x2bc5) [0x5a0a1e7acbc5];(no-scan) 5
+alloc;Tree#walk;String 2000
+alloc;sp_IntArray_new;(no-scan) 210
+alloc;_sp_main_body;Array 199
 ```
 
 The site is captured as a return address on the counted path and symbolised
-only at exit, so the extra cost is one stack walk per allocation and no
-allocation of its own. Names resolve as far as the dynamic symbol table
-reaches; a `static` method -- which is how user methods compile -- shows as an
-address. Turn it into a name with the symbol map from `--profile`, or with
-`addr2line -f -e ./app <addr>` on a build that kept its symbols.
+only at exit (or at the signalled dump), so the extra cost is one stack walk
+per allocation and no allocation of its own. Naming the site costs nothing
+until the report is written, and nothing at all with `SPINEL_ALLOC_SITES`
+unset.
+
+The name is the best one available, in this order:
+
+1. **The Ruby method** (`Tree#walk`, `Foo.build`, `tally`) when the symbol map
+   `--profile` writes, `app.symbols.json`, sits beside the binary under that
+   name. A compiler clone of the function (`sp_Tree_walk.constprop.0`) maps to
+   the same method.
+2. **The C function** (`sp_Tree_walk.constprop.0.isra.0`, `_sp_main_body`,
+   `sp_str_repeat`) from the executable's own symbol table. Methods compile to
+   `static` functions, which only that table lists; on Linux the report reads
+   it from `/proc/self/exe`. `--profile` and `-g` builds keep it, and so does
+   the default build -- only an explicitly stripped binary loses it.
+3. **What the dynamic symbol table knows**, else the raw address
+   (`./app(+0x2bc5) [0x5a0a1e7acbc5]`) -- a stripped binary, or a platform
+   other than Linux/ELF. `addr2line -f -e ./app 0x2bc5` on an unstripped copy
+   of the same build still turns that into a name.
+
+A site names the function the allocation's caller ended up in after C
+inlining, which is not always a method: a method the compiler inlined into
+the top-level code shows as `_sp_main_body`, and an allocation made inside a
+runtime helper (`sp_IntArray_new`, `sp_str_repeat`) shows that helper. Build
+with `-O0` (`spinel app.rb --profile -O0`) to keep every method in its own
+frame when the attribution matters more than the speed.
 
 Two caveats:
 
@@ -113,7 +137,7 @@ Two caveats:
   and falls back to the per-type lines.
 - One frame is not always the frame you want: an allocation inside an inlined
   helper is attributed to whatever the compiler left as the caller. Read the
-  addresses as "the code that asked for this", not as an exact source line.
+  sites as "the code that asked for this", not as an exact source line.
 
 A program with more distinct *(type, site)* pairs than the stats table holds
 does not silently fold them together. What did not fit is reported on its own:
