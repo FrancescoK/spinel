@@ -1016,7 +1016,13 @@ caller's block to reach, so the yield raised LocalJumpError at run time. It
 now calls the method's block parameter as a value, `blk.call(args)`, and a
 def with no named block parameter is given `&__blk` for the purpose. A
 block attached to any other call (`each { yield }`) is inlined with its
-method and keeps its `yield`.
+method and keeps its `yield`, unless the method called keeps its block as a
+real proc (an `&blk` it calls or stores, or a yielding method emitted as a
+function): that block is a closure too, and the method whose `yield` it holds
+is emitted as one function taking its block as a proc, whatever order the
+methods are defined in. A shape the compiler does not see this way is refused
+at compile time, naming the `yield`, rather than raising LocalJumpError at run
+time.
 
 A method whose block use is `block_given?` plus a value use of the parameter
 (`x = blk`, a capture in a proc, a `&blk` forward) takes the same lowering a

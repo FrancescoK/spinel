@@ -20399,6 +20399,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
          is never emitted here. An unguarded yield with no block raises
          LocalJumpError (a guarded one that still reaches codegen sits inside an
          `if (0)` and never executes the raise). */
+      refuse_yield_lost_block(c, id);
       emit_indent(b, indent);
       buf_puts(b, "sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1])));\n");
       emit_indent(b, indent);

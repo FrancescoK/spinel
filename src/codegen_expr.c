@@ -6102,6 +6102,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          (`block_given? ? yield : x`) folds its guard to a compile-time false and
          sits inside an `if (0)`, so the raise never executes there. The trailing
          sentinel keeps the comma expression well-typed for the value position. */
+      refuse_yield_lost_block(c, id);
       buf_puts(b, "(sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1]))), "
                   "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), ");
       /* the sentinel in the slot's own C type: this dead arm still has to

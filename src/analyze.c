@@ -50434,8 +50434,12 @@ static void an_phase_procs(Compiler *c) {
      blk_param pass above already kept it yields=0 when self-recursive);
      this loop covers bodies with literal `yield`s. */
   int lowered_recursive_yield = 0;
-  /* a caller whose block goes to a method lowered after it (a returning proc
-     asks whether its block is lifted) is looked at again */
+  /* A method lowered here takes its block as a real proc, so a literal block
+     passed to it is lifted from then on (a_block_is_lifted). A caller defined
+     before it that hands it a block, and whose question asks whether that
+     block is lifted -- a returning proc in the block, a `yield` in it -- is
+     looked at again, so the order of the definitions does not decide. Each
+     pass after the first lowers one more method or ends the loop. */
   for (int again_ret = 1; again_ret; ) {
   again_ret = 0;
   for (int mi = 1; mi < c->nscopes; mi++) {
@@ -50535,7 +50539,7 @@ static void an_phase_procs(Compiler *c) {
       yblk->is_cell = 1;
     }
     lowered_recursive_yield = 1;
-    again_ret |= ret_proc;
+    again_ret = 1;
   }
   }
 

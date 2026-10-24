@@ -787,6 +787,15 @@ void emit_state_release(EmitUnitState *s, int rollback);
 extern TyKind g_bv_dest_ty;
 extern int g_c_loop_depth;   /* C-loop nesting inside the current fn body */
 extern int g_in_proc_body;   /* emitting a _proc_N function body */
+/* The yielding method, spliced into its caller with a block, whose literal
+   block this proc body is (-1 for none): a `yield` of that method in here
+   cannot reach the caller's block. */
+extern int g_proc_lost_yield_scope;
+void refuse_yield_lost_block(Compiler *c, int id);
+/* Entering the body of a proc made from a literal block of scope `bs`, with
+   `outer_block` the block the enclosing emission splices for its yields:
+   sets g_proc_lost_yield_scope and returns the value to restore. */
+int proc_lost_yield_enter(Compiler *c, int outer_block, Scope *bs);
 /* Set while the wrapped splice's result temp is poly, so a value-carrying
    break/next boxes a scalar value to match. */
 extern int g_ie_res_poly;
