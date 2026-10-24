@@ -24045,8 +24045,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     /* (an interpolation is a call form too: it runs its parts and answers a
        new String. Left unbound, `"k#{f}" + g.call` declined the rewrite,
        and the hold converting g's boxed answer ran g ahead of f) */
+    /* (...and so is a variable's write, which runs its value and answers
+       it: left unbound, `(s = "k#{t}") + g.call` ran g ahead of t, #9258) */
     int bindable = !route_op && (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode || k == NK_InterpolatedStringNode ||
+                    k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode ||
+                    k == NK_GlobalVariableWriteNode || k == NK_ClassVariableWriteNode ||
                     (k == NK_ParenthesesNode && pty != TY_STRING && pty != TY_STRBUF) ||
                     state_read || local_read || held[i]);
     /* ...and any other value (a parenthesized statement, a write, a
