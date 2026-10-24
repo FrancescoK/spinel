@@ -1193,17 +1193,97 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
   return sc;
 }
 static int program_defines_name(const NodeTable *nt, int n0, const char *name);
-/* Does the program open a class or module whose header names NAME? */
-static int ied_program_class(const NodeTable *nt, int n0, const char *name) {
-  for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (cn && sp_streq(cn, name)) return 1;
+/* The paths the program writes, for the receiver of an instance_eval:
+   each class or module header's full path ("A::B"), each value constant's,
+   and the lexical path (the headers around it) of each instance_eval call. */
+typedef struct {
+  ANameHash classes, values;
+  char **keep; int nkeep, ckeep;
+  char **lex;              /* [n0] an instance_eval call's lexical path, else NULL */
+} IedPaths;
+
+static const char *ied_keep(IedPaths *ip, const char *s) {
+  if (ip->nkeep == ip->ckeep) {
+    ip->ckeep = ip->ckeep ? ip->ckeep * 2 : 64;
+    ip->keep = (char **)realloc(ip->keep, sizeof(char *) * (size_t)ip->ckeep);
+    if (!ip->keep) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  return 0;
+  char *d = strdup(s);
+  if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return ip->keep[ip->nkeep++] = d;
 }
+
+/* BASE (a path, "" at the top) joined with the constant path NODE as
+   written, into OUT; 0 when NODE is no plain constant path. A `::`-anchored
+   path starts at the top. */
+static int ied_join(const NodeTable *nt, const char *base, int node, char *out, size_t cap) {
+  char chain[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0, n = qc_read_chain(nt, node, chain, &abs_anchor);
+  if (n <= 0) return 0;
+  snprintf(out, cap, "%s", abs_anchor ? "" : base);
+  for (int i = 0; i < n; i++) {
+    if (out[0]) strncat(out, "::", cap - strlen(out) - 1);
+    strncat(out, chain[i], cap - strlen(out) - 1);
+  }
+  return 1;
+}
+
+static void ied_walk(const NodeTable *nt, int node, const char *path, int n0, IedPaths *ip) {
+  if (node < 0 || node >= n0) return;
+  NodeKind k = nt_kind(nt, node);
+  char full[1024];
+  if ((k == NK_ClassNode || k == NK_ModuleNode) &&
+      ied_join(nt, path, nt_ref(nt, node, "constant_path"), full, sizeof full)) {
+    if (!anh_has(&ip->classes, full)) anh_add(&ip->classes, ied_keep(ip, full));
+    ied_walk(nt, nt_ref(nt, node, "superclass"), path, n0, ip);
+    ied_walk(nt, nt_ref(nt, node, "body"), full, n0, ip);
+    return;
+  }
+  if (k == NK_ConstantWriteNode && nt_str(nt, node, "name")) {
+    snprintf(full, sizeof full, "%s%s%s", path, path[0] ? "::" : "", nt_str(nt, node, "name"));
+    if (!anh_has(&ip->values, full)) anh_add(&ip->values, ied_keep(ip, full));
+  }
+  if (k == NK_ConstantPathWriteNode && ied_join(nt, path, nt_ref(nt, node, "target"), full, sizeof full) &&
+      !anh_has(&ip->values, full))
+    anh_add(&ip->values, ied_keep(ip, full));
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) ip->lex[node] = (char *)ied_keep(ip, path);
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) ied_walk(nt, nt_ref_at(nt, node, i), path, n0, ip);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) ied_walk(nt, ids[j], path, n0, ip);
+  }
+}
+
+/* Does the constant RECV, written at lexical path LEX, name a class or
+   module the program opens? Looked up as Ruby does, from the innermost
+   enclosing path out to the top: the first path the program gives a
+   class or a value decides, and a value (`Two::Item = Object.new`) is no
+   class to reopen. */
+static int ied_names_class(const NodeTable *nt, const IedPaths *ip, const char *lex, int recv) {
+  char base[1024], full[1024];
+  snprintf(base, sizeof base, "%s", lex ? lex : "");
+  for (;;) {
+    if (!ied_join(nt, base, recv, full, sizeof full)) return 0;
+    if (anh_has(&ip->values, full)) return 0;
+    if (anh_has(&ip->classes, full)) return 1;
+    if (!base[0]) return 0;
+    char *cut = strrchr(base, ':');
+    if (cut && cut > base) cut[-1] = '\0';
+    else base[0] = '\0';
+  }
+}
+
+static void ied_paths_free(IedPaths *ip) {
+  for (int i = 0; i < ip->nkeep; i++) free(ip->keep[i]);
+  free(ip->keep); free(ip->lex);
+  anh_free(&ip->classes); anh_free(&ip->values);
+}
+
 /* The block statements of an instance_eval call ID with a literal block,
    and whether one of them is a `def` (self's or receiverless) and all of
    them are: -1 when none is such a `def`, 0 when others stand beside it. */
@@ -1241,6 +1321,10 @@ int desugar_instance_eval_defs(Compiler *c) {
     const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int i = 0; i < bn; i++) if (bb[i] >= 0 && bb[i] < n0) body_of[bb[i]] = nt_ref(nt, id, "constant_path") + 1;
   }
+  IedPaths ip = {0};
+  ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
+  if (!ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  ied_walk(nt, nt->root_id, "", n0, &ip);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -1248,17 +1332,20 @@ int desugar_instance_eval_defs(Compiler *c) {
     const int *stmts; int n;
     int pure = ied_block_defs(nt, id, &stmts, &n);
     if (pure < 0) continue;
+    /* an argument is evaluated by the call (instance_exec's, handed to the
+       block), which the reopening never runs */
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
     int recv = nt_ref(nt, id, "receiver"), cls = -1;
     NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
-    if ((rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, recv, "name") &&
-        ied_program_class(nt, n0, nt_str(nt, recv, "name")))
+    if ((rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && ied_names_class(nt, &ip, ip.lex[id], recv))
       cls = recv;
     else if (rk == NK_SelfNode && body_of[id] > 0)
       cls = body_of[id] - 1;
-    if (!pure || cls < 0) {
+    if (!pure || cls < 0 || an > 0) {
       unsupported_feature_collect(c, id, "a method defined in an instance_eval block, other than one of defs only "
-                                         "on a class or module the program defines, is not supported: name the "
-                                         "receiver (`def Klass.m`) instead");
+                                         "on a class or module the program defines and without arguments, is not "
+                                         "supported: name the receiver (`def Klass.m`) instead");
       continue;
     }
     for (int k = 0; k < n; k++) {
@@ -1275,6 +1362,7 @@ int desugar_instance_eval_defs(Compiler *c) {
     changed = 1;
   }
   free(body_of);
+  ied_paths_free(&ip);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }

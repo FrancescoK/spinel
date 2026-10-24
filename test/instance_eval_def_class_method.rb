@@ -33,3 +33,16 @@ p Outer::Shape.count, Outer::Shape.twice(4)
 p Outer::Shape.label, Outer::Square.label, Outer::Circle.label, Outer::Circle.new.label
 p Holder.made, Holder.made_too
 p Outer::Shape.respond_to?(:twice), Outer::Shape.new.respond_to?(:twice)
+
+# the receiver is read by its whole path: a class of the same leaf in
+# another module is another class, and a path written inside a module
+# body is looked up from there
+module Left
+  class Part; end
+end
+module Right
+  class Part; end
+  Part.instance_eval { def side = :right }
+end
+Left::Part.instance_eval { def side = :left }
+p Left::Part.side, Right::Part.side

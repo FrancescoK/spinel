@@ -721,13 +721,21 @@ spinel: test/reject/inherited_singleton_alias_later_redefined.rb:10: D.o: alias 
 == test/reject/inherited_singleton_alias_later_redefined.rb [promote] rc=1
 spinel: test/reject/inherited_singleton_alias_later_redefined.rb:10: D.o: alias of an inherited method that P defines again after it is not supported; see docs/limitations.md
 == test/reject/instance_eval_def_beside_statements.rb [default] rc=1
-spinel: test/reject/instance_eval_def_beside_statements.rb:6: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines, is not supported: name the receiver (`def Klass.m`) instead
+spinel: test/reject/instance_eval_def_beside_statements.rb:6: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
 == test/reject/instance_eval_def_beside_statements.rb [promote] rc=1
-spinel: test/reject/instance_eval_def_beside_statements.rb:6: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines, is not supported: name the receiver (`def Klass.m`) instead
+spinel: test/reject/instance_eval_def_beside_statements.rb:6: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
 == test/reject/instance_eval_def_unnamed_receiver.rb [default] rc=1
-spinel: test/reject/instance_eval_def_unnamed_receiver.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines, is not supported: name the receiver (`def Klass.m`) instead
+spinel: test/reject/instance_eval_def_unnamed_receiver.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
 == test/reject/instance_eval_def_unnamed_receiver.rb [promote] rc=1
-spinel: test/reject/instance_eval_def_unnamed_receiver.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines, is not supported: name the receiver (`def Klass.m`) instead
+spinel: test/reject/instance_eval_def_unnamed_receiver.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
+== test/reject/instance_eval_def_value_constant.rb [default] rc=1
+spinel: test/reject/instance_eval_def_value_constant.rb:12: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
+== test/reject/instance_eval_def_value_constant.rb [promote] rc=1
+spinel: test/reject/instance_eval_def_value_constant.rb:12: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
+== test/reject/instance_exec_def_with_argument.rb [default] rc=1
+spinel: test/reject/instance_exec_def_with_argument.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
+== test/reject/instance_exec_def_with_argument.rb [promote] rc=1
+spinel: test/reject/instance_exec_def_with_argument.rb:8: a method defined in an instance_eval block, other than one of defs only on a class or module the program defines and without arguments, is not supported: name the receiver (`def Klass.m`) instead
 == test/reject/instance_exec_default_ivar_write.rb [default] rc=1
 spinel: test/reject/instance_exec_default_ivar_write.rb:6: an instance variable written in a block that instance_exec or instance_eval runs on a value with no instance variable layout (nil, a builtin value, Object.new): the value has no slot to hold it at run time
 spinel: 1 refusal, nothing written
