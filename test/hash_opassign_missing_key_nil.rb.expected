@@ -1,0 +1,16 @@
+1
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '-' for nil
+NoMethodError: undefined method '*' for nil
+{1 => 0}
+NoMethodError: undefined method '+' for nil
+{"a" => 3}
+NoMethodError: undefined method '+' for nil
+{1 => "ab"}
+{2 => 2}
+{1 => 7, 2 => 20}
+{5 => 4}
+{1 => "xy"}
+{"k" => 1, "n" => 8}
+{"x" => 3, "y" => 1, "z" => 1}

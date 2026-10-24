@@ -24409,9 +24409,12 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
          sp_streq(op, "^") ? "sp_poly_bxor" : NULL) : NULL;
     int eff = g_pre && subtree_has_side_effect(c, v);
     char slot[256];
-    /* an entry that may hold nil (D3b-ii) is read with it: `nil + 1` is
-       CRuby's NoMethodError, as a miss without a default is */
-    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT && (hash_vals_nullable(c, recv) || ok))
+    /* An Integer slot is read with its nil, as a plain `h[k] + 1` reads it
+       (emit_op_hash_aref): a miss on a Hash with no default, or an entry
+       that holds nil (D3b-ii), is `nil + 1`, CRuby's NoMethodError. The
+       default is a run-time property (default_nil), so the plain getter,
+       which answers default_v (0) for a miss, would fold it as 0. */
+    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT)
       snprintf(slot, sizeof slot, "sp_oint_val(sp_%sHash_oget%s(_t%d, %s), \"%s\")", hn, rs, ta, rk, op);
     else
       snprintf(slot, sizeof slot, "sp_%sHash_get%s(_t%d, %s)", hn, rs, ta, rk);
@@ -24422,7 +24425,9 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     char *rhs = iow_rhs(c, v, pf ? IOW_RHS_BOXED : rhs_int ? IOW_RHS_INT : IOW_RHS_EXPR, eff ? b : NULL);
     buf_printf(b, "%s _t%d = ", c_type_name(vt), tv);
     /* a poly-valued slot folds via the dynamic operator on boxed operands */
-    if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
+    /* a String slot that misses (no default) reads nil: `nil + "x"` is
+       NoMethodError, which sp_str_plus raises (sp_str_concat took nil as "") */
+    if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_plus(%s, %s)", slot, rhs);
     else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
     else if (iow_scalar_fold(c, vt, op, rhs_int ? TY_INT : comp_ntype(c, v), v, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
