@@ -2166,9 +2166,6 @@ static void repr_share_seal(Compiler *c) {
             c->share_borrows);
     share_facts_drop(closed);
   }
-  /* a route master refuses, left to the rule: refused as master does
-     unless the final facts share its String */
-  share_routes_check(c);
   if (refusals_go_on()) {
     /* SP_COLLECT_ERRORS and --emit-types: every refused holder and
        literal, as the routes above were */

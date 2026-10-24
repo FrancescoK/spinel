@@ -134,41 +134,6 @@ int share_elem_holders(const Compiler *c, int e);
    instead of a copy. Answers how many it marked. */
 int share_mark_borrows(Compiler *c);
 
-/* A master route refusal: a String handed along a route that would copy
-   it. Under --share-strings the route is the rule's, as share_route_defer
-   says. */
-typedef struct ShareRoute {
-  int site;            /* the node the refusal names */
-  int value, elems;    /* the String handed along (elems: the Strings the
-                          container `value` names holds) */
-  int to, to_elems;    /* the holder it reaches: node `to`'s value (to_elems:
-                          its elements), or with to_name, that local in the
-                          scope of node `to`; -1 none */
-  const char *to_name;
-  int carry;           /* the node that hands the String along, or -1
-                          (SHARE_CARRY_NONE); SHARE_CARRY_COPY when the
-                          route hands over a copy whatever it reads */
-  int sole;            /* a local's read node whose String must have no other
-                          name, or -1: a plain local (no parameter, no
-                          capture) whose class holds one name at most
-                          (share_node_one_name), asked of the final facts */
-  int fresh_elems;     /* (with elems) the container's elements reach only the
-                          route's holder: an element iterator answering its
-                          receiver whose value is dropped, so a container
-                          whose elements no name holds hands on Strings no
-                          other name holds */
-  int rt_site, rt_grow; /* (scan routes) the call whose block changes no
-                          String in place but by growing or clearing it
-                          (scan_block_changes), or -1: a failed sole check
-                          leaves its subject to a run-time length check
-                          (rt_grow: one is needed, on a handle subject)
-                          instead of refusing */
-  char *msg;           /* (a kept route's message) */
-} ShareRoute;
-/* a route's sole when the subject is no local the facts can be asked of */
-enum { SHARE_SOLE_UNVOUCHED = -2 };
-enum { SHARE_CARRY_NONE = -1, SHARE_CARRY_COPY = -2 };
-ShareRoute share_route(int site, int value, int elems);
 /* Is node n's value a String the walk reached and found no identity in (a
    fresh one no other name holds)? */
 int share_node_fresh(const Compiler *c, int n);
@@ -209,19 +174,6 @@ int share_iter_answers_handles(const Compiler *c, int call);
    meets what the walk does not follow? */
 int share_node_anchored(const Compiler *c, int n);
 
-/* A master route-refusal site asks this first. With the flag off it answers
-   0 and the site refuses as before. With it on, the route is the rule's,
-   and it passes when the facts see it (the String and the holder it
-   reaches in one class) and either the rule does not share that class (no
-   other name can see the copy) or it does and `carry` hands over the
-   handle (a SHARE_CARRY_COPY route never does); every other holder of a
-   shared class holds the handle or is refused by name at seal. Asked while the analysis runs, the facts are not
-   final yet: the route is kept, and repr_seal refuses it with `msg` unless
-   the final facts pass (share_routes_check). Asked from codegen, it answers
-   from the final facts. */
-int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg);
-void share_routes_check(Compiler *c);
-void share_routes_free(Compiler *c);
 
 /* The flows the walk recorded (ShareFlowKind), by index
    0..share_flow_count-1: the kind, the site and the value node. */

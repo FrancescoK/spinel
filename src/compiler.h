@@ -1375,10 +1375,6 @@ typedef struct {
      and the share classes that rule reads (share.h), rebuilt as the
      analysis goes. Off, nothing builds them and the C is unchanged. */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
-  /* the route refusals the flag left to the rule (share_route_defer),
-     checked against the final facts at seal */
-  struct ShareRoute *share_route;
-  int nshare_route, cshare_route;
   /* the program's parent map, for the emitter's questions about where a node
      sits (codegen_util.c's codegen_parents); rebuilt when the node table
      changed, freed with the Compiler */

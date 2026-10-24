@@ -6647,18 +6647,6 @@ int share_store_needs_handle(Compiler *c, int v) { return sh_needs_handle(c, v, 
 
 /* ---- master's route refusals under the flag (share.h) ---- */
 
-ShareRoute share_route(int site, int value, int elems) {
-  ShareRoute r;
-  memset(&r, 0, sizeof r);
-  r.site = site;
-  r.value = value;
-  r.elems = elems;
-  r.to = -1;
-  r.carry = -1;
-  r.sole = -1;
-  r.rt_site = -1;
-  return r;
-}
 
 static int sh_ivar_owner(Compiler *c, int node);
 /* A String method answering its receiver or nil (bop_share_self_answer:
@@ -6847,16 +6835,6 @@ static int sh_node_root(const ShareFacts *F, int n, int elems) {
   return r;
 }
 
-/* The class the route reaches: local to_name in the scope of node `to`,
-   or node `to`'s value (with to_elems, its elements). */
-static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
-  const ShareFacts *F = c->share;
-  if (!q->to_name) return sh_node_root(F, q->to, q->to_elems);
-  Scope *s = q->to >= 0 ? comp_scope_of((Compiler *)c, q->to) : NULL;
-  LocalVar *lv = s ? scope_local(s, q->to_name) : NULL;
-  int h = lv ? share_local_holder(c, (int)(s - c->scopes), (int)(lv - s->locals)) : -1;
-  return h >= 0 ? sh_root(F, F->helem[h]) : -1;
-}
 
 /* The route's answer from the final facts: 1 when it compiles as the rule
    says, 0 when it has to stay refused. The facts must see the route (the
@@ -6865,7 +6843,6 @@ static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
    the rule does not share has one name, and the copy is unobservable; one
    it shares holds the handle in every holder (seal's holder check), and
    the carrying node hands it along. */
-enum { SH_ROUTE_OK, SH_ROUTE_UNSEEN, SH_ROUTE_COPIES };
 /* Is node n (through parentheses) an explicit writer's attribute assignment
    whose value the facts kept apart from its right-hand side's String
    (sh_settle_assign_joins): nothing changes that String in place or sees it
@@ -6893,131 +6870,7 @@ int share_assign_unjoined(const Compiler *c, int n) {
   return sh_find((ShareFacts *)F, F->nval[n]) != sh_find((ShareFacts *)F, F->nval[argv[0]]);
 }
 
-/* Does no holder name class r, and no fact mark it? */
-static int sh_class_unnamed(const ShareFacts *F, int r) {
-  if (F->flags[r]) return 0;
-  for (int h = 0; h < F->nh; h++)
-    if (sh_root(F, F->helem[h]) == r) return 0;
-  return 1;
-}
-/* Does subtree n mention local `name` (read or written, in a nested block
-   too; a def's locals are its own)? */
-static int sh_mentions_local(const NodeTable *nt, int n, const char *name) {
-  if (n < 0) return 0;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_DefNode) return 0;
-  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
-       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
-       k == NK_LocalVariableAndWriteNode) && sp_streq(nt_str(nt, n, "name"), name))
-    return 1;
-  for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (sh_mentions_local(nt, nt_ref_at(nt, n, i), name)) return 1;
-  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
-    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (sh_mentions_local(nt, ids[j], name)) return 1;
-  }
-  return 0;
-}
-/* A scan route's subject (sole) whose class has more names than it: are
-   they all names the block cannot reach the subject through while the scan
-   runs? The block's own parameter (each match, a new String, which `break
-   m` joins to where the scan's value goes), and plain locals the block does
-   not mention (`x = s.scan(/./) { |m| break m }`: x is s once the scan
-   answers its receiver, never while it runs). A local of no other kind, an
-   element of a container a name keeps (`box = [s]`), or any other holder,
-   keeps the refusal. */
-static int sh_sole_unreached(const Compiler *c, const ShareRoute *q) {
-  const ShareFacts *F = c->share;
-  const NodeTable *nt = c->nt;
-  int r = sh_node_root(F, q->sole, 0);
-  if (r < 0 || (F->flags[r] & (SHF_UNKNOWN | SHF_MULTI)) || !q->to_name || q->to < 0) return 0;
-  int body = nt_ref(nt, q->to, "body");
-  Scope *bs = comp_scope_of((Compiler *)c, q->to);
-  int seen = 0;
-  for (int h = 0; h < F->nh; h++) {
-    if (sh_root(F, F->helem[h]) != r) continue;
-    seen++;
-    const ShareHolder *sh = &F->h[h];
-    if (sh->kind != SHK_LOCAL) return 0;
-    Scope *hs = &c->scopes[sh->scope];
-    LocalVar *lv = &hs->locals[sh->local];
-    if (hs == bs && lv->name && sp_streq(lv->name, q->to_name)) continue;
-    if (!lv->name || lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives ||
-        sh_mentions_local(nt, body, lv->name))
-      return 0;
-  }
-  /* (an element slot of a container a name keeps is a name too, and no
-     holder of its own: sh_finalize counts it) */
-  return sh_class_holders(F, r) <= seen;
-}
 
-/* Does the route's sole hold: a local the final facts show as a plain
-   local that no other holder, no capture and nothing the walk does not
-   follow reaches? A scan block that never returns to the scan cannot
-   change the subject under it (share_block_returns), whatever names the
-   subject has. */
-static int sh_route_sole_ok(const Compiler *c, const ShareRoute *q) {
-  if (q->sole == -1 || (q->to >= 0 && !share_block_returns(c, q->to))) return 1;
-  if (q->sole < 0) return 0;
-  Scope *ss = comp_scope_of((Compiler *)c, q->sole);
-  LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
-  return sl && !sl->is_param && !sl->is_block_param && !sl->is_cell && !sl->cell_outlives &&
-         (share_node_one_name(c, q->sole) || sh_sole_unreached(c, q));
-}
-/* A scan whose sole fails can leave its subject to the run-time length
-   check (rt_site): needed only where the block grows or clears the
-   subject's own local (scan_block_changes), whose length the check reads. */
-static int sh_route_rt_watch(const Compiler *c, const ShareRoute *q) {
-  return q->rt_site >= 0;
-}
-static int sh_route_why(const Compiler *c, const ShareRoute *q) {
-  const ShareFacts *F = c->share;
-  if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
-  /* a route that vouches for a local by its being the only name its String
-     has, unless the run-time check watches the subject */
-  if (!sh_route_sole_ok(c, q) && !sh_route_rt_watch(c, q)) return SH_ROUTE_UNSEEN;
-  int v = sh_node_root(F, q->value, q->elems);
-  /* a value the walk reached and found no String identity in (`"a#{i}"`,
-     a builtin's fresh answer) is a String no other name holds: its class
-     is the holder it reaches */
-  if (v < 0 && F && !q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
-      F->nval[q->value] == -1)
-    v = sh_route_to_root(c, q);
-  /* the same for the elements of a container the walk reached and found
-     none in -- a fresh one (`s.split("\n")`) or one whose elements no name
-     holds -- where the route's site vouches that they reach only its holder
-     (fresh_elems: `each` over it, its value dropped); an iterator that keeps
-     the elements it yields (partition, select) names them again */
-  if (v < 0 && F && q->elems && q->fresh_elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
-      (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
-    v = sh_route_to_root(c, q);
-  /* ...and elements whose class no name holds and nothing marks: a scan
-     whose block breaks with its match answers that match, so its value's
-     class is the parameter's, whose elements are no String of a name */
-  if (v >= 0 && q->elems && q->fresh_elems && q->sole >= 0 && sh_class_unnamed(F, v)) v = sh_route_to_root(c, q);
-  if (v < 0) return SH_ROUTE_UNSEEN;
-  if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
-  if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
-  /* a fresh Array's elements bound by an iterator that keeps them: the
-     iterator's typed answer holds copies (only a dropped `each` hands each
-     one to its block alone, and a retaining iterator over a fresh Array
-     answers the handles instead, whatever round recorded the route:
-     share_iter_fresh_elems asks the final facts) */
-  if (q->elems && !q->fresh_elems && !share_iter_fresh_elems(c, q->site) &&
-      share_node_fresh_elems(c, q->value))
-    return SH_ROUTE_COPIES;
-  if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
-  return q->carry < 0 || share_node_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
-}
-static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
-  return sh_route_why(c, q) == SH_ROUTE_OK;
-}
-/* A route that holds by the run-time check marks its scan to emit it
-   (scan_rtcheck: the subject's length, read again after each turn). */
-static void sh_route_rt_mark(Compiler *c, const ShareRoute *q) {
-  if (q->rt_site >= 0 && q->rt_grow && !sh_route_sole_ok(c, q))
-    nt_node_set_int((NodeTable *)c->nt, q->rt_site, "scan_rtcheck", 1);
-}
 
 /* Is node n inside a method the program never names (sh_dead_nodes)? Such a
    node runs nothing: the walk leaves it out, and a route recorded there, or
@@ -7027,77 +6880,8 @@ int share_node_dead(const Compiler *c, int n) {
   return F && F->dead && n >= 0 && n < F->nnodes && F->dead[n];
 }
 
-int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
-  if (!c->share_strings) return 0;
-  /* one representation: every route hands the handle on as it is (see
-     share_routes_check), so none is refused, before or after the seal; a
-     route's run-time mark (a scan's length check) is set as for one the
-     facts vouch for */
-  if (g_one_string) { sh_route_rt_mark(c, q); return 1; }
-  if (share_node_dead(c, q->site) || share_node_dead(c, q->to)) return 1;
-  if (repr_sealed()) {
-    if (!sh_route_ok(c, q)) return 0;
-    sh_route_rt_mark(c, q);
-    return 1;
-  }
-  for (int i = 0; i < c->nshare_route; i++) {
-    const ShareRoute *r = &c->share_route[i];
-    if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
-        r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
-        r->sole == q->sole && r->rt_site == q->rt_site && r->rt_grow == q->rt_grow &&
-        (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
-      return 1;
-  }
-  if (c->nshare_route >= c->cshare_route) {
-    c->cshare_route = c->cshare_route ? c->cshare_route * 2 : 16;
-    c->share_route = realloc(c->share_route, sizeof(ShareRoute) * (size_t)c->cshare_route);
-  }
-  ShareRoute *r = &c->share_route[c->nshare_route++];
-  *r = *q;
-  r->msg = strdup(msg);
-  return 1;
-}
 
-void share_routes_check(Compiler *c) {
-  /* one representation: every slot is the handle and a route hands it on
-     as it is (sp_String_new_shared of a handle is that handle), so no
-     route copies; the deferred routes are not refused */
-  if (g_one_string) return;
-  for (int i = 0; i < c->nshare_route; i++) {
-    const ShareRoute *r = &c->share_route[i];
-    /* (a method the program never names runs nothing) */
-    if (share_node_dead(c, r->site) || share_node_dead(c, r->to)) continue;
-    const char *stats = getenv("SPINEL_SHARE_STATS");
-    if (stats && stats[0] == '2')
-      fprintf(stderr, "share-route: site %d value %d%s to %d%s%s%s carry %d ok=%d\n", r->site, r->value,
-              r->elems ? " (elements)" : "", r->to, r->to_elems ? " (elements)" : "",
-              r->to_name ? " local " : "", r->to_name ? r->to_name : "", r->carry, sh_route_ok(c, r));
-    int why = sh_route_why(c, r);
-    if (why == SH_ROUTE_OK) {
-      sh_route_rt_mark(c, r);
-      continue;
-    }
-    /* the refusal says which half the rule could not answer */
-    const char *lead = why == SH_ROUTE_UNSEEN
-      ? "the share analysis does not follow this route, so it cannot prove "
-        "that no other name sees the copy: "
-      : "this String is shared with another name, and the route does not "
-        "carry the shared handle yet: ";
-    size_t n = strlen(lead) + strlen(r->msg) + 1;
-    char *m = malloc(n);
-    if (!m) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    snprintf(m, n, "%s%s", lead, r->msg);
-    unsupported_feature_collect(c, r->site, m);
-    free(m);
-  }
-}
 
-void share_routes_free(Compiler *c) {
-  for (int i = 0; i < c->nshare_route; i++) free(c->share_route[i].msg);
-  free(c->share_route);
-  c->share_route = NULL;
-  c->nshare_route = c->cshare_route = 0;
-}
 
 /* Under SPINEL_SHARE_STATS, a holder of `closed` (a build without UNKNOWN)
    with the same key as holder h of c->share: its class's facts. */
