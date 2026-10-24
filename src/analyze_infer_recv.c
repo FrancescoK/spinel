@@ -1880,6 +1880,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       is_str_each_iter(name) && !an_user_defines_or_reads(c, name)) {
     if (poly_str_iter_enum(c, id)) { *out = TY_ENUMERATOR; return 1; }
+    /* an IO's codepoints are an Enumerator over the stream, a String's an Array */
+    if (poly_io_codepoint_enum(c, id)) { *out = TY_POLY; return 1; }
     if (is_byte_codepoint_each(name)) { *out = TY_INT_ARRAY; return 1; }
     { *out = TY_STR_ARRAY; return 1; }
   }
@@ -2214,6 +2216,17 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
    what an Array does not answer (`next`, `with_index`). Walked where it is
    made otherwise, it walks the Array chars, lines or bytes answers, the
    same items read at the same point, and keeps their element types. */
+/* Does a blockless, argumentless each_codepoint on a boxed receiver (call
+   id) go to the boxed IO arm (sp_poly_io_codepoint_enum), which answers a
+   stream Enumerator for an IO and the String forms otherwise? Only where
+   the program can hold an IO in a box (an_program_makes_io); inference and
+   both emitter tests read this one answer. */
+int poly_io_codepoint_enum(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  return name && sp_streq(name, "each_codepoint") && nt_ref(nt, id, "arguments") < 0 &&
+         nt_ref(nt, id, "block") < 0 && an_program_makes_io(c);
+}
 int poly_str_iter_enum(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int q = comp_recv_parent(c, id);

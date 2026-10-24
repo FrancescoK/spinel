@@ -479,6 +479,7 @@ int curry_apply_info(Compiler *c, int node, int *out_complete, TyKind *out_ret);
 int curry_count_max(Compiler *c, int recv);
 int an_program_builds_methods(Compiler *c);   /* the program builds Method objects at all */
 int an_program_makes_bsearch_enum(Compiler *c);   /* Array#bsearch without a block, anywhere */
+int an_program_makes_io(Compiler *c);   /* a boxed value may be an IO (a syntactic test) */
 int an_zero_arg_builtin_shadowed(Compiler *c, const char *name, int argc);
 int an_user_recv_defines_method(Compiler *c, const char *name);
 /* obj.methods / public_methods / singleton_methods on an instance of `cid`

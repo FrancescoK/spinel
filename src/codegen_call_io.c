@@ -856,6 +856,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (boxed_winsize_set(c, name, argc, argv)) ||
        ((sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) && argc == 1) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
+       poly_io_codepoint_enum(c, id) ||
        sp_streq(name, "readpartial") ||
        /* a socket read back out of a container: its non-blocking connect and
           its options, as the typed socket arms answer them */
@@ -956,6 +957,19 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* an attr writer answers `x.sync = v` as a reader answers `x.sync` */
       char base[256];
       if (setter_base_name(name, base, sizeof base) && comp_writer_in_chain(c, k, base, NULL)) iocand = 1;
+    }
+    /* each_codepoint: the runtime answers a box, read back at the call's
+       representation (an Enumerator where it is kept) */
+    if (!iocand && poly_io_codepoint_enum(c, id)) {
+      Repr r = repr_of(c, id);
+      Buf eb; memset(&eb, 0, sizeof eb);
+      buf_puts(&eb, "sp_poly_io_codepoint_enum("); emit_boxed(c, recv, &eb);
+      buf_printf(&eb, ", %d)", poly_str_iter_enum(c, id));
+      if (r.kind == RK_BOXED) buf_puts(b, eb.p);
+      else emit_unbox_text(c, r.as_ty, eb.p, b);
+      free(eb.p);
+      c->args_in_call = recv;
+      return 1;
     }
     /* printf: the receiver and every argument, the format included, are
        evaluated and rooted before the handle is unboxed, so a receiver that

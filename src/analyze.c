@@ -1624,6 +1624,39 @@ int an_program_makes_bsearch_enum(Compiler *c) {
   return memo;
 }
 
+/* Can a boxed value in the program be an IO? A conservative syntactic
+   test: the program names an IO class or stream constant (File, IO, the
+   STD streams, ARGF, Pathname, Tempfile, a *Socket or *Server class),
+   reads $stdin / $stdout / $stderr, or calls Kernel#open. Without one, a
+   boxed iterator keeps its String-only forms. */
+static int an_io_const_name(const char *nm) {
+  static const char *const names[] = { "File", "IO", "STDIN", "STDOUT", "STDERR", "ARGF",
+                                       "Pathname", "Tempfile" };
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (sp_streq(nm, names[i])) return 1;
+  size_t n = strlen(nm);
+  return (n >= 6 && sp_streq(nm + n - 6, "Socket")) || (n >= 6 && sp_streq(nm + n - 6, "Server"));
+}
+int an_program_makes_io(Compiler *c) {
+  static const NodeTable *memo_nt = NULL;
+  static int memo_n = -1, memo = 0;
+  const NodeTable *nt = c->nt;
+  if (memo_nt == nt && memo_n == nt->count) return memo;
+  memo = 0;
+  for (int id = 0; id < nt->count && !memo; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) memo = an_io_const_name(nm);
+    else if (k == NK_GlobalVariableReadNode)
+      memo = sp_streq(nm, "$stdin") || sp_streq(nm, "$stdout") || sp_streq(nm, "$stderr");
+    else if (k == NK_CallNode)
+      memo = sp_streq(nm, "open") && nt_ref(nt, id, "receiver") < 0;
+  }
+  memo_nt = nt; memo_n = nt->count;
+  return memo;
+}
+
 /* The block of a call whose target hands the block on to a poly receiver, or
    to a method that keeps it. The target is yield-inlined, so the block is
    spliced into its body -- and lands on the dispatch or the keeper's call

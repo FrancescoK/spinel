@@ -3520,7 +3520,9 @@ sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
 }
 /* Recognize the annotated materialized walks in the existing return
    dispatch; an inspect label must not turn a supported walk into an error. */
+static void sp_io_codepoint_gen(sp_Fiber *f);
 static int sp_enum_returns_source(sp_Enumerator *e) {
+  if (e->gen == sp_io_codepoint_gen) return 1;
   const char *m = e->meth;
   return m && (strcmp(m, "each") == 0 || strcmp(m, "each_with_index") == 0 ||
                strncmp(m, "cycle(", 6) == 0 || strncmp(m, "combination(", 12) == 0 ||
@@ -3826,6 +3828,32 @@ sp_Enumerator *sp_loop_enum(void) {
   return e;
 }
 
+/* IO codepoints are read when the Enumerator is walked, retaining its source. */
+typedef struct { sp_File *io; } sp_IOCodepointCap;
+static void sp_io_codepoint_scan(void *p) {
+  sp_gc_mark(((sp_IOCodepointCap *)p)->io);
+}
+static void sp_io_codepoint_gen(sp_Fiber *f) {
+  sp_IOCodepointCap *cap = (sp_IOCodepointCap *)f->user_data; SP_GC_ROOT(cap);
+  const char *text = NULL; SP_GC_ROOT_STR(text);
+  while ((text = sp_File_getc(cap->io)) != NULL)
+    sp_Fiber_yield(sp_box_int(sp_str_ord(text)));
+  sp_gc_wb((void *)f);
+  f->yielded_value = sp_box_obj(cap->io, SP_BUILTIN_IO);
+}
+sp_Enumerator *sp_io_codepoint_enumerator(sp_File *io) {SP_GC_ROOT(io);
+  sp_IOCodepointCap *cap = (sp_IOCodepointCap *)sp_gc_alloc(sizeof *cap, NULL, sp_io_codepoint_scan);
+  SP_GC_ROOT(cap); cap->io = io;
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_io_codepoint_gen, cap, sp_box_nil());
+  return sp_enum_with_src(e, sp_box_obj(io, SP_BUILTIN_IO), SPL("each_codepoint"));
+}
+static void sp_io_codepoint_rewind(sp_Enumerator *e) {SP_GC_ROOT(e);
+  sp_File *io = ((sp_IOCodepointCap *)e->gen_cap)->io;
+  SP_IO_OPEN(io);
+  if (fseeko(io->fp, 0, SEEK_SET) != 0) sp_raise_cls(sp_errno_class_name(errno), strerror(errno));
+  clearerr(io->fp); io->lineno = 0;
+}
+
 /* IO.copy_stream(src_path, dst_path): stream one file to another, byte count. */
 sp_int sp_io_copy_stream(const char *src, const char *dst) {SP_GC_ROOT_STR(src);SP_GC_ROOT_STR(dst);
   FILE *in = fopen(src ? src : "", "rb");
@@ -3941,6 +3969,7 @@ sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e) {SP_GC_ROOT(e); return
 sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e) {SP_GC_ROOT(e); return sp_enum_values_wrap(sp_Enumerator_peek(e)); }
 sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) { sp_gc_wb((void*)e);
   if (!e) return NULL;
+  if (e->gen == sp_io_codepoint_gen) sp_io_codepoint_rewind(e);
   if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
   else { e->cursor = 0; if (SP_UNLIKELY(e->live)) sp_enum_live_rewind(e); }
   if (e->is_bsearch) { e->bsearch_lo = 0; e->bsearch_hi = e->items ? e->items->len - 1 : -1; e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil(); e->peeked = FALSE; }
