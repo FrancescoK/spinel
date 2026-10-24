@@ -485,13 +485,15 @@ static const char *fn_of_named_setop(const char *name) {
    array as it is, a typed one converted, a boxed value coerced (an Array, or
    CRuby's TypeError), an empty literal NULL. 0 for a kind it cannot take. */
 static int setop_poly_operand(TyKind t, const char *v, Buf *b) {
-  if (t == TY_POLY_ARRAY) buf_puts(b, v);
-  else if (t == TY_INT_ARRAY) buf_printf(b, "sp_IntArray_to_poly(%s)", v);
-  else if (t == TY_STR_ARRAY) buf_printf(b, "sp_StrArray_to_poly_fmt(%s)", v);
-  else if (t == TY_FLOAT_ARRAY) buf_printf(b, "sp_FloatArray_to_poly(%s)", v);
-  else if (t == TY_POLY) buf_printf(b, "sp_poly_set_operand(%s)", v);
-  else if (t == TY_UNKNOWN) buf_puts(b, "NULL");
-  else return 0;
+  switch (t) {
+    case TY_POLY_ARRAY: buf_puts(b, v); break;
+    case TY_INT_ARRAY: buf_printf(b, "sp_IntArray_to_poly(%s)", v); break;
+    case TY_STR_ARRAY: buf_printf(b, "sp_StrArray_to_poly_fmt(%s)", v); break;
+    case TY_FLOAT_ARRAY: buf_printf(b, "sp_FloatArray_to_poly(%s)", v); break;
+    case TY_POLY: buf_printf(b, "sp_poly_set_operand(%s)", v); break;
+    case TY_UNKNOWN: buf_puts(b, "NULL"); break;
+    default: return 0;
+  }
   return 1;
 }
 
