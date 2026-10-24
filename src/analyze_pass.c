@@ -18004,11 +18004,26 @@ int infer_return_types(Compiler *c) {
   return changed;
 }
 
+/* The names a scope's list holds, as a set beside the list. A name went in
+   after a compare with every name already there, so a body naming
+   thousands of distinct methods (a class body, the top level of a Rails
+   application) cost the square of its names, and that was a third of the
+   post-fixpoint phase. The set mirrors one list: the array it last saw,
+   with the count and the last name it left there. Another list, or one
+   changed behind it, rebuilds the set from the list. */
+static ANameHash cr_set; static char **cr_set_arr; static int cr_set_n; static const char *cr_set_last;
 static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
   if (!nm) return;
-  for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], nm)) return;
-  if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
-  (*out)[(*n)++] = strdup(nm);
+  if (cr_set_arr != *out || cr_set_n != *n || (*n > 0 && (*out)[*n - 1] != cr_set_last)) {
+    anh_free(&cr_set); memset(&cr_set, 0, sizeof cr_set);
+    for (int i = 0; i < *n; i++) if (!anh_has(&cr_set, (*out)[i])) anh_add(&cr_set, (*out)[i]);
+  }
+  if (!anh_has(&cr_set, nm)) {
+    if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
+    (*out)[(*n)++] = strdup(nm);
+    anh_add(&cr_set, (*out)[*n - 1]);
+  }
+  cr_set_arr = *out; cr_set_n = *n; cr_set_last = *n > 0 ? (*out)[*n - 1] : NULL;
 }
 
 /* `recv.method(name).arity`: a Method asked only what it is -- its name,
@@ -18157,14 +18172,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
         const char *msym = NULL;
         if (aty && sp_streq(aty, "SymbolNode")) msym = nt_str(nt, mav[0], "value");
         else if (aty && sp_streq(aty, "StringNode")) { msym = nt_str(nt, mav[0], "content"); if (!msym) msym = nt_str(nt, mav[0], "unescaped"); }
-        if (msym) {
-          int found = 0;
-          for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], msym)) { found = 1; break; }
-          if (!found) {
-            if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
-            (*out)[(*n)++] = strdup(msym);
-          }
-        }
+        if (msym) cr_add_name(out, n, cap, msym);
       }
     }
   }
@@ -18251,15 +18259,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
                 k0 == NK_ClassVariableOperatorWriteNode || k0 == NK_GlobalVariableOperatorWriteNode;
   if (g_cr_typed && (k0 == NK_CallNode || var_opw) && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm))
     names[0] = NULL;
-  for (int j = 0; j < 3; j++) {
-    if (!names[j]) continue;
-    int found = 0;
-    for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], names[j])) { found = 1; break; }
-    if (!found) {
-      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
-      (*out)[(*n)++] = strdup(names[j]);
-    }
-  }
+  for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap, inner_self); }
