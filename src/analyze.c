@@ -34572,6 +34572,14 @@ static int scope_yields_inside_lifted_body(Compiler *c, int mi) {
    read out of a container)? Its switch arm calls sp_X_new, which cannot splice
    a yielding initialize the way a constant `X.new` site does, so the class
    needs the clone for its constructor to run the body at all. */
+static int super_new_init_yields(Compiler *c, Scope *s) {
+  if (!s->is_cmethod || !sp_streq(comp_prep_user_name(s->name), "new") || super_reach(c, s) >= 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = k == s->class_id || is_descendant(c, k, s->class_id) ? comp_method_in_chain(c, k, "initialize", NULL) : -1;
+    if (mi >= 0 && c->scopes[mi].yields) return 1;
+  }
+  return 0;
+}
 static int pf_dynamic_new(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
@@ -34587,6 +34595,8 @@ static int pf_dynamic_new(Compiler *c) {
     int rk = nt_kind(nt, recv);
     if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 1;
   }
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id >= 0 && super_new_init_yields(c, &c->scopes[s])) return 1;
   return 0;
 }
 
@@ -44728,6 +44738,7 @@ static int super_reach(Compiler *c, Scope *s) {
 }
 
 static int super_new_init_keeps_block(Compiler *c, Scope *s) {
+  if (super_new_init_yields(c, s)) return 1;
   if (!s->is_cmethod || !sp_streq(comp_prep_user_name(s->name), "new") || super_reach(c, s) >= 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     int mi = k == s->class_id || is_descendant(c, k, s->class_id) ? comp_method_in_chain(c, k, "initialize", NULL) : -1;
