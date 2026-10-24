@@ -5093,7 +5093,11 @@ static const char *const object_methods[] = { "to_s", "inspect", "class", "hash"
    again (dsend_receiver_names_uncached walks every method per class). The
    memo is dropped when the pass ends, or if the class or scope table grows
    meanwhile. Callers own what they get back, as before. */
-static struct { int on, ncls, nscp; char ***names; int *n; } g_dsn;
+static struct { int on, ncls, nscp; char ***names; int *n; char **inames; int ninames; } g_dsn;
+static void dsn_inames_free(char **in, int n) {
+  for (int i = 0; i < n; i++) free(in[i]);
+  free(in);
+}
 static void dsn_memo_free(void) {
   if (g_dsn.names) {
     for (int i = 0; i < g_dsn.ncls * 2 + 2; i++) {
@@ -5103,7 +5107,38 @@ static void dsn_memo_free(void) {
     }
   }
   free(g_dsn.names); free(g_dsn.n);
+  dsn_inames_free(g_dsn.inames, g_dsn.ninames);
   g_dsn.names = NULL; g_dsn.n = NULL; g_dsn.ncls = g_dsn.nscp = 0;
+  g_dsn.inames = NULL; g_dsn.ninames = 0;
+}
+/* The distinct names of the program's instance methods -- a named scope in
+   a class that is not a class method -- in the order the scopes first bear
+   them, less initialize and initialize_copy: the names
+   dsend_receiver_names_uncached asks of a class's chain. It asked them
+   walking every scope once per class, and anew for every class of the set
+   (a Rails application: 118,000 scopes, over its modules or a class's
+   descendants, for every send on an untyped receiver -- most of the pass);
+   the list is one, built once per memo, or once per ask without it. */
+static char **dsn_inames_build(Compiler *c, int *n) {
+  char **in = NULL; int cnt = 0, cap = 0;
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  for (int s = 0; s < c->nscopes; s++) {
+    const Scope *sc = &c->scopes[s];
+    if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
+    if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
+    if (anh_has(&seen, sc->name)) continue;
+    if (cnt == cap) {
+      cap = cap ? cap * 2 : 256;
+      in = realloc(in, sizeof(char *) * (size_t)cap);
+      if (!in) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    in[cnt] = strdup(sc->name);
+    if (!in[cnt]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    anh_add(&seen, in[cnt]); cnt++;
+  }
+  anh_free(&seen);
+  *n = cnt;
+  return in;
 }
 static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out);
 static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***out) {
@@ -5127,21 +5162,19 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
 static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out) {
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
-  ANameHash asked; memset(&asked, 0, sizeof asked);   /* the names asked of class d */
+  /* the memo's list of method names while the pass runs on this table
+     (dsend_receiver_names has reset the memo for a grown one before calling
+     here), else a list of this ask's own */
+  int memo = g_dsn.on && g_dsn.names && g_dsn.ncls == c->nclasses && g_dsn.nscp == c->nscopes;
+  int nin = 0; char **in;
+  if (memo) { if (!g_dsn.inames) g_dsn.inames = dsn_inames_build(c, &g_dsn.ninames); in = g_dsn.inames; nin = g_dsn.ninames; }
+  else in = dsn_inames_build(c, &nin);
   for (int d = 0; d < c->nclasses; d++) {
     if (cls < 0 ? comp_class_is_module(c, &c->classes[d]) : d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
-    for (int s = 0; s < c->nscopes; s++) {
-      const Scope *sc = &c->scopes[s];
-      if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
-      if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
-      /* (the chain answers a name the same for every scope that has it:
-         one lookup per name, where a large program's scopes outnumber its
-         method names many times over, and the lookup was most of the pass) */
-      if (anh_has(&asked, sc->name)) continue;
-      anh_add(&asked, sc->name);
-      if (comp_method_in_chain(c, d, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
-    }
-    anh_free(&asked); memset(&asked, 0, sizeof asked);
+    /* (the chain answers a name the same for every scope that has it: one
+       lookup per name) */
+    for (int i = 0; i < nin; i++)
+      if (comp_method_in_chain(c, d, in[i], NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, in[i]);
     for (int k = d; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
       ClassInfo *cl = &c->classes[k];
       for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
@@ -5155,6 +5188,7 @@ static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, c
   }
   for (int k = 0; object_methods[k]; k++) dsend_add_name(&names, &n, &cap, &seen, object_methods[k]);
   anh_free(&seen);
+  if (!memo) dsn_inames_free(in, nin);
   *out = names;
   return n;
 }
