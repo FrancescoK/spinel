@@ -15417,7 +15417,7 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
      an append through it never reached s. A variable receiver whose answer
      is kept is lifted to its handle first, as a second name for it is
      (lift_poly_read). */
-  if ((boxed || (pub)) && !share_node_transient(c, id)) emit_poly_recv_lift_pre(c, recv);
+  if ((boxed || (pub)) && !an_node_dropped(c, id)) emit_poly_recv_lift_pre(c, recv);
   int tvb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);

@@ -185,6 +185,9 @@ enum { AN_LIFT_INT = 1, AN_LIFT_FLOAT = 2, AN_LIFT_STRING = 4, AN_LIFT_SYMBOL = 
 int an_push_lifts_boxed(Compiler *c, int id);
 /* a builtin of this name answers a new Array where it answers one (analyze_pass.c) */
 int fresh_array_builtin_name(const char *nm);
+/* the value of node n is dropped where it is: a statement's, a loop
+   body's, an ensure clause's (an_value_dropped, analyze_infer.c) */
+int an_node_dropped(Compiler *c, int n);
 /* True if a regex source contains a capturing group: an unescaped '(' that
    isn't the start of a non-capturing/extension group '(?...'. scan returns
    nested arrays for capturing patterns, which the str_array path can't model. */

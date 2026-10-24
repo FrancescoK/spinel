@@ -3173,9 +3173,18 @@ static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
 enum { VL_NIL = 1, VL_NARROW = 2 };
 static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
 static int *cext_walk_values(Compiler *c);
+/* Is n (through parentheses) an element read out of the general Array,
+   which holds its Strings as their handles? */
+static int poly_array_elem_read(Compiler *c, int n) {
+  if (n < 0) return 0;
+  n = nt_paren_single(c->nt, n);
+  if (!container_elem_read_p(c->nt, n)) return 0;
+  int r = nt_ref(c->nt, n, "receiver");
+  return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY;
+}
 /* Is one of the values `n` can answer, through parentheses, a plain begin
    body and the arms of a conditional (an arm left out answers nil), an
-   element read out of an Array of shared Strings (share_str_elem_read)? */
+   element read out of the general Array (poly_array_elem_read)? */
 static int share_str_value_leaves(Compiler *c, int n) {
   int small[8], *lv = small, found = 0;
   int cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL);
@@ -3183,7 +3192,7 @@ static int share_str_value_leaves(Compiler *c, int n) {
     lv = cext_walk_values(c);
     cnt = value_leaves_ex(c, n, lv, 0, c->nt->count, VL_NIL);
   }
-  for (int i = 0; i < cnt && !found; i++) found = share_str_elem_read(c, lv[i]);
+  for (int i = 0; i < cnt && !found; i++) found = poly_array_elem_read(c, lv[i]);
   if (lv != small) free(lv);
   return found;
 }

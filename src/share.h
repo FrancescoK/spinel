@@ -98,6 +98,16 @@ void share_facts_free(Compiler *c);
    with no splat, and no rest or post target -- each target takes its own
    value (SHFL_MULTI)? */
 int share_masgn_plain(const NodeTable *nt, int n);
+/* Does call n store its literal block's values into a container it
+   answers or changes (an Array's or a Hash's map, map!, zip with a block,
+   a fill with a block; an Array.new or Hash.new block), reaching no method
+   of the program's? Not where its value is dropped, but map!'s and a
+   fill's, which keep them in the receiver. */
+int share_call_stores_block(Compiler *c, int n);
+/* Is container literal lit an argument Kernel's puts, print, p or pp
+   prints and keeps none of, or the value a plain multiple write splits
+   into its targets (share_masgn_plain)? */
+int share_literal_unkept(Compiler *c, int lit);
 
 /* Can a slot of type t hold a String (a String, a box, a container that may
    hold one, an object whose native class keeps one)? */
@@ -129,19 +139,12 @@ int share_mark_borrows(Compiler *c);
    is written to an instance variable it reads? Asked of the final facts; a
    method whose values the walk does not follow answers 0. */
 int share_scope_answers_no_string(Compiler *c, int mi);
-/* Is node n an element read (`a[i]`, `a.first`) out of a general Array
-   whose String elements the rule shares? */
-int share_str_elem_read(Compiler *c, int n);
 /* Can a method of the program's own (a reopening of builtin class cls, or
    a module a prepend can put ahead of it) stand in for cls's method name
    where the call plan does not see it? */
 int share_builtin_overridden(Compiler *c, const char *cls, const char *name);
 
 
-/* The flows the walk recorded (ShareFlowKind), by index
-   0..share_flow_count-1: the kind, the site and the value node. */
-int share_flow_count(const Compiler *c);
-int share_flow_at(const Compiler *c, int i, int *site, int *value);
 /* The literal blocks method scope mi yields to, as a list in *blocks:
    their count, or -1 when a block the walk does not list reaches its
    yields (a block passed as a value, a zsuper's, a dynamic call's). */
@@ -199,8 +202,6 @@ int share_frozen_literal(Compiler *c, int n);
 /* ...or a read of a builtin String constant (RUBY_ENGINE ...), one frozen
    object too (share_frozen_string) */
 int share_frozen_string(Compiler *c, int n);
-/* Is node n's result dropped or only read by a builtin that keeps none? */
-int share_node_transient(const Compiler *c, int n);
 /* A fresh value or a single-use local whose destination is its only live name. */
 int share_value_unobserved(Compiler *c, int n);
 
@@ -344,8 +345,6 @@ int share_plan_literal_pickup_clean(Compiler *c, int v, int mi);
    with the object a lift needs), not from its bytes? A call whose route
    boxes cannot render (strbuf_box_unrendered) is not. Asked live. */
 int share_plan_box_handle(Compiler *c, int v);
-/* Does the rule share the String attribute assignment n hands on? */
-int share_assign_shares(const Compiler *c, int n);
 
 
 

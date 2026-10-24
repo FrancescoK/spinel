@@ -394,7 +394,6 @@ typedef enum {
   STRH_INSPECT   /* inspect, to_s */
 } StrhOp;
 int strh_op(const char *n, int argc, int block);
-int is_identity_compare_name(const char *n);  /* equal? == != */
 /* the receiver kind a block-taking iterator name belongs to */
 enum { BITER_NONE, BITER_ARRAY, BITER_INTEGER, BITER_STRING };
 int is_frozen_query(const char *n);           /* frozen? */

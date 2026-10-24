@@ -1538,9 +1538,6 @@ int strh_op(const char *n, int argc, int block) {
 }
 
 
-int is_identity_compare_name(const char *n) {
-  return n && (sp_streq(n, "equal?") || sp_streq(n, "==") || sp_streq(n, "!="));
-}
 
 
 

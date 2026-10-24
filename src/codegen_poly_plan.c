@@ -204,7 +204,7 @@ void pa_report(void) {
    A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
   if (m->ret != TY_STRING ||
-      (!m->ret_handle && !(m->ret_fresh && !share_node_transient(c, id)))) {
+      (!m->ret_handle && !(m->ret_fresh && !an_node_dropped(c, id)))) {
     emit_boxed_ret_call(c, m, call, b);   /* an oint return boxes with its nil */
     return;
   }

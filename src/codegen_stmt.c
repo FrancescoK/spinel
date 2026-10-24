@@ -1643,7 +1643,7 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
   if ((rt != TY_POLY && (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY)) || argc != 1 ||
       cplan_user_fresh(c, v)->dispatch != CP_NONE) return -1;
   /* A dropped frozen literal already keeps its frozen mark in the box. */
-  if (share_frozen_literal(c, argv[0]) && share_node_transient(c, v)) return -1;
+  if (share_frozen_literal(c, argv[0]) && an_node_dropped(c, v)) return -1;
   TyKind at = repr_of(c, argv[0]).ty;
   return at == TY_STRING || at == TY_STRBUF ? argv[0] : -1;
 }

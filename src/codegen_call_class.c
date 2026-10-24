@@ -1226,18 +1226,15 @@ int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
 }
 
 /* Is call id an attribute assignment of one plain String to an explicit
-   `def x=(v)` (one required parameter, the one method the call reaches),
-   where the --share-strings rule shares its value's String? Its value is
-   the String the writer was handed, as the handle it is a name of, whatever
-   the writer returns (call_is_setter_assign). */
+   `def x=(v)` (one required parameter, the one method the call reaches)?
+   Its value is the String the writer was handed, as the handle it is a
+   name of, whatever the writer returns (call_is_setter_assign). */
 int user_assign_handle(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver"), argc = 0;
   const int *argv = call_args(nt, id, &argc);
-  /* (the rule's answer is the cheap test, and most assignments fail it: it
-     goes before the representation reads) */
-  if (recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
-      !share_assign_shares(c, id) || repr_of(c, argv[0]).kind == RK_BOXED ||
+  if (recv < 0 || argc != 1 || argv[0] < 0 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+      repr_of(c, argv[0]).kind == RK_BOXED ||
       (comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_STRBUF))
     return 0;
   /* a boxed receiver is dispatched on its class, and its arms answer the

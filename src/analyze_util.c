@@ -4426,15 +4426,6 @@ int comp_value_dropped(Compiler *c, int n) {
   return n >= 0 && n < c->nt->count && vp_climb(c->nt, comp_parent_map(c), n, VPS_NONE, &up) == VPU_DROPPED;
 }
 
-/* Is the value of method m only ever taken where a call node reads it, and
-   its type free to be the form? A method the runtime or a protocol calls
-   (deconstruct, to_s, an extension entry, a proc form) has it taken where no
-   node does; one an --rbs seed gave its return (`-> Array[String]`) has the
-   seed's C type, which no handle Array converts into. */
-int strh_method_open(const Scope *m) {
-  return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
-         !m->is_proc_form && !m->is_lowered_yield && !m->ret_rbs_seeded;
-}
 
 /* Is argument n's type want, or (unknown_ok, for the gate's early rounds)
    not settled yet? */

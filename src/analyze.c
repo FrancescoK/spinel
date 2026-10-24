@@ -23276,30 +23276,37 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      stores; inference then selects the existing boxed-element form.
      Apply the holder decisions first, so their handles are visible to
      the store walk even while a block parameter still infers as String. */
-  for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
-    int site, value;
-    int fk = share_flow_at(c, f, &site, &value);
-    /* The block values a call stores (map's: its block's last value and
-       each `next`'s) into a container whose elements the rule shares: a
-       String one is boxed as its handle, as a boxed local's stores are
-       (share_lift_value). The call's flow names the block's last value. */
-    if (fk == SHFL_BLOCK && value >= 0 && nt_kind(c->nt, site) == NK_CallNode) {
-      int blk = nt_ref(c->nt, site, "block");
-      changed |= share_lift_value(c, nt_paren_single(c->nt, value));
-      if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode)
-        changed |= share_lift_jumps(c, nt_ref(c->nt, blk, "body"), NK_NextNode);
-    }
-    if (fk != SHFL_ELEM) continue;
-    int recv = nt_kind(c->nt, site) == NK_CallNode ? nt_ref(c->nt, site, "receiver") : -1;
-    /* A fill constructor stores its argument as an element too. */
-    int fill = recv >= 0 && (nt_kind(c->nt, recv) == NK_ConstantReadNode ||
-                            nt_kind(c->nt, recv) == NK_ConstantPathNode) &&
-               is_array_new(nt_str(c->nt, recv, "name"), nt_str(c->nt, site, "name"));
-    if (repr_str_literal_shares(c, site) || fill) {
-      changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
+  /* The block values a call stores (map's: its block's last value and
+     each `next`'s) into a container: a String one is boxed as its handle,
+     as a boxed local's stores are (share_lift_value). */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    if (!share_call_stores_block(c, n) || !comp_scope_of(c, n)->reachable) continue;
+    int body = nt_ref(c->nt, nt_ref(c->nt, n, "block"), "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &bn) : NULL;
+    if (bn == 0) continue;
+    changed |= share_lift_value(c, nt_paren_single(c->nt, bb[bn - 1]));
+    changed |= share_lift_jumps(c, body, NK_NextNode);
+  }
+  /* A typed String container literal's elements, and the argument an
+     Array.new fill stores, are stored as their handles: what each element
+     is built of is demanded into the handle. */
+  static const NodeKind lit_kinds[] = { NK_ArrayNode, NK_HashNode };
+  for (size_t k = 0; k < sizeof lit_kinds / sizeof *lit_kinds; k++)
+    NT_FOREACH_KIND(c->nt, lit_kinds[k], n) {
+      if (!repr_str_literal_shares(c, n) || share_literal_unkept(c, n)) continue;
+      changed |= strbuf_container_source_walk(c, n, 0, SB_DEMAND);
       /* A known attribute's conditional write need not infer its RHS. */
-      infer_type(c, site);
+      infer_type(c, n);
     }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    int recv = nt_ref(c->nt, n, "receiver"), args = nt_ref(c->nt, n, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+    if (recv < 0 || argc < 2 || nt_kind(c->nt, argv[1]) == NK_SplatNode ||
+        (nt_kind(c->nt, recv) != NK_ConstantReadNode && nt_kind(c->nt, recv) != NK_ConstantPathNode) ||
+        !is_array_new(nt_str(c->nt, recv, "name"), nt_str(c->nt, n, "name")) || !comp_scope_of(c, n)->reachable)
+      continue;
+    changed |= strbuf_container_source_walk(c, n, 0, SB_DEMAND);
+    infer_type(c, n);
   }
   /* a container literal no holder names, iterated in place by a block
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its

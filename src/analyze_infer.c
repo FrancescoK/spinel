@@ -1313,6 +1313,9 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   const char *bn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   return bn && is_block_loop_method(bn);
 }
+int an_node_dropped(Compiler *c, int n) {
+  return n >= 0 && n < c->nt->count && an_value_dropped(c->nt, comp_parent_map(c), n);
+}
 
 /* A row that is an empty container with no kind of its own: `[]`, `{}`, a
    bare `Array.new` or `Hash.new`. It is built boxed, as a poly array or a

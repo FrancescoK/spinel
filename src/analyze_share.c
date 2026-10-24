@@ -3984,6 +3984,39 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
 
 /* `a, b = x, y`: a multiple write of an Array literal with no splat into
    targets with no rest; each target takes its own value. */
+int share_call_stores_block(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, n, "block");
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || sh_has_targets(c, n)) return 0;
+  int recv = nt_ref(nt, n, "receiver");
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, recv, "name");
+    return cn && sp_streq(nm, "new") && (sp_streq(cn, "Array") || sp_streq(cn, "Hash"));
+  }
+  static const TyKind fams[] = { BOP_ANY_ARRAY, BOP_ANY_HASH, BOP_ANY_RECV };
+  int keep = 0, any = 0;
+  for (size_t i = 0; i < sizeof fams / sizeof *fams; i++) {
+    int s = bop_share_named(fams[i], nm);
+    if (s == BSH_ITER_MAP_BANG || s == BSH_FILL) keep = any = 1;
+    else if (s == BSH_ITER_MAP || s == BSH_MERGE) any = 1;
+  }
+  return any && (keep || !an_node_dropped(c, n));
+}
+int share_literal_unkept(Compiler *c, int lit) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  int p = lit >= 0 ? par[lit] : -1;
+  if (p >= 0 && nt_kind(nt, p) == NK_MultiWriteNode && nt_ref(nt, p, "value") == lit) return share_masgn_plain(nt, p);
+  int n = p >= 0 ? par[p] : -1;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "arguments") != p) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm || nt_ref(nt, n, "receiver") >= 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  int share = bop_share_named(BOP_KERNEL, nm);
+  if (share != BSH_PURE && !(share == BSH_ARGS && an_node_dropped(c, n))) return 0;
+  return (is_text_print(nm) || is_inspect_print(nm)) && !sh_has_targets(c, n);
+}
 int share_masgn_plain(const NodeTable *nt, int n) {
   int value = nt_ref(nt, n, "value");
   if (value < 0 || nt_kind(nt, value) != NK_ArrayNode || nt_ref(nt, n, "rest") >= 0) return 0;
@@ -5472,7 +5505,6 @@ void share_facts_free(Compiler *c) {
 }
 
 
-
 static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *name) {
   if (!F || !F->bucket) return -1;
   unsigned hb = sh_key_hash(kind, a, name) & (unsigned)(F->nbucket - 1);
@@ -5537,35 +5569,8 @@ int share_elem_holders(const Compiler *c, int e) {
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
 
 
-int share_str_elem_read(Compiler *c, int n) {
-  if (!c->share || n < 0) return 0;
-  n = nt_paren_single(c->nt, n);
-  if (!container_elem_read_p(c->nt, n)) return 0;
-  int r = nt_ref(c->nt, n, "receiver");
-  return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY;
-}
 
 
-int share_flow_count(const Compiler *c) { return c->share ? c->share->nfl + c->share->nlend : 0; }
-int share_flow_at(const Compiler *c, int i, int *site, int *value) {
-  const ShareFacts *F = c->share;
-  if (i >= F->nfl) {
-    /* a lend (sh_bind): a parameter still lent its argument's slot (its
-       site the parameter's holder), or, unified, an argument flow
-       recorded already */
-    i -= F->nfl;
-    *site = F->hidx[F->lend_par[i]];
-    *value = F->lend_done[i] ? -1 : F->lend_node[i];
-    return SHFL_LEND;
-  }
-  *site = F->fl_site[i];
-  *value = F->fl_val[i];
-  /* A byte-only self argument has no identity to carry at this boundary. */
-  int e = F->nval[*value];
-  if (F->fl_kind[i] == SHFL_ARG && e >= 0 && F->kind[e] == SHK_SELF && !(F->own[e] & SHE_IDENTITY))
-    *value = -1;
-  return F->fl_kind[i];
-}
 int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   const ShareFacts *F = c->share;
   *blocks = NULL;
@@ -6391,17 +6396,10 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
 }
 
-int share_node_transient(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
-}
 /* A fresh value, or a local's fresh value handed on at its only read. */
 int share_value_unobserved(Compiler *c, int n) {
   return share_value_fresh(c, n, 0) || an_local_read_once(c, n);
 }
-
-
-
 
 
 /* Does the String (or a box that may hold one) node v evaluates to have to
@@ -6605,38 +6603,6 @@ int share_node_carries_handle(const Compiler *c, int n) {
 }
 int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 1, op); }
 int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 0, op); }
-
-
-
-/* The route's answer from the final facts: 1 when it compiles as the rule
-   says, 0 when it has to stay refused. The facts must see the route (the
-   String and the holder it reaches in one class): a route the walk does
-   not follow says nothing about who else can see the copy. Then a class
-   the rule does not share has one name, and the copy is unobservable; one
-   it shares holds the handle in every holder (seal's holder check), and
-   the carrying node hands it along. */
-/* Is node n (through parentheses) an explicit writer's attribute assignment
-   whose value the facts kept apart from its right-hand side's String
-   (sh_settle_assign_joins): nothing changes that String in place or sees it
-   through a handle, so the value is the pointer all its names read? */
-/* Does the rule share the String an attribute assignment hands on: its
-   right-hand side's class, or the value's where the right-hand side is a
-   new String that has no class of its own? */
-int share_assign_shares(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  const NodeTable *nt = c->nt;
-  int args = nt_ref(nt, n, "arguments"), argc = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  if (!F || argc != 1 || n < 0 || n >= F->nnodes || argv[0] < 0 || argv[0] >= F->nnodes) return 0;
-  return 1;
-}
-
-
-
-
-
-
-
 
 
 /* ---- a Hash key borrows a handle's bytes ----
