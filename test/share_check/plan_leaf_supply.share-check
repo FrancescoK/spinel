@@ -1,2 +1,0 @@
-share-check: 14 marks, 0 declared, 0 copies
-share-check: plan: 14 sites, 14 agree, 0 read, 0 disagree; handle 0/0/0/0, wrap 0/0/0/0, refuse 0/0/0/0, bytes 0/14/0/0 (C handle/read/wrap/bytes); by consumer take 0, read 0, test 0, store 0, identity 14; 0 live, 0 stale

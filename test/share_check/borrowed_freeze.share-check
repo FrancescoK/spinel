@@ -1,8 +1,0 @@
-share-check: copy: test/share_check/borrowed_freeze.rb:38 node 111 LocalVariableReadNode (s): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: copy: test/share_check/borrowed_freeze.rb:39 node 117 LocalVariableReadNode (s): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: copy: test/share_check/borrowed_freeze.rb:42 node 127 LocalVariableReadNode (key): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: copy: test/share_check/borrowed_freeze.rb:58 node 205 LocalVariableReadNode (x): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: copy: test/share_check/borrowed_freeze.rb:62 node 223 LocalVariableReadNode (_spx): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: copy: test/share_check/borrowed_freeze.rb:68 node 236 LocalVariableReadNode (s): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: 69 marks, 0 declared, 6 copies
-share-check: plan: 56 sites, 54 agree, 2 read, 0 disagree; handle 34/2/0/0, wrap 0/0/10/0, refuse 0/0/0/0, bytes 0/2/0/8 (C handle/read/wrap/bytes); by consumer take 37, read 6, test 2, store 0, identity 11; 4 live, 0 stale

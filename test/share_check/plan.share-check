@@ -1,3 +1,0 @@
-share-check: copy: test/share_check/plan.rb:20 node 58 CallNode (p): boxed as bytes by sp_box_str (sp_poly_unbox_s)
-share-check: 15 marks, 0 declared, 1 copies
-share-check: plan: 11 sites, 11 agree, 0 read, 0 disagree; handle 8/0/0/0, wrap 0/0/2/0, refuse 0/0/0/1, bytes 0/0/0/0 (C handle/read/wrap/bytes); by consumer take 9, read 0, test 0, store 0, identity 2; 3 live, 0 stale

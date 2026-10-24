@@ -1,9 +1,0 @@
-share-check: copy: test/share_check/borrowed_enumerator.rb:31 node 465 CallNode (a=): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:34 node 487 CallNode (a=): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:35 node 503 CallNode (a=): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:8 node 379 LocalVariableReadNode (s): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:8 node 383 LocalVariableReadNode (s): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:8 node 386 LocalVariableReadNode (s): boxed as bytes by sp_box_str (bytes face)
-share-check: copy: test/share_check/borrowed_enumerator.rb:9 node 393 LocalVariableReadNode (s): boxed as bytes by sp_box_str (bytes face)
-share-check: 38 marks, 0 declared, 7 copies
-share-check: plan: 30 sites, 30 agree, 0 read, 0 disagree; handle 15/0/0/0, wrap 0/0/7/0, refuse 0/0/0/0, bytes 0/0/0/8 (C handle/read/wrap/bytes); by consumer take 17, read 7, test 0, store 0, identity 6; 7 live, 0 stale

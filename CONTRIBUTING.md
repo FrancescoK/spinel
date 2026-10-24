@@ -61,16 +61,6 @@ The `.expected` comparison uses `GATE_RUBY`, else `ruby` from `PATH` when it
 is Ruby 4.0 or later (`tools/gate-ruby` picks it); without such a Ruby it is
 skipped with a warning. `make gate-tool-test` tests `tools/gate.rb` itself.
 
-`make share-check-ratchet`, a leg of `make gate`, compiles the String-sharing
-programs (`test/share/*.rb`, `test/share/verify/*.rb`,
-`test/share/verify/conflicts/*.rb`, `test/share_strings_*.rb`) with
-`--share-check`. It lists each place where the emitted C copies a String the
-analysis shares, and each place where the String plan disagrees with the
-emitted C, and compares them with `test/share_check/ratchet.txt` and
-`test/share_check/plan_ratchet.txt`. A place a list lacks fails, and so does a
-listed line no place matches, so the lists only shrink: a change that removes
-one deletes its line. `tools/share_check_ratchet.sh` describes the line format.
-
 `make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
 and `test/share/verify/**/*.rb` with `--repr-check --plan-check`.
 It fails on a new conflict, a failed compilation, or generated C that differs

@@ -1624,8 +1624,8 @@ void emit_slot_orw_value_o(Compiler *c, TyKind t, int elems_handle, const char *
          assignment compiles -- the raise aborts before the NULL is reached
          (#2457). */
       const char *ivtxt = vval.p ? vval.p : "";
-      if (strncmp(share_check_unmarked(ivtxt), "sp_raise_nomethod(", 18) == 0 ||
-          strncmp(share_check_unmarked(ivtxt), "(sp_raise_cls(", 14) == 0) {
+      if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
+          strncmp(ivtxt, "(sp_raise_cls(", 14) == 0) {
         Buf w; memset(&w, 0, sizeof w);
         buf_printf(&w, "(%s, %s)", ivtxt, default_value_from_compiler(c, t));
         free(vval.p); vval = w;
@@ -2078,7 +2078,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);
-  int sk_open = g_share_check ? share_check_mark(c, id, 'x', b) : 0;
   int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   g_expr_depth++;
   /* nil out of band: emit_oint_expr asked for the bare sp_oint of this one
@@ -2150,7 +2149,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   g_oint_read = 0;
   g_expr_depth--;
-  if (sk_open) share_check_mark_end(c);
   if (g_repr_check) repr_channel_end(c, frame);
 }
 
@@ -2347,7 +2345,6 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     /* a local a shared-handle shim reads through its shadow, which the shim
        writes back into the handle: no copy of the String */
-    if (g_share_check && lrn && sb_shim_shadow(lrn, rename_local(lrn))) share_check_declare_value(c, id);
     /* compile-time define_method substitution: the loop var IS the literal */
     if (g_dm_subst_name && lrn && sp_streq(lrn, g_dm_subst_name) && g_dm_subst_node >= 0) {
       emit_expr(c, g_dm_subst_node, b); return 1;
@@ -2953,7 +2950,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (g_sb_iv_name && nm && sp_streq(nm, g_sb_iv_name) &&
         strbuf_ivar_owner(c, id) == g_sb_iv_cid) {
       buf_printf(b, "%s", g_sb_iv_repl);
-      if (g_share_check) share_check_declare_value(c, id);   /* (the shim writes the shadow back) */
+   /* (the shim writes the shadow back) */
       return 1;
     }
     /* a shared-mutable string slot: a marked read yields the live HANDLE, an
@@ -5640,7 +5637,6 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (th >= 0) buf_printf(b, "_t%d", th);
       else buf_puts(b, g_argov_text[i]);
       /* a reader call the shim has substituted with its shadow, written back */
-      if (g_share_check && sb_shadowed_reader(id)) share_check_declare_value(c, id);
       return;
     }
 

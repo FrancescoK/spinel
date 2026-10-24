@@ -8665,14 +8665,14 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
   /* A String default that is the receiver an arm holds (`b = self`) is that
      temp itself, rooted already: no alias of it is needed. */
   if (provided < 0 && (pt == TY_STRING || pt == TY_STRBUF) && g_arm_self && g_arm_scope == m &&
-      g_arm_depth == g_expr_depth && ab.p && sp_streq(share_check_unmarked(ab.p), g_arm_self)) {
+      g_arm_depth == g_expr_depth && ab.p && sp_streq(ab.p, g_arm_self)) {
     buf_puts(out, ab.p);
     free(ab.p);
     return;
   }
   char ht[24] = "";
   if (held > 0) snprintf(ht, sizeof ht, "_t%d", held);
-  if (held > 0 && provided >= 0 && ab.p && sp_streq(share_check_unmarked(ab.p), ht)) {
+  if (held > 0 && provided >= 0 && ab.p && sp_streq(ab.p, ht)) {
     emit_obj_upcast_prefix(c, pt, comp_ntype(c, provided), out);
     buf_puts(out, ht);
   }
@@ -9210,7 +9210,6 @@ static void emit_arg_temp(Compiler *c, int v) {
     buf_printf(&hb, " ? sp_strbuf_read_pub(_t%d) : ", th);
     size_t arm_at = hb.len;
     emit_expr(c, stail, &hb);
-    if (g_share_check) share_check_declare_reads(&hb, arm_at, stail);
   }
   /* a bang (or a conditional with one on an arm) ran for its handle, which is
      the String's or nil: its bytes are the handle's read, where the node's
@@ -9276,7 +9275,7 @@ int arg_ran_first(int node, int from) {
    `from`th override on, when `text` is its slot's rendering of it, the temp
    unconverted; -1 otherwise. */
 static int ran_first_temp(int node, int from, const char *text, char *is_o) {
-  text = share_check_unmarked(text);
+  text = text;
   for (int i = from; text && i < g_n_argov; i++) {
     int t;
     if (g_argov_node[i] == node && sp_streq(g_argov_text[i], text) && sscanf(text, "_t%d", &t) == 1) {
@@ -9309,7 +9308,7 @@ int head_held_read(Compiler *c, int node, const char *text) {
   char ht[24];
   if (h < 0 || !text) return -1;
   snprintf(ht, sizeof ht, "_t%d", h);
-  return sp_streq(share_check_unmarked(text), ht) ? h : -1;
+  return sp_streq(text, ht) ? h : -1;
 }
 
 /* See codegen_internal.h. */

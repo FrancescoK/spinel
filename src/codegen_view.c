@@ -105,14 +105,7 @@ static int view_bind_v(int node, int oint, const char *fmt, va_list ap) {
   g_argov_node[slot] = node;
   g_argov_oint[slot] = (unsigned char)oint;
   int n;
-  if (g_share_check) {
-    char text[8 * ARGOV_TEXT_LEN];
-    n = vsnprintf(text, sizeof text, fmt, ap);
-    if (n >= 0 && (size_t)n < sizeof text) n = (int)share_check_strip(text, (size_t)n);
-    if (n >= 0 && (size_t)n < sizeof g_argov_text[0]) memcpy(g_argov_text[slot], text, (size_t)n + 1);
-    else snprintf(g_argov_text[slot], sizeof g_argov_text[0], "%s", text);
-  }
-  else n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
+  n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
   /* (one representation: a node bound to a temp held by face reads it as bytes) */
   if (n > 2 && g_argov_text[slot][0] == '_' && g_argov_text[slot][1] == 't') {
     char *end = NULL;

@@ -300,7 +300,7 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
                build/csrc/analyze_cext.o build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_cls.o build/csrc/analyze_arm.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
-               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/value_pos.o build/csrc/codegen_poly_plan.o build/csrc/share_check.o build/csrc/share_plan.o build/csrc/codegen_str.o \
+               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/value_pos.o build/csrc/codegen_poly_plan.o build/csrc/share_plan.o build/csrc/codegen_str.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
 SPINEL_HDRS += src/decide.h
@@ -5121,49 +5121,6 @@ run-scale-test: $(SPINEL) $(SP_RT_LIB)
 share-verify-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@ruby tools/share_verify.rb
 
-# share-check (--share-check): the handle/copy agreement check. The shapes in
-# test/share_check/ report as recorded (a program per kind of copy, and
-# programs that report none), and the C is the same with the flag. A program
-# with no .expected is one whose answer differs from CRuby's today: only its
-# report is recorded, and it is named here.
-SHARE_CHECK_REPORT_ONLY = map_param_copy
-.PHONY: share-check-test
-share-check-test: $(SPINEL)
-	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share-check.XXXXXX"); ok=1; \
-	for t in test/share_check/*.rb; do \
-	  b=$${t%.rb}; \
-	  if ! $(SPINEL) --share-check -c --no-line-map "$$t" -o "$$tmp/on.c" >/dev/null 2>"$$tmp/err" || \
-	     ! $(SPINEL) -c --no-line-map "$$t" -o "$$tmp/off.c" >/dev/null 2>&1; then \
-	    echo "share-check: FAIL $$t (compile)"; ok=0; continue; \
-	  fi; \
-	  grep '^share-check:' "$$tmp/err" | diff -u "$$b.share-check" - || { echo "share-check: FAIL $$t (report)"; ok=0; }; \
-	  cmp -s "$$tmp/on.c" "$$tmp/off.c" || { echo "share-check: FAIL $$t (the C differs with the flag)"; ok=0; }; \
-	  if [ -f "$$t.expected" ]; then \
-	    if $(SPINEL) --share-check "$$t" -o "$$tmp/b" >/dev/null 2>&1; then \
-	      "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-check: FAIL $$t (output)"; ok=0; }; \
-	    else echo "share-check: FAIL $$t (build)"; ok=0; fi; \
-	  elif ! echo " $(SHARE_CHECK_REPORT_ONLY) " | grep -q " $${b##*/} "; then \
-	    echo "share-check: FAIL $$t (no .expected)"; ok=0; \
-	  fi; \
-	done; \
-	rm -rf "$$tmp"; \
-	if [ $$ok = 1 ]; then echo "share-check: pass"; else exit 1; fi
-
-# share-check-ratchet: the sites --share-check reports over the sharing
-# corpus (test/share/*.rb, test/share/verify/*.rb,
-# test/share/verify/conflicts/*.rb and test/share_strings_*.rb), compared line
-# by line with two lists: the copies with test/share_check/ratchet.txt, and
-# the places where the String plan disagrees with the C with
-# test/share_check/plan_ratchet.txt (tools/share_check_ratchet.sh has the
-# line format and how to update the lists). A site a list lacks fails, and so
-# does a listed line no site matches, so the lists only shrink. It is
-# report-only (Matz, #8328): the compiler refuses at no flagged site yet. It
-# is a `make gate` leg (gate-props), so a pull request that adds a site or
-# leaves a stale line fails its gate rather than master's ratchet.
-.PHONY: share-check-ratchet
-share-check-ratchet: $(SPINEL)
-	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "share-check-ratchet: skipped (one-String mode: no String is a copy of another's bytes, and the share plan it holds the C to is the two representations')"; exit 0; fi; \
-	tools/share_check_ratchet.sh
 
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)
@@ -5229,7 +5186,7 @@ gate-test:
 # under the gate's job server (they took 181 s one after another, the
 # longest of the gate's legs; spin-check alone is 72 s).
 gate-props:
-	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check imemo-shadow-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
+	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check imemo-shadow-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test wrap-test
 
 # infer_type's answers kept across queries against fresh ones (#8852): a
 # write the setters do not count shows as a differing answer. The whole

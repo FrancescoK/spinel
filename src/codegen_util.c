@@ -3417,7 +3417,6 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     emit_strbuf_route(c, recv, b);
     /* (the route's text is that handle: the marks of the node's own
        expressions in it, read as bytes by the check, are no read) */
-    if (g_share_check) share_check_declare_reads(b, at, recv);
     buf_puts(b, "))");
     return 1;
   }

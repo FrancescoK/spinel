@@ -323,12 +323,6 @@ int share_node_one_name(const Compiler *c, int n);
 int share_value_unobserved(Compiler *c, int n);
 /* Does the rule share the class of node n's value? */
 int share_node_shares(const Compiler *c, int n);
-/* --share-check (share_check.c): the flag, and the compiler's state freed
-   with it. */
-extern int g_share_check;
-void share_check_free(Compiler *c);
-/* SPINEL_NEW_CLAIMS=FILE: list the "new String" claims (share_check.c) */
-void share_claims_report(Compiler *c);
 /* Is node v the receiver of an in-place String change the walk recorded, or
    a link of the chain of self-answering calls down to it? */
 int share_node_mutated(Compiler *c, int v);

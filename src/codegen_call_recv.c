@@ -1976,7 +1976,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
         /* the block's answer is stored over the element it was bound to: the bytes
            that answer reads and rebuilds of its parameter are written back (a
            read of the parameter elsewhere in the block is its own) */
-        if (g_share_check && et == TY_STRING) share_check_declare_local_reads(c, g_pre, store_at, bp); }
+ }
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       if (mlv) lv_set_type(mlv, msaved);
@@ -4579,7 +4579,6 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           buf_printf(hb, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;%s", tob, tsb, tob, hb != b ? "\n" : " ");
           /* (the handle read held ahead is the receiver's, written back
              below, as the enclosing bang declares it in the statement) */
-          if (hb != b && g_share_check) share_check_declare_reads(hb, hat, recv);
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
              text comparison below cannot tell from a match that wrote the same
              bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
@@ -4614,7 +4613,6 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           /* the plain form read the handle's bytes, and the set_bin below
              writes its answer back into the handle (the bang's own answer,
              when it is used, is the bytes: only a dropped one is declared) */
-          if (g_share_check && share_node_transient(c, id)) share_check_declare_reads(&nbB, 0, recv);
           int tsmB = g_sub_bang_tm; g_sub_bang_id = sv_sbB; g_sub_bang_tm = 0;
           char smB[40] = "";
           if (tsmB) snprintf(smB, sizeof smB, " || _t%d", tsmB);
@@ -4707,7 +4705,6 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       free(wb.p);
       /* (the chain's bytes are the handle's buffer, read before the
          write-back hands the answer to that handle: no copy) */
-      if (inpl && g_share_check) share_check_declare_reads(b, recv_at, nt_paren_single(c->nt, recv));
       /* (one representation: an in-place write makes the receiver the answer,
          read through its bytes face; the new bytes were a String of their own) */
       Buf onev; memset(&onev, 0, sizeof onev);
@@ -9931,12 +9928,12 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      unresolvable chain like `Rails.application.class.to_s` in a method that
      is compiled but never called -- emits sp_box_nil(); coerce it to a
      const char* (yields "" at runtime) so the string ops below type-check. */
-  if (rt == TY_STRING && sp_streq(share_check_unmarked(r), "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
+  if (rt == TY_STRING && sp_streq(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
   /* Same shape, but the unresolved-call gate raised (SPINEL_GATE_RAISE): its
      sp_raise_nomethod(...) is a side-effecting poly value, so coerce it (the
      raise diverges before the result is read) rather than feed the raw
      sp_RbVal into a const char* string op. */
-  else if (rt == TY_STRING && strncmp(share_check_unmarked(r), "sp_raise_nomethod(", 18) == 0) {
+  else if (rt == TY_STRING && strncmp(r, "sp_raise_nomethod(", 18) == 0) {
     Buf cb; memset(&cb, 0, sizeof cb); buf_printf(&cb, "sp_poly_to_s(%s)", r); r = cb.p ? cb.p : r;
   }
   /* A receiver whose nil flag is set IS nil, and CRuby's nil answers only
@@ -14830,13 +14827,12 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   /* the typed emitter worked on the bytes of a String box, which the
      write-back below hands to the box's handle: the receiver's reads are
      no copy */
-  if (g_share_check && kind == PF_STRING && (flags & PF_MUT) && box) share_check_declare_reads(&cb, 0, recv);
   TyKind got_o = keep_o ? (TyKind)g_face_oint_got : TY_UNKNOWN;
   if (!got_o && arm_o) got_o = nat;
   g_face_oint_id = sfo; g_face_oint_got = sfg;
   /* the raise token below is no oint, whatever the emitter noted on its way
      to declining: it is handed on as the token */
-  if (got_o && cb.p && strncmp(share_check_unmarked(cb.p), "sp_raise_nomethod(", 18) == 0) got_o = TY_UNKNOWN;
+  if (got_o && cb.p && strncmp(cb.p, "sp_raise_nomethod(", 18) == 0) got_o = TY_UNKNOWN;
   if (got_o) {
     Buf ob; memset(&ob, 0, sizeof ob);
     Repr slotr = repr_of(c, id);
@@ -14861,9 +14857,9 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
      sp_box_nil(); })`): its value is the node's own default, boxed here since
      the node is poly, whatever kind the arm was pinned to (#4779) */
   size_t cl = strlen(call);
-  int val_tok = strncmp(share_check_unmarked(call), "({ (void)(", 10) == 0 && strstr(call, "sp_raise_cls(") != NULL &&
+  int val_tok = strncmp(call, "({ (void)(", 10) == 0 && strstr(call, "sp_raise_cls(") != NULL &&
                 cl > 18 && strcmp(call + cl - 18, "; sp_box_nil(); })") == 0;
-  if (strncmp(share_check_unmarked(call), "sp_raise_nomethod(", 18) == 0 || val_tok) {
+  if (strncmp(call, "sp_raise_nomethod(", 18) == 0 || val_tok) {
     TyKind slot = repr_of(c, id).as_ty;
     if (slot == TY_POLY || slot == TY_UNKNOWN || slot == TY_VOID) { buf_puts(val, call); slot = TY_POLY; }
     else emit_unbox_text(c, slot, call, val);   /* the token is an sp_RbVal; the slot is not */
@@ -15444,7 +15440,6 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
      used as a value (`x.strip! || x`) is the transformed bytes, which boxing
      makes a new String: only a dropped answer is declared, one answered
      as the receiver's box, and a method's tail that publishes it (pub). */
-  if (g_share_check && (boxed || pub || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
   nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
   if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);

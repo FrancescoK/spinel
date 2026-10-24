@@ -326,7 +326,6 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
      handle, as a slot's is) */
   else if (strh_handle_call(c, v)) {
     sf->cty = TY_STRBUF;
-    if (g_share_check) share_check_mark(c, v, 'H', b);
     strh_elem_handle_text(c, v, b);
     return SPF_HANDLE;
   }
@@ -339,10 +338,6 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
     buf_puts(b, "sp_box_str(");
     emit_expr(c, v, b);
     buf_puts(b, ")");
-    if (g_share_check) {
-      share_check_declare_reads(b, at, v);
-      share_check_declare_reads(b, at, bx);
-    }
     return SPF_HANDLE;
   }
   else {
@@ -350,7 +345,6 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
     /* (--share-check sees the handle these name: emit_expr's own mark is
        not on their path) */
     if (strbuf_slot_has(c, v)) {
-      if (g_share_check) share_check_mark(c, v, 'H', b);
       strbuf_slot_text(c, v, b);
       return SPF_HANDLE;
     }
@@ -359,7 +353,6 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
        read) */
     size_t at = b->len;
     if (bang_self_handle_has(c, v) && emit_bang_self_handle(c, v, b)) {
-      if (g_share_check) share_check_declare_reads(b, at, v);
       return SPF_HANDLE;
     }
     if (str_route_names_handle(c, v)) {
@@ -369,7 +362,6 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
       if (named) buf_puts(b, hb.p ? hb.p : "NULL");
       free(hb.p);
       if (named) {
-        if (g_share_check) share_check_declare_reads(b, at, v);
         return SPF_HANDLE;
       }
     }
@@ -564,10 +556,6 @@ static int str_box_kernel_string(Compiler *c, int v, Buf *b) {
     buf_printf(b, "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : sp_box_str(({ "
                   "const char *_s%d = sp_poly_check_str(_t%d); _s%d ? _s%d : sp_poly_to_s(_t%d); })); })",
                t, t, t, t, t, t, t, t, t);
-  if (g_share_check) {
-    share_check_declare_reads(b, at, v);
-    share_check_declare_reads(b, at, x);
-  }
   return 1;
 }
 

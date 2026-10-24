@@ -1690,8 +1690,7 @@ void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *),
    has to look past any leading ones or the coercion silently does not fire and
    the sp_RbVal lands in the typed slot raw. */
 const char *past_open_parens(const char *s) {
-  /* (--share-check's marks lead the text of a value; see share_check_unmarked) */
-  for (s = share_check_unmarked(s); *s == '('; s = share_check_unmarked(s + 1)) { }
+  while (*s == '(') s++;
   return s;
 }
 
@@ -3073,7 +3072,6 @@ static void emit_boxed_string(Compiler *c, int node, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   if (g_idset_marks && emit_idset_checked(c, node, b, 1)) return;
-  if (g_share_check) share_check_mark(c, node, 'B', b);
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   if (c->n_cext_extensions && ran_first_handle(node) >= 0) {
     str_box_handle_tmp(b, ran_first_handle(node));
@@ -3162,7 +3160,6 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
     /* (the base's read held ahead of the statement is its handle, as
        emit_bang_held_open declares the receiver reads it holds there) */
-    if (g_share_check) share_check_declare_reads(g_pre, at, base);
     /* (the chain runs over the held handle, whatever its blocks assign, a
        method they call included; a tap takes it as the handle, an each_char
        as its String) */
@@ -3208,14 +3205,6 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
   buf_puts(b, " : sp_box_nil(); })");
   /* (the chain runs over the handle held ahead of its blocks: the reads
      its links make of that handle, in the prelude and here, are no copy) */
-  if (g_share_check && bound) {
-    for (int n = nt_paren_single(c->nt, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode; n = nt_paren_single(c->nt, nt_ref(c->nt, n, "receiver"))) {
-      if (g_pre) share_check_declare_reads(g_pre, pre_at, n);
-      share_check_declare_reads(b, b_at, n);
-    }
-    if (g_pre) share_check_declare_reads(g_pre, pre_at, base);
-    share_check_declare_reads(b, b_at, base);
-  }
   free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
@@ -6033,7 +6022,6 @@ static void line_map_reanchor(Buf *b) {
 
 static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
   /* the frame is decided by the function's text: its marks go first */
-  if (g_share_check) share_check_harvest(c, b, ins);
   if (ins >= b->len) return 0;
   const char *p = b->p;
   size_t end = b->len;
@@ -7504,7 +7492,6 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
   g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
   buf_puts(b, "}\n");
-  if (g_share_check) share_check_harvest(c, b, gc_save_off);
   if (!g_no_root_elision) gc_roots_take_back(c, s, b, gc_save_off);
   const char *site = decide_method_site(c, s);
   if (!g_no_root_frame) gc_frame_build(c, b, gc_save_off + gc_save_len, site);
@@ -21614,7 +21601,7 @@ char *codegen_program(const NodeTable *nt) {
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         size_t begin_at = body->len;
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
-        if (g_share_check) share_check_harvest(c, body, begin_at);   /* (before main_body_split) */
+   /* (before main_body_split) */
       }
     }
   }
@@ -21706,7 +21693,6 @@ char *codegen_program(const NodeTable *nt) {
   /* Over the whole program, not per function: methods, procs, block bodies,
      constructors and main are emitted by different paths, and hooking them one
      at a time left a quarter of the stores bare. */
-  if (g_share_check) share_check_harvest(c, &b, 0);
   gc_wb_insert(c, &b, 0);
   { Buf fz; memset(&fz, 0, sizeof fz);
     fzl_emit_defs(b.p ? b.p : "", &fz, repr_share_rule(c));
@@ -21759,7 +21745,6 @@ char *codegen_program(const NodeTable *nt) {
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
   }
-  share_claims_report(c);
   if (g_ndiags > 0 && defer_refusals())
     fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", g_ndiags, g_ndiags == 1 ? "" : "s");
   if (g_ndiags > 0 && !collect_emit_anyway() && !defer_refusals()) {
@@ -21773,7 +21758,6 @@ char *codegen_program(const NodeTable *nt) {
   if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
-  if (g_share_check) share_check_report(c);
   comp_free(c);
   { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
     if (types_out && !(keep && *keep)) return strdup(""); }

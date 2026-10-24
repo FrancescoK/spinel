@@ -409,7 +409,6 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->n_cext_classes; i++) free(c->cext_classes[i].path);
   free(c->cext_classes);
   share_facts_free(c);
-  share_check_free(c);
   share_plan_free(c);
   free(c->bsl_gen);
   free(c->bsl_val);

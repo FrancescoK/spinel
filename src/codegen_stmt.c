@@ -2507,7 +2507,6 @@ int emit_srange_route_boxed(Compiler *c, int v, Buf *b) {
     emit_expr(c, u, b);
     view_unbind(mark);
   }
-  if (g_share_check && (ran || sx)) share_check_declare_reads(b, arm_at, ran ? v : u);
   buf_puts(b, ran ? ")" : "); })");
   free(rb.p);
   return 1;
@@ -2709,7 +2708,6 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
          the call makes) */
       size_t arm_at = b->len;
       emit_boxed(c, v, b);
-      if (g_share_check) share_check_declare_reads(b, arm_at, v);
     }
     g_conv_hold = hold;
     view_unbind(mark);
@@ -2948,7 +2946,6 @@ void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
     str_new_handle_close(b);
     buf_puts(b, "; })");
   }
-  if (box && g_share_check) share_check_declare_reads(b, at, v);
 }
 /* --share-strings: the boxed operand whose String route v answers (`y.to_s`,
    `+y`, `String(y)` with y boxed: strbuf_route_operand), or -1. The
@@ -3358,7 +3355,6 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
        is no String the rule shares, and the new one it wraps is its own. (A
        pickup arm takes the handle the callee published, so a String the
        rule shares does reach it: its reports stand.) */
-    if (g_share_check && !pickup) { share_check_declare_reads(b, arm_at, v); share_check_declare_reads(b, guard_at, x); }
     g_sn_skip = sn_skip;
     view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
@@ -4391,11 +4387,6 @@ static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, in
   buf_puts(hb, hb != b ? "\n" : " ");
   /* the receiver's reads held ahead of the statement are its handle, as
      emit_bang_self_handle declares those it writes in the statement */
-  if (hb != b && g_share_check) {
-    int r = nt_ref(c->nt, v, "receiver");
-    share_check_declare_reads(hb, at, r);
-    if (r >= 0 && nt_paren_single(c->nt, r) != r) share_check_declare_reads(hb, at, nt_paren_single(c->nt, r));
-  }
 }
 /* Bang v on its receiver held in _t<th>: a safe-navigation call answers
    nil for a nil receiver, its guard this test, as the boxed route's is
@@ -4923,7 +4914,6 @@ void strbuf_hold_slot(Compiler *c, int v, int r, Buf *sb) {
   size_t at = g_pre->len;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);\n", th, sb->p ? sb->p : "NULL", th);
-  if (g_share_check) share_check_declare_reads(g_pre, at, r);
   sb->len = 0;
   buf_printf(sb, "_t%d", th);
 }
@@ -5103,11 +5093,6 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
   /* the answer is the receiver's handle (the bang's own bytes only say
      whether it answered nil): what the receiver's reads fed is written back
      into it, and they are no copy */
-  if (done && g_share_check) {
-    int r = nt_ref(c->nt, v, "receiver");
-    share_check_declare_reads(b, at, r);
-    if (r >= 0 && nt_paren_single(c->nt, r) != r) share_check_declare_reads(b, at, nt_paren_single(c->nt, r));
-  }
   return done;
 }
 
@@ -5191,7 +5176,6 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
       else buf_printf(b, "; if (!_t%d) sp_nil_recv(\"to_str\"); _t%d; })", t, t);
       return;
     } }
-  if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
      HANDLE, not the buffer, so the two names denote one object: a later
      `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
@@ -13686,7 +13670,7 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, &tmp);
   /* (txt is what the tests read, past --share-check's marks; full is written) */
   const char *full = tmp.p ? tmp.p : "";
-  const char *txt = share_check_unmarked(full);
+  const char *txt = full;
   /* A conditional whose condition folds is its live arm alone, in that arm's
      own C: a raise there is no box to open, and is run as any raising tail */
   int raises = strncmp(txt, "(sp_raise_cls(", 14) == 0 ||
@@ -22133,7 +22117,6 @@ int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts) {
     emit_stmt_or_defer(c, body[k], b, indent);
     /* main_body_split cuts by these offsets and sizes the parts by them: a
        statement's marks go before its end is noted */
-    if (g_share_check) share_check_harvest(c, b, from);
     cuts[k] = b->len;
     if (stmt_is_folded_return(c, body[k])) return k + 1;
   }
@@ -23211,7 +23194,6 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         size_t wb_at = b->len;
         emit_expr(c, id, b);
         /* the transform reads the handle's bytes; set_bin takes its answer back */
-        if (g_share_check) share_check_declare_reads(b, wb_at, recv);
         buf_puts(b, "); }\n");
         nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
         return 1;

@@ -1,4 +1,0 @@
-share-check: copy: test/share_check/wrap_copy.rb:10 node 30 LocalVariableReadNode (x): bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
-share-check: plan: disagree: test/share_check/wrap_copy.rb:10 node 30 LocalVariableReadNode (x): plan handle (live), C wrap (take, receiver) [box]
-share-check: 5 marks, 0 declared, 1 copies
-share-check: plan: 3 sites, 2 agree, 0 read, 1 disagree; handle 2/0/1/0, wrap 0/0/0/0, refuse 0/0/0/0, bytes 0/0/0/0 (C handle/read/wrap/bytes); by consumer take 3, read 0, test 0, store 0, identity 0; 1 live, 0 stale
