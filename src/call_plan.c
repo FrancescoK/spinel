@@ -1094,6 +1094,21 @@ static int cplan_argc(const NodeTable *nt, int id) {
   return n;
 }
 
+/* Every argument of call `id` is a constant naming one of the program's
+   modules: a boxed receiver's `prepend` is then Module#prepend, not String's. */
+static int cplan_module_args(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), n = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+  if (n < 1 || !av) return 0;
+  for (int i = 0; i < n; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    int ci = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, av[i], "name")) : -1;
+    if (ci < 0 || !comp_class_is_module(c, &c->classes[ci])) return 0;
+  }
+  return 1;
+}
+
 /* A call to something spinel deliberately does not support (docs/limitations.md),
    by the call node alone: the documented limit's message, or NULL. Without
    it the call falls through to the generic diagnostic, which dumps node ids
@@ -1453,8 +1468,10 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
      Object counts though a program that never reopens it has no class entry
      for it: `Object.include M` (or through `O = Object`) otherwise compiled
      to a NoMethodError at run time. */
-  if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object")) &&
-      (sp_streq(name, "include") || sp_streq(name, "prepend") ||
+  int mixin = sp_streq(name, "include") || sp_streq(name, "prepend");
+  if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object") ||
+                      (mixin && is_builtin_reopen_name(rcn))) &&
+      (mixin ||
        sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
        sp_streq(name, "attr_writer") || sp_streq(name, "define_method"))) {
     /* only the receiver's own class method of the name answers instead:
@@ -1468,6 +1485,22 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
              "restructured through an explicit receiver. Move the `%s` inside `class %s ... "
              "end` (see docs/limitations.md)", rcn, name, name, rcn);
     why = buf;
+  }
+  /* the same through a Class held in a variable (`[A, B].each { |k| k.include(M) }`)
+     or a singleton class the desugaring left: a NoMethodError at run time */
+  if (!why && mixin) {
+    int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
+    if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "singleton_class"))
+      why = "singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement "
+            "of a class or module body, or at the top level on a class or module the program declares: "
+            "move it into `class X ... end` (see docs/limitations.md)";
+    else if (!rcn && recv >= 0 && (comp_ntype(c, recv) == TY_CLASS ||
+                                   (comp_ntype(c, recv) == TY_POLY && cplan_module_args(c, id))))
+      why = "include / prepend on a Class held in a variable is not supported by AOT compilation: the ancestor "
+            "chain is baked at compile time, so the class must be named by a constant. Write "
+            "`K.include(M)` (or `include M` inside `class K ... end`) for each class "
+            "(see docs/limitations.md)";
+    if (why) *lx = LX_NAME;
   }
 
   if (!why) { *stop = 0; return NULL; }

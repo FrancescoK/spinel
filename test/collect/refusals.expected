@@ -60,6 +60,12 @@ spinel: 1 refusal, nothing written
 == test/reject/bind_call_class_value_block_target.rb [promote] rc=1
 spinel: test/reject/bind_call_class_value_block_target.rb:12: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
 spinel: 1 refusal, nothing written
+== test/reject/builtin_include_in_method.rb [default] rc=1
+spinel: test/reject/builtin_include_in_method.rb:7: String.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class String ... end` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/builtin_include_in_method.rb [promote] rc=1
+spinel: test/reject/builtin_include_in_method.rb:7: String.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class String ... end` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/builtin_reopen_bare_instance_method.rb [default] rc=1
 spinel: test/reject/builtin_reopen_bare_instance_method.rb:6: unsupported call: node N (CallNode `instance_method`) recv=-/ty-1 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
@@ -86,6 +92,12 @@ spinel: test/reject/builtin_singleton_alias_call_unordered_same_line.rb:3: Time.
 spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_alias_chain.rb [promote] rc=1
 spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_class_prepend.rb [default] rc=1
+spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares: move it into `class X ... end` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_class_prepend.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares: move it into `class X ... end` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_kernel_alias.rb [default] rc=1
 spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_kernel_alias.rb [promote] rc=1
@@ -410,6 +422,12 @@ spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass e
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
+== test/reject/class_value_include.rb [default] rc=1
+spinel: test/reject/class_value_include.rb:9: include / prepend on a Class held in a variable is not supported by AOT compilation: the ancestor chain is baked at compile time, so the class must be named by a constant. Write `K.include(M)` (or `include M` inside `class K ... end`) for each class (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_value_include.rb [promote] rc=1
+spinel: test/reject/class_value_include.rb:9: include / prepend on a Class held in a variable is not supported by AOT compilation: the ancestor chain is baked at compile time, so the class must be named by a constant. Write `K.include(M)` (or `include M` inside `class K ... end`) for each class (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/compact_class_internal_name_clash.rb [default] rc=1
 spinel: test/reject/compact_class_internal_name_clash.rb:5: a class or module named Foo under a module path takes the internal name X__Foo, which the program's own class X__Foo already has, and a top-level Foo is defined too; rename one of them
 == test/reject/compact_class_internal_name_clash.rb [promote] rc=1
@@ -1140,23 +1158,11 @@ spinel: 1 refusal, nothing written
 == test/reject/object_method_ivar_struct_slot.rb [promote] rc=1
 spinel: test/reject/object_method_ivar_struct_slot.rb:3: unsupported instance_variable_set to an ivar absent from the fixed object layout: node N (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8
 spinel: 1 refusal, nothing written
-== test/reject/object_receiver_include.rb [default] rc=1
-spinel: test/reject/object_receiver_include.rb:7: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
-spinel: 1 refusal, nothing written
-== test/reject/object_receiver_include.rb [promote] rc=1
-spinel: test/reject/object_receiver_include.rb:7: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
-spinel: 1 refusal, nothing written
 == test/reject/object_receiver_include_alias.rb [default] rc=1
 spinel: test/reject/object_receiver_include_alias.rb:8: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/object_receiver_include_alias.rb [promote] rc=1
 spinel: test/reject/object_receiver_include_alias.rb:8: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
-spinel: 1 refusal, nothing written
-== test/reject/object_receiver_include_unrelated_def.rb [default] rc=1
-spinel: test/reject/object_receiver_include_unrelated_def.rb:7: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
-spinel: 1 refusal, nothing written
-== test/reject/object_receiver_include_unrelated_def.rb [promote] rc=1
-spinel: test/reject/object_receiver_include_unrelated_def.rb:7: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/prepend_after_call.rb [default] rc=1
 spinel: test/reject/prepend_after_call.rb:12: a later statement mixes module Loud into class Dog (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
@@ -1270,6 +1276,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
 == test/reject/scan_subject_stdin_gets.rb [promote] rc=1
 spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead
+== test/reject/sclass_constant_prepend.rb [default] rc=1
+spinel: test/reject/sclass_constant_prepend.rb:11: include / prepend inside `class << x` is supported only in `class << self`: write `singleton_class.prepend M` or `extend M` in the body of the class (see docs/limitations.md)
+== test/reject/sclass_constant_prepend.rb [promote] rc=1
+spinel: test/reject/sclass_constant_prepend.rb:11: include / prepend inside `class << x` is supported only in `class << self`: write `singleton_class.prepend M` or `extend M` in the body of the class (see docs/limitations.md)
 == test/reject/scrub_bang_block.rb [default] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written
