@@ -1,0 +1,22 @@
+true
+true
+named 1
+true
+false
+3
+a b
+true
+nil
+nil
+127
+from_local
+true
+poly
+true
+splat splat
+true
+statement
+"wrong first argument"
+"no implicit conversion of Integer into String"
+"no implicit conversion of Integer into String"
+"wrong first argument"

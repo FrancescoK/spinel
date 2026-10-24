@@ -542,8 +542,8 @@ static inline sp_float sp_math_gamma(sp_float x){if(x<0.0&&x==floor(x))sp_raise_
    spawns should not carry two lines about it. */
 sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args, sp_RbVal opts);
 sp_RbVal sp_process_redirect_value(sp_RbVal opts, int slot, sp_bool *found, int *prior);   /* lib/sp_poly_cold.c: needs this header's Hash walk */
-int sp_system_env_args(sp_RbVal env, int argc, const char *const *argv);   /* lib/sp_process.c */
 void sp_system_env_check(sp_RbVal env);   /* raises as system would, before argv is built */
+int sp_system_prog_env_args(sp_RbVal env, const char *prog, int argc, const char *const *argv);   /* lib/sp_process.c: prog NULL unless system([program, argv0], ...); env nil for none */
 void sp_process_exec(sp_RbVal cmd, sp_RbVal args);   /* lib/sp_process.c: Kernel#exec */
 int sp_process_open_redirect(const char *path, int slot, int *owned);
 SP_NORETURN void sp_process_spawn_fail(int *owned, const char *cls, const char *msg);

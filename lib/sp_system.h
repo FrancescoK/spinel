@@ -19,6 +19,9 @@ int sp_system_args(int argc, const char *const *argv);
 /* the same with envp (NULL-terminated "NAME=value" entries) as the child's
    whole environment, or this process's when envp is NULL */
 int sp_system_envp(int argc, const char *const *argv, char **envp);
+/* the same with prog as the program and argv[0] as the argv0 it sees
+   (system([program, argv0], ...)): no shell, no splitting into words */
+int sp_system_prog_envp(const char *prog, int argc, const char *const *argv, char **envp);
 /* CRuby's test of whether the shell runs a one-String command line, and
    the words of a line it does not run (one malloc block, NULL-terminated;
    Process.spawn and system share both) */
