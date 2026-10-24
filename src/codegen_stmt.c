@@ -15949,6 +15949,7 @@ static int masgn_store_allocates(Compiler *c, int tgt) {
 static void masgn_index_key(Compiler *c, int key, TyKind kt, Buf *b) {
   if (kt == TY_POLY && repr_of(c, key).kind != RK_BOXED) emit_boxed(c, key, b);
   else if (kt == TY_INT) emit_int_expr(c, key, b);
+  else if (kt == TY_STRBUF) emit_strbuf_handle_of(c, key, b);
   else emit_expr(c, key, b);
 }
 /* The C slot type of a variable or constant target masgn_store writes, or
@@ -16954,6 +16955,9 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           /* typed target from a poly tuple (known multi-value return) */
           emit_unbox_text(c, ivt, get_expr, b);
         }
+        /* a String field from a String Array: the element's handle, as
+           for a local above */
+        else if (ivt == TY_STRBUF && elem == TY_STRING) buf_printf(b, (g_one_string ? "SP_STR_HDL(%s)" : "sp_String_new_shared(%s)"), get_expr);
         else buf_puts(b, get_expr);
         splice_store_close(c, lefts[i], sk, b);
         buf_puts(b, ";\n");
@@ -18273,9 +18277,13 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       }
     }
     else {
+      /* (one representation: a String is held as it is, a handle a
+         variable's; the String Array keeps its bytes) */
+      int sb = g_one_string && rest_arr_t == TY_STR_ARRAY;
       for (int i = rstart; i < rend; i++) {
         emit_indent(b, indent);
-        buf_printf(b, "sp_%sArray_push%s(_t%d, _t%d);\n", k, nil_store_sfx(c, k, els[i]), tr, tmps[i]);
+        buf_printf(b, sb ? "sp_%sArray_push%s(_t%d, SP_STR_B(_t%d));\n" : "sp_%sArray_push%s(_t%d, _t%d);\n",
+                   k, nil_store_sfx(c, k, els[i]), tr, tmps[i]);
       }
     }
     char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
