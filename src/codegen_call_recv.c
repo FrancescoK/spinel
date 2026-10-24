@@ -568,6 +568,26 @@ static void emit_sb_res_ctype(Compiler *c, TyKind resty, Buf *b) {
   if (g_one_string && (resty == TY_STRING || resty == TY_STRBUF)) { buf_puts(b, "__auto_type"); return; }
   emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
 }
+/* The shim's answer, once the shadow is written back to the handle _t<tH>.
+   Under the one String representation a mutator answering its receiver
+   (insert, concat, a bang that changed it) answers that handle's payload
+   view, which is the String itself where it is stored (SP_STR_HDL finds
+   the handle) and its bytes where they are read: the arm's own answer is
+   the shadow's bytes, a copy once the handle took them, and
+   `[s.insert(0, "<")]` stored the copy. */
+static void emit_sb_shim_answer(Compiler *c, int id, int tH, TyKind resty, Buf *b) {
+  int fl = 0;
+  if (g_one_string && (resty == TY_STRING || resty == TY_STRBUF)) {
+    int argc = 0;
+    call_args(c->nt, id, &argc);
+    fl = bop_answers_self(TY_STRING, nt_str(c->nt, id, "name"), argc, nt_ref(c->nt, id, "block") >= 0);
+  }
+  if (fl == BOPF_SELF || fl == BOPF_SELF_EXACT)
+    buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); (void)_res%d; sp_strbuf_read_pub(_t%d); })", tH, tH, tH, tH);
+  else if (fl == BOPF_SELF_OR_NIL)
+    buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL; })", tH, tH, tH, tH);
+  else buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+}
 
 /* The shared-mutable shim over an IVAR receiver, in expression position. The
    local form renames the slot so the value arm's reads and its write-back both
@@ -606,7 +626,7 @@ static int sb_iv_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
-  buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+  emit_sb_shim_answer(c, id, tH, resty, b);
   return 1;
 }
 
@@ -638,7 +658,7 @@ static int sb_reader_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
-  buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+  emit_sb_shim_answer(c, id, tH, resty, b);
   return 1;
 }
 
@@ -690,7 +710,7 @@ static int sb_route_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   emit_sb_res_ctype(c, resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
-  buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+  emit_sb_shim_answer(c, id, tH, resty, b);
   return 1;
 }
 
@@ -5216,7 +5236,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           emit_sb_res_ctype(c, resty, b);
           buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
           free(armb.p);
-          buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+          emit_sb_shim_answer(c, id, tH, resty, b);
           return 1;
         }
       }
