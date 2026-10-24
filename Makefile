@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -1441,7 +1441,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	cat "$$tmp/runs"; \
 	for flags in '' '--share-strings'; do \
 	  if ! $(SPINEL) $$flags test/share_strings_class_value_stat_fields.rb -c --no-line-map -o "$$tmp/stat.c" >"$$tmp/out" 2>&1 || \
-	     grep -q 'sp_pd_[0-9]' "$$tmp/stat.c"; then \
+	     grep -q 'sp_pd_[0-9a-f]' "$$tmp/stat.c"; then \
 	    echo "share-strings-test: FAIL (Class calls of Stat field names add a dispatch)"; ok=0; \
 	  fi; \
 	done; \
@@ -4589,12 +4589,12 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	awk '/^static .*sp_Board_[a-z_]*\(.*\) \{$$/ {b=1} b {print} b && /^}/ {b=0}' "$$tmp/pab.c" > "$$tmp/pab_board.c"; \
 	[ -s "$$tmp/pab_board.c" ] && ! grep -q 'sp_brk_push' "$$tmp/pab_board.c" || { echo "infer-test: FAIL (#4916 a break out of a walk over an object array pays a setjmp)"; ok=0; }; \
 	$(SPINEL) test/infer/poly_dispatch_out_of_line.rb -c --no-line-map -o "$$tmp/pdl.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line: -c)"; ok=0; }; \
-	[ "$$(grep -c '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9]*(' "$$tmp/pdl.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (#4847 a poly dispatch is not one shared out-of-line function)"; ok=0; }; \
+	[ "$$(grep -c '^static .*sp_pd_[0-9a-f_]*(sp_RbVal _t0) {' "$$tmp/pdl.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9a-f_]*(' "$$tmp/pdl.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (#4847 a poly dispatch is not one shared out-of-line function)"; ok=0; }; \
 	$(SPINEL) test/infer/poly_dispatch_out_of_line.rb -c -o "$$tmp/pdl_lm.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line: -c with line map)"; ok=0; }; \
 	awk '/^#line /{seen=1; d=1; next} seen && !d && !c && !/^#/ {bad++} {d=0; c=/\\$$/} END{exit bad>0}' "$$tmp/pdl_lm.c" || { echo "infer-test: FAIL (#4940 a C line after a statement's first is not re-anchored to its Ruby line)"; ok=0; }; \
-	grep -B1 '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl_lm.c" | grep -q '^#line 12 "test/infer/poly_dispatch_out_of_line.rb"' || { echo "infer-test: FAIL (#4928 an out-of-line dispatch function does not name the call site it came from)"; ok=0; }; \
+	grep -B1 '^static .*sp_pd_[0-9a-f_]*(sp_RbVal _t0) {' "$$tmp/pdl_lm.c" | grep -q '^#line 12 "test/infer/poly_dispatch_out_of_line.rb"' || { echo "infer-test: FAIL (#4928 an out-of-line dispatch function does not name the call site it came from)"; ok=0; }; \
 	$(SPINEL) test/infer/poly_dispatch_out_of_line_array_subclass.rb -c --no-line-map -o "$$tmp/pdla.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line_array_subclass: -c)"; ok=0; }; \
-	[ "$$(grep -c '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdla.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9]*(' "$$tmp/pdla.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (a poly dispatch in a program that subclasses Array is not one shared out-of-line function)"; ok=0; }; \
+	[ "$$(grep -c '^static .*sp_pd_[0-9a-f_]*(sp_RbVal _t0) {' "$$tmp/pdla.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9a-f_]*(' "$$tmp/pdla.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (a poly dispatch in a program that subclasses Array is not one shared out-of-line function)"; ok=0; }; \
 	$(SPINEL) test/infer/string_handle_initialize_reader.rb -c --no-line-map -o "$$tmp/shi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (string_handle_initialize_reader: -c)"; ok=0; }; \
 	grep -q 'sp_Count_initialize(sp_Count \*self, $(STR_SLOT_C) lv_s)' "$$tmp/shi.c" && grep -q 'sp_Name_initialize(sp_Name \*self, $(STR_SLOT_C) lv_s)' "$$tmp/shi.c" && grep -q '$(STR_SLOT_C) lv_line = NULL;' "$$tmp/shi.c" && grep -q 'sp_Grow_initialize(sp_Grow \*self, sp_String \* lv_s)' "$$tmp/shi.c" || { echo "infer-test: FAIL (#6179 an initialize that only reads or keeps its String took the shared handle)"; ok=0; }; \
 	$(SPINEL) test/infer/tally_typed.rb -c --no-line-map -o "$$tmp/tly.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (tally_typed: -c)"; ok=0; }; \
@@ -4692,7 +4692,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  *) [ "$$rounds" -lt 128 ] || { echo "infer-test: FAIL (an each walk's parameter pin and its boxed binding traded the parameter every round: the fixpoint ran to its cap)"; ok=0; };; \
 	esac; \
 	grep -q 'sp_PtrArray \* iv_pts;' "$$tmp/oae.c" || { echo "infer-test: FAIL (an array of one class whose class defines each stayed boxed through a walk)"; ok=0; }; \
-	[ "$$(grep -cE '\(lv_pt__bp[0-9]+\)->iv_x' "$$tmp/oae.c")" = 3 ] || { echo "infer-test: FAIL (an each, reverse_each or each_with_index walk over an array of one class bound its parameter boxed)"; ok=0; }; \
+	[ "$$(grep -cE '\(lv_pt__bp[A-Za-z0-9_]+\)->iv_x' "$$tmp/oae.c")" = 3 ] || { echo "infer-test: FAIL (an each, reverse_each or each_with_index walk over an array of one class bound its parameter boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/obj_array_literal_arg.rb -c --no-line-map -o "$$tmp/oal.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_literal_arg: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_steps;' "$$tmp/oal.c" && grep -q 'sp_total(sp_PtrArray \* lv_parts' "$$tmp/oal.c" || { echo "infer-test: FAIL (an object Array literal passed as an argument stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/obj_array_removals.rb -c --no-line-map -o "$$tmp/oar.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_removals: -c)"; ok=0; }; \
@@ -4812,10 +4812,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'sp_FloatArray \* *lv_ci' "$$tmp/nti.c" || { echo "infer-test: FAIL (each_with_index on the result table did not yield a float row)"; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *lv_other' "$$tmp/nti.c" || { echo "infer-test: FAIL (a nested table passed as zip'\''s other operand stayed boxed)"; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_o' "$$tmp/nti.c" || { echo "infer-test: FAIL (zip did not yield an int row from that operand)"; ok=0; }; \
-	grep -q 'sp_poly_arr_get' "$$tmp/nti.c" && grep -v -E 'lv_[abc]__bp[0-9]+ = sp_poly_arr_get\(' "$$tmp/nti.c" | grep -q 'sp_poly_arr_get' && { echo "infer-test: FAIL (a nested-table iterator still read through sp_poly_arr_get)"; ok=0; }; \
+	grep -q 'sp_poly_arr_get' "$$tmp/nti.c" && grep -v -E 'lv_[abc]__bp[A-Za-z0-9_]+ = sp_poly_arr_get\(' "$$tmp/nti.c" | grep -q 'sp_poly_arr_get' && { echo "infer-test: FAIL (a nested-table iterator still read through sp_poly_arr_get)"; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *lv_rows' "$$tmp/nti.c" || { echo "infer-test: FAIL (the int table walked by each lost its typed representation)"; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *lv_frows' "$$tmp/nti.c" || { echo "infer-test: FAIL (the float table walked by each lost its typed representation)"; ok=0; }; \
-	grep -Eq 'lv_[abc]__bp[0-9]+ = sp_PtrArray_get' "$$tmp/nti.c" && { echo "infer-test: FAIL (a row pointer was assigned to a parameter of a split block)"; ok=0; }; \
+	grep -Eq 'lv_[abc]__bp[A-Za-z0-9_]+ = sp_PtrArray_get' "$$tmp/nti.c" && { echo "infer-test: FAIL (a row pointer was assigned to a parameter of a split block)"; ok=0; }; \
 	$(SPINEL) test/infer/nested_row_poly_param.rb -c --no-line-map -o "$$tmp/nrp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile nested_row_poly_param)"; exit 1; }; \
 	grep -Eq 'lv_r = sp_box_nullable_obj\(\(void \*\)\((sp_PtrArray_get\(lv_rows,|lv_r__bpin\))' "$$tmp/nrp.c" || { echo "infer-test: FAIL (a boxed block parameter over a nested table was not given the row pointer)"; ok=0; }; \
 	grep -q 'lv_r = sp_PtrArray_get' "$$tmp/nrp.c" && { echo "infer-test: FAIL (a void * row was assigned straight into the boxed parameter)"; ok=0; }; \
@@ -4919,7 +4919,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	awk '/ sp_make_tree\(sp_int lv_depth\) \{/,/^}/' "$$tmp/rha.c" > "$$tmp/rha_mt.c"; \
 	grep -q 'sp_make_tree(' "$$tmp/rha_mt.c" && ! grep -Eq '_gcf\.v\[[0-9]+\] = _gcf\.v\[[0-9]+\];|_t[0-9]+ = _t[0-9]+;' "$$tmp/rha_mt.c" || { echo "infer-test: FAIL (an argument the call hoisted into a rooted temp is copied into a second rooted one)"; ok=0; }; \
 	$(SPINEL) test/block_on_user_call_receiver_once.rb -c --no-line-map -o "$$tmp/bur.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (block_on_user_call_receiver_once: -c)"; ok=0; }; \
-	n=$$(grep -Ec '^static .* _proc_[0-9]+\(.*\{$$' "$$tmp/bur.c"); [ "$$n" -eq 2 ] || { echo "infer-test: FAIL (a block on a call-valued receiver of a user class left a dead copy of its proc: $$n proc functions, want 2)"; ok=0; }; \
+	n=$$(grep -Ec '^static .* _proc_[A-Za-z0-9_]+\(.*\{$$' "$$tmp/bur.c"); [ "$$n" -eq 2 ] || { echo "infer-test: FAIL (a block on a call-valued receiver of a user class left a dead copy of its proc: $$n proc functions, want 2)"; ok=0; }; \
 	$(SPINEL) test/poll_dynamic_call_reacher.rb -c --no-line-map -o "$$tmp/pdc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poll_dynamic_call_reacher: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_Device_peek\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && awk '/^[a-z].* sp_Bus_sum\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' || { echo "infer-test: FAIL (a method making a proc's call, or the caller of a yielder making one, does not poll at its entry)"; ok=0; }; \
 	awk '/^[a-z].* sp_Bus_read\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && { echo "infer-test: FAIL (a method that only reaches a proc's call polls at its entry)"; ok=0; }; \
@@ -5574,6 +5574,15 @@ else
 LINE_MAP_RBS = rbs-seed-extractor
 endif
 gate-props: line-map-check
+
+# An edit to one method changes that method's C alone (tools/unit_stability.sh):
+# the scale program's middle unit is edited three ways and the differing
+# lines of C are counted against a bound, so a name numbered across the
+# whole program (a temp, a proc function, a literal, a node) cannot come
+# back unnoticed and spread one edit's difference over the whole file.
+unit-stability-test: $(SPINEL)
+	@tools/unit_stability.sh $(SPINEL)
+gate-props: unit-stability-test
 line-map-check: $(SPINEL) $(LINE_MAP_RBS)
 	@ok=1; \
 	tools/line_map_check.sh -j $(NPROC) $(LINE_MAP_SAMPLE) || ok=0; \
