@@ -10656,6 +10656,23 @@ static int class_new_pos_arity(Compiler *c, int ci, int *pmin, int *pmax) {
   return 1;
 }
 
+/* Whether a seconds field may carry a fraction: a Float, a Rational, or a
+   boxed value that may hold one (#2638). */
+static int time_sec_fractional(Compiler *c, int node) {
+  Repr r = repr_of(c, node);
+  return r.as_ty == TY_RATIONAL || r.as_ty == TY_FLOAT || r.as_ty == TY_POLY;
+}
+
+/* A fractional seconds field as the whole seconds a civil constructor takes,
+   with its nanoseconds stored in the int32_t temp _t<ts> (sp_time_sec_split_*). */
+static void emit_time_sec_whole(Compiler *c, int node, int ts, Buf *b) {
+  Repr r = repr_of(c, node);
+  if (r.as_ty == TY_RATIONAL) { buf_puts(b, "sp_time_sec_split_r("); emit_expr(c, node, b); }
+  else if (r.kind == RK_BOXED) { buf_puts(b, "sp_poly_time_sec_split("); emit_boxed(c, node, b); }
+  else { buf_puts(b, "sp_time_sec_split_f("); emit_expr(c, node, b); }
+  buf_printf(b, ", &_t%d)", ts);
+}
+
 /* Emit an unconditional ArgumentError raise into the prelude when `argc`
    positional args cannot satisfy class `ci`'s `initialize` -- MRI raises at the
    `.new` site. Skips the check when the call carries a splat or a keyword hash
@@ -10668,8 +10685,9 @@ static int class_new_pos_arity(Compiler *c, int ci, int *pmin, int *pmax) {
    works too (#3697); a zone known only at run time may also be a whole-second
    Float or Rational, or nil, which reads the fields in local time. The fields
    are evaluated first, in order, then the zone, as CRuby does. Emits a
-   statement expression; `npos` positional fields. */
-static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Buf *b) {
+   statement expression; `npos` positional fields. A nonzero `ts` is the
+   temp the seconds field's fraction goes to (emit_time_sec_whole). */
+static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, int ts, Buf *b) {
   int tz = ++g_tmp, tu = ++g_tmp, tt = ++g_tmp, tl = ++g_tmp, tf = ++g_tmp;
   TyKind zt = comp_ntype(c, zone);
   buf_printf(b, "({ int64_t _t%d[6];", tf);
@@ -10678,7 +10696,8 @@ static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Bu
     if (i < npos) {
       Repr fitr = repr_of(c, argv[i]);
       TyKind fit = fitr.as_ty;
-      if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
+      if (i == 5 && ts) emit_time_sec_whole(c, argv[i], ts, b);
+      else if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
       else if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
       else if (fitr.kind == RK_BOXED || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
       else emit_int_expr(c, argv[i], b);
@@ -10719,6 +10738,8 @@ void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
    fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
    argument is the utc_offset for Time.new but the usec-of-second count for
    the named class methods. Returns 1 when it emitted. */
+static int emit_time_civil_fields(Compiler *c, const int *argv, int argc, int is_utc, int is_new,
+                                  int ts, Buf *b);
 int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc;
@@ -10742,34 +10763,27 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
     return 1;
   }
   if (argc < 1 || argc > 7) return 0;
-  /* a fractional seconds field (Rational/Float) for the named class methods:
-     split into whole seconds and a nanosecond remainder (#2638). */
-  if (!is_new && argc == 6) {
-    Repr sectr = repr_of(c, argv[5]);
-    TyKind sect = sectr.as_ty;
-    if (sect == TY_RATIONAL || sect == TY_FLOAT || sect == TY_POLY) {
-      int ts = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", ts);
-      if (sect == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[5], b); buf_puts(b, ")"); }
-      /* a boxed field: a Rational's or a Float's fraction is kept, anything
-         else is read as the whole-second field it was */
-      else if (sectr.kind == RK_BOXED) { buf_puts(b, "sp_poly_time_sec_f("); emit_boxed(c, argv[5], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[5], b);
-      buf_printf(b, "; SP_TIME_TMP(_t%da) = sp_time_new%s(", ts, is_utc ? "_utc" : "");
-      for (int i = 0; i < 5; i++) {
-        if (i) buf_puts(b, ", ");
-        Repr fitr = repr_of(c, argv[i]);
-        TyKind fit = fitr.as_ty;
-        if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-        else if (fitr.kind == RK_BOXED || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
-        else if (fit == TY_NIL) buf_puts(b, (i == 1 || i == 2) ? "1" : "0");  /* a nil field is its default */
-        else emit_int_expr(c, argv[i], b);
-      }
-      buf_printf(b, ", (int64_t)_t%d); _t%da->tv_nsec = (int32_t)((_t%d - (double)(int64_t)_t%d) * 1e9 + 0.5); _t%da; })",
-                 ts, ts, ts, ts, ts);
-      return 1;
-    }
+  /* a fractional seconds field (a Float or a Rational): the constructor
+     takes the whole seconds and the nanoseconds are set after it (#2638).
+     For the named class methods only the six-field form, as a 7th argument
+     is their usec. */
+  int npos = is_new && argc >= 2 && nt_argv_kwh(nt, argv, argc) >= 0 ? argc - 1 : argc;
+  if ((is_new ? npos >= 6 : argc == 6) && time_sec_fractional(c, argv[5])) {
+    int ts = ++g_tmp;
+    buf_printf(b, "({ int32_t _t%d = 0; SP_TIME_TMP(_t%da) = ", ts, ts);
+    emit_time_civil_fields(c, argv, argc, is_utc, is_new, ts, b);
+    buf_printf(b, "; _t%da->tv_nsec = _t%d; _t%da; })", ts, ts, ts);
+    return 1;
   }
+  return emit_time_civil_fields(c, argv, argc, is_utc, is_new, 0, b);
+}
+
+/* The civil constructor forms after the special ones of emit_time_civil_ctor:
+   the in: keyword, a 7th positional zone or usec, and the plain fields. A
+   nonzero `ts` takes the seconds field through emit_time_sec_whole. */
+static int emit_time_civil_fields(Compiler *c, const int *argv, int argc, int is_utc, int is_new,
+                                  int ts, Buf *b) {
+  const NodeTable *nt = c->nt;
   /* Time.new(y[, mo[, d[, h[, mi[, s]]]]], in: <off>): the `in:` keyword is
      the utc_offset, same as the 7th positional (#2718). */
   if (is_new && argc >= 2 && argc <= 7 &&
@@ -10779,7 +10793,7 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
       int npos = argc - 1;
       /* any zone spelling, resolved at run time (#3697) */
       if (comp_ntype(c, inv) != TY_INT) {
-        emit_time_civil_zoned(c, (int *)argv, npos, inv, b);
+        emit_time_civil_zoned(c, (int *)argv, npos, inv, ts, b);
         return 1;
       }
       buf_puts(b, "sp_time_new_off(");
@@ -10788,7 +10802,8 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
         if (i < npos) {
           Repr fit_repr = repr_of(c, argv[i]);
           TyKind fit = fit_repr.as_ty;
-          if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
+          if (i == 5 && ts) emit_time_sec_whole(c, argv[i], ts, b);
+          else if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
           else if (fit_repr.kind == RK_BOXED || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
           else emit_int_expr(c, argv[i], b);
         }
@@ -10802,7 +10817,7 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
   }
   /* the 7th positional is the zone: any spelling, resolved at run time (#3697) */
   if (argc == 7 && is_new && comp_ntype(c, argv[6]) != TY_INT) {
-    emit_time_civil_zoned(c, (int *)argv, 6, argv[6], b);
+    emit_time_civil_zoned(c, (int *)argv, 6, argv[6], ts, b);
     return 1;
   }
   if (argc == 7 && is_new) buf_puts(b, "sp_time_new_off(");
@@ -10825,7 +10840,8 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
       Repr fr = repr_of(c, argv[i]);
       TyKind fit = fr.as_ty;
       /* the month field also takes an English month name (#3703) */
-      if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
+      if (i == 5 && ts) emit_time_sec_whole(c, argv[i], ts, b);
+      else if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
       else if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
       else if (fr.kind == RK_BOXED || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
       else if (fit == TY_NIL) buf_puts(b, (i == 1 || i == 2) ? "1" : "0");  /* a nil field is its default */
