@@ -112,3 +112,21 @@ end
 al = Aliased.new
 al.add(4, 2.5, "a")
 p al.read
+
+# The same through a reader, a Struct member and an Array element: a name
+# read out of them and pushed its own kind keeps the Array typed.
+class Keeps
+  attr_reader :kept_r
+  def initialize = @kept_r = [0]
+end
+kp = Keeps.new
+@kept_alias = kp.kept_r
+@kept_alias << 5
+KeptS = Struct.new(:kept_m)
+ks = KeptS.new([0])
+kept_l = ks.kept_m
+kept_l << 6
+kept_a = [0]
+kept_e = [kept_a]
+kept_e[0] << 7
+p [kp.kept_r, ks.kept_m, kept_a]
