@@ -9,8 +9,13 @@ CRuby 4.0 ships.
 - License: Ruby's (`COPYING`) or the 2-clause BSD license (`BSDL`), both
   copied from that commit.
 
-`optparse/*.rb` is unchanged. `optparse.rb` is unchanged except for these
-hunks, each in its own commit with the reason:
+`optparse/*.rb` is unchanged except that six of them (`ac.rb`, `date.rb`,
+`shellwords.rb`, `time.rb`, `uri.rb`, `version.rb`) lose their first line,
+`# frozen_string_literal: false`: Spinel freezes every string literal and
+warns that the pragma is ignored, so it warned in every program that
+required one of them, and their literals are frozen either way.
+`optparse.rb` is unchanged except for these hunks, each in its own commit
+with the reason:
 
 | Where | Upstream | Here | Why |
 |---|---|---|---|
