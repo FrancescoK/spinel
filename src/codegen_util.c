@@ -6629,7 +6629,9 @@ const char *mc(const char *name) {
    later method's name (`c__2`, for every class's `c`), or, when the two
    share a name, the later class's c_name. A program with no clash keeps
    every name. The names a site spells out itself (sp_%s_new, _initialize,
-   _to_s ...) are never the one renamed. */
+   _to_s ...) are never the one renamed, and a method never takes a helper
+   a class is given (sp_A__alloc, _dup, _gc_scan): `def _gc_scan` is
+   renamed instead. */
 static const char *const mc_fixed_names[] = {
   "new", "initialize", "deconstruct_keys", "to_str", "to_hash", "coerce",
   "to_s", "inspect", "new_blk", NULL };
@@ -6649,23 +6651,32 @@ static void mc_compose(Compiler *c, const Scope *s, char *out, size_t n) {
 static int mc_same_method(const Scope *a, const Scope *b) {
   return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
 }
+static const char *const mc_class_helpers[] = { "_alloc", "_dup", "_gc_scan", NULL };
+/* A method whose name another has, as *first and *later; *first is -1 when
+   the name is a class's helper. */
 static int mc_find_clash(Compiler *c, int *first, int *later) {
   int cap = 64;
-  while (cap < c->nscopes * 2) cap *= 2;
+  while (cap < (c->nscopes + 3 * c->nclasses) * 2) cap *= 2;
   char **key = calloc((size_t)cap, sizeof *key);
   int *who = malloc(sizeof(int) * (size_t)cap);
   int found = 0;
-  for (int i = 0; i < c->nscopes && !found; i++) {
-    const Scope *s = &c->scopes[i];
-    if (!s->name || s->c_name) continue;
+  for (int i = -3 * c->nclasses; i < c->nscopes && !found; i++) {
+    const Scope *s = i >= 0 ? &c->scopes[i] : NULL;
     char nm[600];
-    mc_compose(c, s, nm, sizeof nm);
+    if (s) {
+      if (!s->name || s->c_name) continue;
+      mc_compose(c, s, nm, sizeof nm);
+    } else {
+      const ClassInfo *ci = &c->classes[(-i - 1) / 3];
+      if (ci->is_builtin_const || !ci->c_name) continue;
+      snprintf(nm, sizeof nm, "sp_%s_%s", ci->c_name, mc_class_helpers[(-i - 1) % 3]);
+    }
     unsigned h = 2166136261u;
     for (const char *q = nm; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
     int j = (int)(h & (unsigned)(cap - 1));
     while (key[j] && strcmp(key[j], nm)) j = (j + 1) & (cap - 1);
     if (!key[j]) { key[j] = strdup(nm); who[j] = i; }
-    else if (!mc_same_method(&c->scopes[who[j]], s)) { *first = who[j]; *later = i; found = 1; }
+    else if (s && (who[j] < 0 || !mc_same_method(&c->scopes[who[j]], s))) { *first = who[j] < 0 ? -1 : who[j]; *later = i; found = 1; }
   }
   for (int j = 0; j < cap; j++) free(key[j]);
   free(key); free(who);
@@ -6687,6 +6698,11 @@ void mc_resolve_clashes(Compiler *c) {
   int a, b;
   /* each round renames one method or class; the bound only guards a loop */
   for (int round = 0, n = 2; round < 4096 && mc_find_clash(c, &a, &b); round++, n++) {
+    if (a < 0) {
+      if (mc_name_fixed(c->scopes[b].name)) break;
+      mc_rename(c->scopes[b].name, n);
+      continue;
+    }
     const Scope *sa = &c->scopes[a], *sb = &c->scopes[b];
     if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sb->name)) mc_rename(sb->name, n);
     else if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sa->name)) mc_rename(sa->name, n);
