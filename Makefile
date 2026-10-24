@@ -1084,10 +1084,10 @@ SP_OV_DEFINE := -DSP_INT_OVERFLOW_MODE_PROMOTE
 else ifeq ($(SPINEL_INT_OVERFLOW),wrap)
 # The wrap lane (`SPINEL_INT_OVERFLOW=wrap make test`): the same corpus with
 # wraparound arithmetic. The raise-mode pins expect a RangeError wrap never
-# raises, and promote_*.rb a Bignum wrap never makes, so both stay out (the
-# first wrap run found no test whose answer needs the Bignum of the default
-# mode's growth-pattern promotion: that promotion is the analysis's and is
-# the same here). stack_overflow_unhandled and stack_overflow_rescued, and
+# raises, and promote_*.rb a Bignum wrap never makes, so both stay out (and so
+# does a test whose answer needs the Bignum of the default mode's
+# growth-pattern promotion, which wrap does not make: an Integer stays a
+# machine integer there, #10094). stack_overflow_unhandled and stack_overflow_rescued, and
 # their thread_ counterparts, guard the C stack, not arithmetic: their
 # `1 + deep(n + 1)` is a checked add in raise mode, which keeps the
 # recursion a call, and a plain add here, which lets clang turn it into a

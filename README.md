@@ -146,7 +146,8 @@ Integers are native fixed-width words. `--int-overflow=MODE` selects how
 
 In the default mode, integer locals that an obvious growth pattern would
 overflow (e.g. a `q = q * k` accumulator) are still auto-promoted to Bigint;
-`promote` extends that to every integer operation.
+`promote` extends that to every integer operation. `wrap` never widens an
+Integer implicitly: a growing loop local wraps like any other arithmetic.
 
 ### RBS type signatures
 

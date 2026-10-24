@@ -17,6 +17,7 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 
 /* --int-overflow=promote flag; see analyze.h. Default off. */
 int g_promote_mode = 0;
+int g_wrap_mode = 0;
 /* --exceptions=abort (src/main.c): the constructs that need a frame to catch an exception are refused */
 int g_exc_abort = 0;
 int g_plan_check = 0;
@@ -2168,6 +2169,7 @@ void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *c
 }
 
 void detect_bigint_loop_vars(Compiler *c) {
+  if (g_wrap_mode) return;   /* (see infer_bigint_loop_locals) */
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);

@@ -18665,7 +18665,8 @@ static int bi_round(Compiler *c) {
 }
 
 void infer_bigint_loop_locals(Compiler *c) {
-  if (bi_round(c)) return;
+  /* (wrap: Integer arithmetic wraps wherever it stands, a loop's included) */
+  if (g_wrap_mode || bi_round(c)) return;
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     int body = bi_loop_body(nt, id);
