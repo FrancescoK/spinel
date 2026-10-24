@@ -296,7 +296,7 @@ static const struct { const char *nm; int how; } an_by_name[] = {
   { "append_features", AN_MIX_HOOK }, { "prepend_features", AN_MIX_HOOK }, { "extend_object", AN_MIX_HOOK },
   { "load", AN_WORD }, { "autoload", AN_WORD }, { "ERB", AN_WORD }, { NULL, 0 } };
 static ANameHash g_written, g_written_twice, g_by_name_words, g_symbol_names;
-static int g_written_by_value, g_meta_by_value;
+static int g_written_by_value, g_meta_by_value, g_gives_by_value;
 static void an_written_add(ANameHash *st, const char *nm) {
   if (nm && !anh_has(st, nm)) anh_add(st, strdup(nm));
 }
@@ -459,6 +459,7 @@ static void an_note_written_names(const NodeTable *nt) {
             break;
         }
         if (by_value && (how == AN_GIVES || how == AN_GIVES_ALL || how == AN_RENAMES || how == AN_VIS)) g_meta_by_value = 1;
+        if (by_value && (how == AN_GIVES || how == AN_GIVES_ALL || how == AN_RENAMES)) g_gives_by_value = 1;
         by_value |= by_value_before;
         break;
       }
@@ -485,6 +486,11 @@ int an_prog_names_method(const char *nm) {
    computes? */
 int an_prog_meta_by_value(void) {
   return g_meta_by_value;
+}
+/* ...leaving out the visibility calls (`private(*names)`), which change
+   who may call a method but not what it answers */
+int an_prog_gives_by_value(void) {
+  return g_gives_by_value;
 }
 
 static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {

@@ -8370,18 +8370,33 @@ int an_push_widens_fresh(Compiler *c, int id) {
    when its kind cannot take what the push stores (sp_ary_lift_kinds). Only
    where every way the call can answer a typed Array is such a builtin: each
    method of the program's with the name answers the general Array or no
-   Array at all, as its type shows. One answering a box (TY_POLY) may hand
-   back an Array something else holds, which a copy would leave without the
-   push, so it keeps the call as it was, and so do a reader of the name, a
+   Array at all, as its type or each value it answers shows. One that may
+   hand back a typed Array something else holds, which a copy would leave
+   without the push, keeps the call as it was, and so do a reader of the name, a
    method_missing, an instance method's alias or a send by the name, and a
-   name the program computes. A class method's alias of the name answers
-   as the method it names does (lift_aliases_unheld). Answers the kinds the
-   push stores (AN_LIFT_*), 0 for any other call. */
-/* A method typed `t` answers no Array something else holds: the general
-   Array (a push stores into it as it is) or no Array at all. */
-static int lift_ret_unheld(TyKind t) {
+   method the program defines or renames by a name it computes (one it only
+   hides or shows is the same method). A class method's alias of the name
+   answers as the method it names does (lift_aliases_unheld). Answers the
+   kinds the push stores (AN_LIFT_*), 0 for any other call. */
+/* A value typed `t` is no Array something else holds: the general Array
+   (a push stores into it as it is) or no Array at all. */
+static int lift_ty_unheld(TyKind t) {
   return t == TY_POLY_ARRAY ||
          (t != TY_POLY && t != TY_UNKNOWN && !ty_is_array(t) && !ty_is_ptr_array(t));
+}
+/* ...and method mi answers none: by its type, or, typed as a box, by each
+   value it can answer (`def size = 5` is a box under
+   --int-overflow=promote, its value an Integer) */
+static int lift_method_unheld(Compiler *c, int mi) {
+  TyKind t = (TyKind)c->scopes[mi].ret;
+  if (lift_ty_unheld(t)) return 1;
+  if (t != TY_POLY) return 0;
+  int lv[16];
+  int n = method_value_leaves_or_nil(c, mi, lv, 16);
+  if (n <= 0) return 0;
+  for (int i = 0; i < n; i++)
+    if (!lift_ty_unheld(infer_type(c, lv[i]))) return 0;
+  return 1;
 }
 /* The aliases and sends of the name `rn`: an instance method's alias, or a
    send by the Symbol whose receiver is not a constant, may run a method of
@@ -8397,7 +8412,7 @@ static int lift_aliases_unheld(Compiler *c, const char *rn) {
       if (!cls->alias_sg || !cls->alias_sg[i]) return 0;
       int mi = cls->alias_old[i] ? comp_cmethod_in_chain(c, cls->alias_cls && cls->alias_cls[i] >= 0 ? cls->alias_cls[i] : k,
                                                           cls->alias_old[i], NULL) : -1;
-      if (mi < 0 || !lift_ret_unheld((TyKind)c->scopes[mi].ret)) return 0;
+      if (mi < 0 || !lift_method_unheld(c, mi)) return 0;
     }
   }
   const NodeTable *nt = c->nt;
@@ -8440,11 +8455,11 @@ int an_push_lifts_boxed(Compiler *c, int id) {
   if (!nt_int(nt, id, "builtin_only", 0) &&
       (array_hash_reopen_owner(c, id, TY_STR_ARRAY, nm) >= 0 || array_hash_reopen_owner(c, id, TY_POLY_ARRAY, nm) >= 0))
     return 0;
-  if (an_prog_meta_by_value()) return 0;
+  if (an_prog_gives_by_value()) return 0;
   for (int s = 0; s < c->nscopes; s++) {
     const char *sn = c->scopes[s].name;
     if (!sn || (!sp_streq(sn, rn) && !sp_streq(sn, "method_missing"))) continue;
-    if (sp_streq(sn, "method_missing") || !lift_ret_unheld((TyKind)c->scopes[s].ret)) return 0;
+    if (sp_streq(sn, "method_missing") || !lift_method_unheld(c, s)) return 0;
   }
   if (!lift_aliases_unheld(c, rn)) return 0;
   for (int k = 0; k < c->nclasses; k++)

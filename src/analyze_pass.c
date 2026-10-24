@@ -1397,6 +1397,18 @@ static TyKind push_elem_ty(Compiler *c, int node) {
    A kind decided at run time widens them to the general Array as any other
    does; an analysis-only respond_to? probe (`o.push(o)`) stores nothing, and
    its dummy argument is no evidence. */
+/* A `<<` receiver that is a call which may answer an Array: typed one, or
+   boxed. The push widens only the Arrays the call can answer where they are
+   built (push_escape_widen), and an Array widened to the general one holds
+   what it held: another class's `<<` (a StringIO's) is no reason to read the
+   push as no evidence there. */
+static int shl_recv_answers_array(Compiler *c, int recv) {
+  int r = nt_paren_single(c->nt, recv);
+  if (nt_kind(c->nt, r) != NK_CallNode || nt_ref(c->nt, r, "receiver") < 0) return 0;
+  TyKind t = infer_type(c, r);
+  return ty_is_array(t) || t == TY_POLY;
+}
+
 static int push_widens_arrays(const NodeTable *nt, int call, TyKind t) {
   return t != TY_UNKNOWN && !(t == TY_POLY && nt_int(nt, call, "rt_probe", 0));
 }
@@ -3271,10 +3283,14 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            argument, so it reaches only an Array a caller passes, whose `<<`
            is the Array's. Declined, an Integer array a helper pushed a String
            into was refused, where without the user's `<<` it widened. */
+        /* Nor is it a guess on a call that may answer an Array, typed or
+           boxed (`x.to_s.scan(re) << 99`, where a StringIO's `<<` is another
+           class's) */
         if (sp_streq(name, "<<") && recv >= 0 &&
             (an_user_defines_method(c, "<<") || an_native_defines_method(c, "<<")) &&
             unassigned_param_read(c, comp_scope_of(c, recv), recv) < 0 &&
-            !recv_has_array_write(c, recv) && comp_ty_ary_root(c, infer_type(c, recv)) < 0) continue;
+            !recv_has_array_write(c, recv) && comp_ty_ary_root(c, infer_type(c, recv)) < 0 &&
+            !shl_recv_answers_array(c, recv)) continue;
         is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
         if (an == 1) vnode = argv[0];
