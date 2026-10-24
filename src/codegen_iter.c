@@ -2161,7 +2161,6 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
             q.to = blk;
             q.to_name = key;
             q.carry = value;
-            if (!share_route_defer(c, &q, kw_msg)) unsupported_feature(c, value, kw_msg);
           }
         }
       }

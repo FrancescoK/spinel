@@ -958,7 +958,7 @@ static int fetch_blk_param_routes_key(Compiler *c, int id, int blk, LocalVar *lv
      argument temp; a String-valued call's temp can hold only its bytes. */
   if (!share_node_fresh(c, av[0]))
     q.carry = strbuf_var_handle(c, av[0], NULL) ? av[0] : SHARE_CARRY_COPY;
-  return share_route_defer(c, &q, "");
+  return 1;
 }
 
 /* Is a fetch block of the program left with a slot of another type than its

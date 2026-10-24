@@ -20280,7 +20280,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
         ch = lift_poly_read_store(c, sn);
         ShareRoute q = share_route(sn, sn, 0);
         q.carry = sn;
-        if (share_route_defer(c, &q, boxed_msg)) return ch;
+        return ch;
       }
     }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
@@ -24010,7 +24010,6 @@ static int promote_local_alias_pairs(Compiler *c) {
       ShareRoute q = share_route(w, value, 0);
       q.to = w;
       q.carry = value;
-      if (!share_route_defer(c, &q, scrub_msg)) unsupported_feature(c, w, scrub_msg);
     }
     /* the aliasing shapes: `s2 = s1`, the value-position append chain
        `s2 = (s1 << x)`, whose value IS the base object, and each arm of a
@@ -24047,7 +24046,6 @@ static int promote_local_alias_pairs(Compiler *c) {
       q.to = t;
       q.to_name = tn;
       q.carry = source;
-      if (!share_route_defer(c, &q, masgn_msg)) unsupported_feature(c, t, masgn_msg);
     }
   }
   /* `t, u = s, 1` names s as t, as `t = s` does (an_masgn_alias_source) */
@@ -24207,7 +24205,6 @@ static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const c
       q.to = blk;
       q.to_name = bp;
       q.carry = stores.v[e];
-      if (!share_route_defer(c, &q, msg)) unsupported_feature(c, at, msg);
     }
   }
   free(stores.v);
@@ -25963,7 +25960,6 @@ static int sb_split_local_iter(Compiler *c, int w, int recv, const char *itn, in
     ShareRoute q = share_route(w, recv, 1);
     q.to = blk;
     q.to_name = bp;
-    if (!share_route_defer(c, &q, sa_msg)) unsupported_feature(c, w, sa_msg);
   }
   return 0;
 }
@@ -26685,7 +26681,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         ShareRoute q = share_route(w, hrecv, 1);
         q.to = blk4;
         q.to_name = block_param_name(c, blk4, value_param);
-        if (!share_route_defer(c, &q, hc_msg)) unsupported_feature(c, w, hc_msg);
         an_hash_store_routes(c, hrecv, w, blk4, q.to_name, hc_msg);
       }
       const char *it = inner >= 0 ? nt_str(nt, inner, "name") : NULL;
@@ -26699,7 +26694,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         ShareRoute q = share_route(w, src, 1);
         q.to = blk4;
         q.to_name = block_param_name(c, blk4, 0);
-        if (!share_route_defer(c, &q, ac_msg)) unsupported_feature(c, w, ac_msg);
         an_hash_store_routes(c, src, w, blk4, q.to_name, ac_msg);
       }
     }
@@ -26768,7 +26762,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           ShareRoute q = share_route(w, recv4, 1);
           q.to = blk4;
           q.to_name = bp4;
-          if (!share_route_defer(c, &q, ra_msg)) unsupported_feature(c, w, ra_msg);
           an_hash_store_routes(c, recv4, w, blk4, bp4, ra_msg);
         }
         continue;
@@ -26828,7 +26821,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       /* an element iterator answering its receiver (its share row, BSH_ITER)
          whose value is dropped hands each element to the block alone */
       q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER && comp_value_dropped(c, w);
-      if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
     /* An Array read out of a boxed slot -- a Hash's value, through `h.each
        { |k, vs| }`, `h[k]` or `vs = h[k]` -- is iterated as a boxed value,

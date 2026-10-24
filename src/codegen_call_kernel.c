@@ -1549,7 +1549,6 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             q.to = dblk; q.to_name = dp0;
             q.carry = key_handle ? eav[0] : strbuf_flow_unseen(c, eav[0]) ? SHARE_CARRY_NONE : SHARE_CARRY_COPY;
             const char *msg = "ENV.delete is not supported: its block would receive a copy of a shared String key; see docs/limitations.md";
-            if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
           }
           int dbody = nt_ref(nt, dblk, "body");
           int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;

@@ -1503,7 +1503,6 @@ static void assign_value_route(Compiler *c, int id, int value, int as_string, in
              (assign_is_tail(c, id, par) || assign_is_returned(c, id, par));
   Repr mk = repr_of(c, id);
   q.carry = ((mk.handle || mk.demand) && !as_string) || tail ? id : SHARE_CARRY_COPY;
-  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
 }
 
 /* The value of a native binding's attribute assignment (native_assign_keeps)

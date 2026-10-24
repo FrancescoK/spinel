@@ -25823,7 +25823,7 @@ static int refuse_string_copy_routed(Compiler *c, int arg, int to, const char *p
   q.to = to;
   q.to_name = pname;
   q.carry = arg;
-  return to >= 0 && pname && share_route_defer(c, &q, "");
+  return to >= 0 && pname;
 }
 static void refuse_string_copy_to(Compiler *c, int arg, int to, const char *target,
                                   const char *pname, const char *through, const char *why) {
@@ -26571,7 +26571,7 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
     ShareRoute q = share_route(sp, nt_ref(nt, sp, "expression"), 1);
     q.to = lam;
     q.to_name = pname;
-    if (lam >= 0 && share_route_defer(c, &q, "")) return;
+    if (lam >= 0) return;
   }
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
   refuse_string_copy(c, sp, mname ? mt : NULL, pname, "a splat of an Array the program changes",
