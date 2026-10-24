@@ -8610,17 +8610,37 @@ static SgAliasNames sg_alias_names(Compiler *c) {
 
 /* Does a call named `nm` on one of the classes `from` run the class method
    mi: its own name, or an alias of it (a copy of mi made for that class is
-   the same method)? */
+   the same method)?
+   The alias answer is a chain lookup per class of `from`, and this phase runs
+   before the scope index is frozen, so each is a scan of every scope. The
+   callers ask it for every call of the program over one (mi, from), and the
+   same alias name comes up in many of them: `memo` (cm_names_memo, one slot
+   per alias name, -1 unasked) keeps the answer per name for that walk, which
+   changes nothing a lookup reads. A Rails application spent nearly all of
+   its class-structure phase, 185 s, in these lookups. */
 static int cm_call_names(Compiler *c, const char *nm, int mi, const int *from, int nfrom,
-                         const SgAliasNames *an) {
+                         const SgAliasNames *an, signed char *memo) {
   if (sp_streq(nm, c->scopes[mi].name)) return 1;
-  int alias = 0;
-  for (int j = 0; j < an->n && !alias; j++) alias = sp_streq(an->nm[j], nm);
-  for (int f = 0; alias && f < nfrom; f++) {
+  int j = 0;
+  while (j < an->n && !sp_streq(an->nm[j], nm)) j++;
+  if (j == an->n) return 0;
+  if (memo && memo[j] >= 0) return memo[j];
+  int runs = 0;
+  for (int f = 0; !runs && f < nfrom; f++) {
     int r = comp_cmethod_in_chain(c, from[f], nm, NULL);
-    if (r >= 0 && c->scopes[r].is_cmethod && c->scopes[r].def_node == c->scopes[mi].def_node) return 1;
+    if (r >= 0 && c->scopes[r].is_cmethod && c->scopes[r].def_node == c->scopes[mi].def_node) runs = 1;
   }
-  return 0;
+  if (memo) memo[j] = (signed char)runs;
+  return runs;
+}
+
+/* A fresh memo for cm_call_names over one (mi, from): every name unasked.
+   NULL when there are no alias names (nothing to remember) or no memory
+   (the asks are then made each time, as before). Freed by the caller. */
+static signed char *cm_names_memo(const SgAliasNames *an) {
+  signed char *m = an->n > 0 ? malloc((size_t)an->n) : NULL;
+  if (m) memset(m, -1, (size_t)an->n);
+  return m;
 }
 
 /* The class method a call runs on its receiver: its own name, or for a
@@ -8643,17 +8663,20 @@ static const char *cls_call_name(Compiler *c, int id) {
 static int name_called_on_dynamic_recv(Compiler *c, int mi, const int *from, int nfrom, int node_count,
                                        const SgAliasNames *an) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < node_count; id++) {
+  signed char *memo = cm_names_memo(an);
+  int found = 0;
+  for (int id = 0; id < node_count && !found; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = cls_call_name(c, id);
-    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an)) continue;
+    if (!nm || !cm_call_names(c, nm, mi, from, nfrom, an, memo)) continue;
     int r = nt_ref(nt, id, "receiver");
     if (r < 0) continue;
     NodeKind rk = nt_kind(nt, r);
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
-    return 1;
+    found = 1;
   }
-  return 0;
+  free(memo);
+  return found;
 }
 
 /* `Subclass.create` where `create` is an inherited class method whose body
@@ -8866,14 +8889,26 @@ void specialize_inherited_cls_new(Compiler *c) {
      called-direct check below otherwise rescans all nodes per shadowed cmethod
      (O(cmethods * nodes)). */
   int *ccall = malloc((size_t)node_count * sizeof(int));
+  /* with each: the receiver's class, the name it calls, and the class method
+     that call runs (ccres, -2 until asked). The check asks the same call's
+     chain for every shadowed source, each ask a chain lookup through the
+     unfrozen scope index (a scan of every scope per class of the chain), and
+     the answer is the call's alone: the loop below changes nothing a chain
+     reads (it only marks sources). Looked up once per call. */
+  int *ccrc = malloc((size_t)node_count * sizeof(int)), *ccres = malloc((size_t)node_count * sizeof(int));
+  const char **ccnm = malloc((size_t)node_count * sizeof(char *));
   int nccall = 0;
-  if (ccall) {
+  if (ccall && ccrc && ccres && ccnm) {
     for (int id = 0; id < node_count; id++) {
       if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
       int r = nt_ref(nt, id, "receiver");
       const char *rty = r >= 0 ? nt_type(nt, r) : NULL;
-      if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
-        ccall[nccall++] = id;
+      if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+        ccall[nccall] = id;
+        ccnm[nccall] = cls_call_name(c, id);
+        ccrc[nccall] = comp_class_index(c, nt_str(nt, r, "name"));
+        ccres[nccall++] = -2;
+      }
     }
   }
   /* DCE the now-shadowed source cls methods that are never called on their
@@ -8896,15 +8931,18 @@ void specialize_inherited_cls_new(Compiler *c) {
        (`Sub2.describe` when only Sub needed one) -- that call is emitted
        against this source, so DCEing it left an undefined reference. */
     int called_direct = 0;
+    /* one memo for the three walks below: nothing they read changes until
+       the source is marked after them */
+    signed char *cmemo = cm_names_memo(&an);
     for (int ii = 0; ii < nccall && !called_direct; ii++) {
-      int id = ccall[ii];
-      const char *nm1 = cls_call_name(c, id);
-      if (!nm1) continue;
-      int r = nt_ref(nt, id, "receiver");
-      int rc = comp_class_index(c, nt_str(nt, r, "name"));
-      if (rc < 0) continue;
-      if (sp_streq(nm1, src->name) ? rc == src->class_id || comp_cmethod_in_chain(c, rc, src->name, NULL) == s
-                                   : comp_cmethod_in_chain(c, rc, nm1, NULL) == s) called_direct = 1;
+      const char *nm1 = ccnm[ii];
+      int rc = ccrc[ii];
+      if (!nm1 || rc < 0) continue;
+      /* the source's own name on its own class, or whatever the call's name
+         runs on its class being this source */
+      if (sp_streq(nm1, src->name) && rc == src->class_id) { called_direct = 1; break; }
+      if (ccres[ii] == -2) ccres[ii] = comp_cmethod_in_chain(c, rc, nm1, NULL);
+      if (ccres[ii] == s) called_direct = 1;
     }
     /* ... or if a bare call inside some class-method body still resolves to
        this source (a class with no specialized copy of its own) */
@@ -8913,7 +8951,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       int r2 = nt_ref(nt, id, "receiver");
       if (r2 >= 0 && !(nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "SelfNode"))) continue;
       const char *nm2 = cls_call_name(c, id);
-      if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an)) continue;
+      if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an, cmemo)) continue;
       Scope *encl = comp_scope_of(c, id);
       if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
       if (comp_cmethod_in_chain(c, encl->class_id, nm2, NULL) == s) called_direct = 1;
@@ -8924,7 +8962,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (!body_cls || body_cls[id] < 0) continue;
       const char *nm3 = nt_str(nt, id, "name");
-      if (!nm3 || !cm_call_names(c, nm3, s, &src->class_id, 1, &an)) continue;
+      if (!nm3 || !cm_call_names(c, nm3, s, &src->class_id, 1, &an, cmemo)) continue;
       if (comp_cmethod_in_chain(c, body_cls[id], nm3, NULL) == s) called_direct = 1;
     }
     /* ... or if an `obj.class.<name>` call exists anywhere. That compiles to a
@@ -8935,7 +8973,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (nt_kind(nt, id) != NK_CallNode) continue;
       const char *nm4 = cls_call_name(c, id);
-      if (!nm4 || !cm_call_names(c, nm4, s, &src->class_id, 1, &an)) continue;
+      if (!nm4 || !cm_call_names(c, nm4, s, &src->class_id, 1, &an, cmemo)) continue;
       int r4 = nt_ref(nt, id, "receiver");
       if (r4 < 0 || nt_kind(nt, r4) != NK_CallNode) continue;
       const char *rn4 = nt_str(nt, r4, "name");
@@ -8945,9 +8983,10 @@ void specialize_inherited_cls_new(Compiler *c) {
        receiver's call can reach */
     if (!called_direct && class_value_escapes(c, src->class_id) &&
         name_called_on_dynamic_recv(c, s, &src->class_id, 1, node_count, &an)) called_direct = 1;
+    free(cmemo);
     if (!called_direct) src->is_transplanted_source = 1;
   }
-  free(ccall);
+  free(ccall); free(ccrc); free(ccres); free(ccnm);
   free(body_cls);
   free(an.nm);
   sn_end();
