@@ -1265,6 +1265,27 @@ const char *g_ie_next_var = NULL;
    is the proc's own return (Ruby block semantics), not a loop control. */
 int g_c_loop_depth = 0;
 int g_in_proc_body = 0;
+int g_proc_lost_yield_scope = -1;
+/* A `yield` of a method spliced into a caller that gave it a block, met in a
+   block of that method that became a proc of its own: the caller's block is
+   not in that function, so the emitted raise would answer LocalJumpError
+   where CRuby runs the block. The analysis emits such a method as a function
+   taking its block as a proc (an_phase_procs); a shape it did not catch is
+   refused here rather than raising at run time. */
+void refuse_yield_lost_block(Compiler *c, int id) {
+  if (!g_in_proc_body || g_proc_lost_yield_scope < 0) return;
+  Scope *s = comp_scope_of(c, id);
+  if (!s || (int)(s - c->scopes) != g_proc_lost_yield_scope) return;
+  unsupported_feature(c, id, "`yield` in a block that becomes a Proc, inside a method spliced into a caller that passes it a block");
+}
+/* A block of a method spliced with its caller's block leaves that block
+   behind; a proc nested in this one inherits what its parent left. */
+int proc_lost_yield_enter(Compiler *c, int outer_block, Scope *bs) {
+  int sv = g_proc_lost_yield_scope;
+  if (outer_block >= 0 && !g_yield_proc_ref && !g_current_scope_is_lowered && bs && bs->yields)
+    g_proc_lost_yield_scope = (int)(bs - c->scopes);
+  return sv;
+}
 /* Set while emitting an instance_exec/eval splice whose result temp is poly:
    a `break <v>` / `next <v>` carrying a scalar value must box it to match. */
 int g_ie_res_poly = 0;

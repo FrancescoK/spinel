@@ -2563,6 +2563,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        folds its guard to a compile-time false and sits inside an `if (0)`, so
        the raise never executes there; the boxed nil keeps the comma expression
        well-typed for the value position. */
+    refuse_yield_lost_block(c, node);
     buf_puts(b, "(sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1]))), "
                 "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), sp_box_nil())");
     RC(RF_SPECIAL, RW_YIELD);
@@ -10057,7 +10058,7 @@ else if (orecv >= 0 && onm) {
      the middle of ours (invalid C). Same shape as emit_fiber_new's nested-
      Fiber fix: the inner body appends itself first, we follow -- both at file
      scope, and the prototypes in g_proc_protos keep call order irrelevant. */
-  int sv_loopd = g_c_loop_depth, sv_inproc = g_in_proc_body, sv_cv = g_c_ret_void;
+  int sv_loopd = g_c_loop_depth, sv_inproc = g_in_proc_body, sv_cv = g_c_ret_void, sv_lost_yield = proc_lost_yield_enter(c, sv_block, bs);
   g_c_loop_depth = 0; g_in_proc_body = 1;   /* fresh fn: outer loops don't count */
   g_c_ret_void = 0;   /* returns sp_int, whatever the enclosing body returns */
   Buf proc_body_buf; memset(&proc_body_buf, 0, sizeof proc_body_buf);
@@ -10604,7 +10605,7 @@ else if (orecv >= 0 && onm) {
   if (!g_no_root_frame) gc_frame_build(c, pb, proc_frame_ins, decide_node_site(c->nt, create));
   buf_puts(&g_procs, proc_body_buf.p ? proc_body_buf.p : "");
   free(proc_body_buf.p);
-  g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc; g_c_ret_void = sv_cv;
+  g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc; g_c_ret_void = sv_cv; g_proc_lost_yield_scope = sv_lost_yield;
 
   ren_unpark(&ren_sv);
   g_pre = sv_pre; g_indent = sv_indent; g_block_id = sv_block; g_block_nren = sv_bnren;
@@ -17976,7 +17977,7 @@ typedef struct EmitUnitState {
      between-units value. */
   TyKind ret_type, fn_ret_type, result_ty;
   int fn_ret_oint;
-  int c_ret_void, in_proc_body, result_poly, proc_body_kind, proc_toplevel_return;
+  int c_ret_void, in_proc_body, proc_lost_yield_scope, result_poly, proc_body_kind, proc_toplevel_return;
   int indent, nren, block_nren, block_id, c_loop_depth, ensure_depth;
   int fiber_body;      /* g_fiber_body: a refusal inside a Thread body skips its restore */
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
@@ -17998,6 +17999,7 @@ void emit_unit_state_save(EmitUnitState *s) {
   s->view_depth = view_mark();
   s->ret_type = g_ret_type; s->fn_ret_type = g_fn_ret_type; s->fn_ret_oint = g_fn_ret_oint; s->result_ty = g_result_ty;
   s->c_ret_void = g_c_ret_void; s->in_proc_body = g_in_proc_body; s->result_poly = g_result_poly;
+  s->proc_lost_yield_scope = g_proc_lost_yield_scope;
   s->proc_body_kind = g_proc_body_kind; s->proc_toplevel_return = g_proc_toplevel_return;
   s->indent = g_indent; s->nren = g_nren; s->block_nren = g_block_nren; s->block_id = g_block_id;
   s->c_loop_depth = g_c_loop_depth; s->ensure_depth = g_ensure_depth;
@@ -18053,6 +18055,7 @@ void emit_unit_state_restore(const EmitUnitState *s) {
   view_unwind(s->view_depth);
   g_ret_type = s->ret_type; g_fn_ret_type = s->fn_ret_type; g_fn_ret_oint = s->fn_ret_oint; g_result_ty = s->result_ty;
   g_c_ret_void = s->c_ret_void; g_in_proc_body = s->in_proc_body; g_result_poly = s->result_poly;
+  g_proc_lost_yield_scope = s->proc_lost_yield_scope;
   g_proc_body_kind = s->proc_body_kind; g_proc_toplevel_return = s->proc_toplevel_return;
   g_indent = s->indent; g_nren = s->nren; g_block_nren = s->block_nren; g_block_id = s->block_id;
   g_c_loop_depth = s->c_loop_depth; g_ensure_depth = s->ensure_depth;
