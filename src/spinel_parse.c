@@ -98,8 +98,8 @@ static void sp_pm_parser_init(pm_parser_t *parser, const char *src, size_t len,
 }
 
 /* One file's text parsed by itself, before anything is spliced into it: the
-   facts of the file (its frozen_string_literal pragma, the requires its
-   dead branches hold) are read from this parse. */
+   facts of the file (its frozen_string_literal pragma, its source encoding,
+   the requires its dead branches hold) are read from this parse. */
 typedef struct {
   const char *path;
   const char *text;
@@ -157,6 +157,19 @@ static int sp_src_file_fsl(const SpSrcFile *f) {
           "in Spinel (string literals are always frozen); the pragma is "
           "ignored\n", f->path, (int)line);
   return 1;
+}
+
+/* Spinel reads every source file as UTF-8 (#9898): a magic comment naming
+   another encoding, which CRuby would give the file's literals, is ignored
+   with a warning at its line. */
+static void sp_src_file_warn_encoding(const SpSrcFile *f) {
+  if (f->parser.encoding == PM_ENCODING_UTF_8_ENTRY) return;
+  int32_t line = pm_newline_list_line(&f->parser.newline_list, f->parser.encoding_comment_start,
+                                      f->parser.start_line);
+  fprintf(stderr,
+          "spinel: %s:%d: warning: the source encoding %s is not supported in "
+          "Spinel (every source file is read as UTF-8); the magic comment is "
+          "ignored\n", f->path, (int)line, f->parser.encoding->name);
 }
 
 /* Lines of `s` as the require splicers count them: one per '\n', plus one for
@@ -4028,11 +4041,12 @@ static char *resolve_requires(const char *source, const char *source_path,
   else { free(dir); dir = strdup("."); }
   free(path_copy);
 
-  /* The file parsed by itself, each time it is read: its pragma and its
-     dead requires are read from this parse. */
+  /* The file parsed by itself, each time it is read: its pragma, its
+     encoding and its dead requires are read from this parse. */
   SpSrcFile file;
   sp_src_file_parse(&file, source, source_path);
   int file_fsl = sp_src_file_fsl(&file);
+  sp_src_file_warn_encoding(&file);
   /* computed requires spelling a literal path (#5700), then autoloads with
      a literal path (#5696): each answers a fresh copy of what it reads */
   char *reachable = sp_rewrite_dead_requires(&file);

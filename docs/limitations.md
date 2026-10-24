@@ -1431,6 +1431,12 @@ whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
 
+**Source files are read as UTF-8.** An `# encoding:` (or `coding:`) magic
+comment naming another encoding warns at compile time, naming the file and
+line, and is ignored, in the entry file and in every required file: the
+file's literals stay UTF-8 (`"abc".encoding` answers UTF-8 where CRuby
+answers the comment's encoding).
+
 A note on identity: equal frozen literals are one object, as in CRuby
 with frozen string literals. `"abc".equal?("abc")` is `true`, the same
 text in two methods (or in two parts of a `--jobs=N` split build) is the
