@@ -10157,8 +10157,13 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            later allocation had reused. An argument a hoist around the call
            already ran into a temp is rooted here all the same: not every
            hoist roots its temp, nor the Strings a by-value kind carries;
-           the nil arm's head does (head_held_temp). */
+           the nil arm's head does (head_held_temp). A String's bytes read
+           off the handle it hands on (emit_poly_route_arg) are not: the
+           handle is rooted, and a root of the bytes, a view of its payload
+           that a later argument growing the String moves, sent the
+           collector into freed memory. */
         if (held != 2 && ty_gc_holds_refs(c, atmp_ty[a]) && atmp[a] != htmp[a] && atmp[a] != head_held_temp(c, argv[a]) &&
+            !(htmp[a] > 0 && atmp_ty[a] == TY_STRING) &&
             (!held || a < pos_live || kw_runs ||
              (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
           emit_gc_root_tmp_refs(c, atmp_ty[a], atmp[a], b); buf_puts(b, " ");
@@ -10305,6 +10310,11 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       char idxref[64] = "";
       if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
       else if (is_index) snprintf(idxref, sizeof idxref, "_t%d", atmp[0]);
+      /* ...and are read again once every argument has run, where the arms
+         read them */
+      for (int a = 0; a < pos_argc; a++)
+        if (htmp[a] > 0 && atmp[a] != htmp[a] && atmp_ty[a] == TY_STRING)
+          buf_printf(b, "_t%d = sp_strbuf_read_pub(_t%d); ", atmp[a], htmp[a]);
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
                            idxref, id, 0 };
       int pa_frame = g_plan_check ? pa_begin(id) : -1;

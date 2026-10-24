@@ -107,17 +107,27 @@ static inline void sp_fd_publish(sp_String *s){
    payload out (sp_fd_grow_inline, lib/sp_string.c), off the inlined path. */
 static inline int sp_fd_is_inline(sp_String *s){return sp_fd_base(s->data)==(char*)(s+1);}
 SP_COLD SP_NOINLINE int sp_fd_grow_inline(sp_String *s, int64_t need);
+/* An outside payload a growth moved is not freed there: a view of its bytes
+   may still be held (a root, a Hash key, a box), and the mark reads the
+   owner link through it. sp_fd_retire marks it 0xf9 and keeps it until a
+   full cycle's mark reaches no view of it (lib/sp_gc.c). */
+void sp_fd_retire(char *base);
 static inline int sp_fd_grow(sp_String *s, int64_t need){
   if (need < s->cap) return 1;
   if (SP_EXPECT(sp_fd_is_inline(s), 0)) return sp_fd_grow_inline(s, need);
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)s - sizeof(sp_gc_hdr));
   int64_t new_cap = (need * 2) + 16;
   sp_str_lcache_drop(s->data);
-  char *raw = (char *)realloc(sp_fd_base(s->data), SP_FD_OVH + new_cap);
+  char *old = sp_fd_base(s->data);
+  char *raw = (char *)malloc(SP_FD_OVH + new_cap);
   if (!raw) return 0;
-  sp_gc_bytes_sub(s->cap + SP_FD_OVH); h->size -= s->cap + SP_FD_OVH;
-  s->cap = new_cap; s->data = sp_fd_setup(raw); sp_fd_own(s);
+  char *data = sp_fd_setup(raw);
+  /* the whole old room, as sp_fd_grow_inline copies it */
+  memcpy(data, s->data, (size_t)s->cap + 1);
+  h->size -= s->cap + SP_FD_OVH;
+  s->cap = new_cap; s->data = data; sp_fd_own(s);
   h->size += s->cap + SP_FD_OVH; sp_gc_bytes_add(s->cap + SP_FD_OVH);
+  sp_fd_retire(old);
   return 1;
 }
 static inline void sp_String_fin(void*p){sp_str_lcache_drop(((sp_String*)p)->data);free(sp_fd_base(((sp_String*)p)->data));}
