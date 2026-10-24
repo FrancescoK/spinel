@@ -8205,9 +8205,10 @@ const char *pd_fn_name(int fn) { return fn >= 0 && fn < pd_fns ? pd_name[fn] : "
 /* The name is the hash of what the function dispatches (the method's name
    and its C signature), not of its arms: an arm that changes its type
    changes the function's body, and its callers keep calling it by the same
-   name. Two bodies for one name are told apart by `_<n>`, in the order they
-   were first wanted. */
-static void pd_name_set(int fn, const char *nm_key) {
+   name. A second body for one name is told apart by the hash of its body
+   (`_<hash>`), so adding or removing another variant renames none of the
+   rest; `_<n>` is left for two bodies whose hashes meet too. */
+static void pd_name_set(int fn, const char *nm_key, unsigned body_h) {
   if (fn >= pd_name_cap) {
     int nc = pd_name_cap ? pd_name_cap * 2 : 1024;
     while (nc <= fn) nc *= 2;
@@ -8219,9 +8220,11 @@ static void pd_name_set(int fn, const char *nm_key) {
   for (const char *q = nm_key; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
   pd_nhash[fn] = h;
   int dup = 0;
-  for (int k = 0; k < fn; k++) if (pd_nhash[k] == h) dup++;
-  if (dup) snprintf(pd_name[fn], sizeof pd_name[fn], "%08x_%d", h, dup);
-  else snprintf(pd_name[fn], sizeof pd_name[fn], "%08x", h);
+  for (int k = 0; k < fn && !dup; k++) if (pd_nhash[k] == h) dup = 1;
+  if (!dup) { snprintf(pd_name[fn], sizeof pd_name[fn], "%08x", h); return; }
+  snprintf(pd_name[fn], sizeof pd_name[fn], "%08x_%08x", h, body_h);
+  for (int n = 1, k = 0; k < fn; k++)
+    if (!strcmp(pd_name[k], pd_name[fn])) { snprintf(pd_name[fn], sizeof pd_name[fn], "%08x_%08x_%d", h, body_h, n++); k = -1; }
 }
 /* The function a `sp_pd_<name>` in the text names, or -1. */
 static int pd_find_name(const char *nm, size_t n) {
@@ -8290,7 +8293,7 @@ static int pd_lookup_or_add(const char *key, const char *nm_key, int *is_new) {
     j = (j + 1) & (pd_cap - 1);
   }
   pd_tab[j].key = strdup(key); pd_tab[j].fn = pd_fns++; pd_count++;
-  pd_name_set(pd_tab[j].fn, nm_key);
+  pd_name_set(pd_tab[j].fn, nm_key, h);
   *is_new = 1;
   return pd_tab[j].fn;
 }

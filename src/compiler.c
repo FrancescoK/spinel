@@ -235,8 +235,8 @@ void comp_node_pbases(Compiler *c) {
       }
       int dup = pbase_key_count(c, key);
       if (dup) {
-        size_t l = strlen(key);
-        snprintf(key + (l > 20 ? 20 : l), sizeof key - (l > 20 ? 20 : l), "_d%d", dup);
+        size_t l = strlen(key);   /* at most 24 here: the whole key stays */
+        snprintf(key + l, sizeof key - l, "_d%d", dup);
       }
       bi_base_reserve(c, k);
       c->bi_base_key[k] = strdup(key);
