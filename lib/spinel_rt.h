@@ -19094,6 +19094,18 @@ void sp_Enumerator_scan(void *p);
    element taken). */
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside);
 sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
+typedef struct { const char *cls; const char *msg; } sp_enum_raise_cap;
+static void sp_enum_raise_gen(sp_Fiber *f) {
+  sp_enum_raise_cap *cap = (sp_enum_raise_cap *)f->user_data;
+  sp_raise_cls(cap->cls, cap->msg);
+}
+static sp_Enumerator *sp_enum_raise_lazy(const char *cls, const char *msg) SP_UNUSED;
+static sp_Enumerator *sp_enum_raise_lazy(const char *cls, const char *msg) {
+  sp_enum_raise_cap *cap = (sp_enum_raise_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+  SP_GC_ROOT(cap);
+  cap->cls = cls; cap->msg = msg;
+  return sp_Enumerator_new_gen(sp_enum_raise_gen, cap, sp_box_nil());
+}
 /* Lazy stepping for a blockless #each over an endless integer range: rather
    than materialize (impossible -- sp_enum_items_from raises RangeError), yield
    first, first+step, ... forever through the fiber-generator path, so #next /

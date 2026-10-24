@@ -1,0 +1,9 @@
+Enumerator
+[ArgumentError, "comparison of Integer with Hash failed"]
+Enumerator
+[ArgumentError, "comparison of Integer with Hash failed"]
+[ArgumentError, "comparison of Integer with Hash failed"]
+[ArgumentError, "comparison of Integer with Hash failed"]
+[ArgumentError, "comparison of Integer with String failed"]
+Enumerator
+[ArgumentError, "comparison of Integer with nil failed"]
