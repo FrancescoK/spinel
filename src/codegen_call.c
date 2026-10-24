@@ -10725,6 +10725,8 @@ void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
    fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
    argument is the utc_offset for Time.new but the usec-of-second count for
    the named class methods. Returns 1 when it emitted. */
+static int emit_time_civil_fields(Compiler *c, const int *argv, int argc, int is_utc, int is_new,
+                                  Buf *b);
 int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc;
@@ -10776,6 +10778,14 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
       return 1;
     }
   }
+  return emit_time_civil_fields(c, argv, argc, is_utc, is_new, b);
+}
+
+/* The civil constructor forms after the special ones of emit_time_civil_ctor:
+   the in: keyword, a 7th positional zone or usec, and the plain fields. */
+static int emit_time_civil_fields(Compiler *c, const int *argv, int argc, int is_utc, int is_new,
+                                  Buf *b) {
+  const NodeTable *nt = c->nt;
   /* Time.new(y[, mo[, d[, h[, mi[, s]]]]], in: <off>): the `in:` keyword is
      the utc_offset, same as the 7th positional (#2718). */
   if (is_new && argc >= 2 && argc <= 7 &&
