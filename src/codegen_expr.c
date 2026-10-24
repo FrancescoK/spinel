@@ -4931,6 +4931,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                   compiler rejected the ternary outright (#3484). */ \
                else if (ty_nullable_builtin_id(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, ty_nullable_builtin_id(lt)); \
                else if (lt == TY_CLASS) buf_printf((TB), "sp_box_class(_t%d)", t); \
+               /* any other kind with a box of its own (a Time, a Range, a \
+                  Rational): boxed by it, where the raw temp met the boxed \
+                  arm in one C conditional (#10078) */ \
+               else if (!lt_falsy_const && lt != TY_UNKNOWN && ty_traits_of(lt) && ty_traits_of(lt)->box_text) { \
+                 char kept_[32]; snprintf(kept_, sizeof kept_, "_t%d", t); emit_boxed_text(c, lt, kept_, (TB)); } \
                else buf_printf((TB), "_t%d", t); } \
              /* the kept left in an Integer / Float result: its oint where
                 the result is one, its value where it is plain */ \
