@@ -7561,6 +7561,7 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
       (is_instance_eval_family(name))) {
     int nblk = nt_ref(nt, id, "block");
     if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
+    else if (nt_int(nt, id, "ie_usite", 0)) { *out = TY_POLY; return 1; }
   }
   if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
     ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;

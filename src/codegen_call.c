@@ -930,6 +930,37 @@ int emit_ie_untraced(Compiler *c, int id, int recv, int blk, Buf *b) {
   return 1;
 }
 
+int emit_ie_non_proc_block(Compiler *c, int id, int recv, int blk, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int fe = nt_ref(nt, blk, "expression"), args = nt_ref(nt, id, "arguments"), an = 0, sv = g_n_argov;
+  Repr fr = repr_of(c, fe);
+  TyKind ft = fr.as_ty;
+  if (fe < 0 || fr.kind == RK_BOXED || ft == TY_PROC || ft == TY_METHOD || ft == TY_SYMBOL || ft == TY_NIL ||
+      ft == TY_POLY || ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_CURRY || ty_is_hash(ft) ||
+      (ty_is_object(ft) && comp_method_in_chain(c, ty_object_class(ft), "to_proc", NULL) >= 0)) return 0;
+  const char *cn = ft == TY_BOOL ? NULL : conv_cls_name_of(c, ft);
+  if (ft != TY_BOOL && !cn) return 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  Buf rb, fb; memset(&rb, 0, sizeof rb); memset(&fb, 0, sizeof fb);
+  emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "(void)(%s);\n", rb.p ? rb.p : "0");
+  if (sp_streq(nt_str(nt, id, "name"), "instance_exec")) emit_args_off_self(c, av, an, g_pre);
+  emit_expr(c, fe, &fb);
+  emit_indent(g_pre, g_indent);
+  if (ft == TY_BOOL) {
+    int tb = ++g_tmp;
+    buf_printf(g_pre, "sp_bool _t%d = %s; sp_raise_cls(\"TypeError\", _t%d ? \"no implicit conversion of TrueClass into Proc\" : \"no implicit conversion of FalseClass into Proc\");\n",
+               tb, fb.p ? fb.p : "0", tb);
+  } else {
+    buf_printf(g_pre, "(void)(%s); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Proc\");\n", fb.p ? fb.p : "0", cn);
+  }
+  emit_ie_param_default(c, repr_of(c, id).as_ty, b);
+  view_unbind(sv);
+  free(rb.p); free(fb.p);
+  return 1;
+}
+
 /* Print "spinel: <file>:<line>: warning: " for node `id` when
    SPINEL_WARN_UNRESOLVED is set, so a call/constant that silently degrades to
    nil/0 (where CRuby would raise or do real work) can be audited. Returns 1
