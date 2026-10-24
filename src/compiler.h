@@ -1853,6 +1853,12 @@ const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n
    and the class shape stand still. A retargeted send on a boxed receiver
    asked it class by class at every resolution of its plan. */
 int        comp_name_reader_any(Compiler *c, const char *name);
+/* The classes whose own chain hop defines a reader of `name` (the ones
+   comp_reader_in_chain answers with def_class the class itself), ascending,
+   *n of them; kept as comp_name_reader_any's answers are. The kinds walk
+   asked it class by class for every argument-less call on a receiver that
+   can be anything, at every solve. */
+const int *comp_name_reader_owners(Compiler *c, const char *name, int *n);
 /* does class_id's chain define the method call id names, and does the call reach it? A call
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */

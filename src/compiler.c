@@ -1260,6 +1260,52 @@ int comp_name_reader_any(Compiler *c, const char *name) {
   return ans;
 }
 
+/* See compiler.h. Kept as comp_name_reader_any's answers are, under the same
+   stamps, in a table of its own: the names, each one's list and count. */
+static char **rdo_name; static int **rdo_list; static int *rdo_n; static int rdo_cap, rdo_cnt;
+static const Compiler *rdo_c; static unsigned rdo_tgen, rdo_shape; static int rdo_ncls = -1;
+const int *comp_name_reader_owners(Compiler *c, const char *name, int *n) {
+  *n = 0;
+  if (!name) return NULL;
+  if (rdo_c != c || rdo_tgen != comp_table_gen || rdo_shape != cmc_shape || rdo_ncls != c->nclasses) {
+    for (int i = 0; i < rdo_cap; i++) { free(rdo_name[i]); rdo_name[i] = NULL; free(rdo_list[i]); rdo_list[i] = NULL; }
+    rdo_cnt = 0; rdo_c = c; rdo_tgen = comp_table_gen; rdo_shape = cmc_shape; rdo_ncls = c->nclasses;
+  }
+  if (rdo_cnt * 2 >= rdo_cap) {
+    int ocap = rdo_cap; char **on = rdo_name; int **ol = rdo_list; int *oc = rdo_n;
+    rdo_cap = ocap ? ocap * 2 : 256;
+    rdo_name = calloc((size_t)rdo_cap, sizeof(char *));
+    rdo_list = calloc((size_t)rdo_cap, sizeof(int *));
+    rdo_n = calloc((size_t)rdo_cap, sizeof(int));
+    if (!rdo_name || !rdo_list || !rdo_n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!on[i]) continue;
+      unsigned j = sp_strhash(on[i]) & (unsigned)(rdo_cap - 1);
+      while (rdo_name[j]) j = (j + 1) & (unsigned)(rdo_cap - 1);
+      rdo_name[j] = on[i]; rdo_list[j] = ol[i]; rdo_n[j] = oc[i];
+    }
+    free(on); free(ol); free(oc);
+  }
+  unsigned j = sp_strhash(name) & (unsigned)(rdo_cap - 1);
+  while (rdo_name[j]) {
+    if (sp_streq(rdo_name[j], name)) { *n = rdo_n[j]; return rdo_list[j]; }
+    j = (j + 1) & (unsigned)(rdo_cap - 1);
+  }
+  int cnt = 0, *list = NULL;
+  for (int k = 0; k < c->nclasses; k++) {
+    int dc = -1;
+    if (!comp_reader_in_chain(c, k, name, &dc) || dc != k) continue;
+    int *g = realloc(list, sizeof(int) * (size_t)(cnt + 1));
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    list = g; list[cnt++] = k;
+  }
+  rdo_name[j] = strdup(name);
+  if (!rdo_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  rdo_list[j] = list; rdo_n[j] = cnt; rdo_cnt++;
+  *n = cnt;
+  return list;
+}
+
 int comp_ary_root(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses ? c->classes[cid].ary_root - 1 : -1;
 }
