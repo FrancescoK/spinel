@@ -19952,58 +19952,6 @@ static int poly_local_shows_string(Compiler *c, const char *vn, Scope *vs) {
       return 1;
   return 0;
 }
-static int sa_unseen_element(Compiler *c, int u, int k);
-static __attribute__((noreturn)) void sa_refuse(Compiler *c, int id, int route);
-static void sa_refuse_element(Compiler *c, int e, int u);
-/* A master route refusal at node `site` for String node `v` that the
-   route hands along as a copy: under --share-strings the copy is right
-   when the rule does not share v's class, since no other name can see it
-   (share_route_defer). Answers 1 when the site leaves it to the rule.
-   A demanded reader carries its backing slot's handle, checked at the seal. */
-static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *msg) {
-  ShareRoute q = share_route(site, v, 0);
-  q.carry = reader ? v : SHARE_CARRY_COPY;
-  /* Unary plus already carries a mutable operand's handle; a frozen
-     operand gets its own. Let the seal check that existing value route. */
-  /* A builtin answering its String receiver is a value route over that
-     receiver's handle. The seal checks the route after storage settles. */
-  if (nt_kind(c->nt, v) == NK_CallNode &&
-      (is_unary_plus(nt_str(c->nt, v, "name")) ||
-       (bop_share_named(TY_STRING, nt_str(c->nt, v, "name")) == BSH_RECV &&
-        bop_answers_self(TY_STRING, nt_str(c->nt, v, "name"), call_plain_argc(c, v),
-                         nt_ref(c->nt, v, "block") >= 0) == BOPF_SELF)) &&
-      cplan_user(c, v)->dispatch == CP_NONE) q.carry = v;
-  /* A demanded String conversion already boxes its receiver's handle.
-     Let the seal check that route when no user method overrides it. */
-  if (repr_string_conversion_operand(c, v) >= 0) q.carry = v;
-  return share_route_defer(c, &q, msg);
-}
-static const char *sa_msg(int route);
-/* A String a block parameter holds that no element iterator binds (a
-   proc's, a lambda's, the block of a method that yields, `each_char`'s):
-   stored into a container whose elements are then mutated, the element
-   stays a copy of it. Refused (#6765) rather than compiled with the change
-   lost. Under --share-strings the stored copy is right when the rule does
-   not share block parameter sn's String: no other name can see it
-   (share_route_defer). Where it shares, the store would hand on the
-   parameter's handle, but a class this refusal guards can hold routes that
-   copy which the seal does not check yet (a reader on a boxed receiver), so
-   the refusal stays. `to`, when the caller names it, is the container whose
-   elements the String reaches. */
-static void refuse_stored_block_param(Compiler *c, int sn, int to) {
-  static const char msg[] =
-    "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
-    "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
-    "String is not yet shared by reference through a stored block parameter). Mutate the String "
-    "before storing it, or store it where the caller holds it.";
-  ShareRoute q = share_route(sn, sn, 0);
-  q.to = to;
-  q.to_elems = to >= 0;
-  /* The rule now gives a shared block parameter a handle slot. Its
-     stored read carries that slot; the seal checks what binds it. */
-  q.carry = sn;
-  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, sn, msg);
-}
 /* Is block parameter (vn, vs) bound only by the yields of user methods
    (`each { |e| acc << e }` over a yielding each, inlined or taking its
    block as a proc), which hand over what they yield? A Struct's each is
@@ -20253,9 +20201,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     char rb[256]; int rdefc = -1;
     int as = an_strbuf_alias_source(c, snu);
     int reader = an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb) != NULL;
-    if (((as >= 0 && as != snu) || reader) &&
-        !sa_copy_defer(c, snu, snu, reader, sa_msg(3)))
-      sa_refuse(c, snu, 3);
+    (void)as; (void)reader;
   }
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
     const char *snm = nt_str(nt, sn, "name");
@@ -20282,17 +20228,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
            (share_default_apply), or the seal refuses it by name, and the element is
            that handle (`each { |e| acc << e }` over a yielding each) */
         int yo = block_param_user_yield_only(c, snm, sns);
-        if (!yo) refuse_stored_block_param(c, sn, -1);
-        else {
-          /* what binds it hands over its handle: the route carries it */
-          static const char ymsg[] =
-            "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
-            "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
-            "String is not yet shared by reference through a stored block parameter). Mutate the String "
-            "before storing it, or store it where the caller holds it.";
-          ShareRoute yq = share_route(sn, sn, 0);
-          if (!share_route_defer(c, &yq, ymsg)) unsupported_feature(c, sn, ymsg);
-        }
         if (yo && c->share &&
             repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
           if (snv->type != TY_STRBUF || !snv->str_shared) { lv_set_type(snv, TY_STRBUF); snv->str_shared = 1; ch = 1; }
@@ -20347,7 +20282,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
         q.carry = sn;
         if (share_route_defer(c, &q, boxed_msg)) return ch;
       }
-      if (!sa_copy_defer(c, sn, sn, 0, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
     }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
@@ -20429,9 +20363,6 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
           changed |= strbuf_store_leaf(c, inner.v[e3], depth, mode - SB_NEST1);
         free(inner.v);
       }
-      /* `a.insert(0, s)`: a store this walk does not take (sa_refuse) */
-      for (int k = 0, e; mode == SB_DEMAND && nst == 0 && (e = sa_unseen_element(c, sns0[si], k)) != -2; k++)
-        if (e >= 0) sa_refuse_element(c, e, sns0[si]);
       /* bound from a method result, an ivar or another local: the container
          is whatever that expression built (`x = mk; x[0] << "q"`) */
       if (nst == 0 && nt_kind(nt, sns0[si]) == NK_LocalVariableWriteNode) {
@@ -20771,25 +20702,6 @@ static int store_after_param_rebind(Compiler *c, Scope *m, const char *pn, int s
     if (an_subtree_has(nt, bb[j], st)) return 1;
   return 0;
 }
-/* String `l` a callee stores into the container its caller passed as `a`,
-   whose elements are mutated through the caller's container: refused, as
-   the walk does not follow the store into the callee. Under --share-strings
-   the String reaches the elements of `a` (the facts join a parameter's
-   container with its argument's), a copy no other name sees when the rule
-   does not share them. */
-static void refuse_callee_container_store(Compiler *c, int l, int a) {
-  static const char msg[] =
-    "a String a method stores into an Array or Hash its caller passed it is mutated in place through "
-    "the caller's container (a String is not yet shared by reference through a store into a "
-    "parameter's container). Store the String in the caller, or mutate it in the method.";
-  ShareRoute q = share_route(l, l, 0);
-  q.to = a;
-  q.to_elems = 1;
-  /* (a frozen String, a literal's, is its own handle: no change reaches
-     it through any name, as the plan's SPK_FROZEN) */
-  q.carry = c->share_strings && share_frozen_string(c, l) ? SHARE_CARRY_NONE : l;
-  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, l, msg);
-}
 /* Does call u hand a read of local `vn` as an argument, where
    arg_layout_param_node could answer it: a positional, or a keyword's
    value? The walk below resolved every call's target before asking, and
@@ -20898,9 +20810,7 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
           TyKind lt = infer_type(c, l);
           LocalVar *ll = nt_kind(nt, l) == NK_LocalVariableReadNode
                          ? scope_local(comp_scope_of(c, l), nt_str(nt, l, "name")) : NULL;
-          if ((lt == TY_STRING || lt == TY_STRBUF) && !c->strbuf_box[l] &&
-              !(ll && ll->type == TY_STRBUF && ll->str_shared))
-            refuse_callee_container_store(c, l, a);
+          (void)lt; (void)ll;
         }
       }
     }
@@ -21237,111 +21147,6 @@ static int gvar_site_is(Compiler *c, int e, const char *grn) {
                     ? comp_resolve_gvar(c, vn + 1) : NULL;
   return vrn && sp_streq(vrn, grn);
 }
-static int gvar_array_plain_string(Compiler *c, const char *grn) {
-  const NodeTable *nt = c->nt;
-  LocalVar *g = comp_gvar(c, grn);
-  if (!g || (g->type != TY_STR_ARRAY && g->type != TY_POLY_ARRAY)) return -1;
-  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
-       e = comp_vsite_next(c, e)) {
-    /* the values written and stored, read through parentheses (vp_one):
-       `$g = (x; [s])` writes the Array literal, whose element is s. The
-       answer is the value as written, parentheses and all, which the
-       refusal hands on as its route's carry. */
-    int w = nt_ref(nt, comp_vsite_node(c, e), "value"), v;
-    if (!gvar_site_is(c, e, grn) || vp_one(nt, w, VPS_NONE | VP_PARENS_ONLY, &v) != VP1_NODE)
-      continue;
-    if (nt_kind(nt, v) != NK_ArrayNode) {
-      if (g->type == TY_STR_ARRAY) return w;
-      continue;
-    }
-    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
-    for (int e = 0; e < en; e++) {
-      int l;
-      if (vp_one(nt, el[e], VPS_NONE | VP_PARENS_ONLY, &l) != VP1_NODE) continue;
-      TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return el[e];
-    }
-  }
-  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
-       e = comp_vsite_next(c, e)) {
-    int u = comp_vsite_node(c, e);
-    const char *un = nt_str(nt, u, "name");
-    if (!un || !gvar_site_is(c, e, grn) || !array_mutator_name(un)) continue;
-    int a = nt_ref(nt, u, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    for (int k = 0; k < an; k++) {
-      int l;
-      if (vp_one(nt, av[k], VPS_NONE | VP_PARENS_ONLY, &l) != VP1_NODE) continue;
-      TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return av[k];
-    }
-  }
-  return -1;
-}
-/* A String global Hash `grn` holds that is no handle, or -1. Its values are
-   plain Strings when a `$g[k] = s` stores one that is not a literal (a
-   literal is frozen) and no handle, or a literal Hash is written with one:
-   the walk demands only what the stores of a local or ivar container give. */
-static int gvar_hash_plain_string(Compiler *c, const char *grn) {
-  const NodeTable *nt = c->nt;
-  LocalVar *g = comp_gvar(c, grn);
-  if (!g || !ty_is_hash(g->type) || ty_hash_val(g->type) != TY_STRING) return -1;
-  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
-       e = comp_vsite_next(c, e)) {
-    int v = nt_paren_single(nt, nt_ref(nt, comp_vsite_node(c, e), "value"));
-    if (!gvar_site_is(c, e, grn) || v < 0 || nt_kind(nt, v) != NK_HashNode) continue;
-    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
-    for (int k = 0; k < en; k++) {
-      if (nt_kind(nt, el[k]) != NK_AssocNode) continue;
-      int l = nt_paren_single(nt, nt_ref(nt, el[k], "value"));
-      TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
-    }
-  }
-  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
-       e = comp_vsite_next(c, e)) {
-    int u = comp_vsite_node(c, e);
-    const char *un = nt_str(nt, u, "name");
-    if (!un || !gvar_site_is(c, e, grn) || !(sp_streq(un, "[]=") || sp_streq(un, "store"))) continue;
-    int a = nt_ref(nt, u, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an != 2) continue;
-    int l = nt_paren_single(nt, av[1]);
-    TyKind lt = infer_type(c, l);
-    if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
-  }
-  return -1;
-}
-/* Refused at node id, for String `l` that global read g's Hash holds as a
-   value (gvar_hash_plain_string). Under --share-strings the copy is right
-   when the rule does not share g's values, and where it does, l must hand
-   its handle into the Hash (share_route_defer), as for a global's Array. */
-static void refuse_global_hash_element(Compiler *c, int id, int g, int l) {
-  static const char msg[] =
-    "an element of a global Hash is a String mutated in place through the Hash (a String is not yet "
-    "shared by reference through a global variable's Hash). Keep the Hash in a local or an instance "
-    "variable.";
-  ShareRoute q = share_route(id, l, 0);
-  q.to = g;
-  q.to_elems = 1;
-  q.carry = l;
-  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
-}
-/* Refused at node id, for String `l` that global read g's Array holds
-   (gvar_array_plain_string). Under --share-strings the copy is right when
-   the rule does not share g's elements, and where it does, l must hand its
-   handle into the Array (share_route_defer). */
-static void refuse_global_array_element(Compiler *c, int id, int g, int l) {
-  static const char msg[] =
-    "an element of a global Array is a String mutated in place through the Array (a String is not yet "
-    "shared by reference through a global variable's Array). Keep the Array in a local or an instance "
-    "variable.";
-  ShareRoute q = share_route(id, l, 0);
-  q.to = g;
-  q.to_elems = 1;
-  q.carry = l;
-  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
-}
 /* --share-strings: the values stored into global grn's container where
    the rule shares its elements: its pushes' and `<<`'s, and the last
    argument of its `[]=` and `store`, each demanded into a shared handle
@@ -21512,20 +21317,7 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
         if (!wrn || !sp_streq(wrn, grn)) continue;
         changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
       }
-      /* `$a << s`: a store this walk does not take (sa_refuse) */
-      if (mode == SB_DEMAND)
-        for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
-             e = comp_vsite_next(c, e)) {
-          int u = comp_vsite_node(c, e);
-          if (!gvar_site_is(c, e, grn)) continue;
-          for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)
-            if (e >= 0) sa_refuse_element(c, e, u);
-        }
       if (mode == SB_DEMAND && c->share_strings) changed |= strbuf_gvar_store_walk(c, grn, depth + 1);
-      int pl = mode == SB_DEMAND ? gvar_array_plain_string(c, grn) : -1;
-      if (pl >= 0) refuse_global_array_element(c, node, node, pl);
-      int hl = mode == SB_DEMAND ? gvar_hash_plain_string(c, grn) : -1;
-      if (hl >= 0) refuse_global_hash_element(c, node, node, hl);
       return changed;
     }
     case NK_CallNode: {
@@ -27038,10 +26830,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER && comp_value_dropped(c, w);
       if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
-    int gpl = (bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
-              nt_kind(nt, recv4) == NK_GlobalVariableReadNode
-              ? gvar_array_plain_string(c, comp_resolve_gvar(c, nt_str(nt, recv4, "name") + 1)) : -1;
-    if (gpl >= 0) refuse_global_array_element(c, w, recv4, gpl);
     /* An Array read out of a boxed slot -- a Hash's value, through `h.each
        { |k, vs| }`, `h[k]` or `vs = h[k]` -- is iterated as a boxed value,
        so its elements bind the parameter boxed. Only a handle element takes
@@ -45878,35 +45666,6 @@ static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly
   }
   return got;
 }
-/* The refusal's message for each route: 0 a global, 1 a method returning
-   its parameter, 2 a bang method's result, 3 an Array element. */
-static const char *sa_msg(int route) {
-  return route == 0 ? "a String variable assigned from or to a global variable is mutated in place (a String "
-                 "is not yet shared by reference through a global variable). Mutate the String through "
-                 "the global, or assign the global again after the mutation."
-    : route == 1 ? "a String a method returns as its parameter is mutated in place, or the variable passed "
-                   "in is (a String is not yet shared by reference through a method returning its "
-                   "parameter). Mutate and read the String through the variable passed in."
-    : route == 2 ? "the result of a String bang method, which is its receiver, is mutated in place (a "
-                   "String is not yet shared by reference through a bang method's result). Mutate the "
-                   "receiver instead."
-    : "a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into "
-      "a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the "
-      "variable (a String is not yet shared by reference through such an Array element). Push the "
-      "variable itself into a local Array with `<<` or `push`.";
-}
-static __attribute__((noreturn)) void sa_refuse(Compiler *c, int id, int route) {
-  unsupported_feature(c, id, sa_msg(route));
-}
-/* Route 3 for String `e` that Array call `u` adds: under --share-strings
-   the share facts are asked first whether the String and the Array's
-   elements are one class that holds the handle (share_route_defer). */
-static void sa_refuse_element(Compiler *c, int e, int u) {
-  ShareRoute q = share_route(e, e, 0);
-  q.to = nt_paren_single(c->nt, nt_ref(c->nt, u, "receiver"));
-  q.to_elems = 1;
-  if (!share_route_defer(c, &q, sa_msg(3))) sa_refuse(c, e, 3);
-}
 /* A String variable a call adds to an Array without the element store
    (strbuf_container_store_values) seeing it: through `insert`, `prepend`
    or a `concat` of a literal on any Array, or through a push or `<<` whose
@@ -45927,63 +45686,6 @@ static void sa_refuse_element(Compiler *c, int e, int u) {
 static const NodeTable *sau_nt; static unsigned sau_ver; static unsigned long sau_edits; static int sau_cnt = -1, sau_cap;
 static signed char *sau_state;      /* per node: 0 unread, 1 name and receiver read, 2 shape read too */
 static const char **sau_nm; static int *sau_r, *sau_an; static signed char *sau_shape; static const int **sau_av;
-static int sa_unseen_element(Compiler *c, int u, int k) {
-  const NodeTable *nt = c->nt;
-  if (sau_nt != nt || sau_ver != nt->version || sau_edits != nt->edits || sau_cnt != nt->count) {
-    sau_nt = nt; sau_ver = nt->version; sau_edits = nt->edits; sau_cnt = nt->count;
-    if (sau_cap < nt->count) {
-      sau_cap = nt->count;
-      sau_state = realloc(sau_state, (size_t)sau_cap);
-      sau_nm = realloc(sau_nm, sizeof(const char *) * (size_t)sau_cap);
-      sau_r = realloc(sau_r, sizeof(int) * (size_t)sau_cap);
-      sau_an = realloc(sau_an, sizeof(int) * (size_t)sau_cap);
-      sau_shape = realloc(sau_shape, (size_t)sau_cap);
-      sau_av = realloc(sau_av, sizeof(const int *) * (size_t)sau_cap);
-      if (!sau_state || !sau_nm || !sau_r || !sau_an || !sau_shape || !sau_av) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
-    memset(sau_state, 0, (size_t)sau_cap);
-  }
-  if (u < 0 || u >= sau_cap) return -2;
-  if (sau_state[u] == 0) {
-    sau_nm[u] = nt_str(nt, u, "name");
-    sau_r[u] = nt_paren_single(nt, nt_ref(nt, u, "receiver"));
-    sau_state[u] = 1;
-  }
-  const char *nm = sau_nm[u]; int r = sau_r[u];
-  if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
-  if (sau_state[u] == 1) {
-    int a = nt_ref(nt, u, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
-    signed char shape = 1;
-    if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
-      int body = nt_ref(nt, block, "body");
-      av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
-      if (an > 0) { av += an - 1; an = 1; }
-    }
-    else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
-      av = nt_arr(nt, av[0], "elements", &an);
-    else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
-    else if (add != ARRAY_ADD_PREPEND &&
-             !(is_push_unshift(nm) && (nt_kind(nt, r) == NK_GlobalVariableReadNode ||
-                                       (nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
-                                        is_push_unshift(nt_str(nt, r, "name"))))))
-      shape = 0;
-    sau_av[u] = av; sau_an[u] = an; sau_shape[u] = shape;
-    sau_state[u] = 2;
-  }
-  if (!sau_shape[u]) return -2;
-  const int *av = sau_av[u]; int an = sau_an[u];
-  if (k >= an) return -2;
-  /* a read that yields the live handle (strbuf_box) stored into an Array
-     of boxed values is the String; a String Array holds a copy */
-  int e = nt_paren_single(nt, av[k]);
-  TyKind vt = comp_ntype(c, e);
-  SaName v;
-  return (vt == TY_STRING || vt == TY_STRBUF) && sa_name(c, e, &v) &&
-         v.kind != NK_GlobalVariableReadNode && !(c->strbuf_box[e] && comp_ntype(c, r) == TY_POLY_ARRAY)
-         ? e : -1;
-}
 /* refuse_string_alias_copies' answers of sa_array_observed, by the Array
    variable's first read (0: not asked yet, 1 no, 2 yes), so the reads of an
    Array many adders fill are climbed once. */
@@ -47444,7 +47146,6 @@ static void refuse_string_read_copies(Compiler *c) {
         LocalVar *lv = ln ? scope_local(comp_scope_of(c, l), ln) : NULL;
         if (!lv || !lv->is_block_param || lv->type != TY_POLY || lv->poly_ctr) continue;
         strbuf_block_param_source_walk(c, ln, comp_scope_of(c, l), 0, SB_HAS_STRING, 1, &bound);
-        if (!bound) refuse_stored_block_param(c, l, cont);
       }
     }
   }
