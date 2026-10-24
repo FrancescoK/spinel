@@ -243,6 +243,11 @@ typedef struct {
                        method's own positional parameter j (`a[i, n] = src`),
                        boxed when its callers disagree: the binding checks
                        each call's argument j's elements the same way. */
+  unsigned long long store_merge_src; /* (params, hashes) bit j set: a merge!
+                       or update into this parameter merges the method's own
+                       positional parameter j, boxed when its callers
+                       disagree: the binding checks each call's hash for it,
+                       its keys and values, the same way. */
   int store_rest_src; /* (params, containers) one past the first element of the
                        method's rest parameter that a push, unshift or insert
                        through this parameter stores, or 0: the rest
