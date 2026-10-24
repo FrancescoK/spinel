@@ -5041,8 +5041,11 @@ else {
   LocalVar *slv1 = (sbsc && p1) ? scope_local(sbsc, p1) : NULL;
   TyKind spt0 = slv0 ? slv0->type : TY_UNKNOWN;
   TyKind spt1 = slv1 ? slv1->type : TY_UNKNOWN;
-  if (slv0) lv_set_type(slv0, et);
-  if (slv1) lv_set_type(slv1, et);
+  /* (one representation: a String element's parameter is its handle, so
+     a change through it, `a << "!"`, reaches the element) */
+  TyKind pet = one_elem_decl_type(k, et);
+  if (slv0) { one_elem_bind_slot(slv0, pet); lv_set_type(slv0, pet); }
+  if (slv1) { one_elem_bind_slot(slv1, pet); lv_set_type(slv1, pet); }
   for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh ntype cache */
   int save = g_indent; g_indent += 3;
   /* Shadow the outer (possibly poly) block params with et-typed locals */
@@ -5053,8 +5056,9 @@ else {
     LocalVar *plv = pi ? slv1 : slv0;
     if (!pn) continue;
     int pto = ono && slot_is_oint(plv);
-    if (pto) buf_puts(g_pre, oint_ctype(et)); else emit_ctype(c, et, g_pre);
+    if (pto) buf_puts(g_pre, oint_ctype(et)); else emit_ctype(c, pet, g_pre);
     if (ono && !pto) buf_printf(g_pre, " lv_%s = %s(_t%d); ", pn, oint_arg(et), pi ? tb : ta);
+    else if (pet != et) buf_printf(g_pre, " lv_%s = SP_STR_HDL(_t%d); ", pn, pi ? tb : ta);
     else buf_printf(g_pre, " lv_%s = _t%d; ", pn, pi ? tb : ta);
   }
   buf_puts(g_pre, "\n");
