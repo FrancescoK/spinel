@@ -111,7 +111,7 @@ static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, i
   int u = nt_paren_single(c->nt, expr);
   int holds = call_publishes_shared_handle(c, expr);
   if (!holds && u >= 0 && comp_ntype(c, u) == TY_STRING && !arg_ran_first(u, 0))
-    holds = share_node_shares(c, u) && share_plan_with_need(c, u, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE &&
+    holds = share_plan_with_need(c, u, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE &&
             share_plan_producer(c, u, NULL) != SPK_NONE;
   if (!holds) return 0;
   for (int j = k + 1; j < n; j++)
@@ -4064,7 +4064,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
 static int lit_elem_carries_handle(Compiler *c, int v) {
   v = nt_paren_single(c->nt, v);
   if (v < 0) return 0;
-  if (nt_kind(c->nt, v) == NK_CallNode) return repr_call_returns_handle(c, v) && share_node_shares(c, v);
+  if (nt_kind(c->nt, v) == NK_CallNode) return repr_call_returns_handle(c, v);
   return strbuf_var_handle(c, v, NULL);
 }
 /* --share-strings: is String Array literal els[0..n) one whose elements
@@ -5191,17 +5191,12 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
   return 0;
 }
 
-/* --share-strings: does String Range `range` keep endpoint `end` as its
-   handle? One the rule shares, one that is a handle already (a String
-   changed in place: its own handle), and any endpoint of a Range whose
-   endpoints' class the rule shares (a change through #begin reaches it,
-   a new String's included). A frozen literal never changes, and a String
-   nothing changes in place stays the bytes it is, so its identity is the
-   String's own (#8321). */
+/* Does String Range `range` keep endpoint `end` as its handle? Every
+   String endpoint but nil and a frozen literal, which never changes, so its
+   identity is its bytes' own (#8321). */
 static int srange_end_keeps(Compiler *c, int range, int end) {
-  if (end < 0 || comp_ntype(c, end) == TY_NIL || share_frozen_literal(c, end)) return 0;
-  Repr r = repr_of(c, end);
-  return r.kind == RK_STRBUF || r.handle || share_node_shares(c, end) || share_node_elems_share(c, range);
+  (void)range;
+  return end >= 0 && comp_ntype(c, end) != TY_NIL && !share_frozen_literal(c, end);
 }
 /* ...one end into rooted temps: the handle `_t<ht>` and a NULL byte field
    `_t<st>` for an end kept so, else no handle and the end's bytes (NULL for

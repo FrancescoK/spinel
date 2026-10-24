@@ -3020,8 +3020,7 @@ int operand_may_change_string(Compiler *c, int n) {
 int call_publishes_shared_handle(Compiler *c, int v) {
   int u = nt_paren_single(c->nt, v);
   return u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !arg_ran_first(v, 0) &&
-         !arg_ran_first(u, 0) && repr_of(c, u).strbuf_src == RS_NONE && repr_call_returns_handle(c, u) &&
-         share_node_shares(c, u);
+         !arg_ran_first(u, 0) && repr_of(c, u).strbuf_src == RS_NONE && repr_call_returns_handle(c, u);
 }
 
 void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {

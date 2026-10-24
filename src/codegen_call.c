@@ -8119,7 +8119,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
        an exception's handle (the override's published one, else the kept
        message's), as a reader's arm beside it boxes its field's */
     else if (ret == TY_POLY && bt == TY_STRING && !is_raise && argc == 0 && is_message_name(name) &&
-             !exc_has_nonstring_msg_override(c) && share_node_shares(c, id)) {
+             !exc_has_nonstring_msg_override(c)) {
       char e[48];
       snprintf(e, sizeof e, "_t%d.v.p", tv);
       buf_printf(&ib, "((_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
@@ -10138,7 +10138,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             /* --share-strings: a setter's boxed value the rule shares is
                lifted to its handle once, so each arm stores and the call
                answers that one String (emit_poly_index_call's rule) */
-            if (is_setter_val && a == 0 && at == TY_POLY && share_node_shares(c, argv[0]))
+            if (is_setter_val && a == 0 && at == TY_POLY)
               buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", atmp[a], atmp[a]);
           }
         }
@@ -12591,10 +12591,8 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   ctor_arity_emit(&aerr, b);
   buf_printf(b, "default: break; } if (_t%d.tag == SP_TAG_OBJ) sp_raise_exc((sp_Exception *)_t%d.v.p); ",
              rt, rt);
-  /* (--share-strings: a message that is a shared String's handle is kept as
-     that handle, sp_raise_poly_msg_h) */
-  if (mn >= 0) buf_printf(b, "%s(_t%d, _t%d); })",
-                         share_node_shares(c, mn) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", kt, mt);
+  /* (a String message is kept as its handle, sp_raise_poly_msg_h) */
+  if (mn >= 0) buf_printf(b, "sp_raise_poly_msg_h(_t%d, _t%d); })", kt, mt);
   else buf_printf(b, "sp_raise_poly(_t%d); })", kt);
 }
 
@@ -20748,14 +20746,12 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
 }
 
 
-/* --share-strings: is recv a String the rule shares? The share row of a
+/* Is recv a String a change in place can reach? The share row of a
    blockless String iterator joins its Enumerator to the receiver, so a
-   change in place through another name is one the Enumerator sees; a
-   frozen literal changes through no name. */
+   change through another name is one the Enumerator sees; a frozen literal
+   changes through no name. */
 int str_each_recv_shares(Compiler *c, int recv) {
-  if (recv < 0 || share_frozen_literal(c, recv)) return 0;
-  Repr r = repr_of(c, recv);
-  return r.kind == RK_STRBUF || r.handle || share_node_shares(c, recv);
+  return recv >= 0 && !share_frozen_literal(c, recv);
 }
 /* Does the Enumerator of call id outlive the expression it is made in:
    kept, handed on, or built on by blockless calls answering Enumerators

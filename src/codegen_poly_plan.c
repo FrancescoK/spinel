@@ -204,7 +204,7 @@ void pa_report(void) {
    A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
   if (m->ret != TY_STRING ||
-      (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id) && !share_node_transient(c, id)))) {
+      (!m->ret_handle && !(m->ret_fresh && !share_node_transient(c, id)))) {
     emit_boxed_ret_call(c, m, call, b);   /* an oint return boxes with its nil */
     return;
   }
@@ -287,7 +287,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
          where the rule shares the call's String, publishes that String's
          handle, read through its handle form (repr_native_arm_handle), as
          a method arm's tail read does: the call's pickup takes it */
-      if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id)) {
+      if (repr_native_arm_handle(c, id, k)) {
         Buf hc, rb;
         memset(&hc, 0, sizeof hc);
         memset(&rb, 0, sizeof rb);

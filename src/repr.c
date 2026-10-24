@@ -1605,7 +1605,7 @@ void repr_channel_end(Compiler *c, int frame) {
      A call returning a fresh bound argument has the same permission once
      its parameter-return fact has settled. */
   int fresh = share_return_owned(c, f.node, l->mi) ||
-              share_node_fresh(c, f.node) || share_call_fresh(c, f.node);
+              share_node_fresh(c, f.node);
   int want = fresh ? RCH_CLEAR : l->want;
   l->seen = 1;
   q->checked++;
@@ -1986,7 +1986,7 @@ static int repr_flow_checked(Compiler *c, int v) {
   /* an explicit writer's assignment whose value nothing sees as its
      right-hand side's object: the value a holder wraps is its own */
   if (share_assign_unjoined(c, v)) return 0;
-  return share_node_shares(c, v);
+  return 1;
 }
 
 /* The route half of the seal: every flow the walk recorded into a class

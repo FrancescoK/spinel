@@ -147,10 +147,6 @@ int share_node_elems_share(const Compiler *c, int n);
 /* Is node n an element read (`a[i]`, `a.first`) out of a general Array
    whose String elements the rule shares? */
 int share_str_elem_read(Compiler *c, int n);
-/* ...or is their class proven to keep its Strings to itself: it exists,
-   the rule does not share it, and it meets nothing the walk does not
-   follow? */
-int share_node_elems_local(const Compiler *c, int n);
 /* Is node n a blockless builtin's new Array of new Strings whose elements
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
@@ -196,12 +192,6 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    there are more than cap. Any other block that reaches them is a proc
    the yield calls. */
 int share_method_reaching_blocks(const Compiler *c, int mi, int *out, int cap);
-/* Is call node `call`'s String one no other name holds: each user method
-   it reaches answers only Strings its returns did not join to its value
-   (sh_settle_rets: built in its own locals, which die with the call)?
-   The settled return-tail fact also admits fresh returns and a returned
-   parameter bound to a fresh argument or omitted fresh default. */
-int share_call_fresh(Compiler *c, int call);
 /* The class that `K.new(...)` (through parentheses) builds exactly: a class
    of the program's with no `def self.new` in its chain. -1 for any other
    node. */
@@ -424,14 +414,6 @@ int share_plan_call_answers_literal(Compiler *c, int v);
    the program's own methods? */
 int share_plan_literal_pickup_clean(Compiler *c, int v, int mi);
 const char *share_plan_role_name(int role);
-/* Is node v, a tail of a method whose value is a String, a box whose String
-   the plan gives a taker as its handle (a taker needs the handle where its
-   facts say a name of the String must see the same object, and a box
-   supplies its own)? Such a tail publishes that handle for the caller's
-   pickup (sp_poly_unbox_s_pub). A value that is control flow (a conditional,
-   a case, a begin, a sequence, `||` / `&&`, a rescue modifier, a loop) is
-   emitted arm by arm, each arm a value of its own: it is none. */
-int share_plan_return_box(Compiler *c, int v);
 /* Is node v, a String call a store lifts into a handle (poly_strbuf_lift),
    boxed by the handle its producer supplies (the plan's SPR_BOX form
    with the object a lift needs), not from its bytes? A call whose route

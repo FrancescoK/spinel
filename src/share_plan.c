@@ -739,7 +739,6 @@ static int share_plan_need_of(int need) {
 }
 int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_needs_handle(c, v)); }
 
-static int share_plan_box_plain(Compiler *c, int v);
 static int share_plan_box_kept(Compiler *c, int v);
 
 /* What a consumer in `role` needs of value v, whose own need (what its
@@ -749,15 +748,14 @@ static int share_plan_role_need(Compiler *c, int v, int role, int need) {
   if (role == SPR_IDENTITY) return SPN_OBJECT;
   /* A box is copied by value, so a box of a String's bytes is a String of
      its own once a copy is changed in place: a box of a String no other
-     name holds is a new handle, which every copy names, unless a copy is
-     proven unseen (share_plan_box_plain), or the box goes into nothing
-     that keeps it (share_plan_box_kept): a builtin that only reads it is
-     handed the bytes. A frozen literal is its own object already. Any
+     name holds is a new handle, which every copy names, unless the box
+     goes into nothing that keeps it (share_plan_box_kept): a builtin that
+     only reads it is handed the bytes. A frozen literal is its own object already. Any
      other value needs what a taker does. */
   if (role == SPR_BOX) {
     if (share_frozen_literal(c, v)) return SPN_BYTES;
     if (share_value_fresh(c, v, 0))
-      return share_plan_box_plain(c, v) || !share_plan_box_kept(c, v) ? SPN_BYTES : SPN_NEW;
+      return !share_plan_box_kept(c, v) ? SPN_BYTES : SPN_NEW;
   }
   /* the store asks past the literal it splits (never less than the value) */
   if (role == SPR_STORE && need == SPN_BYTES) return share_plan_need_of(share_store_needs_handle(c, v));
@@ -947,19 +945,6 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   return p;
 }
 
-/* Asked live, as the return walk runs before the memo exists. */
-int share_plan_return_box(Compiler *c, int v) {
-  if (!c->share || v < 0) return 0;
-  switch (nt_kind(c->nt, v)) {
-  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode:
-  case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode:
-  case NK_RescueModifierNode: case NK_WhileNode: case NK_UntilNode:
-    return 0;
-  default: break;
-  }
-  if (repr_of(c, v).kind != RK_BOXED) return 0;
-  return share_plan_with_need(c, v, SPR_TAKE, share_plan_need(c, v)).form == SPF_HANDLE;
-}
 
 /* Does an arm of conditional (or begin, `||`, `&&`) v, or v itself where it
    is a call, answer by a route boxes cannot render (strbuf_box_unrendered)?
@@ -1232,21 +1217,6 @@ static int share_plan_box_kept(Compiler *c, int v) {
     }
   }
   return 1;
-}
-
-/* Is node v, a new String, an element of a container literal a holder
-   keeps whose elements share_node_elems_local proves its own? No other
-   name can tell a copy of its box from the String there, and a handle
-   would cost an allocation and a copy per box. */
-static int share_plan_box_plain(Compiler *c, int v) {
-  const NodeTable *nt = c->nt;
-  int n = c->share_parent_n, p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
-  while (p >= 0 && p < n && nt_kind(nt, p) == NK_ParenthesesNode) p = c->share_parent[p];
-  if (p >= 0 && p < n && nt_kind(nt, p) == NK_AssocNode) p = c->share_parent[p];
-  if (p < 0 || p >= n || (nt_kind(nt, p) != NK_ArrayNode && nt_kind(nt, p) != NK_HashNode)) return 0;
-  /* (a temporary literal is not: the walk joins an element read off it,
-     `[s, 1].first`, to no class of the literal's) */
-  return share_node_anchored(c, p) && share_node_elems_local(c, p);
 }
 
 void share_plan_free(Compiler *c) {

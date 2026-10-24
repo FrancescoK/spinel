@@ -25347,12 +25347,6 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
   }
   if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
-  /* A returning override can answer its own fresh String beside a handle.
-     The existing pickup clears that tail's return channel before wrapping. */
-  if (share_call_fresh(c, n)) {
-    if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
-    tc->fresh++; return 1;
-  }
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
@@ -25424,18 +25418,13 @@ static int an_ret_handle_body(Compiler *c, RetHandles *R, int mi) {
 }
 /* Is n, the last statement of a method no signature types (not an arm of
    it, and no `return`, whose value may wait in an ensure's result slot,
-   which publishes nothing), a box whose String the plan gives as its
-   handle (share_plan_return_box)? The flag's late widening boxes a
-   parameter after the method's String value has settled, so the value is
-   a box its unboxing at the return publishes the handle of
-   (unbox_ret_pub), as a seeded method's is (an_tail_boxed_string); a box
-   with none (a new String, nil) clears the side channel, and it may answer
-   nil. An iterator over such a box answering its receiver (`s.scan(re) {
-   }`, strbuf_iter_box_tail) answers the box's String, so it publishes the
-   box's handle too. */
+   which publishes nothing), an iterator over a box answering its receiver
+   (`s.scan(re) { }`, strbuf_iter_box_tail)? It answers the box's String,
+   so it publishes the box's handle, as a seeded method's tail does
+   (an_tail_boxed_string); a box with none (a new String, nil) clears the
+   side channel, and it may answer nil. */
 static int an_ret_box_tail(Compiler *c, RetHandles *R, int n, TailCount *tc) {
-  if (R->fresh || c->scopes[tc->mi].ret_rbs_seeded ||
-      (!share_plan_return_box(c, n) && strbuf_iter_box_tail(c, n) < 0)) return 0;
+  if (R->fresh || c->scopes[tc->mi].ret_rbs_seeded || strbuf_iter_box_tail(c, n) < 0) return 0;
   if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
   tc->reads++;
   tc->nils++;

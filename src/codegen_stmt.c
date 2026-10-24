@@ -1632,8 +1632,6 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
       cplan_user_fresh(c, v)->dispatch != CP_NONE) return -1;
   /* A dropped frozen literal already keeps its frozen mark in the box. */
   if (share_frozen_literal(c, argv[0]) && share_node_transient(c, v)) return -1;
-  if (share_value_fresh(c, argv[0], 0) && !share_node_shares(c, v) &&
-      !share_node_elems_share(c, recv)) return -1;
   TyKind at = repr_of(c, argv[0]).ty;
   return at == TY_STRING || at == TY_STRBUF ? argv[0] : -1;
 }
@@ -2014,7 +2012,7 @@ static int strbuf_site_tail(Compiler *c) {
 }
 static int strbuf_value_held(Compiler *c, int v) {
   v = nt_paren_single(c->nt, v);
-  return v >= 0 && share_node_shares(c, v) && !share_value_fresh(c, v, 0);
+  return v >= 0 && !share_value_fresh(c, v, 0);
 }
 /* Does a `next v` that leaves block body n (not a nested block's, loop's
    or method's) hand on a held String? */
@@ -2559,7 +2557,7 @@ int strbuf_route_exc_message(Compiler *c, int v) {
   return (exc_text_call(c, v) ||
           (exc_message_boxed_call(c, v) &&
            (!repr_call_returns_handle(c, nt_paren_single(c->nt, v)) || !exc_boxed_all_exceptions(c, v)))) &&
-         !exc_text_override_calls_super(c) && share_node_shares(c, nt_paren_single(c->nt, v));
+         !exc_text_override_calls_super(c);
 }
 /* An override's answer to exception text call v off exception `e` (C
    text), into _v<t>, and the handle it published or a new one: the value
@@ -2634,8 +2632,7 @@ int strbuf_route_boxed_exc_message(Compiler *c, int v) {
   TyKind vt = comp_ntype(c, v);
   return nm && is_exception_message(nm) && !is_to_s_name(nm) && recv >= 0 && nt_ref(nt, v, "arguments") < 0 &&
          nt_ref(nt, v, "block") < 0 && (vt == TY_STRING || vt == TY_STRBUF) && repr_of(c, recv).kind == RK_BOXED &&
-         comp_method_index(c, nm) < 0 && cplan_targets(c, v, tg, CPT_MAX) == 0 && !exc_has_user_msg_override(c) &&
-         share_node_shares(c, v);
+         comp_method_index(c, nm) < 0 && cplan_targets(c, v, tg, CPT_MAX) == 0 && !exc_has_user_msg_override(c);
 }
 /* --share-strings: `e.message` / `e.to_s` as an operand compared by identity
    (equal?, object_id). Its identity is the box sp_poly_equal and
@@ -2748,7 +2745,7 @@ int strbuf_route_clamp(Compiler *c, int v, int *ops) {
   v = nt_paren_single(c->nt, v);
   if (v < 0 || nt_kind(nt, v) != NK_CallNode ||
       bop_share_named(TY_STRING, nt_str(nt, v, "name")) != BSH_CLAMP) return 0;
-  if (!c->share || !share_node_shares(c, v)) return 0;
+  if (!c->share) return 0;
   ops[0] = nt_ref(nt, v, "receiver");
   if (ops[0] < 0 || comp_recv_type(c, ops[0]) != TY_STRING ||
       cplan_user(c, v)->dispatch != CP_NONE) return 0;
@@ -3587,7 +3584,7 @@ int strbuf_bang_tail(Compiler *c, int v) {
   const char *nm = v >= 0 && nt_kind(c->nt, v) == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
   return nm &&
          (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(c->nt, v, "block") >= 0) & BOPF_SELF_OR_NIL) &&
-         (strbuf_bang_self_local(c, v) || (face_str_bang_call(c, v) && share_node_shares(c, v)));
+         (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v));
 }
 int strbuf_builtin_tail(Compiler *c, int v) {
   /* A boxed local's read narrowed to a String (`v.is_a?(String) ? v : d`)
@@ -3848,7 +3845,6 @@ static int strbuf_handle_walk(Compiler *c, int v, int under) {
   return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_LOGIC,
                                  strbuf_handle_arm, &w);
 }
-static int strbuf_begin_arm_leaf(Compiler *c, int v) { return strbuf_handle_walk(c, v, 1); }
 int strbuf_cond_has_handle_leaf(Compiler *c, int v) { return strbuf_handle_walk(c, v, 0); }
 static int strbuf_handle_arm(const VpLeaf *lf, void *ud) {
   const StrbufHandleWalk *w = ud;
@@ -13037,17 +13033,11 @@ static int struct_ret_unboxes(TyKind t) {
   const TyTraits *tr = ty_traits_of(t);
   return tr && tr->struct_valued && tr->unbox;
 }
-/* Is node the last statement of a method no signature types, and a box
-   the plan gives as its handle (the tail an_ret_box_tail took)? */
-static int unbox_ret_box_tail(Compiler *c, int node, Scope *ms) {
-  return node == scope_body_last(c, (int)(ms - c->scopes)) && share_plan_return_box(c, node);
-}
 /* Does the String return unboxing a method's tail at node publishes the
-   box's handle (Scope.ret_handle of a method an --rbs seed types String, or
-   a box tail of one no signature types)? */
+   box's handle (Scope.ret_handle of a method an --rbs seed types String)? */
 static int unbox_ret_pub_p(Compiler *c, TyKind t, int node) {
   Scope *ms = t == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
-  return ms && ms->ret_handle && (ms->ret_rbs_seeded || unbox_ret_box_tail(c, node, ms));
+  return ms && ms->ret_handle && ms->ret_rbs_seeded;
 }
 static int unbox_ret_pub(Compiler *c, TyKind t, int node) {
   int pub = unbox_ret_pub_p(c, t, node);
@@ -13428,7 +13418,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     return;
   }
   if (!ts || !ts->ret_pub_fresh ||
-      !(share_tail_fresh(c, nt_paren_single(c->nt, node)) || share_call_fresh(c, nt_paren_single(c->nt, node)))) {
+      !share_tail_fresh(c, nt_paren_single(c->nt, node))) {
     emit_tail_value_1(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;
@@ -18700,7 +18690,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             }
             /* (and a boxed value the rule shares is lifted to its handle
                once, as the value form's is) */
-            else if (at == TY_POLY && share_node_shares(c, argv[0])) {
+            else if (at == TY_POLY) {
               buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_lift(", tval); emit_expr(c, argv[0], b); buf_puts(b, ");");
             }
             else {
@@ -21313,15 +21303,14 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "BeginNode")) {
     /* begin/rescue value -> a temp, assigned in both branches, then tail */
     TyKind rt = repr_of(c, id).as_ty;
-    /* --share-strings: a String value whose class the rule shares, tailing
-       into a box (a boxed return, a proc's value): a String temp would box
-       a copy of a handle arm. The temp is the box, each arm boxed into it
-       as its handle where it has one, and a plain String's box is lifted
-       into a new handle (sp_poly_strbuf_lift) for the box the caller keeps.
-       Lift at the arms, so a frozen literal keeps its own identity. */
+    /* a String value tailing into a box (a boxed return, a proc's value):
+       a String temp would box a copy of a handle arm. The temp is the box,
+       each arm boxed into it as its handle where it has one, and a plain
+       String's box is lifted into a new handle (sp_poly_strbuf_lift) for the
+       box the caller keeps. Lift at the arms, so a frozen literal keeps its
+       own identity. */
     int share_box = (rt == TY_STRING || rt == TY_STRBUF) &&
-                    (g_result_var ? g_result_poly : g_ret_type == TY_POLY) &&
-                    (share_node_shares(c, id) || strbuf_begin_arm_leaf(c, id));
+                    (g_result_var ? g_result_poly : g_ret_type == TY_POLY);
     if (share_box) rt = TY_POLY;
     /* --share-strings: a begin whose value the slot it tails reads as the
        handle (a spliced block's under the demand) holds its arms' values as
@@ -25045,7 +25034,7 @@ int strbuf_poly_user_base(Compiler *c, int v) {
    (strbuf_flow_unseen_arms)? */
 int strbuf_flow_unseen(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (!share_node_shares(c, v) || share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
+  if (share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
   const char *rname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   return is_argv_const(rname) || (is_env_const(rname) &&

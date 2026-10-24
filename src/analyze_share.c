@@ -5583,11 +5583,6 @@ int share_node_anchored(const Compiler *c, int n) {
   int r = sh_node_root(F, n, 0);
   return r >= 0 && F->anchored && F->anchored[r];
 }
-int share_node_elems_local(const Compiler *c, int n) {
-  const ShareFacts *F = c->share;
-  int r = sh_node_root(F, n, 1);
-  return r >= 0 && !(F->flags[r] & SHF_UNKNOWN) && !repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
-}
 int share_node_elems_share(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 1);
@@ -6146,7 +6141,6 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   }
   return 1;
 }
-int share_call_fresh(Compiler *c, int call) { return sh_user_call_fresh(c, call, 0); }
 /* Does the subtree at n hold a `next` that leaves it (not one in a nested
    block, lambda, method or loop)? With any, also a break or a return. */
 static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
@@ -6634,7 +6628,6 @@ static int sh_needs_handle(Compiler *c, int v, int litout) {
   if (!sc || !sc->reachable || share_frozen_string(c, v)) return SHN_NO;
   if (!F->into) sh_into_build(c);
   unsigned char bits = F->into[v];
-  if (!share_node_shares(c, v) && !(bits & SHI_INTO)) return SHN_NO;
   if (litout && (bits & SHI_LITOUT)) return SHN_NO;
   if (share_node_transient(c, v) && !(bits & SHI_MUTATED)) return SHN_NO;
   return strbuf_flow_unseen(c, v) || share_node_fresh(c, v) ? SHN_FRESH : SHN_YES;
@@ -6851,7 +6844,7 @@ int share_assign_shares(const Compiler *c, int n) {
   int args = nt_ref(nt, n, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (!F || argc != 1 || n < 0 || n >= F->nnodes || argv[0] < 0 || argv[0] >= F->nnodes) return 0;
-  return share_node_shares(c, F->nval[argv[0]] >= 0 ? argv[0] : n);
+  return 1;
 }
 
 int share_assign_unjoined(const Compiler *c, int n) {
