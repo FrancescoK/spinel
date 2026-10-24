@@ -1,0 +1,4 @@
+"undefined method 'each_char' for nil"
+"undefined method 'each_byte' for nil"
+"undefined method 'each_line' for nil"
+4

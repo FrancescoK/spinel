@@ -1218,6 +1218,9 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     }
     free(hb_ech.p);
     buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); ", ts, rb.p ? rb.p : "", ts); free(rb.p);
+    /* a receiver that can be nil (`a[5].each_char { }`) raises NoMethodError,
+       where the loop walked nil as an empty String */
+    if (!recv_never_nil(c, recv)) buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", ts, name);
     /* Save outer variable before loop to restore it afterward */
     int tsv_ech = 0;
     if (p0 && clv_ech) {
