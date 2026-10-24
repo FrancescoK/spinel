@@ -190,8 +190,11 @@ int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
   if (nt_kind(c->nt, id) == NK_CallNode && comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) return 0;
   int blk = nt_ref(c->nt, id, "block");
   int initm = comp_method_in_chain(c, ci, "initialize", NULL);
-  if (blk < 0) return 0;
-  if (nt_kind(c->nt, blk) != NK_BlockArgumentNode &&
+  Scope *sblk = blk < 0 && (nt_kind(c->nt, id) == NK_SuperNode || nt_kind(c->nt, id) == NK_ForwardingSuperNode)
+                ? comp_scope_of(c, id) : NULL;
+  int by_sblk = sblk && sblk->blk_param && sblk->blk_param[0];
+  if (blk < 0 && !by_sblk) return 0;
+  if (!by_sblk && nt_kind(c->nt, blk) != NK_BlockArgumentNode &&
       !(nt_kind(c->nt, blk) == NK_BlockNode && ctor_new_on_cycle(c, id, ci, initm))) return 0;
   if (ctor_init_proc_form(c, ci) < 0) return 0;
   /* A literal block, here or forwarded from the site a body was spliced
@@ -222,6 +225,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      bypasses that method and splices initialize here. */
   if (nt_kind(nt, id) == NK_CallNode && comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
+  if (block < 0 && (nt_kind(nt, id) == NK_SuperNode || nt_kind(nt, id) == NK_ForwardingSuperNode)) {
+    Scope *sblk = comp_scope_of(c, id);
+    if (sblk && sblk->blk_param && sblk->blk_param[0]) return 0;
+  }
   /* A literal BlockNode is spliced directly. A forwarded `&b` / `&`
      (BlockArgumentNode) inside an inlined enclosing method resolves to that
      method's own block, which is exactly the currently-active g_block_id -- so
@@ -12942,7 +12949,8 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
       buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value_from_compiler(c, ty_object(ci)));
       return;
     }
-    buf_printf(b, "sp_%s_new(", k->c_name);
+    int by_pf = is && is->yields && ctor_init_proc_form(c, ci) >= 0;
+    buf_printf(b, "sp_%s_new%s(", k->c_name, by_pf ? "_blk" : "");
     for (int i = 0; i < inp; i++) {
       if (i) buf_puts(b, ", ");
       if (i >= s->nparams) { emit_arg_or_default(c, is, i, -1, b); continue; }
@@ -12957,7 +12965,12 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
       else buf_puts(b, ln.p);
       free(ln.p);
     }
-    emit_ctor_block_slot(c, id, initm, inp > 0 ? ", " : "", b);
+    if (by_pf) {
+      buf_puts(b, inp > 0 ? ", " : "");
+      if (s->blk_param && s->blk_param[0]) buf_printf(b, "lv_%s", rename_local(s->blk_param));
+      else buf_puts(b, "NULL");
+    }
+    else emit_ctor_block_slot(c, id, initm, inp > 0 ? ", " : "", b);
     buf_puts(b, ")");
     return;
   }
