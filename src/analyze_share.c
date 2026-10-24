@@ -6602,22 +6602,15 @@ int share_node_mutated(Compiler *c, int v) {
 }
 
 /* Does the String (or a box that may hold one) node v evaluates to have to
-   be the shared handle where it is emitted -- stored, boxed, mutated -- and
-   not a copy of its bytes? The checks, in order: it is reachable, its type
-   can hold a String, the rule shares its class (or a flow takes it into a
-   holder whose class the rule shares, which a new String's own class never
-   is), it is no frozen literal (that is the literal's own handle), it is no
-   transient read (except an in-place change's receiver, whatever the use
-   marks say), and a container literal's element only if the literal's
-   elements are shared and the literal can be reached again. A String no
-   other name can see may be copied, but where a box keeps it, the box has
-   to be the handle's: SHN_FRESH. With litout 0, an element of a container
-   literal is asked as what a consumer other than the literal takes (a
-   multiple write's target takes the elements of the literal it splits). */
-static int sh_needs_handle(Compiler *c, int v, int litout) {
+   be the String's handle where it is emitted -- stored, boxed, mutated --
+   and not its bytes? Under the one representation every String does, but
+   nil, a literal (a String literal is its own handle; a container, a Range
+   or a Symbol holds none), a value of a type that cannot hold a String, one
+   in a method no call reaches, and a frozen String, whose handle is the
+   literal's own. */
+int share_value_needs_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  ShareFacts *F = c->share;
-  if (!F || v < 0 || v >= F->nnodes) return SHN_NO;
+  if (v < 0 || v >= nt->count) return SHN_NO;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_NilNode || k == NK_StringNode || k == NK_ArrayNode || k == NK_HashNode ||
       k == NK_RangeNode || k == NK_SymbolNode)
@@ -6626,14 +6619,9 @@ static int sh_needs_handle(Compiler *c, int v, int litout) {
   if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) return SHN_NO;
   Scope *sc = comp_scope_of(c, v);
   if (!sc || !sc->reachable || share_frozen_string(c, v)) return SHN_NO;
-  if (!F->into) sh_into_build(c);
-  unsigned char bits = F->into[v];
-  if (litout && (bits & SHI_LITOUT)) return SHN_NO;
-  if (share_node_transient(c, v) && !(bits & SHI_MUTATED)) return SHN_NO;
-  return strbuf_flow_unseen(c, v) || share_node_fresh(c, v) ? SHN_FRESH : SHN_YES;
+  return SHN_YES;
 }
-int share_value_needs_handle(Compiler *c, int v) { return sh_needs_handle(c, v, 1); }
-int share_store_needs_handle(Compiler *c, int v) { return sh_needs_handle(c, v, 0); }
+int share_store_needs_handle(Compiler *c, int v) { return share_value_needs_handle(c, v); }
 
 /* ---- master's route refusals under the flag (share.h) ---- */
 

@@ -269,17 +269,13 @@ int share_node_shares(const Compiler *c, int n);
    a link of the chain of self-answering calls down to it? */
 int share_node_mutated(Compiler *c, int v);
 
-/* Must the String node v evaluates to be the shared handle where it is
-   emitted, and not a copy of its bytes: SHN_YES, or SHN_FRESH when no other
-   name sees it, so a copy is fine unless a box keeps it (the box has to be
-   the handle's, or no change shows through the box's other names). A pure
-   query, answered from the final facts. */
-enum { SHN_NO, SHN_YES, SHN_FRESH };
+/* Must the String node v evaluates to be its handle where it is emitted,
+   and not its bytes: SHN_YES for every String but nil, a literal, a frozen
+   String and one in a method no call reaches. */
+enum { SHN_NO, SHN_YES };
 int share_value_needs_handle(Compiler *c, int v);
 /* ... asked for the target of a multiple write that stores v, an element
-   of an Array literal it splits into its targets (also through a splat):
-   the literal is no container that keeps v (its own need says bytes where
-   no name sees the literal), the target is one. */
+   of an Array literal it splits into its targets (also through a splat) */
 int share_store_needs_handle(Compiler *c, int v);
 /* Does node n hand over the shared handle (or a box holding it), not a
    copy of its bytes? The carry a deferred route is checked against

@@ -3331,8 +3331,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       g_ie_next_var = nxbuf;
       /* (a number carrier read where the yield is boxed is boxed too) */
       g_ie_res_poly = nx_bt != TY_STRBUF && (nx_bt == TY_POLY || (want_poly && (ty_is_object(nx_bt) || oint_kind(nx_bt))));
-      /* a `next nil` into an Integer or Float slot is the slot's nil */
-      g_ie_next_ty = (nx_bt == TY_INT || nx_bt == TY_FLOAT) ? nx_bt : TY_UNKNOWN;
+      /* a `next nil` into an Integer or Float slot is the slot's nil, and
+         a `next` into the handle carrier adopts its value */
+      g_ie_next_ty = (nx_bt == TY_INT || nx_bt == TY_FLOAT || nx_bt == TY_STRBUF) ? nx_bt : TY_UNKNOWN;
       g_ie_next_oint = ywo && oint_kind(nx_bt);
       if (g_ie_res_poly) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", nx_tmp);
       else if (g_ie_next_oint) buf_printf(b, "%s _t%d = %s; ", oint_ctype(nx_bt), nx_tmp, oint_nil(nx_bt));

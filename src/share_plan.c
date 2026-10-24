@@ -735,7 +735,7 @@ static int share_plan_supplies(Compiler *c, int v) { return share_plan_supplies_
 enum { SPN_ASK = 3, SPM_NEED = 3, SPM_ROLE_SHIFT = 2 };
 
 static int share_plan_need_of(int need) {
-  return need == SHN_NO ? SPN_BYTES : need == SHN_FRESH ? SPN_NEW : SPN_OBJECT;
+  return need == SHN_NO ? SPN_BYTES : SPN_OBJECT;
 }
 int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_needs_handle(c, v)); }
 
