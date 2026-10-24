@@ -1,0 +1,22 @@
+[TypeError, "no implicit conversion of Integer into Proc"]
+[TypeError, "no implicit conversion of Float into Proc"]
+[TypeError, "no implicit conversion of String into Proc"]
+[TypeError, "no implicit conversion of Array into Proc"]
+[TypeError, "no implicit conversion of Range into Proc"]
+[TypeError, "no implicit conversion of Object into Proc"]
+[TypeError, "no implicit conversion of Foo into Proc"]
+[TypeError, "no implicit conversion of TrueClass into Proc"]
+[TypeError, "no implicit conversion of FalseClass into Proc"]
+[TypeError, "no implicit conversion of Integer into Proc"]
+[TypeError, "no implicit conversion of Float into Proc"]
+[TypeError, "no implicit conversion of String into Proc"]
+[TypeError, "no implicit conversion of Array into Proc"]
+[TypeError, "no implicit conversion of Range into Proc"]
+[TypeError, "no implicit conversion of Object into Proc"]
+[TypeError, "no implicit conversion of Foo into Proc"]
+[TypeError, "no implicit conversion of TrueClass into Proc"]
+[TypeError, "no implicit conversion of FalseClass into Proc"]
+[TypeError, "no implicit conversion of Integer into Proc"]
+:blk
+:none
+:blk
