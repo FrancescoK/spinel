@@ -2965,7 +2965,29 @@ static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int b
   if (rt == TY_CLASS && is_instance_eval_family(nm)) return -2 - id;
   if (rt == TY_CLASS) return ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0);
   int may = rt == TY_POLY && ie_name_may_forward(c, nm);
-  for (int k = 0; may && cls >= -1 && k < 2 * c->nclasses; k++) {
+  /* The classes whose chain answers the name, on each side, in place of
+     every class on both: a class whose chain does not answer forwards
+     nothing (ie_forward_target: no method, no target), `new` aside, which
+     reaches an initialize and so asks every class. Asked class by class,
+     a boxed call with a block cost a chain lookup per class and side,
+     2,600 on a Rails application, every round: half of build_ie_map. The
+     answer is the one target every class agrees on, or the ambiguity,
+     whichever order the classes come in. The lists are copied out: a
+     forward's walk may ask the chain memo, which keeps them. */
+  int listed = may && !sp_streq(nm, "new");
+  for (int side = 0; listed && cls >= -1 && side < 2; side++) {
+    int n = 0; const int *rs = comp_name_responders(c, nm, side, &n);
+    if (n < 0) { listed = 0; break; }
+    int *ks = n > 0 ? malloc(sizeof(int) * (size_t)n) : NULL;
+    if (n > 0 && !ks) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < n; i++) ks[i] = rs[2 * i];
+    for (int i = 0; i < n && cls >= -1; i++) {
+      int t = ie_forward_target(c, ks[i], side, nm, 0);
+      if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
+    }
+    free(ks);
+  }
+  for (int k = 0; may && !listed && cls >= -1 && k < 2 * c->nclasses; k++) {
     int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
     if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
   }
