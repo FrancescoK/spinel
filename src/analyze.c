@@ -10758,7 +10758,8 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int ea = nt_ref(nt, id, "arguments");
     int eac = 0;
     if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
-    if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
+    if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR &&
+        !enumerator_own_with_object(c, id)) {
       int toa = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, toa, "name", "to_a");
       nt_node_set_int(nt, toa, "made_to_a", 1);

@@ -12782,6 +12782,27 @@ int enum_builtin_responds(Compiler *c, const char *name, TyKind rt) {
   return 0;
 }
 
+/* Does the program give Enumerator a with_object of its own (a reopening
+   of Enumerator, or a module it prepends or includes: a def, an alias, a
+   define_method, an attr_reader, or an alias of a builtin method such as
+   `alias with_object with_index`)? CRuby calls that one, which the
+   each_with_object walk a with_object call is rewritten onto would pass
+   by. Such a call is refused, once per call. (An attr_writer defines
+   `with_object=`, which leaves with_object the builtin's.) */
+int enumerator_own_with_object(Compiler *c, int id) {
+  int ci = comp_class_index(c, "Enumerator");
+  if (ci < 0) return 0;
+  const char *rn = comp_resolve_alias(c, ci, "with_object");
+  if (comp_method_in_chain(c, ci, "with_object", NULL) < 0 && !comp_reader_in_chain(c, ci, "with_object", NULL) &&
+      (!rn || sp_streq(rn, "with_object"))) return 0;
+  if (!nt_int(c->nt, id, "wo_refused", 0)) {
+    nt_node_set_int((NodeTable *)c->nt, id, "wo_refused", 1);
+    unsupported_feature_collect(c, id, "Enumerator#with_object of the program's own (an Enumerator reopening, "
+                                       "or a module it prepends or includes) is not supported");
+  }
+  return 1;
+}
+
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -12839,7 +12860,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
         builtin_enum_name_index("each_with_object") >= 0) {
       int wa = nt_ref(nt, id, "arguments"), wn = 0;
       if (wa >= 0) nt_arr(nt, wa, "arguments", &wn);
-      if (wn == 1 && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY) { bname = "each_with_object"; wo_arm = 1; }
+      if (wn == 1 && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY && !enumerator_own_with_object(c, id)) {
+        bname = "each_with_object"; wo_arm = 1;
+      }
     }
     if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
