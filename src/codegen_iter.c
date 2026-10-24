@@ -6717,6 +6717,10 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
     emit_indent(b, indent);
     if (rt == TY_ENUMERATOR)
       buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s);\n", ta, rb.p ? rb.p : "");
+    /* a receiver that can be nil raises on it, as the typed walks' do (an
+       Array of Integers under promote is one of these) */
+    else if (!nt_safe_nav(c->nt, id) && repr_of(c, recv).may_nil && !repr_of(c, recv).nil_tested)
+      buf_printf(b, "sp_PolyArray *_t%d = %s; if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"each\");\n", ta, rb.p ? rb.p : "", ta);
     else
       buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : "");
     free(rb.p);
