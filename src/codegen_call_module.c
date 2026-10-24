@@ -114,6 +114,18 @@ static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
              first + 1, first);
 }
 
+/* DOTMATCH applies to each pattern when the argument is an Array. */
+static void emit_dir_glob_dot(Compiler *c, int pattern, Buf *b) {
+  if (nt_kind(c->nt, pattern) == NK_ArrayNode || ty_is_array(comp_ntype(c, pattern))) {
+    buf_puts(b, "sp_dir_glob_multi_dot("); emit_boxed(c, pattern, b);
+  }
+  else if (repr_of(c, pattern).kind == RK_BOXED) {
+    buf_puts(b, "sp_dir_glob_dot_boxed("); emit_boxed(c, pattern, b);
+  }
+  else { buf_puts(b, "sp_dir_glob_dot("); emit_path_expr(c, pattern, b); }
+  buf_puts(b, ")");
+}
+
 /* the class methods of File / FileTest, Dir and Time */
 /* The encoding a `File.read` options hash names, when that is all it
    names (`encoding:`, `external_encoding:`, `internal_encoding:`):
@@ -780,7 +792,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "glob") && argc == 2 && nt_type(nt, argv[1]) &&
         sp_streq(nt_type(nt, argv[1]), "ConstantPathNode") &&
         nt_str(nt, argv[1], "name") && sp_streq(nt_str(nt, argv[1], "name"), "FNM_DOTMATCH")) {
-      buf_puts(b, "sp_dir_glob_dot("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+      emit_dir_glob_dot(c, argv[0], b); return 1;
     }
     /* Dir.glob(pattern, base: dir): a lone base: keyword; nil is the current directory */
     if (sp_streq(name, "glob") && argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&

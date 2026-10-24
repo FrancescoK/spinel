@@ -18244,6 +18244,34 @@ static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
   }
   return out;
 }
+/* Dir.glob([pat, ...], File::FNM_DOTMATCH): each pattern globbed in order,
+   results concatenated, a match two patterns share kept twice. Each pattern
+   is converted as a path argument is, so one that is no String (nor names a
+   path through #to_path) raises TypeError, as in CRuby. */
+static sp_StrArray *sp_dir_glob_multi_dot(sp_RbVal pats) SP_UNUSED;
+static sp_StrArray *sp_dir_glob_multi_dot(sp_RbVal pats) {
+  SP_GC_ROOT_RBVAL(pats);
+  sp_PolyArray *ps = sp_enum_items_from(pats);
+  SP_GC_ROOT(ps);
+  sp_StrArray *out = sp_StrArray_new();
+  SP_GC_ROOT(out);
+  for (sp_int i = 0; ps && i < ps->len; i++) {
+    sp_StrArray *one = sp_dir_glob_dot(sp_poly_arg_path(ps->data[i]));
+    SP_GC_ROOT(one);
+    for (sp_int j = 0; one && j < one->len; j++)
+      sp_StrArray_push(out, sp_StrArray_get(one, j));
+  }
+  return out;
+}
+/* A boxed pattern may hold an Array of patterns; anything else converts as
+   a path argument does. */
+static sp_StrArray *sp_dir_glob_dot_boxed(sp_RbVal pattern) SP_UNUSED;
+static sp_StrArray *sp_dir_glob_dot_boxed(sp_RbVal pattern) {
+  SP_GC_ROOT_RBVAL(pattern);
+  if (pattern.tag == SP_TAG_OBJ && sp_poly_is_array_kind(pattern.cls_id))
+    return sp_dir_glob_multi_dot(pattern);
+  return sp_dir_glob_dot(sp_poly_arg_path(pattern));
+}
 sp_StrArray *sp_dir_children(const char *path);
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string
