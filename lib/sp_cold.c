@@ -1736,35 +1736,37 @@ sp_int sp_file_write(const char *path, const char *data) {SP_GC_ROOT_STR(path);S
    next allocation waited on the command too (#4528). The child is forked
    here with its stdout on a pipe; the read parks on that pipe like any read
    from a pipe does, and the wait is the scheduler's polling one, as
-   Kernel#system's is. */
+   Kernel#system's is.
+   A command line with no shell character runs as its words, with no shell
+   (sp_cmdline_shell_p, CRuby's rule): a program that cannot be run raises
+   its Errno, as `missing` does under CRuby, where the shell only printed
+   "not found" and the answer was "". */
+extern const char *sp_errno_class_name(int e);   /* lib/sp_exc.c: the Errno:: class for a C errno */
 const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
+  int via_shell = sp_cmdline_shell_p(cmd);
+  char **words = NULL;
+  if (!via_shell) {
+    int wn = 0;
+    if (!(words = sp_cmdline_words(cmd, &wn))) sp_raise_cls("NoMemoryError", "out of memory");
+  }
+  /* the program a failed exec names: the first word, "" for a line of none */
+  const char *prog = words ? (words[0] ? words[0] : "") : "/bin/sh";
   int fds[2];
-  if (sp_io_make_pipe(fds) != 0) { sp_last_status = -1; return sp_str_empty; }
+  if (sp_io_make_pipe(fds) != 0) { free(words); sp_last_status = -1; return sp_str_empty; }
   fflush(NULL);
-#if defined(_WIN32)
-  /* posix_spawn where there is no fork (see sp_process.c) */
-  pid_t pid = 0;
-  {
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addclose(&fa, fds[0]);
-    if (fds[1] != 1) { posix_spawn_file_actions_adddup2(&fa, fds[1], 1); posix_spawn_file_actions_addclose(&fa, fds[1]); }
-    char *av[] = { (char *)"sh", (char *)"-c", (char *)cmd, NULL };
-    int rc = posix_spawn(&pid, "/bin/sh", &fa, NULL, av, environ);
-    posix_spawn_file_actions_destroy(&fa);
-    if (rc != 0) { close(fds[0]); close(fds[1]); sp_last_status = 127 << 8; return sp_str_empty; }
+  int exec_errno = 0;
+  int pid = sp_system_start(words ? NULL : cmd, prog, words, NULL, fds[1], fds[0], &exec_errno);
+  if (pid <= 0) {
+    close(fds[0]); close(fds[1]);
+    if (pid == 0 && words) {
+      const char *msg = sp_sprintf("%s - %s", strerror(exec_errno), prog);
+      free(words);
+      sp_raise_cls(sp_errno_class_name(exec_errno), msg);
+    }
+    free(words);
+    return sp_str_empty;
   }
-#else
-  pid_t pid = fork();
-  if (pid < 0) { close(fds[0]); close(fds[1]); sp_last_status = -1; return sp_str_empty; }
-  if (pid == 0) {
-    close(fds[0]);
-    if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
-    else fcntl(1, F_SETFD, 0);
-    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-    _exit(127);
-  }
-#endif
+  free(words);
   close(fds[1]);
   size_t cap = 4096, len = 0;
   char *buf = (char *)malloc(cap);

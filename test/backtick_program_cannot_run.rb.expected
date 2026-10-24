@@ -1,0 +1,18 @@
+Errno::ENOENT
+"No such file or directory - spinel_missing_q1"
+"No such file or directory - spinel_missing_q1"
+127
+true
+""
+127
+"No such file or directory - "
+"a b\n"
+true
+Errno::EACCES
+"Permission denied - /"
+"interp\n"
+"hi\n"
+""
+4
+""
+1
