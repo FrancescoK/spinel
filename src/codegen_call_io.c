@@ -1025,8 +1025,31 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ", tv, tv);
       if (boxed) buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), _t%d)", tv, tv);
       else buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), (sp_int)0)", tv);
+      /* a Dir rewinds and answers itself, where the program can make one */
+      if (an_program_makes_dir(c)) {
+        buf_printf(b, " : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR) ? ", tv, tv);
+        if (boxed) buf_printf(b, "(sp_Dir_rewind((sp_Dir *)_t%d.v.p), _t%d)", tv, tv);
+        else buf_printf(b, "(sp_Dir_rewind((sp_Dir *)_t%d.v.p), (sp_int)0)", tv);
+      }
       buf_printf(b, " : %ssp_File_rewind(sp_poly_as_io(_t%d, \"rewind\"))%s; })",
                  boxed ? "sp_box_int(" : "", tv, boxed ? ")" : "");
+      return 1;
+    }
+    /* seek(pos) on a boxed value, where the program can make a Dir: a Dir
+       seeks and answers itself, a stream answers IO#seek's 0. Without a
+       Dir the stream arm below takes it. */
+    if (!iocand && sp_streq(name, "seek") && argc == 1 && !nt_argv_has_splat(nt, argv, argc) &&
+        an_program_makes_dir(c)) {
+      int tv = ++g_tmp, tio3 = ++g_tmp, tp = ++g_tmp;
+      int boxed = repr_of(c, id).kind == RK_BOXED;
+      buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 1, tv, 1, " ", b);
+      buf_printf(b, "sp_File *_t%d = (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR)"
+                    " ? NULL : sp_poly_as_io(_t%d, \"seek\"); sp_int _t%d = ", tio3, tv, tv, tv, tp);
+      emit_int_expr_offt(c, argv[0], b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ", tv, tv);
+      if (boxed) buf_printf(b, "sp_box_obj(sp_Dir_seek((sp_Dir *)_t%d.v.p, _t%d), SP_BUILTIN_DIR)", tv, tp);
+      else buf_printf(b, "(sp_Dir_seek((sp_Dir *)_t%d.v.p, _t%d), (sp_int)0)", tv, tp);
+      buf_printf(b, " : %ssp_File_seek(_t%d, _t%d, 0)%s; })", boxed ? "sp_box_int(" : "", tio3, tp, boxed ? ")" : "");
       return 1;
     }
     if (!iocand) {
