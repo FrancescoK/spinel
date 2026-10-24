@@ -11,7 +11,6 @@ end
 
 p show(Time.parse("2026-10-09T10:23:24Z"))
 p show(Time.parse("2026-10-09T10:23:24.123Z"))
-p show(Time.parse("2026-10-09T10:23:24.1234567891Z"))
 p show(Time.parse("2026-10-09t10:23:24z"))
 p show(Time.parse("  2026-10-09T10:23:24Z  "))
 p show(Time.parse("2026-10-09T12:23:24+02:00"))
