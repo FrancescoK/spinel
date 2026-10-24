@@ -45050,6 +45050,20 @@ static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   case VP1_NIL: return 1;   /* nil, which brings no member */
   case VP1_MANY: return 0;
   }
+  /* an Array's to_a holds its elements (`%i[a b].to_set` is
+     `Set.new(%i[a b].to_a)` here): judged by the Array's, unless the
+     program gives Array a to_a of its own (`class Array; def to_a =
+     ...`, or through a module it includes), which may answer anything */
+  int arr_cid = comp_class_index(c, "Array");
+  int own_to_a = arr_cid >= 0 && comp_method_in_chain(c, arr_cid, "to_a", NULL) >= 0;
+  for (int d = 0; d < 8 && !own_to_a && nt_kind(nt, v) == NK_CallNode && nt_str(nt, v, "name") &&
+                  sp_streq(nt_str(nt, v, "name"), "to_a") && nt_ref(nt, v, "arguments") < 0 &&
+                  nt_ref(nt, v, "block") < 0; d++) {
+    int r = nt_ref(nt, v, "receiver");
+    if (r < 0 || !ty_is_array(infer_type(c, r))) break;
+    if (vp_one(nt, r, VPS_NONE | VP_PARENS_ONLY, &r) != VP1_NODE) break;
+    v = r;
+  }
   TyKind t = infer_type(c, v);
   if (sid_no_collection_kind(t)) return 1;
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
