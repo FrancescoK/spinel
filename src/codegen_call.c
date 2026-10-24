@@ -20688,17 +20688,23 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
         const char *cn = nrt == TY_FLOAT ? "Float" : "Integer";
         TyKind rty = repr_of(c, id).as_ty;
         const char *dv = default_value_from_compiler(c, rty);
+        int defer_lazy = cmpform && rty == TY_ENUMERATOR &&
+                         (sp_streq(nn, "upto") || sp_streq(nn, "downto")) &&
+                         nt_ref(nt, id, "block") < 0;
         buf_puts(b, "({ (void)("); emit_expr(c, nr, b); buf_puts(b, "); ");
         if (offk == NK_KeywordHashNode) { buf_puts(b, "(void)("); emit_boxed(c, off, b); buf_puts(b, "); "); }
         if (cmpform) {
           /* CRuby names the operand: a class for a String/Array, the value
              itself for nil/true/false, the inspect form for a Symbol */
+          const char *raiser = defer_lazy ? "sp_enum_raise_lazy" : "sp_raise_cls";
           if (offk == NK_SymbolNode && nt_str(nt, off, "value"))
-            buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"comparison of %s with :%s failed\"); ",
-                       cn, nt_str(nt, off, "value"));
+            buf_printf(b, "%s(\"ArgumentError\", \"comparison of %s with :%s failed\")",
+                       raiser, cn, nt_str(nt, off, "value"));
           else
-            buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"comparison of %s with %s failed\"); ",
-                       cn, litcls);
+            buf_printf(b, "%s(\"ArgumentError\", \"comparison of %s with %s failed\")",
+                       raiser, cn, litcls);
+          if (defer_lazy) { buf_puts(b, "; })"); return 1; }
+          buf_puts(b, "; ");
         }
         else if (sp_streq(nn, "gcdlcm"))
           buf_puts(b, "sp_raise_cls(\"TypeError\", \"not an integer\"); ");
