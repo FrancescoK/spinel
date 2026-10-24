@@ -1,7 +1,6 @@
 #include <limits.h>
 #include "codegen_internal.h"
 #include "call_plan.h"
-#include "value_pos.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -599,7 +598,6 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
   else if (why == RW_YIELD) cls = "yield-site";
   else if (why == RW_TRANSPLANT) cls = "transplant";
   else if (why == RW_RAN_FIRST) cls = "ran-first";
-  else if (why == RW_PAREN_TAIL) cls = "paren-tail";
   else if (why == RW_HANDLE_ROUTE) cls = "handle-route";
   else if (why == RW_LITERAL) cls = "literal";
   else if ((form == RF_INT_NIL || form == RF_FLT_NIL) &&
@@ -2833,31 +2831,6 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     /* --share-strings: a String a bang method answers off a variable's
        handle is that handle, boxed as it (a copy forked the box off it) */
     if (t == TY_STRING && emit_boxed_bang_self(c, node, b)) return;
-    /* a sequence in parentheses ending in a variable that holds the handle
-       (vp_one): its statements, then that variable's box, as the bare read
-       is boxed; one that ran ahead (emit_arg_temp) is the handle it took
-       there, or, where it took none, its temp as any other's */
-    if (t == TY_STRING && nt_kind(c->nt, node) == NK_ParenthesesNode) {
-      int u;
-      if (vp_one(c->nt, node, VPS_NONE | VP_PARENS_ONLY, &u) == VP1_NODE && u != node &&
-          repr_of(c, u).kind == RK_STRBUF) {
-        if (ran_first_handle(node) >= 0) {
-          str_box_handle_tmp(b, ran_first_handle(node));
-          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
-          return;
-        }
-        if (!arg_ran_first(node, 0)) {
-          Buf pre; memset(&pre, 0, sizeof pre);
-          emit_paren_lead(c, node, u, &pre, 0);
-          buf_printf(b, "({ %s", pre.p ? pre.p : "");
-          emit_boxed(c, u, b);
-          buf_puts(b, "; })");
-          free(pre.p);
-          RC(RF_STRBUF_HANDLE, RW_PAREN_TAIL);
-          return;
-        }
-      }
-    }
     /* --share-strings: a mutator on a narrowed box (`a << x` where an
        is_a? guard narrows a boxed a) answers that box, read as one */
     if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {

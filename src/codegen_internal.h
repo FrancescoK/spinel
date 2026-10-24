@@ -472,8 +472,6 @@ enum {
   RW_YIELD,          /* a yield boxed by the block of this call site */
   RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
   RW_RAN_FIRST,      /* an argument that already ran: its temp */
-  RW_PAREN_TAIL,     /* parentheses boxed as the handle of the variable
-                        they end in, after their statements */
   RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
