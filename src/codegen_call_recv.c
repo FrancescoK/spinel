@@ -9879,7 +9879,13 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   if (!rs.p && (rt == TY_INT || rt == TY_FLOAT) && node_is_oint(c, recv)) {
     buf_printf(&rs, "%s(", oint_arg(rt)); emit_oint_expr(c, recv, rt, &rs); buf_puts(&rs, ")");
   }
-  if (!rs.p) emit_expr(c, recv, &rs);
+  if (!rs.p) {
+    /* (an and/or answering a handle, `(ARGV[0] || "16").to_i`: its bytes) */
+    int hl = rt == TY_STRING && logic_value_handle(c, recv);
+    if (hl) buf_puts(&rs, "SP_STR_B(");
+    emit_expr(c, recv, &rs);
+    if (hl) buf_puts(&rs, ")");
+  }
   const char *r = rs.p ? rs.p : "";
   /* A Float receiver that can be nil answers a Float's methods only where
      NilClass has the name:

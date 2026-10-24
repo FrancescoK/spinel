@@ -4690,6 +4690,16 @@ static int logic_left_carries(Compiler *c, int left) {
   return (k == NK_IfNode || k == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, u);
 }
 
+/* See codegen_internal.h. */
+int logic_value_handle(Compiler *c, int v) {
+  int u = g_one_string ? nt_paren_single(c->nt, v) : -1;
+  NodeKind k = u >= 0 ? nt_kind(c->nt, u) : NK_NONE;
+  if (k != NK_OrNode && k != NK_AndNode) return 0;
+  int left = nt_ref(c->nt, u, "left");
+  Repr lr = repr_of(c, left);
+  return lr.as_ty == TY_STRING && lr.strbuf_src == RS_HANDLE && repr_of(c, u).as_ty == TY_STRING;
+}
+
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
 static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {

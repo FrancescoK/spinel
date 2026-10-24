@@ -345,6 +345,10 @@ void emit_strbuf_ivar_plus(Compiler *c, int value, const char *ref, Buf *b);
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
 int strbuf_arg_carries(Compiler *c, int v);
+/* one representation: does and/or v (through parentheses) answer its String
+   as the handle its left is, which a reader of the bytes takes through
+   SP_STR_B? (codegen_expr.c) */
+int logic_value_handle(Compiler *c, int v);
 int strbuf_arg_bang(Compiler *c, int v);
 int strbuf_arg_bang_value(Compiler *c, int v);
 int strbuf_next_srange_value(Compiler *c, int v);
