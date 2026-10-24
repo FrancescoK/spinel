@@ -3698,6 +3698,22 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, Buf *out) {
   }
   int sr = strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, out);
   if (sr) return sr;
+  /* One representation: an element read of a typed String container
+     whose index runs code (`arr[id(0)].upcase!`) is no slot to read
+     again, but its handle, read once here, is the receiver; the bang
+     went to a copy of the bytes, and the element never changed. */
+  if (g_one_string && !nt_safe_nav(c->nt, id) && one_str_elem_call(c, nt_paren_single(c->nt, recv), TY_UNKNOWN)) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    strh_elem_handle_text(c, nt_paren_single(c->nt, recv), &hb);
+    if (hb.p) {
+      int t = ++g_tmp;
+      buf_printf(out, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
+                 "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+                 t, hb.p, t, nt_str(c->nt, id, "name"), t);
+      free(hb.p);
+      return 2;
+    }
+  }
   return strbuf_route_recv(c, id, recv, out) ? 2 : 0;
 }
 /* See codegen_internal.h. */
