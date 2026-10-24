@@ -1593,6 +1593,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
       int tv = ++g_tmp;
       buf_puts(b, "({ ");
       tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
+      int turkic_rt = 0;
       if (!*sfx) {
         int literals = 1;
         for (int i = 0; i < argc; i++)
@@ -1603,6 +1604,11 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
           int first = g_tmp + 1;
           g_tmp += argc;
           for (int i = 0; i < argc; i++) ta[i] = hold_operand(c, argv[i], TY_POLY, 1, first + i, 1, " ", b);
+          turkic_rt = 1;
+          buf_printf(b, "sp_case_opts_is_turkic(%d, (sp_RbVal[]){", argc);
+          for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); buf_printf(b, "_t%d", ta[i]); }
+          buf_printf(b, "}) ? sp_poly_case_conv(_t%d, _t%d.tag == SP_TAG_SYM ? sp_str_%s_turkic_sym : sp_str_%s_turkic, \"%s\") : ({ ",
+                     tv, tv, name, name, name);
         }
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d)) "
                       "sp_case_opts_check(%d, (sp_RbVal[]){", tv, tv, tv, argc);
@@ -1615,7 +1621,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
         buf_printf(b, "}, %s, _t%d); ", x->op->arg, tv);
       }
       if (sp_streq(sfx, "_turkic")) buf_printf(b, "sp_poly_case_conv(_t%d, _t%d.tag == SP_TAG_SYM ? sp_str_%s_turkic_sym : sp_str_%s_turkic, \"%s\"); })", tv, tv, name, name, name);
-      else buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
+      else buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\")%s; })", tv, name, sfx, name, turkic_rt ? "; })" : "");
       return 1;
     }
   }

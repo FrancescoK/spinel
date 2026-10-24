@@ -20035,7 +20035,8 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   char base[16];
   if (ln >= sizeof base) return 0;
   memcpy(base, name, ln + 1);
-  if (ln && base[ln - 1] == '!') base[ln - 1] = 0;
+  int bang = ln && base[ln - 1] == '!';
+  if (bang) base[ln - 1] = 0;
   if (!(sp_streq(base, "upcase") || sp_streq(base, "downcase") || sp_streq(base, "capitalize") ||
         sp_streq(base, "swapcase"))) return 0;
   TyKind rt = comp_ntype(c, recv);
@@ -20051,34 +20052,46 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   int plain = rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
               rk == NK_ConstantReadNode || rk == NK_StringNode || rk == NK_SymbolNode;
   if (!plain && g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  int ta[2]; int rt_turkic = rt == TY_STRING && argc <= 2 && !bang;
+  if (rt_turkic) buf_puts(b, "({ ");
+  else if (plain) buf_puts(b, "(");
   int tv = 0;
-  if (plain) buf_puts(b, "(");
-  else {
+  if (!plain || rt_turkic) {
     tv = ++g_tmp;
-    buf_puts(b, "({ ");
+    if (!rt_turkic) buf_puts(b, "({ ");
     emit_ctype(c, rt, b);
     buf_printf(b, " _t%d = ", tv);
     emit_expr(c, recv, b);
     buf_puts(b, "; ");
     if (rt != TY_SYMBOL) buf_printf(b, "SP_GC_ROOT(_t%d); ", tv);
   }
+  if (rt_turkic) {
+    for (int i = 0; i < argc; i++) {
+      ta[i] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", ta[i]);
+      emit_boxed(c, av[i], b);
+      buf_puts(b, "; ");
+    }
+    buf_printf(b, "sp_case_opts_is_turkic(%d, (sp_RbVal[]){", argc);
+    for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); buf_printf(b, "_t%d", ta[i]); }
+    buf_printf(b, "}) ? sp_str_%s_turkic(_t%d) : ({ ", base, tv);
+  }
   buf_printf(b, "sp_case_opts_check(%d, (sp_RbVal[]){", argc);
   for (int i = 0; i < argc; i++) {
     if (i) buf_puts(b, ", ");
-    emit_boxed(c, av[i], b);
+    if (rt_turkic) buf_printf(b, "_t%d", ta[i]);
+    else emit_boxed(c, av[i], b);
   }
   buf_printf(b, "}, %d, ", down);
-  if (plain) emit_boxed(c, recv, b);
+  if (plain && !rt_turkic) emit_boxed(c, recv, b);
   else { char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv); emit_boxed_text(c, rt, tn, b); }
-  buf_printf(b, ")%s ", plain ? "," : ";");
-  if (!plain) {
-    view_bind(recv, "_t%d", tv);
-  }
+  buf_printf(b, ")%s ", (plain && !rt_turkic) ? "," : ";");
+  if (!plain || rt_turkic) view_bind(recv, "_t%d", tv);
   int sv = g_case_opts_node; g_case_opts_node = id;
   emit_call(c, id, b);
   g_case_opts_node = sv;
-  if (!plain) view_unbind(g_n_argov - 1);
-  buf_puts(b, plain ? ")" : "; })");
+  if (!plain || rt_turkic) view_unbind(g_n_argov - 1);
+  buf_puts(b, rt_turkic ? "; }); })" : (plain ? ")" : "; })"));
   return 1;
 }
 

@@ -234,6 +234,7 @@ void sp_raise_frozen_str(const char*s){SP_GC_ROOT_STR(s);const char*ins=sp_str_i
    specs exercise. Full Unicode is out of scope (one internal UTF-8 rep). */
 uint32_t sp_uc_toupper(uint32_t cp){
   if(cp<0x80)return (uint32_t)toupper((int)cp);
+  if(cp==0x131)return 0x49;
   if(cp>=0xE0&&cp<=0xFE&&cp!=0xF7)return cp-0x20; /* Latin-1 lower -> upper */
   if(cp==0xFF)return 0x178;                       /* ÿ -> Ÿ */
   if(cp>=0x100&&cp<=0x137){ if(cp&1)return cp-1; return cp; } /* Latin-Ext-A pairs */
@@ -244,6 +245,7 @@ uint32_t sp_uc_toupper(uint32_t cp){
 }
 uint32_t sp_uc_tolower(uint32_t cp){
   if(cp<0x80)return (uint32_t)tolower((int)cp);
+  if(cp==0x130)return cp;
   if(cp>=0xC0&&cp<=0xDE&&cp!=0xD7)return cp+0x20; /* Latin-1 upper -> lower */
   if(cp==0x178)return 0xFF;                        /* Ÿ -> ÿ */
   if(cp>=0x100&&cp<=0x137){ if((cp&1)==0)return cp+1; return cp; }

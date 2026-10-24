@@ -5280,6 +5280,15 @@ SP_COLD static void sp_case_opts_unmapped(sp_RbVal recv, int turkic, const char 
     }
   }
 }
+static int sp_case_opts_is_turkic(sp_int argc, const sp_RbVal *o) {
+  if (argc < 1 || argc > 2) return 0;
+  const char *a = sp_case_opt_name(o[0]);
+  if (!a) return 0;
+  if (argc == 1) return strcmp(a, "turkic") == 0;
+  const char *b = sp_case_opt_name(o[1]);
+  return b && ((strcmp(a, "turkic") == 0 && strcmp(b, "lithuanian") == 0) ||
+               (strcmp(a, "lithuanian") == 0 && strcmp(b, "turkic") == 0));
+}
 SP_COLD static void sp_case_opts_check(sp_int argc, const sp_RbVal *o, int down, sp_RbVal recv) {
   if (argc <= 0) return;
   if (argc > 2) { sp_raise_cls("ArgumentError", "too many options"); return; }
