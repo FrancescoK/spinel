@@ -4208,7 +4208,15 @@ static void emit_iter_step_open_body(Compiler *c, int block, int want_poly, int 
 static TyKind emit_iter_step_tail_body(Compiler *c, const IterStep *st, Buf *vb);
 TyKind emit_iter_step_tail(Compiler *c, const IterStep *st, Buf *vb) {
   int arm = step_arm_begin();
+  /* (one representation: the step's answer is the block's value, not an
+     operand the call around it holds across the block, g_one_held, as
+     its leading statements and a framed body are not; held, its String
+     operands were read as copies (SP_STR_BC) that nothing roots while
+     the next one is made) */
+  int held = g_one_held;
+  g_one_held = 0;
   TyKind t = emit_iter_step_tail_body(c, st, vb);
+  g_one_held = held;
   step_arm_end(c, arm);
   return t;
 }
