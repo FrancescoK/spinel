@@ -422,4 +422,5 @@ int ostruct_member_name(const char *n);
 int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a type predicate's sp_stat_type_pred kind + 100, else -1 */
 int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
 int boxed_stat_name(const char *n);   /* mode or a numeric field */
+int boxed_stat_reader(const char *n); /* mtime, atime, ftype */
 #endif

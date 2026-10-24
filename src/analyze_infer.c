@@ -3888,10 +3888,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* the descriptor surface, typed as the TY_IO arms type it: a stat is
          carried as the handle itself, the offsets and counts are ints */
       if (sp_streq(name, "stat") && argc == 0) { *out = an_poly_concrete(c, name, TY_IO); return 1; }
-      /* and that handle's times (File::Stat#mtime / atime; a boxed ctime is
-         Time#ctime's String as well, left to that arm) */
-      if (argc == 0 && (sp_streq(name, "mtime") || sp_streq(name, "atime")))
-        { *out = an_poly_concrete(c, name, TY_TIME); return 1; }
+      /* and that handle's readers (boxed_stat_reader), typed by their TY_IO rows */
+      if (argc == 0 && boxed_stat_reader(name)) {
+        const struct BuiltinOp *sop = an_bop_find(c, id, TY_IO, name, 0, 0);
+        if (sop) { *out = an_poly_concrete(c, name, sop->result); return 1; }
+      }
       /* Dir#seek answers itself; IO#seek answers 0. Keep either in a box. */
       if (sp_streq(name, "seek") && argc == 1 && an_program_makes_dir(c))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }

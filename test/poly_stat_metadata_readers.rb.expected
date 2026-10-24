@@ -1,0 +1,10 @@
+[5, "file", true, false, true]
+"directory"
+"file"
+"file"
+"file"
+"custom"
+[:file, NoMethodError, "undefined method 'ftype' for an instance of File"]
+true
+[:typed_file, NoMethodError, "undefined method 'ftype' for an instance of File"]
+[:int, NoMethodError, "undefined method 'ftype' for an instance of Integer"]

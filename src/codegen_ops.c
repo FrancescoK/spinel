@@ -510,7 +510,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
 };
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                              const char *rtext, int t0, int stage, BopArgKind arg_of, Buf *b) {
+                              const char *rtext, int t0, int stage, BopArgKind arg_of, int observe, Buf *b) {
   if (recv < 0) return 0;
   /* a Hash or Array receiver of any variant reads its family's rows */
   TyKind lk = bop_family_of(rt);
@@ -523,27 +523,35 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext, t0 };
   if (!bop_emitters[op->emit](c, &x, b)) return 0;
-  if (g_plan_check) plan_check_observe(c, id, rt, op);
+  if (g_plan_check && observe) plan_check_observe(c, id, rt, op);
   return 1;
 }
 
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, 1, b);
+}
+
+/* A row rendered as one arm of a boxed dispatch: the node answers what the
+   dispatch answers, so the row is not compared with inference's for the
+   node (--plan-check) */
+int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
+                             const char *rtext, Buf *b) {
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, 0, b);
 }
 
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, bop_arg_ntype, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, bop_arg_ntype, 1, b);
 }
 
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, bop_arg_ntype, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, bop_arg_ntype, 1, b);
 }
 
 int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
                           int stage, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, bop_arg_ntype, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, bop_arg_ntype, 1, b);
 }
 
 /* The call emitted through the row of its name that guards no argument kind,
@@ -551,5 +559,5 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
    viewed as an Integer to emit the element branch, and the row of an
    Integer index would state a result the held branch does not take. */
 int emit_builtin_op_unguarded(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, -1, NULL, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, -1, NULL, 1, b);
 }

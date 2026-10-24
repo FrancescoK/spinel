@@ -1906,15 +1906,23 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
        getc a nil-able String (NULL boxes to nil), getbyte an Integer or
        nil (an oint), readline/readchar/readbyte raise EOFError */
     const BuiltinZeroOp *io_op = bop_zero_find(TY_IO, name);
-    /* a stat handle's times (File::Stat#mtime / atime), a Time each */
-    int stat_k = sp_streq(name, "mtime") ? 0 : sp_streq(name, "atime") ? 1 : -1;
-    if (stat_k >= 0 && (ret == TY_POLY || ret == TY_TIME)) {
-      char sx[96];
-      snprintf(sx, sizeof sx, "sp_stat_handle_time((sp_File *)_t%d.v.p, %d)", tv, stat_k);
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { _t%d = ", tv, tv, tr);
-      if (ret == TY_POLY) emit_boxed_text(c, TY_TIME, sx, b);
-      else buf_puts(b, sx);
-      buf_puts(b, "; }\nelse ");
+    /* a stat handle's readers (boxed_stat_reader: mtime, atime, ftype),
+       rendered through their TY_IO rows, which also hold that a File handle
+       has no ftype (sp_stat_extended_recv): the row gives the answer's kind.
+       It is one arm of the dispatch, which records nothing for it, as the
+       hand-written arm before it did not (emit_builtin_op_arm_text) */
+    const BuiltinOp *sop = boxed_stat_reader(name) ? bop_find(TY_IO, name, 0, 0) : NULL;
+    if (sop && (ret == TY_POLY || ret == sop->result)) {
+      Buf sb = {0};
+      char sr[48];
+      snprintf(sr, sizeof sr, "((sp_File *)_t%d.v.p)", tv);
+      if (emit_builtin_op_arm_text(c, id, nt_ref(nt, id, "receiver"), TY_IO, name, sr, &sb)) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { _t%d = ", tv, tv, tr);
+        if (ret == TY_POLY) emit_boxed_text(c, sop->result, sb.p, b);
+        else buf_puts(b, sb.p);
+        buf_puts(b, "; }\nelse ");
+      }
+      free(sb.p);
     }
     /* a bare puts writes the newline and answers nil (#6158) */
     if (sp_streq(name, "puts")) {
