@@ -4554,9 +4554,14 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       if (is_unless) buf_puts(b, ")");
       buf_puts(b, " ? ");
       int hw = g_one_string && res == TY_STRBUF;   /* (#10021: either face into the handle result) */
-      buf_printf(b, hw ? "SP_STR_HDL(%s)" : "%s", ta.p ? ta.p : "0");
+      /* ...and a handle arm into the bytes result as its bytes, which
+         beside a bytes arm (nil's) made the C conditional a void * read
+         through as bytes (`(s ? s : nil) || :done`) */
+      int bw = g_one_string && res == TY_STRING && !res_o;
+      int bwt = bw && repr_of(c, tb[0]).as_ty == TY_STRBUF, bwe = bw && repr_of(c, eb[0]).as_ty == TY_STRBUF;
+      buf_printf(b, hw ? "SP_STR_HDL(%s)" : bwt ? "SP_STR_B(%s)" : "%s", ta.p ? ta.p : "0");
       buf_puts(b, " : ");
-      buf_printf(b, hw ? "SP_STR_HDL(%s)" : "%s", te.p ? te.p : "0");
+      buf_printf(b, hw ? "SP_STR_HDL(%s)" : bwe ? "SP_STR_B(%s)" : "%s", te.p ? te.p : "0");
       buf_puts(b, ")");
     }
     else {
