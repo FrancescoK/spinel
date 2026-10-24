@@ -51149,13 +51149,16 @@ static void an_phase_method_backstops(Compiler *c) {
     }
     free(mholders.scope); free(mholders.name); free(mholders.memo[0]); free(mholders.memo[1]);
   }
+  /* (the names as a set: compared one by one with every reachable scope's
+     name, thousands of `method(:sym)` names against 118,000 scopes on a
+     Rails application were most of this phase) */
+  ANameHash msym_set; memset(&msym_set, 0, sizeof msym_set);
+  for (int i = 0; i < msym_n; i++) if (!anh_has(&msym_set, msym_names[i])) anh_add(&msym_set, msym_names[i]);
   int msym_pinned = 0;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (!sc->reachable || !sc->name) continue;
-    int taken = 0;
-    for (int i = 0; i < msym_n && !taken; i++)
-      if (sp_streq(msym_names[i], sc->name)) taken = 1;
+    int taken = anh_has(&msym_set, sc->name);
     if (taken) {
       /* The bound-Method ABI passes sp_int args, so a param nothing else
          typed is pinned to int rather than left undeclared. The return is
@@ -51208,7 +51211,7 @@ static void an_phase_method_backstops(Compiler *c) {
       if (sc->ret == TY_UNKNOWN) { scope_set_ret(sc, TY_INT); msym_pinned = 1; }
     }
   }
-  free(msym_names);
+  free(msym_names); anh_free(&msym_set);
   /* A pin here is a type change after the fixpoint: what the body computes
      from that parameter -- an ivar it stores, the return it becomes -- and
      every direct caller of the method still carry the types they had before
@@ -51341,7 +51344,10 @@ static void an_phase_method_backstops(Compiler *c) {
       /* a call that can land here: implicit self, a receiver of this class
          or a subclass, or one whose type is poly or never settled */
       int called = 0;
-      for (int id = 0; id < nt->count && !called; id++) {
+      /* (the calls of the name, from the index: this walked every node of
+         the program for each such method, and a Rails application has
+         thousands of them over 2.3 million nodes) */
+      for (int id = an_calls_named_first(c, sc->name); id >= 0 && !called; id = an_calls_named_next(id)) {
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *nm = nt_str(nt, id, "name");
         if (!nm || !sp_streq(nm, sc->name)) continue;
