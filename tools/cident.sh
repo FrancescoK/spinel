@@ -39,6 +39,10 @@ NEW=$ROOT/bin/spinel
 OC=build/optcarrot-single.rb
 list() {
   ls test/*.rb benchmark/*.rb packages/*/test/*.rb 2>/dev/null
+  # the String-sharing programs share-strings-test compiles, which exercise
+  # what the corpus above reaches least (stage 2 of the one representation
+  # takes the share analysis apart under them)
+  find test/share -name '*.rb' 2>/dev/null | LC_ALL=C sort
   [ -f "$OC" ] && echo "$OC"
 }
 
