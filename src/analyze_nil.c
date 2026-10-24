@@ -93,7 +93,8 @@ typedef struct {
   int round;
   int changed;
   int all_ivars_nil;      /* an instance_variable_set the program makes */
-  const char **dyn; int ndyn, cdyn; /* method names a send or a method(:m) reaches */
+  ANameHash dyn;          /* method names a send or a method(:m) reaches: a set,
+                             asked once per method of the program */
 } NF;
 
 /* the (class, name) keys of the slots the side table holds besides an
@@ -1473,8 +1474,10 @@ static int nf_unseen_callers(NF *f, const Scope *m) {
     "method_missing", "respond_to_missing?", "initialize_copy", "inherited", "included", NULL };
   if (!m->name) return 1;
   for (int i = 0; callbacks[i]; i++) if (sp_streq(m->name, callbacks[i])) return 1;
-  for (int i = 0; i < f->ndyn; i++) if (sp_streq(f->dyn[i], m->name)) return 1;
-  return 0;
+  /* (a set: asked for every method of the program, and a Rails application
+     has tens of thousands of such names -- the list search was the whole
+     of a sample inside the value-types phase) */
+  return anh_has(&f->dyn, m->name);
 }
 
 /* The parameters of method mi that call `id` (its arguments av[0..an))
@@ -1866,11 +1869,7 @@ void an_nil_facts(Compiler *c) {
       NodeKind ak = nt_kind(nt, av[i]);
       const char *s = ak == NK_SymbolNode || ak == NK_StringNode ? nt_str(nt, av[i], ak == NK_SymbolNode ? "value" : "content") : NULL;
       if (!s) continue;
-      if (f.ndyn >= f.cdyn) {
-        f.cdyn = f.cdyn ? f.cdyn * 2 : 16;
-        f.dyn = realloc(f.dyn, sizeof *f.dyn * (size_t)f.cdyn);
-      }
-      f.dyn[f.ndyn++] = s;
+      if (!anh_has(&f.dyn, s)) anh_add(&f.dyn, s);
     }
   }
   for (int mi = 0; mi < c->nscopes; mi++) {
@@ -1971,7 +1970,7 @@ void an_nil_facts(Compiler *c) {
   nf_free_lists(c, rets, nrets);
   for (int k = 0; k < f.iv_cap; k++) free((char *)f.iv[k].name);
   free(f.ememo);
-  free(f.par); free(f.dp.pos); free(f.dp.done); free(f.def_mi); free(f.iv); free(f.dyn); free(f.rg);
+  free(f.par); free(f.dp.pos); free(f.dp.done); free(f.def_mi); free(f.iv); anh_free(&f.dyn); free(f.rg);
   free(f.pl_mi); free(f.pl_owner); free(f.pl_disp); free(f.yield_nil); free(f.byname);
   free(f.kid_head); free(f.kid_next); free(f.kid_to); free(f.dfs); free(f.seen); free(f.mod);
 }
