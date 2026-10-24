@@ -1732,7 +1732,9 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
     for (int i = 0; i < pp->n && all; i++) {
       const PolyArm *a = &pp->arm[i];
       if (a->kind == PA_READER) all = a->vty == TY_STRBUF;
-      else if (a->kind == PA_USER) all = a->mi > 0 && scope_ret_handle((Compiler *)c, a->mi);
+      /* (a method whose return is the handle itself, `h[k] = v`'s value,
+         answers it as a reader's arm does) */
+      else if (a->kind == PA_USER) all = a->mi > 0 && (scope_ret_handle((Compiler *)c, a->mi) || a->vty == TY_STRBUF);
       else all = 0;
     }
     if (all) return SPK_POLY_ARMS;

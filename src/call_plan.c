@@ -1935,6 +1935,8 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
         TyKind slotty = is_scalar_ret(ret) ? ret : TY_INT;
         conv = cpoly_conv(ret, cret);
         if (conv == PC_SAME && cret == TY_BIGINT && (slotty == TY_INT || slotty == TY_FLOAT)) conv = PC_NUM;
+        /* a String's handle into a plain String slot is read, as a reader's is */
+        else if (conv == PC_SAME && cret == TY_STRBUF && ret == TY_STRING) conv = PC_COPY;
       }
       cpoly_add(p, &cap, pfi >= 0 ? PA_PROC_FORM : PA_USER, k, mi, cret, conv);
       p->arm[p->n - 1].def = (short)defcls;
@@ -2248,6 +2250,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
     if (!fits) continue;
     TyKind mret = ks->ret;
     int conv = is_setter_val || mret == TY_VOID || mret == TY_NIL || method_is_void(ks) ? PC_VOID
+             : mret == TY_STRBUF && ret == TY_STRING ? PC_COPY
              : cpoly_conv(ret, mret);
     cpoly_add(p, &cap, pfi >= 0 ? PA_PROC_FORM : PA_USER, k, mi, mret, conv);
     p->arm[p->n - 1].def = (short)defcls;

@@ -1154,6 +1154,15 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
     emit_strbuf_handle_of(c, recv, b);
     buf_puts(b, "; ");
   }
+  /* (or a boxed receiver's call whose arms each answer a String's handle,
+     read as the box's handle, as a mutator's receiver is:
+     emit_recv_route_handle) */
+  else if (c->share_plan && share_plan_producer(c, recv, NULL) == SPK_POLY_ARMS) {
+    th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    emit_str_form_handle(c, recv, b);
+    buf_puts(b, "; ");
+  }
   else { free(ref.p); return 0; }
   free(ref.p);
   buf_printf(b, "SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })", th, th, th);

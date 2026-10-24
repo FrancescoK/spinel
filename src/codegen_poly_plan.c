@@ -514,6 +514,13 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else if (ret == TY_POLY && cret9 != TY_POLY) {
         emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b); pconv = PC_BOX;
       }
+      /* a method answering a String's handle (`h["k"] = "v"`'s value)
+         into a plain String slot: read through the handle, as a reader's
+         handle field is below; assigned bare, the C did not build */
+      else if (cret9 == TY_STRBUF && ret == TY_STRING) {
+        str_read_handle(b, call, 1);
+        pconv = PC_COPY;
+      }
       /* The slot is scalar (e.g. a length dispatch fixed to sp_int) but
          this class's method widened its return to poly: coerce down. */
       else if (ret != TY_POLY && cret9 == TY_POLY) {
@@ -1302,7 +1309,8 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
   a->kind = pfi >= 0 ? PA_PROC_FORM : PA_USER; a->mi = mi; a->def = (short)defcls; a->vty = (unsigned char)mret;
   a->conv = U->is_setter_val || mret == TY_VOID || mret == TY_NIL || method_is_void(ks) ? PC_VOID
           : ret == TY_POLY && mret != TY_POLY ? PC_BOX
-          : ret != TY_POLY && mret == TY_POLY ? PC_UNBOX : PC_SAME;
+          : ret != TY_POLY && mret == TY_POLY ? PC_UNBOX
+          : mret == TY_STRBUF && ret == TY_STRING ? PC_COPY : PC_SAME;
   return 1;
 }
 
@@ -1381,6 +1389,11 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
     else if (ret != TY_POLY && mret == TY_POLY) {
       plan_put_boxed(c, so, is_scalar_ret(ret) ? ret : TY_INT, call, b);
       conv = PC_UNBOX;
+    }
+    /* a String's handle into a plain String slot (as the zero-argument arm) */
+    else if (mret == TY_STRBUF && ret == TY_STRING) {
+      str_read_handle(b, call, 1);
+      conv = PC_COPY;
     }
     /* so: the result slot is an sp_oint / sp_ofloat (plan_slot_oint) */
     else if (ms && ms->ret == mret && method_ret_is_oint(ms)) {

@@ -24975,6 +24975,9 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
     /* (an arm that answers no String, nil or an Integer say, has none for
        another name to see, and boxes as the value it is) */
     if (share_scope_answers_no_string(c, ami)) continue;
+    /* (a method whose return is the handle itself, `h[k] = v`'s value,
+       boxes that handle: it publishes as a reader's arm does) */
+    if (c->scopes[ami].ret == TY_STRBUF) { pub = 1; continue; }
     if (c->scopes[ami].ret != TY_STRING ||
         (!scope_ret_handle(c, ami) && !scope_ret_fresh(c, ami) && !scope_ret_frozen_lit(c, ami))) return 0;
     pub |= scope_ret_handle(c, ami);
