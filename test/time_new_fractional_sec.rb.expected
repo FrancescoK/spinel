@@ -14,3 +14,8 @@
 700000000
 899999999
 700000000
+[FloatDomainError, "NaN"]
+[FloatDomainError, "Infinity"]
+[FloatDomainError, "-Infinity"]
+[RangeError, "bignum too big to convert into 'long'"]
+[FloatDomainError, "NaN"]

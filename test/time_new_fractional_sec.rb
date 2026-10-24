@@ -26,3 +26,11 @@ p Time.new(2026, 3, 4, 10, 20, 0.7).nsec
 p Time.new(2026, 3, 4, 10, 20, 0.7r).nsec
 p Time.utc(2026, 3, 4, 10, 20, 59.9).nsec
 p Time.local(2026, 3, 4, 10, 20, 0.7r).nsec
+
+# a seconds field no Integer holds is CRuby's error, not a wrong second
+[Float::NAN, Float::INFINITY, -Float::INFINITY, 1e30].each do |v|
+  Time.new(2026, 3, 4, 10, 20, v)
+rescue FloatDomainError, RangeError => e
+  p [e.class, e.message]
+end
+begin; Time.utc(2026, 3, 4, 10, 20, Float::NAN); rescue FloatDomainError => e; p [e.class, e.message]; end
