@@ -19641,26 +19641,49 @@ static ANameHash g_cst_names;
 static int *g_cst_first, *g_cst_next, g_cst_cap = 0, g_cst_cnt = -1;
 static const NodeTable *g_cst_nt;
 static unsigned g_cst_ver;
-static int cst_first(Compiler *c, const char *name) {
+/* The same nodes chained by (scope, name) as well, where the scope is the
+   one strbuf_container_store_values tests: the write's own, or the
+   receiver read's. The by-name chain carries every store of a local of
+   that name in the program -- thousands for a common name on a Rails
+   application -- and the walks below asked about one scope's local, so
+   each ask read and rejected every other scope's stores: a fifth of the
+   storage phase. A bucket's chain is ascending too, and may mix other
+   (scope, name) pairs, which the walks' own tests reject as before. */
+static int *g_cst_sc_head, *g_cst_sc_next, g_cst_sc_nb;
+static unsigned cst_sc_bucket(int si, const char *name) {
+  return (sp_strhash(name) ^ ((unsigned)si * 2654435761u)) & (unsigned)(g_cst_sc_nb - 1);
+}
+static void cst_ready(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (g_cst_nt != nt || g_cst_ver != nt->version || g_cst_cnt != nt->count) {
     anh_free(&g_cst_names); memset(&g_cst_names, 0, sizeof g_cst_names);
-    free(g_cst_first); free(g_cst_next);
+    free(g_cst_first); free(g_cst_next); free(g_cst_sc_head); free(g_cst_sc_next);
     g_cst_cap = 64;
     g_cst_first = malloc(sizeof(int) * (size_t)g_cst_cap);
     int *last = malloc(sizeof(int) * (size_t)g_cst_cap);
     g_cst_next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
-    if (!g_cst_first || !last || !g_cst_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_cst_sc_nb = 16;
+    while (g_cst_sc_nb < nt->count && g_cst_sc_nb < (1 << 22)) g_cst_sc_nb <<= 1;
+    g_cst_sc_head = malloc(sizeof(int) * (size_t)g_cst_sc_nb);
+    int *sc_last = malloc(sizeof(int) * (size_t)g_cst_sc_nb);
+    g_cst_sc_next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!g_cst_first || !last || !g_cst_next || !g_cst_sc_head || !sc_last || !g_cst_sc_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int b = 0; b < g_cst_sc_nb; b++) g_cst_sc_head[b] = -1;
     for (int w = 0; w < nt->count; w++) {
       NodeKind wk = nt_kind(nt, w);
       const char *nm = NULL;
+      int sn = w;   /* the node whose scope the walks test */
       if (wk == NK_LocalVariableWriteNode) nm = nt_str(nt, w, "name");
       else if (wk == NK_CallNode) {
         int r = nt_ref(nt, w, "receiver");
-        if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) nm = nt_str(nt, r, "name");
+        if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) { nm = nt_str(nt, r, "name"); sn = r; }
       }
       if (!nm) continue;
       g_cst_next[w] = -1;
+      g_cst_sc_next[w] = -1;
+      unsigned b = cst_sc_bucket((int)(comp_scope_of(c, sn) - c->scopes), nm);
+      if (g_cst_sc_head[b] < 0) g_cst_sc_head[b] = w; else g_cst_sc_next[sc_last[b]] = w;
+      sc_last[b] = w;
       int k = anh_find(&g_cst_names, nm);
       if (k < 0) {
         anh_add(&g_cst_names, nm); k = g_cst_names.n - 1;
@@ -19675,17 +19698,28 @@ static int cst_first(Compiler *c, const char *name) {
       else g_cst_next[last[k]] = w;
       last[k] = w;
     }
-    free(last);
+    free(last); free(sc_last);
     g_cst_nt = nt; g_cst_ver = nt->version; g_cst_cnt = nt->count;
   }
+}
+static int cst_first(Compiler *c, const char *name) {
+  cst_ready(c);
   int k = name ? anh_find(&g_cst_names, name) : -1;
   return k >= 0 ? g_cst_first[k] : -1;
 }
+/* the stores that can be local `name` of `scope`'s, ascending, among others
+   of the bucket: cst_first's list for the scope, when the walk has one */
+static int cst_first_sc(Compiler *c, Scope *scope, const char *name) {
+  cst_ready(c);
+  if (!name || !scope) return cst_first(c, name);
+  return g_cst_sc_head[cst_sc_bucket((int)(scope - c->scopes), name)];
+}
+static int cst_next_sc(Scope *scope, int w) { return scope ? g_cst_sc_next[w] : g_cst_next[w]; }
 /* The same indexed stores used by String sharing, for containers that cross
  * the C extension boundary. The caller owns the returned producer list. */
 int *cext_container_stores(Compiler *c, const char *name, Scope *scope, int *count) {
   StoreVals all = {0}, values = {0};
-  for (int w = cst_first(c, name); w >= 0; w = g_cst_next[w]) {
+  for (int w = cst_first_sc(c, scope, name); w >= 0; w = cst_next_sc(scope, w)) {
     strbuf_container_store_values(c, w, name, scope, 1, &values);
     for (int j = 0; j < values.n; j++) store_vals_add(&all, values.v[j]);
   }
@@ -19701,7 +19735,7 @@ static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *c
   /* the indexed nodes in ascending order, then any the walk itself added */
   int n0 = nt->count;
   int *cand = NULL, ncand = 0;
-  for (int w = cst_first(c, contn); w >= 0; w = g_cst_next[w]) {
+  for (int w = cst_first_sc(c, conts, contn); w >= 0; w = cst_next_sc(conts, w)) {
     if (!(ncand & (ncand - 1))) cand = realloc(cand, sizeof(int) * (size_t)(ncand ? ncand * 2 : 1));
     cand[ncand++] = w;
   }
