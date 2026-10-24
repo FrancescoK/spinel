@@ -945,7 +945,7 @@ int emit_ie_non_proc_block(Compiler *c, int id, int recv, int blk, Buf *b) {
   emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "(void)(%s);\n", rb.p ? rb.p : "0");
-  if (sp_streq(nt_str(nt, id, "name"), "instance_exec")) emit_args_off_self(c, av, an, g_pre);
+  emit_args_off_self(c, av, an, g_pre);
   emit_expr(c, fe, &fb);
   emit_indent(g_pre, g_indent);
   if (ft == TY_BOOL) {

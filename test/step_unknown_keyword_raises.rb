@@ -18,6 +18,7 @@ t(:step_pos) { 2.step(5, zap: 1) }
 t(:step_order) { (log << :r; 2).step(by: (log << :b; 1), foo: (log << :f; 1)) }
 p log
 t(:step_float) { 1.5.step(foo: 1) }
+t(:step_other_class) { StepElsewhere.new.step(count: 1, mode: 2) }
 t(:step_ok) { 2.step(to: 6, by: 2).to_a }
 x = [nil, 1][0]
 t(:safe_nil) { x&.step(foo: 1) }
