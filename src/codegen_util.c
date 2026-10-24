@@ -763,7 +763,7 @@ int subtree_has_side_effect(Compiler *c, int id) {
     return 1;
   /* a bare Array.new / Hash.new is as empty and as unobservable as the
      literal `[]` / `{}`, which is no effect */
-  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id) && !node_is_empty_container(nt, id)) return 1;
+  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id) && !node_is_empty_container(c, id)) return 1;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
     if (subtree_has_side_effect(c, nt_ref_at(nt, id, i))) return 1;
@@ -6505,12 +6505,13 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
   static char buf[128];
   const char *stem = c->classes[class_id].c_name;
   /* The runtime owns dozens of sp_Range_* / sp_Time_* / sp_File_* /
-     sp_Class_* functions and grows more; rather than track the names, a
+     sp_Class_* / sp_Enumerator_* functions and grows more; rather than track the names, a
      reopen of these takes the `_oc` stem for every method. */
   {
     const char *rn = c->classes[class_id].name;
     if (rn && (is_range_or_time_class(rn) ||
-               io_family_class(c, class_id) || sp_streq(rn, "Class"))) {
+               io_family_class(c, class_id) || sp_streq(rn, "Class") ||
+               sp_streq(rn, "Enumerator"))) {
       snprintf(buf, sizeof buf, "%s_oc", stem);
       return buf;
     }

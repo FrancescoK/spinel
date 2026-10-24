@@ -2757,7 +2757,7 @@ int emit_call_untyped_array_arms(Compiler *c, Buf *b, const NodeTable *nt, const
   if (recv >= 0 && (rt == TY_UNKNOWN || ty_is_array(rt))) {
     /* an argument-less `Array.new` is the same empty array, and carries the
        same unknown element type (#3613) */
-    int empty_recv = node_is_empty_container(nt, recv) && an_empty_container_kind(c, recv) == 1;
+    int empty_recv = node_is_empty_container(c, recv) && an_empty_container_kind(c, recv) == 1;
     /* a receiver typed for its use answers only what no type changes */
     int typed = rt != TY_UNKNOWN;
     {

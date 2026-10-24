@@ -2297,6 +2297,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
+    /* a method the program defines on Enumerator answers first */
+    if (emit_call_reopen_arms(c, id, b, nt, name, recv, TY_ENUMERATOR)) return 1;
     /* the readers that render the receiver and the arguments: builtin-op rows */
     if (emit_builtin_op(c, id, recv, TY_ENUMERATOR, name, b)) return 1;
     /* find_index(v) walks it only as far as the hit, so an endless one

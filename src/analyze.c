@@ -7870,6 +7870,21 @@ static int ecw_helper_spliced(const NodeTable *nt, const char *nm) {
     if (nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
   return 0;
 }
+/* Does the program define a method of its own named for the String walk
+   `rn` (each_char, each_line, each_byte, each_codepoint) or for the reader
+   the rewrite puts in its place (chars, lines, bytes, codepoints)? Then the
+   receiver may be the program's own object, or a reopened String, which
+   answers its own method: the call stays as written. The pass runs before
+   the methods are registered, so it reads the definitions. */
+static int walk_rewrite_shadowed(Compiler *c, const char *rn) {
+  const char *rd = sp_streq(rn, "each_char") ? "chars" : sp_streq(rn, "each_line") ? "lines" :
+                   sp_streq(rn, "each_byte") ? "bytes" : "codepoints";
+  NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
+    const char *dn = nt_str(c->nt, d, "name");
+    if (dn && (sp_streq(dn, rn) || sp_streq(dn, rd))) return 1;
+  }
+  return 0;
+}
 static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   /* (the parent map, made at the first such call of the pass) */
@@ -8301,7 +8316,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     if (sp_streq(nm, "with_index") && nt_ref(nt, recv, "arguments") < 0 &&
         (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte") ||
          sp_streq(rn, "each_codepoint")) &&
-        !(enum_chain_kept(nt, &kept_par, id))) {
+        !(enum_chain_kept(nt, &kept_par, id)) &&
+        !walk_rewrite_shadowed(c, rn)) {
       /* a block that breaks: the walk's helper answers the String, or the
          break's value through the call's own break wrapper -- the
          (walk; s) form below lets its tail take the break's place */
@@ -8372,6 +8388,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        their own machinery. */
     else if (nt_ref(nt, id, "block") >= 0 && nt_ref(nt, recv, "arguments") < 0 &&
              (sp_streq(rn, "each_char") || sp_streq(rn, "each_line")) &&
+             !walk_rewrite_shadowed(c, rn) &&
              (sp_streq(nm, "map") || sp_streq(nm, "collect") || sp_streq(nm, "select") ||
               sp_streq(nm, "filter") || sp_streq(nm, "reject") || sp_streq(nm, "flat_map") ||
               sp_streq(nm, "collect_concat") || sp_streq(nm, "filter_map") ||
@@ -11125,6 +11142,11 @@ int desugar_enum_method_recv(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
+    /* a method the program defines on Enumerator answers the call itself:
+       the hops below would hand it to the element array's builtin */
+    { int r0 = nt_ref(nt, id, "receiver");
+      if (nm && r0 >= 0 && infer_type(c, r0) == TY_ENUMERATOR &&
+          cplan_user_fresh(c, id)->mi >= 0) continue; }
     if (desugar_enum_named_call(c, id, nt, nm, &changed)) continue;
     if (!nm || !is_array_enum_method(nm)) continue;
     /* the name the call was written with, where the pre-pass renamed it
@@ -15830,7 +15852,7 @@ static int is_empty_array_literal(const NodeTable *nt, int id, int cap) {
    operand in parentheses is the node inside them: that is what the marking
    (empty_arr_recv, arr_want) and the inference of it read. */
 static int empty_array_operand(Compiler *c, int id) {
-  if (id < 0 || id >= c->node_cap || !node_is_empty_container(c->nt, id) || an_empty_container_kind(c, id) != 1)
+  if (id < 0 || id >= c->node_cap || !node_is_empty_container(c, id) || an_empty_container_kind(c, id) != 1)
     return -1;
   return nt_paren_single(c->nt, id);
 }

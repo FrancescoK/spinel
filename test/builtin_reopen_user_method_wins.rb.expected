@@ -1,0 +1,36 @@
+:enum_sum
+:enum_sum
+:enum_sum
+3
+:mine
+[1, 2]
+:enum_size
+:enum_next
+:enum_size
+:enum_map
+:enum_map
+1
+false
+1
+1
+"hey"
+:mine2
+:mine2
+:enum_take_while
+:enum_find
+:enum_find_index
+:enum_include
+:enum_inject
+:enum_tally
+:enum_tally
+2
+true
+2
+[1, 2]
+:array_find
+:array_flat_map
+:enum_size
+[:enum_next, 1]
+:enum_map
+Enumerator
+:enum_map

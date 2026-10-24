@@ -3545,8 +3545,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
       const char *ecn = c->classes[g_emitting_class_id].name;
-      /* an IO reopening's self is the sp_File handle, typed so */
-      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass") && !io_family_class(c, g_emitting_class_id))
+      /* an IO reopening's self is the sp_File handle, an Enumerator's the sp_Enumerator */
+      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass") && !io_family_class(c, g_emitting_class_id) && !sp_streq(ecn, "Enumerator"))
         rt = TY_POLY;
     }
     /* MatchData is nullable (nil on no-match): .class checks at run time so a
@@ -5101,6 +5101,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     case TY_TIME:   oc_cn = "Time"; break;
     case TY_THREAD: oc_cn = "Thread"; break;
     case TY_FIBER:  oc_cn = "Fiber"; break;
+    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
     case TY_IO:     oc_cn = "File"; break;
     case TY_CLASS:  oc_cn = "Class"; break;
     default: break;
@@ -5116,7 +5117,10 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
               emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           size_t at = b->len;
-          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
+          /* the method's own name: an alias's call names the method it
+             resolved to */
+          const char *mn = c->scopes[oc_mi].name;
+          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, mn), mc(mn));
           int open = emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, at, b);
           /* a method taking `&block` takes the call's block, or NULL (#7200) */
           emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);

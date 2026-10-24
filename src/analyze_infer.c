@@ -1323,7 +1323,7 @@ int an_node_dropped(Compiler *c, int n) {
    are read as sp_IntArray without a test. A row whose type is merely not
    settled yet stays open. */
 static int an_row_open_empty(Compiler *c, int row) {
-  return comp_ntype(c, row) == TY_UNKNOWN && node_is_empty_container(c->nt, row);
+  return comp_ntype(c, row) == TY_UNKNOWN && node_is_empty_container(c, row);
 }
 
 static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
@@ -6436,6 +6436,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     case TY_TIME:   oc_cn = "Time"; break;
     case TY_THREAD: oc_cn = "Thread"; break;
     case TY_FIBER:  oc_cn = "Fiber"; break;
+    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
     case TY_RANDOM: oc_cn = "Random"; break;
     case TY_IO:     oc_cn = "File"; break;
     case TY_CLASS:  oc_cn = "Class"; break;
@@ -8259,7 +8260,7 @@ static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *n
    builtin_only. A rewrite that turns the call into another builtin's asks
    it first. */
 int an_reopen_owner(Compiler *c, int id, const char *cn) {
-  const char *name = nt_str(c->nt, id, "name");
+  const char *name = nt_str(c->nt, id, "orig_name") ? nt_str(c->nt, id, "orig_name") : nt_str(c->nt, id, "name");
   if (!name || nt_int(c->nt, id, "builtin_only", 0)) return -1;
   int mi = reopen_owner_of(c, id, cn, name);
   /* (a Symbol or Range one; an Array or Hash one keeps the answer the
@@ -8702,6 +8703,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if ((bonly || nt_int(nt, id, "builtin_only", 0)) && recv >= 0 && is_copy_alias(name)) {
     TyKind crt = infer_type(c, recv);
     if (ty_is_object(crt)) return crt;
+  }
+
+  /* a method the program defines on Enumerator answers an Enumerator's call
+     (by the name an alias resolved to above) ahead
+     of the builtin arms below, as the emitter calls it */
+  if (recv >= 0 && infer_type(c, recv) == TY_ENUMERATOR && !bonly && !nt_int(nt, id, "builtin_only", 0)) {
+    const CallPlan *p = cplan_user(c, id);
+    if (p->mi >= 0 && p->via == UC_REOPEN) return an_user_call(c, id, p->mi, p->via, p->owner_ci);
   }
 
   TyKind accessor_ret;
@@ -9809,7 +9818,7 @@ int an_or_empty_hash_fallback(Compiler *c, int node) {
   case VP1_NIL: return -1;
   case VP1_MANY: return -1;
   }
-  if (nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
+  if (nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(c, r)) return -1;
   if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
   TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
   return (lt == TY_NIL || lt == TY_UNKNOWN) ? r : -1;
@@ -10267,6 +10276,9 @@ TyKind infer_builtin_self(Compiler *c, int self_cls) {
   /* a Numeric reopen is called on any number -- an Integer, a Float --
      and takes self boxed, the arithmetic on it dispatching on the value */
   if (sp_streq(cn, "Numeric")) return TY_POLY;
+  /* an Enumerator reopen's method is called on the runtime's Enumerator,
+     and the C function takes it so (mc_reopen_cls) */
+  if (sp_streq(cn, "Enumerator")) return TY_ENUMERATOR;
   TyKind bk = builtin_value_kind(cn);
   /* (File, IO and the sockets only at the top level: `M::File` is the
      program's own class) */
@@ -10587,7 +10599,7 @@ static TyKind infer_array_literal(Compiler *c, int id) {
         const char *ety = nt_type(nt, els[k]);
         if ((ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
                      sp_streq(ety, "KeywordHashNode"))) ||
-            node_is_empty_container(nt, els[k]))
+            node_is_empty_container(c, els[k]))
           et = TY_POLY;
       }
       /* a nil element keeps the literal a boxed container, as it always was:
@@ -11496,7 +11508,7 @@ TyKind infer_uncached(Compiler *c, int id) {
        It carries a value, so the two arms are a union: poly. */
     if (r == TY_UNKNOWN && vsrc >= 0) {
       int bn2 = 0; const int *bs2 = nt_arr(nt, vsrc, "body", &bn2);
-      if (bs2 && bn2 > 0 && node_is_empty_container(nt, bs2[bn2 - 1])) r = TY_POLY;
+      if (bs2 && bn2 > 0 && node_is_empty_container(c, bs2[bn2 - 1])) r = TY_POLY;
     }
     /* A body that carries a value of a type not settled yet is not the same as
        a body that carries none: taking the handler's type alone made the whole
@@ -11530,7 +11542,7 @@ TyKind infer_uncached(Compiler *c, int id) {
       /* the same on the handler side: an empty container arm carries a value */
       if (at == TY_UNKNOWN && st >= 0) {
         int an2 = 0; const int *as2 = nt_arr(nt, st, "body", &an2);
-        if (as2 && an2 > 0 && node_is_empty_container(nt, as2[an2 - 1])) at = TY_POLY;
+        if (as2 && an2 > 0 && node_is_empty_container(c, as2[an2 - 1])) at = TY_POLY;
       }
       if (at == TY_UNKNOWN || at == TY_VOID) continue;  /* this arm diverges too */
       r = have ? ty_unify(r, at) : at;
@@ -11577,7 +11589,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (et == TY_VOID || et == TY_NIL) return rt;
     if (et == TY_UNKNOWN) {
       /* an empty container carries a value; the union of the two arms is poly */
-      if (node_is_empty_container(nt, e)) return TY_POLY;
+      if (node_is_empty_container(c, e)) return TY_POLY;
       /* a KNOWN diverging form never produces a try value however the
          fixpoint settles: keep the rescue arm's type for it */
       const char *ety = e >= 0 ? nt_type(nt, e) : NULL;

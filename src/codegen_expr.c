@@ -1067,7 +1067,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
    arm is its oint form, a nil arm its nil */
 static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (node_is_empty_container(nt, nd)) nd = nt_paren_single(c->nt, nd);   /* `([])` is `[]` */
+  if (node_is_empty_container(c, nd)) nd = nt_paren_single(c->nt, nd);   /* `([])` is `[]` */
   const char *bty = nt_type(nt, nd);
   if (res_o && oint_kind(res)) { emit_oint_expr(c, nd, res, b); return; }
   if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
@@ -2243,7 +2243,7 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int res_o, int 
    A tail with no value is run for its effect alone. */
 static void emit_if_arm_tail(Compiler *c, int last, TyKind res, int res_o, int tr) {
   TyKind lt = repr_of(c, last).as_ty;
-  if (lt == TY_UNKNOWN && node_is_empty_container(c->nt, last)) {
+  if (lt == TY_UNKNOWN && node_is_empty_container(c, last)) {
     Buf le; memset(&le, 0, sizeof le);
     emit_ternary_arm(c, last, res, &le);
     emit_indent(g_pre, g_indent + 2);
@@ -4499,7 +4499,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          the result's array kind as the unfolded pair gives it: emitted raw
          it was the default Integer array, stored into a poly array slot */
       int fempty = 0;
-      if (ln == 1 && ty_is_array(fres) && node_is_empty_container(nt, lb[0]))
+      if (ln == 1 && ty_is_array(fres) && node_is_empty_container(c, lb[0]))
         fempty = an_empty_container_kind(c, lb[0]) == 1;
       if (ln == 1) {
         if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
@@ -5022,7 +5022,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     case VP1_MANY: break;
     }
     int e_diverges = (er.untyped || et == TY_VOID || (et == TY_NIL && rt != TY_POLY && e_yields)) &&
-                     !node_is_empty_container(nt, e);
+                     !node_is_empty_container(c, e);
     /* --share-strings: under a handle demand (strbuf_route_begin) the
        result slot is the handle, and each value is taken as one */
     int hdem = rt == TY_STRBUF && repr_of(c, id).demand;
@@ -5124,7 +5124,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       /* an empty `[]` or `{}` has no element type of its own and takes
          the other arm's, as a ternary arm does; emitted bare it is an
          IntArray in a StrArray slot (`s.split(".") rescue []`) */
-      else if (node_is_empty_container(nt, r) && (ty_is_array(rt) || ty_is_hash(rt)))
+      else if (node_is_empty_container(c, r) && (ty_is_array(rt) || ty_is_hash(rt)))
         emit_ternary_arm_o(c, r, rt, res_o, &rv);
       else emit_expr_slot(c, r, rt, &rv);
       g_rescue_save_depth--;

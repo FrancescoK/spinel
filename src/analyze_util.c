@@ -1,6 +1,7 @@
 #include "analyze_internal.h"
 #include "builtin_names.h"
 #include "share.h"
+#include "call_plan.h"
 #include <errno.h>
 #include <limits.h>
 
@@ -845,8 +846,11 @@ int str_in(const char *s, const char *const *set) {
    whether to keep its result. In a `rescue` that meant the array was built
    and thrown away (`x = ([] rescue 0)` assigned nil), and in a begin/rescue
    the value unified to the handler's Integer and the array pointer went into
-   an sp_int slot (#3495, #3496). */
-int node_is_empty_container(const NodeTable *nt, int node) {
+   an sp_int slot (#3495, #3496). An `Array.new` or `Hash.new` the program
+   answers with its own class method is that method's value, not an empty
+   container. */
+int node_is_empty_container(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
   node = nt_paren_single(nt, node);   /* `([])` is as empty as `[]` */
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -864,7 +868,7 @@ int node_is_empty_container(const NodeTable *nt, int node) {
   if (!rn || (!sp_streq(rn, "Array") && !sp_streq(rn, "Hash"))) return 0;
   int ca = nt_ref(nt, node, "arguments");
   int argc = 0; if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
-  return argc == 0;
+  return argc == 0 && !cplan_const_user(c, node, rn, 1);
 }
 
 int is_arith_op(const char *op) {

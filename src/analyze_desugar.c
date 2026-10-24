@@ -12736,10 +12736,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
         (sp_streq(name, "find") || sp_streq(name, "detect") ||
          sp_streq(name, "any?") || sp_streq(name, "all?") ||
          sp_streq(name, "none?") || sp_streq(name, "one?"))) continue;
-    /* an Array, Hash or Range reopen's own method of the name is the call's
-       target, as the call plan takes it (for an Integer Range: a Float or
-       String one has no route to the reopen yet) */
-    const char *reopen_cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" : NULL;
+    /* an Array, Hash, Range or Enumerator reopen's own method of the name is
+       the call's target, as the call plan takes it (for an Integer Range: a
+       Float or String one has no route to the reopen yet) */
+    const char *reopen_cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" :
+                            rt == TY_ENUMERATOR ? "Enumerator" : NULL;
     if (reopen_cn && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
     if (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
         rt == TY_STR_RANGE || (rt == TY_ENUMERATOR && !lazy_driven)) ok = 1;
@@ -19379,7 +19380,7 @@ int object_public_method_name(const char *n) {
 
 static int rbself_builtin(const char *cn) {
   static const char *const B[] = { "String", "Integer", "Float", "Symbol", "TrueClass",
-    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", "Random", NULL };
+    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", "Random", "Enumerator", NULL };
   return str_in(cn, B);
 }
 

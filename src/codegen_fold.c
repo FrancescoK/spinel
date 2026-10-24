@@ -6421,6 +6421,9 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   else if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || comp_ntype(c, recv) != TY_ENUMERATOR) return 0;
+  /* the program's own Enumerator method of the name is the call's target */
+  { const CallPlan *up = cplan_user(c, id);
+    if (up->mi >= 0 && up->via == UC_REOPEN) return 0; }
   /* find(ifnone) { }: the proc answers when nothing matched, exactly as the
      array form serves it. Any other argument stays a loud reject. (#3814) */
   int f_ifnone = !inc && !take && iargc == 1 && iargv &&
@@ -13532,7 +13535,7 @@ else {
       buf_printf(b, vptr ? "sp_%s_%s((*%s)" : "sp_%s_%s(%s", c->classes[defcls].c_name, mc(mname), selfptr);
     }
     else
-      buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
+      buf_printf(b, "sp_%s_%s((sp_%s *)%s", mc_reopen_cls(c, defcls, mname), mc(mname), c->classes[defcls].c_name, selfptr);
     for (int k = 0; k < np; k++) {
       /* a temp the call ran first keeps its own form: the parameter's */
       if (m && atmp_o[k] && atmp_ty[k] != TY_POLY) emit_arm_arg(c, m, k, atmp[k], atmp_ty[k], 1, b);
@@ -13596,7 +13599,7 @@ else {
   {
     Buf _dc; memset(&_dc, 0, sizeof _dc);
     buf_printf(&_dc, "sp_%s_%s((sp_%s *)%s",
-               c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
+               mc_reopen_cls(c, defcls, mname), mc(mname), c->classes[defcls].c_name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(&_dc, ", _t%d", atmp[a]);
     buf_puts(&_dc, ")");
     buf_puts(b, " default: { ");

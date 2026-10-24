@@ -222,7 +222,7 @@ int an_local_writes_named_next(int id);
    leads to it. Each still has to be resolved; the list only narrows. */
 int *an_scope_call_candidates(Compiler *c, Scope *m, int *n);
 int is_arith_op(const char *op);
-int node_is_empty_container(const NodeTable *nt, int node);
+int node_is_empty_container(Compiler *c, int node);
 int bind_coerce_operator_params(Compiler *c);
 int is_cmp_op(const char *op);
 int is_numeric_coerce_op(const char *op);
