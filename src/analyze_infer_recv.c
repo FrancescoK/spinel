@@ -588,6 +588,11 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = TY_POLY_POLY_HASH; return 1; }
     if (sp_streq(name, "merge") && argc == 1) {
       TyKind at = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+      if (ty_is_object(at)) {
+        int hmi = comp_method_in_chain(c, ty_object_class(at), "to_hash", NULL);
+        if (hmi >= 0 && ty_is_hash((TyKind)c->scopes[hmi].ret) && (TyKind)c->scopes[hmi].ret != rt)
+          { *out = TY_POLY_POLY_HASH; return 1; }
+      }
       /* a conflict block whose value the receiver's variant cannot hold
          builds the general boxed hash, as a boxed receiver's does */
       if (ty_hash_val(rt) != TY_POLY) {
