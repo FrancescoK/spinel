@@ -20,3 +20,12 @@ def j.to_hash
   {a: 1}
 end
 p({a: 2}.merge(j))
+
+m = Foo.new
+def m.to_hash
+  {a: 1, b: 2}
+end
+p({a: 0, b: 0, c: 3}.merge(m) { |key, old, new| old + new })
+pr = ->(key, old, new) { old + new }
+p({a: 0, b: 0, c: 3}.merge(m, &pr))
+p({str: 1, sym: 0}.merge(Bar.new) { |key, old, new| old + new })

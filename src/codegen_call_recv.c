@@ -6153,6 +6153,22 @@ static void emit_blk_value_as_o(Compiler *c, int blk, TyKind vt, Buf *b) {
   buf_puts(b, "; })");
 }
 
+static void emit_merge_arg_boxed(Compiler *c, int arg, Buf *b) {
+  TyKind at = infer_type(c, arg);
+  if (!ty_is_hash(at) && at != TY_POLY && at != TY_UNKNOWN) {
+    int mdef = -1;
+    TyKind mk = obj_container_conv(c, at, "to_hash", &mdef);
+    if (mk != TY_UNKNOWN) {
+      Buf cb = {0, 0, 0};
+      emit_obj_container_conv(c, arg, mdef, "to_hash", &cb);
+      emit_boxed_text(c, mk, cb.p ? cb.p : "NULL", b);
+      free(cb.p);
+      return;
+    }
+  }
+  emit_boxed(c, arg, b);
+}
+
 /* Hash#merge(other) { |key, old, new| } built as the general boxed hash:
    walk the other hash's pairs into a boxed copy of the receiver, consulting
    the block on a collision. Answers 0 for an empty block. */
@@ -6178,7 +6194,7 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, int mb
     for (int j = 0; j < mbn; j++) infer_subtree(c, mbb[j]);
     int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
     buf_puts(b, "({ "); ta = hold_operand(c, recv, TY_POLY, 1, ta, 1, " ", b);
-    buf_printf(b, "sp_RbVal _t%d = ", tb); emit_boxed(c, arg, b);
+    buf_printf(b, "sp_RbVal _t%d = ", tb); emit_merge_arg_boxed(c, arg, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tb);
     buf_printf(b, " sp_PolyPolyHash *_t%d = sp_poly_hash_merge(_t%d, sp_box_nil()); SP_GC_ROOT(_t%d);",
                tr, ta, tr);
@@ -6253,14 +6269,14 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
       else if (g_yield_proc_ref) buf_puts(&pb, g_yield_proc_ref);
       if (!pb.p || sp_streq(pb.p, "NULL")) {
         buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
-        buf_puts(b, ", "); emit_boxed(c, arg, b); buf_puts(b, ")");
+        buf_puts(b, ", "); emit_merge_arg_boxed(c, arg, b); buf_puts(b, ")");
         free(pb.p);
         return 1;
       }
       /* a copy of the receiver, merged through the proc */
       int th = ++g_tmp, to = ++g_tmp, tp = ++g_tmp;
       buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_poly_hash_merge(", th); emit_boxed(c, recv, b);
-      buf_printf(b, ", sp_box_nil()); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, arg, b);
+      buf_printf(b, ", sp_box_nil()); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_merge_arg_boxed(c, arg, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); ", to, tp, pb.p, tp);
       buf_printf(b, "sp_poly_hash_merge_blk(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_POLY_POLY_HASH), _t%d, _t%d, \"merge\"); _t%d; })",
                  th, to, tp, th);
