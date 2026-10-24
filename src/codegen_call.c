@@ -29800,11 +29800,10 @@ void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv,
     else if (sym && sp_streq(sym, "read_write")) ev = 3;
   }
   int boxed = !sp_streq(name, "wait_writable");
-  buf_printf(b, "%s(%s, ", boxed ? "sp_io_wait_timeout_value" : "sp_io_wait_timeout", r);
+  buf_printf(b, "%s(%s, ", boxed ? "sp_io_wait_timeout_value" : "sp_io_wait_writable_timeout", r);
   if (argc >= 1) emit_boxed(c, argv[0], b);
   else buf_puts(b, "sp_box_nil()");
-  buf_printf(b, ", %d", ev);
-  if (boxed) buf_printf(b, ", %d", sp_streq(name, "wait") && argc > 0);
+  if (boxed) buf_printf(b, ", %d, %d", ev, sp_streq(name, "wait") && argc > 0);
   buf_puts(b, ")");
 }
 

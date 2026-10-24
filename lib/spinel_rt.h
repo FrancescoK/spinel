@@ -15724,6 +15724,15 @@ static sp_File *sp_io_wait_timeout(sp_File *f, sp_RbVal value, sp_int kind) {
   double seconds = value.tag == SP_TAG_NIL ? sp_io_timeout_seconds(f) : sp_io_wait_interval(value);
   return sp_io_wait_events(f, seconds, kind);
 }
+/* IO#wait_writable needs a handle opened for writing: a read-only one is
+   IOError "not opened for writing" before the timeout is read, as in CRuby,
+   though a regular file's descriptor polls ready. IO#wait(t, :write) polls
+   the descriptor alone, as CRuby's does, so the check is here and not in
+   sp_io_wait_timeout. */
+static sp_File *sp_io_wait_writable_timeout(sp_File *f, sp_RbVal value) {
+  sp_io_check_writable(f);
+  return sp_io_wait_timeout(f, value, 1);
+}
 static sp_RbVal sp_io_wait_timeout_value(sp_File *f, sp_RbVal value, sp_int kind, sp_bool explicit_wait) {
   SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(value);
   double seconds = explicit_wait ? sp_io_wait_interval(value) : -1.0;
