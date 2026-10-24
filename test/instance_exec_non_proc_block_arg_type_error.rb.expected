@@ -13,3 +13,5 @@
 [TypeError, "no implicit conversion of TrueClass into Proc"]
 [TypeError, "no implicit conversion of TrueClass into Proc"]
 [:recv, :arg, :blk]
+[TypeError, "no implicit conversion of TrueClass into Proc"]
+[:recv, :arg, :blk]
