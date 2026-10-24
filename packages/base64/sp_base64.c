@@ -62,7 +62,9 @@ static const char *b64_enc(const char *src, size_t n, const char *alpha, int wra
 
 /* A byte's value in an alphabet, XX for every byte outside it (whitespace and
    `=` included): one load per byte in place of a chain of range tests. The
-   two alphabets differ only in their last two chars. */
+   urlsafe table takes `+` and `/` beside `-` and `_`, as CRuby's
+   urlsafe_decode64 does: it turns `-_` into `+/` and decodes the standard
+   alphabet. */
 enum { XX = 0xFF };
 static const unsigned char B64_DEC_STD[256] = {
   XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
@@ -85,7 +87,7 @@ static const unsigned char B64_DEC_STD[256] = {
 static const unsigned char B64_DEC_URL[256] = {
   XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
   XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
-  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, 62, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, 62, XX, 62, XX, 63,
   52, 53, 54, 55, 56, 57, 58, 59, 60, 61, XX, XX, XX, XX, XX, XX,
   XX,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
   15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, XX, XX, XX, XX, 63,
@@ -102,8 +104,7 @@ static const unsigned char B64_DEC_URL[256] = {
 };
 
 /* decode, skipping whitespace, `=` and any byte outside the alphabet, as
-   CRuby's decode64 does; the standard and urlsafe entry points each pass
-   their own alphabet's table. */
+   CRuby's decode64 does. */
 static const char *b64_dec(const char *src, size_t n, const unsigned char *tbl) {SP_GC_ROOT_STR(src);
   char *r = sp_str_alloc_raw(n / 4 * 3 + 4);
   size_t o = 0;
@@ -125,14 +126,18 @@ static const char *b64_dec(const char *src, size_t n, const unsigned char *tbl) 
 /* Strict decode (CRuby's `unpack1("m0")`): the input length must be a multiple
    of 4, every byte must be an alphabet char or valid trailing `=` padding, and
    any stray byte (whitespace, newline, out-of-alphabet) raises ArgumentError --
-   unlike b64_dec, which silently skips them. */
-static const char *b64_dec_strict(const char *src, size_t n, const unsigned char *tbl) {SP_GC_ROOT_STR(src);
+   unlike b64_dec, which silently skips them. `pad` more `=` are read after the
+   `n` bytes, for urlsafe_decode64's unpadded input, without copying it. */
+static const char *b64_dec_strict(const char *src, size_t n, size_t pad, const unsigned char *tbl) {SP_GC_ROOT_STR(src);
+  size_t len = n;
+  n += pad;
   if (n % 4 != 0) sp_raise_cls("ArgumentError", "invalid base64");
   char *r = sp_str_alloc_raw(n / 4 * 3 + 4);
   size_t o = 0, i = 0;
   const unsigned char *u = (const unsigned char *)src;
   /* every block but the last: four alphabet chars, as `=` is padding only
-     at the end; an XX in any of them sets the high bit of their union */
+     at the end; an XX in any of them sets the high bit of their union (the
+     read `=` are all in the last block) */
   for (; i + 4 < n; i += 4) {
     unsigned a = tbl[u[i]], b = tbl[u[i + 1]], c = tbl[u[i + 2]], d = tbl[u[i + 3]];
     if ((a | b | c | d) & 0x80) sp_raise_cls("ArgumentError", "invalid base64");
@@ -145,7 +150,7 @@ static const char *b64_dec_strict(const char *src, size_t n, const unsigned char
   for (; i < n; i += 4) {
     unsigned q[4]; int npad = 0;
     for (int k = 0; k < 4; k++) {
-      char c = src[i + k];
+      char c = i + k < len ? src[i + k] : '=';
       if (c == '=') {
         /* `=` is legal only as trailing padding of the final block (position
            2 with a following `=`, or position 3). */
@@ -159,6 +164,10 @@ static const char *b64_dec_strict(const char *src, size_t n, const unsigned char
         q[k] = v;
       }
     }
+    /* the bits padding drops must be zero, as CRuby's m0 has them: "8V=="
+       carries a 1 past its one byte */
+    if ((npad == 2 && (q[1] & 0xF)) || (npad == 1 && (q[2] & 0x3)))
+      sp_raise_cls("ArgumentError", "invalid base64");
     unsigned acc = (q[0] << 18) | (q[1] << 12) | (q[2] << 6) | q[3];
     r[o++] = (char)(acc >> 16);
     if (npad < 2) r[o++] = (char)(acc >> 8);
@@ -173,5 +182,11 @@ const char *sp_base64_encode64(const char *s)        { return b64_enc(s, sp_str_
 const char *sp_base64_strict_encode64(const char *s) { return b64_enc(s, sp_str_byte_len(s), B64_STD, 0); }
 const char *sp_base64_urlsafe_encode64(const char *s){ return b64_enc(s, sp_str_byte_len(s), B64_URL, 0); }
 const char *sp_base64_decode64(const char *s)        { return b64_dec(s, sp_str_byte_len(s), B64_DEC_STD); }
-const char *sp_base64_strict_decode64(const char *s) { return b64_dec_strict(s, sp_str_byte_len(s), B64_DEC_STD); }
-const char *sp_base64_urlsafe_decode64(const char *s){ return b64_dec(s, sp_str_byte_len(s), B64_DEC_URL); }
+const char *sp_base64_strict_decode64(const char *s) { return b64_dec_strict(s, sp_str_byte_len(s), 0, B64_DEC_STD); }
+/* CRuby's urlsafe_decode64: input that does not end in `=` is padded to a
+   multiple of 4, and the result decoded strictly, `-_` read as `+/` */
+const char *sp_base64_urlsafe_decode64(const char *s) {
+  size_t n = sp_str_byte_len(s);
+  size_t pad = n % 4 != 0 && s[n - 1] != '=' ? 4 - n % 4 : 0;
+  return b64_dec_strict(s, n, pad, B64_DEC_URL);
+}
