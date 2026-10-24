@@ -363,7 +363,7 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver"), argc = 0;
   const int *argv = call_args(nt, id, &argc);
-  int shared = repr_share_rule(c), held[3], tr = ++g_tmp;
+  int shared = 1, held[3], tr = ++g_tmp;
   int tf = ++g_tmp, tn = ++g_tmp, te = ++g_tmp, ts = ++g_tmp, tb = ++g_tmp, eof = ++g_tmp;
   buf_puts(b, "({ ");
   Buf *saved_pre = g_pre;
@@ -465,8 +465,7 @@ static const char *io_pread_entry(int argc) {
 
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b) {
   if (!io_read_nonblock_outbuf(c, id)) return 0;
-  if (repr_share_rule(c)) emit_io_read_nonblock_buffer(c, id, 0, b);
-  else emit_io_read_nonblock_value(c, id, b);
+  emit_io_read_nonblock_buffer(c, id, 0, b);
   return 1;
 }
 
@@ -475,7 +474,7 @@ int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b) {
    that identity. The seal and the emitter ask this same predicate. */
 int strbuf_io_outbuf(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || id < 0 || nt_kind(nt, id) != NK_CallNode) return -1;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return -1;
   const char *name = nt_str(nt, id, "name");
   int sh = bop_share_named(TY_IO, name);
   if (sh == BSH_FILL1 && is_nonblock_io(name) && io_read_nonblock_outbuf(c, id)) return 1;
@@ -495,7 +494,7 @@ int strbuf_io_outbuf(Compiler *c, int id) {
 /* Hold each operand before dispatch, including a boxed receiver. The
    existing read helper fills the buffer and answers its handle here. */
 int emit_strbuf_io_read(Compiler *c, int id, Buf *b) {
-  if (repr_share_rule(c) && io_read_nonblock_outbuf(c, id)) {
+  if (io_read_nonblock_outbuf(c, id)) {
     emit_io_read_nonblock_buffer(c, id, 1, b);
     return 1;
   }
@@ -2108,8 +2107,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, " sp_RbVal lv_%s = %s(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn2,
                    (is_byte || is_cp) ? "sp_box_int" : "sp_box_str", lt2, bpn2);
       /* A character is a fresh String, bound just as a fresh line is. */
-      else if (bpn2 && !is_byte && !is_cp && repr_share_rule(c) &&
-               repr_of_slot(c, scope_local(comp_scope_of(c, blk2), bp2)).kind == RK_STRBUF)
+      else if (bpn2 && !is_byte && !is_cp && repr_of_slot(c, scope_local(comp_scope_of(c, blk2), bp2)).kind == RK_STRBUF)
         emit_line_param_decl(c, id, bpn2, lt2, b);
       else if (bpn2) {
         buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "sp_int" : "const char *", bpn2, lt2);

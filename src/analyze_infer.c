@@ -2851,7 +2851,7 @@ static TyKind cmethod_setter_assign_ty(Compiler *c, int id, int mi) {
   const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
   if (ac != 1 || nt_kind(c->nt, av[0]) == NK_SplatNode) return TY_UNKNOWN;
   TyKind rk = infer_type(c, av[0]);
-  if (rk == TY_STRBUF && c->share_strings) rk = TY_STRING;
+  if (rk == TY_STRBUF) rk = TY_STRING;
   return rk;
 }
 
@@ -3438,7 +3438,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         int owned = call_is_setter_assign(nt, id) ? (has_def || has_writer)
                                                   : (has_writer && !has_user_def);
         TyKind at = owned ? infer_type(c, argv[0]) : TY_UNKNOWN;
-        if (at == TY_STRBUF && c->share_strings) at = TY_STRING;
+        if (at == TY_STRBUF) at = TY_STRING;
         if (at != TY_UNKNOWN) { *out = at; return 1; }
       }
       /* []= on a poly receiver yields the assigned value, emitted boxed */
@@ -4498,7 +4498,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
    here each round, the rule set it back the next and the storage fixpoint
    never settled. */
 static void an_bind_line_param(Compiler *c, LocalVar *blv) {
-  if (blv && !(blv->type == TY_STRBUF && blv->str_shared && c->share_strings))
+  if (blv && !(blv->type == TY_STRBUF && blv->str_shared))
     lv_set_type(blv, TY_STRING);
 }
 
@@ -5717,7 +5717,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
          yields the argument */
       if (nc > 0 && !has_blk && argc == 1 && call_is_setter_assign(nt, id)) {
         TyKind at = infer_type(c, argv[0]);
-        if (at == TY_STRBUF && c->share_strings) at = TY_STRING;
+        if (at == TY_STRBUF) at = TY_STRING;
         if (at != TY_UNKNOWN) { *out = at; return 1; }
       }
       if (nc > 0 && !has_blk)
@@ -6188,7 +6188,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (at == TY_INT)    { *out = TY_INT_ARRAY; return 1; }    /* Array(int)   -> [int]   */
       if (at == TY_FLOAT)  { *out = TY_FLOAT_ARRAY; return 1; }  /* Array(float) -> [float] */
       /* The scalar String is one fill element, with Array.new's layout. */
-      if (at == TY_STRING && c->share_strings) {
+      if (at == TY_STRING) {
         *out = infer_array_new_fill(c, argv[0]);
         return 1;
       }
@@ -9827,7 +9827,7 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
   /* (--share-strings: a constant whose slot is an sp_String * handle reads
      as a String, as the bare ConstantReadNode does: `A::X`'s storage form
      leaked into a yield's site type and a method's return) */
-  if (lv && c->share_strings && repr_slot_kind(c, lv) == RK_STRBUF) { *out = TY_STRING; return 1; }
+  if (lv && repr_slot_kind(c, lv) == RK_STRBUF) { *out = TY_STRING; return 1; }
   if (lv && lv->type != TY_UNKNOWN) { *out = lv->type; return 1; }
   /* A top-level scoped constant `::Name` (no parent) names the same thing as
      the bare constant `Name`; resolve it as a class when it is one so is_a?,
@@ -10463,7 +10463,7 @@ static TyKind infer_array_literal(Compiler *c, int id) {
     TyKind e = TY_UNKNOWN;
     /* --share-strings: whether every element is a String and one is a
        handle (strh_has), for the String handle Array form below */
-    int strh_all = c->share_strings, strh_has = 0;
+    int strh_all = 1, strh_has = 0;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);
       /* (a splat is the type of its Array's elements, but it spreads them:

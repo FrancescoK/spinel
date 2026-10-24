@@ -1038,7 +1038,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk, ts, ti);
   if (p0) {
     emit_indent(g_pre, g_indent + 1);
-    if (repr_share_rule(c) && repr_of_slot(c, p0_lv_tv).kind == RK_STRBUF) {
+    if (repr_of_slot(c, p0_lv_tv).kind == RK_STRBUF) {
       /* A shared parameter takes the key or value through its handle
          representation, as the other hash block walks bind it. */
       char src[128];
@@ -1079,8 +1079,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   /* the block's value carries its nil into a result whose values may be nil:
      an oint-formed value is emitted as its oint, a boxed one unboxed with it */
   int lastv = bb[bn - 1];
-  int box_eligible = !keys && dr.val == TY_POLY && (bret == TY_STRING || bret == TY_STRBUF) && repr_share_rule(c) &&
-                     !fold_body_has_next(c, body);
+  int box_eligible = !keys && dr.val == TY_POLY && (bret == TY_STRING || bret == TY_STRBUF) && !fold_body_has_next(c, body);
   /* a conversion of a boxed value (`v.to_s`, `String(v)`) answers the
      value's own box when it is a String, and bytes otherwise */
   int conv_op = box_eligible ? fold_boxed_conversion_operand(c, lastv) : -1;
@@ -3650,7 +3649,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   TyKind rt = rr.as_ty;
   /* A demanded String memo uses the Array fold's handle accumulator.
      Range elements come from a counter; the memo never needs an Array. */
-  int range = rt == TY_RANGE && repr_share_rule(c) && repr_of(c, id).demand;
+  int range = rt == TY_RANGE && repr_of(c, id).demand;
   if (!ty_is_array(rt) && !range) return 0;
   /* `[[ints],...].inject { |a, b| a & b }`: the inner int arrays are boxed in a
      poly array; fold them as int arrays (unboxing each element). The poly array
@@ -3784,7 +3783,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      value as a handle, so a block answering its accumulator answers the
      seed itself */
   int hacc = 0, bacc = 0;
-  if (acc_ty == TY_STRING && init >= 0 && p0_orig && repr_share_rule(c) && repr_of(c, id).demand) {
+  if (acc_ty == TY_STRING && init >= 0 && p0_orig && repr_of(c, id).demand) {
     Scope *hsc = comp_scope_of(c, block);
     hacc = repr_of_slot(c, hsc ? scope_local(hsc, p0_orig) : NULL).handle;
     bacc = repr_of_slot(c, hsc ? scope_local(hsc, p0_orig) : NULL).kind == RK_BOXED;
@@ -5339,14 +5338,14 @@ static void emit_block_value_into_inner(Compiler *c, int block, const char *dest
       const char *apf = (g_ie_next_ty == TY_POLY_ARRAY && tr.elem != TY_POLY) ? array_to_poly_fn(tt) : NULL;
       if (want_poly && tr.kind != RK_BOXED) emit_boxed(c, tail, &vb);
       /* a `then` read as the shared handle (emit_tap_then_expr): the tail's */
-      else if (dest_ty == TY_STRBUF && repr_share_rule(c)) {
+      else if (dest_ty == TY_STRBUF) {
         /* (one representation: the value of either face as the handle; a
            conditional of handle reads answers their bytes faces) */
         buf_puts(&vb, "SP_STR_HDL(");
         emit_strbuf_handle_of(c, tail, &vb);
         buf_puts(&vb, ")");
       }
-      else if (dest_ty == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, tail, &vb);
+      else if (dest_ty == TY_STRBUF) emit_strbuf_handle_of(c, tail, &vb);
       else if (apf) { buf_printf(&vb, "%s(", apf); emit_expr(c, tail, &vb); buf_puts(&vb, ")"); }
       else if (dest_oint && oint_kind(g_ie_next_ty)) emit_oint_expr(c, tail, g_ie_next_ty, &vb);
       else emit_expr(c, tail, &vb);
@@ -9086,10 +9085,10 @@ static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
   /* --share-strings: so does a boxed receiver's call whose arms answer a
      String (or a sequence ending in one): the handle its box holds is
      taken where the call runs */
-  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return 1;
+  if (strbuf_poly_user_base(c, v) >= 0) return 1;
   /* So does a call result lifted into the handle for a boxed parameter: the
      handle its method publishes is taken where the call runs. */
-  if (repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v)) return 1;
+  if (c->poly_strbuf_lift[v] && strbuf_value_carries(c, v)) return 1;
   /* --share-strings: and so does a bang on a handle or a box, or a
      conditional with one on an arm, which a parameter that is the handle
      takes as its receiver's String or nil (strbuf_arg_carries) */
@@ -9601,7 +9600,7 @@ void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int 
    parameter of m that is the shared handle (arg_layout_param_map); NULL
    when none does. The caller frees it. */
 static char *arg_handle_params(Compiler *c, Scope *m, const int *argv, int argc, const int *vals, int nv) {
-  if (!repr_share_rule(c) || !m || m->nparams <= 0 || nv <= 0) return NULL;
+  if (!m || m->nparams <= 0 || nv <= 0) return NULL;
   int *out = malloc(sizeof *out * (size_t)m->nparams);
   char *hand = calloc((size_t)nv, 1);
   if (!out || !hand) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -11335,7 +11334,7 @@ static int arg_bind_param(Compiler *c, Scope *m, ArgBind *B, int i, int *spread,
   if (L->from[i] == ARG_NODE) a = argv[L->arg[i]];
   /* A braceless Hash bound as a positional is the container itself.
      The sharing source walk must reach its original element stores. */
-  else if (c->share_strings && L->from[i] == ARG_KWH) a = kwh;
+  else if (L->from[i] == ARG_KWH) a = kwh;
   else if (defaults && L->from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
   else if (L->from[i] == ARG_ELEM || L->from[i] == ARG_GATHERED) {
@@ -12176,7 +12175,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          another one (a call in its predicate allocated, so it was). Its arms
          are variables, which are rooted where they live. One the analysis
          lifted (poly_strbuf_lift) is bound as its handle below. */
-      if (!seq && repr_share_rule(c) && at == TY_STRING && m->pnames[k] &&
+      if (!seq && at == TY_STRING && m->pnames[k] &&
           repr_of_slot(c, scope_local(m, m->pnames[k])).kind == RK_BOXED && !c->poly_strbuf_lift[argv[k]] &&
           strbuf_srange_tail(c, argv[k]) < 0 &&
           (strbuf_cond_has_handle_leaf(c, argv[k]) || strbuf_srange_arm(c, argv[k]))) root = 0;
@@ -12230,7 +12229,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          box takes (ran_first_handle): bound as its bytes, the box rendered
          the arms again, a second bang. A bang alone stays bound as its
          bytes, which the rest's box takes as its receiver's own box */
-      if (repr_share_rule(c) && at == TY_STRING && m->rest_idx >= 0 && k >= m->rest_idx &&
+      if (at == TY_STRING && m->rest_idx >= 0 && k >= m->rest_idx &&
           strbuf_arg_bang_value(c, argv[k]) && !strbuf_bang_self_local(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);

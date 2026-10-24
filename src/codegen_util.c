@@ -2241,12 +2241,12 @@ int strbuf_ivar_owner(Compiler *c, int node) {
   /* (--share-strings: an ivar in an instance_eval/exec splice is the
      rebound receiver's, as the ivar emitter takes it: `K.new(s).instance_exec
      { @name }` read the surrounding scope's slot facts for K's @name) */
-  if (repr_share_rule(c) && ie_class_of(c, node) >= 0) return ie_class_of(c, node);
+  if (ie_class_of(c, node) >= 0) return ie_class_of(c, node);
   Scope *cs = comp_scope_of(c, node);
   if (!cs) return -1;
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
-  if (g_ie_class_id >= 0) return repr_share_rule(c) ? g_ie_class_id : -1;
+  if (g_ie_class_id >= 0) return g_ie_class_id;
   return comp_class_index(c, "Toplevel");
 }
 /* ---- Is an object's ivar set? ----
@@ -3368,8 +3368,7 @@ static void strbuf_nilable_id(Compiler *c, const char *h, const char *nil_id, Bu
   StrForm sf;
   str_form_of_text(&sf, h ? h : "", TY_STRBUF, SF_EVAL_ONCE);
   str_form_settle(c, &sf, b);
-  buf_printf(b, repr_share_rule(c) ? "_t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s"
-                                   : "_t%d ? (sp_int)(uintptr_t)_t%d : %s", sf.tmp, sf.tmp, nil_id);
+  buf_printf(b, "_t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s", sf.tmp, sf.tmp, nil_id);
   str_form_close(&sf, b);
   str_form_free(&sf);
 }
@@ -3422,7 +3421,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   }
   /* --share-strings: a spliced yield whose block answers a holder's
      handle (strbuf_route_yield): that handle's */
-  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_YieldNode &&
+  if (recv >= 0 && nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_YieldNode &&
       strbuf_yield_tail_held(c)) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, recv, &hb)) {
@@ -3439,7 +3438,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   if (route && !up) {
     if (repr_of(c, route - 1).may_nil)
       strbuf_nilable_id(c, ref.p, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty", b);
-    else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref.p);
+    else buf_printf(b, "((sp_int)(uintptr_t)sp_String_identity(%s))", ref.p);
     free(ref.p);
     return 1;
   }
@@ -3453,13 +3452,13 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   }
   /* The box's payload is already its identity, with or without a handle.
      A frozen literal's handle resolves to the same identity as its bytes. */
-  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
+  if (recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
     buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
     emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
     buf_puts(b, "))");
     return 1;
   }
-  return strbuf_box_ref_as(c, recv, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), b);
+  return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)sp_String_identity(%s))", b);
 }
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
@@ -3560,12 +3559,12 @@ int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent) {
 int sb_reader_shim_open(Compiler *c, int id, int recv, Buf *sref, SbReaderSave *sv) {
   /* a global holding the handle (--share-strings) is such a slot too:
      strbuf_slot_text answers for it only then */
-  int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
+  int gv = recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
   if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
   /* (--share-strings: or a value route whose handle ran first, `(+s)`
      under emit_bang_self_handle, whose temp strbuf_slot_text answers) */
-  int ran = repr_share_rule(c) && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
+  int ran = nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
   if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref)) return 0;
@@ -3599,11 +3598,11 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   int r = nt_ref(nt, v, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   /* A fresh object-method result is bytes to wrap, not a reader's handle. */
-  if (repr_share_rule(c) && ty_is_object(rt) && share_value_fresh(c, v, 0)) return 0;
+  if (ty_is_object(rt) && share_value_fresh(c, v, 0)) return 0;
   /* A yielding method is inlined into the demanded handle slot. Other
      method calls keep their byte ABI and need a proved return pickup;
      a field reader has its own handle arm. */
-  if (repr_share_rule(c) && ty_is_object(rt)) {
+  if (ty_is_object(rt)) {
     int mi = cplan_user(c, v)->mi;
     if (mi >= 0) return c->scopes[mi].yields || an_memo_reader_ivar(c, mi) || repr_call_returns_handle(c, v);
   }
@@ -3613,7 +3612,7 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
      its count of arguments, `prepend(a, b)`, and a bang, whose nil the
      reader of its handle has tested) */
   return nm && (is_append_concat(nm) || str_self_call(nt, v) ||
-                (repr_share_rule(c) && nt_ref(nt, v, "block") < 0 &&
+                (nt_ref(nt, v, "block") < 0 &&
                  (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), 0) == BOPF_SELF ||
                   bop_share_self_answer(nm, 0))));
 }
@@ -3632,7 +3631,7 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
 int strbuf_held_chain(const Compiler *c, int r) {
   const NodeTable *nt = c->nt;
   r = nt_paren_single(c->nt, r);
-  if (!repr_share_rule(c) || r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, r, "name");
   int argc = 0, targets[CPT_MAX];
   const int *argv = call_args(nt, r, &argc);
@@ -3722,12 +3721,11 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int self_ans = bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0);
-  if (!self_ans && !repr_share_rule(c)) return 0;
   int r = nt_ref(nt, v, "receiver");
   if (r < 0) return 0;
   /* --share-strings: itself, to_s or to_str of a held chain answers its
      String (strbuf_held_chain; nil.to_s's "" aside, emit_held_handle) */
-  if (repr_share_rule(c) && is_receiver_conversion(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
+  if (is_receiver_conversion(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
       nt_ref(nt, v, "block") < 0 && !nt_safe_nav(nt, v) && nt_kind(nt, nt_paren_single(c->nt, r)) == NK_CallNode) {
     int ct[CPT_MAX];
     return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0 && strbuf_held_chain(c, r);
@@ -3744,7 +3742,6 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   if (self_ans && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF) return 1;
   /* (--share-strings: a String method that answers its receiver always,
      `insert`, too) */
-  if (!repr_share_rule(c)) return 0;
   NodeKind rk = nt_kind(nt, r);
   if (!self_ans) {
     int argc;
@@ -3783,7 +3780,7 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
 static int strbuf_reader_field_boxed(Compiler *c, int n) {
   int recv = nt_ref(c->nt, n, "receiver"), cid, defc = -1;
   const char *name = nt_str(c->nt, n, "name");
-  if (!repr_share_rule(c) || recv < 0 || !name || nt_ref(c->nt, n, "arguments") >= 0) return 0;
+  if (recv < 0 || !name || nt_ref(c->nt, n, "arguments") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (!ty_is_object(rt) || !comp_reader_in_chain(c, (cid = ty_object_class(rt)), name, &defc)) return 0;
   if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
@@ -3799,7 +3796,7 @@ static int strbuf_reader_field_boxed(Compiler *c, int n) {
    slot keeps one. */
 int strbuf_poly_ivar_get(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, n, "name");
   int recv = nt_ref(nt, n, "receiver"), a = nt_ref(nt, n, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3824,7 +3821,7 @@ int strbuf_call_reads_handle(Compiler *c, int recv) {
    strbuf_flow_carries.) */
 const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return NULL;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return NULL;
   int r = nt_ref(nt, n, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   /* (or a subclass of one, where no method of the program's answers the name first) */
@@ -3998,7 +3995,7 @@ int one_str_elem_call(Compiler *c, int v, TyKind rt) {
 }
 int strh_handle_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
   if (one_str_elem_call(c, v, TY_UNKNOWN)) return 1;
   /* (comp_ntype, not comp_recv_type: that one only turns a String buffer
@@ -4014,7 +4011,7 @@ int strh_handle_call(Compiler *c, int v) {
    can be read again where it is used? */
 int strh_elem_slot(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   /* One representation: an element read of any typed String container
@@ -4073,7 +4070,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
   /* (--share-strings: a value route over a handle, `(+s)`, whose handle
      already ran into a temp (emit_bang_self_handle): that temp holds it,
      as a variable's slot does) */
-  if (repr_share_rule(c) && recv >= 0 && ran_first_read_handle(recv) >= 0) {
+  if (recv >= 0 && ran_first_read_handle(recv) >= 0) {
     if (b) buf_printf(b, "_t%d", ran_first_read_handle(recv));
     return 1;
   }
@@ -4102,7 +4099,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     return fit;
   }
   if (strbuf_call_reads_handle(c, recv) &&
-      !(repr_share_rule(c) && (repr_string_conversion_operand(c, recv) >= 0 || repr_boxed_to_s_operand(c, recv) >= 0))) {
+      !((repr_string_conversion_operand(c, recv) >= 0 || repr_boxed_to_s_operand(c, recv) >= 0))) {
     if (!b) return 1;
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     /* (--share-strings: what the read put ahead of the statement goes with
@@ -4123,7 +4120,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     /* (one representation: the read can be of any face, the box's, the
        bytes' or the handle's) */
     if (fit) buf_printf(b, "SP_STR_HDL(%s)", rb2.p);
-    else if (repr_share_rule(c) && pre && g_pre == pre && pre->len > pre_mark) {
+    else if (pre && g_pre == pre && pre->len > pre_mark) {
       pre->len = pre_mark;
       pre->p[pre_mark] = '\0';
     }
@@ -4131,7 +4128,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     return fit;
   }
   /* a global or a constant holding the handle (--share-strings, #6765) */
-  if ((repr_share_rule(c) || c->n_cext_extensions) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
+  if ((1) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
     /* inside the shim over it, the read is its plain shadow */
     if (sb_shadowed_reader(recv)) return 0;
     return holder_static_handle_buf(c, recv, b);
@@ -4919,7 +4916,7 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
     return;
   case CF_BOX:
     /* (a String into a boxed slot the rule shares: emit_boxed's lift) */
-    if (repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && from == TY_STRING) {
+    if (node >= 0 && c->poly_strbuf_lift[node] && from == TY_STRING) {
       buf_puts(b, "sp_poly_strbuf_lift(");
       emit_boxed_text(c, from, text, b);
       buf_puts(b, ")");
@@ -6219,7 +6216,7 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
   /* a String Range's minmax: its min and max as they answer them, the
      endpoints themselves (sp_srange_extreme_h), not copies */
   int u = nt_paren_single(c->nt, v);
-  if (repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_minmax_pair(nt_str(c->nt, u, "name")) &&
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_minmax_pair(nt_str(c->nt, u, "name")) &&
       nt_ref(c->nt, u, "arguments") < 0 && nt_ref(c->nt, u, "block") < 0 && nt_ref(c->nt, u, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(c->nt, u, "receiver")) == TY_STR_RANGE && cplan_user(c, u)->dispatch == CP_NONE &&
       !share_builtin_overridden(c, "Range", "minmax")) {
@@ -6467,7 +6464,7 @@ int exc_text_override_calls_super(Compiler *c) {
          publishes the handle it answers, `def message = super`, hands on
          that String) */
       if (mi >= 0 && scope_calls_super(c, mi) &&
-          !(c->share_strings && (scope_ret_fresh(c, mi) || scope_ret_handle(c, mi)))) {
+          !((scope_ret_fresh(c, mi) || scope_ret_handle(c, mi)))) {
         c->exc_text_super = 2;
         break;
       }
@@ -7318,7 +7315,7 @@ int ty_gc_holds_refs(Compiler *c, TyKind t) {
 /* The roots a String Range by value adds, built --share-strings, beyond its
    two endpoint strings: the handles it keeps (#8321). `ref` is the struct. */
 void emit_srange_handle_roots(Compiler *c, const char *ref, Buf *b) {
-  if (repr_share_rule(c)) buf_printf(b, " SP_GC_ROOT(%s.hf); SP_GC_ROOT(%s.hl);", ref, ref);
+  buf_printf(b, " SP_GC_ROOT(%s.hf); SP_GC_ROOT(%s.hl);", ref, ref);
 }
 /* The mark lines of a String Range slot by value (`ref` the slot: an
    object's ivar, a global, a constant, a class variable), which the walker
@@ -7327,7 +7324,7 @@ void emit_srange_handle_roots(Compiler *c, const char *ref, Buf *b) {
 void emit_srange_marks(Compiler *c, const char *ref, Buf *b) {
   buf_printf(b, "  sp_mark_string(%s.first);\n", ref);
   buf_printf(b, "  sp_mark_string(%s.last);\n", ref);
-  if (repr_share_rule(c)) buf_printf(b, "  sp_gc_mark(%s.hf);\n  sp_gc_mark(%s.hl);\n", ref, ref);
+  buf_printf(b, "  sp_gc_mark(%s.hf);\n  sp_gc_mark(%s.hl);\n", ref, ref);
 }
 void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b) {
   if (t == TY_STR_RANGE) {

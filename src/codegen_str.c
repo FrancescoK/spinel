@@ -98,7 +98,7 @@ static int str_uplus_literal(Compiler *c, int v) {
    slot. */
 static int str_handle_ran_first(Compiler *c, int v, StrForm *sf) {
   int ran = arg_ran_first(v, 0), late = ran && str_var_read(c, v);
-  if (ran_first_handle(v) < 0 || (!late && !(repr_share_rule(c) && ran))) return 0;
+  if (ran_first_handle(v) < 0 || (!late && !(ran))) return 0;
   buf_printf(&sf->expr, "_t%d", ran_first_handle(v));
   return 1;
 }

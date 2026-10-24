@@ -21,7 +21,7 @@ static void emit_spawn_fd_options(Compiler *c, Buf *b, int tkv, int tfd, int tth
     /* a filename boxed as the String's handle reads as the String (the arms
        below test the String tag) */
     char vref[48];
-    snprintf(vref, sizeof vref, repr_share_rule(c) ? "sp_poly_strbuf_deref(_t%d)" : "_t%d", tkv);
+    snprintf(vref, sizeof vref, "sp_poly_strbuf_deref(_t%d)", tkv);
     buf_printf(b,
       "{ sp_RbVal _t%d; sp_bool _t%d; int _prior; "
       "_t%d = sp_process_redirect_value(_t%d, %d, &_t%d, &_prior); "
@@ -2143,7 +2143,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           "_t%d = sp_poly_hash_get_pair_val(_t%d, "
           "sp_box_sym(sp_sym_intern(\"chdir\")), &_t%d); ",
           tkv, tfd, tkv, tth, tfd);
-        if (repr_share_rule(c)) buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); ", tkv, tkv);
+        buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); ", tkv, tkv);
         buf_printf(b,
           "if (_t%d && _t%d.tag == SP_TAG_STR) "
           "{ sp_PolyArray_push(_t%d, _t%d); } "

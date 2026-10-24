@@ -559,7 +559,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         emit_boxed(c, av[0], b);
         buf_puts(b, ")");
       }
-      else if (repr_share_rule(c) && at == TY_STRING && repr_of(c, id).as_ty == TY_POLY_ARRAY) {
+      else if (at == TY_STRING && repr_of(c, id).as_ty == TY_POLY_ARRAY) {
         /* The inferred boxed element keeps its shared String handle. */
         int t = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", t); emit_strbuf_handle_of(c, av[0], b);
@@ -1528,7 +1528,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* --share-strings: a variable's handle is read as a copy of its
            bytes, which reach unsetenv past sp_env_str's allocation */
         Buf kref; memset(&kref, 0, sizeof kref);
-        int key_handle = repr_share_rule(c) && strbuf_slot_text(c, eav[0], &kref);
+        int key_handle = strbuf_slot_text(c, eav[0], &kref);
         /* a key the operand builds (`ENV.delete(key(1))`) is a new String
            nothing else holds, and it too reaches unsetenv past that
            allocation; a variable's or a literal's is held where it is */
@@ -1551,9 +1551,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                analyzed type (it may not be a declared local here) */
             LocalVar *dlv = scope_local(comp_scope_of(c, id), dp0);
             TyKind dpt = dlv ? dlv->type : TY_STRING;
-            if (repr_share_rule(c) && dpt != TY_STRING && dpt != TY_STRBUF && dpt != TY_POLY)
+            if (dpt != TY_STRING && dpt != TY_STRBUF && dpt != TY_POLY)
               unsupported_feature(c, id, "ENV.delete is not supported: its block parameter cannot carry the String key; see docs/limitations.md");
-            if (repr_share_rule(c) && repr_of_slot(c, dlv).handle) {
+            if (repr_of_slot(c, dlv).handle) {
               if (!key_handle && !key_new && nt_kind(nt, eav[0]) != NK_StringNode) buf_printf(b, "SP_GC_ROOT(_t%d); ", t1);
               buf_printf(b, "sp_String *lv_%s = ", rename_local(dp0));
               if (key_handle) buf_puts(b, kref.p);

@@ -530,7 +530,7 @@ int local_is_handle(Compiler *c, int a) {
 }
 /* --share-strings: a read of an ivar whose slot is the rule's handle */
 int ivar_read_is_handle(Compiler *c, int a) {
-  if (!repr_share_rule(c) || a < 0 || nt_kind(c->nt, a) != NK_InstanceVariableReadNode) return 0;
+  if (a < 0 || nt_kind(c->nt, a) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, a, "name");
   int cid = nm ? strbuf_ivar_owner(c, a) : -1;
   int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
@@ -558,7 +558,7 @@ int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
      A String reopening's self has the handle selected by its receiver ABI. */
   if (!local_is_handle(c, a) && !repr_static_share(c, a) &&
       !repr_self_shared(c, a) &&
-      !(repr_share_rule(c) && a >= 0 && nt_kind(c->nt, a) == NK_InstanceVariableReadNode))
+      !(a >= 0 && nt_kind(c->nt, a) == NK_InstanceVariableReadNode))
     return 0;
   /* a value that ran first, ahead of a later one that rebinds the local
      (`yield(s, (s = +"q"; 1))`), is the handle it read then: the slot holds
@@ -959,7 +959,6 @@ static int cmethod_of_class(Compiler *c, const Scope *encl) {
   return encl->is_cmethod && encl->class_id >= 0 && !comp_class_is_module(c, &c->classes[encl->class_id]);
 }
 static int inline_string_self(Compiler *c, int id, InlineTarget *t) {
-  if (!repr_share_rule(c)) return 0;
   const CallPlan *p = cplan_user(c, id);
   if (p->via != UC_REOPEN || !repr_self_handle(c, p->mi)) return 0;
   t->mi = p->mi; t->recv_class = p->owner_ci;
@@ -2105,7 +2104,7 @@ void block_aliases_release(BlockAliases *al) {
    coerces it as before. */
 static void emit_block_default(Compiler *c, LocalVar *pl, int dv, TyKind pt, BiRen *bi, Buf *b) {
   bi_block_side(bi);
-  if (!(repr_share_rule(c) && repr_of_slot(c, pl).handle && emit_handle_var_ref(c, dv, b)))
+  if (!(repr_of_slot(c, pl).handle && emit_handle_var_ref(c, dv, b)))
     emit_block_arg_coerced_lv(c, dv, pl, pt, b);
   bi_method_side(bi);
 }
@@ -3319,7 +3318,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
         if (nxv != TY_UNKNOWN && nxv != TY_VOID) nx_bt = ty_unify(nx_bt, nxv); }
       /* a yield read as the shared handle (emit_strbuf_route): the carrier
          is the handle, which each `next` and the tail hand on */
-      if (want_ty == TY_STRBUF && repr_share_rule(c)) nx_bt = TY_STRBUF;
+      if (want_ty == TY_STRBUF) nx_bt = TY_STRBUF;
       if (bn3 > 0) {
         const char *tty3 = nt_type(nt, bd3[bn3 - 1]);
         nx_tail_stmt = tty3 && (sp_streq(tty3, "IfNode") || sp_streq(tty3, "CaseNode") ||
@@ -3408,7 +3407,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if (void_tail) emit_expr(c, tl3, &tb);
       else if (g_ie_res_poly) emit_boxed(c, tl3, &tb);
       else if (g_ie_next_oint && oint_kind(nx_bt)) emit_oint_expr(c, tl3, nx_bt, &tb);   /* the next-var is the oint */
-      else if (nx_bt == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, tl3, &tb);
+      else if (nx_bt == TY_STRBUF) emit_strbuf_handle_of(c, tl3, &tb);
       else emit_expr_slot(c, tl3, nx_bt, &tb);
       g_pre = svp3; g_indent = svi3;
       if (void_tail) buf_puts(b, "(void)(");
@@ -4576,7 +4575,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      it. A copy wrapped as a new handle forked the parameter off the
      receiver. */
   int hparam = 0;
-  if (et == TY_STRING && repr_share_rule(c) && p0) {
+  if (et == TY_STRING && p0) {
     Scope *hsc = comp_scope_of(c, block);
     /* (an inlined method's parameter is renamed; its slot keeps the name it
        was declared under) */
@@ -4617,7 +4616,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* --share-strings: `then` read as the handle (emit_strbuf_route), or
      stored as one (a call marked to hand out the handle), answers its
      block's value as one */
-  int hres = is_then && repr_share_rule(c) && (repr_of(c, id).demand || repr_of(c, id).as_ty == TY_STRBUF);
+  int hres = is_then && (repr_of(c, id).demand || repr_of(c, id).as_ty == TY_STRBUF);
   /* (one representation: a String value of either face is collected as the handle) */
   if (is_then && repr_of(c, id).as_ty == TY_STRING) hres = 1;
   if (is_then) {
@@ -4751,7 +4750,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      below) */
   /* read as the handle (emit_strbuf_route, strbuf_route_tap): the handle
      itself, which keeps the receiver's frozen mark */
-  if (is_tap && (hparam || et == TY_STRBUF) && repr_share_rule(c) && repr_of(c, id).demand)
+  if (is_tap && (hparam || et == TY_STRBUF) && repr_of(c, id).demand)
     buf_printf(b, "_t%d", tr);
   else if (is_tap && hparam && repr_of(c, id).as_ty == TY_STRING && strbuf_value_carries(c, recv))
     str_read_handle_tmp(b, tr, 1);
@@ -5396,7 +5395,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   /* --share-strings: the elements of a PolyArray of handles (a fresh String
      Array's, emit_array_filter_loop_handles) are Strings, not tuples to
      spread, bound to a parameter the scope holds as the handle */
-  int handle_param = et == TY_POLY && c->share_strings && (fsaved == TY_STRBUF || fsaved == TY_STRING);
+  int handle_param = et == TY_POLY && (fsaved == TY_STRBUF || fsaved == TY_STRING);
   if (block_binds_gathered(c, block)) {
     Buf eb; memset(&eb, 0, sizeof eb);
     if (et == TY_POLY) buf_puts(&eb, es);
@@ -5741,7 +5740,7 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   buf_puts(&gb, "} }\n");
   if (ok && rpre.p) buf_puts(g_pre ? g_pre : b, rpre.p);
   if (ok) buf_puts(b, gb.p ? gb.p : "");
-  else if (repr_share_rule(c) && sv_pre && g_pre == sv_pre && sv_pre->len > pre0_mark) {
+  else if (sv_pre && g_pre == sv_pre && sv_pre->len > pre0_mark) {
     sv_pre->len = pre0_mark;
     sv_pre->p[pre0_mark] = '\0';
   }
@@ -5879,7 +5878,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
        to the receiver's own String, as the expression form binds it
        (emit_tap_then_expr) */
     int hparam = 0;
-    if (et == TY_STRING && repr_share_rule(c) && p0) {
+    if (et == TY_STRING && p0) {
       LocalVar *hlv = tsc ? scope_local(tsc, p0) : NULL;
       if (!hlv && tsc) hlv = scope_local(tsc, p0_orig);
       hparam = hlv && repr_of_slot(c, hlv).handle;
@@ -6124,7 +6123,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
        match, a fresh String, as a handle of its own (a plain String under
        a String-typed shadow would hand the body a copy) */
     LocalVar *sclv = (csc && p0_orig) ? scope_local(csc, p0_orig) : NULL;
-    int sc_handle = sclv && repr_share_rule(c) && repr_of_slot(c, sclv).kind == RK_STRBUF;
+    int sc_handle = sclv && repr_of_slot(c, sclv).kind == RK_STRBUF;
     int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN && !sc_handle;
     int tm = ++g_tmp, ti = ++g_tmp;
     /* (one representation: the subject is one String the block can change:
@@ -7608,7 +7607,7 @@ void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t
   /* --share-strings: an end the Range keeps as a handle is read off it
      (#8321): the walk starts from the begin's read face, a String of its
      own (sp_srange_first), and the end is there if either form is */
-  if (repr_share_rule(c)) {
+  {
     emit_indent(b, indent);
     buf_printf(b, "SP_GC_ROOT(_t%d.hf); SP_GC_ROOT(_t%d.hl);\n", tr, tr);
     emit_indent(b, indent);
@@ -7618,14 +7617,6 @@ void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t
     emit_indent(b, indent);
     buf_printf(b, "sp_StrArray *_t%d = (_t%d.hl || _t%d.last) ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n",
                ta, tr, tr, tr, ta);
-  }
-  else {
-    emit_indent(b, indent);
-    buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
-    emit_indent(b, indent);
-    buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
   }
   emit_indent(b, indent);
   buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tn, tn);

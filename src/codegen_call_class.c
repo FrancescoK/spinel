@@ -1208,7 +1208,7 @@ int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
   /* --share-strings: a boxed receiver is dispatched on its class
      (emit_boxed_writer_arms); where one class has the writer, an attr
      writer or a Struct member, the slot is that class's */
-  if ((rt == TY_POLY || rt == TY_UNKNOWN) && c->share_strings) {
+  if ((rt == TY_POLY || rt == TY_UNKNOWN)) {
     int wmi, wcls;
     if (boxed_writer_defs(c, name, base, &wmi, &wcls) != 1 || wmi >= 0) return 0;
     snprintf(ivn, sizeof ivn, "@%s", base);
@@ -1236,7 +1236,7 @@ int user_assign_handle(Compiler *c, int id) {
   const int *argv = call_args(nt, id, &argc);
   /* (the rule's answer is the cheap test, and most assignments fail it: it
      goes before the representation reads) */
-  if (!c->share_strings || recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+  if (recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
       !share_assign_shares(c, id) || repr_of(c, argv[0]).kind == RK_BOXED ||
       (comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_STRBUF))
     return 0;
@@ -1283,7 +1283,7 @@ const NativeMethod *native_assign_keeps(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver"), argc = 0;
   const int *argv = call_args(nt, id, &argc);
-  if (!repr_share_rule(c) || recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+  if (recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
       repr_of(c, argv[0]).kind == RK_BOXED || (comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_STRBUF))
     return NULL;
   TyKind rty = repr_of(c, recv).as_ty, at = comp_ntype(c, argv[0]);
@@ -1378,7 +1378,7 @@ int writers_change_param(Compiler *c, int id) {
   if (n < 0) return 1;
   for (int i = 0; i < n; i++) {
     const Scope *m = &c->scopes[mis[i]];
-    if (m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0], repr_share_rule(c))) return 1;
+    if (m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0], 1)) return 1;
   }
   return 0;
 }
@@ -2453,7 +2453,7 @@ static int boxed_arg_wants_root(Compiler *c, int node) {
   if (t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_NIL || t == TY_SYMBOL || t == TY_CLASS)
     return 0;
   if (comp_ty_value_obj(c, t) || ty_is_struct_valued(t)) return 1;
-  if (repr_share_rule(c) && (t == TY_STRING || t == TY_STRBUF)) return 1;
+  if ((t == TY_STRING || t == TY_STRBUF)) return 1;
   return !((tr.kind == RK_BOXED || needs_root(t)) && !arg_wants_root(c, t, node));
 }
 

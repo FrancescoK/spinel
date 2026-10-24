@@ -236,6 +236,9 @@ extern int g_infer_optimistic;
    (stage 2 of string-one-repr-design.md); ty_array_of and ty_hash_of take
    a String handle as a String. */
 #define g_one_string 1
+/* ...and so is the share rule it implies (every String slot the handle):
+   what c->share_strings and repr_share_rule() said, folded the same way */
+#define SHARE_ON 1
 /* Set while infer_write_types is re-deriving local types. That pass resets
    every non-param local to UNKNOWN at the top of each round and re-derives in
    node order, so a read reached BEFORE its own write answers UNKNOWN -- and

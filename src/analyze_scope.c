@@ -5384,7 +5384,7 @@ void register_ffi_decls(Compiler *c) {
            onto the String heap at the call site (emit of a native call):
            a new String each call, whatever the package declares. Under
            --share-strings only, as a package's <name>.share.rb is read. */
-        c->native_methods[mi].share = c->share_strings && (sp_streq(ret_spec, "cstring") || sp_streq(ret_spec, "cbinstr"))
+        c->native_methods[mi].share = (sp_streq(ret_spec, "cstring") || sp_streq(ret_spec, "cbinstr"))
                                       ? NSH_FRESH : 0;
         c->native_methods[mi].share_csym = NULL;
         continue;
@@ -11150,7 +11150,7 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   if (!how) return 0;
   int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", NULL)[1];
   TyKind vt = infer_type(c, v);
-  int handle = c->share_strings && an_arg_is_shared_handle(c, nt_paren_single(nt, v));
+  int handle = an_arg_is_shared_handle(c, nt_paren_single(nt, v));
   if (handle) vt = TY_POLY;
   if (vt == TY_UNKNOWN) return 0;
   const int *ks = &one;
@@ -11191,7 +11191,7 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
          String one, whose box holds the handle; the reads of a member
          holding a container keep their type. */
       if (unknown && mt != TY_INT && mt != TY_FLOAT && mt != TY_BOOL && mt != TY_SYMBOL && mt != TY_NIL &&
-          !(c->share_strings && (mt == TY_STRING || mt == TY_STRBUF))) continue;
+          !((mt == TY_STRING || mt == TY_STRBUF))) continue;
       if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
       TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
       if (merged != ci->ivar_types[m]) { ivar_set_type(ci, m, merged); changed = 1; }

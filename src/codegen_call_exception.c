@@ -183,7 +183,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   if (sp_streq(name, "detailed_message") && emit_exc_detailed_options(c, id, recv, argc, argv, b)) return 1;
   /* A marked message read takes the existing exception handle route,
      including a rescued variable specialized to an exception subclass. */
-  if (repr_share_rule(c) && is_exception_message(name) &&
+  if (is_exception_message(name) &&
       (repr_of(c, id).handle || repr_of(c, id).demand) && strbuf_route_exc_message(c, id))
     return emit_strbuf_route(c, id, b);
   /* A specialized rescue var (`rescue MyError => e`, MyError carrying ivars)
@@ -1106,7 +1106,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         buf_printf(b, "({ sp_RbVal _t%d = ", rk); emit_boxed(c, av[0], b);
         buf_printf(b, "; sp_RbVal _t%d = ", rm); emit_boxed(c, av[1], b);
         buf_printf(b, "; %s(_t%d, _t%d); })",
-                   repr_share_rule(c) && share_node_shares(c, av[1]) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", rk, rm);
+                   share_node_shares(c, av[1]) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", rk, rm);
       }
       else if (at == TY_EXCEPTION)
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
@@ -1188,7 +1188,7 @@ int exc_msg_handle(Compiler *c, int arg, Buf *b) {
    with *mh the handle's text, and *mark the bound node's mark when b was
    opened (-1 otherwise); exc_msg_release closes it after the exception. */
 int exc_msg_holds(Compiler *c, int arg) {
-  return arg >= 0 && repr_share_rule(c) && comp_ntype(c, arg) == TY_STRING &&
+  return arg >= 0 && comp_ntype(c, arg) == TY_STRING &&
          share_plan_of(c, arg, SPR_TAKE, NULL).form == SPF_HANDLE;
 }
 int exc_msg_hold(Compiler *c, int arg, Buf *b, Buf *mh, int *mark) {

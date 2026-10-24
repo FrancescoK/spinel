@@ -695,7 +695,7 @@ static int sh_native_keeps_self(const Compiler *c, int cid) {
 }
 
 static int sh_self(ShareFacts *F, Compiler *c, int mi) {
-  if (!c->share_strings || mi < 0) return -1;
+  if (mi < 0) return -1;
   Scope *s = &c->scopes[mi];
   if (s->is_cmethod || s->class_id < 0) return -1;
   return s->class_id == comp_class_index(c, "String") || sh_native_keeps_self(c, s->class_id)
@@ -1304,7 +1304,7 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
   if (bp < 0) return;
   /* a lambda's parameters hang from it directly, a block's from a
      BlockParametersNode (--share-strings reads the lambda's too) */
-  int direct = c->share_strings && nt_kind(nt, bp) == NK_ParametersNode;
+  int direct = nt_kind(nt, bp) == NK_ParametersNode;
   if (!direct && nt_kind(nt, bp) != NK_BlockParametersNode) {
     /* `_1` / `it`: the parameters by name */
     for (int i = 0; ; i++) {
@@ -2578,7 +2578,7 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
        join as BSH_SUB's do: the copy also retains a literal source's
        elements, including fresh Strings. The existing route checks guard
        transfers of those Strings without handles. */
-    if (c->share_strings && share == BSH_NEW_FILL && argc == 1 && blk < 0)
+    if (share == BSH_NEW_FILL && argc == 1 && blk < 0)
       sh_union(F, r, v);
     if (share == BSH_NEW_FILL && i == 0) sh_union(F, er, sh_elem(F, v));
   }
@@ -2677,7 +2677,7 @@ static int sh_string_conv_methods(Compiler *c, int arg, int *mis, int cap) {
   TyKind at = c->ntype[arg];
   int obj = ty_is_object(at), ocid = obj ? ty_object_class(at) : -1, n = 0;
   int exact = obj && share_exact_new_class(c, arg) == ocid;
-  if (!c->share_strings || (!obj && at != TY_POLY && at != TY_UNKNOWN)) return 0;
+  if ((!obj && at != TY_POLY && at != TY_UNKNOWN)) return 0;
   for (int j = 0; j < 2; j++) {
     int np = 0;
     const PolyCand *pc = comp_poly_candidates(c, j ? "to_s" : "to_str", &np);
@@ -2698,7 +2698,7 @@ static int sh_string_conv_methods(Compiler *c, int arg, int *mis, int cap) {
 static int sh_string_conv_arg(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, n, "name");
-  if (!c->share_strings || !nm || !is_string_class_name(nm) || nt_ref(nt, n, "receiver") >= 0 ||
+  if (!nm || !is_string_class_name(nm) || nt_ref(nt, n, "receiver") >= 0 ||
       nt_ref(nt, n, "block") >= 0) return -1;
   int argc = 0;
   const int *argv = call_args(nt, n, &argc);
@@ -3216,7 +3216,7 @@ static int sh_reader_beside_override(Compiler *c, int n, int recv, TyKind rt, co
    side whatever the writer returns, and the object the writer was handed,
    so no name-free String. */
 static int sh_assign_call(const Compiler *c, int n) {
-  if (!c->share_strings || nt_kind(c->nt, n) != NK_CallNode || nt_ref(c->nt, n, "block") >= 0 ||
+  if (nt_kind(c->nt, n) != NK_CallNode || nt_ref(c->nt, n, "block") >= 0 ||
       !call_is_setter_assign(c->nt, n)) return 0;
   int args = nt_ref(c->nt, n, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
@@ -3379,7 +3379,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
   /* (a String receiver whose class the program gives the name runs that
      method, which asks no identity: `class String; def equal?(o) = ...`) */
-  if (c->share_strings && is_identity_query(name) &&
+  if (is_identity_query(name) &&
       !((rt == TY_STRING || rt == TY_STRBUF) && share_builtin_overridden(c, "String", name))) {
     int identity = recv < 0 ? sh_self(F, c, sh_method_index(c, n)) : rv;
     if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED | (sh_str_identity(c, name, recv) ? SHE_STR_COMPARED : 0);
@@ -3392,7 +3392,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      reflection on one): the runtime's table is keyed by the String's
      handle, so the receiver's identity is used, as a comparison by
      identity uses it */
-  if (c->share_strings && (is_bivar_access(name) || is_ivar_reflection_name(name)) && (recv < 0 || maybe_str)) {
+  if ((is_bivar_access(name) || is_ivar_reflection_name(name)) && (recv < 0 || maybe_str)) {
     int identity = recv < 0 || nt_kind(nt, recv) == NK_SelfNode ? sh_self(F, c, sh_method_index(c, n)) : rv;
     if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED | SHE_IVARS;
   }
@@ -3449,7 +3449,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* Reachability is known before the share walk. A dead send cannot
        make every method's parameters and returns meet UNKNOWN. */
     Scope *sc = comp_scope_of(c, n);
-    if (c->share_strings && sc && !sc->reachable) return -1;
+    if (sc && !sc->reachable) return -1;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
     /* a runtime name whose arms are complete (desugar_dynamic_send,
        dyn_send_complete): every method the send can reach has an arm the
@@ -3513,7 +3513,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* (a subclass of a native class, where no method of the program's answers
      the name first, takes the class's binding: comp_native_answer_class) */
   int ncid = ty_is_object(rt) ? comp_native_answer_class(c, ty_object_class(rt), name) : recv < 0 ? sh_ivar_owner(c, n)
-             : c->share_strings && rt == TY_POLY ? sh_boxed_native_class(c, n, name, argc) : -1;
+             : rt == TY_POLY ? sh_boxed_native_class(c, n, name, argc) : -1;
   if (ncid >= 0 && ncid < c->nclasses && c->classes[ncid].is_native_class) {
     int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, recv < 0);
     if (r != -2) return r;
@@ -3643,10 +3643,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
       }
       /* a method of a String reopen: self is the receiver */
-      if (c->share_strings) sh_bind_self(F, c, n, tg[i], rv);
-      else if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
-          c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
-        sh_union(F, rv, F->unknown);
+      sh_bind_self(F, c, n, tg[i], rv);
     }
     /* an attribute assignment's value is its right-hand side, not the
        writer's return: the value the walk found for it, else (a new
@@ -3689,11 +3686,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (iv >= 0 && !writer) r = sh_join(F, r, iv);
     }
     /* a poly receiver may be a builtin as well */
-    if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
+    if (rt == TY_EXCEPTION && is_exception_message(name))
       return sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
     /* ...and so may a boxed one beside user returns: an exception in the
        box answers its stored message (strbuf_route_exc_message) */
-    if (c->share_strings && (rt == TY_POLY || rt == TY_UNKNOWN) && ntg > 0 && is_exception_message(name) &&
+    if ((rt == TY_POLY || rt == TY_UNKNOWN) && ntg > 0 && is_exception_message(name) &&
         argc == 0 && blk < 0)
       r = sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
     if ((rt != TY_POLY && rt != TY_UNKNOWN) || sh_builtin_fresh(c, n, F->ostruct)) return r;
@@ -3702,7 +3699,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       r = sh_join(F, r, sh_exc(F));
       /* --share-strings: a receiver that can hold only exceptions (the
          boxed-receiver walk) is no String, whose to_s would answer it */
-      if (c->share_strings && sh_recv_only_exceptions(c, n)) return r;
+      if (sh_recv_only_exceptions(c, n)) return r;
     }
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
         bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
@@ -3747,7 +3744,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         /* the value is the String the slot holds now, a new one included */
         if (sh_assign_call(c, n)) r = iv;
       }
-      else if (c->share_strings) r = sh_join(F, r, sh_reader_overrides(F, c, name));
+      else r = sh_join(F, r, sh_reader_overrides(F, c, name));
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
       return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
     }
@@ -3766,20 +3763,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      hand it their arguments. */
   /* Exception#to_s with no user target hands on the stored message, as
      #message does (the shared route answers the stored handle). */
-  if (c->share_strings && is_to_s_name(name) && argc == 0 && blk < 0 &&
+  if (is_to_s_name(name) && argc == 0 && blk < 0 &&
       (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)))))
     return sh_exc(F);
   if (is_exc_message_name(name)) {
     /* Formatted exception text is a new String, not the stored message.
        User targets above retain their own return facts. */
-    if (c->share_strings && blk < 0 &&
+    if (blk < 0 &&
         is_exception_full_message(name) &&
         (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
     /* (the renderings are no other value's method: off a boxed receiver
        too, each is a new String, with or without keywords) */
-    if (c->share_strings && blk < 0 && is_exception_full_message(name) &&
+    if (blk < 0 && is_exception_full_message(name) &&
         (rt == TY_POLY || rt == TY_UNKNOWN)) return -1;
-    return c->share_strings && is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F);
+    return is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F);
   }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
     sh_exc_args(F, c, n);
@@ -3787,7 +3784,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* `Klass.exception(s)` and `e.exception(s)` make an exception that keeps s
      as its message, as `Klass.new(s)` does */
-  if (c->share_strings && recv >= 0 && argc == 1 && blk < 0 && is_exception_factory(name) &&
+  if (recv >= 0 && argc == 1 && blk < 0 && is_exception_factory(name) &&
       !sh_has_targets(c, n) &&
       (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))) ||
        (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode))) {
@@ -3979,9 +3976,9 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
         for (int j = 0; j < cs->nparams; j++)
           sh_union(F, cs->pnames[j] ? sh_local_of(F, c, cs, cs->pnames[j], n) : -1, sh_exc(F));
       else sh_exc_args(F, c, n);
-      if (c->share_strings && is_initialize_family(cs->name)) return -1;
+      if (is_initialize_family(cs->name)) return -1;
       /* ...and #message / #to_s answer it (super_reaches_exc_text) */
-      if (c->share_strings && super_reaches_exc_text(c, n, 1)) {
+      if (super_reaches_exc_text(c, n, 1)) {
         /* (#message's through the #to_s methods it answers, too) */
         int tos[16], r = sh_exc(F);
         int nts = is_message_name(cs->name) ? exc_message_super_to_s(c, n, tos, 16) : 0;
@@ -4153,7 +4150,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int r = sh_new(F, SHK_VALUE);
     sh_union(F, sh_elem(F, r), l);
     sh_union(F, sh_elem(F, r), rr);
-    if (c->share_strings) {
+    {
       sh_flow(F, SHFL_ELEM, n, nt_ref(nt, n, "left"), sh_elem_peek(F, r));
       sh_flow(F, SHFL_ELEM, n, nt_ref(nt, n, "right"), sh_elem_peek(F, r));
     }
@@ -4249,7 +4246,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     return sh_jumped(F, n, sh_super(F, c, n));
   case NK_SelfNode: {
     Scope *s = comp_scope_of(c, n);
-    if (c->share_strings) return sh_self(F, c, sh_method_index(c, n));
+    return sh_self(F, c, sh_method_index(c, n));
     int cid = s ? s->class_id : -1;
     return cid >= 0 && cid == comp_class_index(c, "String") ? F->unknown : -1;
   }
@@ -4716,7 +4713,7 @@ static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
      object as a frozen literal is, whose handle is its own literal slot's
      (emit_engine_const_str) */
   if (nt_kind(c->nt, n) == NK_ConstantReadNode && share_frozen_string(c, n)) return -1;
-  if (c->share_strings && (t == TY_STRING || t == TY_STRBUF))
+  if ((t == TY_STRING || t == TY_STRBUF))
     return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   for (int i = 0; i < F->nmconst; i++)
     if (sp_streq(F->mconst[i], nm)) return sh_holder(F, SHK_CONST, 0, -1, nm, n);
@@ -5434,7 +5431,6 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
 void share_facts_build(Compiler *c) {
   share_facts_free(c);
   c->share = sh_build(c, 0);
-  if (!c->share_strings) return;
   ShareFacts *F = c->share;
   /* Argument flows depend on the parameter's representation. The walk's
      other flows already mark direct identity uses of self. */
@@ -5858,7 +5854,7 @@ int share_param_kept(Compiler *c, int mi, int pj) {
   if (h < 0) return 1;
   /* (a build without the flag asks the elements themselves, as it always
      has: the alternatives and the keeps below are the share rule's) */
-  int alt = c->share_strings;
+  int alt = 1;
   if (!F->pkept) {
     F->pkept = calloc((size_t)(F->n > 0 ? F->n : 1), 1);
     if (!F->pkept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -6627,7 +6623,7 @@ int share_node_mutated(Compiler *c, int v) {
 static int sh_needs_handle(Compiler *c, int v, int litout) {
   const NodeTable *nt = c->nt;
   ShareFacts *F = c->share;
-  if (!c->share_strings || !F || v < 0 || v >= F->nnodes) return SHN_NO;
+  if (!F || v < 0 || v >= F->nnodes) return SHN_NO;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_NilNode || k == NK_StringNode || k == NK_ArrayNode || k == NK_HashNode ||
       k == NK_RangeNode || k == NK_SymbolNode)
@@ -6738,8 +6734,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
      it through sp_strbuf_read_pub), or a method that publishes its own. A
      pickup around the call takes that handle, so the value is the field's
      String itself: `{ host: req.host }` with two classes answering host. */
-  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && repr_share_rule((Compiler *)c) &&
-      nt_ref(c->nt, u, "receiver") >= 0 && repr_of(c, nt_ref(c->nt, u, "receiver")).kind == RK_BOXED &&
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && nt_ref(c->nt, u, "receiver") >= 0 && repr_of(c, nt_ref(c->nt, u, "receiver")).kind == RK_BOXED &&
       nt_ref(c->nt, u, "block") < 0) {
     const PolyPlan *pp = cplan_poly_arms((Compiler *)c, u);
     int all = pp->n > 0;
@@ -6760,8 +6755,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
      whose class the rule shares stores its Strings as the handle
      (share_lift_poly_ivar_stores), so the box the reader answers is the
      handle's own; `{ host: req.host }` with `attr_accessor :host` */
-  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && repr_share_rule((Compiler *)c) &&
-      call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0) {
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0) {
     int rv = nt_ref(c->nt, u, "receiver");
     TyKind rt = rv >= 0 ? comp_ntype((Compiler *)c, rv) : TY_UNKNOWN;
     const char *rn = nt_str(c->nt, u, "name");
@@ -6978,7 +6972,6 @@ static int sh_hash_key_call(Compiler *c, int n) {
 
 
 int share_mark_borrows(Compiler *c) {
-  if (!c->share_strings) return 0;
   const NodeTable *nt = c->nt;
   int marked = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {

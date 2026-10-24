@@ -6153,7 +6153,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     int dsplat = 0;
     for (int k = 1; k < argc; k++)
       if (nt_kind(nt, argv[k]) == NK_SplatNode && subtree_has_side_effect(c, argv[k])) dsplat = 1;
-    TyKind drt = c->share_strings && !dsplat && dsend_recv_local_ok(c, nt, recv, &drun) &&
+    TyKind drt = !dsplat && dsend_recv_local_ok(c, nt, recv, &drun) &&
                  (drun || dsend_recv_rebound(c, nt, recv, argv, argc)) ? infer_type(c, recv) : TY_VOID;
     int base = nt->count;
     if (splat_src >= 0) {

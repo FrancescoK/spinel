@@ -132,7 +132,7 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
   /* PC_BOX of a String writes sp_box_str. A method promising a shared
      return must retain its published handle across this boxing boundary.
      PC_BOX_HANDLE records that emitted alternative to the plain box. */
-  if (c->share_strings) for (int a = 0; a < f->n; a++) {
+  for (int a = 0; a < f->n; a++) {
     const PolyArm *o = &f->arm[a];
     if (o->mi <= 0 || o->mi >= c->nscopes || o->vty != TY_STRING) continue;
     int mi = o->kind == PA_PROC_FORM ? scope_proc_form_of(c, o->mi) : o->mi;
@@ -496,7 +496,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
          handle: the handle the method publishes, else one around the String
          (NULL for nil) */
       else if (ret == TY_STRBUF && cret9 == TY_STRING) {
-        if (repr_share_rule(c) && c->scopes[pf9 ? pfi9 : mi].ret_handle) {
+        if (c->scopes[pf9 ? pfi9 : mi].ret_handle) {
           int pv = ++g_tmp;
           buf_printf(b, "({ _sp_ret_strbuf = NULL; __auto_type _v%d = (%s); !_v%d ? NULL : _sp_ret_strbuf ? "
                         "(sp_String *)_sp_ret_strbuf : ", pv, call, pv);
@@ -578,7 +578,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
        call under the pickup's own view, which has dropped the box mark, and
        answered no, so the pickup wrapped the bytes in a new handle and the
        field's String lost its identity: `{ host: req.host }` held a copy) */
-    str_read_handle(b, fld, repr_share_rule(c));
+    str_read_handle(b, fld, 1);
     pconv = PC_COPY;
   }
   /* a plain String field (a Struct member) where the call answers a handle
@@ -2345,7 +2345,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     }
     /* A boxed to_s answers a String receiver itself: with sharing, the
        box it holds is the answer, not a copy of its bytes. */
-    else if (ret == TY_POLY && repr_share_rule(c) && is_to_s_name(name))
+    else if (ret == TY_POLY && is_to_s_name(name))
       buf_printf(b, program_has_strsub(c) ? "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? sp_poly_to_s_box(_t%d) : sp_box_str(%s(_t%d))"
                                           : "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? _t%d : sp_box_str(%s(_t%d))",
                  tv, tv, tv, pfn, tv);
@@ -2912,7 +2912,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      is what CRuby answers for a non-String separator anyway. */
   if (is_pjoin && argc == 1) {
     TyKind jat = comp_ntype(c, argv[0]);
-    if (repr_share_rule(c) && jat == TY_STRBUF) jat = TY_STRING;
+    if (jat == TY_STRBUF) jat = TY_STRING;
     if (!(jat == TY_STRING || jat == TY_POLY || jat == TY_NIL || jat == TY_UNKNOWN))
       is_pjoin = 0;
   }
@@ -2931,7 +2931,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      non-String format anyway. */
   if (is_ppack) {
     TyKind pat = comp_ntype(c, argv[0]);
-    if (repr_share_rule(c) && pat == TY_STRBUF) pat = TY_STRING;
+    if (pat == TY_STRBUF) pat = TY_STRING;
     if (!(pat == TY_STRING || pat == TY_POLY || pat == TY_UNKNOWN)) is_ppack = 0;
   }
   /* Both arms answer a String, so they can only be emitted where the result

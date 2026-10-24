@@ -110,7 +110,7 @@ int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
   if (handle)
     buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", tb, ref.p, tb);
   else if (kh < 0) tb = hold_operand(c, ob, TY_POLY, 1, tb, 1, " ", b);
-  if (repr_share_rule(c) && slot && h.r.kind == RK_BOXED)
+  if (slot && h.r.kind == RK_BOXED)
     buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); %s = _t%d; ", tb, tb, ref.p, tb);
   buf_printf(b, "sp_RbVal _t%d = sp_poly_pack_buffer(_t%d, ", tr, ta);
   char fmt[32]; snprintf(fmt, sizeof fmt, "_t%d", tf);
@@ -138,7 +138,7 @@ int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
 /* Array.new's poly fill keeps an existing shared slot's handle. Static
    reads retain String dispatch even when their storage is the handle. */
 int array_fill_boxes_handle(Compiler *c, int id, int fill) {
-  if (repr_of(c, id).as_ty != TY_POLY_ARRAY || !repr_share_rule(c)) return 0;
+  if (repr_of(c, id).as_ty != TY_POLY_ARRAY) return 0;
   return repr_of(c, fill).kind == RK_STRBUF;
 }
 

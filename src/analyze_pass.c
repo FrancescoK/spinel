@@ -3508,7 +3508,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
        is, and widens the array as the String would: taken as a value of
        run-time kind, the typed store raised TypeError (#9258). An empty
        or String array keeps the boxed reading. */
-    if (c->share_strings && vt == TY_POLY && vnode >= 0 && (is_push || is_idx_write) &&
+    if (vt == TY_POLY && vnode >= 0 && (is_push || is_idx_write) &&
         share_str_value_leaves(c, vnode)) {
       TyKind rt0 = infer_type(c, recv);
       if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY && rt0 != TY_STRH_ARRAY)
@@ -17888,7 +17888,7 @@ int infer_return_types(Compiler *c) {
          Keep that fact available to callers visited before the callee.
          Shared String storage needs it during late inference; leave the
          default build's return convergence unchanged. */
-      if (c->share_strings && c->scopes[s].yields &&
+      if (c->scopes[s].yields &&
           block_given_tail_then_last(c, scope_body_last(c, s)) >= 0) continue;
       scope_set_ret_noblock(&c->scopes[s], TY_UNKNOWN);
     }

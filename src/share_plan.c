@@ -210,7 +210,7 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
      publishes or a new one (or a conversion of it a String answers with
      itself): the dispatch is read as a box, and its handle is bound
      (strbuf_poly_user_base) */
-  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_POLY_ARMS;
+  if (strbuf_poly_user_base(c, v) >= 0) return SPK_POLY_ARMS;
   if (share_value_fresh(c, v, 0)) return SPK_NONE;
   if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
   /* (a call whose answer the C picks up after it, the handle its targets
@@ -568,7 +568,6 @@ int share_plan_targets_cover(Compiler *c, int u) {
    literal's (SP_SHARE_STRING_LITERALS, which the share rule sets), so
    what the call hands on is the object. See share.h. */
 int share_plan_call_answers_literal(Compiler *c, int v) {
-  if (!repr_share_rule(c)) return 0;
   int u = nt_paren_single(c->nt, v);
   if (u < 0 || nt_kind(c->nt, u) != NK_CallNode || nt_ref(c->nt, u, "block") >= 0) return 0;
   int tg[CPT_MAX], n = cplan_targets(c, u, tg, CPT_MAX);
@@ -950,7 +949,7 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
 
 /* Asked live, as the return walk runs before the memo exists. */
 int share_plan_return_box(Compiler *c, int v) {
-  if (!repr_share_rule(c) || !c->share || v < 0) return 0;
+  if (!c->share || v < 0) return 0;
   switch (nt_kind(c->nt, v)) {
   case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode:
   case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode:
@@ -982,8 +981,8 @@ static int share_plan_arms_unrendered(Compiler *c, int v) {
    a call whose route boxes cannot render (strbuf_box_unrendered, also on an
    arm of a conditional) boxes as it did, from its bytes. */
 int share_plan_box_handle(Compiler *c, int v) {
-  if (repr_share_rule(c) && c->share && v >= 0 && strbuf_self_chain_base(c, v) >= 0) return 1;
-  if (!repr_share_rule(c) || !c->share || v < 0 || share_plan_arms_unrendered(c, v) ||
+  if (c->share && v >= 0 && strbuf_self_chain_base(c, v) >= 0) return 1;
+  if (!c->share || v < 0 || share_plan_arms_unrendered(c, v) ||
       share_plan_with_need(c, v, SPR_BOX, SPN_OBJECT).form != SPF_HANDLE)
     return 0;
   /* ...and a route the emitters take: a value that hands on its handle, or
@@ -1267,7 +1266,7 @@ void share_plan_free(Compiler *c) {
    and the table version it was asked under, and its consumer's role. */
 void share_plan_build(Compiler *c) {
   share_plan_free(c);
-  if (!repr_share_rule(c) || !c->share) return;
+  if (!c->share) return;
   int n = c->nt->count;
   c->share_plan = malloc((size_t)n + 1);
   c->share_plan_ty = malloc(sizeof *c->share_plan_ty * ((size_t)n + 1));

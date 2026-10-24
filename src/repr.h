@@ -222,7 +222,8 @@ int repr_sealed(void);
 /* Does the share rule decide which Strings are the shared handle
    (--share-strings, #6765)? Codegen asks this, not the flag: where it is
    0, every emitter takes master's form. */
-int repr_share_rule(const Compiler *c);
+/* The share rule is the only one (one representation): folded away. */
+#define repr_share_rule(c) ((void)(c), 1)
 
 /* R1 (--repr-check): the form a boxer gave a value, recorded at each of
    emit_boxed's and emit_boxed_text's returns, and the form repr_of predicts

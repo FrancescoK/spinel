@@ -110,7 +110,7 @@ static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, i
      any value the String plan can hand over as the handle) */
   int u = nt_paren_single(c->nt, expr);
   int holds = call_publishes_shared_handle(c, expr);
-  if (!holds && u >= 0 && repr_share_rule(c) && comp_ntype(c, u) == TY_STRING && !arg_ran_first(u, 0))
+  if (!holds && u >= 0 && comp_ntype(c, u) == TY_STRING && !arg_ran_first(u, 0))
     holds = share_node_shares(c, u) && share_plan_with_need(c, u, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE &&
             share_plan_producer(c, u, NULL) != SPK_NONE;
   if (!holds) return 0;
@@ -229,7 +229,7 @@ static const char *interp_reader_var(Compiler *c, int call, char *buf, size_t ca
 static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int expr, int *base) {
   const NodeTable *nt = c->nt;
   int u = nt_paren_single(c->nt, expr);
-  if (!repr_share_rule(c) || u < 0) return 0;
+  if (u < 0) return 0;
   int kind = 1, b = u, nil_converted = 0;
   /* a String method that answers its receiver, or nil (`s << "a"`,
      `s.upcase!`, `s.itself`, `s.to_s`, `+s`, `s&.itself`), over a variable: the
@@ -291,7 +291,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
     int pid = parts[k];
     const char *pty = nt_type(nt, pid);
     /* a segment's held parts are read where it ends */
-    if (c->share_strings && k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
+    if (k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
     if (pty && sp_streq(pty, "StringNode")) {
       const char *content = nt_str(nt, pid, "content");
       int off = lits.len;
@@ -737,7 +737,6 @@ static int interp_part_mutates(const NodeTable *nt, int n) {
    every part's String after all of them ran; the parts here are read as each
    runs, a copy of the String at that moment (as for a variable). */
 static void interp_refuse_assign_order(Compiler *c, int id) {
-  if (!repr_share_rule(c)) return;
   const NodeTable *nt = c->nt;
   int *flat = NULL, n = 0, cap = 0;
   interp_flatten(nt, id, &flat, &n, &cap);
@@ -2262,17 +2261,11 @@ static void emit_engine_const_str(Compiler *c, const char *var, const char *lit,
   char key[64];
   snprintf(key, sizeof key, " %s = {", var);
   if (!g_proc_protos.p || !strstr(g_proc_protos.p, key)) {
-    if (repr_share_rule(c))
-      buf_printf(&g_proc_protos,
+    buf_printf(&g_proc_protos,
                  "static sp_StringLiteral %s_slot = { NULL, NULL };\n"
                  "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
                  "{ { (sp_str_hdr *)((char *)&%s_slot + 1), sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
                  var, lit, var, var, lit, lit, lit);
-    else
-      buf_printf(&g_proc_protos,
-                 "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
-                 "{ { NULL, sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
-                 lit, var, lit, lit, lit);
   }
   buf_printf(b, "((const char *)%s.d)", var);
 }
@@ -2391,7 +2384,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if (c->nilnarrow[id] == TY_POLY_ARRAY)
         buf_printf(b, "sp_poly_to_poly_array(%s)", rb2.p ? rb2.p : "");
       else
-        emit_unbox_text(c, repr_share_rule(c) && c->nilnarrow[id] == TY_STRBUF ? repr_of(c, id).as_ty : c->nilnarrow[id],
+        emit_unbox_text(c, c->nilnarrow[id] == TY_STRBUF ? repr_of(c, id).as_ty : c->nilnarrow[id],
                         rb2.p ? rb2.p : "", b);
       free(rb2.p);
       return 1;
@@ -2708,7 +2701,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         free(srefW2.p);
       }
       /* The statement form takes a conditional arm by arm too. */
-      else if (repr_share_rule(c) && strbuf_ivar_store_aliases(c, v))
+      else if (strbuf_ivar_store_aliases(c, v))
         emit_strbuf_ivar_store(c, 1, v, b);
       else if (emit_strbuf_write_handle(c, v, b)) { }
       /* a route that hands on the handle (`@a = yield`, emit_strbuf_route) */
@@ -4071,7 +4064,6 @@ static int lit_elem_carries_handle(Compiler *c, int v) {
    (operand_may_change_string) before anything reads the Array? Its bytes taken
    at the element, the Array kept the String as it was then. */
 static int str_lit_reads_late(Compiler *c, const int *els, int n) {
-  if (!repr_share_rule(c)) return 0;
   int carried = 0;
   for (int j = 0; j < n; j++) {
     if (nt_kind(c->nt, els[j]) == NK_SplatNode || nil_store_sfx(c, "Str", els[j])[0]) return 0;
@@ -4802,7 +4794,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        the handle it publishes, or by the receiver's where it is a builtin
        call answering its receiver (`s.itself || v`, share_plan_box_handle),
        not from its bytes. */
-    int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
+    int lt_hbox = res == TY_POLY &&
                   (lt == TY_STRBUF ||
                    (lt == TY_STRING && (face_str_bang_call(c, nt_paren_single(c->nt, left)) ||
                                         strbuf_var_handle(c, nt_paren_single(c->nt, left), NULL) ||
@@ -5024,7 +5016,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                      !node_is_empty_container(nt, e);
     /* --share-strings: under a handle demand (strbuf_route_begin) the
        result slot is the handle, and each value is taken as one */
-    int hdem = rt == TY_STRBUF && repr_share_rule(c) && repr_of(c, id).demand;
+    int hdem = rt == TY_STRBUF && repr_of(c, id).demand;
     /* A call spinel folds into an unconditional raise carries whatever C type
        that raise helper returns, which need not match the merged slot (the
        constant-folded `nil.clone(freeze: false)` yields an int against an
@@ -5360,8 +5352,8 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
        bytes off the handle where it uses them (sp_srange_first /
        sp_srange_last), so a change in place to the endpoint's String shows
        through the Range (#8321) */
-    int lsh = repr_share_rule(c) && srange_end_keeps(c, id, left);
-    int rsh = repr_share_rule(c) && srange_end_keeps(c, id, right);
+    int lsh = srange_end_keeps(c, id, left);
+    int rsh = srange_end_keeps(c, id, right);
     if (lsh || rsh) {
       int hl = ++g_tmp, hr = ++g_tmp, tl = ++g_tmp, tr = ++g_tmp;
       buf_puts(b, "({ ");
@@ -5638,7 +5630,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (g_argov_node[i] == id) {
       /* (--share-strings: a handle bound by ran_first_bind_read is read as
          its String, and as the handle where the node is viewed as one) */
-      int th = repr_share_rule(c) && comp_ntype(c, id) == TY_STRBUF ? ran_first_read_handle(id) : -1;
+      int th = comp_ntype(c, id) == TY_STRBUF ? ran_first_read_handle(id) : -1;
       if (th >= 0) buf_printf(b, "_t%d", th);
       else buf_puts(b, g_argov_text[i]);
       /* a reader call the shim has substituted with its shadow, written back */
@@ -6337,7 +6329,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         /* --share-strings: a handle held here is the one the value's Array
            boxes (ran_first_handle), not its variable's, which the stores
            may have rebound */
-        if (vt == TY_STRBUF && repr_share_rule(c)) ran_first_bind(v, t, t);
+        if (vt == TY_STRBUF) ran_first_bind(v, t, t);
         else view_bind(v, "_t%d", t);
       }
       free(vb.p);
@@ -6374,7 +6366,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     const char *sop = nt_str(nt, id, "binary_operator");
     /* a `+=` on an ivar the rule holds as the shared handle answers the
        String it built, read from the handle as the ivar's own read is */
-    if (repr_share_rule(c) && svt == TY_STRBUF && sop && is_plus_op(sop)) {
+    if (svt == TY_STRBUF && sop && is_plus_op(sop)) {
       if (g_pre) {
         emit_stmt(c, id, g_pre, g_indent);
         buf_printf(b, "sp_strbuf_read_pub(%s)", ref);

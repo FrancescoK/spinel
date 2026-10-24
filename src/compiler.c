@@ -112,7 +112,7 @@ Compiler *comp_new(const NodeTable *nt) {
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
      reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
      are. An environment that exports the variable as "0" or "" means off. */
-  c->share_strings = sp_share_strings_env();
+  c->share_strings = 1;
   comp_node_pbases(c);
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;

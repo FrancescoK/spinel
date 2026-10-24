@@ -223,10 +223,9 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     else if (p[0] == '$' && (p[1] == 'B' || p[1] == 'E')) {
       int beg = p[1] == 'B';
       int chk = x->name && is_endpoint_query(x->name);
-      if (repr_share_rule(c) && chk)
+      if (chk)
         buf_printf(b, "sp_srange_%s(sp_srange_need_end(_t%d, %d))", beg ? "first" : "last", x->t0, !beg);
-      else if (repr_share_rule(c)) buf_printf(b, "sp_srange_%s(_t%d)", beg ? "first" : "last", x->t0);
-      else buf_printf(b, "_t%d.%s", x->t0, beg ? "first" : "last");
+      else buf_printf(b, "sp_srange_%s(_t%d)", beg ? "first" : "last", x->t0);
       p++;
     }
     else if (p[0] == '$' && p[1] == 'R') {

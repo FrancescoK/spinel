@@ -1495,7 +1495,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
   const NodeTable *nt = c->nt;
   /* The zero-argument row still checks frozen state and answers self,
      including when an outer call has held the receiver as a handle. */
-  if (repr_share_rule(c) && argc == 0 && is_string_append_or_prepend(name) &&
+  if (argc == 0 && is_string_append_or_prepend(name) &&
       bop_answers_self(TY_STRING, name, argc, 0) == BOPF_SELF) {
     Buf ref; memset(&ref, 0, sizeof ref);
     if (strbuf_recv_handle(c, id, nt_paren_single(c->nt, recv), &ref)) {

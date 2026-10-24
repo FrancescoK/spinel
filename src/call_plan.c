@@ -187,7 +187,7 @@ static int cplan_called_before_def(Compiler *c, int id, int mi) {
 int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
-  return c->share_strings && mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
+  return mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
          c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
 }
 /* The existing boxed dispatch candidates also serve literal-name send arms. */
@@ -843,7 +843,7 @@ static void ct_index_build(Compiler *c) {
    that implicit edge just as it binds an explicit call. */
 static int ct_exception_text(Compiler *c, int id, int *out) {
   const char *name = nt_str(c->nt, id, "name");
-  if (!c->share_strings || !name || nt_int(c->nt, id, "builtin_only", 0) ||
+  if (!name || nt_int(c->nt, id, "builtin_only", 0) ||
       !is_exception_message(name) || call_plain_argc(c, id) != 0 ||
       nt_ref(c->nt, id, "block") >= 0) return -2;
   int recv = nt_ref(c->nt, id, "receiver");
@@ -956,7 +956,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
      asks each class the receiver can hold for its own method, and adding
      every class's here widened the facts of the bundled library's calls,
      a Set's #inspect over its elements, for nothing) */
-  if (c->share_strings && cn && !is_text_conversion(cn)) {
+  if (cn && !is_text_conversion(cn)) {
     int np = 0;
     const PolyCand *pc = comp_poly_candidates(c, cn, &np);
     for (int i = 0; i < np; i++) {
@@ -1980,7 +1980,7 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
     if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF)) continue;
     /* --share-strings: a handle into a String parameter passes its bytes
        (emit_poly_temp_as reads the held handle) */
-    if (pt0 == TY_STRING && at0 == TY_STRBUF && repr_share_rule(c)) continue;
+    if (pt0 == TY_STRING && at0 == TY_STRBUF) continue;
     int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
     int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
     if (pc && ac && pt0 != at0 &&
@@ -2135,7 +2135,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
 TyKind cplan_poly_arg_storage(Compiler *c, int id) {
   Repr r = repr_of(c, id);
   if (r.strbuf_src == RS_SLOT_POLY) return TY_POLY;
-  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  if (r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
   return r.as_ty;
 }
 
@@ -2855,7 +2855,7 @@ int cplan_nil(Compiler *c, int id) {
      including a subclass whose #message invokes #to_s implicitly. */
   int exc_text = is_exception_message(nm) &&
     (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))));
-  if (!(cplan_nil_family(rt) || exc_text || (rt == TY_STRBUF && c->share_strings)) || comp_ntype(c, r) != rt) return CN_NONE;
+  if (!(cplan_nil_family(rt) || exc_text || (rt == TY_STRBUF)) || comp_ntype(c, r) != rt) return CN_NONE;
   Repr rr = repr_of(c, r);
   if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
   /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960):

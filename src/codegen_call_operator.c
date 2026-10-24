@@ -1674,7 +1674,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* (--share-strings: so does a call answering its receiver over a
      handle, `id(s).concat(x)[0] = v`, held as that handle first, run once:
      the store takes it from the temp, ran_first_handle) */
-  int aset_route = recv >= 0 && repr_share_rule(c) && repr_of(c, recv).as_ty == TY_STRING &&
+  int aset_route = recv >= 0 && repr_of(c, recv).as_ty == TY_STRING &&
                    strbuf_self_route(c, recv) && g_n_argov + 2 < MAX_ARG_OVERRIDE;
   /* (one a `&.` guard holds already is taken from there: ran_first_handle) */
   int aset_held = aset_route && ran_first_handle(recv) >= 0;

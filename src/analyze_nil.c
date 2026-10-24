@@ -59,7 +59,7 @@
    the shared String handle a String slot became (#6765), whose NULL is nil
    as the String's is */
 static int nf_tracked(const Compiler *c, TyKind t) {
-  return nil_fact_tracked(t) || (t == TY_STRBUF && c->share_strings);
+  return nil_fact_tracked(t) || (t == TY_STRBUF);
 }
 
 /* ---- (class, ivar) and per-name side tables ---- */
@@ -814,7 +814,7 @@ static int nf_call(NF *f, int v) {
   /* --share-strings: `then` with a literal block answers its block's value,
      which can be the receiver's nil (a route of the shared String, which a
      parameter it is handed may then bind) */
-  if (c->share_strings && r >= 0 && is_then_alias(nm)) {
+  if (r >= 0 && is_then_alias(nm)) {
     int blk = nt_ref(nt, v, "block");
     /* the tail's value, or a `next`'s (as a yielded block's value is read) */
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
