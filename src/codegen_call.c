@@ -10670,14 +10670,13 @@ static int time_sec_fractional(Compiler *c, int node) {
 }
 
 /* A fractional seconds field as the whole seconds a civil constructor takes,
-   with its value kept in the double temp _t<ts> for the nanoseconds. */
+   with its nanoseconds stored in the int32_t temp _t<ts> (sp_time_sec_split_*). */
 static void emit_time_sec_whole(Compiler *c, int node, int ts, Buf *b) {
   Repr r = repr_of(c, node);
-  buf_printf(b, "(int64_t)(_t%d = ", ts);
-  if (r.as_ty == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, node, b); buf_puts(b, ")"); }
-  else if (r.kind == RK_BOXED) { buf_puts(b, "sp_poly_time_sec_f("); emit_boxed(c, node, b); buf_puts(b, ")"); }
-  else emit_expr(c, node, b);
-  buf_puts(b, ")");
+  if (r.as_ty == TY_RATIONAL) { buf_puts(b, "sp_time_sec_split_r("); emit_expr(c, node, b); }
+  else if (r.kind == RK_BOXED) { buf_puts(b, "sp_poly_time_sec_split("); emit_boxed(c, node, b); }
+  else { buf_puts(b, "sp_time_sec_split_f("); emit_expr(c, node, b); }
+  buf_printf(b, ", &_t%d)", ts);
 }
 
 /* Emit an unconditional ArgumentError raise into the prelude when `argc`
@@ -10770,46 +10769,17 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
     return 1;
   }
   if (argc < 1 || argc > 7) return 0;
-  /* a fractional seconds field (Rational/Float) for the named class methods:
-     split into whole seconds and a nanosecond remainder (#2638). */
-  if (!is_new && argc == 6) {
-    Repr sectr = repr_of(c, argv[5]);
-    TyKind sect = sectr.as_ty;
-    if (sect == TY_RATIONAL || sect == TY_FLOAT || sect == TY_POLY) {
-      int ts = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", ts);
-      if (sect == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[5], b); buf_puts(b, ")"); }
-      /* a boxed field: a Rational's or a Float's fraction is kept, anything
-         else is read as the whole-second field it was */
-      else if (sectr.kind == RK_BOXED) { buf_puts(b, "sp_poly_time_sec_f("); emit_boxed(c, argv[5], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[5], b);
-      buf_printf(b, "; SP_TIME_TMP(_t%da) = sp_time_new%s(", ts, is_utc ? "_utc" : "");
-      for (int i = 0; i < 5; i++) {
-        if (i) buf_puts(b, ", ");
-        Repr fitr = repr_of(c, argv[i]);
-        TyKind fit = fitr.as_ty;
-        if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-        else if (fitr.kind == RK_BOXED || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
-        else if (fit == TY_NIL) buf_puts(b, (i == 1 || i == 2) ? "1" : "0");  /* a nil field is its default */
-        else emit_int_expr(c, argv[i], b);
-      }
-      buf_printf(b, ", (int64_t)_t%d); _t%da->tv_nsec = (int32_t)((_t%d - (double)(int64_t)_t%d) * 1e9 + 0.5); _t%da; })",
-                 ts, ts, ts, ts, ts);
-      return 1;
-    }
-  }
-  /* Time.new with a fractional seconds field: the constructor takes the whole
-     seconds and the fraction is set as nanoseconds, as above. */
-  if (is_new) {
-    int npos = argc >= 2 && nt_argv_kwh(nt, argv, argc) >= 0 ? argc - 1 : argc;
-    if (npos >= 6 && time_sec_fractional(c, argv[5])) {
-      int ts = ++g_tmp;
-      buf_printf(b, "({ double _t%d = 0; SP_TIME_TMP(_t%da) = ", ts, ts);
-      emit_time_civil_fields(c, argv, argc, is_utc, is_new, ts, b);
-      buf_printf(b, "; _t%da->tv_nsec = (int32_t)((_t%d - (double)(int64_t)_t%d) * 1e9 + 0.5); _t%da; })",
-                 ts, ts, ts, ts);
-      return 1;
-    }
+  /* a fractional seconds field (a Float or a Rational): the constructor
+     takes the whole seconds and the nanoseconds are set after it (#2638).
+     For the named class methods only the six-field form, as a 7th argument
+     is their usec. */
+  int npos = is_new && argc >= 2 && nt_argv_kwh(nt, argv, argc) >= 0 ? argc - 1 : argc;
+  if ((is_new ? npos >= 6 : argc == 6) && time_sec_fractional(c, argv[5])) {
+    int ts = ++g_tmp;
+    buf_printf(b, "({ int32_t _t%d = 0; SP_TIME_TMP(_t%da) = ", ts, ts);
+    emit_time_civil_fields(c, argv, argc, is_utc, is_new, ts, b);
+    buf_printf(b, "; _t%da->tv_nsec = _t%d; _t%da; })", ts, ts, ts);
+    return 1;
   }
   return emit_time_civil_fields(c, argv, argc, is_utc, is_new, 0, b);
 }
