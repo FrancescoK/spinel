@@ -157,7 +157,7 @@ int nil_fact_tracked(TyKind t);
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
 extern int g_final_bind_pass;
-/* The bind pass that decides container parameter seeds a box reached mid-fixpoint (param_seed_holds). */
+/* The pass that decides container seeds a box reached mid-fixpoint (param_seed_holds, ret_seed_holds, class_ivar_pin_holds). */
 extern int g_seed_box_settled;
 
 /* Unified value type of a slot's `recv[k] = v` writes; nwrites (optional)

@@ -3240,6 +3240,16 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	    cmp -s "$$tmp/sdk.out" test/rbs-seed/settle_drop_keeps_unrelated_pins.expected || { echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins failed or output differs from CRuby)"; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (settle_drop_keeps_unrelated_pins: C did not compile)"; ok=0; fi; \
 	;; \
+	array_ret_ivar_seed_transient_box) \
+	$(SPINEL) test/rbs-seed/array_ret_ivar_seed_transient_box.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/rst.c" 2>/dev/null; \
+	grep -q 'sp_IntArray \* sp_SeedBoxRetPlan_row(' "$$tmp/rst.c" || { echo "rbs-seed-test: FAIL (an Array return seed gave way to a box that settled as its own form)"; ok=0; }; \
+	grep -q 'sp_IntArray \* iv_last;' "$$tmp/rst.c" || { echo "rbs-seed-test: FAIL (an Array ivar pin gave way to a box that settled as its own form)"; ok=0; }; \
+	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/rst.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/rst" 2>"$$tmp/rst.err"; then \
+	  "$$tmp/rst" > "$$tmp/rst.out" 2>/dev/null && \
+	    cmp -s "$$tmp/rst.out" test/rbs-seed/array_ret_ivar_seed_transient_box.expected || { echo "rbs-seed-test: FAIL (array_ret_ivar_seed_transient_box failed or output differs from CRuby)"; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (array_ret_ivar_seed_transient_box: C did not compile)"; ok=0; fi; \
+	;; \
 	array_param_seed_transient_box) \
 	$(SPINEL) test/rbs-seed/array_param_seed_transient_box.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/pst.c" 2>/dev/null; \

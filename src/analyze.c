@@ -27,9 +27,10 @@ int g_arm_check = 0;
    parameter that stayed UNKNOWN through the fixpoint (see bind_call_params);
    applied only after convergence so any concrete kind wins first. */
 int g_final_bind_pass = 0;
-/* Set for the one bind pass that decides, on the settled types, the
-   container parameter seeds a box reached while the fixpoint ran
-   (LocalVar.rbs_box_held, an_settle_seed_boxes). */
+/* Set for the one pass that decides, on the settled types, the container
+   seeds a box reached while the fixpoint ran: a parameter's, a return's and
+   an ivar's (LocalVar.rbs_box_held, Scope.ret_rbs_box_held,
+   ClassInfo.ivar_box_held; an_settle_seed_boxes). */
 int g_seed_box_settled = 0;
 /* Set while the type fixpoint iterates: a pass that would otherwise GUESS a
    type from ambiguous or not-yet-arrived evidence must instead leave the slot
@@ -5977,12 +5978,15 @@ static int seed_symkey_box_gives_way(TyKind seed, TyKind val) {
 }
 
 /* Does ivar `name`'s pin hold against a write of `vt`? One that gives way
-   is dropped, and the slot re-derives from its writes. */
+   is dropped, and the slot re-derives from its writes. A box gives way only
+   on the settled types, as for a parameter's seed (param_seed_holds). */
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
   if (!class_ivar_pinned(ci, name)) return 0;
   int iv = comp_ivar_index(ci, name);
-  if (iv < 0 || !(seed_form_gives_way(ci->ivar_types[iv], vt) || seed_box_gives_way(ci->ivar_types[iv], vt)))
-    return 1;
+  if (iv < 0) return 1;
+  int form = seed_form_gives_way(ci->ivar_types[iv], vt);
+  if (!form && !seed_box_gives_way(ci->ivar_types[iv], vt)) return 1;
+  if (!form && !g_seed_box_settled) { ci->ivar_box_held = 1; return 1; }
   class_unpin_ivar(ci, name);
   ivar_set_type(ci, iv, TY_UNKNOWN);
   return 0;
@@ -6006,11 +6010,15 @@ int param_seed_holds(LocalVar *lv, TyKind at) {
   return 0;
 }
 
-/* And a return's against the value its body answers. */
+/* And a return's against the value its body answers; a box, again, only on
+   the settled types. */
 int ret_seed_holds(Scope *s, TyKind r) {
   if (!s->ret_rbs_seeded) return 0;
-  int boxed = seed_box_gives_way(s->ret, r) || seed_symkey_box_gives_way(s->ret, r);
-  if (!seed_form_gives_way(s->ret, r) && !boxed) return 1;
+  int symkey = seed_symkey_box_gives_way(s->ret, r);
+  int boxed = seed_box_gives_way(s->ret, r) || symkey;
+  int form = seed_form_gives_way(s->ret, r);
+  if (!form && !boxed) return 1;
+  if (!form && !symkey && !g_seed_box_settled) { s->ret_rbs_box_held = 1; return 1; }
   /* The box the body answers keeps its form, which only the run time knows,
      but the seed still says what it is: a Hash, or an Array. A yielding
      method can be spliced into its caller, past the check that makes it so. */
@@ -49405,21 +49413,34 @@ static int an_retract_stale_reverse_widening(Compiler *c) {
   return any;
 }
 
-/* A container parameter seed held against a box while the types settled
-   (param_seed_holds): bind once more on the settled types, where a call that
-   still hands it a box which may be another form drops the seed. 1 when one
-   did: the program then derives again without it. */
+/* A container seed held against a box while the types settled (a
+   parameter's, a return's, an ivar's pin: param_seed_holds, ret_seed_holds,
+   class_ivar_pin_holds): derive their bindings, returns and ivar writes once
+   more on the settled types, where a box which may still be another form
+   drops the seed. 1 when one did: the program then derives again without
+   it. Only a parameter's drop clears local pins (below): a return's or an
+   ivar's leaves them, as narrowing under one is not a case we have seen. */
 static int an_settle_seed_boxes(Compiler *c) {
   int held = 0;
-  for (int s = 0; s < c->nscopes; s++)
+  for (int s = 0; s < c->nscopes; s++) {
+    held |= c->scopes[s].ret_rbs_box_held;
     for (int i = 0; i < c->scopes[s].nlocals; i++) held |= c->scopes[s].locals[i].rbs_box_held;
+  }
+  for (int k = 0; k < c->nclasses; k++) held |= c->classes[k].ivar_box_held;
   if (!held) return 0;
+  int *pins = (int *)malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  for (int k = 0; k < c->nclasses; k++) pins[k] = c->classes[k].n_rbs_pin_ivars;
+  int nclasses = c->nclasses;
   g_seed_box_settled = 1;
   infer_param_types(c);
+  infer_ivar_types(c);
+  infer_return_types(c);
   g_seed_box_settled = 0;
   int dropped = 0;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
+    if (sc->ret_rbs_box_held && !sc->ret_rbs_seeded) dropped = 1;
+    sc->ret_rbs_box_held = 0;
     int here = 0;
     for (int i = 0; i < sc->nlocals; i++) {
       LocalVar *lv = &sc->locals[i];
@@ -49442,6 +49463,11 @@ static int an_settle_seed_boxes(Compiler *c) {
       lv->oa_grace = 0;
     }
   }
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k < nclasses && c->classes[k].ivar_box_held && c->classes[k].n_rbs_pin_ivars < pins[k]) dropped = 1;
+    c->classes[k].ivar_box_held = 0;
+  }
+  free(pins);
   return dropped;
 }
 
