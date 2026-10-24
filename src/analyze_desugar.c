@@ -2299,12 +2299,21 @@ static void cg_mark_ancestors(Compiler *c, int k, unsigned char *vis, int depth)
   }
 }
 
+/* Is class K the class A or one below it? */
+static int cg_class_below(Compiler *c, int k, int a) {
+  for (int n = 0; k >= 0 && k < c->nclasses && n < 64; k = c->classes[k].parent, n++)
+    if (k == a) return 1;
+  return 0;
+}
+
 /* The candidates a const_get on the module named RNM (NULL when it is not
    known here) can answer, into *out (pointers into CS): the constants RNM,
    its ancestors and the modules they include hold, the top-level ones, and
    the paths whose first segment is one of those -- what CRuby's lookup
-   reaches. A receiver not known here takes them all. Answers the count. */
-static int cg_cands_for_recv(Compiler *c, const CgCands *cs, const char *rnm, char ***out) {
+   reaches. A `self` receiver (SELF) can be a subclass at run time, in an
+   inherited class method: each class below RNM adds its own. A receiver
+   not known here takes them all. Answers the count. */
+static int cg_cands_for_recv(Compiler *c, const CgCands *cs, const char *rnm, int self, char ***out) {
   *out = malloc(sizeof(char *) * (size_t)(cs->n > 0 ? cs->n : 1));
   if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int rk = rnm ? comp_class_index(c, rnm) : -1;
@@ -2313,6 +2322,8 @@ static int cg_cands_for_recv(Compiler *c, const CgCands *cs, const char *rnm, ch
   unsigned char *ok = calloc((size_t)cs->n + 1, 1);
   if (!vis || !ok) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   if (rk >= 0) cg_mark_ancestors(c, rk, vis, 0);
+  for (int k = 0; self && rk >= 0 && k < c->nclasses; k++)
+    if (k != rk && cg_class_below(c, k, rk)) cg_mark_ancestors(c, k, vis, 0);
   int n = 0;
   for (int i = 0; i < cs->n; i++) {
     const CgCand *cd = &cs->v[i];
@@ -2409,7 +2420,7 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     if (nrest > 8) continue;
     int rest[8]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];
     free(cand);
-    int ncand = cg_cands_for_recv(c, &cs, const_get_recv_name(c, id, recv), &cand);
+    int ncand = cg_cands_for_recv(c, &cs, const_get_recv_name(c, id, recv), nt_kind(nt, recv) == NK_SelfNode, &cand);
     if (ncand == 0) continue;
     int base = nt->count;
     int *arms = (int *)malloc(sizeof(int) * (size_t)ncand);

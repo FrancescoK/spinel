@@ -4755,10 +4755,18 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
                   "_r%d = 0; } } while (0); _r%d; })", t, t, t, t, t);
     return 1;
   }
-  buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
-                "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); "
-                "_r%d = sp_box_nil(); } } while (0); _r%d; })",
-             t, t, t, rnm ? rnm : "", rnm ? "::" : "", t, t, t);
+  /* `self` in a class method is the class it runs on, a subclass too */
+  Buf sv = {0, 0, 0};
+  if (rvt && sp_streq(rvt, "SelfNode") && rk >= 0 && repr_of(c, recv).as_ty == TY_CLASS) emit_expr(c, recv, &sv);
+  buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); ", t, t, t);
+  if (sv.p)
+    buf_printf(b, "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %%s::%%s\", sp_class_val_name(sp_box_class(%s)), _n%d)); ",
+               sv.p, t);
+  else
+    buf_printf(b, "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); ",
+               rnm ? rnm : "", rnm ? "::" : "", t);
+  buf_printf(b, "_r%d = sp_box_nil(); } } while (0); _r%d; })", t, t);
+  free(sv.p);
   return 1;
 }
 
