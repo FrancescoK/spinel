@@ -1,0 +1,19 @@
+599
+0
+512
+:own
+:base
+:mix
+:top
+Kid::Inner
+Away::Box
+NameError: uninitialized constant Kid::FAR
+NameError: uninitialized constant Kid::Box
+NameError: uninitialized constant Kid::DEEP
+NameError: uninitialized constant Kid::D3
+[true, false, true, false]
+Away::Box
+:top
+NameError: uninitialized constant FAR
+:far
+[1, 2]
