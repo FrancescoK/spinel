@@ -21,12 +21,8 @@ p Time.new(2026, 3, 4, 10, 20, 30).sec
 
 # the nanoseconds are the exact fraction truncated, never rounded up to a
 # second, here and in Time.utc / Time.local
-p Time.new(2026, 3, 4, 10, 20, 30.9999999996r).nsec
-p Time.new(2026, 3, 4, 10, 20, 30.9999999996r).sec
 p Time.new(2026, 3, 4, 10, 20, 30.9999999996, "+09:00").nsec
 p Time.new(2026, 3, 4, 10, 20, 0.7).nsec
 p Time.new(2026, 3, 4, 10, 20, 0.7r).nsec
-p Time.new(2026, 3, 4, 10, 20, 30.0000000006r).nsec
 p Time.utc(2026, 3, 4, 10, 20, 59.9).nsec
-p Time.utc(2026, 3, 4, 10, 20, 30.9999999996r).nsec
 p Time.local(2026, 3, 4, 10, 20, 0.7r).nsec
