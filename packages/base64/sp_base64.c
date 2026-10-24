@@ -25,8 +25,22 @@ static const char *b64_enc(const char *src, size_t n, const char *alpha, int wra
   size_t outlen = groups * 4;
   size_t nl = wrap > 0 ? (outlen + (size_t)wrap - 1) / (size_t)wrap : 0;
   char *r = sp_str_alloc_raw(outlen + nl + 1);
-  size_t o = 0, col = 0;
-  for (size_t i = 0; i < n; i += 3) {
+  size_t o = 0, col = 0, i = 0;
+  const unsigned char *u = (const unsigned char *)src;
+  /* whole groups of three bytes, four chars each: when the line width is a
+     multiple of four (CRuby's 60, or none) a newline falls between groups */
+  if (wrap % 4 == 0) {
+    for (; i + 3 <= n; i += 3) {
+      unsigned v = (unsigned)u[i] << 16 | (unsigned)u[i + 1] << 8 | u[i + 2];
+      r[o] = alpha[v >> 18];
+      r[o + 1] = alpha[(v >> 12) & 63];
+      r[o + 2] = alpha[(v >> 6) & 63];
+      r[o + 3] = alpha[v & 63];
+      o += 4;
+      if (wrap > 0 && (col += 4) == (size_t)wrap) { r[o++] = '\n'; col = 0; }
+    }
+  }
+  for (; i < n; i += 3) {
     unsigned v = (unsigned char)src[i] << 16;
     if (i + 1 < n) v |= (unsigned char)src[i + 1] << 8;
     if (i + 2 < n) v |= (unsigned char)src[i + 2];
@@ -46,29 +60,59 @@ static const char *b64_enc(const char *src, size_t n, const char *alpha, int wra
   return r;
 }
 
-/* decode, skipping whitespace; '-_' and '+/' both accepted so one decoder
-   serves the standard and urlsafe forms (CRuby's decode64 is lax the same
-   way for whitespace; alphabets stay distinct per entry point below). */
-static int b64_val(char c, const char *alpha) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == alpha[62]) return 62;
-  if (c == alpha[63]) return 63;
-  return -1;
-}
+/* A byte's value in an alphabet, XX for every byte outside it (whitespace and
+   `=` included): one load per byte in place of a chain of range tests. The
+   two alphabets differ only in their last two chars. */
+enum { XX = 0xFF };
+static const unsigned char B64_DEC_STD[256] = {
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, 62, XX, XX, XX, 63,
+  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, XX, XX, XX, XX, XX, XX,
+  XX,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, XX, XX, XX, XX, XX,
+  XX, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX
+};
+static const unsigned char B64_DEC_URL[256] = {
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, 62, XX, XX,
+  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, XX, XX, XX, XX, XX, XX,
+  XX,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, XX, XX, XX, XX, 63,
+  XX, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX,
+  XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX, XX
+};
 
-static const char *b64_dec(const char *src, size_t n, const char *alpha) {SP_GC_ROOT_STR(src);
+/* decode, skipping whitespace, `=` and any byte outside the alphabet, as
+   CRuby's decode64 does; the standard and urlsafe entry points each pass
+   their own alphabet's table. */
+static const char *b64_dec(const char *src, size_t n, const unsigned char *tbl) {SP_GC_ROOT_STR(src);
   char *r = sp_str_alloc_raw(n / 4 * 3 + 4);
   size_t o = 0;
   unsigned acc = 0;
   int nb = 0;
   for (size_t i = 0; i < n; i++) {
-    char c = src[i];
-    if (c == '\n' || c == '\r' || c == ' ' || c == '\t' || c == '=') continue;
-    int v = b64_val(c, alpha);
-    if (v < 0) continue;   /* CRuby decode64 ignores out-of-alphabet bytes */
-    acc = (acc << 6) | (unsigned)v;
+    unsigned v = tbl[(unsigned char)src[i]];
+    if (v == XX) continue;   /* CRuby decode64 ignores out-of-alphabet bytes */
+    acc = (acc << 6) | v;
     if (++nb == 4) { r[o++] = (char)(acc >> 16); r[o++] = (char)(acc >> 8); r[o++] = (char)acc; acc = 0; nb = 0; }
   }
   if (nb == 3) { acc <<= 6; r[o++] = (char)(acc >> 16); r[o++] = (char)(acc >> 8); }
@@ -82,12 +126,24 @@ static const char *b64_dec(const char *src, size_t n, const char *alpha) {SP_GC_
    of 4, every byte must be an alphabet char or valid trailing `=` padding, and
    any stray byte (whitespace, newline, out-of-alphabet) raises ArgumentError --
    unlike b64_dec, which silently skips them. */
-static const char *b64_dec_strict(const char *src, size_t n, const char *alpha) {SP_GC_ROOT_STR(src);
+static const char *b64_dec_strict(const char *src, size_t n, const unsigned char *tbl) {SP_GC_ROOT_STR(src);
   if (n % 4 != 0) sp_raise_cls("ArgumentError", "invalid base64");
   char *r = sp_str_alloc_raw(n / 4 * 3 + 4);
-  size_t o = 0;
-  for (size_t i = 0; i < n; i += 4) {
-    int q[4]; int npad = 0;
+  size_t o = 0, i = 0;
+  const unsigned char *u = (const unsigned char *)src;
+  /* every block but the last: four alphabet chars, as `=` is padding only
+     at the end; an XX in any of them sets the high bit of their union */
+  for (; i + 4 < n; i += 4) {
+    unsigned a = tbl[u[i]], b = tbl[u[i + 1]], c = tbl[u[i + 2]], d = tbl[u[i + 3]];
+    if ((a | b | c | d) & 0x80) sp_raise_cls("ArgumentError", "invalid base64");
+    unsigned acc = a << 18 | b << 12 | c << 6 | d;
+    r[o] = (char)(acc >> 16);
+    r[o + 1] = (char)(acc >> 8);
+    r[o + 2] = (char)acc;
+    o += 3;
+  }
+  for (; i < n; i += 4) {
+    unsigned q[4]; int npad = 0;
     for (int k = 0; k < 4; k++) {
       char c = src[i + k];
       if (c == '=') {
@@ -98,13 +154,12 @@ static const char *b64_dec_strict(const char *src, size_t n, const char *alpha) 
       }
       else {
         if (npad) sp_raise_cls("ArgumentError", "invalid base64");  /* data after pad */
-        int v = b64_val(c, alpha);
-        if (v < 0) sp_raise_cls("ArgumentError", "invalid base64");
+        unsigned v = tbl[(unsigned char)c];
+        if (v == XX) sp_raise_cls("ArgumentError", "invalid base64");
         q[k] = v;
       }
     }
-    unsigned acc = ((unsigned)q[0] << 18) | ((unsigned)q[1] << 12) |
-                   ((unsigned)q[2] << 6) | (unsigned)q[3];
+    unsigned acc = (q[0] << 18) | (q[1] << 12) | (q[2] << 6) | q[3];
     r[o++] = (char)(acc >> 16);
     if (npad < 2) r[o++] = (char)(acc >> 8);
     if (npad < 1) r[o++] = (char)acc;
@@ -117,6 +172,6 @@ static const char *b64_dec_strict(const char *src, size_t n, const char *alpha) 
 const char *sp_base64_encode64(const char *s)        { return b64_enc(s, sp_str_byte_len(s), B64_STD, 60); }
 const char *sp_base64_strict_encode64(const char *s) { return b64_enc(s, sp_str_byte_len(s), B64_STD, 0); }
 const char *sp_base64_urlsafe_encode64(const char *s){ return b64_enc(s, sp_str_byte_len(s), B64_URL, 0); }
-const char *sp_base64_decode64(const char *s)        { return b64_dec(s, sp_str_byte_len(s), B64_STD); }
-const char *sp_base64_strict_decode64(const char *s) { return b64_dec_strict(s, sp_str_byte_len(s), B64_STD); }
-const char *sp_base64_urlsafe_decode64(const char *s){ return b64_dec(s, sp_str_byte_len(s), B64_URL); }
+const char *sp_base64_decode64(const char *s)        { return b64_dec(s, sp_str_byte_len(s), B64_DEC_STD); }
+const char *sp_base64_strict_decode64(const char *s) { return b64_dec_strict(s, sp_str_byte_len(s), B64_DEC_STD); }
+const char *sp_base64_urlsafe_decode64(const char *s){ return b64_dec(s, sp_str_byte_len(s), B64_DEC_URL); }
