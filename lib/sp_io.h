@@ -327,6 +327,9 @@ SP_NORETURN SP_COLD void sp_dir_raise_closed(void);
    struct because the poly to_s and spaceship in spinel_rt.h call them. */
 const char *sp_Dir_to_s(sp_Dir *d);
 sp_RbVal sp_Dir_cmp(sp_Dir *d, sp_RbVal other);
+/* and the boxed count/include? there read the handle through these */
+const char *sp_Dir_read(sp_Dir *d);
+sp_Dir *sp_Dir_rewind(sp_Dir *d);
 
 /* ---- sp_io_pipe/sysopen relocated from spinel_rt.h (0 optcarrot uses). ---- */
 sp_PolyArray *sp_io_pipe(void);
