@@ -3741,19 +3741,6 @@ static int iter_row_share(const IterRow *r) {
   }
 }
 
-int iter_keeps_no_block_value(TyKind fam, const char *name, int argc) {
-  const IterRow *r = name ? iter_row(fam, name, argc, 0) : NULL;
-  if (!r) return 0;
-  switch (r->answer) {
-  case IA_RECV: case IA_SOME: case IA_ONE: case IA_PARTS:
-    return 1;
-  case IA_MEMO:
-    /* each_with_object's memo is its argument; inject's is the block's value */
-    return r->nyield >= 1 && r->yield[0] != YS_MEMO;
-  default:
-    return 0;
-  }
-}
 
 /* The families whose iterator rows the share analysis reads: a number's or
    a Range's iterators hand their blocks numbers, and the family's "*" row
@@ -3877,40 +3864,7 @@ int bop_share(TyKind fam, const char *name) {
   return s;
 }
 
-/* The first index of the sorted rows at or after lo whose receiver kind is
-   past rk (rk's rows run up to it), or, with name, whose (kind, name) is not
-   below (rk, name) */
-static int bop_index_bound(int lo, int hi, TyKind rk, const char *name) {
-  while (lo < hi) {
-    int mid = lo + (hi - lo) / 2;
-    const BuiltinOp *r = &bop_rows[bop_index[mid]];
-    if (name ? bop_cmp_key(rk, name, r) > 0 : r->recv <= rk) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
 
-int bop_share_pure_anywhere(const char *name, int argc, int has_block) {
-  if (!name || bop_share_find(BOP_ANY_RECV, name) || bop_share_find(BOP_KERNEL, name)) return 0;
-  if (!bop_indexed) bop_build_index();
-  /* each receiver kind's rows of the name, a search in the kind's run */
-  for (int lo = 0; lo < BOP_NROWS;) {
-    TyKind rk = bop_rows[bop_index[lo]].recv;
-    int end = bop_index_bound(lo, BOP_NROWS, rk, NULL);
-    for (int i = bop_index_bound(lo, end, rk, name); i < end && sp_streq(bop_rows[bop_index[i]].name, name); i++) {
-      const BuiltinOp *r = &bop_rows[bop_index[i]];
-      /* (a boxed emitter's own row re-enters the kinds it serves, read here
-         by their rows) */
-      if (rk == TY_POLY || !bop_row_fits(r, argc, has_block)) continue;
-      TyKind fam = rk == TY_STRBUF ? TY_STRING : rk;
-      if (!bop_share_pure_family(fam) || bop_share(fam, name) != BSH_PURE) return 0;
-      if (fam == TY_STRING && (r->flags & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS | BOPF_SELF_EXACT)))
-        return 0;
-    }
-    lo = end;
-  }
-  return 1;
-}
 
 TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt) {
   int boxed = rt == TY_POLY;

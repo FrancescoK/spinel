@@ -118,7 +118,6 @@ int cow_user_block_value(Compiler *c, const int *parent, int id);
    parameters alias the caller's String, and are not passed by value.
    analyze.c */
 void an_byref_eligible_scopes(Compiler *c, char *elig);
-int an_byref_param_by_value(Compiler *c, const char *elig, int mi, int pi);
 /* A runtime protocol name: the emitted program can call the method with
    no CallNode of its own (`puts obj` calls to_s). analyze.c */
 int method_name_implicitly_invoked(const char *nm);

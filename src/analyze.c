@@ -17875,12 +17875,6 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
   return did;
 }
 
-int an_byref_param_by_value(Compiler *c, const char *elig, int mi, int pi) {
-  Scope *m = &c->scopes[mi];
-  if (!m->name || pi < 0 || !an_byref_group_member_string(c, m, pi)) return 0;
-  int captured = 0;
-  return !an_byref_group_takes_ref(c, m->name, pi, elig, NULL, c->nscopes, &captured);
-}
 
 /* The method a plain call `id` names, by its receiver: self or none (the
    enclosing class's, else a top-level method's), a constant's `new` (its

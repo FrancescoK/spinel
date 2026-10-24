@@ -1713,12 +1713,6 @@ int repr_static_share(const Compiler *c, int node) {
   return holder_of_node(c, node, &h) && (h.r.share || (c->n_cext_extensions && h.r.handle));
 }
 
-int repr_str_class_shares(unsigned flags, int holders) {
-  /* one representation (--string-repr=handle): every String holder is the
-     handle; the share facts then decide nothing about layout */
-  (void)flags; (void)holders;
-  return 1;
-}
 
 /* Does local lv of scope s hold a String the rule shares: one whose type
    can hold a String, but the loop variable a define_method unroll

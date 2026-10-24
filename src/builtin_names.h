@@ -171,8 +171,6 @@ int is_encoding_mutator(const char *n); /* encode! force_encoding */
 int encoding_mutator_max_argc(const char *n);
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
-int is_exception_factory(const char *n); /* exception */
-int is_exc_message_name(const char *n); /* message full_message detailed_message */
 int is_unary_plus(const char *n); /* +@ */
 int is_loop_name(const char *n); /* loop */
 int is_first_or_take(const char *n); /* first take */
@@ -268,8 +266,6 @@ int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice
 int is_array_push_family(const char *n); /* << append prepend push unshift */
 
 int is_io_class_name(const char *n); /* File IO */
-int is_file_class_name(const char *n); /* File */
-int is_filetest_module_name(const char *n); /* FileTest */
 int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
 int is_object_base_name(const char *n); /* BasicObject Object */
 int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
@@ -396,7 +392,6 @@ typedef enum {
 int strh_op(const char *n, int argc, int block);
 /* the receiver kind a block-taking iterator name belongs to */
 enum { BITER_NONE, BITER_ARRAY, BITER_INTEGER, BITER_STRING };
-int is_frozen_query(const char *n);           /* frozen? */
 int is_pop_name(const char *n);               /* pop */
 int is_first_name(const char *n);             /* first */
 

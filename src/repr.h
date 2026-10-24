@@ -322,8 +322,6 @@ const char *repr_coerce_form_name(int form);
 /* Does local lv of scope s hold a String the rule shares (a slot whose type
    can hold one)? */
 int repr_local_shares(const Compiler *c, const Scope *s, const LocalVar *lv);
-/* the rule over a class's facts (SHF_*, the count of its holders) */
-int repr_str_class_shares(unsigned flags, int holders);
 /* repr_of(c, node).share alone, without the rest of repr_of: whether a
    read or write node of a global, a constant or a class variable names a
    slot that holds the handle the rule assigned. The analysis's loops and

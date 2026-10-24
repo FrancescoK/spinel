@@ -920,15 +920,6 @@ int is_select_reject_bang(const char *n) {
 int is_raise_alias(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail");
 }
-/* the Exception methods that answer the message (the share walk's sh_exc) */
-int is_exc_message_name(const char *n) {
-  return sp_streq(n, "message") || sp_streq(n, "full_message") || sp_streq(n, "detailed_message");
-}
-/* Exception.exception(m) and e.exception(m): an exception that keeps m as its
-   message, as new does */
-int is_exception_factory(const char *n) {
-  return sp_streq(n, "exception");
-}
 /* +s alone: a route that answers its String operand unless frozen
    (--share-strings, emit_strbuf_route) */
 int is_unary_plus(const char *n) {
@@ -1085,13 +1076,7 @@ int is_standard_output_global(const char *n) {
   return sp_streq(n, "$stdout") || sp_streq(n, "$stderr");
 }
 
-int is_file_class_name(const char *n) {
-  return n && sp_streq(n, "File");
-}
 
-int is_filetest_module_name(const char *n) {
-  return n && sp_streq(n, "FileTest");
-}
 
 int is_io_class_name(const char *n) {
   return sp_streq(n, "IO") || sp_streq(n, "File");
@@ -1541,7 +1526,6 @@ int strh_op(const char *n, int argc, int block) {
 
 
 
-int is_frozen_query(const char *n) { return n && sp_streq(n, "frozen?"); }
 
 int is_pop_name(const char *n) { return n && sp_streq(n, "pop"); }
 
