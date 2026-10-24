@@ -1,0 +1,9 @@
+[10, 20, 30]
+Array
+:early
+[1, 2, 3]
+NoMethodError with_object
+[:own, [:own]]
+[1, 4, 9]
+{1 => "1", 2 => "2", 3 => "3"}
+[-1, -2, -3]

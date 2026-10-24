@@ -10662,9 +10662,15 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int ea = nt_ref(nt, id, "arguments"); int eac = 0;
     if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
     int er = nt_ref(nt, id, "receiver");
+    /* ...also `v.with_object(memo).each { }` over a value known only at run
+       time: with_object's own dispatch (desugar_builtin_enum_calls) answers
+       it for an Enumerator and raises for the rest, as the inner call does */
+    const char *wrn = er >= 0 && nt_kind(nt, er) == NK_CallNode ? nt_str(nt, er, "name") : NULL;
+    int wo_poly = wrn && sp_streq(wrn, "with_object") && nt_ref(nt, er, "receiver") >= 0 &&
+                  infer_type(c, nt_ref(nt, er, "receiver")) == TY_POLY;
     if (eac == 0 && er >= 0 && nt_kind(nt, er) == NK_CallNode &&
         nt_ref(nt, er, "block") < 0 && nt_ref(nt, er, "receiver") >= 0 &&
-        infer_type(c, er) == TY_ENUMERATOR) {
+        (wo_poly || infer_type(c, er) == TY_ENUMERATOR)) {
       const char *ern = nt_str(nt, er, "name");
       if (ern && !sp_streq(ern, "lazy")) {
         /* a boxed receiver's to_enum (desugar_to_enum) builds the
