@@ -2374,6 +2374,28 @@ static void rewrite_const_alias_name(Compiler *c, int node) {
   }
 }
 
+/* `extend Alias` / `include Alias` / `prepend Alias` with `Alias = Mod`
+   (also through a chain of aliases): name the module itself, since the
+   extend pass and the singleton prepend it carries match a module's own
+   name only, and dropped an alias silently. */
+static void rewrite_mixin_alias_args(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm || nt_ref(nt, call, "receiver") >= 0 || !is_mixin_call(nm)) return;
+  int anode = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  for (int j = 0; j < an; j++) {
+    NodeKind ak = nt_kind(nt, av[j]);
+    if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
+    const char *rn = nt_str(nt, av[j], "name");
+    if (!rn || comp_class_index(c, rn) >= 0) continue;
+    const char *real = resolve_class_alias_chain(c, rn);
+    if (!real || sp_streq(real, rn) || comp_class_index(c, real) < 0) continue;
+    char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees rn */
+    nt_set_str((NodeTable *)nt, av[j], "name", buf);
+  }
+}
+
 /* `A = SomeClass` (a constant aliasing a class) then `A.foo`: rewrite the
    ConstantRead receiver's name to the underlying class so class-method dispatch
    resolves it exactly like the direct `SomeClass.foo`. The class argument of
@@ -2391,6 +2413,7 @@ void rewrite_const_alias_receivers(Compiler *c) {
     }
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     rewrite_const_alias_name(c, nt_ref(nt, id, "receiver"));
+    rewrite_mixin_alias_args(c, id);
     const char *nm = nt_str(nt, id, "name");
     if (nm && is_kind_query(nm)) {
       int args = nt_ref(nt, id, "arguments"), an = 0;

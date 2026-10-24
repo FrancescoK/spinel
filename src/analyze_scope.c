@@ -7353,9 +7353,12 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
         dst->body = nb;
         /* in a reopened Time or Integer, `self.class` is that builtin,
-           as in a method the reopening writes itself */
-        if (is_builtin_reopen(c->classes[ci].name))
+           as in a method the reopening writes itself, and a bare `strip` is
+           the builtin method on self */
+        if (is_builtin_reopen(c->classes[ci].name)) {
           desugar_included_self_class(c, nb, c->classes[ci].name);
+          desugar_included_bare_builtin(c, nb, c->classes[ci].name);
+        }
         walk_scope(c, nb, dst_idx, ci);
         g_inc_did_clone = 1;
       }
@@ -9087,6 +9090,11 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
               int nb = nt_clone_subtree((NodeTable *)nt, sc->body);
               comp_grow_node_arrays(c);
               sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
+              if (nb >= 0 && is_builtin_reopen(c->classes[ci].name)) {
+                /* as the include path does for a reopened builtin */
+                desugar_included_self_class(c, nb, c->classes[ci].name);
+                desugar_included_bare_builtin(c, nb, c->classes[ci].name);
+              }
               if (nb >= 0) { dst->body = nb; walk_scope(c, nb, dst_i, ci); }
               else dst->body = sc->body;
             }
