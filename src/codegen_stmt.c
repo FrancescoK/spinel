@@ -23156,6 +23156,12 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         if (strbuf_slot_text(c, recv, &srefS)) {
           int tbS = ++g_tmp;
           emit_indent(b, indent);
+          /* a slot that can be nil (`x = a[5]; x.upcase!`) raises
+             NoMethodError, where the transform read through NULL */
+          if (g_one_string && !recv_never_nil(c, recv))
+            buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\"); sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n",
+                       tbS, srefS.p, tbS, name, tbS, base, tbS);
+          else
           buf_printf(b, (g_one_string ? "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n" : "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n"),
                      tbS, srefS.p, tbS, base, tbS);
           free(srefS.p);
