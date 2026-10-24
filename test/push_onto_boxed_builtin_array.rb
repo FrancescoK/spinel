@@ -4,6 +4,8 @@
 # Strings rather than raising. A program's own method of the name answers
 # its own Array, which the push widens where it is built.
 
+require "stringio"
+
 class Piece
   def scan(_re) = ["x"]
   def keys = [:k]
@@ -116,3 +118,34 @@ class Circle < Shape
 end
 
 p extended(Shape.new), extended(Circle.new)
+
+# A `<<` another class of the program answers too (StringIO's) is still a
+# push onto the Array a builtin answers.
+log = StringIO.new
+log << "x" << "y"
+p log.string
+
+# A visibility call by a computed name hides methods; it defines none, and
+# the builtin's Array still widens for the push.
+class Quiet
+  NAMES = %i[first_name last_name].freeze
+  def first_name = "a"
+  def last_name = "b"
+  private(*NAMES)
+end
+
+p version_of("V3_4")
+
+# A method answering an Integer, a box under --int-overflow=promote, answers
+# no Array: the builtin's Array beside it still widens.
+class Counted
+  def scan(_re) = 5
+end
+
+def counted_version(x)
+  found = x.scan(/\d+/)
+  return found if found == 5
+  (x.scan(/\d+/) << 0).join(".")
+end
+
+p counted_version("V7_1"), counted_version(Counted.new)
