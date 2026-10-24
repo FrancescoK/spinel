@@ -106,7 +106,6 @@ int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_shift, 
 int exc_subclass_defines_cmp(Compiler *c);
 int obj_cmp_by_identity(TyKind t);
 int object_defines_cmp(Compiler *c);
-void scalar_nil_test(TyKind t, const char *v, char *out, size_t n);
 int any_class_defines(Compiler *c, const char *qm);
 int any_class_responds(Compiler *c, const char *qm);
 int class_implicit_responds(Compiler *c, int cid, const char *qm);

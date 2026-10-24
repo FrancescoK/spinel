@@ -1012,9 +1012,6 @@ void emit_ensure_chain_pops(Buf *b, const EnsureCtx *outer);
 void emit_loop_unwind(Buf *b);
 int emit_frame_unwind(Buf *b, int pop_base, const char *guard);
 int rescues_crossed(int pop_base);
-/* Pop the sp_rescue_sp handlers crossed (no frame pop), for the begin..ensure
-   deferred return whose frame-pop text is special. */
-void emit_cur_exc_restore(Buf *b, int pop_base);
 
 /* First-class Proc support: each `proc {}` / `lambda {}` / `->{}` literal
    lowers to a standalone `static sp_int _proc_N(void *cap, sp_int *args)`
@@ -1798,7 +1795,6 @@ int kernel_private_method(const char *name);
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
 void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int t, int indent, Buf *b);
 int typed_array_lit_flag_free(Compiler *c, int node);
-void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
 /* A builtin type that certainly has no #to_ary, and its class name for the
    "no implicit conversion of X into Array" TypeError (codegen_call_recv.c). */
@@ -2720,8 +2716,6 @@ void refuse_unredirected_output(Compiler *c, int id);   /* a bare print past a r
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc);
 int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b);
 int int_value_plain(Compiler *c, int node);   /* an Integer that can never be nil */
-int int_value_plain_promote(Compiler *c, int node);
-int int_local_plain(Compiler *c, LocalVar *lv, const char *name);
 int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv, Buf *b, int indent);
 void emit_assign(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
@@ -2732,7 +2726,6 @@ const char *poly_pow_fn(TyKind rt);   /* sp_poly_pow, or sp_poly_pow_recv for a 
 int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
                         int capture, Buf *b);
 void emit_poly_unboxed(Compiler *c, int node, TyKind t, const char *conv, Buf *b);
-void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b);
 void emit_tail_recv_value(Compiler *c, int id, int rr, Buf *b);
 const char *op_assign_int_conv(TyKind slot, const char *op);
 void emit_cond(Compiler *c, int id, Buf *b);

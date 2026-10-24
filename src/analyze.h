@@ -149,7 +149,6 @@ int nil_fact_why(const Compiler *c, int node);
    are pointers that the program stores nil into or leaves a gap in
    (NFW_ELEM_NIL's Arrays)? */
 int nil_elem_fact_node(const Compiler *c, int node);
-const char *nil_fact_why_name(int why);
 /* Does the fact track a value of type t: an object, or a builtin held as a
    pointer that is NULL for nil (a String, an Array, a Hash, an IO)? */
 int nil_fact_tracked(TyKind t);

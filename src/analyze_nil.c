@@ -1992,11 +1992,6 @@ int nil_fact_why(const Compiler *c, int node) {
   return (m & 3) == NF_MAY_NIL ? m >> 2 : (m & 3) == NF_GUARDED ? NFW_GUARDED : NFW_NONE;
 }
 
-const char *nil_fact_why_name(int why) {
-  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem-nil", "taken", "elem",
-    "global", "ivar", "caller", "opaque", "guarded" };
-  return why >= 0 && why < (int)(sizeof names / sizeof *names) ? names[why] : "?";
-}
 
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn) {
   if (cid < 0 || cid >= c->nclasses || !ivn) return 1;

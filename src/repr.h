@@ -210,7 +210,6 @@ int repr_dyn_cls(const Compiler *c, TyKind t);
 /* the flag readers that decide it (old names: box_nullable_arg, the local
    arm of call_returns_nullable_int) */
 int repr_box_nullable_arg(Compiler *c, int v);
-int repr_local_nullable_int(Compiler *c, int node);
 /* Does a container of type t hold its Strings as `const char *` (a typed
    String Array or a Hash with String values), so none can be the shared
    handle? */

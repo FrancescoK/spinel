@@ -1469,12 +1469,6 @@ int rescues_crossed(int pop_base) {
     if (g_rescue_save_stack[i].exc_base >= pop_base) k++;
   return k;
 }
-/* Pop the k crossed rescue-body handlers (no frame pop). Used at sites whose
-   frame-pop text is special (the begin..ensure deferred-return). */
-void emit_cur_exc_restore(Buf *b, int pop_base) {
-  int k = rescues_crossed(pop_base);
-  if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
-}
 /* Pop the handlers of the rescue bodies entered since `rescue_base` (the
    g_rescue_save_depth an ensure or a loop recorded on entry). The frame
    depth alone cannot tell them from one entered before at the same depth:
@@ -5366,20 +5360,9 @@ static int plain_expr(Compiler *c, int n, int depth) {
   default: return 0;
   }
 }
-/* a local (written under `name`) that never holds nil, as int_value_plain
-   asks of its reads: for the target of `x += 1` */
-int int_local_plain(Compiler *c, LocalVar *lv, const char *name) {
-  if (g_promote_mode) return 0;
-  return plain_local(c, lv, name, 0);
-}
 int int_value_plain(Compiler *c, int node) {
   if (g_promote_mode) return 0;
   return plain_expr(c, node, 0);
-}
-/* the shape alone under --int-overflow=promote, where every Integer slot is
-   boxed: a plain value boxed into one is the number even at INTPTR_MIN */
-int int_value_plain_promote(Compiler *c, int node) {
-  return g_promote_mode && plain_expr(c, node, 0);
 }
 /* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
    kinds hold nil in a form C does not read as false (an Integer or Float
@@ -5445,13 +5428,6 @@ void emit_elem_store_value(Compiler *c, const char *k, int node, Buf *b) {
   }
   if (nil_store_sfx(c, k, node)[0]) emit_oint_expr(c, node, et, b);
   else emit_coerce(c, node, et, CO_HOLD, "an Array element", b);
-}
-/* The C text asking whether the Integer or Float array `arr` (C text; `node`
-   its Ruby expression, of kind `t`) may hold nil: "1" where analyze marked
-   the array, else whether it has a nil bitmap at all (SP_MAY_NIL). */
-void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b) {
-  if (node >= 0 && nullable_int_elem_array(c, node)) buf_puts(b, "1");
-  else buf_printf(b, "sp_%sArray_may_nil(%s)", t == TY_INT_ARRAY ? "Int" : "Float", arr);
 }
 /* An array literal of Integers or Floats none of which can be nil at run
    time (no splat, no element nil_store_sfx would flag): it is born without

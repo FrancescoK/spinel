@@ -1211,17 +1211,6 @@ int repr_box_nullable_arg(Compiler *c, int v) {
   return 0;
 }
 
-/* A local that was assigned a nilable Integer result holds its nil as the
-   call's answer did: `i = s.index("z")` then `i == nil` has to answer
-   true. The analysis marks the local (call_returns_nullable_int's local
-   arm). */
-int repr_local_nullable_int(Compiler *c, int node) {
-  const NodeTable *nt = c->nt;
-  const char *ln = nt_str(nt, node, "name");
-  Scope *sc = ln ? comp_scope_of(c, node) : NULL;
-  LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
-  return lv && lv->nullable_int;
-}
 
 /* Can a value held as t be nil? A user object and a builtin pointer the
    analysis follows (nil_fact_tracked: a String, an Array, a Hash, an IO)

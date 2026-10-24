@@ -12949,7 +12949,6 @@ static const char *const sp_bx_class_name[SP_BX_N] = { "Integer", "Float", "Comp
 static const char *const sp_bx_prefix[SP_BX_N]     = { "__int_", "__flt_", "__cmp_" };
 
 extern int sp_builtin_extra_names_n(int idx);
-extern const char *sp_builtin_extra_name(int idx, int i);
 extern int sp_builtin_extra_name_index(int idx, const char *name);
 
 int desugar_builtin_scalar_defs(Compiler *c) {
@@ -22938,9 +22937,6 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
 /* Is every read of constant `name` in the program the receiver of a call
    that leaves the Array as it is? Then its literal is what an each sees. */
 static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused, int no_alias);
-static int sce_const_unmutated(const NodeTable *nt, const char *name) {
-  return sce_const_unmutated_ex(nt, name, 0, 0);
-}
 /* ... but for `excused` reads the caller knows leave it as it is. With
    no_alias, a call that answers the Array itself (to_a) is a read that can
    change it later (`FLAGS.to_a << :c`): the attr splat reads the names once,

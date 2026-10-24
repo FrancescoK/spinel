@@ -4903,10 +4903,6 @@ static char *sp_splice_builtin_extras(char *source, const char *exe_path,
 int sp_builtin_extra_names_n(int idx) {
   return (idx >= 0 && idx < SP_BUILTIN_EXTRA_N) ? sp_builtin_extras[idx].names_n : 0;
 }
-const char *sp_builtin_extra_name(int idx, int i) {
-  if (idx < 0 || idx >= SP_BUILTIN_EXTRA_N || i < 0 || i >= sp_builtin_extras[idx].names_n) return NULL;
-  return sp_builtin_extras[idx].names[i];
-}
 int sp_builtin_extra_name_index(int idx, const char *name) {
   if (!name || idx < 0 || idx >= SP_BUILTIN_EXTRA_N) return -1;
   for (int i = 0; i < sp_builtin_extras[idx].names_n; i++)

@@ -2078,12 +2078,6 @@ void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl
   else emit_expr(c, arg, b);
   buf_puts(b, "))");
 }
-/* The C test that temp `v` of an Integer or a Float kind holds nil (its
-   oint's nil flag), into out. */
-void scalar_nil_test(TyKind t, const char *v, char *out, size_t n) {
-  (void)t;
-  snprintf(out, n, "%s.nil", v);   /* v is the sp_oint / sp_ofloat temp */
-}
 /* Comparable's instance methods, for respond_to? on a user class that mixes it
    in (spinel keys the mixin off the presence of a user `<=>`). */
 const char *const comparable_names[] = {
