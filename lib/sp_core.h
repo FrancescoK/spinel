@@ -21,6 +21,7 @@ intptr_t sp_str_to_i_base(const char *s, intptr_t base);
 intptr_t sp_str_to_i_strict(const char *s);
 intptr_t sp_str_to_i_strict_base(const char *s, intptr_t base);
 sp_oint sp_str_to_i_lenient_base(const char *s, intptr_t base);   /* nil for a rejected string (exception: false) */
+intptr_t sp_int_negative_base(const char *s, intptr_t base);   /* Kernel#Integer: the radix a negative one reads as */
 int     sp_str_int_overflows(const char *s, intptr_t base);
 char   *sp_int_digits_dup(const char *s, intptr_t *base, const char **rest);
 double  sp_str_to_f_strict(const char *s);

@@ -119,6 +119,21 @@ static int sp_digit36(int c) {
   return -1;
 }
 
+/* Kernel#Integer's negative radix, as CRuby reads it: a leading 0 (after
+   whitespace and sign) with more text after it selects the prefix (base 0),
+   otherwise -base is the radix, and -1 is base 10. Only Integer() takes it;
+   String#to_i refuses a negative radix before it parses. */
+sp_int sp_int_negative_base(const char *s, sp_int base) {
+  if (base >= 0 || !s) return base;
+  while (isspace((unsigned char)*s)) s++;
+  if (*s == '+' || *s == '-') s++;
+  if (*s == '0' && s[1] != 0) return 0;
+  if (base == -1) return 10;
+  /* CRuby holds the radix in a C int, whose -INT_MIN is INT_MIN again: a
+     radix at or below it keeps its sign, and the range check names it so */
+  return base <= INT32_MIN ? base : -base;
+}
+
 /* Skips leading whitespace and sign, resolves base 0 from the prefix
    (0x -> 16, 0b -> 2, 0/0o -> 8, 0d -> 10, otherwise 10), and skips a
    prefix matching the base. Per CRuby, only base 0 enables prefix-based
@@ -268,6 +283,7 @@ static sp_int sp_str_to_i_base_impl(const char *s, sp_int base, int lenient, int
     SP_INT_REJECT("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
   int neg, any;
   sp_int v;
+  base = sp_int_negative_base(s, base);
   const char *p = sp_int_head(s, &base, &neg);
   if (base < 2 || base > 36) SP_INT_REJECT("ArgumentError", sp_sprintf("invalid radix %lld", (long long)base));
   if (*p == '\0') SP_INT_REJECT("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));

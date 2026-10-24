@@ -20990,6 +20990,8 @@ static const char *sp_obj_conv_str_of(sp_RbVal a) {
 sp_Bigint *sp_bigint_new_str(const char *s, int base);   /* sp_bigint.c */
 static sp_RbVal sp_str_to_i_promote(const char *s, sp_int base, int mode) {
   SP_GC_ROOT_STR(s);
+  /* Integer() reads a negative radix before anything else (sp_core.c) */
+  if (mode != 0) base = sp_int_negative_base(s, base);
   int bare = base == -1;   /* #to_i with no base */
   if (bare) base = 10;
   if (!s || !sp_str_int_overflows(s, base)) {
