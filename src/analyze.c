@@ -47226,6 +47226,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_reader_aliases_before_redef(c); /* attr_reader :v; alias w v; def v -> def w = @v */
   desugar_readers_over_inherited_defs(c); /* def r in Base; attr_reader :r in Sub < Base -> Sub: def r = @r */
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
+  desugar_instance_eval_defs(c);         /* K.instance_eval { def m } -> K.class_eval { def K.m } */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
   desugar_singleton_class_meta(c);      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */

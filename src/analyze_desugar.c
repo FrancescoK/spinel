@@ -1192,6 +1192,93 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
   nt_node_set_ref(nt, sc, "body", sbody);
   return sc;
 }
+static int program_defines_name(const NodeTable *nt, int n0, const char *name);
+/* Does the program open a class or module whose header names NAME? */
+static int ied_program_class(const NodeTable *nt, int n0, const char *name) {
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (cn && sp_streq(cn, name)) return 1;
+  }
+  return 0;
+}
+/* The block statements of an instance_eval call ID with a literal block,
+   and whether one of them is a `def` (self's or receiverless) and all of
+   them are: -1 when none is such a `def`, 0 when others stand beside it. */
+static int ied_block_defs(const NodeTable *nt, int id, const int **stmts, int *n) {
+  int blk = nt_ref(nt, id, "block");
+  int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+  *n = 0; *stmts = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", n) : NULL;
+  int defs = 0, others = 0;
+  for (int k = 0; k < *n; k++) {
+    int st = (*stmts)[k], r = nt_kind(nt, st) == NK_DefNode ? nt_ref(nt, st, "receiver") : -2;
+    if (r == -1 || (r >= 0 && nt_kind(nt, r) == NK_SelfNode)) defs = 1;
+    else others = 1;
+  }
+  return defs ? !others : -1;
+}
+/* `Klass.instance_eval { def m ... end }` defines m on Klass's singleton
+   class, a class method, where `Klass.class_eval { def m }` defines an
+   instance method. With a constant receiver the program defines (or a
+   receiverless / `self.` call directly in a class body) and a block of
+   defs only, each def is given the receiver (`def Klass.m`) and the call
+   becomes the class_eval reopening those defs register through. Any other
+   instance_eval whose block defines a method is refused: the method would
+   land on no singleton the program can name. */
+int desugar_instance_eval_defs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  if (program_defines_name(nt, n0, "instance_eval") || program_defines_name(nt, n0, "instance_exec")) return 0;
+  /* the class body a call is a direct statement of: its header */
+  int *body_of = (int *)calloc((size_t)n0 + 1, sizeof(int));
+  if (!body_of) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int body = nt_ref(nt, id, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; i < bn; i++) if (bb[i] >= 0 && bb[i] < n0) body_of[bb[i]] = nt_ref(nt, id, "constant_path") + 1;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec"))) continue;
+    const int *stmts; int n;
+    int pure = ied_block_defs(nt, id, &stmts, &n);
+    if (pure < 0) continue;
+    int recv = nt_ref(nt, id, "receiver"), cls = -1;
+    NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+    if ((rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, recv, "name") &&
+        ied_program_class(nt, n0, nt_str(nt, recv, "name")))
+      cls = recv;
+    else if (rk == NK_SelfNode && body_of[id] > 0)
+      cls = body_of[id] - 1;
+    if (!pure || cls < 0) {
+      unsupported_feature_collect(c, id, "a method defined in an instance_eval block, other than one of defs only "
+                                         "on a class or module the program defines, is not supported: name the "
+                                         "receiver (`def Klass.m`) instead");
+      continue;
+    }
+    for (int k = 0; k < n; k++) {
+      int r = nt_clone_subtree(nt, cls);
+      if (r < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      nt_node_set_ref(nt, stmts[k], "receiver", r);
+    }
+    if (recv < 0 || rk == NK_SelfNode) {
+      int r = nt_clone_subtree(nt, cls);
+      if (r < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      nt_node_set_ref(nt, id, "receiver", r);
+    }
+    nt_node_set_str(nt, id, "name", "class_eval");
+    changed = 1;
+  }
+  free(body_of);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_extend_self(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
