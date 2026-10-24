@@ -27437,7 +27437,32 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* The receiver of the push being emitted whose builtin's typed Array is
+   widened first (an_push_lifts_boxed), and the kinds the push stores */
+static int g_lift_recv = -1, g_lift_kinds = 0;
+static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  if (id == g_lift_recv) {
+    int sv = g_lift_recv, kinds = g_lift_kinds;
+    g_lift_recv = -1;
+    buf_puts(b, "sp_ary_lift_kinds(");
+    emit_call(c, id, b);
+    buf_printf(b, ", %d)", kinds);
+    g_lift_recv = sv;
+    return;
+  }
+  int lk = an_push_lifts_boxed(c, id);
+  if (lk) {
+    int sv = g_lift_recv, svk = g_lift_kinds;
+    g_lift_recv = nt_paren_single(c->nt, nt_ref(c->nt, id, "receiver"));
+    g_lift_kinds = lk;
+    emit_call_lifted(c, id, b);
+    g_lift_recv = sv; g_lift_kinds = svk;
+    return;
+  }
+  emit_call_lifted(c, id, b);
+}
+static void emit_call_lifted(Compiler *c, int id, Buf *b) {
   /* one representation: the operands of a call with a block are held
      across the block (g_one_held) */
   int held = g_one_held;

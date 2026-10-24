@@ -23729,7 +23729,9 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        statement is that form. A user class's own #<< goes through it too:
        sp_poly_shl dispatches to it, and only a plain String receiver is
        stored back. */
-    if (sp_streq(name, "<<") && argc == 1 && poly_shl_root_slot(c, recv) >= 0) {
+    /* ...and so is a push onto a builtin's new Array the value form widens
+       first (an_push_lifts_boxed) */
+    if ((sp_streq(name, "<<") && argc == 1 && poly_shl_root_slot(c, recv) >= 0) || an_push_lifts_boxed(c, id)) {
       emit_indent(b, indent);
       buf_puts(b, "(void)("); emit_call(c, id, b); buf_puts(b, ");\n");
       return 1;

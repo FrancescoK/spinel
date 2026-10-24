@@ -5915,15 +5915,21 @@ static int widen_arg_hash(Compiler *c, int arg) {
   return 1;
 }
 
-/* 1 when `v` builds a new array nothing else holds: a literal, `Array.new`,
-   or a builtin that answers a new array. */
-int is_fresh_array(Compiler *c, int v) {
+/* A builtin of this name answers, where it answers an Array, a new one
+   nothing else holds. */
+int fresh_array_builtin_name(const char *nm) {
   static const char *const fresh[] = {
     "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
     "reject", "sort", "sort_by", "reverse", "uniq", "compact", "flatten", "zip",
     "split", "chars", "bytes", "lines", "scan", "keys", "values", "dup",
     "take", "drop", "take_while", "drop_while", "rotate", "shuffle", "each_slice",
     "each_cons", "+", "-", "*", "&", "|", NULL };
+  return nm && str_in(nm, fresh);
+}
+
+/* 1 when `v` builds a new array nothing else holds: a literal, `Array.new`,
+   or a builtin that answers a new array. */
+int is_fresh_array(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = value_node_or_self(nt, v);   /* `(a; [1])` builds the literal */
   if (v < 0) return 0;
@@ -5942,7 +5948,7 @@ int is_fresh_array(Compiler *c, int v) {
   TyKind rt = infer_type(c, r);
   if (rt == TY_UNKNOWN || rt == TY_POLY || ty_is_object(rt)) return 0;
   if (sp_streq(nm, "to_a")) return !ty_is_array(rt);
-  return str_in(nm, fresh);
+  return fresh_array_builtin_name(nm);
 }
 
 /* Collects into out[] the container literals `n` can evaluate to, as far
