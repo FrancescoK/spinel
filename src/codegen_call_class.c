@@ -2351,6 +2351,9 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               char _asr[300]; snprintf(_asr, sizeof _asr, "_t%d->iv_%s", _atmp, iv_c(_abase));
               buf_printf(b, "; %s", _amsp);
               if (_avt == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", _asr);
+              /* (one representation: an assignment whose value is boxed,
+                 a writer a subclass overrides, boxes the handle) */
+              else if (g_one_string && _avt == TY_POLY) buf_printf(b, "SP_STR_BOX(%s)", _asr);
               else emit_strbuf_node_read(c, id, _asr, b);
               buf_puts(b, "; })");
             }
