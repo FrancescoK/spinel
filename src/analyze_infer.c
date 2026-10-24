@@ -7230,6 +7230,10 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
           { *out = rt; return 1; }
         if ((is_map_alias(name)) && argc == 0)
           { *out = infer_map_block_ty(c, id, oblk); return 1; }
+        /* the filters: one with a bang answers the array or nil, boxed,
+           and one without a bang a new array of the same class */
+        if (is_select_reject_bang(name) && argc == 0) { *out = TY_POLY; return 1; }
+        if ((is_select_alias(name) || sp_streq(name, "reject")) && argc == 0) { *out = rt; return 1; }
       } }
   }
   return 0;

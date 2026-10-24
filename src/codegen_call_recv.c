@@ -5436,6 +5436,19 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       buf_puts(b, nil_ok ? ")" : ", \"clear\"))");
       return 1;
     }
+    /* the filters with a bang, which the pass admits for an object array
+       only: the in-place filter loop, and the array boxed by reference */
+    if (!nested && is_select_reject_bang(name) && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+      int trecv, torig, twp;
+      if (!emit_array_filter_loop(c, recv, nt_ref(nt, id, "block"), rt, name, g_pre, g_indent, &trecv, &torig, &twp))
+        return 0;
+      char ts[24]; snprintf(ts, sizeof ts, "_t%d", trecv);
+      Buf box; memset(&box, 0, sizeof box);
+      emit_boxed_text(c, rt, ts, &box);
+      emit_filter_bang_result(name, trecv, torig, twp, box.p ? box.p : "sp_box_nil()", b);
+      free(box.p);
+      return 1;
+    }
     if (sp_streq(name, "[]=") && argc == 2) {
       int tv = ++g_tmp;
       buf_printf(b, "({ %s *_t%d = ", ecn, tv);
