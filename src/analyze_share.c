@@ -1613,11 +1613,6 @@ static int share_target_armed_plan(Compiler *c, const CallPlan *p, int call, int
   const PolyCand *pc = comp_poly_candidates_at(c, call, nm, &np);
   for (int i = 0; i < np; i++)
     if (pc[i].mi == mi || (pc[i].mi < 0 && comp_method_in_chain(c, pc[i].cls, nm, NULL) == mi)) return 1;
-  { const char *stats = getenv("SPINEL_SHARE_STATS");
-    if (stats && stats[0] == '2')
-      fprintf(stderr, "share-target: call %d `%s` line %d on %s drops %s#%s (set n=%d bv=%d, %d candidates at the call)\n", call, nm,
-              (int)nt_int(c->nt, call, "node_line", 0), ty_name(c->ntype[recv]),
-              c->scopes[mi].class_id >= 0 ? c->classes[c->scopes[mi].class_id].name : "?", nm, cs->n, cs->bv, np); }
   return 0;
 }
 int share_target_armed(Compiler *c, int call, int mi) {
@@ -2474,13 +2469,6 @@ static int sh_boxed_fresh_recorded(Compiler *c, int n) {
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
-  { const char *stats = getenv("SPINEL_SHARE_STATS");
-    if (stats && stats[0] == '2') {
-      const char *fp = nt_file_path(c->nt, (int)nt_int(c->nt, n, "node_file", -1));
-      const char *nm = nt_kind(c->nt, n) == NK_CallNode ? nt_str(c->nt, n, "name") : nt_type(c->nt, n);
-      fprintf(stderr, "share-unknown: %s:%d node %d `%s` joins UNKNOWN (%d values)\n", fp ? fp : "?",
-              (int)nt_int(c->nt, n, "node_line", 0), n, nm ? nm : "?", nv);
-    } }
   for (int i = 0; i < nv; i++) {
     /* A proc handed self can keep or mutate that receiver. */
     if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY | SHE_COMPARED;

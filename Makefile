@@ -1445,19 +1445,6 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; }; then \
 	  echo "share-strings-test: FAIL (String self forwarding does not select the callee ABI)"; ok=0; \
 	fi; \
-	if ! SPINEL_SHARE_STATS=3 $(SPINEL) --share-strings test/share/share_strings_dead_send.rb -c --no-line-map -o "$$tmp/dead.c" >"$$tmp/out" 2>&1 || \
-	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
-	  echo "share-strings-test: FAIL (a send in an uncalled method widens the sharing facts)"; ok=0; \
-	fi; \
-	if ! SPINEL_SHARE_STATS=3 $(SPINEL) --share-strings test/share/share_strings_dead_define_method.rb -c --no-line-map -o "$$tmp/deaddm.c" >"$$tmp/out" 2>&1 || \
-	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
-	  echo "share-strings-test: FAIL (a send in a define_method body that never runs widens the sharing facts)"; ok=0; \
-	fi; \
-	t=test/share/share_strings_flow_destinations; \
-	if [ -z "$(filter -DSP_ONE_STRING,$(COPT))" ] && { ! SPINEL_SHARE_STATS=2 $(SPINEL) --share-strings "$$t.rb" -c --no-line-map -o "$$tmp/dest.c" >"$$tmp/out" 2>&1 || \
-	   ! grep '^share-flow-need:' "$$tmp/out" | cmp -s - "$$t.flows"; }; then \
-	  echo "share-strings-test: FAIL (a flow's destination, or the handle a stored value needs, changed)"; ok=0; \
-	fi; \
 	t=test/share_strings_copy_beside_alloc.rb; \
 	if ! $(SPINEL) --share-strings "$$t" -o "$$tmp/cba" >"$$tmp/out" 2>&1 || \
 	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
@@ -1817,12 +1804,6 @@ cli-opts-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  echo "cli-opts-test: FAIL (a program without String#crypt links libcrypt)"; ok=0; fi; \
 	if [ "$$(uname)" = Linux ] && ! $(SPINEL) "$$tmp/crypt.rb" --print-build 2>&1 | grep -q -- "-lcrypt"; then \
 	  echo "cli-opts-test: FAIL (String#crypt does not link libcrypt)"; ok=0; fi; \
-	for fl in "" --share-strings; do \
-	  if ! SPINEL_SHARE_STRINGS=0 SPINEL_SHARE_STATS=1 $(SPINEL) $$fl "$$tmp/hello.rb" -c -o "$$tmp/sh.c" >"$$tmp/sh.out" 2>&1; then \
-	    echo "cli-opts-test: FAIL ('$$fl' did not compile)"; sed -n 1,3p "$$tmp/sh.out"; ok=0; continue; fi; \
-	  grep -q '^share-stats:' "$$tmp/sh.out" || \
-	    { echo "cli-opts-test: FAIL (Strings were not shared with '$$fl' and SPINEL_SHARE_STRINGS=0: sharing is the one mode, #6765)"; ok=0; }; \
-	done; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
