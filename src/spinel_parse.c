@@ -4479,6 +4479,11 @@ static void sp_src_lex_drop(void) {
   memset(&sp_src_lex, 0, sizeof sp_src_lex);
 }
 
+static int sp_src_off_cmp(const void *a, const void *b) {
+  size_t x = *(const size_t *)a, y = *(const size_t *)b;
+  return (x > y) - (x < y);
+}
+
 static SpSrcLex *sp_src_lex_of(const char *source) {
   SpSrcLex *lx = &sp_src_lex;
   if (lx->src == source) return lx;
@@ -4500,6 +4505,9 @@ static SpSrcLex *sp_src_lex_of(const char *source) {
     lx->com[lx->com_n++] = (size_t)(c->location.end - (const uint8_t *)source);
   }
   if (parser.error_list.size > 0) lx->evals = 1;
+  /* the lexer reads a heredoc's body before the rest of its opening line,
+     so a `module` in the body's code comes before one later on that line */
+  if (lx->mods_n > 1) qsort(lx->mods, (size_t)lx->mods_n, sizeof(size_t), sp_src_off_cmp);
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   return lx;
