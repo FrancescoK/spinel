@@ -9309,8 +9309,12 @@ static int int_arms_clamp_pow(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* pow(exp, mod) with a Bignum modulus: the result is bounded by the
      modulus but the intermediates are not, so run it in bigint (#3006) */
   else if (sp_streq(name, "pow") && argc == 2 && repr_of(c, argv[1]).big) {
-    buf_printf(b, "sp_bigint_powmod(sp_bigint_new_int(%s), ", r);
-    emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+    buf_printf(b, "sp_bigint_powmod_arg(sp_bigint_new_int(%s), ", r);
+    emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "pow") && argc == 2 && (comp_ntype(c, argv[0]) != TY_INT || (comp_ntype(c, argv[1]) != TY_INT && repr_of(c, argv[1]).kind != RK_BOXED))) {
+    buf_printf(b, "sp_powmod_box(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", ");
+    emit_boxed(c, argv[1], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "pow") && argc == 2 && repr_of(c, argv[1]).kind == RK_BOXED) {
     buf_printf(b, "sp_powmod_arg(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");

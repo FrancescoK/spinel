@@ -936,12 +936,12 @@ sp_StrArray*sp_str_scan(const char*s,const char*pat){if(!s)sp_nil_recv("scan");
   /* `$~` is the last match, or nil when there was none */
   if(pl==0){
     const char*p=s;
-    for(;;){sp_str_split_push(a,p,0);if(p>=pe)break;p+=sp_utf8_advance(p);}
+    for(;;){sp_str_piece(a,s,p,0);if(p>=pe)break;p+=sp_str_is_binary(s)?1:sp_utf8_advance(p);}
     if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(p-s),(sp_int)(p-s));
     return a;
   }
   const char*p=s,*f,*last=NULL;
-  while((f=sp_bytestr(p,(size_t)(pe-p),pat,pl))!=NULL){sp_str_split_push(a,f,pl);last=f;p=f+pl;}
+  while((f=sp_bytestr(p,(size_t)(pe-p),pat,pl))!=NULL){sp_str_piece(a,s,f,pl);last=f;p=f+pl;}
   if(sp_re_track_last){if(last)sp_re_set_lit_match(s,(sp_int)(last-s),(sp_int)(last-s+pl));else sp_re_clear_last_match();}
   return a;
 }

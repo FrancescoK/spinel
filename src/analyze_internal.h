@@ -541,6 +541,10 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
 TyKind infer_sum_block_ty(Compiler *c, int block);
 TyKind infer_map_block_ty(Compiler *c, int id, int block);
 void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, int by_v, int by_first);
+int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args);
+void kw_error_message(char *out, size_t n, const char *kind, int count, const char *names);
+void kw_names_add(char *list, size_t n, int *count, const char *inspected);
+void kw_key_inspect(const char *kn, int is_sym, char *out, size_t n);
 /* A range endpoint that is the infinite Float constant (analyze_infer.c). */
 int infer_end_is_float_inf(Compiler *c, int right);
 int propagate_prep_params(Compiler *c);

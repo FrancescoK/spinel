@@ -20573,6 +20573,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       int nil_arg = off >= 0 && offk == NK_NilNode;
       int bad_arg = off >= 0 && offk != NK_NilNode;
       if (hit && sp_streq(nn, "coerce")) hit = 0;   /* see below: Float() owns these errors */
+      if (hit && sp_streq(nn, "pow") && nc == 2 && nrt == TY_INT) hit = 0;
       if (hit && (nil_arg || bad_arg)) {
         /* #between? / #clamp compare rather than coerce, and CRuby's failed
            comparison is an ArgumentError naming the receiver's class */
