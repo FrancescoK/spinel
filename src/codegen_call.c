@@ -24010,8 +24010,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     /* (an attribute assignment on a handle, or a chain over one, keeps its
        place too: the arms take its handle through the node) */
     int route_op = strbuf_assign_route(c, operand[i]);
+    /* (an interpolation is a call form too: it runs its parts and answers a
+       new String. Left unbound, `"k#{f}" + g.call` declined the rewrite,
+       and the hold converting g's boxed answer ran g ahead of f) */
     int bindable = !route_op && (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
-                    k == NK_ForwardingSuperNode || k == NK_YieldNode ||
+                    k == NK_ForwardingSuperNode || k == NK_YieldNode || k == NK_InterpolatedStringNode ||
                     (k == NK_ParenthesesNode && pty != TY_STRING && pty != TY_STRBUF) ||
                     state_read || local_read || held[i]);
     /* ...and any other value (a parenthesized statement, a write, a
