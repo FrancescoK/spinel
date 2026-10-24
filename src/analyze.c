@@ -420,26 +420,43 @@ static void an_note_written_names(const NodeTable *nt) {
         int lit_blk = nt_kind(nt, blk) == NK_BlockNode;
         int by_value_before = by_value;
         by_value = 0;
-        if (how == AN_SITE || how == AN_MIX_HOOK) by_value = 1;
-        else if (how == AN_MIX) { for (int i = 0; i < an; i++) if (!an_mix_literal(nt, av[i])) by_value = 1; }
-        else if (how == AN_EVAL) { if (an > 0 || !lit_blk) by_value = 1; }
-        else if (how == AN_EXEC) { if (!lit_blk) by_value = 1; }
-        else if (how == AN_RECV) { if (!an_name_spelled(nt, nt_ref(nt, id, "receiver"))) by_value = 1; }
-        else if (how == AN_CALLS) { if (an > 0 && !an_name_spelled(nt, av[0])) by_value = 1; }
-        else if (how == AN_GIVES) { if (an > 0 && nt_kind(nt, av[0]) != NK_SymbolNode) by_value = 1; }
-        else if (how == AN_LAST) {
-          /* one operand beside a literal block is the first value, not a name;
-             beside a block-pass it is the name whenever no block was given */
-          if (an > 0 && !(an == 1 && lit_blk) && !an_name_spelled(nt, av[an - 1])) by_value = 1;
-        }
-        else {
-          for (int i = 0; i < an; i++) {
-            NodeKind ak = nt_kind(nt, av[i]);
-            /* `private def m` and `private attr_reader :m` name what they wrap */
-            if (how == AN_VIS && (ak == NK_DefNode || (ak == NK_CallNode && an_by_name_how(nt_str(nt, av[i], "name")) == AN_GIVES_ALL)))
-              continue;
-            if (ak != NK_SymbolNode || (how == AN_RENAMES && i > 0 && !an_name_spelled(nt, av[i]))) by_value = 1;
-          }
+        switch (how) {
+          case AN_SITE:
+          case AN_MIX_HOOK:
+            by_value = 1;
+            break;
+          case AN_MIX:
+            for (int i = 0; i < an; i++) if (!an_mix_literal(nt, av[i])) by_value = 1;
+            break;
+          case AN_EVAL:
+            if (an > 0 || !lit_blk) by_value = 1;
+            break;
+          case AN_EXEC:
+            if (!lit_blk) by_value = 1;
+            break;
+          case AN_RECV:
+            if (!an_name_spelled(nt, nt_ref(nt, id, "receiver"))) by_value = 1;
+            break;
+          case AN_CALLS:
+            if (an > 0 && !an_name_spelled(nt, av[0])) by_value = 1;
+            break;
+          case AN_GIVES:
+            if (an > 0 && nt_kind(nt, av[0]) != NK_SymbolNode) by_value = 1;
+            break;
+          case AN_LAST:
+            /* one operand beside a literal block is the first value, not a name;
+               beside a block-pass it is the name whenever no block was given */
+            if (an > 0 && !(an == 1 && lit_blk) && !an_name_spelled(nt, av[an - 1])) by_value = 1;
+            break;
+          default:
+            for (int i = 0; i < an; i++) {
+              NodeKind ak = nt_kind(nt, av[i]);
+              /* `private def m` and `private attr_reader :m` name what they wrap */
+              if (how == AN_VIS && (ak == NK_DefNode || (ak == NK_CallNode && an_by_name_how(nt_str(nt, av[i], "name")) == AN_GIVES_ALL)))
+                continue;
+              if (ak != NK_SymbolNode || (how == AN_RENAMES && i > 0 && !an_name_spelled(nt, av[i]))) by_value = 1;
+            }
+            break;
         }
         if (by_value && (how == AN_GIVES || how == AN_GIVES_ALL || how == AN_RENAMES || how == AN_VIS)) g_meta_by_value = 1;
         by_value |= by_value_before;
