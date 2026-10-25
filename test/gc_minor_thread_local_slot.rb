@@ -10,7 +10,13 @@
 # the write and the read, so the map is the only thing holding it. Run under
 # SPINEL_GC_MINOR=1 this segfaulted on this program within a few rounds.
 # spinel: gc-minor
+# Under SPINEL_GC_STRESS every allocation collects, so a tenth of the churn
+# still runs many collections between each write and read; the full count
+# took 11 s of CPU alone there and passed the 60 s limit under a loaded gate
+# (#10206).
+STRESS = ENV["SPINEL_GC_STRESS"]
 def churn(n)
+  n /= 10 if STRESS
   a = []
   n.times { a << ("x" * 200) }
   a.length
