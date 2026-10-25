@@ -8222,12 +8222,15 @@ static SP_UNUSED sp_RbVal sp_ary_lift_kinds(sp_RbVal a, int kinds) {
 /* A boxed value an --rbs `Array[untyped]` seed reads as the poly array: an
    Array of another kind (an Integer array passed on through an `untyped`
    parameter) is copied into one, where reading its header as a poly array's
-   saw an empty Array (#8452). nil stays NULL. */
+   saw an empty Array (#8452). nil stays NULL. Anything else raises
+   TypeError, as a seeded Time slot does (#10154): an object of another
+   class has no Array header, and reading it as one crashed. */
 static SP_UNUSED sp_PolyArray *sp_poly_as_poly_array(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
-  if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_POLY_ARRAY && sp_poly_is_array_kind(v.cls_id))
-    return sp_poly_to_poly_array(v);
-  return (sp_PolyArray *)v.v.p;
+  if (SP_LIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)) return (sp_PolyArray *)v.v.p;
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return sp_poly_to_poly_array(v);
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Array)", sp_poly_class_name(v)));
+  return NULL;
 }
 
 /* The ARGUMENT of an Array set operation (`&` `|` `-`), arriving through a poly
