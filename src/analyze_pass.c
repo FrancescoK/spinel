@@ -3160,16 +3160,23 @@ static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int c
   }
   return changed;
 }
+/* the parameter a merge!'s receiver reads, one the body never assigns and
+   no RBS signature types, or NULL */
+static LocalVar *merge_param_recv(Compiler *c, int recv) {
+  if (recv < 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return NULL;
+  Scope *sc = comp_scope_of(c, recv);
+  if (unassigned_param_read(c, sc, recv) < 0) return NULL;
+  LocalVar *lv = scope_local(sc, nt_str(c->nt, recv, "name"));
+  return lv && !lv->rbs_seeded ? lv : NULL;
+}
 /* `obj.merge!(src)` with `src` boxed: when both are parameters the body
    never assigns, src's position is recorded on obj (store_merge_src), for
    the binding to check each call's hash for it against obj's container
    (param_src_misfits). A box from anywhere else is left to the store. */
 static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an) {
-  if (recv < 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return 0;
+  LocalVar *lv = merge_param_recv(c, recv);
+  if (!lv) return 0;
   Scope *sc = comp_scope_of(c, recv);
-  if (unassigned_param_read(c, sc, recv) < 0) return 0;
-  LocalVar *lv = scope_local(sc, nt_str(c->nt, recv, "name"));
-  if (!lv || lv->rbs_seeded) return 0;
   int ch = 0;
   for (int ai = 0; ai < an; ai++)
     if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_read(c, sc, argv[ai]));
@@ -3370,20 +3377,26 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       else if (name && (is_hash_merge_bang(name)) && an >= 1) {
         /* merging hashes into an empty-{} local writes their keys/values:
            key+value evidence exactly like []= (#2434) */
-        TyKind mat = infer_type(c, argv[0]);
         /* into a Hash subclass instance, a Hash only the run time knows
            brings keys and values of any kind: the instance's Hash boxes both */
         int bsub_recv = recv >= 0 && comp_ty_ary_root(c, infer_type(c, recv)) >= 0;
-        if (bsub_recv && mat == TY_POLY) mat = TY_POLY_POLY_HASH;
-        if (!ty_is_hash(mat)) { changed |= note_merge_param_srcs(c, recv, argv, an); continue; }
-        is_idx_write = 1; kt = ty_hash_key(mat); vt = ty_hash_val(mat);
-        for (int ai = 1; ai < an; ai++) {
+        /* into a parameter, a boxed argument that is a parameter too is
+           checked at the binding (note_merge_param_srcs), and any other box
+           is left to the store, so the typed arguments beside it are still
+           evidence. Into any other receiver, or with an argument of any
+           other kind, the call brings none. */
+        int boxed = 0, other = 0;
+        for (int ai = 0; ai < an && !other; ai++) {
           TyKind mai = infer_type(c, argv[ai]);
           if (bsub_recv && mai == TY_POLY) mai = TY_POLY_POLY_HASH;
-          if (!ty_is_hash(mai)) { changed |= note_merge_param_srcs(c, recv, argv, an); is_idx_write = 0; break; }
-          kt = ty_unify(kt, ty_hash_key(mai));
-          vt = ty_unify(vt, ty_hash_val(mai));
+          if (mai == TY_POLY) { boxed = 1; continue; }
+          if (!ty_is_hash(mai)) { other = 1; continue; }
+          kt = is_idx_write ? ty_unify(kt, ty_hash_key(mai)) : ty_hash_key(mai);
+          vt = is_idx_write ? ty_unify(vt, ty_hash_val(mai)) : ty_hash_val(mai);
+          is_idx_write = 1;
         }
+        if (boxed || other) changed |= note_merge_param_srcs(c, recv, argv, an);
+        if (other || (boxed && !merge_param_recv(c, recv))) is_idx_write = 0;
         if (!is_idx_write) continue;
         /* a conflict block's value is stored under the colliding key */
         TyKind bvt = hash_merge_block_value_ty(c, id);
