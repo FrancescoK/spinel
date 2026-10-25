@@ -80,6 +80,10 @@ typedef struct CF {
      An object such code may reach has its contents joined with rtc both
      ways: the code may store what it holds there, and read what is there. */
   int rt_obj, rtc;
+  /* the scalar helpers desugar_builtin_scalar_defs makes (`__int_gcd__1`),
+     sorted by the name of the call desugar_builtin_scalar_calls rewrites
+     into them (`gcd`), and per scope whether it is one */
+  struct { const char *base; int mi; } *scal; int nscal; unsigned char *scal_mi;
   int (*umemo)[3];            /* cf_union's answers, direct-mapped: (a, b, a | b) */
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
@@ -2647,6 +2651,57 @@ static void cf_send_writers(CF *f, int v, int r, const int *argv, int argc) {
   }
 }
 
+/* The scalar helpers (#8837, decision 5): desugar_builtin_scalar_calls
+   rewrites `recv.gcd(x)` into `__int_gcd__1(recv, x)` inside the type
+   fixpoint, after this walk, so the walk binds such a call to the helpers
+   of its name itself: the receiver (in a helper's own body, a
+   receiverless call's is its `__self`) to the first parameter, the
+   arguments to the rest, and the helper's value to the call's. A call the
+   desugar leaves alone (a receiver that is no Integer, a splat) binds
+   values the helper never sees, which only widens it. */
+static int cf_scal_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+static void cf_scal_build(CF *f) {
+  Compiler *c = f->c;
+  static const char *const pre[] = { "__int_", "__flt_", "__cmp_" };
+  f->scal_mi = calloc((size_t)c->nscopes + 1, 1);
+  f->scal = malloc(sizeof *f->scal * (size_t)(c->nscopes + 1));
+  if (!f->scal_mi || !f->scal) cf_oom();
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    const char *nm = c->scopes[mi].name;
+    if (!nm || c->scopes[mi].is_cmethod || c->scopes[mi].class_id >= 0 || !cf_prelude_scope(f, mi)) continue;
+    int q = -1;
+    for (int i = 0; i < 3 && q < 0; i++) if (!strncmp(nm, pre[i], 6)) q = i;
+    if (q < 0 || !nm[6]) continue;
+    /* the base name: past the prefix, less a clone's `__<n>` */
+    const char *b = nm + 6, *e = b + strlen(b), *u = strstr(b, "__");
+    if (u && u > b) { const char *d = u + 2; while (*d >= '0' && *d <= '9') d++; if (!*d && d > u + 2) e = u; }
+    char *base = malloc((size_t)(e - b) + 1);
+    if (!base) cf_oom();
+    memcpy(base, b, (size_t)(e - b)); base[e - b] = 0;
+    f->scal[f->nscal].base = base; f->scal[f->nscal].mi = mi; f->nscal++;
+    f->scal_mi[mi] = 1;
+  }
+  qsort(f->scal, (size_t)f->nscal, sizeof *f->scal, cf_scal_cmp);
+}
+static void cf_scal_bind(CF *f, int v, const char *nm, int r, const int *argv, int argc) {
+  if (!f->nscal) return;
+  int lo = 0, hi = f->nscal;
+  while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(f->scal[m].base, nm) < 0) lo = m + 1; else hi = m; }
+  if (lo >= f->nscal || strcmp(f->scal[lo].base, nm)) return;
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(f->nt, argv[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return;   /* (no rewrite) */
+  }
+  int recv = r >= 0 ? r : cf_lv(f, v, "__self");
+  for (int j = lo; j < f->nscal && !strcmp(f->scal[j].base, nm); j++) {
+    int mi = f->scal[j].mi;
+    if (recv >= 0) cf_flow(f, recv, cf_param_el(f, mi, 0));
+    for (int i = 0; i < argc; i++) cf_flow(f, argv[i], cf_param_el(f, mi, i + 1));
+    cf_flow(f, f->ret_el[mi], v);
+  }
+}
 static void cf_call(CF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -2662,6 +2717,7 @@ static void cf_call(CF *f, int v) {
     const char *lit = k0 == NK_SymbolNode ? nt_str(nt, argv[0], "value") : k0 == NK_StringNode ? nt_str(nt, argv[0], "content") : NULL;
     if (lit) { nm = lit; argv++; argc--; }
   }
+  cf_scal_bind(f, v, nm, r, argv, argc);
   if (cf_opaque_name(nm)) {
     cf_all(f, v);
     /* (the kinds' walk: the arguments are handed on, not made anything;
@@ -4491,6 +4547,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   for (int k = 0; k < c->nclasses && !f.has_mm; k++)
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) f.has_mm = 1;
   /* the parameters a call the analysis cannot see binds: anything */
+  cf_scal_build(&f);
   cf_mark_dead_protocols(&f);
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *s = &c->scopes[mi];
@@ -4502,7 +4559,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
     int sd_all = noseed && sp_streq(noseed, "all");
     int sd_proto = cf_protocol_name(s->name) && !(noseed && sp_streq(noseed, "proto")) && !sd_all;
-    int sd_prelude = cf_prelude_scope(&f, mi) && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
+    int sd_prelude = cf_prelude_scope(&f, mi) && !f.scal_mi[mi] && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
     int sd_modfn = s->is_module_function && !(noseed && sp_streq(noseed, "modfn")) && !sd_all;
     if (sd_proto || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi)) ||
         s->is_proc_form || s->is_lowered_yield ||
@@ -4586,6 +4643,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   if (f.why) cf_why_report(&f);
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
+  for (int i = 0; i < f.nscal; i++) free((char *)f.scal[i].base);
+  free(f.scal); free(f.scal_mi);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
   free(f.sw); free(f.swi);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); free(f.pm[mi].kw); free(f.pm[mi].el); }
