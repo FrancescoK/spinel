@@ -21778,6 +21778,13 @@ static const char *unresolved_builtin_class(TyKind t) {
 int an_written_call(int id);
 static void unresolved_builtin_refusal(Compiler *c, int id, int recv, const char *nm, TyKind t) {
   if (recv < 0 || !nm || !an_written_call(id)) return;
+  /* (a call with arguments may have no route because CRuby rejects one of
+     them too: `[1].find(42) { false }` raises NoMethodError over 42.call,
+     and gsub!(an Array) a TypeError; the gate's raise stands for that, so
+     only a call with none is refused) */
+  int ac = 0;
+  call_args(c->nt, id, &ac);
+  if (ac > 0) return;
   const char *cls = unresolved_builtin_class(t);
   if (!cls || !builtin_method_known(cls, nm)) return;
   char msg[256];
