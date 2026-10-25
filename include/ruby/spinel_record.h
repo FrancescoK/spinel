@@ -27,6 +27,8 @@ void rb_define_alias(VALUE, const char *, const char *);
 void rb_define_attr(VALUE, const char *, int, int);
 void rb_include_module(VALUE, VALUE);
 void rb_extend_object(VALUE, VALUE);
+void rb_undef_method(VALUE, const char *);
+void rb_undef_alloc_func(VALUE);
 ID rb_intern(const char *);
 ID rb_intern2(const char *, long);
 #define rb_intern_const rb_intern

@@ -112,6 +112,8 @@ void rb_define_alias(VALUE o,const char *n,const char *old) { (void)o;(void)n;(v
 void rb_define_attr(VALUE o,const char *n,int r,int w) { (void)o;(void)n;(void)r;(void)w; }
 void rb_include_module(VALUE o,VALUE m) { (void)o;(void)m; }
 void rb_extend_object(VALUE o,VALUE m) { (void)o;(void)m; }
+void rb_undef_method(VALUE o,const char *n) { (void)o;(void)n; }
+void rb_undef_alloc_func(VALUE o) { (void)o; }
 void rb_define_const(VALUE o,const char *n,VALUE v) {
     (void)o;(void)n;
     if(!binding || next_constant>=binding->constant_count)sp_raise_cls("RuntimeError","C constant definitions outside Init are unsupported");
@@ -195,6 +197,8 @@ void *rb_check_typeddata(VALUE value,const rb_data_type_t *type) {
 void *sp_cext_data_ptr(VALUE value) { return data_object(value)->cext_data; }
 const rb_data_type_t *sp_cext_data_type(VALUE value) { return data_object(value)->cext_type; }
 static void *sp_cext_allocate_locked(sp_cext_extension *ext,int slot,int cls) {
+    /* rb_undef_alloc_func: no slot, as CRuby's allocator-undefined class */
+    if(slot<0)rb_raise(rb_eTypeError,"allocator undefined for %s",sp_obj_cls_name_fn?sp_obj_cls_name_fn(cls):"class");
     sp_cext_init(ext);sp_cext_arena_mark mark=sp_cext_arena_enter();
     sp_RbVal k={SP_TAG_CLASS,cls,{.i=cls}};
     VALUE obj=((VALUE (*)(VALUE))ext->functions[slot])(sp_cext_value(k));

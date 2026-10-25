@@ -73,6 +73,8 @@ Supported events:
 | alias | `name`, `original` |
 | attribute | `name`, `read`, `write` |
 | include / extend | `module` |
+| undef_method | `name` |
+| undef_allocator | (none) |
 
 Constant values have `type` equal to integer, boolean, nil, symbol, reference
 (a qualified class/module name), or string. Strings store arbitrary bytes as

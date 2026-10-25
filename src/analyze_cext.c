@@ -171,6 +171,34 @@ void desugar_cext_decls(Compiler *c) {
         }
         if (!found) unsupported_feature(c, site, "C extension allocator needs a manifest class");
         buf_puts(&b, "nil");
+      } else if (sp_streq(name, "__cext_undef_allocator")) {
+        /* No allocator: instances come only from TypedData_Make_Struct /
+         * TypedData_Wrap_Struct in C, and Ruby's new and allocate raise as
+         * CRuby's do for a class whose allocator is undefined. */
+        need(c, site, ac, 1); const char *cn = text(c, site, av[0]);
+        int found = 0;
+        for (int q = 0; q < c->n_cext_classes; q++) if (sp_streq(c->cext_classes[q].path, cn) && !c->cext_classes[q].module) {
+          c->cext_classes[q].allocator = -2; c->cext_classes[q].extension = ext; found = 1;
+        }
+        if (!found) unsupported_feature(c, site, "C extension allocator needs a manifest class");
+        owner_open(c, site, &b, cn);
+        buf_printf(&b, "def self.allocate\nraise TypeError, \"allocator undefined for %s\"\nend\n"
+                       "def self.new(*)\nraise TypeError, \"allocator undefined for %s\"\nend\n"
+                       "def dup\nraise TypeError, \"allocator undefined for %s\"\nend\n"
+                       "def clone(freeze: nil)\nraise TypeError, \"allocator undefined for %s\"\nend\nend\n", cn, cn, cn, cn);
+      } else if (sp_streq(name, "__cext_undef_method")) {
+        /* Only initialize / initialize_copy of a class without an allocator:
+         * new, allocate, dup and clone raise before either could run, so
+         * their absence is not observable. Any other undef is refused, as
+         * Module#undef_method is. */
+        need(c, site, ac, 2);
+        const char *cn = text(c, site, av[0]), *mn = text(c, site, av[1]);
+        int undefined_allocator = 0;
+        for (int q = 0; q < c->n_cext_classes; q++)
+          if (sp_streq(c->cext_classes[q].path, cn) && c->cext_classes[q].allocator == -2) undefined_allocator = 1;
+        if (!undefined_allocator || (!sp_streq(mn, "initialize") && !sp_streq(mn, "initialize_copy")))
+          unsupported_feature(c, site, "rb_undef_method is supported only for initialize and initialize_copy of a class whose allocator is undefined");
+        buf_puts(&b, "nil");
       } else if (sp_streq(name, "__cext_alias")) {
         need(c, site, ac, 3); owner_open(c, site, &b, text(c, site, av[0]));
         buf_puts(&b, "alias_method "); symbol(&b, text(c, site, av[1])); buf_puts(&b, ", "); symbol(&b, text(c, site, av[2])); buf_puts(&b, "\nend\n");
@@ -383,11 +411,13 @@ void register_cext_layouts(Compiler *c) {
       if (ruby_name && sp_streq(ruby_name, cc->path)) { cid = k; break; }
     }
     if (cid < 0) unsupported_feature(c, c->nt->root_id, "C extension class was not registered");
-    if (cc->allocator >= 0) {
+    /* -2: the allocator is undefined, so instances come only from
+     * TypedData_Make_Struct / TypedData_Wrap_Struct; the layout is the same */
+    if (cc->allocator >= 0 || cc->allocator == -2) {
       c->classes[cid].cext_layout = 1;
       c->classes[cid].instantiated = 1;
       c->classes[cid].cext_extension = cc->extension + 1;
-      c->classes[cid].cext_allocator = cc->allocator;
+      c->classes[cid].cext_allocator = cc->allocator >= 0 ? cc->allocator : -1;
     }
   }
 }
