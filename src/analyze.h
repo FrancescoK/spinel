@@ -173,15 +173,15 @@ void analyze_program(Compiler *c);
 int an_prog_never_gives(const char *nm, int defs);
 int an_prog_names_method(const char *nm);
 int an_prog_meta_by_value(void);
-int an_prog_gives_by_value(void);
 /* 1 or -1 when `id` is that Integer literal, parenthesized or not; 0 otherwise */
 int an_unit_int_literal(const NodeTable *nt, int id);
 /* a push onto a typed Array a builtin call just built, given an element of
    another kind: it answers the general Array (analyze_infer.c) */
 int an_push_widens_fresh(Compiler *c, int id);
 /* ...and onto one a boxed receiver's builtin built (`x.to_s.scan(re) << 99`
-   with x.to_s boxed): the kinds the push stores (AN_LIFT_*), which the
-   receiver's typed Array is widened for before it (analyze_infer.c) */
+   with x.to_s boxed): the kinds the push stores (AN_LIFT_*), for which the
+   receiver's builtin arms box their typed Array as the general one
+   (analyze_infer.c) */
 enum { AN_LIFT_INT = 1, AN_LIFT_FLOAT = 2, AN_LIFT_STRING = 4, AN_LIFT_SYMBOL = 8, AN_LIFT_OTHER = 16 };
 int an_push_lifts_boxed(Compiler *c, int id);
 /* a builtin of this name answers a new Array where it answers one (analyze_pass.c) */

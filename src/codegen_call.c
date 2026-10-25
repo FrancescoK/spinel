@@ -7597,6 +7597,26 @@ static int bind_poly_arg_temp(Compiler *c, int v, TyKind held, int tn) {
   return view_bind(v, "_t%d", tn);
 }
 
+/* The receiver of the push being emitted whose builtin arms box their new
+   Array as the general one (an_push_lifts_boxed), and the kinds the push
+   stores */
+static int g_lift_recv = -1, g_lift_kinds = 0;
+/* A builtin arm's answer `text`, typed bt, boxed. The Array a builtin of a
+   name that builds one (fresh_array_builtin_name) answers for the receiver
+   of such a push is held by nothing else: one whose kind cannot take what
+   the push stores is boxed as the general Array, which can. */
+static void emit_builtin_arm_boxed(Compiler *c, int id, TyKind bt, const char *text, Buf *b) {
+  int fits = bt == TY_INT_ARRAY ? AN_LIFT_INT : bt == TY_FLOAT_ARRAY ? (AN_LIFT_INT | AN_LIFT_FLOAT)
+           : bt == TY_STR_ARRAY ? AN_LIFT_STRING : 0;
+  const char *to_pa = fits && id == g_lift_recv && (g_lift_kinds & ~fits) &&
+                      fresh_array_builtin_name(nt_str(c->nt, id, "name")) ? array_to_poly_fn(bt) : NULL;
+  if (!to_pa) { emit_boxed_text(c, bt, text, b); return; }
+  Buf t; memset(&t, 0, sizeof t);
+  buf_printf(&t, "%s(%s)", bt == TY_STR_ARRAY ? "sp_StrArray_to_poly_handles" : to_pa, text);
+  emit_boxed_text(c, TY_POLY_ARRAY, t.p, b);
+  free(t.p);
+}
+
 /* A genuine String reaching the poly method dispatch because a user class
    happens to own the name. The switch below has an arm per user class and
    none for a String, so the call raised NoMethodError for a method String has
@@ -7700,7 +7720,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     /* a raise token stays bare, for the test below */
     if (nb.p && (strncmp(nb.p, "sp_raise_nomethod(", 18) == 0 || strncmp(nb.p, "sp_raise_poly_nomethod(", 23) == 0))
       buf_puts(&ib, nb.p);
-    else emit_boxed_text(c, bt, nb.p ? nb.p : "0", &ib);
+    else emit_builtin_arm_boxed(c, id, bt, nb.p ? nb.p : "0", &ib);
     free(nb.p);
   }
   /* into an oint slot the String's answer goes in its own form, lifted
@@ -8137,7 +8157,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
       /* (any other builtin value has no #message: the accessor raises) */
       buf_printf(&ib, ", SP_BUILTIN_STRBUF) : sp_poly_exc_acc(_t%d, \"message\"))", tv);
     }
-    else if (ret == TY_POLY && bt != TY_POLY && !is_raise) emit_boxed_text(c, bt, nb->p, &ib);
+    else if (ret == TY_POLY && bt != TY_POLY && !is_raise) emit_builtin_arm_boxed(c, id, bt, nb->p, &ib);
     else if (to_pa && !is_raise)
       buf_printf(&ib, "%s(%s)", bt == TY_STR_ARRAY ? "sp_StrArray_to_poly_handles" : to_pa, nb->p);
     else if (wrap_h && !is_raise && argc == 0 && is_message_name(name) && !exc_has_nonstring_msg_override(c)) {
@@ -27456,20 +27476,8 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
-/* The receiver of the push being emitted whose builtin's typed Array is
-   widened first (an_push_lifts_boxed), and the kinds the push stores */
-static int g_lift_recv = -1, g_lift_kinds = 0;
 static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
-  if (id == g_lift_recv) {
-    int sv = g_lift_recv, kinds = g_lift_kinds;
-    g_lift_recv = -1;
-    buf_puts(b, "sp_ary_lift_kinds(");
-    emit_call(c, id, b);
-    buf_printf(b, ", %d)", kinds);
-    g_lift_recv = sv;
-    return;
-  }
   int lk = an_push_lifts_boxed(c, id);
   if (lk) {
     int sv = g_lift_recv, svk = g_lift_kinds;
