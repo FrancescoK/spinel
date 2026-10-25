@@ -23905,8 +23905,39 @@ static int an_param_appended_deep_d(Compiler *c, int mi, int j, int depth) {
   }
   return 0;
 }
+/* The answers while the share pass runs (sb_share_begin), per (method,
+   parameter), for the generation: the pass asked for every element argument
+   of every call it visits, each a walk of the callee's body and of what it
+   hands the parameter on to, over the same few methods. A change the pass
+   reports ends the generation (sb_share_step, asked here too), and the
+   question reads only what such a change moves. */
+typedef struct { int mi, j, ans; int gen; } ApdMemo;
+static ApdMemo *apd_tab; static int apd_cap, apd_n;
 static int an_param_appended_deep(Compiler *c, int mi, int j) {
-  return an_param_appended_deep_d(c, mi, j, 0);
+  if (!sb_shared) return an_param_appended_deep_d(c, mi, j, 0);
+  sb_share_step();
+  if (apd_n * 2 >= apd_cap) {
+    int ncap = apd_cap ? apd_cap * 2 : 1024;
+    ApdMemo *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < apd_cap; i++) {
+      if (apd_tab[i].gen != sb_memo_gen) continue;
+      unsigned h = ((unsigned)apd_tab[i].mi * 2654435761u ^ (unsigned)apd_tab[i].j * 40503u) & (unsigned)(ncap - 1);
+      while (nv[h].gen == sb_memo_gen) h = (h + 1) & (unsigned)(ncap - 1);
+      nv[h] = apd_tab[i];
+    }
+    free(apd_tab); apd_tab = nv; apd_cap = ncap; apd_n = 0;
+    for (int i = 0; i < apd_cap; i++) apd_n += apd_tab[i].gen == sb_memo_gen;
+  }
+  unsigned h = ((unsigned)mi * 2654435761u ^ (unsigned)j * 40503u) & (unsigned)(apd_cap - 1);
+  while (apd_tab[h].gen == sb_memo_gen) {
+    if (apd_tab[h].mi == mi && apd_tab[h].j == j) return apd_tab[h].ans;
+    h = (h + 1) & (unsigned)(apd_cap - 1);
+  }
+  int ans = an_param_appended_deep_d(c, mi, j, 0);
+  apd_tab[h] = (ApdMemo){ mi, j, ans, sb_memo_gen };
+  apd_n++;
+  return ans;
 }
 /* An element read handed to a parameter that is appended to (`m(h[:a])`,
    `m(a[0][1])`, `m(@a[0])`): the container's Strings have to become handles
