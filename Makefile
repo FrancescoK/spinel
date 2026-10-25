@@ -2053,7 +2053,9 @@ reject-test: $(SPINEL)
 	for t in test/reject/macro_*.rb; do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mc.c" >"$$tmp/mc.out" 2>&1; then \
 	  echo "reject-test: FAIL ($$t: a macro over state or a name it cannot compute was expanded)"; ok=0; \
-	else grep -qE "unsupported send with a runtime method name|unsupported .*CallNode .(module_eval|class_eval|const_set).|no class in the program defines|define_method with a non-literal name" "$$tmp/mc.out" || \
+	else pat="unsupported send with a runtime method name|unsupported .*CallNode .(module_eval|class_eval|const_set).|no class in the program defines"; \
+	  grep -q '^# spinel: reject-define-method-name$$' "$$t" && pat="define_method with a non-literal name"; \
+	  grep -qE "$$pat" "$$tmp/mc.out" || \
 	  { echo "reject-test: FAIL ($$t: refused without saying why)"; sed -n 1,5p "$$tmp/mc.out"; ok=0; }; fi; \
 	done; \
 	for t in test/reject/class_eval_static_*.rb; do \

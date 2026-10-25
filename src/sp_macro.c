@@ -3069,6 +3069,18 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
    (`r.attribute` of an attr_reader against `def attribute(name)`) raises
    before the macro would run, so it keeps nothing of the macro alive. A
    splat, a keyword hash, a block-pass or `...` may fit anything. */
+/* Can the macro `def` take `argc` positional arguments? */
+static int mx_argc_fits(const pm_def_node_t *def, size_t argc) {
+  const pm_parameters_node_t *ps = def->parameters;
+  if (!ps) return argc == 0;
+  /* keywords never take a positional argument (a keyword hash returned above),
+     so only a rest parameter, or `...`, lifts the upper bound */
+  size_t lo = ps->requireds.size + ps->posts.size;
+  if (ps->rest || (ps->keyword_rest && PM_NODE_TYPE(ps->keyword_rest) == PM_FORWARDING_PARAMETER_NODE))
+    return argc >= lo;
+  return argc >= lo && argc <= lo + ps->optionals.size;
+}
+
 static int mx_call_fits(const pm_def_node_t *def, const pm_call_node_t *cn) {
   if (cn->block && PM_NODE_TYPE(cn->block) == PM_BLOCK_ARGUMENT_NODE) return 1;
   size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
@@ -3076,13 +3088,7 @@ static int mx_call_fits(const pm_def_node_t *def, const pm_call_node_t *cn) {
     pm_node_type_t t = PM_NODE_TYPE(cn->arguments->arguments.nodes[i]);
     if (t == PM_SPLAT_NODE || t == PM_KEYWORD_HASH_NODE || t == PM_FORWARDING_ARGUMENTS_NODE) return 1;
   }
-  const pm_parameters_node_t *ps = def->parameters;
-  if (!ps) return argc == 0;
-  /* keywords never take a positional argument (a keyword hash returned above),
-     so only a rest parameter lifts the upper bound */
-  size_t lo = ps->requireds.size + ps->posts.size;
-  if (ps->rest) return argc >= lo;
-  return argc >= lo && argc <= lo + ps->optionals.size;
+  return mx_argc_fits(def, argc);
 }
 
 /* calls of each candidate macro's name anywhere in the program; `attr` holds
@@ -3102,8 +3108,44 @@ static bool mx_super_visit(const pm_node_t *n, void *data) {
   return true;
 }
 
+/* Is n in a candidate's body? A call there runs only when that macro does
+   (the instance method `extension` a `def self.extension` defines its
+   `#{name}=` with, the `attribute` calls of a `timestamps`): dropped with
+   it. Whether its expansions left such a call as written is seen when the
+   expanded text is walked. */
+static int mx_in_candidate(const MxCount *mc, const pm_node_t *n) {
+  for (int j = 0; !mc->result && j < g_mx_nmacros; j++) {
+    if (!mc->cand[j]) continue;
+    const pm_location_t *dl = &g_mx_macros[j].def->base.location;
+    if (n->location.start >= dl->start && n->location.end <= dl->end) return 1;
+  }
+  return 0;
+}
+
 static bool mx_count_visit(const pm_node_t *n, void *data) {
   MxCount *mc = (MxCount *)data;
+  /* `T.hits += 1`, `T.hits ||= v`, `a, T.hits = ...`: calls of the reader
+     (no argument) and of the writer (one) */
+  pm_constant_id_t rw[2] = { 0, 0 };
+  switch (PM_NODE_TYPE(n)) {
+    case PM_CALL_OR_WRITE_NODE:
+      rw[0] = ((const pm_call_or_write_node_t *)n)->read_name; rw[1] = ((const pm_call_or_write_node_t *)n)->write_name; break;
+    case PM_CALL_AND_WRITE_NODE:
+      rw[0] = ((const pm_call_and_write_node_t *)n)->read_name; rw[1] = ((const pm_call_and_write_node_t *)n)->write_name; break;
+    case PM_CALL_OPERATOR_WRITE_NODE:
+      rw[0] = ((const pm_call_operator_write_node_t *)n)->read_name; rw[1] = ((const pm_call_operator_write_node_t *)n)->write_name; break;
+    case PM_CALL_TARGET_NODE: rw[1] = ((const pm_call_target_node_t *)n)->name; break;
+    default: break;
+  }
+  if ((rw[0] || rw[1]) && !mx_in_candidate(mc, n))
+    for (int k = 0; k < 2; k++) {
+      if (!rw[k]) continue;
+      char *nm = mx_name(rw[k]);
+      for (int i = 0; i < g_mx_nmacros; i++)
+        if (mc->cand[i] && strcmp(g_mx_macros[i].name, nm) == 0 && mx_argc_fits(g_mx_macros[i].def, (size_t)k))
+          mc->counts[i]++;
+      free(nm);
+    }
   /* a def of the name that calls super reaches it with arguments of its own
      (`def self.attribute(name) = super(name, :string)`): it keeps it */
   if (PM_NODE_TYPE(n) == PM_DEF_NODE && ((const pm_def_node_t *)n)->body) {
@@ -3127,17 +3169,7 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
         }
         mc->attr[mc->nattr++] = ac->arguments->arguments.nodes[q];
       }
-    /* a call in a candidate's body runs only when that macro does (the
-       instance method `extension` a `def self.extension` defines its
-       `#{name}=` with, the `attribute` calls of a `timestamps`): dropped with
-       it. Whether its expansions left such a call as written is seen when
-       the expanded text is walked. */
-    int inside = 0;
-    for (int j = 0; !mc->result && j < g_mx_nmacros && !inside; j++) {
-      if (!mc->cand[j]) continue;
-      const pm_location_t *dl = &g_mx_macros[j].def->base.location;
-      if (n->location.start >= dl->start && n->location.end <= dl->end) inside = 1;
-    }
+    int inside = mx_in_candidate(mc, n);
     for (int i = 0; i < g_mx_nmacros && !inside; i++) {
       if (!mc->cand[i] || strcmp(g_mx_macros[i].name, nm) != 0 ||
           !mx_call_fits(g_mx_macros[i].def, (const pm_call_node_t *)n)) continue;

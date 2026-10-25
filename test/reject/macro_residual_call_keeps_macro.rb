@@ -1,3 +1,4 @@
+# spinel: reject-define-method-name
 # `timestamps` expands everywhere and goes, but `attribute` is a name two
 # modules define, so its expansion leaves `attribute :created_at, :datetime`
 # as written, in Todo's body. That call runs at run time: Macros#attribute
