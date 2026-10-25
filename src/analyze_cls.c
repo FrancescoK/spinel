@@ -110,6 +110,7 @@ typedef struct CF {
   int *usz;                   /* ... per root, its element count */
   int (*uev)[3]; int nuev, cuev;  /* ... each union of two classes: the rule's line, the root, the smaller count */
   unsigned char *exec_esc;    /* per scope: its block parameter may run under another self */
+  unsigned char *blk_local;   /* per scope: its block parameter is only called (cf_collect_blk_local) */
   unsigned char *exec_blk;    /* per node: a block or lambda that may run under another self */
   int pending;            /* calls round 0 left to phase 1 */
   /* directed mode (#8837, SPINEL_CLS_FLOW): a flow is an edge from the
@@ -1806,6 +1807,18 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   Compiler *c = f->c;
   if (blk < 0) return;
   Scope *m = &c->scopes[mi];
+  if (nt_kind(nt, blk) == NK_BlockArgumentNode && f->blk_local) {
+    /* `&blk`, the block parameter of a method that only calls it: mi's
+       yields are that method's, and their values its block's */
+    int e = nt_ref(nt, blk, "expression");
+    int om = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? cf_owner_def(f, e, 1, NULL) : -1;
+    const char *en = e >= 0 ? nt_str(nt, e, "name") : NULL;
+    if (om >= 0 && f->blk_local[om] && en && sp_streq(en, c->scopes[om].blk_param)) {
+      for (int y = 0; y < CF_YARGS; y++) cf_flow(f, f->yarg_el[mi][y], f->yarg_el[om][y]);
+      cf_flow(f, f->yval_el[om], f->yval_el[mi]);
+      return;
+    }
+  }
   if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
     /* `&pr`: the proc's value is its body's, its parameters take anything */
     int e = nt_ref(nt, blk, "expression");
@@ -1834,7 +1847,9 @@ static void cf_bind_block(CF *f, int mi, int blk) {
     }
   }
   if (!plain) { cf_all_block_params(f, blk); return; }
-  if (m->blk_param && m->blk_param[0]) { cf_all_block_params(f, blk); return; }
+  if (m->blk_param && m->blk_param[0] && !(f->blk_local && f->blk_local[mi])) {
+    cf_all_block_params(f, blk); return;
+  }
   if (f->has_super[mi]) { cf_all_block_params(f, blk); return; }
   if (m->is_proc_form) { cf_all_block_params(f, blk); return; }
   if (m->is_lowered_yield) { cf_all_block_params(f, blk); return; }
@@ -2702,6 +2717,7 @@ static void cf_scal_bind(CF *f, int v, const char *nm, int r, const int *argv, i
     cf_flow(f, f->ret_el[mi], v);
   }
 }
+static int cf_blk_call(CF *f, int v, int r, const char *nm, const int *argv, int argc);
 static void cf_call(CF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -2718,6 +2734,7 @@ static void cf_call(CF *f, int v) {
     if (lit) { nm = lit; argv++; argc--; }
   }
   cf_scal_bind(f, v, nm, r, argv, argc);
+  if (cf_blk_call(f, v, r, nm, argv, argc)) return;
   if (cf_opaque_name(nm)) {
     cf_all(f, v);
     /* (the kinds' walk: the arguments are handed on, not made anything;
@@ -3815,6 +3832,72 @@ static void cf_collect_exec(CF *f) {
   }
   if (procs) NT_FOREACH_KIND(nt, NK_LambdaNode, id) f->exec_blk[id] = 1;
 }
+/* Which methods only call their block parameter: every read of it is the
+   receiver of call, (), [], yield or === with plain arguments (or of
+   arity, nil?, lambda?, parameters), it is never written, stored or
+   passed on, and it does not run under another self. Such a parameter's
+   calls are yields (cf_blk_call), and a literal block given to the method
+   binds as a yielding method's does (cf_bind_block) rather than taking
+   anything (#8837, stage 4). */
+static int cf_blk_call_name(const char *cn) {
+  return cn && (sp_streq(cn, "call") || sp_streq(cn, "()") || sp_streq(cn, "yield") || sp_streq(cn, "===") || sp_streq(cn, "[]"));
+}
+static void cf_collect_blk_local(CF *f) {
+  Compiler *c = f->c;
+  const NodeTable *nt = f->nt;
+  f->blk_local = calloc((size_t)c->nscopes + 1, 1);
+  if (!f->blk_local) cf_oom();
+  for (int mi = 1; mi < c->nscopes; mi++)
+    f->blk_local[mi] = c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] && !f->exec_esc[mi];
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, id) {
+    int mi = cf_owner_def(f, id, 1, NULL);
+    if (mi < 0 || !f->blk_local[mi]) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, c->scopes[mi].blk_param)) continue;
+    int p = f->par ? f->par[id] : -1, ok = 0;
+    /* handed on as the block of a receiverless call of a method of the
+       class's own (`each_line(sep, &blk)`): that method's yields are this
+       one's (cf_bind_block) */
+    if (p >= 0 && nt_kind(nt, p) == NK_BlockArgumentNode) {
+      int pc = f->par[p];
+      while (pc >= 0 && nt_type(nt, pc) && sp_streq(nt_type(nt, pc), "ArgumentsNode")) pc = f->par[pc];
+      const char *cn = pc >= 0 && nt_kind(nt, pc) == NK_CallNode ? nt_str(nt, pc, "name") : NULL;
+      int k = c->scopes[mi].class_id;
+      ok = cn && nt_ref(nt, pc, "receiver") < 0 && nt_ref(nt, pc, "block") == p && k >= 0 && !c->scopes[mi].is_cmethod &&
+           comp_method_in_chain(c, k, cn, NULL) >= 0;
+    }
+    if (p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id) {
+      const char *cn = nt_str(nt, p, "name");
+      if (cn && (sp_streq(cn, "arity") || sp_streq(cn, "nil?") || sp_streq(cn, "lambda?") || sp_streq(cn, "parameters"))) ok = 1;
+      else if (cf_blk_call_name(cn) && nt_ref(nt, p, "block") < 0) {
+        int a = nt_ref(nt, p, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        ok = an <= CF_YARGS;
+        for (int i = 0; i < an && ok; i++) {
+          NodeKind k = nt_kind(nt, av[i]);
+          if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) ok = 0;
+        }
+      }
+    }
+    if (!ok) f->blk_local[mi] = 0;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int mi = cf_owner_def(f, id, 1, NULL);
+    const char *nm = nt_str(nt, id, "name");
+    if (mi >= 0 && f->blk_local[mi] && nm && sp_streq(nm, c->scopes[mi].blk_param)) f->blk_local[mi] = 0;
+  }
+}
+/* `blk.call(a, b)` on a block parameter that is only called: the yield
+   `yield a, b` */
+static int cf_blk_call(CF *f, int v, int r, const char *nm, const int *argv, int argc) {
+  if (r < 0 || !f->blk_local || nt_kind(f->nt, r) != NK_LocalVariableReadNode || !cf_blk_call_name(nm)) return 0;
+  int mi = cf_owner_def(f, r, 1, NULL);
+  const char *rn = nt_str(f->nt, r, "name");
+  if (mi < 0 || !f->blk_local[mi] || !rn || !sp_streq(rn, f->c->scopes[mi].blk_param)) return 0;
+  for (int i = 0; i < argc && i < CF_YARGS; i++) cf_flow(f, argv[i], f->yarg_el[mi][i]);
+  cf_flow(f, f->yval_el[mi], v);
+  return 1;
+}
 /* node v runs in a block that may have another self */
 static int cf_in_exec_block(CF *f, int v) {
   for (int q = f->par ? f->par[v] : -1, d = 0; q >= 0 && d < 100000; q = f->par[q], d++) {
@@ -4544,6 +4627,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     }
   }
   cf_collect_exec(&f);
+  cf_collect_blk_local(&f);
   for (int k = 0; k < c->nclasses && !f.has_mm; k++)
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) f.has_mm = 1;
   /* the parameters a call the analysis cannot see binds: anything */
@@ -4644,7 +4728,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
   for (int i = 0; i < f.nscal; i++) free((char *)f.scal[i].base);
-  free(f.scal); free(f.scal_mi);
+  free(f.scal); free(f.scal_mi); free(f.blk_local);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
   free(f.sw); free(f.swi);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); free(f.pm[mi].kw); free(f.pm[mi].el); }
