@@ -2535,6 +2535,16 @@ static const PolyPlan *cplan_poly_level(Compiler *c, int id, int full) {
 #ifndef NDEBUG
   int tmp0 = g_tmp;
 #endif
+  /* Resolve into a plan of this call's own, then store it. Resolving can
+     ask for another call's arms (an argument's representation reads its
+     reader arms: repr_boxed_reader_handle), which comes back here and
+     refills `fresh` or moves the memo under the arms this call is still
+     adding. */
+  PolyPlan r = {0};
+  cpoly_resolve(c, id, &r, full);
+#ifndef NDEBUG
+  assert(g_tmp == tmp0);   /* resolving emits nothing */
+#endif
   PolyPlan *p = &fresh;
   if (plain) {
     if (id >= g_pp_cap) {
@@ -2550,10 +2560,8 @@ static const PolyPlan *cplan_poly_level(Compiler *c, int id, int full) {
     free(g_pp_name[id]);
     g_pp_name[id] = nm ? strdup(nm) : NULL;
   }
-  cpoly_resolve(c, id, p, full);
-#ifndef NDEBUG
-  assert(g_tmp == tmp0);   /* resolving emits nothing */
-#endif
+  free(p->arm);
+  *p = r;
   return p;
 }
 
