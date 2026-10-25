@@ -6835,6 +6835,12 @@ static void gc_wb_insert(Compiler *c, Buf *b, size_t fn_off) {
     while (end < b->len && !(b->p[end] == '\n' && !strncmp(b->p + end + 1, "static ", 7))) end++;
     Buf seg; memset(&seg, 0, sizeof seg);
     buf_putn(&seg, b->p + start, end - start);
+    /* An --incremental build numbers each segment's barrier temps from 1.
+       The count otherwise runs on from whatever function was emitted last
+       (main), so one temp more in main renamed the barriers of the whole
+       program and every unit missed the cache. The default build keeps
+       its numbering, byte for byte. */
+    if (g_incremental) g_tmp = 0;
     gc_wb_insert_seg(c, &seg, 0);
     buf_putn(&out, seg.p, seg.len);
     free(seg.p);
