@@ -125,7 +125,11 @@ module OpenSSL
       Digest.raw(@name, data)
     end
 
-    def hexdigest(data = nil) = digest(data).unpack1("H*")
+    # unpack1("H*") answers a String, but only a numeric directive types the
+    # call, so its answer is boxed; the interpolation types it. #to_s is
+    # #hexdigest, and in a program that requires openssl every `x.to_s` on a
+    # boxed receiver takes #to_s's type too.
+    def hexdigest(data = nil) = "#{digest(data).unpack1("H*")}"
     def base64digest(data = nil) = [digest(data)].pack("m0")
 
     # The `!` forms answer the digest and reset the object.
@@ -135,7 +139,7 @@ module OpenSSL
       value
     end
 
-    def hexdigest! = digest!.unpack1("H*")
+    def hexdigest! = "#{digest!.unpack1("H*")}"
     def base64digest! = [digest!].pack("m0")
 
     alias length digest_length
