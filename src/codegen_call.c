@@ -22471,7 +22471,6 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
     unsupported(c, id, "a method of a module included or prepended into Rational or Complex "
                        "(define it in the class body instead)");
 }
-      unresolved_builtin_refusal(c, id, recv, nm, grt);
       if (warn_unresolved_pos(c, id)) {
         fprintf(stderr, "unresolved call '%s' on %s receiver -> %s\n",
                 nm ? nm : "?", ty_name(grt),
@@ -22498,6 +22497,9 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
         unsupported(c, id, "a lazy chain held in an instance, class or global variable or a "
                            "constant (an Enumerator::Lazy is fused into the call that forces it; "
                            "keep the chain in a local or force it where it is built)");
+      /* after the refusals of particular shapes above, whose words say what
+         to do instead: this one only names the method */
+      unresolved_builtin_refusal(c, id, recv, nm, grt);
       if (g_gate_raise) {
         /* Scalar slot: the comma-expr yields a typed default the surrounding C
            accepts directly. Poly slot: emit the recognizable sp_raise_nomethod
