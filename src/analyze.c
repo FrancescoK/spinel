@@ -50356,66 +50356,11 @@ static void an_phase_post_fixpoint(Compiler *c) {
   propagate_bigint_cascade(c);
 }
 
-/* Procs: the forced #each lowering, the proc captures, the referenced module sources, the dropped case arms, the lifted block procs and their scopes (analyze_program's steps, in their order) */
-static void an_phase_procs(Compiler *c) {
-  /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
-     actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
-     drives `#each` with a collector block; the real (lowered) function form
-     passes that block as a proc. Done BEFORE mark_proc_captures so the
-     collector block lifts and its `__enum_acc` accumulator gets a heap cell. */
-  for (int id = 0; id < c->nt->count; id++) {
-    const char *ty = nt_type(c->nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
-    const char *nm = nt_str(c->nt, id, "name");
-    if (!nm || !sp_streq(nm, "__enum_to_a")) continue;
-    int recv = nt_ref(c->nt, id, "receiver");
-    if (recv < 0) continue;
-    TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt)) continue;
-    int ec = comp_method_in_chain(c, ty_object_class(rt), "each", NULL);
-    if (ec < 0) continue;
-    Scope *m = &c->scopes[ec];
-    if (m->blk_param || !m->yields) continue;   /* already lowered, or no yielding each */
-    m->is_lowered_yield = 1;
-    m->yields = 0;
-    /* A Struct's synthesized each returns self (Struct#each semantics), so keep
-       its object return. A hand-written each's value is whatever its body tail
-       evaluates to -- `self` for the `...; self` idiom, but a bare-yield each
-       (`yield 1; yield 2`) ends in the block's return value (poly), and
-       `def each(&b) = xs.each(&b)` ends in the inner array. Pinning those to the
-       class type truncated the poly tail to an object pointer; type the return
-       poly so any tail coerces (the __enum_to_a driver discards it either way). */
-    int is_struct = m->class_id >= 0 && c->classes[m->class_id].is_struct;
-    scope_set_ret(m, is_struct ? ty_object(m->class_id) : TY_POLY);
-    m->blk_param = strdup("__yblk__");
-    LocalVar *yblk = scope_local_intern(m, "__yblk__");
-    if (yblk) { lv_set_type(yblk, TY_PROC); yblk->is_param = 1; yblk->is_cell = 1; }
-  }
-
-  /* mark locals captured by escaping procs (they need heap cells) */
-  mark_proc_captures(c);
-
-  /* Reachability: an instance/free method is live only if its name is
-     referenced somewhere -- as a call name, an alias target, or a symbol
-     literal (covering send/method/define_method). Names never mentioned
-     are dead code; skipping them avoids type-checking uninvoked methods
-     (e.g. a never-called method with an uninferrable param). */
-  compute_reachable(c, 1);
-  /* a module method named by Mod.instance_method(:m) is referenced directly */
-  unmark_referenced_module_sources(c);
-  /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
-     drop `case` arms for classes that are never instantiated (the referenced
-     method then DCEs as an unreferenced static). */
-  compute_instantiated(c, 0);
-
-  /* Lower self-recursive yield methods: methods that use `yield` AND call
-     themselves recursively. Their implicit block is forwarded as a proc
-     parameter -- the declared &block name when the def has one, else a
-     synthetic __yblk__ -- so the method is emitted (yields=0) and each
-     `yield` in its body calls sp_proc_call(<blk>, ...). A declared &block
-     that only does blk.call/&blk-forward never reaches here (the
-     blk_param pass above already kept it yields=0 when self-recursive);
-     this loop covers bodies with literal `yield`s. */
+/* The lowering of yielding methods into functions taking their block as a
+   proc, out of an_phase_procs so it can run again once the types it reads
+   have settled (an_phase_method_backstops can still widen a receiver to
+   poly, whose dispatch lifts the block). Answers whether it lowered any. */
+static int an_lower_yielders(Compiler *c) {
   int lowered_recursive_yield = 0;
   /* A method lowered here takes its block as a real proc, so a literal block
      passed to it is lifted from then on (a_block_is_lifted). A caller defined
@@ -50533,6 +50478,70 @@ static void an_phase_procs(Compiler *c) {
      enclosing locals never got heap cells (#3166). Re-run the capture pass now
      that the yields flags are final; it only sets is_cell and is idempotent. */
   if (lowered_recursive_yield) mark_proc_captures(c);
+  return lowered_recursive_yield;
+}
+
+/* Procs: the forced #each lowering, the proc captures, the referenced module sources, the dropped case arms, the lifted block procs and their scopes (analyze_program's steps, in their order) */
+static void an_phase_procs(Compiler *c) {
+  /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
+     actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
+     drives `#each` with a collector block; the real (lowered) function form
+     passes that block as a proc. Done BEFORE mark_proc_captures so the
+     collector block lifts and its `__enum_acc` accumulator gets a heap cell. */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || !sp_streq(nm, "__enum_to_a")) continue;
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_object(rt)) continue;
+    int ec = comp_method_in_chain(c, ty_object_class(rt), "each", NULL);
+    if (ec < 0) continue;
+    Scope *m = &c->scopes[ec];
+    if (m->blk_param || !m->yields) continue;   /* already lowered, or no yielding each */
+    m->is_lowered_yield = 1;
+    m->yields = 0;
+    /* A Struct's synthesized each returns self (Struct#each semantics), so keep
+       its object return. A hand-written each's value is whatever its body tail
+       evaluates to -- `self` for the `...; self` idiom, but a bare-yield each
+       (`yield 1; yield 2`) ends in the block's return value (poly), and
+       `def each(&b) = xs.each(&b)` ends in the inner array. Pinning those to the
+       class type truncated the poly tail to an object pointer; type the return
+       poly so any tail coerces (the __enum_to_a driver discards it either way). */
+    int is_struct = m->class_id >= 0 && c->classes[m->class_id].is_struct;
+    scope_set_ret(m, is_struct ? ty_object(m->class_id) : TY_POLY);
+    m->blk_param = strdup("__yblk__");
+    LocalVar *yblk = scope_local_intern(m, "__yblk__");
+    if (yblk) { lv_set_type(yblk, TY_PROC); yblk->is_param = 1; yblk->is_cell = 1; }
+  }
+
+  /* mark locals captured by escaping procs (they need heap cells) */
+  mark_proc_captures(c);
+
+  /* Reachability: an instance/free method is live only if its name is
+     referenced somewhere -- as a call name, an alias target, or a symbol
+     literal (covering send/method/define_method). Names never mentioned
+     are dead code; skipping them avoids type-checking uninvoked methods
+     (e.g. a never-called method with an uninferrable param). */
+  compute_reachable(c, 1);
+  /* a module method named by Mod.instance_method(:m) is referenced directly */
+  unmark_referenced_module_sources(c);
+  /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
+     drop `case` arms for classes that are never instantiated (the referenced
+     method then DCEs as an unreferenced static). */
+  compute_instantiated(c, 0);
+
+  /* Lower self-recursive yield methods: methods that use `yield` AND call
+     themselves recursively. Their implicit block is forwarded as a proc
+     parameter -- the declared &block name when the def has one, else a
+     synthetic __yblk__ -- so the method is emitted (yields=0) and each
+     `yield` in its body calls sp_proc_call(<blk>, ...). A declared &block
+     that only does blk.call/&blk-forward never reaches here (the
+     blk_param pass above already kept it yields=0 when self-recursive);
+     this loop covers bodies with literal `yield`s (an_lower_yielders). */
+  an_lower_yielders(c);
   for (int again = 1; again; ) {
     again = 0;
     for (int mi = 1; mi < c->nscopes; mi++) {
@@ -53401,6 +53410,10 @@ void analyze_program(Compiler *c) {
   AN_PHASE("late_widen", an_phase_late_widen(c, &promoted));
   AN_PHASE("nullable_returns", an_phase_nullable_returns(c, &promoted));
   free(promoted.ty);
+  /* a receiver the backstops or the late widening turned poly now lifts a
+     block whose `yield` the procs pass judged spliced; lower its method as
+     that pass would */
+  AN_PHASE("procs_settled", an_lower_yielders(c));
   AN_PHASE("proc_returns", an_phase_proc_returns(c));
   AN_PHASE("storage", an_phase_storage(c));
   AN_PHASE("value_types", an_phase_value_types(c));
