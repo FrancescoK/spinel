@@ -18343,8 +18343,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       emit_poly_str_transform_answer(c, id, recv, argc, argv, name, "tr", b);
       return 1;
     }
-    if ((is_substitution(name)) && argc == 2 &&
-        comp_ntype(c, argv[0]) == TY_STRING && comp_ntype(c, argv[1]) == TY_STRING) {
+    /* a boxed replacement (`value.to_s` where some class's to_s answers a
+       non-String) is converted where it is passed, raising TypeError for
+       a non-String as CRuby does; it fell to NoMethodError naming String */
+    if ((is_substitution(name)) && argc == 2 && comp_ntype(c, argv[0]) == TY_STRING &&
+        (comp_ntype(c, argv[1]) == TY_STRING || comp_ntype(c, argv[1]) == TY_POLY)) {
       emit_poly_str_transform_answer(c, id, recv, argc, argv, name, name, b);
       return 1;
     }

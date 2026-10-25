@@ -1,0 +1,7 @@
+"Hello bob, bob"
+"Hi ann"
+"x 2"
+"one and %{n}"
+"7"
+[TypeError, "no implicit conversion of Integer into String"]
+[NoMethodError, "undefined method 'sub' for an instance of Integer"]
