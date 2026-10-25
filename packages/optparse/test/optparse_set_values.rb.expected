@@ -1,0 +1,14 @@
+"fast"
+["b"]
+"slow"
+["b"]
+"fastest"
+["b"]
+"fast"
+["b"]
+[OptionParser::InvalidArgument, "invalid argument: --mode=x", ["b"]]
+:low
+["b"]
+:high
+["b"]
+[OptionParser::InvalidArgument, "invalid argument: -lx", ["b"]]

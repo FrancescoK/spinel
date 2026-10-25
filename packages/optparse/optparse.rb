@@ -7,6 +7,7 @@
 #
 # See OptionParser for documentation.
 #
+require 'set' unless defined?(Set)
 require 'shellwords'
 require 'did_you_mean'
 
@@ -1502,7 +1503,7 @@ XXX
       case o
       when Proc, Method
         block = notwice(o, block, 'block')
-      when Array, Hash
+      when Array, Hash, Set
         if Array === o
           o, v = o.partition {|v,| Completion.completable?(v)}
           values = notwice(v, values, 'values') unless v.empty?
