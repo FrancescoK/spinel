@@ -86,17 +86,34 @@ static VALUE lookup(const char *name) {
     if (!sp_cext_class_lookup_fn) sp_raise_cls("RuntimeError", "C extension class hook is missing");
     return sp_cext_value(sp_cext_class_lookup_fn(name));
 }
-static VALUE define_under(VALUE outer, const char *name) {
+/* Paths the running Init has defined, so rb_const_defined answers as the
+ * recorder did: from the extension's own definitions and the builtins it
+ * knows, never from the program's Ruby state. */
+static char **init_paths;
+static size_t init_path_count;
+static char *qualified(VALUE outer, const char *name) {
     const char *parent = class_name(outer);
-    if (!strcmp(parent, "Object")) return lookup(name);
     size_t len = strlen(parent) + strlen(name) + 3;
     char *full = malloc(len); if (!full) rb_raise(rb_eNoMemError, "class name allocation failed");
-    snprintf(full, len, "%s::%s", parent, name);
-    VALUE v = lookup(full); free(full); return v;
+    if (!strcmp(parent, "Object")) snprintf(full, len, "%s", name);
+    else snprintf(full, len, "%s::%s", parent, name);
+    return full;
 }
-VALUE rb_define_class(const char *name, VALUE superclass) { (void)superclass; return lookup(name); }
+static void init_path(const char *path) {
+    if (!binding) return;
+    char **next = realloc(init_paths, (init_path_count + 1) * sizeof(*next));
+    char *copy = strdup(path);
+    if (!next || !copy) rb_raise(rb_eNoMemError, "C extension Init path allocation failed");
+    init_paths = next; init_paths[init_path_count++] = copy;
+}
+static VALUE define_path(const char *full) { init_path(full); return lookup(full); }
+static VALUE define_under(VALUE outer, const char *name) {
+    char *full = qualified(outer, name);
+    VALUE v = define_path(full); free(full); return v;
+}
+VALUE rb_define_class(const char *name, VALUE superclass) { (void)superclass; return define_path(name); }
 VALUE rb_define_class_under(VALUE outer, const char *name, VALUE superclass) { (void)superclass; return define_under(outer,name); }
-VALUE rb_define_module(const char *name) { return lookup(name); }
+VALUE rb_define_module(const char *name) { return define_path(name); }
 VALUE rb_define_module_under(VALUE outer, const char *name) { return define_under(outer,name); }
 static void bind_function(VALUE (*fn)(ANYARGS)) {
     if (!binding || next_function >= binding->count)
@@ -112,6 +129,18 @@ void rb_define_alias(VALUE o,const char *n,const char *old) { (void)o;(void)n;(v
 void rb_define_attr(VALUE o,const char *n,int r,int w) { (void)o;(void)n;(void)r;(void)w; }
 void rb_include_module(VALUE o,VALUE m) { (void)o;(void)m; }
 void rb_extend_object(VALUE o,VALUE m) { (void)o;(void)m; }
+static const char *const recorder_builtins[] = {"BasicObject","Object","Class","Module","String","Array","Hash",
+    "Integer","Float","IO","Exception","StandardError","RuntimeError","TypeError","ArgumentError","RangeError",
+    "NoMemoryError","SystemCallError",NULL};
+int rb_const_defined(VALUE outer,ID id) {
+    const char *name=rb_id2name(id);
+    if(!name)rb_raise(rb_eArgError,"unknown constant ID");
+    if(!binding)rb_raise(rb_eRuntimeError,"rb_const_defined outside Init is unsupported");
+    for(int i=0;recorder_builtins[i];i++)if(!strcmp(recorder_builtins[i],name))return 1;
+    char *full=qualified(outer,name);int found=0;
+    for(size_t i=0;i<init_path_count && !found;i++)found=!strcmp(init_paths[i],full);
+    free(full);return found;
+}
 void rb_define_const(VALUE o,const char *n,VALUE v) {
     (void)o;(void)n;
     if(!binding || next_constant>=binding->constant_count)sp_raise_cls("RuntimeError","C constant definitions outside Init are unsupported");
@@ -137,6 +166,7 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
     sp_cext_extension *previous=binding;
     size_t previous_function=next_function, previous_constant=next_constant;
     int roots=sp_gc_nroots;
+    volatile size_t previous_paths=init_path_count;
     jmp_buf frame;
     if(setjmp(frame)!=0) {
         int unwind=sp_cext_unwinding();
@@ -147,6 +177,7 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
         }
         init_roots=previous_roots;free(addresses);binding=previous;
         next_function=previous_function;next_constant=previous_constant;
+        while(init_path_count>previous_paths)free(init_paths[--init_path_count]);
         sp_cext_arena_restore(mark);sp_gc_nroots=roots;
         if(unwind)sp_cext_resume_unwind();
         else sp_fiber_reraise(cls,msg,obj);
@@ -155,6 +186,7 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
     sp_exc_arm(frame);
     init_roots=&journal;binding=extension;next_function=0;next_constant=0;extension->init();
     sp_exc_disarm();init_roots=previous_roots;free(addresses);binding=previous;
+    while(init_path_count>previous_paths)free(init_paths[--init_path_count]);
     next_function=previous_function;next_constant=previous_constant;
     extension->initialized=1;
     sp_cext_arena_restore(mark);
@@ -470,6 +502,7 @@ VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) { return dispatch
 VALUE rb_ivar_get(VALUE receiver, ID id) { return rb_iv_get(receiver, rb_id2name(id)); }
 VALUE rb_ivar_set(VALUE receiver, ID id, VALUE value) { return rb_iv_set(receiver, rb_id2name(id), value); }
 VALUE rb_const_get(VALUE receiver, ID id) { (void)class_name(receiver); return dispatch(3, rb_id2name(id), receiver, 0, NULL, NULL); }
+VALUE rb_const_get_at(VALUE receiver, ID id) { return rb_const_get(receiver, id); }
 VALUE rb_eval_string(const char *code) { return dispatch(4, code, Qnil, 0, NULL, NULL); }
 ID rb_intern2(const char *s, long len) {
     if (len < 0) rb_raise(rb_eArgError, "negative symbol length");

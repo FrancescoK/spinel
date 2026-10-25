@@ -88,7 +88,7 @@ module CextRecord
   end
 
   SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_block_call
-               rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_const_get rb_eval_string].freeze
+               rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_const_get rb_const_get_at rb_eval_string].freeze
   DYNAMIC_IDS = %w[rb_to_id rb_check_id rb_sym2id SYM2ID sp_cext_scanned_sym2id].freeze
 
   def scan(text)
@@ -125,7 +125,7 @@ module CextRecord
       when "rb_eval_string"
         raise Refusal, "rb_eval_string: expected a literal string" unless args.length == 1
         evals << c_string(args[0], t)
-      when "rb_const_get"
+      when "rb_const_get", "rb_const_get_at"
         constants = true
       end
     end
