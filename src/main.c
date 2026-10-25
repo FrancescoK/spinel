@@ -43,6 +43,7 @@ extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
 extern int g_require_gate_cli;
+extern int g_dump_load_graph;
 /* RUBY_DESCRIPTION for the compiled program, in the `ruby -v` shape:
    "spinel <RUBY_VERSION> (<release> revision <rev>)" (codegen appends the
    platform). The version word is the one RUBY_VERSION and
@@ -491,22 +492,26 @@ static void usage(void) {
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --dump-load-graph  Print the files the program loads and what each require\n"
+    "              resolves to, and exit (debug)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
 }
 
-/* --dump-ast (1), --dump-value-positions (2) and --check-value-pos (3) work
-   on the parsed table and stop; the mode a flag names, or 0. */
+/* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3) and
+   --dump-load-graph (4, which the parse prints as it resolves the requires)
+   work on the parsed table and stop; the mode a flag names, or 0. */
 static int table_mode_of(const char *a) {
   if (sp_streq(a, "--dump-ast")) return 1;
   if (sp_streq(a, "--dump-value-positions")) return 2;
+  if (sp_streq(a, "--dump-load-graph")) return g_dump_load_graph = 4;
   return sp_streq(a, "--check-value-pos") ? 3 : 0;
 }
 static int run_table_mode(const NodeTable *nt, int mode) {
   if (mode == 1) nt_dump(nt, stdout);
   else if (mode == 2) value_pos_dump(nt, stdout);
-  else return value_pos_check();
+  else if (mode == 3) return value_pos_check();
   return 0;
 }
 
