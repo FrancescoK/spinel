@@ -7906,6 +7906,82 @@ static int walk_rewrite_shadowed(Compiler *c, const char *rn) {
   }
   return 0;
 }
+/* a Hash literal, or a merge into one (`{}.merge!(a)` in `{}.merge!(a).merge!(b)`):
+   a Hash nothing else holds */
+static int fresh_hash_merge_recv(const NodeTable *nt, int recv) {
+  recv = nt_paren_single(nt, recv);
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_HashNode) return 1;
+  const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  return rn && (sp_streq(rn, "merge") || is_hash_merge_bang(rn)) &&
+         fresh_hash_merge_recv(nt, nt_ref(nt, recv, "receiver"));
+}
+static int lit_name_is(const NodeTable *nt, int n, const char *nm) {
+  NodeKind k = nt_kind(nt, n);
+  const char *s = k == NK_SymbolNode ? nt_str(nt, n, "value") : k == NK_StringNode ? nt_str(nt, n, "content") : NULL;
+  return s && sp_streq(s, nm);
+}
+/* `nm` bound as a method under `root`: a def, an alias, or an
+   alias_method / define_method naming it or a name only the run time
+   knows (`%i[merge! update].each { |m| define_method(m) ... }`); or a
+   module prepended, whose methods are not followed here (`Hash.prepend(M)`
+   is a `prepend M` in a `class Hash` by now) */
+static int binds_name_under(const NodeTable *nt, int root, const char *nm) {
+  if (root < 0 || root >= nt->count) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_DefNode && nt_ref(nt, root, "receiver") < 0 && nt_str(nt, root, "name") && sp_streq(nt_str(nt, root, "name"), nm)) return 1;
+  if (k == NK_AliasMethodNode && lit_name_is(nt, nt_ref(nt, root, "new_name"), nm)) return 1;
+  const char *cn = k == NK_CallNode ? nt_str(nt, root, "name") : NULL;
+  if (cn && sp_streq(cn, "prepend") && nt_ref(nt, root, "receiver") < 0) return 1;
+  if (cn && (sp_streq(cn, "alias_method") || sp_streq(cn, "define_method"))) {
+    int ca = nt_ref(nt, root, "arguments"), an = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    NodeKind ak = an >= 1 ? nt_kind(nt, av[0]) : NK_NONE;
+    if (an >= 1 && ((ak != NK_SymbolNode && ak != NK_StringNode) || lit_name_is(nt, av[0], nm))) return 1;
+  }
+  for (int j = 0; j < nt_num_refs(nt, root); j++) if (binds_name_under(nt, nt_ref_at(nt, root, j), nm)) return 1;
+  for (int j = 0; j < nt_num_arrs(nt, root); j++) {
+    int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
+    for (int i = 0; i < an; i++) if (binds_name_under(nt, ids[i], nm)) return 1;
+  }
+  return 0;
+}
+static int is_hash_const(const NodeTable *nt, int n) {
+  return n >= 0 && nt_kind(nt, n) == NK_ConstantReadNode && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), "Hash");
+}
+/* the program may give Hash its own `nm` (the pass runs before the
+   classes are registered): its `class Hash` binds the name, or it
+   reaches Hash's methods another way -- a module prepended or included,
+   a class_eval, a refinement -- whose bindings are not followed here */
+static int hash_reopen_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_ClassNode, k) {
+    int cp = nt_ref(nt, k, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (cn && sp_streq(cn, "Hash") && binds_name_under(nt, nt_ref(nt, k, "body"), nm)) return 1;
+  }
+  static const char *const reach[] = { "prepend", "include", "class_eval", "class_exec", "module_eval",
+                                       "module_exec", "define_method", "alias_method", "send", "__send__", NULL };
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *cn = nt_str(nt, call, "name");
+    if (!cn) continue;
+    for (int i = 0; reach[i]; i++)
+      if (sp_streq(cn, reach[i]) && is_hash_const(nt, nt_ref(nt, call, "receiver"))) return 1;
+    if (sp_streq(cn, "refine")) {
+      int ca = nt_ref(nt, call, "arguments"), an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (an >= 1 && is_hash_const(nt, av[0])) return 1;
+    }
+  }
+  return 0;
+}
+/* hash_reopen_defines of `nm` (merge! or update) or of merge, asked once
+   per pass for each (`memo[]` -1 until then) */
+static int hash_merges_own(const NodeTable *nt, const char *nm, int memo[3]) {
+  int i = sp_streq(nm, "merge!") ? 0 : 1;
+  if (memo[i] < 0) memo[i] = hash_reopen_defines(nt, nm);
+  if (memo[2] < 0) memo[2] = hash_reopen_defines(nt, "merge");
+  return memo[i] || memo[2];
+}
 static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   /* (the parent map, made at the first such call of the pass) */
@@ -7926,6 +8002,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int *kept_par = NULL;   /* enum_chain_kept's parent map */
+  int hash_own_merge[3] = { -1, -1, -1 };   /* hash_merges_own's answers */
   /* A string-bounded range literal bound to a variable (`cr = ('a'..'e')`)
      has no sp_Range representation (int bounds only): materialize it into a
      string array at the assignment, like the literal-receiver interpose
@@ -7967,6 +8044,14 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         finite = rgt >= 0 && nt_type(nt, rgt) && sp_streq(nt_type(nt, rgt), "IntegerNode");
       }
       if (finite) { nt_node_set_ref(nt, id, "receiver", lz_recv); continue; }
+    }
+    /* `{}.merge!(h)` / `{"a" => 1}.update(h)`: nothing else holds the
+       literal, so a merge into a new Hash answers the same, and merge
+       folds a hash of another kind into one that holds both; merge! keeps
+       the literal's own variant, which has no arm for it */
+    if (is_hash_merge_bang(nm) && fresh_hash_merge_recv(nt, recv) && !hash_merges_own(nt, nm, hash_own_merge)) {
+      nt_node_set_str(nt, id, "name", "merge");
+      nm = "merge";
     }
     if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
       /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
