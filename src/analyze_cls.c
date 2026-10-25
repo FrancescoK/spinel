@@ -2391,13 +2391,30 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
    `:int`, ...), the receiver itself for `:self`, anything for `:any`. A
    name no binding takes answers as Object's method would when it is one
    whose answer is a builtin (`nil?`, `==`, `to_s`), else anything. */
+/* What a native binding answers when its declaration does not tell (`:any`,
+   a name it does not declare): a value the runtime holds (#8837), which
+   in the directed walk is the runtime object's contents, the call's
+   arguments handed to it first (the C side may keep them and give them
+   back); every class in the unified one */
+static void cf_native_runtime_value(CF *f, int v) {
+  if (!f->directed || f->rtc < 0) { cf_all(f, v); return; }
+  if (v >= 0 && v < f->nnodes && nt_kind(f->nt, v) == NK_CallNode) {
+    int a = nt_ref(f->nt, v, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(f->nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      NodeKind k = nt_kind(f->nt, av[i]);
+      cf_escape(f, k == NK_SplatNode ? nt_ref(f->nt, av[i], "expression") : av[i]);
+    }
+  }
+  cf_edge(f, f->rtc, v);
+}
 static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, int argc) {
   Compiler *c = f->c;
   cf_kval(f, v);
   int m = comp_native_method_find(c, k, nm, argc, 0);
   if (m < 0) {
     if (cf_scalar_answer(nm)) cf_add_set(f, v, cf_bv_set(f));
-    else cf_all(f, v);
+    else cf_native_runtime_value(f, v);
     return;
   }
   const char *ret = c->native_methods[m].ret;
@@ -2406,7 +2423,7 @@ static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, i
   TyKind t = native_spec_to_ty(ret);
   if (sp_streq(ret, "string?") || sp_streq(ret, "int?") || sp_streq(ret, "float?") ||
       (t != TY_POLY && t != TY_UNKNOWN)) { cf_add_set(f, v, cf_bv_set(f)); return; }
-  cf_all(f, v);
+  cf_native_runtime_value(f, v);
 }
 
 /* The value of a call on a native class or module itself (`SQL.sqlite3_column_int(stmt, i)`,
@@ -2422,7 +2439,7 @@ static void cf_native_class_answer(CF *f, int v, int x, const char *nm, int argc
     if (c->native_funcs[i].mod && sp_streq(c->native_funcs[i].mod, cn) && sp_streq(c->native_funcs[i].name, nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
   if (comp_native_method_find(c, x, nm, argc, 1) >= 0) { cf_add_set(f, v, f->own[x]); return; }
   if (cf_scalar_answer(nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
-  cf_all(f, v);
+  cf_native_runtime_value(f, v);
 }
 
 static int cf_poison_class_call(CF *f, int v, const char *key, const char *nm, const int *argv, int argc, int blk) {
