@@ -1385,17 +1385,18 @@ static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
   const NodeTable *nt = c->nt;
   v = nt_paren_single(c->nt, v);
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+  NodeKind vk = nt_kind(nt, v);
   if (!vty) return 0;
   int n = 0;
-  if (sp_streq(vty, "ArrayNode")) {
+  if (vk == NK_ArrayNode) {
     nt_arr(nt, v, "elements", &n);
     return !n && (ty_is_ptr_array(slot) || slot == TY_POLY_ARRAY || array_kind(slot));
   }
-  if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode")) {
+  if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
     nt_arr(nt, v, "elements", &n);
     return !n && ty_is_hash(slot) && ty_hash_cname(slot);
   }
-  if (sp_streq(vty, "CallNode") && node_is_empty_container(c, v)) {
+  if (vk == NK_CallNode && node_is_empty_container(c, v)) {
     const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
     if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) return 1;
     if (rn && sp_streq(rn, "Array"))

@@ -503,8 +503,8 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         /* A hash literal default `{}` infers TY_UNKNOWN but is still a hash value
            -- incompatible with a non-hash hash-val type like TY_INT. */
         if (dt == TY_UNKNOWN) {
-          const char *atn = nt_type(nt, argv[1]);
-          if (atn && (sp_streq(atn, "HashNode") || sp_streq(atn, "KeywordHashNode")))
+          NodeKind atn_k = nt_kind(nt, argv[1]);
+          if (atn_k == NK_HashNode || atn_k == NK_KeywordHashNode)
             dt = TY_POLY_POLY_HASH;
         }
         if (ty_unify(vt, dt) == TY_POLY) { *out = TY_POLY; return 1; }
@@ -730,8 +730,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         int bn = 0;
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         int tail = bn > 0 ? bb[bn - 1] : -1;
-        const char *tty = tail >= 0 ? nt_type(nt, tail) : NULL;
-        if (tty && sp_streq(tty, "ArrayNode")) {
+        NodeKind tk = nt_kind(nt, tail);
+        if (tk == NK_ArrayNode) {
           int en = 0; const int *el = nt_arr(nt, tail, "elements", &en);
           if (en == 2) {
             TyKind kt = infer_type(c, el[0]);
@@ -896,6 +896,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
               infer_type(c, argv[0]) == TY_PROC) { *out = TY_POLY; return 1; }
         }
         const char *a0ty = nt_type(nt, argv[0]);
+        NodeKind a0k = nt_kind(nt, argv[0]);
         /* a symbol literal, or a local statically holding one (s = :+) -- and
            only when there is no block: `inject(:s, &:+)` gives the operator in
            the block, which makes the lone Symbol the SEED, not the operator
@@ -915,13 +916,13 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           TyKind it = infer_type(c, argv[0]);
           /* An empty array-literal seed accumulates an array: poly, since the
              block decides the element mix (`reduce([]) { |a, x| a << x }`). */
-          if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "ArrayNode")) {
+          if (it == TY_UNKNOWN && a0k == NK_ArrayNode) {
             int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
             if (sen == 0) it = TY_POLY_ARRAY;
           }
           /* An empty `{}` seed accumulates a general boxed-key/value hash, like
              each_with_object({}); the block decides the key/value mix (#2958). */
-          else if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "HashNode")) {
+          else if (it == TY_UNKNOWN && a0k == NK_HashNode) {
             int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
             if (sen == 0) it = TY_POLY_POLY_HASH;
           }
@@ -1089,8 +1090,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
       /* Heterogeneous push/unshift on a typed-array literal: lift to poly. */
       TyKind elem_t = ty_array_elem(rt);
-      const char *rty = nt_type(nt, recv);
-      if (rty && sp_streq(rty, "ArrayNode")) {
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk == NK_ArrayNode) {
         for (int ai = 0; ai < argc; ai++) {
           TyKind at = infer_type(c, argv[ai]);
           /* (one-String mode: a String Array holds a handle as it holds
@@ -1380,9 +1381,9 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set") ||
          sp_streq(name, "remove_instance_variable")) && argc >= 1 &&
         !comp_call_reaches_own(c, id, cid, name)) {
-      const char *a0ty = nt_type(nt, argv[0]);
-      if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
-        const char *sym = sp_streq(a0ty, "SymbolNode")
+      NodeKind a0k = nt_kind(nt, argv[0]);
+      if (a0k == NK_SymbolNode || a0k == NK_StringNode) {
+        const char *sym = a0k == NK_SymbolNode
                             ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
         /* A name in the layout yields its declared type; an undefined-but-valid
            `@`-name reads as nil and a bad name (no `@`) raises NameError -- both poly. */
