@@ -7147,10 +7147,15 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
        the items it yields, so a Ruby-defined Enumerable method (find, count,
        each_with_object, ...) over a boxed one saw no elements. A generator
        is walked one item ahead, so a block that breaks out stops an endless
-       one; reverse_each needs them all first. */
+       one; reverse_each needs them all first, and a user Enumerable's are
+       read as its to_a answers them (sp_poly_enum_chk, its #each unless the
+       class has a to_a of its own), its object having no length or element
+       read of its own. */
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s(_t%d);\n", ta,
-               sp_streq(name, "reverse_each") ? "sp_poly_iter_subject" : "sp_poly_iter_walk", ta);
+    if (sp_streq(name, "reverse_each"))
+      buf_printf(b, "_t%d = sp_poly_iter_subject(sp_poly_enum_chk(_t%d, \"%s\"));\n", ta, ta, wn);
+    else
+      buf_printf(b, "_t%d = sp_poly_iter_walk(_t%d);\n", ta, ta);
     emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
     int thash = 0;

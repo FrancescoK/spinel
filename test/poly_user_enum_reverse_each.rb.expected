@@ -1,0 +1,10 @@
+321
+true
+20
+["C", "B", "A"]
+:own
+[:plain, NoMethodError, "undefined method 'reverse_each' for an instance of Plain"]
+54
+321
+1
+[[3, 4], [1, 2], [[3, 4]], [[1, 2]]]
