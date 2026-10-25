@@ -3191,6 +3191,8 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
   const pm_string_t *us = PM_NODE_TYPE(n) == PM_SYMBOL_NODE ? &((pm_symbol_node_t *)n)->unescaped
                         : PM_NODE_TYPE(n) == PM_STRING_NODE ? &((pm_string_node_t *)n)->unescaped : NULL;
   for (int q = 0; us && q < mc->nattr; q++) if (mc->attr[q] == n) us = NULL;
+  /* one in a candidate's body goes with it, as a call there does */
+  if (us && mx_in_candidate(mc, n)) us = NULL;
   if (us) {
     for (int i = 0; i < g_mx_nmacros; i++) {
       if (!mc->cand[i]) continue;
@@ -3206,8 +3208,9 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
    of the constants an include or prepend names, or an extend that is not a
    class body's own (made on a receiver, or in a method), and of a constant
    another constant is made from (`M2 = Greet; include M2`). `all`: one names
-   a module that is not a constant, a Symbol or String spells one of them
-   (`send(:include, m)`), or a constant is set at run time. A macro of such a module that nothing expanded may still run,
+   a module that is not a constant, one is sent or taken by name
+   (`send(:include, m)`, `method(:extend)`), or a constant is set at run
+   time. A macro of such a module that nothing expanded may still run,
    from where the runtime calls it. */
 typedef struct { MxNames *names; int *all; int in_def; } MxMixScan;
 
@@ -3225,15 +3228,21 @@ static bool mx_mix_visit(const pm_node_t *n, void *data) {
     if (ln) mx_names_add(ms->names, ln);
     free(ln);
   }
-  char *lit = mx_sym_or_str(n);
-  if (lit && (strcmp(lit, "include") == 0 || strcmp(lit, "prepend") == 0 || strcmp(lit, "extend") == 0 ||
-              strcmp(lit, "const_set") == 0)) *ms->all = 1;
-  free(lit);
   if (PM_NODE_TYPE(n) != PM_CALL_NODE) return true;
   const pm_call_node_t *cn = (const pm_call_node_t *)n;
   char *nm = mx_name(cn->name);
   size_t na = cn->arguments ? cn->arguments->arguments.size : 0;
   if (strcmp(nm, "const_set") == 0) *ms->all = 1;
+  static const char *const BYNAME[] = { "send", "public_send", "__send__", "method", "public_method",
+    "singleton_method", "instance_method", "public_instance_method", NULL };
+  for (int i = 0; na && BYNAME[i]; i++) {
+    if (strcmp(nm, BYNAME[i]) != 0) continue;
+    char *w = mx_sym_or_str(cn->arguments->arguments.nodes[0]);
+    static const char *const MIX[] = { "include", "prepend", "extend", "const_set", "append_features",
+      "prepend_features", "extend_object", NULL };
+    for (int k = 0; w && MIX[k]; k++) if (strcmp(w, MIX[k]) == 0) *ms->all = 1;
+    free(w);
+  }
   int self_recv = !cn->receiver || PM_NODE_TYPE(cn->receiver) == PM_SELF_NODE;
   int mix = strcmp(nm, "include") == 0 || strcmp(nm, "prepend") == 0 ||
             (strcmp(nm, "extend") == 0 && (!self_recv || ms->in_def));
