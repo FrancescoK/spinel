@@ -319,10 +319,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       char ref[24];
       buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
       emit_slot_truthy(rt, ref, b);
-      if (rt == TY_INT) buf_printf(b, " ? 2*%s.v+1 : SP_NIL_OBJECT_ID; })", ref);
+      if (rt == TY_INT) buf_printf(b, " ? (sp_int)(2*(uintptr_t)%s.v+1) : SP_NIL_OBJECT_ID; })", ref);
       else buf_printf(b, " ? sp_rbval_hash_key(sp_box_float(%s.v)) : SP_NIL_OBJECT_ID; })", ref);
     }
-    else if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
+    /* (2n+1 in unsigned arithmetic: an Integer past half the range would
+       overflow the signed product) */
+    else if (rt == TY_INT) { buf_puts(b, "((sp_int)(2*(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ")+1))"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_NIL_OBJECT_ID)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID)"); }
@@ -333,11 +335,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_expr(c, recv, b);
       buf_puts(b, ")))");
     }
-    /* a boxed value: its identity is the boxed payload (heap pointer / int) */
+    /* a boxed value: an immediate's id is the one the typed arms above
+       answer for it, any other value's its identity (sp_poly_object_id) */
     else if (rt == TY_POLY) {
-      buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
+      buf_puts(b, "sp_poly_object_id(");
       emit_expr(c, recv, b);
-      buf_puts(b, "))");
+      buf_puts(b, ")");
     }
     /* a String: a mutable one held as its shared sp_String has that
        handle's identity, the one a box of it carries (its text is a fresh
