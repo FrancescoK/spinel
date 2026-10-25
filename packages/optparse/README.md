@@ -25,6 +25,7 @@ with the reason:
 | `List#accept`, `make_switch` | `pattern.method(:convert).to_proc` | `->(*a) { pattern.convert(*a) }` | refused on a pattern of several classes |
 | `visit` | `el.__send__(id, *args, &block)` | a `case` calling each method by name | the block did not arrive |
 | pager of `--help` | a branch under `if ... and false` with `Process.exec(..., in: f)` | removed | `exec` with options is refused, even dead |
+| pager of `--help` | `IO.popen(*args, &print)` | `Process.spawn` of the pager reading an `IO.pipe` | `IO.popen` with a write mode is not supported; through the splat it raised ArgumentError on a terminal with `PAGER` set |
 | `--version` | `--version=pkg` loads `optparse/version` | the package name is ignored | that file finds versions by constant names at run time |
 | `version`, `release` | `defined?(@version) && @version` | `@version` | `defined?` answered nil for an ivar set only by `attr_writer` |
 | `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | refused under `--share-strings` |

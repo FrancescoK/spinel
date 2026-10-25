@@ -1064,7 +1064,13 @@ XXX
       rescue Errno::EPIPE
         # pager terminated
       end
-      IO.popen(*args, &print)
+      env, cmd, = args
+      r, w = IO.pipe
+      pid = Process.spawn(env, cmd, in: r)
+      r.close
+      print.call(w)
+      w.close
+      Process.wait(pid)
     else
       puts help
     end

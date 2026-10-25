@@ -19,8 +19,8 @@ parser.on_tail("--tail")
 [%w[-x], %w[--yyy A], %w[-z], %w[-zQ], %w[-n 3], %w[--verbose], %w[--no-verbose],
  %w[--dry-run], %w[-s], %w[--blk=ab], %w[--blknil], %w[--mode=f], %w[--tail],
  %w[-x -x], %w[x -x y]].each do |words|
-  # a Hash the program types with Symbol keys (spinel-findings 51: an empty
-  # {} passed as into: is not widened yet)
+  # a Hash that starts with a Symbol key: an empty {} given as into:
+  # raises TypeError for now
   options = { kept: "before" }
   argv = words.dup
   result = parser.parse!(argv, into: options)
