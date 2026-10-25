@@ -7968,6 +7968,14 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
       if(scope && writer && scope->class_id==writer->class_id && name && written && sp_streq(name,written))
         changed|=cext_widen_containers(c,nt_ref(nt,write,"value"),seen);
     }
+    /* and what element stores put into the container it holds: an Array
+     * pushed onto @q reaches C when @q.shift does */
+    int owner=name ? comp_ivar_owner(c,v) : -1;
+    if(owner>=0) {
+      int count=0;int *values=cext_ivar_container_stores(c,name,owner,&count);
+      for(int j=0;j<count;j++)changed|=cext_widen_containers(c,values[j],seen);
+      free(values);
+    }
   } else if (kind == NK_GlobalVariableReadNode || kind == NK_ClassVariableReadNode ||
              kind == NK_ConstantReadNode || kind == NK_InstanceVariableReadNode) {
     int *literals = cext_walk_values(c);

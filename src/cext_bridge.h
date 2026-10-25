@@ -9,5 +9,6 @@ int cext_demand_reader(Compiler *c, int call);
 int cext_demand_string(Compiler *c, int value);
 int cext_demand_container_strings(Compiler *c, int value);
 int *cext_container_stores(Compiler *c, const char *name, Scope *scope, int *count);
+int *cext_ivar_container_stores(Compiler *c, const char *name, int cls, int *count);
 int cext_scope(const Compiler *c, int mi);
 #endif
