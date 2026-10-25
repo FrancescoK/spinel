@@ -18415,7 +18415,9 @@ int any_class_responds(Compiler *c, const char *qm) {
 }
 const char *builtin_class_of_type(TyKind t);
 /* The builtin classes and modules a value of builtin kind `rt` has among
-   its ancestors; NULL where the kind alone does not name its class. */
+   its ancestors; NULL where the kind alone does not name its class. A
+   Boolean may be either true or false: both classes lead its list, and
+   their builtin methods are the same names. */
 static const char *const *builtin_value_ancestry(TyKind rt) {
   static const char *const num[][7] = {
     { "Integer", "Numeric", "Comparable", "Object", "Kernel", "BasicObject", NULL },
@@ -18429,6 +18431,8 @@ static const char *const *builtin_value_ancestry(TyKind rt) {
     { "Hash", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
     { "Range", "Enumerable", "Object", "Kernel", "BasicObject", NULL } };
   static const char *const nil[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  static const char *const boolean[] = { "TrueClass", "FalseClass", "Object", "Kernel", "BasicObject", NULL };
+  if (rt == TY_BOOL) return boolean;
   const char *cn = rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE ? "Range" : builtin_class_of_type(rt);
   if (!cn) return NULL;
   for (int i = 0; i < 2; i++) if (sp_streq(cn, num[i][0])) return num[i];
@@ -18449,8 +18453,15 @@ static int rt_probe_unfounded(Compiler *c, TyKind rt, const char *qm) {
   int foreign = 0;
   for (int k = 0; k < c->nclasses; k++) {
     const char *kn = c->classes[k].name;
-    if (!kn || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
+    if (!kn) continue;
+    /* An ancestor's respond_to_missing? may answer for any name, which only
+       a run-time call could tell. A Boolean then keeps the answer it had
+       before it had a row here (the probe's); the kinds that had one keep
+       theirs. */
+    int owns = comp_method_in_chain(c, k, qm, NULL) >= 0;
+    if (!owns && (rt != TY_BOOL || comp_method_in_chain(c, k, "respond_to_missing?", NULL) < 0)) continue;
     for (int a = 0; anc[a]; a++) if (sp_streq(anc[a], kn)) return 0;
+    if (!owns) continue;
     if (is_builtin_reopen(kn)) foreign = 1;
   }
   size_t ql = strlen(qm);
