@@ -3311,14 +3311,15 @@ static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
 }
 static sp_int sp_rbval_hash_key(sp_RbVal v);   /* with the Hash key machinery below */
 /* A boxed value's #object_id: an immediate's is the one its typed form
-   answers (an Integer's 2n+1, a Symbol's id * 2, true's, nil's, a Float's
-   key), so `[x][0].object_id == x.object_id`; any other is its identity.
+   answers (an Integer's 2n+1, a Symbol's SP_SYM_OBJECT_ID, true's, nil's,
+   a Float's key), so `[x][0].object_id == x.object_id`; any other is its
+   identity.
    The box's payload was read as the id, which for an Integer, a Symbol and
    true is not the typed one. */
 static inline sp_int sp_poly_object_id(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: return (sp_int)(2 * (uintptr_t)v.v.i + 1);   /* (unsigned: an Integer past half the range wraps, as the typed arm does) */
-    case SP_TAG_SYM: return (sp_int)v.v.i * 2;
+    case SP_TAG_SYM: return SP_SYM_OBJECT_ID(v.v.i);
     case SP_TAG_BOOL: return v.v.i ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID;
     case SP_TAG_NIL: return SP_NIL_OBJECT_ID;
     case SP_TAG_FLT: return sp_rbval_hash_key(v);
