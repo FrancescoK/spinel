@@ -2658,7 +2658,12 @@ static void cf_call(CF *f, int v) {
         return;
       }
     }
-    if (cf_owner_block(f, v, 0) >= 0) {
+    /* a bare call in a block that may run under another self (an exec
+       block, cf_collect_exec) may reach any class's method of the name; in
+       any other block self is the scope's, as above (#8837: five such
+       `format` / `warn` calls in a large program's blocks were enough to
+       make every class of 1,779 receivers) */
+    if (cf_owner_block(f, v, 0) >= 0 && cf_in_exec_block(f, v)) {
       CFByName *b = cf_byname(f, nm);
       if (b->n || b->ncm || b->nrd || b->nwr) { cf_call_any(f, v, nm, argv, argc, blk); return; }
     }
@@ -3571,6 +3576,11 @@ static int cf_exec_call(CF *f, const char *nm) {
   CFByName *b = cf_byname(f, nm);
   for (int i = 0; i < b->n; i++) if (f->exec_esc[b->mi[i]]) return 1;
   for (int i = 0; i < b->ncm; i++) if (f->exec_esc[b->cmi[i]]) return 1;
+  /* `new` hands its block to initialize */
+  if (sp_streq(nm, "new")) {
+    CFByName *ini = cf_byname(f, "initialize");
+    for (int i = 0; i < ini->n; i++) if (f->exec_esc[ini->mi[i]]) return 1;
+  }
   return 0;
 }
 /* Which blocks may run with a self that is not the scope's: one a call
