@@ -80,6 +80,7 @@ typedef struct CF {
      An object such code may reach has its contents joined with rtc both
      ways: the code may store what it holds there, and read what is there. */
   int rt_obj, rtc;
+  int dynarg;                 /* (directed) what a Method's or Proc's call, or a send of a computed name, hands on */
   /* the scalar helpers desugar_builtin_scalar_defs makes (`__int_gcd__1`),
      sorted by the name of the call desugar_builtin_scalar_calls rewrites
      into them (`gcd`), and per scope whether it is one */
@@ -2718,6 +2719,7 @@ static void cf_scal_bind(CF *f, int v, const char *nm, int r, const int *argv, i
   }
 }
 static int cf_blk_call(CF *f, int v, int r, const char *nm, const int *argv, int argc);
+static int cf_blk_call_name(const char *cn);
 static void cf_call(CF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -2735,6 +2737,47 @@ static void cf_call(CF *f, int v) {
   }
   cf_scal_bind(f, v, nm, r, argv, argc);
   if (cf_blk_call(f, v, r, nm, argv, argc)) return;
+  /* `k.superclass` (#8837): the Class objects of the parents of the
+     classes the receiver's Class objects are, and the builtin ones (a
+     runtime class, nil) */
+  if (sp_streq(nm, "superclass") && argc == 0 && r >= 0 && f->directed) {
+    int ps = cf_set_of(f, r);
+    if (ps == CF_EMPTY) { cf_add_set(f, v, cf_bv_set(f)); return; }
+    /* (a Class object the walk does not know, Class.new(Mod)'s, may have
+       any class for its parent) */
+    int only_classes = ps != CF_ALL && !f->pool[ps].bv && !f->pool[ps].os;
+    for (int k = only_classes ? cls_set_next(&f->pool[ps], -1) : -1; k >= 0 && only_classes; k = cls_set_next(&f->pool[ps], k))
+      if (k < c->nclasses || comp_cmethod_in_chain(c, k - c->nclasses, "superclass", NULL) >= 0) only_classes = 0;   /* (an object's own superclass) */
+    if (only_classes) {
+      const ClsSet *rs = &f->pool[ps];
+      int b = cf_tb(f, 1);
+      for (int k = cls_set_next(rs, -1); k >= 0; k = cls_set_next(rs, k)) {
+        if (k < c->nclasses) continue;
+        int par = c->classes[k - c->nclasses].parent;
+        if (par >= 0 && par < c->nclasses) cf_tb_bit(f, b, par + c->nclasses);
+      }
+      cf_add_set(f, v, cf_pool_tb(f, b, 1, 0));
+      return;
+    }
+  }
+  /* a Method's or Proc's call, and a send of a computed name: what it hands
+     on reaches the methods a name the program spells reflectively may
+     call (cf_is_dyn), whose parameters take it (cf_solve) */
+  /* `inject(:m)`, `reduce(init, :m)` and `each_with_object(x, &:m)` hand m
+     the receiver's elements and the memo (cf_collect_dyn names m) */
+  if (f->directed && f->dynarg >= 0 && (sp_streq(nm, "inject") || sp_streq(nm, "reduce") || sp_streq(nm, "each_with_object"))) {
+    if (r >= 0) cf_load(f, r, f->dynarg);
+    for (int i = 0; i < argc; i++) if (nt_kind(nt, argv[i]) != NK_BlockArgumentNode && nt_kind(nt, argv[i]) != NK_SymbolNode) cf_flow(f, argv[i], f->dynarg);
+  }
+  if (f->directed && f->dynarg >= 0 && (cf_blk_call_name(nm) || sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) {
+    int first = sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send");
+    for (int i = first; i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_BlockArgumentNode) continue;
+      if (ak == NK_SplatNode) cf_load(f, nt_ref(nt, argv[i], "expression"), f->dynarg);
+      else cf_flow(f, argv[i], f->dynarg);
+    }
+  }
   if (cf_opaque_name(nm)) {
     cf_all(f, v);
     /* (the kinds' walk: the arguments are handed on, not made anything;
@@ -4432,7 +4475,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
   memset(&f, 0, sizeof f);
-  f.rt_obj = f.rtc = -1;   /* (made below, in directed mode: none until then) */
+  f.rt_obj = f.rtc = f.dynarg = -1;   /* (made below, in directed mode: none until then) */
   /* directed 2: the walk of the kinds alone (cf_kinds), whose classes are
      not kept */
   f.directed = directed != 0;
@@ -4585,6 +4628,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
      values, and are escaped (an object they come to hold is reachable by
      the runtime) */
   f.rt_obj = f.rtc = -1;
+  if (directed) f.dynarg = cf_new_el(&f);
   if (directed) {
     f.rt_obj = cf_new_obj(&f);
     f.rtc = f.obj_cont[f.rt_obj];
@@ -4684,7 +4728,12 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         int why = sd_proto ? 90001 : sd_prelude ? 90002 : sd_modfn ? 90003 :
                   (cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi))) ? 90004 :
                   (s->is_proc_form || s->is_lowered_yield || s->cs_synth) ? 90005 : 90006;
-        cf_all_params_at(&f, mi, why);
+        if (why == 90004 && f.dynarg >= 0 && !cf_opaque_name(s->name) && !sd_proto && !sd_prelude && !sd_modfn) {
+            for (int i = 0; i < s->nparams; i++) cf_edge(&f, f.dynarg, cf_param_el(&f, mi, i));
+            if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_bv_set(&f));
+            cf_edge(&f, f.ret_el[mi], f.dynarg);   /* (a memo handed back, a value sent on) */
+          }
+          else cf_all_params_at(&f, mi, why);
       }
     }
     if (s->blk_param && s->blk_param[0]) {
