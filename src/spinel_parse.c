@@ -4016,6 +4016,9 @@ static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
     }
     int adjacent = PM_NODE_TYPE(lit) == PM_INTERPOLATED_STRING_NODE &&
                    !((const pm_interpolated_string_node_t *)lit)->opening_loc.start;
+    /* the operator counts only on a literal head: `base + "/foo"` and
+       `File.dirname(__FILE__) + "/foo"` are computed paths, left to run time */
+    if (PM_NODE_TYPE(lit) != PM_STRING_NODE && PM_NODE_TYPE(lit) != PM_INTERPOLATED_STRING_NODE) binary = 0;
     if (adjacent || binary) {
       fprintf(stderr, "spinel: %s:%d: require_relative needs its path as one string literal\n",
               s->path, (int)pm_newline_list_line(&pp->newline_list, call->base.location.start, pp->start_line));
