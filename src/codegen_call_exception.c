@@ -240,7 +240,11 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "), (sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
-    if (argc == 0 && (sp_streq(name, "cause") || sp_streq(name, "backtrace") ||
+    /* (the renderings' keywords, `highlight: false`, are taken and left
+       unread, as the base exception's are) */
+    int kw_only = argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode &&
+                  (sp_streq(name, "full_message") || sp_streq(name, "detailed_message"));
+    if ((argc == 0 || kw_only) && (sp_streq(name, "cause") || sp_streq(name, "backtrace") ||
                       sp_streq(name, "full_message") || sp_streq(name, "detailed_message") ||
                       sp_streq(name, "exception")) &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0) {

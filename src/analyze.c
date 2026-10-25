@@ -5217,8 +5217,8 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
 static int give_exception_self_calls_a_receiver(Compiler *c) {
   static const struct { const char *name; int argc_min, argc_max; } own[] = {
     { "message", 0, 0 }, { "backtrace", 0, 0 }, { "backtrace_locations", 0, 0 }, { "cause", 0, 0 },
-    { "full_message", 0, 0 }, { "detailed_message", 0, 0 }, { "set_backtrace", 1, 1 },
-  };
+    { "full_message", 0, 1 }, { "detailed_message", 0, 1 }, { "set_backtrace", 1, 1 },
+  };   /* (the renderings' one argument is their keywords, `highlight: false`) */
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   for (int id = 0; id < n0; id++) {
@@ -5226,12 +5226,13 @@ static int give_exception_self_calls_a_receiver(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int an = 0;
+    const int *av = NULL;
     { int a = nt_ref(nt, id, "arguments");
-      if (a >= 0) nt_arr(nt, a, "arguments", &an); }
+      if (a >= 0) av = nt_arr(nt, a, "arguments", &an); }
     int hit = 0;
     for (size_t k = 0; k < sizeof own / sizeof own[0] && !hit; k++)
       hit = sp_streq(nm, own[k].name) && an >= own[k].argc_min && an <= own[k].argc_max;
-    if (!hit) continue;
+    if (!hit || (an == 1 && !sp_streq(nm, "set_backtrace") && nt_kind(nt, av[0]) != NK_KeywordHashNode)) continue;
     Scope *osc = comp_scope_of(c, id);
     int ocid = osc ? osc->class_id : -1;
     if (ocid < 0 || ocid >= c->nclasses || osc->is_cmethod || !class_is_exc_subclass(c, ocid)) continue;
