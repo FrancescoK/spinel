@@ -1909,11 +1909,13 @@ void emit_to_s_expr(Compiler *c, int node, Buf *b) {
   TyKind wt = comp_ntype(c, node);
   /* (one representation: a read of a slot that hands on its live handle,
      Repr.handle, is the handle, where the payload slot takes the bytes;
-     SP_STR_B resolves the face on the expression's C type) */
+     SP_STR_B resolves the face on the expression's C type. Any other
+     String is the bytes already.) */
   if (wt == TY_STRING) {
-    if (g_one_string) buf_puts(b, "SP_STR_B(");
+    int hnd = g_one_string && repr_of(c, node).handle;
+    if (hnd) buf_puts(b, "SP_STR_B(");
     emit_expr(c, node, b);
-    if (g_one_string) buf_puts(b, ")");
+    if (hnd) buf_puts(b, ")");
     return;
   }
   /* An UNTYPED node is not a boxed value, and emit_boxed renders one as
