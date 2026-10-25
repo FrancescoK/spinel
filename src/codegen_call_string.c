@@ -491,8 +491,8 @@ no_gsub_enum:
   {
     /* Pattern from argument (str.match?(/dyn/), str =~ /dyn/, etc.) */
     if (recv >= 0 && argc >= 1) {
-      const char *a0ty = nt_type(nt, argv[0]);
-      int is_interp_arg = a0ty && sp_streq(a0ty, "InterpolatedRegularExpressionNode");
+      NodeKind a0k = nt_kind(nt, argv[0]);
+      int is_interp_arg = a0k == NK_InterpolatedRegularExpressionNode;
       /* Any regex-typed argument EXPRESSION, not just a local or constant read:
          an inline `Regexp.new(s)` / `Regexp.union(..)` / a method returning a
          regex is the same mrb_regexp_pattern* in argument position, so
@@ -506,8 +506,9 @@ no_gsub_enum:
          it `matcher.match?(re_local)` fed the object into sp_re_match_p's
          const char* slot and the generated C did not compile. */
       const char *a0nt = nt_type(nt, argv[0]);
+      NodeKind a0nk = nt_kind(nt, argv[0]);
       int is_regex_val_arg = !is_interp_arg && argc >= 1 && comp_ntype(c, argv[0]) == TY_REGEX
-                             && a0nt && !sp_streq(a0nt, "RegularExpressionNode")
+                             && a0nt && a0nk != NK_RegularExpressionNode
                              && !ty_is_object(rt);
       /* a boxed receiver's match? or match that a class answers too
          (StringScanner's match?, OptionParser::Completion's match) is the
@@ -650,8 +651,8 @@ no_gsub_enum:
     }
     /* Pattern from receiver (rx.match?(str), rx =~ str, etc.) */
     {
-      const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-      int is_interp_recv = rty && sp_streq(rty, "InterpolatedRegularExpressionNode");
+      NodeKind rk = nt_kind(nt, recv);
+      int is_interp_recv = rk == NK_InterpolatedRegularExpressionNode;
       int is_regex_lv_recv = !is_interp_recv && recv >= 0 && comp_ntype(c, recv) == TY_REGEX;
       if (is_interp_recv || is_regex_lv_recv) {
         Buf rp; memset(&rp, 0, sizeof rp);
@@ -762,8 +763,8 @@ no_gsub_enum:
        call site rather than inside sp_str_format_polyarr, whose body is
        optcarrot-layout-sensitive (a guard there cost ~9% fps); a literal
        format can't be nil and is emitted bare. */
-    const char *frty = nt_type(nt, recv);
-    int fck = (frty && (sp_streq(frty, "StringNode") || sp_streq(frty, "InterpolatedStringNode")))
+    NodeKind frk = nt_kind(nt, recv);
+    int fck = (frk == NK_StringNode || frk == NK_InterpolatedStringNode)
               ? -1 : ++g_tmp;
     if (at == TY_POLY_ARRAY) {
       const char *fend = (operand_may_allocate(c, argv[0]) && !subtree_is_pure_read(c, argv[0])) ? emit_str_format_held(c, recv, argv[0], fck, b) : NULL;
@@ -798,8 +799,8 @@ no_gsub_enum:
        hash. Handled when the format is a string literal, so each name resolves
        to a compile-time symbol id; the looked-up values are pushed in order and
        the rewritten positional format reuses sp_str_format_polyarr. */
-    const char *recv_ntype = nt_type(nt, recv);
-    if (ty_is_hash(at) && recv_ntype && sp_streq(recv_ntype, "StringNode")) {
+    NodeKind recv_ntype_k = nt_kind(nt, recv);
+    if (ty_is_hash(at) && recv_ntype_k == NK_StringNode) {
       const char *fmt = nt_str(nt, recv, "content");
       const char *names[64]; int name_len[64];
       Buf rew; memset(&rew, 0, sizeof rew);
@@ -917,8 +918,8 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (recv >= 0 && argc == 1 && sp_streq(name, "last_match") &&
       nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    const char *aty = nt_type(nt, argv[0]);
-    if (aty && sp_streq(aty, "IntegerNode")) {
+    NodeKind ak = nt_kind(nt, argv[0]);
+    if (ak == NK_IntegerNode) {
       long long idx = nt_int(nt, argv[0], "value", 0);
       if (idx == 0) { buf_puts(b, "sp_re_match_str"); return 1; }
       if (idx >= 1 && idx <= 9) { buf_printf(b, "sp_re_captures[%d]", (int)idx); return 1; }
@@ -929,9 +930,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        read through the integer slot, where the pointer became a wild index
        (#3653) */
     TyKind lmat = comp_ntype(c, argv[0]);
-    if (aty && (sp_streq(aty, "StringNode") || sp_streq(aty, "SymbolNode"))) {
+    if (ak == NK_StringNode || ak == NK_SymbolNode) {
       buf_puts(b, "sp_re_named_capture(sp_re_last_pat, ");
-      if (sp_streq(aty, "SymbolNode")) emit_str_literal(b, nt_str(nt, argv[0], "value"));
+      if (ak == NK_SymbolNode) emit_str_literal(b, nt_str(nt, argv[0], "value"));
       else emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return 1;

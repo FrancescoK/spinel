@@ -379,8 +379,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     /* File.write(path, str, offset) / File.write(path, str, mode: "a", perm: 0o600) (#2782) */
     if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 3) {
-      const char *k3 = nt_type(nt, argv[2]);
-      if (k3 && sp_streq(k3, "KeywordHashNode")) {
+      NodeKind k3_k = nt_kind(nt, argv[2]);
+      if (k3_k == NK_KeywordHashNode) {
         int mv = struct_kwarg_value(c, argv[2], "mode");
         int pv = struct_kwarg_value(c, argv[2], "perm");
         if (pv >= 0) {
@@ -573,8 +573,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int csep = -1;
       Buf chomp; memset(&chomp, 0, sizeof chomp);
       for (int ki = 1; ki < argc; ki++) {
-        const char *kty = nt_type(nt, argv[ki]);
-        if (kty && sp_streq(kty, "KeywordHashNode")) {
+        NodeKind kk = nt_kind(nt, argv[ki]);
+        if (kk == NK_KeywordHashNode) {
           int cv = struct_kwarg_value(c, argv[ki], "chomp");
           emit_kw_flag(c, cv, &chomp);
         }
@@ -2450,8 +2450,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       else if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
-        const char *atype = nt_type(nt, argv[0]);
-        int islit = atype && sp_streq(atype, "RangeNode");
+        NodeKind atype_k = nt_kind(nt, argv[0]);
+        int islit = atype_k == NK_RangeNode;
         int lo = islit ? nt_ref(nt, argv[0], "left") : -1;
         int hi = islit ? nt_ref(nt, argv[0], "right") : -1;
         /* an endless/beginless range has no finite span -> Errno::EDOM (#2550) */

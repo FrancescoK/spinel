@@ -66,8 +66,8 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
   if (n != 1) return -1;
   int call = st[0];
-  const char *cty = nt_type(c->nt, call);
-  if (!cty || !sp_streq(cty, "CallNode") || nt_ref(c->nt, call, "receiver") >= 0) return -1;
+  NodeKind ck = nt_kind(c->nt, call);
+  if (ck != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
   if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
@@ -995,11 +995,11 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
   }
   else {
     TyKind rt = comp_ntype(c, recv);
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     /* a scoped receiver (NS::Base.transaction { }) resolves by its leaf name,
        the key classes are indexed under */
-    const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
-                                 sp_streq(rty, "ConstantPathNode")))
+    const char *cname = ((rk == NK_ConstantReadNode ||
+                                 rk == NK_ConstantPathNode))
                         ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
     if ((t->mi = class_reopen_cmethod(c, recv, name)) >= 0) {
@@ -1094,9 +1094,9 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     }
     return 0;
   }
-  const char *rty = nt_type(nt, recv);
-  const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
-                               sp_streq(rty, "ConstantPathNode")))
+  NodeKind rk = nt_kind(nt, recv);
+  const char *cname = ((rk == NK_ConstantReadNode ||
+                               rk == NK_ConstantPathNode))
                       ? nt_str(nt, recv, "name") : NULL;
   if (narrow && !cname) {
     TyKind rt = comp_ntype(c, recv);
@@ -1666,8 +1666,8 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
 int is_block_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id < 0) return 0;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_or_yield(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -1689,8 +1689,8 @@ int is_block_call(Compiler *c, int id) {
 int is_blockless_block_param_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id >= 0) return 0;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -3297,11 +3297,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
          is the handle, which each `next` and the tail hand on */
       if (want_ty == TY_STRBUF) nx_bt = TY_STRBUF;
       if (bn3 > 0) {
-        const char *tty3 = nt_type(nt, bd3[bn3 - 1]);
-        nx_tail_stmt = tty3 && (sp_streq(tty3, "IfNode") || sp_streq(tty3, "CaseNode") ||
-                                sp_streq(tty3, "WhileNode") || sp_streq(tty3, "UntilNode") ||
-                                sp_streq(tty3, "BeginNode") || sp_streq(tty3, "NextNode") ||
-                                sp_streq(tty3, "ReturnNode"));
+        NodeKind tty3_k = nt_kind(nt, bd3[bn3 - 1]);
+        nx_tail_stmt = (tty3_k == NK_IfNode || tty3_k == NK_CaseNode ||
+                                tty3_k == NK_WhileNode || tty3_k == NK_UntilNode ||
+                                tty3_k == NK_BeginNode || tty3_k == NK_NextNode ||
+                                tty3_k == NK_ReturnNode);
       }
       nx_tmp = ++g_tmp;
       snprintf(nxbuf, sizeof nxbuf, "_t%d", nx_tmp);
@@ -3746,11 +3746,12 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
      cls_id switch (#2448). */
   {
     const char *rvty = nt_type(nt, recv);
+    NodeKind rvk = nt_kind(nt, recv);
     if (!rvty) return 0;
-    if (sp_streq(rvty, "LocalVariableReadNode") || sp_streq(rvty, "InstanceVariableReadNode")) {
+    if (rvk == NK_LocalVariableReadNode || rvk == NK_InstanceVariableReadNode) {
       /* ok: a plain variable holding a poly value */
     }
-    else if (sp_streq(rvty, "CallNode")) {
+    else if (rvk == NK_CallNode) {
       const char *rmn = nt_str(nt, recv, "name");
       static const char *const CONT[] = {"[]", "first", "last", "fetch", "sample",
         "dig", "shift", "pop", "min", "max", "at", NULL};
@@ -4184,8 +4185,8 @@ static int call_targets_yielding_method(Compiler *c, int id) {
   }
   else {
     TyKind rt = comp_ntype(c, recv);
-    const char *rty = nt_type(nt, recv);
-    const char *cn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+    NodeKind rk = nt_kind(nt, recv);
+    const char *cn = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
                      ? nt_str(nt, recv, "name") : NULL;
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
@@ -4322,16 +4323,17 @@ int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
 static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "RedoNode")) return redo < 0 || id == redo;
+  if (ty_k == NK_RedoNode) return redo < 0 || id == redo;
   /* a `redo` in a block a yield here splices belongs to that splice, which
      carries its own label (emit_block_invoke), not to this loop */
   /* nested scope/loop boundaries: a redo inside binds to that inner loop */
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "LambdaNode"))
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode ||
+      ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_LambdaNode)
     return 0;
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
+  if (ty_k == NK_CallNode && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), redo)) return 1;
   int na = nt_num_arrs(nt, id);
@@ -4358,20 +4360,21 @@ int subtree_owns_redo(const NodeTable *nt, int body, int redo) {
 static int subtree_has_own_next_ex(const NodeTable *nt, int id, int next) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "NextNode")) return next < 0 || id == next;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "LambdaNode"))
+  if (ty_k == NK_NextNode) return next < 0 || id == next;
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode ||
+      ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_LambdaNode)
     return 0;
-  if (sp_streq(ty, "ForNode"))
+  if (ty_k == NK_ForNode)
     return next >= 0 && subtree_has_own_next_ex(nt, nt_ref(nt, id, "collection"), next);
-  int blk = sp_streq(ty, "CallNode") ? nt_ref(nt, id, "block") : -1;
+  int blk = ty_k == NK_CallNode ? nt_ref(nt, id, "block") : -1;
   if (blk >= 0) {
     if (next < 0) return 0;
-    const char *bty = nt_type(nt, blk);
+    NodeKind bk = nt_kind(nt, blk);
     return subtree_has_own_next_ex(nt, nt_ref(nt, id, "receiver"), next) ||
            subtree_has_own_next_ex(nt, nt_ref(nt, id, "arguments"), next) ||
-           (bty && sp_streq(bty, "BlockArgumentNode") && subtree_has_own_next_ex(nt, blk, next));
+           (bk == NK_BlockArgumentNode && subtree_has_own_next_ex(nt, blk, next));
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) if (subtree_has_own_next_ex(nt, nt_ref_at(nt, id, i), next)) return 1;
@@ -4522,10 +4525,10 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      a downstream `.join` / `p` dispatches correctly (#3200, #3208). */
   int empty_arr_adopt = 0;
   if (is_tap) {
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     int rel = 0;
-    if (rty && sp_streq(rty, "ArrayNode")) nt_arr(nt, recv, "elements", &rel);
-    if (rty && sp_streq(rty, "ArrayNode") && rel == 0) {
+    if (rk == NK_ArrayNode) nt_arr(nt, recv, "elements", &rel);
+    if (rk == NK_ArrayNode && rel == 0) {
       const char *bp = block_param_name(c, block, 0);
       Scope *bsc2 = bp ? comp_scope_of(c, block) : NULL;
       LocalVar *blv = bsc2 ? scope_local(bsc2, rename_local(bp)) : NULL;
@@ -5951,9 +5954,9 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     buf_printf(b, "sp_StrArray *_t%d = ", tm);
     if (sp_argc == 0) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
     else if (sp_argc == 1) {
-      const char *aty = nt_type(nt, sp_argv[0]);
-      int ws = (aty && sp_streq(aty, "NilNode")) ||
-               (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
+      NodeKind ak = nt_kind(nt, sp_argv[0]);
+      int ws = (ak == NK_NilNode) ||
+               (ak == NK_StringNode && nt_str(nt, sp_argv[0], "content") &&
                 sp_streq(nt_str(nt, sp_argv[0], "content"), " ") && nt_str_len(nt, sp_argv[0], "content") == 1);
       int reli = re_lit_index(c, sp_argv[0]);
       if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
