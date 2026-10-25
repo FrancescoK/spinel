@@ -1,0 +1,15 @@
+"Shell ran ls -l"
+["Shell ran job 1", "Shell ran job 2"]
+"plain\n"
+"class-level date"
+"BUILD ALL"
+"aliased pwd"
+"defined id"
+true
+false
+"wrapped inner\n"
+"log: logged\n"
+"string name echo n"
+"expression"
+NoMethodError
+"top\n"

@@ -4503,3 +4503,42 @@ int strh_var_read(const NodeTable *nt, int n) {
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
          k == NK_ConstantReadNode || k == NK_ClassVariableReadNode;
 }
+
+/* Is `recv` the builtin Kernel module as call `id`'s receiver (a constant
+   read of Kernel the program gives no class method of the call's name)? */
+int an_kernel_const_recv(Compiler *c, int id, int recv, int fresh) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  return rn && sp_streq(rn, "Kernel") && !cplan_const_user(c, id, rn, fresh);
+}
+
+/* The String a `super` in a ` override (call `id` in scope `s`) hands
+   Kernel#`: 1 for super(x) with one plain argument (*arg is x), 2 for a
+   zero-argument super in a def of one required parameter and nothing
+   else, 0 for any other shape, -1 where no Kernel#` is above self. */
+int an_super_backtick_shape(Compiler *c, int id, const Scope *s, int *arg) {
+  const NodeTable *nt = c->nt;
+  *arg = -1;
+  /* a BasicObject instance has no Kernel above it: NoMethodError */
+  if (!s->is_cmethod && s->class_id >= 0 && class_is_blank_slate(c, s->class_id)) return -1;
+  if (nt_kind(nt, id) == NK_SuperNode) {
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an != 1 || nt_ref(nt, id, "block") >= 0) return 0;
+    NodeKind ak = nt_kind(nt, av[0]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+    *arg = av[0];
+    return 1;
+  }
+  if (nt_kind(nt, id) != NK_ForwardingSuperNode) return 0;
+  if (s->nparams != 1 || s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->pdefault[0] >= 0) return 0;
+  int pn = s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? nt_ref(nt, s->def_node, "parameters") : -1;
+  if (pn >= 0) {
+    int rn = 0, kn = 0;
+    nt_arr(nt, pn, "requireds", &rn);
+    nt_arr(nt, pn, "keywords", &kn);
+    if (rn != 1 || kn != 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0) return 0;
+  }
+  return 2;
+}

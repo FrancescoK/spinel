@@ -14811,6 +14811,38 @@ static int super_member_nilbit(Compiler *c, ClassInfo *cls, int a, int v, Buf *b
   free(ob.p);
   return 1;
 }
+/* `super` in a ` override no ancestor defines is Kernel#`: it runs the
+   command and answers its output (infer's twin, bt_super). A super of
+   another shape (a splat, no argument, two) is refused. 0 where self has
+   no Kernel#` above it (a BasicObject subclass): the caller raises
+   NoMethodError. */
+static int emit_super_backtick(Compiler *c, int id, Scope *s, Buf *b) {
+  int arg, shape = an_super_backtick_shape(c, id, s, &arg);
+  if (shape < 0) return 0;
+  if (!shape) {
+    unsupported_feature(c, id, "unsupported `super` in a program-defined `: "
+                        "only super(cmd) or a bare super in a def of one parameter reaches Kernel#`");
+  }
+  Buf rb; memset(&rb, 0, sizeof rb);
+  buf_puts(&rb, "sp_backtick(");
+  if (shape == 2) {
+    /* the parameter, as the override took it: a String, or a box read as
+       one (a non-String raises TypeError, as in CRuby) */
+    LocalVar *lv = scope_local(s, s->pnames[0]);
+    Buf pn; memset(&pn, 0, sizeof pn); buf_printf(&pn, "lv_%s", rename_local(s->pnames[0]));
+    Buf kb; memset(&kb, 0, sizeof kb);
+    emit_boxed_text(c, lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY, pn.p, &kb);
+    buf_printf(&rb, "sp_poly_arg_str_chk(%s)", kb.p ? kb.p : "sp_box_nil()");
+    free(pn.p); free(kb.p);
+  }
+  else emit_str_expr(c, arg, &rb);
+  buf_puts(&rb, ")");
+  if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_STRING, rb.p, b);
+  else buf_puts(b, rb.p);
+  free(rb.p);
+  return 1;
+}
+
 void emit_super(Compiler *c, int id, Buf *b) {
   refuse_from_plan(c, id, CRF_LIMIT, "super-refusal");
   if (repr_of(c, id).demand && repr_call_returns_handle(c, id) && emit_strbuf_route(c, id, b)) return;
@@ -14933,6 +14965,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
       else buf_printf(b, " _t%d; })", ta);
       return;
     }
+    /* `super` in a class-level ` override is Kernel#` too */
+    if (cmi < 0 && sp_streq(uname, "`") && emit_super_backtick(c, id, s, b)) return;
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
@@ -15377,6 +15411,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         return;
       }
     }
+    /* `super` in a ` override no ancestor defines is Kernel#` */
+    if (uname && sp_streq(uname, "`") && emit_super_backtick(c, id, s, b)) return;
     /* `super` from the program's own send, __send__ or public_send that no
        ancestor of the program defines is Object's: it dispatches on the name
        at run time, which no emitted code here does, so it is refused rather
