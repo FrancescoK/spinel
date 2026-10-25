@@ -1838,9 +1838,19 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       return;
     }
     if (cf_element_answer(nm)) {
-      /* (a Proc's [] is its call: its set is its value's) */
       cf_load(f, recv_el, v);
-      if (cf_kskip(f, v, recv_el)) cf_krecv_edge(f, recv_el, v); else cf_flow(f, recv_el, v);
+      /* (a Proc's [] is its call: its set is its value's) */
+      if (sp_streq(nm, "[]")) {
+        if (cf_kskip(f, v, recv_el)) cf_krecv_edge(f, recv_el, v); else cf_flow(f, recv_el, v);
+      }
+      /* no other element read answers its receiver (the receiver flowing
+         on made the container one of its own elements, and a store into
+         the answer, `scopes.last[k] = v`, a store into the container,
+         #10016). A run of elements, `last(2)`, is a container of its own
+         holding the receiver's, and so is the pair a Hash's first, min,
+         max and shift answer. */
+      else if (argc > 0 || sp_streq(nm, "first") || sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "shift"))
+        if (!sp_streq(nm, "dig") && !sp_streq(nm, "at")) cf_share(f, v, recv_el);
       /* dig reads through the containers it finds, to any depth */
       if (f->directed && sp_streq(nm, "dig")) cf_load(f, v, v);
       cf_add_set(f, v, cf_bv_set(f));

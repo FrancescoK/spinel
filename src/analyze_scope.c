@@ -11265,8 +11265,12 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
     if (!(ks = poly_recv_classes(c, id, &nk))) { ks = x->structs; nk = x->ns; unknown = 1; }
   }
   int changed = 0;
+  int recv = nt_ref(nt, id, "receiver");
   for (int i = 0; i < nk; i++) {
     int k = ks[i], lo, hi;
+    /* a Struct the class facts keep out of the box (`scopes.last[k] = v`
+       on a Hash read out of an Array) is not stored into (#10016) */
+    if (how == 2 && cls_fact_excludes(c, recv, k)) continue;
     if (!struct_aset_members(c, id, k, &lo, &hi)) continue;
     ClassInfo *ci = &c->classes[k];
     for (int m = lo; m < hi; m++) {
