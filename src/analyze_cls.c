@@ -80,6 +80,7 @@ typedef struct CF {
      An object such code may reach has its contents joined with rtc both
      ways: the code may store what it holds there, and read what is there. */
   int rt_obj, rtc;
+  int (*umemo)[3];            /* cf_union's answers, direct-mapped: (a, b, a | b) */
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
   int *def_mi;                          /* DefNode -> scope */
@@ -121,6 +122,8 @@ typedef struct CF {
      contents are its contents (one level, as in Das's one-level flow). */
   int **psucc, *npsucc, *cpsucc;        /* per element: the elements its objects reach (a share) */
   int **pts, *npts, *cpts;              /* per element: the objects it may hold, sorted */
+  unsigned long long **pbit; int *npbit; /* ... and as a bitset, to ask one (npbit words) */
+  int *sent; unsigned char *sentp;      /* per element: the set, and whether a container the walk does not track, last sent on */
   int **pdel, *npdel, *cpdel;           /* per element: the objects added since it was last sent on */
   int **ld, *nld, *cld, **st, *nst, *cst;   /* per element: the loads out of it, the stores into it */
   unsigned char *ptop, *esc;            /* may hold an untracked container; its objects escaped */
@@ -305,10 +308,22 @@ static int cf_pool_tb(CF *f, int b, int bv, int os) {
   for (int j = 0; j < f->tb[b].nt; j++) { s.wi[s.nw] = f->tb[b].t[j]; s.w[s.nw++] = f->tb[b].d[f->tb[b].t[j]]; }
   return cf_pool(f, &s);
 }
+static int cf_union_set(CF *f, int a, int b);
+#define CF_UMEMO (1 << 16)
 static int cf_union(CF *f, int a, int b) {
   if (a == b || b == CF_EMPTY) return a;
   if (a == CF_EMPTY) return b;
   if (a == CF_ALL || b == CF_ALL) return CF_ALL;
+  /* the walk asks the same two sets again along many edges and rounds:
+     the pool's sets are interned, so their union is remembered */
+  if (!f->umemo && !(f->umemo = calloc(CF_UMEMO, sizeof *f->umemo))) cf_oom();
+  unsigned h = ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) & (CF_UMEMO - 1);
+  if (f->umemo[h][2] && f->umemo[h][0] == a && f->umemo[h][1] == b) return f->umemo[h][2] - 1;
+  int u = cf_union_set(f, a, b);
+  f->umemo[h][0] = a; f->umemo[h][1] = b; f->umemo[h][2] = u + 1;
+  return u;
+}
+static int cf_union_set(CF *f, int a, int b) {
   const ClsSet *x = &f->pool[a], *y = &f->pool[b];
   /* the merge, noting whether it is one of the two (as it is along most
      edges once a set has grown: no lookup then) */
@@ -412,7 +427,7 @@ static void cf_grow_directed(CF *f) {
   CF_GROW(f->succ); CF_GROW(f->nsucc); CF_GROW(f->csucc);
   CF_GROW(f->psucc); CF_GROW(f->npsucc); CF_GROW(f->cpsucc);
   CF_GROW(f->inwl); CF_GROW(f->orig); CF_GROW(f->all_seq);
-  CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts);
+  CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts); CF_GROW(f->pbit); CF_GROW(f->npbit); CF_GROW(f->sent); CF_GROW(f->sentp);
   CF_GROW(f->pdel); CF_GROW(f->npdel); CF_GROW(f->cpdel);
   CF_GROW(f->ld); CF_GROW(f->nld); CF_GROW(f->cld);
   CF_GROW(f->st); CF_GROW(f->nst); CF_GROW(f->cst);
@@ -423,7 +438,7 @@ static void cf_grow_directed(CF *f) {
     f->succ[i] = NULL; f->nsucc[i] = 0; f->csucc[i] = 0;
     f->psucc[i] = NULL; f->npsucc[i] = 0; f->cpsucc[i] = 0;
     f->inwl[i] = 0; f->orig[i] = 0; f->all_seq[i] = 0;
-    f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0;
+    f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0; f->pbit[i] = NULL; f->npbit[i] = 0; f->sent[i] = CF_EMPTY; f->sentp[i] = 0;
     f->pdel[i] = NULL; f->npdel[i] = 0; f->cpdel[i] = 0;
     f->ld[i] = NULL; f->nld[i] = 0; f->cld[i] = 0;
     f->st[i] = NULL; f->nst[i] = 0; f->cst[i] = 0;
@@ -482,9 +497,8 @@ static void cf_ptop_set_at(CF *f, int x, int line) {
   cf_wl_push(f, x);
 }
 static int cf_pts_has(CF *f, int x, int o) {
-  int lo = 0, hi = f->npts[x];
-  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
-  return lo < f->npts[x] && f->pts[x][lo] == o;
+  int q = o >> 6;
+  return q < f->npbit[x] && ((f->pbit[x][q] >> (o & 63)) & 1);
 }
 static void cf_edge(CF *f, int src, int dst);
 /* x holds object o */
@@ -511,12 +525,20 @@ static void cf_pts_add(CF *f, int x, int o) {
     { int ko = f->obj_cont[o]; cf_edge(f, ko, ks); cf_edge(f, ks, ko); }
     o = sm;     /* the summary is added like any object: it reaches on, loads and stores apply to it */
   }
-  int lo = 0, hi = f->npts[x];
-  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
-  cf_push_int(&f->pts[x], &f->npts[x], &f->cpts[x], o);
+  if ((o >> 6) >= f->npbit[x]) {
+    int nw = (o >> 6) + 1 + (f->nobj >> 6);
+    unsigned long long *b = realloc(f->pbit[x], sizeof *b * (size_t)nw);
+    if (!b) cf_oom();
+    memset(b + f->npbit[x], 0, sizeof *b * (size_t)(nw - f->npbit[x]));
+    f->pbit[x] = b; f->npbit[x] = nw;
+  }
+  f->pbit[x][o >> 6] |= 1ULL << (o & 63);
+  { int lo = 0, hi = f->npts[x];
+    while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
+    cf_push_int(&f->pts[x], &f->npts[x], &f->cpts[x], o);
+    memmove(&f->pts[x][lo + 1], &f->pts[x][lo], sizeof(int) * (size_t)(f->npts[x] - 1 - lo));
+    f->pts[x][lo] = o; }
   f->st_pts++;
-  memmove(&f->pts[x][lo + 1], &f->pts[x][lo], sizeof(int) * (size_t)(f->npts[x] - 1 - lo));
-  f->pts[x][lo] = o;
   f->changed = 1;
   int k = f->obj_cont[o];
   for (int i = 0; i < f->nld[x]; i++) cf_edge(f, k, f->ld[x][i]);
@@ -602,18 +624,23 @@ static void cf_drain(CF *f) {
        of them itself, cf_edge) */
     int nd = f->npdel[x], *dl = NULL;
     if (nd) { dl = f->pdel[x]; f->pdel[x] = NULL; f->npdel[x] = 0; f->cpdel[x] = 0; }
-    for (int i = 0; i < f->nsucc[x]; i++) {
+    /* the set goes on only when it changed since it last did (a new edge
+       sends it itself, cf_edge); the objects only those gained since */
+    int sx = f->set[x], dosets = sx != f->sent[x] || (f->ptop[x] && !f->sentp[x]);
+    f->sent[x] = sx; f->sentp[x] = f->ptop[x];
+    for (int i = 0; (dosets || nd) && i < f->nsucc[x]; i++) {
       int y = f->succ[x][i];
-      int sx = f->set[x];
-      int u = cf_union(f, f->set[y], sx);
-      if (u != f->set[y]) {
-        if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
-        if (u == CF_ALL) f->all_seq[y] = ++f->seq;
-        f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
-        if (u == CF_ALL) cf_ptop_set(f, y);
+      if (dosets) {
+        int u = cf_union(f, f->set[y], sx);
+        if (u != f->set[y]) {
+          if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
+          if (u == CF_ALL) f->all_seq[y] = ++f->seq;
+          f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
+          if (u == CF_ALL) cf_ptop_set(f, y);
+        }
+        if (f->ptop[x]) cf_ptop_set(f, y);
       }
       for (int j = 0; j < nd; j++) cf_pts_add(f, y, dl[j]);
-      if (f->ptop[x]) cf_ptop_set(f, y);
     }
     for (int i = 0; i < f->npsucc[x]; i++) {
       int y = f->psucc[x][i];
@@ -636,7 +663,17 @@ static void cf_edge(CF *f, int src, int dst) {
   f->st_edges++;
   f->changed = 1;
   if (f->npts[src]) { cf_push_int(&f->fs, &f->nfs, &f->cfs, src); cf_push_int(&f->fs, &f->nfs, &f->cfs, dst); }
-  cf_kick(f, src);
+  /* the set src has goes along the new edge now (the drain sends a set on
+     only when it changed) */
+  int u = cf_union(f, f->set[dst], f->set[src]);
+  if (u != f->set[dst]) {
+    if (u == CF_ALL && !f->orig[dst]) f->orig[dst] = f->orig[src] ? f->orig[src] : -1;
+    if (u == CF_ALL) f->all_seq[dst] = ++f->seq;
+    f->set[dst] = u; cf_wl_push(f, dst);
+    if (u == CF_ALL) cf_ptop_set(f, dst);
+  }
+  if (f->ptop[src]) cf_ptop_set(f, dst);
+  cf_drain(f);
 }
 /* an edge that carries only the objects */
 static void cf_pedge(CF *f, int src, int dst) {
@@ -4247,6 +4284,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
   memset(&f, 0, sizeof f);
+  f.rt_obj = f.rtc = -1;   /* (made below, in directed mode: none until then) */
   /* directed 2: the walk of the kinds alone (cf_kinds), whose classes are
      not kept */
   f.directed = directed != 0;
@@ -4538,7 +4576,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   }
   if (f.why) cf_why_report(&f);
   /* the pass's own */
-  free(f.par); free(f.uf); free(f.set); free(f.ph);
+  free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
   free(f.sw); free(f.swi);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); free(f.pm[mi].kw); free(f.pm[mi].el); }
@@ -4571,7 +4609,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     free(f.orig);
     for (int i = 0; i < f.dcap; i++) free(f.succ[i]);
     free(f.succ); free(f.nsucc); free(f.csucc); free(f.inwl); free(f.wl); free(f.eh);
-    for (int i = 0; i < f.dcap; i++) { free(f.psucc[i]); free(f.pts[i]); free(f.pdel[i]); free(f.ld[i]); free(f.st[i]); }
+    for (int i = 0; i < f.dcap; i++) { free(f.psucc[i]); free(f.pts[i]); free(f.pbit[i]); free(f.pdel[i]); free(f.ld[i]); free(f.st[i]); }
+    free(f.pbit); free(f.npbit); free(f.sent); free(f.sentp);
     free(f.pdel); free(f.npdel); free(f.cpdel);
     free(f.psucc); free(f.npsucc); free(f.cpsucc); free(f.pts); free(f.npts); free(f.cpts);
     free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst);
