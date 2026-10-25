@@ -89,14 +89,18 @@ module CextRecord
 
   SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_block_call
                rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_const_get rb_const_get_at rb_eval_string].freeze
-  DYNAMIC_IDS = %w[rb_to_id rb_check_id rb_sym2id SYM2ID sp_cext_scanned_sym2id].freeze
+  DYNAMIC_IDS = %w[rb_to_id rb_check_id rb_sym2id].freeze
+  # SYM2ID of a Symbol the program made: a call through that ID is sent as
+  # Ruby sends a computed name, over the methods the program defines.
+  SYMBOL_IDS = %w[SYM2ID sp_cext_scanned_sym2id].freeze
 
   def scan(text)
     tokens = source_only(text).scan(TOKEN)
-    names = []; arities = []; ivars = []; evals = []; constants = false
+    names = []; arities = []; ivars = []; evals = []; constants = false; computed = false
     tokens.each_with_index do |t, i|
       raise Refusal, "scanner: inline assembly is outside the recorder subset" if %w[asm __asm __asm__].include?(t)
       raise Refusal, "#{t}: runtime-computed method IDs are unsupported" if DYNAMIC_IDS.include?(t)
+      computed = true if SYMBOL_IDS.include?(t)
       next unless SCANNED.include?(t)
       raise Refusal, "#{t}: taking an API function address is outside the literal scanner subset" unless tokens[i+1] == "("
       args, = arguments(tokens, i+2)
@@ -136,7 +140,7 @@ module CextRecord
       raise Refusal, "invalid literal instance variable #{name.inspect}" unless name =~ /\A@[A-Za-z_][A-Za-z_0-9]*\z/
     end
     [names.uniq.sort, arities.uniq.sort,
-     {"ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constants}]
+     {"ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constants, "computed_ids" => computed}]
   end
 
   def write_atomic(path, bytes)
@@ -258,7 +262,7 @@ module CextRecord
     Dir.mktmpdir("spinel-cext-record-") do |dir|
       flags = ["-std=c11", "-O0", "-DSP_CEXT_RECORDER", "-I#{ROOT}/include", *cflags]
       flags += ["-DSP_THREADS", "-ftls-model=initial-exec"] if threaded
-      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false; callable = []
+      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false; computed_ids = false; callable = []
       sources.each_with_index do |source, i|
         source = File.expand_path(source)
         raise Refusal, "missing C source #{source}" unless File.file?(source)
@@ -269,6 +273,7 @@ module CextRecord
         names.concat(ids); arities.concat(argc)
         ivars.concat(bridge["ivars"]); evals.concat(bridge["evals"])
         constant_reads ||= bridge["constant_reads"]
+        computed_ids ||= bridge["computed_ids"]
         obj = File.join(dir, "extension#{i}.o")
         command(*compiler, *flags, "-c", source, "-o", obj)
         objects << obj
@@ -347,6 +352,7 @@ module CextRecord
                   "definitions" => events, "literal_ids" => names.uniq.sort,
                   "funcall_arities" => arities.uniq.sort,
                   "ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constant_reads}
+      manifest["computed_ids"] = true if computed_ids
       ruby = render(manifest)
       if object_archive
         extension_archive = File.join(dir, "extension.a")
@@ -401,6 +407,9 @@ module CextRecord
       lines << "__cext_stub(2, #{name.dump}, 1)"
     end
     manifest.fetch("evals", []).each { |code| lines << "__cext_stub(4, #{code.dump}, 0)" }
+    if manifest["computed_ids"]
+      manifest["funcall_arities"].each { |arity| lines << "__cext_stub(5, \"\", #{arity})" }
+    end
     lines.join("\n") + "\n"
   end
 

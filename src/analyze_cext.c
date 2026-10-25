@@ -218,15 +218,22 @@ void desugar_cext_decls(Compiler *c) {
         need(c, site, ac, 3);
         int kind = (int)integer(c, site, av[0]), argc = (int)integer(c, site, av[2]);
         const char *key = text(c, site, av[1]);
-        if (kind < 0 || kind > 4 || argc < 0)
+        if (kind < 0 || kind > 5 || argc < 0)
           unsupported_feature(c, site, "invalid C extension dispatch stub");
         int idx = c->n_cext_stubs++;
         c->cext_stubs = realloc(c->cext_stubs, sizeof(CextStub) * (size_t)c->n_cext_stubs);
         c->cext_stubs[idx] = (CextStub){strdup(key), kind, argc, site};
         buf_printf(&b, "def __cext_dispatch_%d(r", idx);
+        if (kind == 5) buf_puts(&b, ", name");
         for (int j = 0; j < argc; j++) buf_printf(&b, ", a%d", j);
         buf_puts(&b, ", &block)\n__cext_box(block)\n__cext_box(");
-        if (kind == 0) {
+        if (kind == 5) {
+          /* An ID the extension computed from a Symbol: sent as Ruby sends a
+           * computed name, over the methods the program defines. */
+          buf_puts(&b, "r.__send__(name");
+          for (int j = 0; j < argc; j++) buf_printf(&b, ", a%d", j);
+          buf_puts(&b, ", &block)");
+        } else if (kind == 0) {
           buf_puts(&b, "r.__cext_target(");
           for (int j = 0; j < argc; j++) buf_printf(&b, "%sa%d", j ? ", " : "", j);
           buf_puts(&b, argc ? ", &block)" : "&block)");
@@ -478,14 +485,21 @@ static void emit_missing_cext_send(Compiler *c, Buf *b) {
 void emit_cext_dispatch(Compiler *c, Buf *b) {
   if (!c->n_cext_extensions) return;
   buf_puts(b, "static sp_RbVal _sp_cext_dispatch(int kind, const char *key, sp_RbVal r, int argc, const sp_RbVal *argv, sp_Proc *block) {\n");
+  /* Literal names first; a computed name the literal table does not hold
+   * then goes to the send of its arity. */
+  for (int computed = 0; computed < 2; computed++)
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *sc = &c->scopes[mi];
     int idx = sc->def_node >= 0 ? nt_int(c->nt, sc->def_node, "cext_stub", 0) - 1 : -1;
     if (idx < 0) continue;
     CextStub *stub = &c->cext_stubs[idx];
-    buf_printf(b, "if (kind == %d && argc == %d && !strcmp(key, ", stub->kind, stub->argc);
-    emit_str_literal(b, stub->key); buf_puts(b, ")) return ");
-    emit_method_cname(c, sc, b); buf_puts(b, "(r");
+    if ((stub->kind == 5) != computed) continue;
+    if (computed) buf_printf(b, "if (kind == 0 && argc == %d) return ", stub->argc);
+    else {
+      buf_printf(b, "if (kind == %d && argc == %d && !strcmp(key, ", stub->kind, stub->argc);
+      emit_str_literal(b, stub->key); buf_puts(b, ")) return ");
+    }
+    emit_method_cname(c, sc, b); buf_puts(b, computed ? "(r, sp_box_sym(sp_sym_intern(key))" : "(r");
     for (int j = 0; j < stub->argc; j++) buf_printf(b, ", argv[%d]", j);
     buf_puts(b, ", block);\n");
   }

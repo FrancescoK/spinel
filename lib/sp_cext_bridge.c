@@ -708,6 +708,8 @@ void rb_iter_break(void) { rb_iter_break_value(Qnil); }
 
 #ifdef SP_CEXT
 VALUE rb_str_intern(VALUE v) { return ID2SYM(rb_intern2(RSTRING_PTR(v), RSTRING_LEN(v))); }
+/* SYM2ID in the retained objects, compiled for the recorder's scan */
+ID sp_cext_scanned_sym2id(VALUE v) { return SYM2ID(v); }
 #endif
 
 #ifdef SP_CEXT
