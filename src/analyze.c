@@ -19697,11 +19697,54 @@ enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK
    number of paths, not of the things walked. A thing walked again within
    the same walk, no shallower than before, answers what it answered (0
    while its walk is still running: a cycle adds nothing); its demands are
-   already made. The memo is dropped when the outermost walk returns. */
+   already made. The memo is dropped when the outermost walk returns.
+
+   Inside the share pass (sb_share_begin / sb_share_end) it is kept across
+   the outermost walks instead: the pass starts one from every holder slot
+   and every store it visits, and the walks fan out over the same methods,
+   containers and parameters, so each slot walked the web the one before it
+   had walked. A thing an earlier walk found changing nothing, in the same
+   state, changes nothing now, and its demands are made: a generation ends
+   wherever the pass reports a change (sb_share_step, as a walk begins: the
+   pass's `changed` is folded into `any` and cleared), so no walk reads a
+   record left before a write it has not seen, and the records that survive
+   to a later walk all answer 0 -- a walk that changed something ended the
+   generation it wrote in. SPINEL_SB_SHADOW=1 walks such a record's thing
+   again all the same and stops the compile if the walk changes anything. */
 enum { SBM_EXPR, SBM_RET, SBM_IVAR, SBM_LOCAL };
-typedef struct { unsigned long long key; int depth, res, gen; } SbMemo;
+typedef struct { unsigned long long key; int depth, res, gen, walk; unsigned char shadow; } SbMemo;
 static SbMemo *sb_memo;
-static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest;
+static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest, sb_walk_id;
+static int sb_shared, *sb_share_changed, *sb_share_any, *sb_share_prev_changed, *sb_share_prev_any;
+static int sb_shadow = -1;
+static int sb_shadow_on(void) {
+  if (sb_shadow < 0) { const char *e = getenv("SPINEL_SB_SHADOW"); sb_shadow = e && *e && *e != '0'; }
+  return sb_shadow;
+}
+/* the pass's `changed` and `any`; the generation ends here, and again at the end */
+static void sb_share_begin(int *changed, int *any) {
+  sb_share_prev_changed = sb_share_changed; sb_share_prev_any = sb_share_any;   /* (the pass around the rule: one level) */
+  sb_shared++; sb_memo_gen++; sb_memo_n = 0;
+  sb_share_changed = changed; sb_share_any = any;
+}
+/* a change the pass reported since the last step ends the generation */
+static void sb_share_step(void) {
+  if (sb_share_changed && *sb_share_changed) { sb_memo_gen++; sb_memo_n = 0; *sb_share_any = 1; *sb_share_changed = 0; }
+}
+/* ... and what was folded into `any` goes back into `changed`.
+   SPINEL_SB_STATS=1 prints, per region, the outermost walks and the records
+   of earlier walks they read. */
+static long sb_share_walks, sb_share_hits;
+static void sb_share_end(void) {
+  if (sb_share_changed) *sb_share_changed |= *sb_share_any;
+  if (getenv("SPINEL_SB_STATS")) {
+    fprintf(stderr, "spinel-sb-share: walks=%ld cross-walk hits=%ld\n", sb_share_walks, sb_share_hits);
+    sb_share_walks = sb_share_hits = 0;
+  }
+  sb_shared--; sb_memo_gen++; sb_memo_n = 0;
+  sb_share_changed = sb_share_prev_changed; sb_share_any = sb_share_prev_any;
+  sb_share_prev_changed = sb_share_prev_any = NULL;
+}
 static unsigned long long sb_memo_key(int kind, int a, int b, int mode) {
   return ((unsigned long long)(unsigned)kind << 60) ^ ((unsigned long long)(unsigned)mode << 52) ^
          ((unsigned long long)(unsigned)a << 24) ^ (unsigned long long)(unsigned)(b + 1);
@@ -19724,17 +19767,37 @@ static SbMemo *sb_memo_slot(unsigned long long key) {
 /* Enter a walk of (kind, a, b, mode) at depth: 1 with *res set when it has
    been walked already, else 0 (the caller walks it and sb_memo_leave's). */
 static int sb_memo_enter(int kind, int a, int b, int mode, int depth, int *res) {
-  if (sb_walk_nest++ == 0) { sb_memo_gen++; sb_memo_n = 0; }
+  if (sb_walk_nest++ == 0) {
+    sb_walk_id++;
+    if (!sb_shared) { sb_memo_gen++; sb_memo_n = 0; }
+    else { sb_share_step(); sb_share_walks++; }
+  }
   unsigned long long key = sb_memo_key(kind, a, b, mode);
   SbMemo *m = sb_memo_slot(key);
-  if (m->gen == sb_memo_gen && m->depth <= depth) { *res = m->res; sb_walk_nest--; return 1; }
+  if (m->gen == sb_memo_gen && m->depth <= depth) {
+    if (sb_shared && m->walk != sb_walk_id) sb_share_hits++;
+    /* (shadow) a record an earlier walk left: walk the thing again, and
+       sb_memo_leave checks that the walk changed nothing */
+    if (sb_shared && m->walk != sb_walk_id && sb_shadow_on()) { m->shadow = 1; m->walk = sb_walk_id; return 0; }
+    *res = m->res; sb_walk_nest--; return 1;
+  }
   if (m->gen != sb_memo_gen) sb_memo_n++;
-  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0;
+  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0; m->walk = sb_walk_id; m->shadow = 0;
   return 0;
 }
 static int sb_memo_leave(int kind, int a, int b, int mode, int res) {
   SbMemo *m = sb_memo_slot(sb_memo_key(kind, a, b, mode));
-  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) m->res |= res;
+  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) {
+    if (m->shadow) {
+      if (res) {
+        fprintf(stderr, "spinel: internal error: the store walk skipped (kind %d, %d, %d, mode %d), which changes the analysis state\n",
+                kind, a, b, mode);
+        exit(70);
+      }
+      m->shadow = 0;
+    }
+    m->res |= res;
+  }
   sb_walk_nest--;
   return res;
 }
@@ -23270,7 +23333,8 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     if (d_in != c->share_sig && d_in != c->share_in_sig) { c->share_sig = d_in; return 1; }
   }
   share_facts_build(c);
-  int changed = one_reflect_widen(c);
+  int changed = one_reflect_widen(c), any = 0;
+  sb_share_begin(&changed, &any);   /* (the walks below share their records; sb_share_end folds `any` back) */
   int nh = 0;
   ShareHolder *slots = slot_holders(c, &nh);
   for (int h = 0; h < nh; h++) {
@@ -23470,6 +23534,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an, rest_read);
   }
   free(rest_read);
+  sb_share_end();
   /* The next round must settle on the types AFTER these promotions.
      Comparing with the pre-promotion types asks for another inference
      round even when no dependent type moved. */
@@ -25484,7 +25549,8 @@ static int pickup_caller_may_be_str(const LocalVar *lv, int demand) {
   return lv->type == TY_UNKNOWN || lv->type == TY_STRING || lv->type == TY_STRBUF || lv->type == TY_POLY;
 }
 static int promote_shared_stored_strings_pass(Compiler *c) {
-  int changed = 0;
+  int changed = 0, any = 0;
+  sb_share_begin(&changed, &any);   /* (the store walks below share their records; sb_share_end folds `any` back) */
   /* --share-strings: the one rule decides first (#6765) */
   changed |= share_default_apply(c, 1);
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -26460,6 +26526,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     }
     sbd_memo_on = 0;
   }
+  sb_share_end();
   return changed;
 }
 
