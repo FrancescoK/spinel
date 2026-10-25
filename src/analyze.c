@@ -9588,6 +9588,20 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
     if (infer_type(c, ex) != TY_SYMBOL) continue;
+    /* `m(&sym_var.to_proc)` is `m(&sym_var)`: the block argument takes the
+       Symbol itself and the call becomes the block below, whose parameter
+       is typed from what the call yields. As a lambda's, it was boxed, and
+       a name computed at run time reached no builtin's method on it. */
+    if (is_toproc) {
+      int ba_of = -1;
+      NT_FOREACH_KIND(nt, NK_BlockArgumentNode, ba)
+        if (nt_ref(nt, ba, "expression") == id) { ba_of = ba; break; }
+      if (ba_of >= 0) {
+        nt_node_set_ref(nt, ba_of, "expression", ex);
+        changed = 1;
+        continue;
+      }
+    }
     /* as many parameters as the call passes its block: the first receives
        the send, the rest are its arguments */
     int npar = is_toproc ? 1 : sym_block_values(c, id);

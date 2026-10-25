@@ -1,0 +1,12 @@
+[2, 3]
+["AB"]
+["AB"]
+["ba", "zyx"]
+[2, 42]
+["A", "B", "C"]
+6
+[3, 7]
+"AB"
+4
+"undefined method 'no_such_meth' for an instance of String"
+"undefined method 'no_such_meth' for an instance of String"
