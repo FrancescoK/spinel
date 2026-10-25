@@ -208,6 +208,11 @@ void rb_define_attr(VALUE o, const char *n, int r, int w) {
 }
 void rb_include_module(VALUE o, VALUE m) { event("include",o); field("module",owner(m,"rb_include_module")->name); end(); }
 void rb_extend_object(VALUE o, VALUE m) { event("extend",o); field("module",owner(m,"rb_extend_object")->name); end(); }
+void rb_undef_method(VALUE o, const char *n) { event("undef_method",o); field("name",n); end(); }
+void rb_undef_alloc_func(VALUE o) {
+    if (owner(o,"rb_undef_alloc_func")->module == 1) refuse("rb_undef_alloc_func","expected a class");
+    event("undef_allocator",o); end();
+}
 ID rb_intern(const char *s) {
     for (size_t i=0;i<symbol_count;i++) if (!strcmp(s,symbols[i])) return i+1;
     char **next = realloc(symbols,(symbol_count+1)*sizeof(*next));

@@ -20633,7 +20633,7 @@ static void emit_cext_runtime(Compiler *c, Buf *b) {
     }
     buf_puts(b, "default: sp_raise_cls(\"TypeError\", \"unknown C extension data class\"); } }\n");
     buf_puts(b, "static void *_sp_cext_class_alloc(int cls) { switch (cls) {\n");
-    for (int k = 0; k < c->nclasses; k++) if (c->classes[k].cext_extension)
+    for (int k = 0; k < c->nclasses; k++) if (c->classes[k].cext_extension && c->classes[k].cext_allocator >= 0)
       buf_printf(b, "case %d: return sp_cext_allocate(&_sp_cext_%d, %d, %d);\n", k,
                  c->classes[k].cext_extension - 1, c->classes[k].cext_allocator, k);
     buf_puts(b, "default: sp_raise_cls(\"TypeError\", \"unknown C extension data class\"); } }\n");

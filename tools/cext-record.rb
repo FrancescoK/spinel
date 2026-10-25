@@ -374,6 +374,8 @@ module CextRecord
              when "alias" then d.values_at("owner", "name", "original")
              when "attribute" then d.values_at("owner", "name", "read", "write")
              when "include", "extend" then d.values_at("owner", "module")
+             when "undef_method" then d.values_at("owner", "name")
+             when "undef_allocator" then [d["owner"]]
              when "constant"
                v = d.fetch("value")
                [d["owner"], d["name"], v["type"], v["type"] == "string" ? v["hex"] : v["value"], v["object"], v["frozen"]]
