@@ -5921,6 +5921,104 @@ int is_fresh_array(Compiler *c, int v) {
   return fresh_array_builtin_name(nm);
 }
 
+/* The writes of each name, by write kind (ivar, gvar, cvar, constant),
+   ascending: container_literals follows the writes of the name a read
+   names, and walked every write of the kind for each read, comparing
+   names -- on a Rails application half of its own time, under the boxed
+   element widening's asks every round. Rebuilt when the node table
+   changes, as the other such indexes are (cst_first). */
+static const NodeTable *clw_nt; static unsigned clw_ver; static int clw_cnt;
+static ANameHash clw_names[4]; static int *clw_first[4], clw_cap[4], *clw_next;
+static int clw_slot(NodeKind wk) {
+  return wk == NK_InstanceVariableWriteNode ? 0 : wk == NK_GlobalVariableWriteNode ? 1 :
+         wk == NK_ClassVariableWriteNode ? 2 : wk == NK_ConstantWriteNode ? 3 : -1;
+}
+static int clw_first_named(Compiler *c, NodeKind wk, const char *name) {
+  const NodeTable *nt = c->nt;
+  int slot = clw_slot(wk);
+  if (slot < 0 || !name) return -1;
+  if (clw_nt != nt || clw_ver != nt->version || clw_cnt != nt->count) {
+    static const NodeKind kinds[4] = { NK_InstanceVariableWriteNode, NK_GlobalVariableWriteNode,
+                                       NK_ClassVariableWriteNode, NK_ConstantWriteNode };
+    free(clw_next);
+    clw_next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!clw_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int s = 0; s < 4; s++) {
+      anh_free(&clw_names[s]); memset(&clw_names[s], 0, sizeof clw_names[s]);
+      /* (last: each name's latest write so far, as long as the firsts) */
+      int *last = clw_cap[s] ? malloc(sizeof(int) * (size_t)clw_cap[s]) : NULL;
+      if (clw_cap[s] && !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      NT_FOREACH_KIND(nt, kinds[s], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn) continue;
+        clw_next[w] = -1;
+        int k = anh_find(&clw_names[s], wn);
+        if (k < 0) {
+          anh_add(&clw_names[s], wn); k = clw_names[s].n - 1;
+          if (k >= clw_cap[s]) {
+            clw_cap[s] = clw_cap[s] ? clw_cap[s] * 2 : 64;
+            clw_first[s] = realloc(clw_first[s], sizeof(int) * (size_t)clw_cap[s]);
+            last = realloc(last, sizeof(int) * (size_t)clw_cap[s]);
+            if (!clw_first[s] || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          }
+          clw_first[s][k] = w;
+        }
+        else clw_next[last[k]] = w;
+        last[k] = w;
+      }
+      free(last);
+    }
+    clw_nt = nt; clw_ver = nt->version; clw_cnt = nt->count;
+  }
+  int k = anh_find(&clw_names[slot], name);
+  return k >= 0 ? clw_first[slot][k] : -1;
+}
+
+/* The argument index call `call` hands parameter pi of method si by its
+   layout, or -1 (container_literals, the parameter case): the layout is
+   decided from the call's argument nodes and the method's parameter list
+   alone (arg_layout_untyped), so the answer holds while the node table and
+   the scopes do, and is kept per (call, method, parameter). The walk asked
+   the layout again at every caller of the method, at every ask for the
+   parameter, in every round -- on a Rails application most of its time. */
+typedef struct { int call, si, pi, from; } ClaEntry;
+static ClaEntry *cla_tab; static int cla_cap, cla_n;
+static const NodeTable *cla_nt; static unsigned cla_ver, cla_gen; static int cla_count, cla_nscopes;
+static int cla_layout_arg(Compiler *c, int call, int si, Scope *sc, const int *av, int an, int pi) {
+  const NodeTable *nt = c->nt;
+  if (cla_nt != nt || cla_ver != nt->version || cla_count != nt->count || cla_gen != comp_scope_index_gen() ||
+      cla_nscopes != c->nscopes) {
+    cla_n = 0;
+    if (cla_tab) memset(cla_tab, 0, sizeof *cla_tab * (size_t)cla_cap);
+    cla_nt = nt; cla_ver = nt->version; cla_count = nt->count; cla_gen = comp_scope_index_gen(); cla_nscopes = c->nscopes;
+  }
+  if (cla_n * 2 >= cla_cap) {
+    int ncap = cla_cap ? cla_cap * 2 : 4096;
+    ClaEntry *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < cla_cap; i++) {
+      if (!cla_tab[i].call) continue;
+      unsigned h = ((unsigned)cla_tab[i].call * 2654435761u ^ (unsigned)cla_tab[i].si * 40503u ^ (unsigned)cla_tab[i].pi * 97u) & (unsigned)(ncap - 1);
+      while (nv[h].call) h = (h + 1) & (unsigned)(ncap - 1);
+      nv[h] = cla_tab[i];
+    }
+    free(cla_tab); cla_tab = nv; cla_cap = ncap;
+  }
+  /* (keys are stored off by one: a zero call marks an empty slot) */
+  unsigned h = ((unsigned)(call + 1) * 2654435761u ^ (unsigned)si * 40503u ^ (unsigned)pi * 97u) & (unsigned)(cla_cap - 1);
+  while (cla_tab[h].call) {
+    if (cla_tab[h].call == call + 1 && cla_tab[h].si == si && cla_tab[h].pi == pi) return cla_tab[h].from;
+    h = (h + 1) & (unsigned)(cla_cap - 1);
+  }
+  ArgLayout L;
+  call_layout(c, sc, av, an, &L);
+  int from = pi < L.n && L.from[pi] == ARG_NODE ? L.arg[pi] : -1;
+  arg_layout_free(&L);
+  cla_tab[h] = (ClaEntry){ call + 1, si, pi, from };
+  cla_n++;
+  return from;
+}
+
 /* Collects into out[] the container literals `n` can evaluate to, as far
    as the program shows: a literal itself, the literals a variable is
    assigned, and, for an element read `x[k]` (`fetch`, `first`, `last`),
@@ -5981,10 +6079,7 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
         if (!hit) continue;
         int a = nt_ref(nt, call, "arguments"), an = 0;
         const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-        ArgLayout L;
-        call_layout(c, sc, av, an, &L);
-        int from = pi < L.n && L.from[pi] == ARG_NODE ? L.arg[pi] : -1;
-        arg_layout_free(&L);
+        int from = cla_layout_arg(c, call, si, sc, av, an, pi);
         if (from >= 0 && from < an) nout = container_literals(c, av[from], out, nout, cap, depth + 1);
       }
     }
@@ -5999,8 +6094,7 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
   if (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode)
     cid = sc->class_id >= 0 ? sc->class_id : comp_class_index(c, "Toplevel");
   if (k == NK_ClassVariableReadNode) cid = comp_cvar_owner(c, cid, nm);
-  NT_FOREACH_KIND(nt, wk, w) {
-    if (!sp_streq(nt_str(nt, w, "name"), nm)) continue;
+  for (int w = clw_first_named(c, wk, nm); w >= 0; w = clw_next[w]) {
     if (cid >= 0) {
       Scope *ws = comp_scope_of(c, w);
       int wc = ws && ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
