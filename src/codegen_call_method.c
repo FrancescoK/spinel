@@ -190,7 +190,7 @@ int emit_op_proc_parameters(Compiler *c, const BopCtx *x, Buf *b) {
      false -> proc (req remapped to opt at print), nil -> the receiver's own.
      Kinds are stored canonically, see the meta emitter. #2693 */
   int pmode = -1, pmode_ok = argc == 0;
-  if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+  if (argc == 1 && nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_KeywordHashNode) {
     int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
     if (en == 1) {
       int key = nt_ref(nt, elems[0], "key");
@@ -221,9 +221,9 @@ int emit_op_proc_source_location(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
   int lit = -1;
-  if (nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LambdaNode") || is_proc_create(c, recv)))
+  if (nt_type(nt, recv) && (nt_kind(nt, recv) == NK_LambdaNode || is_proc_create(c, recv)))
     lit = recv;
-  else if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
+  else if (nt_type(nt, recv) && nt_kind(nt, recv) == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, recv, "name");
     Scope *sc = vn ? comp_scope_of(c, recv) : NULL;
     for (int w = 0; vn && w < nt->count; w++) {
@@ -232,7 +232,7 @@ int emit_op_proc_source_location(Compiler *c, const BopCtx *x, Buf *b) {
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       int is_lit = val >= 0 && nt_type(nt, val) &&
-                   (sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val));
+                   (nt_kind(nt, val) == NK_LambdaNode || is_proc_create(c, val));
       if (!is_lit || lit >= 0) { lit = -1; break; }   /* non-literal or second write */
       lit = val;
     }
@@ -1373,7 +1373,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         snprintf(blk_tmp, sizeof blk_tmp, "_t%d", tb);
       }
       free(bpv.p);
-      if (cblk >= 0 && nt_type(nt, cblk) && sp_streq(nt_type(nt, cblk), "BlockNode")) {
+      if (cblk >= 0 && nt_type(nt, cblk) && nt_kind(nt, cblk) == NK_BlockNode) {
         int tb = ++g_tmp;
         /* render the proc value first: a capturing block's emission writes its
            own prelude (capture struct fill) to g_pre, which must land as whole
@@ -1916,8 +1916,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      receiver alone, but the comparison's answer is static (#3245). */
   if (recv >= 0 && argc == 1 &&
       is_equality_name(name) &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SelfNode") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_SelfNode &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "receiver")) {
     int mrecv2 = nt_ref(nt, recv, "receiver");
     if (mrecv2 >= 0 && comp_ntype(c, mrecv2) == TY_METHOD) {
@@ -2346,7 +2346,7 @@ int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            literal active at the inline splice, so materialize THAT --
            the param's own name does not exist in the spliced context. */
         const char *_fnm = (_fwd >= 0 && nt_type(nt, _fwd) &&
-                            sp_streq(nt_type(nt, _fwd), "LocalVariableReadNode"))
+                            nt_kind(nt, _fwd) == NK_LocalVariableReadNode)
                            ? nt_str(nt, _fwd, "name") : NULL;
         if (_fnm && g_block_id >= 0 && g_block_param_name &&
             sp_streq(_fnm, g_block_param_name)) {

@@ -887,14 +887,14 @@ no_gsub_enum:
 int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Regexp.last_match -> the last MatchData ($~), or nil */
   if (recv >= 0 && argc == 0 && sp_streq(name, "last_match") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     buf_puts(b, "sp_re_last_matchdata()");
     return 1;
   }
   /* Regexp.try_convert(x) -> x if it is a Regexp, else nil */
   if (recv >= 0 && argc == 1 && sp_streq(name, "try_convert") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if (comp_ntype(c, argv[0]) == TY_REGEX) {
       buf_puts(b, "sp_box_regexp((void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
@@ -908,14 +908,14 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.timeout / Regexp.timeout= -> spinel enforces no global match timeout;
      the getter is nil and the setter is a no-op returning its argument. */
   if (recv >= 0 && (sp_streq(name, "timeout") || sp_streq(name, "timeout=")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if (argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
     if (argc == 1) { buf_puts(b, "("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1; }
   }
   /* Regexp.last_match(n) -> nth capture group string, or whole match for n=0 */
   if (recv >= 0 && argc == 1 && sp_streq(name, "last_match") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     const char *aty = nt_type(nt, argv[0]);
     if (aty && sp_streq(aty, "IntegerNode")) {
@@ -953,7 +953,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.escape / Regexp.quote -> escape special regex characters */
   if (recv >= 0 && argc == 1 &&
       (sp_streq(name, "escape") || sp_streq(name, "quote")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     Repr rar = repr_of(c, argv[0]);
     TyKind _re_at = rar.as_ty;
@@ -974,11 +974,11 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      elements. A Regexp built at run time (`Regexp.compile(s)`, a value held
      in a variable) keeps its source too, and joins by the same #to_s form. */
   if (recv >= 0 && argc >= 0 && sp_streq(name, "union") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     /* `Regexp.union([a, b])`: a lone Array argument supplies the operands. */
     const int *ops = argv; int nops = argc;
-    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))
+    if (argc == 1 && nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_ArrayNode)
       ops = nt_arr(nt, argv[0], "elements", &nops);
     /* `Regexp.union(*[a, b])`: so does a splatted literal */
     else if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode &&
@@ -1084,9 +1084,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      non-literal regexp value defaults to true (the answer for backref-free
      patterns, which is the supported domain). */
   if (recv >= 0 && argc == 1 && sp_streq(name, "linear_time?") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
+    if (nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_RegularExpressionNode)
       buf_puts(b, re_src_has_backref(nt_str(nt, argv[0], "unescaped")) ? "FALSE" : "TRUE");
     /* a pattern reached through a variable, or given as a String source, is
        inspected at run time rather than assumed linear (#3684) */
@@ -1103,7 +1103,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.compile is an alias for Regexp.new, and compiles as it does: a
      String source held boxed is read as a String, a Regexp is copied */
   if (recv >= 0 && argc >= 1 && sp_streq(name, "compile") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     emit_regexp_new(c, argc, argv, b);
     return 1;
@@ -1121,7 +1121,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
     if ((is_slice_alias(name)) && argc == 1 &&
-        nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+        nt_type(c->nt, argv[0]) && nt_kind(c->nt, argv[0]) == NK_RangeNode) {
       /* :s[a..b] / :s[a...b] over the name; a beginless/endless bound is 0 /
          the name length. The name is materialized once to avoid re-evaluating
          the receiver for an endless range. */

@@ -209,7 +209,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      method the block is the `__yblk__` proc parameter, which is non-NULL
      exactly when the caller passed a block, so test it directly. */
   if (sp_streq(name, "block_given?") &&
-      (recv < 0 || (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")))) {
+      (recv < 0 || (nt_type(nt, recv) && nt_kind(nt, recv) == NK_SelfNode))) {
     /* block_given? asks about the innermost method. An inlined yielding method
        (g_block_id >= 0) statically has a block, so fold to 1 even when the
        enclosing method is lowered; only a genuinely lowered scope inspects its
@@ -613,15 +613,15 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       Repr ar = repr_of(c, av[0]);
       TyKind at = ar.as_ty;
       int empty_arr_lit = 0;
-      if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ArrayNode")) {
+      if (nt_type(nt, av[0]) && nt_kind(nt, av[0]) == NK_ArrayNode) {
         int _en = 0; nt_arr(nt, av[0], "elements", &_en);
         empty_arr_lit = (_en == 0);
       }
       /* `{}` types as no hash variant at all, so the hash test below missed it
          and an empty Hash literal was rejected as unconvertible (#3746) */
       if (nt_type(nt, av[0]) &&
-          (sp_streq(nt_type(nt, av[0]), "HashNode") ||
-           sp_streq(nt_type(nt, av[0]), "KeywordHashNode"))) {
+          (nt_kind(nt, av[0]) == NK_HashNode ||
+           nt_kind(nt, av[0]) == NK_KeywordHashNode)) {
         int _hn = 0; nt_arr(nt, av[0], "elements", &_hn);
         if (_hn == 0) empty_arr_lit = 1;
       }
@@ -647,7 +647,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       return 1;
     }
     if ((is_format_alias(name)) && ac == 1 &&
-        nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) {
+        nt_type(nt, av[0]) && nt_kind(nt, av[0]) == NK_SplatNode) {
       /* format(*args): the array's head is the format string */
       int sfx = nt_ref(nt, av[0], "expression");
       if (sfx >= 0) {
@@ -700,8 +700,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int is_float = (lo >= 0 && repr_of(c, lo).as_ty == TY_FLOAT) || (hi >= 0 && repr_of(c, hi).as_ty == TY_FLOAT);
         /* a statically empty/reversed int range -> nil (#2519) */
         if (islit && !is_float && lo >= 0 && hi >= 0 &&
-            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
-            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
+            nt_type(nt, lo) && nt_kind(nt, lo) == NK_IntegerNode &&
+            nt_type(nt, hi) && nt_kind(nt, hi) == NK_IntegerNode) {
           long long lov = nt_int(nt, lo, "value", 0);
           long long hiv = nt_int(nt, hi, "value", 0);
           int excl = nt_range_excl(nt, av[0]);
@@ -729,7 +729,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          shape) fed an sp_int to sp_bigint_to_s_base and the C build stopped.
          Fall through to the Bignum arm below, which the 64-bit build already
          takes for a literal past int64. */
-      if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "IntegerNode") &&
+      if (nt_type(nt, av[0]) && nt_kind(nt, av[0]) == NK_IntegerNode &&
           !repr_of(c, av[0]).big) {
         long long v = nt_int(nt, av[0], "value", 0);
         if (v == 0) { buf_puts(b, "sp_krand_float()"); return 1; }
@@ -806,7 +806,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   if (sp_streq(name, "sleep") && argc <= 1 && !bare_call_class_owned(c, id) &&
       (recv < 0 ||
        (nt_type(nt, recv) &&
-        (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode")) &&
+        (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Kernel")))) {
     /* a bare sleep, and sleep(nil), sleep until Thread#wakeup */
     if (argc == 0) { buf_puts(b, "(sp_sleep_forever(), (sp_int)0)"); return 1; }
@@ -1011,7 +1011,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "caller") && argc <= 2 && !bare_call_class_owned(c, id)) {
     /* Range literal: caller(lo..hi) or caller(lo...hi) -> caller(lo, len). */
     if (argc == 1 && nt_type(c->nt, argv[0]) &&
-        sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+        nt_kind(c->nt, argv[0]) == NK_RangeNode) {
       int rid = argv[0];
       int left = nt_ref(c->nt, rid, "left");
       int right = nt_ref(c->nt, rid, "right");

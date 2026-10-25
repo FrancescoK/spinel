@@ -874,8 +874,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        element pair is incomparable. Covers every builtin array kind via the
        boxed accessor. An empty `[]` literal is TY_UNKNOWN but still an array
        (`[] <=> []` is 0) (#2984). */
-    int rlit0 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode");
-    int alit0 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode");
+    int rlit0 = nt_type(nt, recv) && nt_kind(nt, recv) == NK_ArrayNode;
+    int alit0 = nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_ArrayNode;
     if ((ty_is_array(lrt) || (rlit0 && lrt == TY_UNKNOWN)) &&
         (ty_is_array(lat) || (alit0 && latr.untyped))) {
       int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr = ++g_tmp;
@@ -1190,10 +1190,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     {
       TyKind h_rt = rt, h_a0 = repr_of(c, argv[0]).as_ty;
       if (h_rt == TY_UNKNOWN && nt_type(nt, recv) &&
-          (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")) &&
+          (nt_kind(nt, recv) == NK_HashNode || nt_kind(nt, recv) == NK_KeywordHashNode) &&
           ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) h_rt = TY_STR_POLY_HASH;
       if (h_a0 == TY_UNKNOWN && nt_type(nt, argv[0]) &&
-          (sp_streq(nt_type(nt, argv[0]), "HashNode") || sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) &&
+          (nt_kind(nt, argv[0]) == NK_HashNode || nt_kind(nt, argv[0]) == NK_KeywordHashNode) &&
           ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; })) h_a0 = TY_STR_POLY_HASH;
       if (ty_is_hash(h_rt) && argc == 1 && ty_is_hash(h_a0)) {
         int strict = sp_streq(name, "<") || sp_streq(name, ">");
@@ -1223,7 +1223,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (rvt && sp_streq(rvt, "CallNode") && nt_str(nt, recv, "name") &&
                sp_streq(nt_str(nt, recv, "name"), "new")) {
         int rr = nt_ref(nt, recv, "receiver");
-        if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "ConstantReadNode") &&
+        if (rr >= 0 && nt_type(nt, rr) && nt_kind(nt, rr) == NK_ConstantReadNode &&
             nt_str(nt, rr, "name") && sp_streq(nt_str(nt, rr, "name"), "Array")) eff_rt = TY_POLY_ARRAY;
       }
     }
@@ -1269,7 +1269,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
       is_kind_query(name) && !kind_query_to_dispatch(c, id, name, rt) &&
       (repr_of(c, argv[0]).as_ty == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
-      !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
+      !(nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_ConstantReadNode)) {
     int t = ++g_tmp, k = ++g_tmp;
     /* the call typed as a box (a program class's own kind query may answer
        other than true or false, #8653): the bool answer boxed for it */
@@ -1434,7 +1434,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* A statically-typed user object is_a? the universal ancestors */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
       (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"))) {
-    const char *acn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
+    const char *acn = nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_ConstantReadNode
                         ? nt_str(nt, argv[0], "name") : NULL;
     if (acn && is_object_root(acn)) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
@@ -1680,8 +1680,8 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   int aset_held = aset_route && ran_first_handle(recv) >= 0;
   if (recv >= 0 && sp_streq(name, "[]=") && (argc == 2 || argc == 3) &&
       ((repr_of(c, recv).as_ty == TY_STRING &&
-        nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
-                              sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) ||
+        nt_type(nt, recv) && (nt_kind(nt, recv) == NK_LocalVariableReadNode ||
+                              nt_kind(nt, recv) == NK_InstanceVariableReadNode)) ||
        (repr_of(c, recv).as_ty == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode) || aset_route ||
        /* or the shadow a shim reads it as (emit_held_self_answer_shim) */
        sb_held_shadow(recv))) {

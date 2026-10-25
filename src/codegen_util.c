@@ -1152,7 +1152,7 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
      rule emit_boxed applies (#4495), so the two agree on the type of one
      node, a level further out for each tail that is a yield again. That
      tail's own cache is the union over every expansion. */
-  for (int k = 1; nt_type(c->nt, tail) && sp_streq(nt_type(c->nt, tail), "YieldNode") &&
+  for (int k = 1; nt_type(c->nt, tail) && nt_kind(c->nt, tail) == NK_YieldNode &&
                   yield_block_out(k) >= 0; k++) {
     int fbody = nt_ref(c->nt, yield_block_out(k), "body");
     int fn = 0; const int *fb = fbody >= 0 ? nt_arr(c->nt, fbody, "body", &fn) : NULL;
@@ -1674,10 +1674,10 @@ int re_lit_node(Compiler *c, int nid) {
     const char *kn = nt_str(nt, k, "name");
     if (!kn || !sp_streq(kn, nm)) continue;
     int v = nt_ref(nt, k, "value");
-    if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
+    if (v >= 0 && nt_type(nt, v) && nt_kind(nt, v) == NK_CallNode &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze"))
       v = nt_ref(nt, v, "receiver");
-    if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "RegularExpressionNode")) found = v;
+    if (v >= 0 && nt_type(nt, v) && nt_kind(nt, v) == NK_RegularExpressionNode) found = v;
   }
   cg_memo_put(&memo, nm, tag, found);
   return found;
@@ -7090,9 +7090,9 @@ int struct_kwarg_value(Compiler *c, int kwh, const char *name) {
   int n = 0;
   const int *els = nt_arr(nt, kwh, "elements", &n);
   for (int i = 0; i < n; i++) {
-    if (!nt_type(nt, els[i]) || !sp_streq(nt_type(nt, els[i]), "AssocNode")) continue;
+    if (!nt_type(nt, els[i]) || nt_kind(nt, els[i]) != NK_AssocNode) continue;
     int key = nt_ref(nt, els[i], "key");
-    if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")) {
+    if (key >= 0 && nt_type(nt, key) && nt_kind(nt, key) == NK_SymbolNode) {
       const char *kn = nt_str(nt, key, "value");
       if (kn && sp_streq(kn, name)) return nt_ref(nt, els[i], "value");
     }

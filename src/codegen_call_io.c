@@ -1534,7 +1534,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else {
           const char *sbp = NULL;
           if (argc >= 2 && nt_type(nt, argv[1]) &&
-              sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode"))
+              nt_kind(nt, argv[1]) == NK_LocalVariableReadNode)
             sbp = nt_str(nt, argv[1], "name");
           int tsp = ++g_tmp;
           if (argc >= 2) {
@@ -1731,7 +1731,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_printf(b, "((void)sp_file_chown(sp_File_path(%s), ", r);
       for (int ci = 0; ci < 2; ci++) {
         if (ci) buf_puts(b, ", ");
-        if (nt_type(nt, argv[ci]) && sp_streq(nt_type(nt, argv[ci]), "NilNode")) buf_puts(b, "-1LL");
+        if (nt_type(nt, argv[ci]) && nt_kind(nt, argv[ci]) == NK_NilNode) buf_puts(b, "-1LL");
         else emit_int_expr(c, argv[ci], b);
       }
       buf_puts(b, "), (sp_int)0)");
@@ -1868,7 +1868,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (argc > 2) emit_io_read_overcount(c, name, r, argv, argc, "0..2", b);
       else if (argc == 2 && emit_io_read_outbuf(c, id, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
       else if (argc >= 2 && nt_type(nt, argv[1]) &&
-               sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
+               nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
         /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
         const char *bnm = nt_str(nt, argv[1], "name");
         int trd = ++g_tmp;
@@ -1917,7 +1917,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          plain local, rebind it to the read result (#3131) */
       const char *bufn = NULL;
       if (argc >= 3 && nt_type(nt, argv[2]) &&
-          sp_streq(nt_type(nt, argv[2]), "LocalVariableReadNode"))
+          nt_kind(nt, argv[2]) == NK_LocalVariableReadNode)
         bufn = nt_str(nt, argv[2], "name");
       int tpr = ++g_tmp;
       if (bufn) {
@@ -2034,7 +2034,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          and `r.equal?(b)` holds (#3336). A frozen buffer raises first. */
       const char *sbn = NULL;
       if (argc >= 2 && nt_type(nt, argv[1]) &&
-          sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode"))
+          nt_kind(nt, argv[1]) == NK_LocalVariableReadNode)
         sbn = nt_str(nt, argv[1], "name");
       int tsr = ++g_tmp;
       if (argc >= 2) {
