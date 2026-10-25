@@ -25,6 +25,7 @@
 #include "repr.h"
 #include "share.h"
 #include "csplit.h"
+#include "unit_cache.h"
 #include "decide.h"
 
 #include <stdio.h>
@@ -37,6 +38,8 @@
 #endif
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <dirent.h>
 #include "timing.h"
 
 extern int g_no_root_elision;
@@ -653,6 +656,64 @@ static int incremental_begin(int stdout_mode, int print_build, int emit_rbs, int
   return 0;
 }
 
+static int dir_is_empty(const char *dir) {
+  DIR *d = opendir(dir);
+  if (!d) return 0;
+  struct dirent *e;
+  int empty = 1;
+  while (empty && (e = readdir(d)) != NULL)
+    empty = strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0;
+  closedir(d);
+  return empty;
+}
+
+/* -c --incremental writes a directory, and refuse_overwrite's care applies
+   to it: a regular file there, or a directory holding something other than
+   a previous unit set (no units.txt), is not written into without --force.
+   A missing directory is created, one level. 1: refused (said why). */
+static int units_dir_refused(const char *dir) {
+  struct stat st;
+  int exists = stat(dir, &st) == 0, ours = 1;
+  if (exists && !S_ISDIR(st.st_mode)) ours = 0;
+  else if (exists) {
+    char m[4200];
+    snprintf(m, sizeof m, "%s/units.txt", dir);
+    struct stat ms;
+    ours = stat(m, &ms) == 0 || dir_is_empty(dir);
+  }
+  if (!ours && !g_force_overwrite) {
+    fprintf(stderr,
+            "spinel: refusing to overwrite '%s': it is not spinel's output.\n"
+            "spinel:   writing the unit set there would mix it with what is in\n"
+            "spinel:   it. Choose another -o path, or pass --force if you mean\n"
+            "spinel:   to replace it.\n", dir);
+    return 1;
+  }
+  if (exists && !S_ISDIR(st.st_mode)) { remove(dir); exists = 0; }
+  if (!exists && mkdir(dir, 0777) != 0) {
+    fprintf(stderr, "spinel: cannot create %s: %s\n", dir, strerror(errno));
+    return 1;
+  }
+  return 0;
+}
+
+/* -c --incremental: the generated C went to a temp path and the cc command
+   was assembled as for a build, so that the units are preprocessed with the
+   build's own flags; the unit set is written to -o DIR (default
+   <basename>.units) instead of compiling. main's exit status. */
+static int incremental_write_dir(const char *cmd, size_t src_at, size_t src_end, const char *c_path,
+                                 const char *output, const char *basename, int want_g, const char *cc_cmd) {
+  char dir[4096];
+  snprintf(dir, sizeof dir, "%s%s", output ? output : basename, output ? "" : ".units");
+  int rc = units_dir_refused(dir);
+  if (!rc) {
+    IncrementalOpts o = { inc_flags.unit_bytes, inc_flags.cache_stats, want_g, cc_cmd, dir };
+    rc = cc_incremental_build(cmd, src_at, src_end, c_path, 0, &o) != 0;
+  }
+  remove(c_path);
+  return rc;
+}
+
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -1138,7 +1199,7 @@ int main(int argc, char **argv) {
   /* Decide where the generated C goes. */
   char c_path[4096];
   int c_is_temp = 0;
-  if (c_only) {
+  if (c_only && !inc_flags.on) {
     snprintf(c_path, sizeof c_path, "%s", output ? output : basename);
     if (!output) strncat(c_path, ".c", sizeof c_path - strlen(c_path) - 1);
   }
@@ -1146,12 +1207,12 @@ int main(int argc, char **argv) {
     make_temp_path(c_path, sizeof c_path, "out", 0, ".c");
     c_is_temp = 1;
   }
-  if (c_only && refuse_overwrite(c_path)) { free(csrc); return 1; }
+  if (c_only && !inc_flags.on && refuse_overwrite(c_path)) { free(csrc); return 1; }
   double tm_wr = sp_timing_now();
   if (!write_text_file(c_path, csrc)) { free(csrc); return 1; }
   sp_timing_end(tm_wr, "write_c", "");
 
-  if (c_only) {
+  if (c_only && !inc_flags.on) {
     /* With --print-build as well, the C is written and the ingredient report
        follows from this same run: `spin pack` used to invoke the compiler
        twice, once for the C and once for the report, and the second run
@@ -1567,6 +1628,8 @@ int main(int argc, char **argv) {
   }
   free(bi.p);
   int cc_rc = -1;
+  /* -c --incremental: the unit set is the output; nothing is compiled */
+  if (c_only && inc_flags.on) { cc_rc = incremental_write_dir(cmd.p, cc_src_at, cc_src_end, c_path, output, basename, want_g, cc_cmd); free(cmd.p); return cc_rc; }
   double tm_ccall = sp_timing_now();
   /* Unasked, only a large unit is split: a part cannot inline what another
      part defines, which cost optcarrot's 0.6 MB unit ~10% of its speed, and

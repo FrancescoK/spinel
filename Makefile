@@ -308,6 +308,9 @@ SPINEL_OBJ  += build/csrc/decide.o
 # --incremental: the hashes that name a unit and key its cached object.
 SPINEL_HDRS += src/sha256.h
 SPINEL_OBJ  += build/csrc/sha256.o
+# --incremental's native step: preprocess, split into units, build.
+SPINEL_HDRS += src/unit_cache.h
+SPINEL_OBJ  += build/csrc/unit_cache.o
 
 build/csrc:
 	@mkdir -p build/csrc
