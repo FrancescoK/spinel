@@ -31,7 +31,6 @@ with the reason:
 | `warn`, `abort` | `super("#{program_name}: #{mesg}")` | write the line to `$stderr`; `abort` then raises `SystemExit` | `super` did not reach `Kernel#warn` and `Kernel#abort` (NoMethodError) |
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
 | top of the file | nothing: CRuby loads did_you_mean before the program | `require 'did_you_mean'` | an invalid or ambiguous option names the switches it could have meant |
-| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [String.new(sopts.join(', '))]` | the String is changed in place through the Array: refused under `--share-strings`, and in the default build the change is lost once the program uses `Set` |
 | `Switch#compsys` | `desc.join("")` | `desc.join("").dup` | refused under `--share-strings`: the String is handed on and could change in place |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
