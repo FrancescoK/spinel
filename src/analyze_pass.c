@@ -7382,9 +7382,9 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
      run time knows (a dispatch over the classes with a method of the name):
      the arrays each method of the name answers, or the method an alias of
      the name runs, widen where they are built (the builtin's own answer is
-     widened at the push, an_push_lifts_boxed). Every body is one the
-     dispatch can run, a method a subclass overrides too: an instance of the
-     class itself runs it. */
+     boxed as the general Array by its arm, an_push_lifts_boxed). Every body
+     is one the dispatch can run, a method a subclass overrides too: an
+     instance of the class itself runs it. */
   TyKind crt = r >= 0 ? infer_type(c, r) : TY_UNKNOWN;
   if (r < 0 || !(crt == TY_POLY || crt == TY_CLASS || ty_is_object(crt))) return 0;
   int ch = 0;

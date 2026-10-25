@@ -149,3 +149,19 @@ def counted_version(x)
 end
 
 p counted_version("V7_1"), counted_version(Counted.new)
+
+# Another class's method of the name answers a box (a `catch` block's
+# value); the builtin's Array beside it still widens, where the builtin
+# builds it.
+class Walker
+  def scan(item, &block)
+    catch(:skip) do
+      yield item
+      item.each { |c| scan(c, &block) } if item.is_a?(Array)
+    end
+  end
+end
+
+seen = []
+Walker.new.scan([1, [2]]) { |i| seen << i }
+p seen.size, version_of("V5_6"), version_of(Label.new)
