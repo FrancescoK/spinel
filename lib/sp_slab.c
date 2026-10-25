@@ -390,10 +390,17 @@ static void sp_slab_init(void) {
   for (int k = 0; k < SP_SLAB_NCLS; k++) {
     unsigned cs = sp_slab_csize[k];
     sp_slab_nslots_of[k] = (uint16_t)(SP_SLAB_CHUNK / cs);
-    /* the smallest reciprocal that divides every in-chunk offset exactly */
+    /* the smallest reciprocal that divides every in-chunk offset exactly.
+       r * cs is 2^32 + e with e < cs, so off * r >> 32 is off / cs plus
+       (rem + off * e / 2^32) / cs, exact while off * e < 2^32: true of the
+       chunk's last offset is true of all. Only a class it fails for walks
+       the offsets, which for every class was most of a small program's
+       run (a third of a million instructions at startup) */
     uint32_t r = (uint32_t)((((uint64_t)1 << 32) + cs - 1) / cs);
-    for (unsigned off = 0; off < SP_SLAB_CHUNK; off += 16)
-      if ((unsigned)(((uint64_t)off * r) >> 32) != off / cs) { r = 0; break; }
+    uint64_t e = (uint64_t)r * cs - ((uint64_t)1 << 32);
+    if ((uint64_t)(SP_SLAB_CHUNK - 16) * e >= ((uint64_t)1 << 32))
+      for (unsigned off = 0; off < SP_SLAB_CHUNK; off += 16)
+        if ((unsigned)(((uint64_t)off * r) >> 32) != off / cs) { r = 0; break; }
     sp_slab_recip[k] = r;   /* 0: divide (never, checked here) */
   }
 }
