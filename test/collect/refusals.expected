@@ -1784,6 +1784,12 @@ spinel: 1 refusal, nothing written
 == test/reject/unresolved_builtin_method.rb [promote] rc=1
 spinel: test/reject/unresolved_builtin_method.rb:7: unsupported Hash#transform_values on a value typed as Hash, a call no route of the compiler took (CRuby calls the method; this would raise NoMethodError): node N (CallNode `transform_values`) recv=LocalVariableReadNode/ty28 argc=0
 spinel: 1 refusal, nothing written
+== test/reject/unresolved_builtin_method_sym_block.rb [default] rc=1
+spinel: test/reject/unresolved_builtin_method_sym_block.rb:17: unsupported Array#drop_while on a value typed as Array, a call no route of the compiler took (CRuby calls the method; this would raise NoMethodError): node N (CallNode `drop_while`) recv=CallNode/ty22 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/unresolved_builtin_method_sym_block.rb [promote] rc=1
+spinel: test/reject/unresolved_builtin_method_sym_block.rb:17: unsupported Array#drop_while on a value typed as Array, a call no route of the compiler took (CRuby calls the method; this would raise NoMethodError): node N (CallNode `drop_while`) recv=CallNode/ty22 argc=0
+spinel: 1 refusal, nothing written
 == test/reject/unsupported_node_kind.rb [default] rc=1
 spinel: test/reject/unsupported_node_kind.rb:5: unsupported condition (non-bool): FlipFlopNode at test/reject/unsupported_node_kind.rb:5:8
 spinel: test/reject/unsupported_node_kind.rb:10: unsupported condition (non-bool): MatchLastLineNode at test/reject/unsupported_node_kind.rb:10:8
