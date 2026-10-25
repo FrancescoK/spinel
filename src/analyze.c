@@ -37878,6 +37878,12 @@ static int sg_civ_reader_call(Compiler *c, int v) {
   return ivi >= 0 && (cls->ivar_types[ivi] == TY_INT || cls->ivar_types[ivi] == TY_FLOAT);
 }
 
+/* a value position of nullable_int_value's conditional: an absent arm is
+   nil, and a walk that gave up may be */
+static int nullable_int_leaf(const VpLeaf *leaf, void *ud) {
+  if (leaf->kind == VPK_NIL || leaf->kind == VPK_GAVE_UP) return 1;
+  return nullable_int_value(ud, leaf->node);
+}
 int nullable_int_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0) return 0;
@@ -37902,40 +37908,14 @@ int nullable_int_value(Compiler *c, int v) {
      can. A ternary, an `if`/`unless` or `case` used as an expression, a
      begin/rescue and `a || b` all reach a Hash key this way (#3505). An arm
      that is absent yields nil, which an int slot holds as its nil. */
-  if (nt_kind(nt, v) == NK_StatementsNode) {
-    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
-    return st && n > 0 ? nullable_int_value(c, st[n - 1]) : 1;   /* an empty body is nil */
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode:
+    return for_each_value_position(nt, v, VP_BEGIN_BOTH | VP_CASE_IN_RAISE_NIL | VPS_IF | VPS_UNLESS | VPS_CASE |
+                                   VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD, nullable_int_leaf, c);
+  default:
+    break;
   }
-  if (nt_kind(nt, v) == NK_ElseNode) {
-    int es = nt_ref(nt, v, "statements");
-    return es < 0 || nullable_int_value(c, es);
-  }
-  if (nt_kind(nt, v) == NK_IfNode || nt_kind(nt, v) == NK_UnlessNode) {
-    int ts = nt_ref(nt, v, "statements");
-    if (ts < 0 || nullable_int_value(c, ts)) return 1;   /* an empty arm is nil */
-    int els = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-    return els >= 0 ? nullable_int_value(c, els) : 1;
-  }
-  if (nt_kind(nt, v) == NK_CaseNode || nt_kind(nt, v) == NK_CaseMatchNode) {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; w < nw; w++) {
-      int ws = nt_ref(nt, whens[w], "statements");
-      if (ws < 0 || nullable_int_value(c, ws)) return 1;   /* an empty arm is nil */
-    }
-    int els = nt_ref(nt, v, "else_clause");
-    return els >= 0 ? nullable_int_value(c, els) : 1;
-  }
-  if (nt_kind(nt, v) == NK_BeginNode) {
-    if (nullable_int_value(c, nt_ref(nt, v, "statements"))) return 1;
-    for (int rs = nt_ref(nt, v, "rescue_clause"); rs >= 0; rs = nt_ref(nt, rs, "subsequent"))
-      if (nullable_int_value(c, nt_ref(nt, rs, "statements"))) return 1;
-    int els = nt_ref(nt, v, "else_clause");
-    /* an else with no statements answers nil */
-    return els >= 0 && (nt_ref(nt, els, "statements") < 0 || nullable_int_value(c, nt_ref(nt, els, "statements")));
-  }
-  if (nt_kind(nt, v) == NK_RescueModifierNode)
-    return nullable_int_value(c, nt_ref(nt, v, "expression")) ||
-           nullable_int_value(c, nt_ref(nt, v, "rescue_expression"));
   /* `a && b` / `a || b` answers one of its operands: nil where one is nil
      (`nil && 2`, `false || nil`), not only where one is a number that can be */
   if (nt_kind(nt, v) == NK_OrNode || nt_kind(nt, v) == NK_AndNode) {
