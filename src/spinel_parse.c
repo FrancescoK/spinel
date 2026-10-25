@@ -4190,6 +4190,12 @@ static void sp_req_edit_put(SpReqEdit *e, const char *str, size_t kw, size_t ple
   st->quote = '"';
 }
 
+/* Only blanks and `;`, then the line's end or a comment, from `p` on. */
+static int sp_req_rest_is_blank(const char *p) {
+  while (*p == ' ' || *p == '\t' || *p == ';') p++;
+  return !*p || *p == '\n' || *p == '\r' || *p == '#';
+}
+
 /* A `%w(...).each` loop whose body is one computed require, every word of
    it naming a file: unrolled. */
 static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
@@ -4209,11 +4215,28 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
       PM_NODE_TYPE(((const pm_statements_node_t *)blk->body)->body.nodes[0]) != PM_CALL_NODE) return 0;
   const pm_call_node_t *req = (const pm_call_node_t *)((const pm_statements_node_t *)blk->body)->body.nodes[0];
   /* a statement, or the receiver of a call that is one (`end.size`): the
-     lines through `end` are what the loop is unrolled into */
+     lines through `end` are what the loop is unrolled into, so that call
+     takes no arguments or block, and nothing but a comment follows the
+     statement on its last line (`end.size; X = 1` would lose `X = 1`). An
+     `if`/`unless` modifier and its condition are part of that statement,
+     and stay what the unrolling does with them (they are not kept). */
   const pm_node_t *parent = s->depth ? s->stack[s->depth - 1] : NULL;
+  const char *fin = (const char *)c->base.location.end;
+  int gi = s->depth - 2, mod = 0;
   if (parent && PM_NODE_TYPE(parent) == PM_CALL_NODE && ((const pm_call_node_t *)parent)->receiver == (const pm_node_t *)c &&
-      s->depth > 1) parent = s->stack[s->depth - 2];
+      s->depth > 1) {
+    const pm_call_node_t *outer = (const pm_call_node_t *)parent;
+    if (outer->arguments || outer->block) return 0;
+    fin = (const char *)outer->base.location.end;
+    parent = s->stack[s->depth - 2];
+    gi = s->depth - 3;
+  }
   if (!parent || PM_NODE_TYPE(parent) != PM_STATEMENTS_NODE) return 0;
+  if (gi >= 0 && sp_node_is_modifier(s->stack[gi]) &&
+      (PM_NODE_TYPE(s->stack[gi]) == PM_IF_NODE || PM_NODE_TYPE(s->stack[gi]) == PM_UNLESS_NODE)) {
+    fin = (const char *)s->stack[gi]->location.end;
+    mod = 1;   /* its condition may go on past the line, the lines it leaves are harmless */
+  }
   size_t w = (size_t)((const char *)c->base.location.start - t), p = sp_line_start_of(t, w);
   for (size_t i = p; i < w; i++) if (t[i] != ' ' && t[i] != '\t') return 0;
   const char *pclose = (const char *)((const pm_block_parameters_node_t *)blk->parameters)->closing_loc.end;
@@ -4226,6 +4249,7 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
     if ((const char *)blk->closing_loc.start > line_end) return 0;
     lo = pclose; hi = (const char *)blk->closing_loc.start;
     after = *line_end ? (size_t)(line_end - t) + 1 : (size_t)(line_end - t);
+    if ((fin > line_end && !mod) || !sp_req_rest_is_blank(fin)) return 0;
   }
   else {                                    /* the do line, the require's line, the end line */
     lo = line_end + 1;
@@ -4237,6 +4261,7 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
     if (ek < el || ek > ee) return 0;
     for (const char *q = el; q < ek; q++) if (*q != ' ' && *q != '\t') return 0;
     after = *ee ? (size_t)(ee - t) + 1 : (size_t)(ee - t);
+    if ((fin > ee && !mod) || !sp_req_rest_is_blank(fin)) return 0;
   }
   char var[64], joined[512];
   const pm_constant_t *vn = pm_constant_pool_id_to_constant(&s->parser->constant_pool,
