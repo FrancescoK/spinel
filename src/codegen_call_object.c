@@ -450,7 +450,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      any) never runs, so empty all?/none? are true, any?/one? false */
   if (recv >= 0 && (argc == 0 || argc == 1) &&
       is_quantifier_or_count(name) &&
-      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ArrayNode &&
+      nt_kind(nt, recv) == NK_ArrayNode &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (sp_streq(name, "count")) { buf_puts(b, "0"); return 1; }
     buf_puts(b, (sp_streq(name, "all?") || sp_streq(name, "none?")) ? "1" : "0");
@@ -459,7 +459,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* nil?/empty? on an empty array literal fold to constants (an Array is never
      nil; an empty one is empty). The `[]` literal has no side effects. */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "empty?")) &&
-      nt_type(nt, recv) && nt_kind(nt, recv) == NK_ArrayNode &&
+      nt_kind(nt, recv) == NK_ArrayNode &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     buf_puts(b, sp_streq(name, "empty?") ? "1" : "0");
     return 1;
@@ -630,7 +630,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     Repr nrr = repr_of(c, recv);
     TyKind nrt = nrr.as_ty;
     if (nrr.kind == RK_BOXED) nblk = resolve_forwarded_block(c, nblk);
-    if (!ty_is_object(nrt) && nblk >= 0 && nt_type(nt, nblk) &&
+    if (!ty_is_object(nrt) && nblk >= 0 &&
         nt_kind(nt, nblk) == NK_BlockNode) {
       int nexec = sp_streq(name, "instance_exec");
       int nbp = nt_ref(nt, nblk, "parameters");
@@ -1418,11 +1418,11 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        0 = false, 1 = true. Only a single `freeze:` keyword arg is accepted. */
     int freeze_mode = -1, dkw_ok = (dargc == 0);
     if (dargc == 1 && dargv && sp_streq(name, "clone") &&
-        nt_type(nt, dargv[0]) && nt_kind(nt, dargv[0]) == NK_KeywordHashNode) {
+        nt_kind(nt, dargv[0]) == NK_KeywordHashNode) {
       int kn = 0; const int *kel = nt_arr(nt, dargv[0], "elements", &kn);
-      if (kn == 1 && nt_type(nt, kel[0]) && nt_kind(nt, kel[0]) == NK_AssocNode) {
+      if (kn == 1 && nt_kind(nt, kel[0]) == NK_AssocNode) {
         int kk = nt_ref(nt, kel[0], "key"), kv = nt_ref(nt, kel[0], "value");
-        if (kk >= 0 && nt_type(nt, kk) && nt_kind(nt, kk) == NK_SymbolNode &&
+        if (kk >= 0 && nt_kind(nt, kk) == NK_SymbolNode &&
             nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "freeze") && kv >= 0) {
           const char *kvt = nt_type(nt, kv);
           if (kvt && sp_streq(kvt, "TrueNode"))  { freeze_mode = 1; dkw_ok = 1; }
@@ -1649,7 +1649,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          recv_t == TY_RATIONAL || recv_t == TY_COMPLEX || recv_t == TY_BIGINT)) {
       int dargs2 = nt_ref(nt, id, "arguments");
       int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;
-      if (dn2 == 1 && nt_type(nt, dv2[0]) && nt_kind(nt, dv2[0]) == NK_KeywordHashNode) {
+      if (dn2 == 1 && nt_kind(nt, dv2[0]) == NK_KeywordHashNode) {
         /* clone(freeze: false) on an always-frozen immediate can't produce an
            unfrozen copy: CRuby raises ArgumentError. freeze: true / nil (and a
            non-immediate like Range) return the value. (#2597) */
@@ -1682,7 +1682,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (argc0 == 1 && is_dup_clone && is_clone_name(name) && recv_tr.kind == RK_BOXED) {
       int cargs = nt_ref(nt, id, "arguments");
       int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
-      if (cn == 1 && cv && nt_type(nt, cv[0]) && nt_kind(nt, cv[0]) == NK_KeywordHashNode) {
+      if (cn == 1 && cv && nt_kind(nt, cv[0]) == NK_KeywordHashNode) {
         int fval = kwh_lookup(nt, cv[0], "freeze");
         const char *fvt = fval >= 0 ? nt_type(nt, fval) : NULL;
         if (fvt && (sp_streq(fvt, "FalseNode") || sp_streq(fvt, "TrueNode") || sp_streq(fvt, "NilNode"))) {
@@ -2927,9 +2927,9 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* clone(freeze: false) on an immediate: CRuby's ArgumentError */
     if (nm0 && sp_streq(nm0, "clone") && ac0 == 1 &&
         (rt0 == TY_BOOL || rt0 == TY_NIL || rt0 == TY_INT || rt0 == TY_SYMBOL || rt0 == TY_FLOAT) &&
-        nt_type(nt, av0[0]) && nt_kind(nt, av0[0]) == NK_KeywordHashNode) {
+        nt_kind(nt, av0[0]) == NK_KeywordHashNode) {
       int fv = struct_kwarg_value(c, av0[0], "freeze");
-      if (fv >= 0 && nt_type(nt, fv) && nt_kind(nt, fv) == NK_FalseNode) {
+      if (fv >= 0 && nt_kind(nt, fv) == NK_FalseNode) {
         const char *icn = rt0 == TY_NIL ? "NilClass" : rt0 == TY_INT ? "Integer"
                         : rt0 == TY_SYMBOL ? "Symbol" : rt0 == TY_FLOAT ? "Float" : NULL;
         if (icn) {
@@ -2955,7 +2955,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
 /* printing a value: $stderr.puts / print, and to_s / inspect / nil? on an object no arm above answered */
 int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* $stderr.puts / $stderr.print: emit to stderr */
-  if (recv >= 0 && argc >= 0 && nt_type(nt, recv) &&
+  if (recv >= 0 && argc >= 0 &&
       nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
     const char *gvnm = nt_str(nt, recv, "name");
     /* a stream slot that can hold a non-IO reads boxed: its call goes

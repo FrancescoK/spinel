@@ -1029,7 +1029,7 @@ int loop_has_valued_break(Compiler *c, int root) {
    must be emitted as a statement, not assigned to the result temp. */
 static int node_is_raise(Compiler *c, int nd) {
   const NodeTable *nt = c->nt;
-  if (nd < 0 || !nt_type(nt, nd) || nt_kind(nt, nd) != NK_CallNode) return 0;
+  if (nd < 0 || nt_kind(nt, nd) != NK_CallNode) return 0;
   if (nt_ref(nt, nd, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, nd, "name");
   return nm && (is_raise_alias(nm));
@@ -4140,7 +4140,7 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
           emit_indent(g_pre, g_indent);
           if (ir.range == TY_INT || ir.range == TY_STRING) {
             /* check if it's a string range (bounds are TY_STRING) */
-            int rn = nt_type(nt, inner) && nt_kind(nt, inner) == NK_RangeNode ? inner : -1;
+            int rn = nt_kind(nt, inner) == NK_RangeNode ? inner : -1;
             int rlo = rn >= 0 ? nt_ref(nt, rn, "left") : -1;
             int rhi = rn >= 0 ? nt_ref(nt, rn, "right") : -1;
             /* the runtime tests the argument for truth; it has always been given Prism's bit */
@@ -4237,7 +4237,7 @@ else {
         const char *ep = el.p ? el.p : "NULL";
         emit_indent(g_pre, g_indent);
         if (ir.range == TY_INT || ir.range == TY_STRING) {
-          int rn2 = nt_type(nt, inner) && nt_kind(nt, inner) == NK_RangeNode ? inner : -1;
+          int rn2 = nt_kind(nt, inner) == NK_RangeNode ? inner : -1;
           int rlo2 = rn2 >= 0 ? nt_ref(nt, rn2, "left") : -1;
           /* the argument is Prism's bit, as above */
           int rexcl2 = nt_range_excl(nt, rn2) ? NT_RANGE_EXCLUDE_END : 0;
@@ -4439,7 +4439,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
   int tn = 0;
   const int *tb = then_b >= 0 ? nt_arr(nt, then_b, "body", &tn) : NULL;
   int else_stmts = -1;
-  if (sub >= 0 && nt_type(nt, sub) && nt_kind(nt, sub) == NK_ElseNode)
+  if (sub >= 0 && nt_kind(nt, sub) == NK_ElseNode)
     else_stmts = nt_ref(nt, sub, "statements");
   int en = 0;
   const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
@@ -4465,7 +4465,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
     }
     if (known >= 0) {
       int take_then = is_unless ? !known : known;
-      if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&
+      if (!take_then && !is_unless && sub >= 0 &&
           nt_kind(nt, sub) == NK_IfNode) {
         emit_expr(c, sub, b);  /* the elsif chain continues as the value */
         return 1;
@@ -5024,7 +5024,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        sp_Class slot). Control never reaches the assignment, so treat it as
        diverging and emit it for effect alone. (#3021) */
     if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt && !(hdem && et == TY_STRING) &&
-        !ty_is_numeric(rt) && nt_type(nt, e) && nt_kind(nt, e) == NK_CallNode)
+        !ty_is_numeric(rt) && nt_kind(nt, e) == NK_CallNode)
       e_diverges = 1;
     buf_puts(b, "  ");
     /* the expression arm's own preludes (an inline-spliced body, a rooted
@@ -5245,8 +5245,8 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
   /* (:a..:e): a poly array of boxed symbols, walked by name succession
      (interning through the generated TU's own table) */
   if (left >= 0 && right >= 0 &&
-      nt_type(nt, left) && nt_kind(nt, left) == NK_SymbolNode &&
-      nt_type(nt, right) && nt_kind(nt, right) == NK_SymbolNode) {
+      nt_kind(nt, left) == NK_SymbolNode &&
+      nt_kind(nt, right) == NK_SymbolNode) {
     int ta = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                   " const char *_t%d = sp_sym_to_s(", ta, ta, ts);
@@ -5448,7 +5448,7 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
      parameter is UB, which is where the arbitrary integer came from. Both
      spellings take the unbounded sentinel (#3670). */
   int left_unbounded = left < 0 ||
-      (nt_type(nt, left) && nt_kind(nt, left) == NK_NilNode) ||
+      (nt_kind(nt, left) == NK_NilNode) ||
       lazy_endpoint_is_infinite(c, left);
   /* `-Float::INFINITY` is the negation call around the constant */
   if (!left_unbounded && left >= 0 && nt_kind(nt, left) == NK_CallNode &&
@@ -5456,7 +5456,7 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
       lazy_endpoint_is_infinite(c, nt_ref(nt, left, "receiver")))
     left_unbounded = 1;
   int right_unbounded = right < 0 ||
-      (nt_type(nt, right) && nt_kind(nt, right) == NK_NilNode) ||
+      (nt_kind(nt, right) == NK_NilNode) ||
       lazy_endpoint_is_infinite(c, right);
   /* A Float end over an Integer begin, (1..2.5), or a boxed end that may be
      one: the Range walks from the Integer as CRuby does and keeps the end

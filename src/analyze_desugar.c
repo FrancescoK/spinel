@@ -921,7 +921,7 @@ static int me_is_own(const NodeTable *nt, int e, const char *own, int depth) {
     if (take_then) arm = nt_ref(nt, e, "statements");
     else {
       int sub = nt_ref(nt, e, k == NK_IfNode ? "subsequent" : "else_clause");
-      if (sub >= 0 && nt_type(nt, sub) && nt_kind(nt, sub) == NK_ElseNode) arm = nt_ref(nt, sub, "statements");
+      if (sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) arm = nt_ref(nt, sub, "statements");
       else arm = sub;
     }
     if (arm < 0) return 0;
@@ -4024,7 +4024,7 @@ int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "public_method")) continue;
     if (!method_sym_arg(c, id)) continue;   /* literal symbol/string arg only */
@@ -4092,7 +4092,7 @@ int desugar_enumerable_chain(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     if (!nm || recv < 0) continue;
@@ -4237,7 +4237,7 @@ int desugar_implicit_send(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;        /* implicit self only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !is_send_family(nm)) continue;
@@ -4319,7 +4319,7 @@ int desugar_public_send_recv(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") < 0) continue;          /* explicit receiver only */
     const char *nm = nt_str(nt, id, "name");
     /* Also handle send/__send__ here, but ONLY when they target another
@@ -4597,7 +4597,7 @@ int desugar_step_kwargs(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "step")) continue;
     if (nt_ref(nt, id, "receiver") < 0) continue;         /* Numeric#step has a receiver */
@@ -4606,13 +4606,13 @@ int desugar_step_kwargs(Compiler *c) {
     int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
     if (ac != 1 || !av) continue;
     int kh = av[0];
-    if (!nt_type(nt, kh) || nt_kind(nt, kh) != NK_KeywordHashNode) continue;
+    if (nt_kind(nt, kh) != NK_KeywordHashNode) continue;
     int to_v = -1, by_v = -1, other = 0, by_first = 0;
     int en = 0; const int *els = nt_arr(nt, kh, "elements", &en);
     for (int i = 0; i < en; i++) {
-      if (!nt_type(nt, els[i]) || nt_kind(nt, els[i]) != NK_AssocNode) { other = 1; break; }
+      if (nt_kind(nt, els[i]) != NK_AssocNode) { other = 1; break; }
       int key = nt_ref(nt, els[i], "key");
-      const char *kn = (key >= 0 && nt_type(nt, key) && nt_kind(nt, key) == NK_SymbolNode)
+      const char *kn = (key >= 0 && nt_kind(nt, key) == NK_SymbolNode)
                        ? nt_str(nt, key, "value") : NULL;
       if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[i], "value");
       else if (kn && sp_streq(kn, "by")) { by_v = nt_ref(nt, els[i], "value"); by_first = to_v < 0; }
@@ -4637,7 +4637,7 @@ int desugar_toplevel_instance_exec(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;         /* implicit self only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "instance_exec")) continue;
@@ -4667,18 +4667,18 @@ int desugar_binding_lvget(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int get = nm && sp_streq(nm, "local_variable_get"), set = nm && sp_streq(nm, "local_variable_set");
     if (!get && !set && (!nm || !sp_streq(nm, "local_variable_defined?"))) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || !nt_type(nt, recv) || nt_kind(nt, recv) != NK_CallNode) continue;
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     if (nt_ref(nt, recv, "receiver") >= 0) continue;      /* binding must be receiverless */
     const char *rnm = nt_str(nt, recv, "name");
     if (!rnm || !sp_streq(rnm, "binding")) continue;
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1 + set || !av || !nt_type(nt, av[0]) || nt_kind(nt, av[0]) != NK_SymbolNode) continue;
+    if (ac != 1 + set || !av || nt_kind(nt, av[0]) != NK_SymbolNode) continue;
     const char *vn = nt_str(nt, av[0], "value");
     if (!vn) continue;
     int sc = c->nscope[id];
@@ -5989,7 +5989,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     }
     ANameHash called; memset(&called, 0, sizeof called);
     for (int id = 0; id < n0; id++) {
-      if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+      if (nt_kind(nt, id) != NK_CallNode) continue;
       const char *nm = nt_str(nt, id, "name");
       if (nm && !anh_has(&called, nm)) anh_add(&called, nm);
     }
@@ -6180,7 +6180,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
      with a runtime name exists (the common case has none, so skip the scans). */
   { int any = 0;
     for (int id = 0; id < n0 && !any; id++) {
-      if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+      if (nt_kind(nt, id) != NK_CallNode) continue;
       const char *nm = nt_str(nt, id, "name"); if (!nm) continue;
       if (!is_send_family(nm)) continue;
       int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue;
@@ -6200,7 +6200,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
   char **picked = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   char **lits = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     if (!is_send_family(nm)) continue;
@@ -6888,7 +6888,7 @@ int desugar_respond_to_probe(Compiler *c) {
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "respond_to?")) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -7958,17 +7958,17 @@ int desugar_symbol_to_proc_call(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "call")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || !nt_type(nt, recv) || nt_kind(nt, recv) != NK_CallNode) continue;
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     const char *rnm = nt_str(nt, recv, "name");
     if (!rnm || !sp_streq(rnm, "to_proc")) continue;
     int rargs = nt_ref(nt, recv, "arguments");
     if (rargs >= 0) { int rc = 0; nt_arr(nt, rargs, "arguments", &rc); if (rc != 0) continue; }
     int sym = nt_ref(nt, recv, "receiver");
-    if (sym < 0 || !nt_type(nt, sym) || nt_kind(nt, sym) != NK_SymbolNode) continue;
+    if (sym < 0 || nt_kind(nt, sym) != NK_SymbolNode) continue;
     const char *mname = nt_str(nt, sym, "value");
     if (!mname || !*mname) continue;
     int args = nt_ref(nt, id, "arguments");
@@ -8008,13 +8008,13 @@ int desugar_to_h_block(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "to_h")) continue;
     int recv = nt_ref(nt, id, "receiver");
     int blk = nt_ref(nt, id, "block");
     if (recv < 0 || blk < 0) continue;                 /* need a receiver and a block */
-    if (!nt_type(nt, blk) || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (nt_kind(nt, blk) != NK_BlockNode) continue;
     /* Only builtin iterables lower onto map{}.to_h. A Struct/Data or other user
        object with a block-taking to_h has its own member-pair path; rewriting it
        onto map would change the element protocol and mistype the result. */
@@ -8320,7 +8320,7 @@ static int tp_find_stmt(Compiler *c, int root, int target, int sc,
     *out_st = curr_st; *out_idx = curr_idx; return 1;
   }
   NodeTable *nt = (NodeTable *)c->nt;
-  int is_stmt = nt_type(nt, root) && nt_kind(nt, root) == NK_StatementsNode;
+  int is_stmt = nt_kind(nt, root) == NK_StatementsNode;
   int nr = nt_num_refs(nt, root);
   for (int i = 0; i < nr; i++) {
     int ch = nt_ref_at(nt, root, i);
@@ -8356,7 +8356,7 @@ int desugar_to_proc_block_arg(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
@@ -8415,7 +8415,7 @@ int desugar_proc_expr_block_arg(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
@@ -8467,10 +8467,10 @@ int desugar_to_hash_splat(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_AssocSplatNode) continue;
+    if (nt_kind(nt, id) != NK_AssocSplatNode) continue;
     int val = nt_ref(nt, id, "value");
     if (val < 0) continue;
-    if (nt_type(nt, val) && nt_kind(nt, val) == NK_CallNode &&
+    if (nt_kind(nt, val) == NK_CallNode &&
         nt_str(nt, val, "name") && sp_streq(nt_str(nt, val, "name"), "to_hash")) continue;
     TyKind t = infer_type(c, val);
     if (!ty_is_object(t)) continue;
@@ -8738,7 +8738,7 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
   int pn = nt_ref(nt, ms->def_node, "parameters");
   if (pn < 0) return;
   int bp = nt_ref(nt, pn, "block");
-  if (bp < 0 || !nt_type(nt, bp) || nt_kind(nt, bp) != NK_BlockParameterNode) return;
+  if (bp < 0 || nt_kind(nt, bp) != NK_BlockParameterNode) return;
   if (named ? !nt_str(nt, bp, "name") : nt_str(nt, bp, "name") != NULL) return;
   nt_node_set_ref(nt, pn, "block", -1);
   /* the named parameter's slot was registered as a Proc parameter: it is
@@ -9017,7 +9017,7 @@ int desugar_value_callable_forwards(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
@@ -9606,7 +9606,7 @@ int desugar_sort_by_with_index(Compiler *c) {
       }
     }
     int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     const char *rnm = nt_str(nt, recv, "name");
@@ -9779,7 +9779,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        have no such walk and keep the (faithfully raising) hop. */
     if (rt == TY_RANGE && (is_find_alias(nm))) {
       int rn7 = nt_paren_single(nt, recv);
-      if (rn7 >= 0 && nt_type(nt, rn7) && nt_kind(nt, rn7) == NK_RangeNode &&
+      if (rn7 >= 0 && nt_kind(nt, rn7) == NK_RangeNode &&
           nt_ref(nt, rn7, "right") < 0) continue;
     }
     /* Only where the call found no arm at all. A form that IS wired -- a

@@ -2545,7 +2545,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      == -1 but is not a missing-block case). Checked before the raise because
      emit_boxed, unlike the expr-position YieldNode emitter, is now reached for
      a lowered yield tail once every proc returns through the boxed channel. */
-  if (nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_YieldNode && g_current_scope_is_lowered) {
+  if (nt_kind(c->nt, node) == NK_YieldNode && g_current_scope_is_lowered) {
     int yargs = nt_ref(c->nt, node, "arguments");
     int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(c->nt, yargs, "arguments", &yargc) : NULL;
     buf_puts(b, "((void)");
@@ -2563,13 +2563,13 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* A proc-form body has no inline block by construction -- the block arrives
      as an sp_Proc * parameter -- so the yield lowers to a call on it, not to
      the no-block raise (#3399). */
-  if (g_yield_proc_ref && nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_YieldNode) {
+  if (g_yield_proc_ref && nt_kind(c->nt, node) == NK_YieldNode) {
     /* This helper's callers want a BOXED value, so ask for the poly form. */
     emit_yield_proc_call(c, nt_ref(c->nt, node, "arguments"), TY_POLY, b, 0, 1);
     RC(RF_YIELD, RW_YIELD);
     return;
   }
-  if (nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_YieldNode && g_block_id < 0) {
+  if (nt_kind(c->nt, node) == NK_YieldNode && g_block_id < 0) {
     /* An unguarded yield with no block raises LocalJumpError. A guarded yield
        folds its guard to a compile-time false and sits inside an `if (0)`, so
        the raise never executes there; the boxed nil keeps the comma expression
@@ -2580,7 +2580,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     RC(RF_SPECIAL, RW_YIELD);
     return;
   }
-  if (g_block_id >= 0 && nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_YieldNode) {
+  if (g_block_id >= 0 && nt_kind(c->nt, node) == NK_YieldNode) {
     /* A forwarding block (`wrap { yield }` handing its own block on) has a
        yield for its tail, and that node's cached type is one site's too:
        the value at THIS site is what the block one level out answers, the
@@ -2593,7 +2593,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
       if (bn <= 0) { bt = TY_NIL; break; }
       int tail = bb[bn - 1];
-      if (nt_type(c->nt, tail) && nt_kind(c->nt, tail) == NK_YieldNode &&
+      if (nt_kind(c->nt, tail) == NK_YieldNode &&
           yield_block_out(depth + 1) >= 0) { tblk = yield_block_out(depth + 1); continue; }
       bt = comp_ntype(c, tail);
       /* The tail is not the only value the block can produce: `next v` leaves
@@ -2691,7 +2691,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
-  if (tr.untyped && nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_ArrayNode) {
+  if (tr.untyped && nt_kind(c->nt, node) == NK_ArrayNode) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
@@ -2704,14 +2704,14 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
-  if (tr.untyped && nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_HashNode) {
+  if (tr.untyped && nt_kind(c->nt, node) == NK_HashNode) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
   /* Hash.new / Hash.new(default) whose variant no key usage ever narrowed:
      box an empty PolyPolyHash carrying the default (it used to fall to the
      constant path and raise "uninitialized constant Hash"). */
-  if (tr.untyped && nt_type(c->nt, node) && nt_kind(c->nt, node) == NK_CallNode &&
+  if (tr.untyped && nt_kind(c->nt, node) == NK_CallNode &&
       nt_str(c->nt, node, "name") && sp_streq(nt_str(c->nt, node, "name"), "new") &&
       nt_ref(c->nt, node, "block") < 0) {
     int hrecv = nt_ref(c->nt, node, "receiver");
@@ -8096,7 +8096,7 @@ int proc_does_nonlocal_return(Compiler *c, int create) {
   int recv = nt_ref(c->nt, create, "receiver");
   int is_proc = (recv < 0 && sp_streq(cn, "proc"));
   int is_proc_new = (sp_streq(cn, "new") && recv >= 0 &&
-                     nt_type(c->nt, recv) && nt_kind(c->nt, recv) == NK_ConstantReadNode &&
+                     nt_kind(c->nt, recv) == NK_ConstantReadNode &&
                      nt_str(c->nt, recv, "name") && sp_streq(nt_str(c->nt, recv, "name"), "Proc"));
   if (!is_proc && !is_proc_new) return 0;
   if (nt_ref(c->nt, create, "block") < 0) return 0;
@@ -8189,7 +8189,7 @@ static void emit_enum_size_arg(Compiler *c, int size_node, Buf *b) {
    result, so it compiles through the normal terminal path. */
 static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
   const NodeTable *nt = c->nt;
-  if (id < 0 || !yname || !nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) return 0;
+  if (id < 0 || !yname || nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "<<")) return 0;
   int rcv = nt_ref(nt, id, "receiver");
@@ -8209,7 +8209,7 @@ static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
     }
     break;
   }
-  if (rcv < 0 || !nt_type(nt, rcv) || nt_kind(nt, rcv) != NK_LocalVariableReadNode) return 0;
+  if (rcv < 0 || nt_kind(nt, rcv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, rcv, "name");
   return rn && sp_streq(rn, yname);
 }
@@ -8235,12 +8235,12 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
     const char *nm = nt_str(nt, id, "name");
     int rcv = nt_ref(nt, id, "receiver");
     if (nm && sp_streq(nm, "yield") && rcv >= 0 &&
-        nt_type(nt, rcv) && nt_kind(nt, rcv) == NK_LocalVariableReadNode &&
+        nt_kind(nt, rcv) == NK_LocalVariableReadNode &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), yname)) {
       int ar = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       if (ac != 1) return 1;
-      if (ac == 1 && nt_type(nt, av[0]) && nt_kind(nt, av[0]) == NK_SplatNode) return 1;
+      if (ac == 1 && nt_kind(nt, av[0]) == NK_SplatNode) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);
@@ -9753,7 +9753,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   if (ret != TY_POLY && !ret_proc) {
     int owner = -1;
     for (int oid = 0; oid < nt->count; oid++) if (nt_ref(nt, oid, "block") == create) { owner = oid; break; }
-    if (owner >= 0 && nt_type(nt, owner) && nt_kind(nt, owner) == NK_CallNode) {
+    if (owner >= 0 && nt_kind(nt, owner) == NK_CallNode) {
       const char *onm = nt_str(nt, owner, "name");
       int orecv = nt_ref(nt, owner, "receiver");
       int mi = -1;
@@ -15186,7 +15186,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       /* Data's `super(x: e, y: e2)` passes a single KeywordHashNode: map each
          member to the like-named keyword's value. Assigning positionally would
          drop the whole hash into the first (scalar) member slot. */
-      int kwh = (!is_fwd && an == 1 && sargv && nt_type(c->nt, sargv[0]) &&
+      int kwh = (!is_fwd && an == 1 && sargv &&
                  nt_kind(c->nt, sargv[0]) == NK_KeywordHashNode) ? sargv[0] : -1;
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);

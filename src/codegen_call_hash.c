@@ -1126,7 +1126,7 @@ int emit_call_openstruct_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        operand unwrapped in place */
     if (argc == 1 && emit_native_object_protocol(c, id, b)) return 1;
     if (is_kind_query(name) && argc == 1 &&
-        nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_ConstantReadNode) {
+        nt_kind(nt, argv[0]) == NK_ConstantReadNode) {
       const char *tcn = nt_str(nt, argv[0], "name");
       int yes;
       if (sp_streq(name, "instance_of?")) yes = tcn && sp_streq(tcn, "OpenStruct");

@@ -796,10 +796,9 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     char qexc_buf[160];
     #define RAISE_EXC_NAME(nd, leaf) ({ \
         const char *_ln = (leaf); \
-        if (nt_type(nt, nd) && nt_kind(nt, nd) == NK_ConstantPathNode) { \
+        if (nt_kind(nt, nd) == NK_ConstantPathNode) { \
           int _par = nt_ref(nt, nd, "parent"); \
-          const char *_pnm = (_par >= 0 && nt_type(nt, _par) && \
-                              nt_kind(nt, _par) == NK_ConstantReadNode) \
+          const char *_pnm = (_par >= 0 && nt_kind(nt, _par) == NK_ConstantReadNode) \
                              ? nt_str(nt, _par, "name") : NULL; \
           if (_pnm && _ln) { \
             snprintf(qexc_buf, sizeof qexc_buf, "%s::%s", _pnm, _ln); \
@@ -813,9 +812,9 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     if (ac >= 2 && nt_argv_kwh(nt, av, ac) >= 0) {
       int kn = 0;
       const int *kel = nt_arr(nt, av[ac - 1], "elements", &kn);
-      if (kn == 1 && nt_type(nt, kel[0]) && nt_kind(nt, kel[0]) == NK_AssocNode) {
+      if (kn == 1 && nt_kind(nt, kel[0]) == NK_AssocNode) {
         int kk = nt_ref(nt, kel[0], "key");
-        if (kk >= 0 && nt_type(nt, kk) && nt_kind(nt, kk) == NK_SymbolNode &&
+        if (kk >= 0 && nt_kind(nt, kk) == NK_SymbolNode &&
             nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "cause")) {
           cause_node = nt_ref(nt, kel[0], "value");
           ac--;
@@ -825,7 +824,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     if (cause_node >= 0) {
       /* record that cause: was given (so cause: nil suppresses the implicit
          cause), then evaluate it -- a nil literal / value carries as NULL (#2990) */
-      int cause_is_nil = nt_type(nt, cause_node) && nt_kind(nt, cause_node) == NK_NilNode;
+      int cause_is_nil = nt_kind(nt, cause_node) == NK_NilNode;
       /* The cause must be an exception or nil: one the program can be known
          to hold as anything else is CRuby's TypeError, raised once the first
          argument is known to be raisable (a wrong first argument is the

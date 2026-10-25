@@ -717,10 +717,10 @@ const char *an_regex_lit_src(Compiler *c, int nid) {
     const char *kn = nt_str(nt, k, "name");
     if (!kn || !sp_streq(kn, nm)) continue;
     int v = nt_ref(nt, k, "value");
-    if (v >= 0 && nt_type(nt, v) && nt_kind(nt, v) == NK_CallNode &&
+    if (v >= 0 && nt_kind(nt, v) == NK_CallNode &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze"))
       v = nt_ref(nt, v, "receiver");
-    if (v >= 0 && nt_type(nt, v) && nt_kind(nt, v) == NK_RegularExpressionNode)
+    if (v >= 0 && nt_kind(nt, v) == NK_RegularExpressionNode)
       return nt_str(nt, v, "unescaped");
   }
   return NULL;
@@ -1159,7 +1159,7 @@ int chain_is_lazy_valued(Compiler *c, int node) {
 }
 static int chain_is_lazy_valued_1(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (node < 0 || !nt_type(nt, node) || nt_kind(nt, node) != NK_CallNode) return 0;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *top = nt_str(nt, node, "name");
   if (!top) return 0;
   /* with_index / zip keep the VALUE lazy (so a chain ending in them is still
@@ -1175,14 +1175,14 @@ static int chain_is_lazy_valued_1(Compiler *c, int node) {
        single-plain-write alias and keep walking. Bounded: a
        self-referential write (`s = s.map{}`) would otherwise recurse
        through lazy_alias_chain forever (#3324). */
-    if (nt_type(nt, cur) && nt_kind(nt, cur) == NK_LocalVariableReadNode) {
+    if (nt_kind(nt, cur) == NK_LocalVariableReadNode) {
       if (++hops > 8) return 0;
       int a = lazy_alias_chain(c, cur);
       if (a < 0) return 0;
       cur = a;
       continue;
     }
-    if (!nt_type(nt, cur) || nt_kind(nt, cur) != NK_CallNode) return 0;
+    if (nt_kind(nt, cur) != NK_CallNode) return 0;
     const char *nm = nt_str(nt, cur, "name");
     if (nm && sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) return 1;
     cur = nt_ref(nt, cur, "receiver");
@@ -1294,11 +1294,11 @@ const char *struct_call_dup_member(Compiler *c, int callnode) {
   int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (!argv) return NULL;
   for (int a = 0; a < an; a++) {
-    if (!nt_type(nt, argv[a]) || nt_kind(nt, argv[a]) != NK_SymbolNode) continue;
+    if (nt_kind(nt, argv[a]) != NK_SymbolNode) continue;
     const char *m = nt_str(nt, argv[a], "value");
     if (!m) continue;
     for (int b = 0; b < a; b++) {
-      if (!nt_type(nt, argv[b]) || nt_kind(nt, argv[b]) != NK_SymbolNode) continue;
+      if (nt_kind(nt, argv[b]) != NK_SymbolNode) continue;
       const char *m2 = nt_str(nt, argv[b], "value");
       if (m2 && sp_streq(m2, m)) return m;
     }
@@ -1412,7 +1412,7 @@ static int hash_new_default_arg_compute(Compiler *c, int recv) {
   const char *nm = nt_str(nt, recv, "name");
   if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "__hash_new_default"))) return -1;
   int cr = nt_ref(nt, recv, "receiver");
-  if (cr < 0 || !nt_type(nt, cr) || nt_kind(nt, cr) != NK_ConstantReadNode) return -1;
+  if (cr < 0 || nt_kind(nt, cr) != NK_ConstantReadNode) return -1;
   const char *cn = nt_str(nt, cr, "name");
   if (!cn || !sp_streq(cn, "Hash")) return -1;
   if (nt_ref(nt, recv, "block") >= 0) return -1;   /* block default: dproc path */
@@ -1827,7 +1827,7 @@ int hash_new_blockless(Compiler *c, int recv) {
   const char *nm = nt_str(nt, recv, "name");
   if (!nm || !sp_streq(nm, "new")) return 0;
   int cr = nt_ref(nt, recv, "receiver");
-  if (cr < 0 || !nt_type(nt, cr) || nt_kind(nt, cr) != NK_ConstantReadNode) return 0;
+  if (cr < 0 || nt_kind(nt, cr) != NK_ConstantReadNode) return 0;
   const char *cn = nt_str(nt, cr, "name");
   if (!cn || !sp_streq(cn, "Hash")) return 0;
   return nt_ref(nt, recv, "block") < 0;
@@ -1868,7 +1868,7 @@ int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode) {
 }
 int scope_body_last(Compiler *c, int mi) {
   int body = c->scopes[mi].body;
-  if (body < 0 || !nt_type(c->nt, body) || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
+  if (body < 0 || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
   int n = 0; const int *bb = nt_arr(c->nt, body, "body", &n);
   return n > 0 ? bb[n - 1] : -1;
 }
@@ -1889,11 +1889,11 @@ const char *an_memo_reader_ivar(Compiler *c, int mi) {
 }
 int is_blk_param_call(Compiler *c, int node, int mi) {
   const NodeTable *nt = c->nt;
-  if (node < 0 || !nt_type(nt, node) || nt_kind(nt, node) != NK_CallNode) return 0;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, node, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   const char *bp = c->scopes[mi].blk_param;
   return rn && bp && bp[0] && sp_streq(rn, bp);
@@ -2574,7 +2574,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
     int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
     TyKind bt;
     if (bn == 0) bt = TY_NIL;
-    else if (nt_type(nt, bd[bn - 1]) && nt_kind(nt, bd[bn - 1]) == NK_ReturnNode)
+    else if (nt_kind(nt, bd[bn - 1]) == NK_ReturnNode)
       /* `{ return e }`: a non-local return -- the yield never produces a
          value, but typing it as e's type keeps the enclosing method's
          return shape consistent (the inline emits `return e` directly). */
@@ -3128,7 +3128,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
      answers from the block arm, typed per call site like a yield tail */
   int tl = block_given_tail_then_last(c, last);
   if (tl >= 0) last = tl;
-  int is_yield = last >= 0 && nt_type(c->nt, last) && nt_kind(c->nt, last) == NK_YieldNode;
+  int is_yield = last >= 0 && nt_kind(c->nt, last) == NK_YieldNode;
   /* A force-lowered Enumerable #each returns self (its ret is pinned to the
      defining class), not the block's value -- the per-call-site block typing
      below is only for the value-carrying (self-recursive) lowering. */
@@ -3422,7 +3422,7 @@ static TyKind proc_interior_return_ty(Compiler *c, int node) {
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
     int ch = nt_ref_at(nt, node, i);
-    if (ch >= 0 && nt_type(nt, ch) && nt_kind(nt, ch) == NK_BlockNode &&
+    if (ch >= 0 && nt_kind(nt, ch) == NK_BlockNode &&
         is_proc_literal(c, node)) continue;   /* a nested proc's own block */
     TyKind s = proc_interior_return_ty(c, ch);
     if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
@@ -3623,7 +3623,7 @@ const char *method_sym_arg(Compiler *c, int node) {
 /* True if `node` is a `method(:sym)` / `<recv>.method(:sym)` call. */
 int is_method_obj_call(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (node < 0 || !nt_type(nt, node) || nt_kind(nt, node) != NK_CallNode) return 0;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   /* Module#instance_method builds the same object, unbound (NULL self); the
      Method machinery (name/arity/owner/call-after-bind) rides it (#2676) */
@@ -4265,7 +4265,7 @@ int an_indexed_each_source(const NodeTable *nt, int recv) {
   if (rn && sp_streq(rn, "each_with_index")) return nt_ref(nt, recv, "receiver");
   if (!rn || !sp_streq(rn, "with_index")) return -1;
   int wir = nt_ref(nt, recv, "receiver");
-  if (wir >= 0 && nt_type(nt, wir) && nt_kind(nt, wir) == NK_CallNode &&
+  if (wir >= 0 && nt_kind(nt, wir) == NK_CallNode &&
       nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
       nt_ref(nt, wir, "block") < 0)
     return nt_ref(nt, wir, "receiver");
@@ -4452,7 +4452,7 @@ static int strh_plain_block_params(Compiler *c, int blk) {
   if (pn < 0) return 1;
   int n = 0;
   const int *rq = nt_arr(nt, pn, "requireds", &n);
-  if (n > 1 || (n == 1 && !(nt_type(nt, rq[0]) && nt_kind(nt, rq[0]) == NK_RequiredParameterNode))) return 0;
+  if (n > 1 || (n == 1 && nt_kind(nt, rq[0]) != NK_RequiredParameterNode)) return 0;
   /* (a destructuring parameter is a hidden parameter and a read of its
      elements by the time the walk runs) */
   const char *pnm = n == 1 ? nt_str(nt, rq[0], "name") : NULL;

@@ -141,7 +141,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     }
   }
   int bp = nt_ref(c->nt, pn, "block");
-  if (bp >= 0 && nt_type(c->nt, bp) && nt_kind(c->nt, bp) == NK_BlockParameterNode) {
+  if (bp >= 0 && nt_kind(c->nt, bp) == NK_BlockParameterNode) {
     const char *bn = nt_str(c->nt, bp, "name");
     s->blk_param = strdup(bn ? bn : "");
     /* Register the &block param as a local so mark_proc_captures can find it
@@ -638,7 +638,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx) {
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "each")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || nt_kind(nt, recv) != NK_ArrayNode) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_ArrayNode) return 0;
   int blk = nt_ref(nt, id, "block");
   if (blk < 0) return 0;
   /* block parameter name */
@@ -654,7 +654,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn != 1) return 0;
   int dc = bb[0];
-  if (!nt_type(nt, dc) || nt_kind(nt, dc) != NK_CallNode) return 0;
+  if (nt_kind(nt, dc) != NK_CallNode) return 0;
   const char *dcn = nt_str(nt, dc, "name");
   if (!dcn || !sp_streq(dcn, "define_method") || nt_ref(nt, dc, "receiver") >= 0) return 0;
   int dargs = nt_ref(nt, dc, "arguments");
@@ -1494,7 +1494,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   if (ty && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
-    int cls_toplevel = class_id < 0 && cp >= 0 && nt_type(c->nt, cp) &&
+    int cls_toplevel = class_id < 0 && cp >= 0 &&
                        nt_kind(c->nt, cp) == NK_ConstantReadNode;
     /* An earlier pass mangles a nested name to `Outer__Inner`: test the leaf. */
     const char *cls_leaf = cname;
@@ -2375,10 +2375,10 @@ int is_c_ident(const char *s);
 /* Is CallNode `val` a `Struct.new(...)` / `Data.define(...)`? */
 int is_struct_call(Compiler *c, int val) {
   const NodeTable *nt = c->nt;
-  if (val < 0 || !nt_type(nt, val) || nt_kind(nt, val) != NK_CallNode) return 0;
+  if (val < 0 || nt_kind(nt, val) != NK_CallNode) return 0;
   const char *mn = nt_str(nt, val, "name");
   int vr = nt_ref(nt, val, "receiver");
-  const char *rn = vr >= 0 && nt_type(nt, vr) && nt_kind(nt, vr) == NK_ConstantReadNode
+  const char *rn = vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode
                    ? nt_str(nt, vr, "name") : NULL;
   return rn && ((sp_streq(rn, "Struct") && mn && sp_streq(mn, "new")) ||
                 (sp_streq(rn, "Data") && mn && sp_streq(mn, "define")));
@@ -2489,7 +2489,7 @@ static const char *resolve_member_symbol(Compiler *c, int node) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != scp) continue;
     int wv = nt_ref(nt, w, "value");
-    if (wv < 0 || !nt_type(nt, wv) || nt_kind(nt, wv) != NK_SymbolNode)
+    if (wv < 0 || nt_kind(nt, wv) != NK_SymbolNode)
       return NULL;   /* a non-symbol write: not resolvable */
     const char *sm = nt_str(nt, wv, "value");
     if (!sm) return NULL;
@@ -2514,7 +2514,7 @@ static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap,
     int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
     if (en > cap) return -1;
     for (int e = 0; e < en; e++) {
-      if (!nt_type(nt, els[e]) || nt_kind(nt, els[e]) != NK_SymbolNode) return -1;
+      if (nt_kind(nt, els[e]) != NK_SymbolNode) return -1;
       out[e] = nt_str(nt, els[e], "value");
       if (!out[e]) return -1;
     }
@@ -2600,7 +2600,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   cls->is_struct = 1;
   {
     int vr = nt_ref(nt, val, "receiver");
-    const char *rn = vr >= 0 && nt_type(nt, vr) && nt_kind(nt, vr) == NK_ConstantReadNode
+    const char *rn = vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode
                      ? nt_str(nt, vr, "name") : NULL;
     if (rn && sp_streq(rn, "Data")) cls->is_data = 1;
   }
@@ -2611,7 +2611,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
      constant -- a legacy pattern spinel deliberately drops (see limitations.md).
      Reject it with a pointer to the modern `Foo = Struct.new(...)` form rather
      than leaving `Struct::Foo` untyped and failing with a raw C error (#3080). */
-  if (an >= 1 && argv && nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_StringNode) {
+  if (an >= 1 && argv && nt_kind(nt, argv[0]) == NK_StringNode) {
     int ln = (int)nt_int(nt, val, "node_line", 0);
     const char *file = nt->source_file ? nt->source_file : "source.rb";
     fprintf(stderr, "spinel: %s:%d: Struct.new with a string name (the Struct::Name "
@@ -2621,7 +2621,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   for (int a = 0; a < an; a++) {
     /* trailing `keyword_init: true` -> the members are keyword-initialized;
        Struct#keyword_init? reports it (a KeywordHashNode holds the pairs). */
-    if (nt_type(nt, argv[a]) && nt_kind(nt, argv[a]) == NK_KeywordHashNode) {
+    if (nt_kind(nt, argv[a]) == NK_KeywordHashNode) {
       int en = 0; const int *elems = nt_arr(nt, argv[a], "elements", &en);
       for (int e = 0; e < en; e++) {
         int key = nt_ref(nt, elems[e], "key");
@@ -2639,7 +2639,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
     /* `Data.define(*syms)` / `Struct.new(*syms)`: a splatted member list whose
        source is a literal symbol array (directly, or a local's sole array-
        literal write) resolves at compile time to the member names (#2973). */
-    if (nt_type(nt, argv[a]) && nt_kind(nt, argv[a]) == NK_SplatNode) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
       int se = nt_ref(nt, argv[a], "expression");
       const char *syms[128];
       int en = se >= 0 ? resolve_symbol_list(c, se, syms, 128, 0) : -1;
@@ -4700,8 +4700,8 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       int args = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an >= 2 && nt_type(nt, argv[0]) && nt_kind(nt, argv[0]) == NK_SymbolNode &&
-          nt_type(nt, argv[1]) && nt_kind(nt, argv[1]) == NK_SymbolNode)
+      if (an >= 2 && nt_kind(nt, argv[0]) == NK_SymbolNode &&
+          nt_kind(nt, argv[1]) == NK_SymbolNode)
       { const char *anw = nt_str(nt, argv[0], "value"), *aod = nt_str(nt, argv[1], "value");
         if (!singleton && anw && alias_accessor_declared_after(nt, stmts, n, k, anw)) continue;
         alias_register(c, cls, anw, aod, s, singleton); }
@@ -4893,10 +4893,10 @@ void register_globals_consts(Compiler *c) {
       /* a constant bound to a regex literal is resolved at compile time to a
          precompiled pattern, not stored as a runtime value */
       int rv = nt_ref(nt, id, "value");
-      if (rv >= 0 && nt_type(nt, rv) && nt_kind(nt, rv) == NK_CallNode &&
+      if (rv >= 0 && nt_kind(nt, rv) == NK_CallNode &&
           nt_str(nt, rv, "name") && sp_streq(nt_str(nt, rv, "name"), "freeze"))
         rv = nt_ref(nt, rv, "receiver");
-      int is_regex_const = rv >= 0 && nt_type(nt, rv) && nt_kind(nt, rv) == NK_RegularExpressionNode;
+      int is_regex_const = rv >= 0 && nt_kind(nt, rv) == NK_RegularExpressionNode;
       /* regex constants: store with type TY_REGEX so call-type inference works */
       if (nm && is_regex_const) {
         LocalVar *cv = comp_const_intern(c, nm);
@@ -4916,7 +4916,7 @@ void register_globals_consts(Compiler *c) {
         if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
             sp_streq(nt_str(nt, v, "name"), "new")) {
           int vr = nt_ref(nt, v, "receiver");
-          if (vr >= 0 && nt_type(nt, vr) && nt_kind(nt, vr) == NK_ConstantReadNode &&
+          if (vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode &&
               nt_str(nt, vr, "name") && comp_class_index(c, nt_str(nt, vr, "name")) >= 0)
             cv->init_guarded = 1;
         }
@@ -5071,7 +5071,7 @@ static char *ffi_fold_str(Compiler *c, int nid) {
     int pn = 0; const int *parts = nt_arr(nt, nid, "parts", &pn);
     size_t total = 1;
     for (int i = 0; i < pn; i++) {
-      if (!nt_type(nt, parts[i]) || nt_kind(nt, parts[i]) != NK_StringNode) return NULL;
+      if (nt_kind(nt, parts[i]) != NK_StringNode) return NULL;
       const char *p = nt_str(nt, parts[i], "content");
       if (!p) p = nt_str(nt, parts[i], "unescaped");
       if (!p) return NULL;
@@ -5114,7 +5114,7 @@ static char *ffi_fold_str(Compiler *c, int nid) {
       return strdup(dir);
     }
     if (nm && sp_streq(nm, "expand_path") && rcv >= 0 && (an == 1 || an == 2) &&
-        nt_type(nt, rcv) && nt_kind(nt, rcv) == NK_ConstantReadNode &&
+        nt_kind(nt, rcv) == NK_ConstantReadNode &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), "File")) {
       char *rel = ffi_fold_str(c, av[0]);
       if (!rel) return NULL;
@@ -5406,7 +5406,7 @@ void register_ffi_decls(Compiler *c) {
          the parser reads only under the flag. */
       if (is_native_share_decl(dname) && native_cid >= 0 && an >= 2) {
         const char *sname = ffi_arg_str(nt, args[0]);
-        int has_specs = nt_type(nt, args[1]) && nt_kind(nt, args[1]) == NK_ArrayNode;
+        int has_specs = nt_kind(nt, args[1]) == NK_ArrayNode;
         int ki = has_specs ? 2 : 1;
         const char *kind = ki < an ? ffi_arg_str(nt, args[ki]) : NULL;
         const char *hsym = ki + 1 < an ? ffi_arg_str(nt, args[ki + 1]) : NULL;
@@ -5549,7 +5549,7 @@ void register_ffi_decls(Compiler *c) {
           for (int ki = 0; ki < kn; ki++) {
             int kk = nt_ref(nt, kel[ki], "key"), kv = nt_ref(nt, kel[ki], "value");
             const char *ks = kk >= 0 ? ffi_arg_str(nt, kk) : NULL;
-            if (ks && sp_streq(ks, "blocking") && kv >= 0 && nt_type(nt, kv) && nt_kind(nt, kv) == NK_TrueNode)
+            if (ks && sp_streq(ks, "blocking") && kv >= 0 && nt_kind(nt, kv) == NK_TrueNode)
               blocking = 1;
           }
           an--;
@@ -6409,7 +6409,7 @@ static void check_blk_param_writes(Compiler *c) {
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
     int bpn = nt_ref(nt, pn, "block");
-    if (bpn < 0 || !nt_type(nt, bpn) || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
+    if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
     const char *bn = nt_str(nt, bpn, "name");
     if (!bn || !bn[0]) continue;   /* an anonymous `&` has no name to assign */
     check_blk_param_writes_in(c, nt_ref(nt, id, "body"), bn, nt_str(nt, id, "name"));
@@ -8820,7 +8820,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       continue;
     }
     if (recv < 0 ||
-        (nt_type(nt, recv) && nt_kind(nt, recv) == NK_SelfNode)) {
+        (nt_kind(nt, recv) == NK_SelfNode)) {
       /* a bare (or explicit-self: this pass runs before the desugar that
          drops such receivers) call inside a class-method body: self is the
          class there, so an inherited factory's `new` must construct the
@@ -8910,7 +8910,7 @@ void specialize_inherited_cls_new(Compiler *c) {
   int nccall = 0;
   if (ccall && ccrc && ccres && ccnm) {
     for (int id = 0; id < node_count; id++) {
-      if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+      if (nt_kind(nt, id) != NK_CallNode) continue;
       int r = nt_ref(nt, id, "receiver");
       const char *rty = r >= 0 ? nt_type(nt, r) : NULL;
       if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
@@ -8957,9 +8957,9 @@ void specialize_inherited_cls_new(Compiler *c) {
     /* ... or if a bare call inside some class-method body still resolves to
        this source (a class with no specialized copy of its own) */
     for (int id = 0; id < node_count && !called_direct; id++) {
-      if (!nt_type(nt, id) || nt_kind(nt, id) != NK_CallNode) continue;
+      if (nt_kind(nt, id) != NK_CallNode) continue;
       int r2 = nt_ref(nt, id, "receiver");
-      if (r2 >= 0 && !(nt_type(nt, r2) && nt_kind(nt, r2) == NK_SelfNode)) continue;
+      if (r2 >= 0 && nt_kind(nt, r2) != NK_SelfNode) continue;
       const char *nm2 = cls_call_name(c, id);
       if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an, cmemo)) continue;
       Scope *encl = comp_scope_of(c, id);
@@ -12248,7 +12248,7 @@ static void bc_check_scoped(Bc *b, int v) {
   int par = nt_ref(nt, v, "parent");
   const char *nm = nt_str(nt, v, "name");
   if (par < 0 || !nm) return;
-  if (nt_type(nt, par) && nt_kind(nt, par) == NK_ConstantPathNode) {
+  if (nt_kind(nt, par) == NK_ConstantPathNode) {
     bc_check_scoped(b, par);
     if (sp_streq(nt_str(nt, par, "name"), "SpinelNoSuchConstant__")) return;
   }
@@ -12415,9 +12415,9 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     if (mode == 2 && vt && sp_streq(vt, "ConstantPathNode")) {
       /* defined?(X::Y) is nil, not NameError, when the head X is unreachable */
       int head = v;
-      while (head >= 0 && nt_type(nt, head) && nt_kind(nt, head) == NK_ConstantPathNode)
+      while (head >= 0 && nt_kind(nt, head) == NK_ConstantPathNode)
         head = nt_ref(nt, head, "parent");
-      if (head >= 0 && nt_type(nt, head) && nt_kind(nt, head) == NK_ConstantReadNode) {
+      if (head >= 0 && nt_kind(nt, head) == NK_ConstantReadNode) {
         bc_check(b, head, 1);
         if (!sp_streq(nt_str(nt, head, "name"), "SpinelNoSuchConstant__")) bc_check_scoped(b, v);
         return;
