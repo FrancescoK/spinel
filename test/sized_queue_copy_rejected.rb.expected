@@ -1,0 +1,16 @@
+NoMethodError
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::SizedQueue", :initialize_copy, Thread::SizedQueue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::SizedQueue", :initialize_copy, Thread::SizedQueue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]
+[1, 1, 1, true]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::SizedQueue", :initialize_copy, Thread::SizedQueue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::SizedQueue", :initialize_copy, Thread::SizedQueue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]
+:foo
+Foo
+[true, true]
+nil
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]
+[NoMethodError, "undefined method 'initialize_copy' for an instance of Thread::Queue", :initialize_copy, Thread::Queue, false, 1]

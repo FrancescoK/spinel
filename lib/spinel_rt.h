@@ -13125,6 +13125,7 @@ static sp_RbVal (*sp_bsub_dup_hook)(sp_RbVal, int, sp_bool *) = NULL;
 extern sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 #endif
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen);
+sp_queue *sp_Queue_copy_error(sp_queue *q); /* Queue copy hooks are undefined */
 /* clone(freeze: ...) on a boxed value. An immutable immediate (nil/bool/int/
    float/sym/bigint) can't be unfrozen, so `freeze: false` raises ArgumentError
    like CRuby; `freeze: true`/nil returns it (already frozen). A mutable value
