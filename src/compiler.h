@@ -2034,6 +2034,7 @@ int        comp_is_own_reader(ClassInfo *ci, const char *name);
 int        comp_enum_answers_first(Compiler *c, int cid, const char *name);
 int        comp_comparable_answers_first(Compiler *c, int cid, const char *name);
 int        comp_comparable_reaches(Compiler *c, int cid);
+int        comp_enum_reaches(Compiler *c, int cid);   /* Enumerable among its ancestors */
 int        core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int        comp_is_writer(ClassInfo *ci, const char *name);
 int        name_is_plain_setter(const char *name);

@@ -12528,6 +12528,9 @@ static int obj_to_a_reader(Compiler *c, int cid) {
   }
   return -1;
 }
+int obj_to_a_has(Compiler *c, int cid) {
+  return obj_to_a_method(c, cid, NULL) >= 0 || obj_to_a_reader(c, cid) >= 0;
+}
 int obj_to_a_any(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];

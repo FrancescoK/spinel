@@ -1393,6 +1393,7 @@ void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *k
 int class_to_io_dispatched(Compiler *c, int k);
 /* Does an instantiated class answer #to_a through sp_obj_to_a_fn? */
 int obj_to_a_any(Compiler *c);
+int obj_to_a_has(Compiler *c, int cid);   /* sp_obj_to_a answers class cid's elements */
 void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw);
 int scope_refuses_keywords(Compiler *c, const Scope *m);
 /* The keyword ArgumentErrors, `kind` "missing" or "unknown", naming `count`

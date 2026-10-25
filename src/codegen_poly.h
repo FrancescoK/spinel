@@ -17,6 +17,8 @@ void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b)
 struct PolyPlan_s;
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
                           int blk_tmp0, const struct PolyPlan_s *p, Buf *b);
+void emit_poly_enum_includer_arms0(Compiler *c, int id, const char *name, TyKind ret, int tv, int tr,
+                                   int blk_tmp0, const struct PolyPlan_s *p, Buf *b);
 /* The keywords of a call on a poly receiver, as its arms read them. */
 typedef struct {
   int kwh, kwn, kwall;
