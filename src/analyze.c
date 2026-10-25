@@ -5199,6 +5199,43 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
   return changed;
 }
 
+/* Exception's own methods, called on an implicit self from a method of the
+   program's exception class (`def label = "w:#{message}"`): they are read
+   off the receiver, and with none the bare call was a NameError where
+   `self.message` answered. Give it the receiver, unless a Ruby method of the
+   chain (a reopening of the builtin among them) answers the name. */
+static int give_exception_self_calls_a_receiver(Compiler *c) {
+  static const struct { const char *name; int argc_min, argc_max; } own[] = {
+    { "message", 0, 0 }, { "backtrace", 0, 0 }, { "backtrace_locations", 0, 0 }, { "cause", 0, 0 },
+    { "full_message", 0, 0 }, { "detailed_message", 0, 0 }, { "set_backtrace", 1, 1 },
+  };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int an = 0;
+    { int a = nt_ref(nt, id, "arguments");
+      if (a >= 0) nt_arr(nt, a, "arguments", &an); }
+    int hit = 0;
+    for (size_t k = 0; k < sizeof own / sizeof own[0] && !hit; k++)
+      hit = sp_streq(nm, own[k].name) && an >= own[k].argc_min && an <= own[k].argc_max;
+    if (!hit) continue;
+    Scope *osc = comp_scope_of(c, id);
+    int ocid = osc ? osc->class_id : -1;
+    if (ocid < 0 || ocid >= c->nclasses || osc->is_cmethod || !class_is_exc_subclass(c, ocid)) continue;
+    if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
+    int selfn = nt_new_node(nt, "SelfNode");
+    if (selfn < 0) continue;
+    nt_set_self_receiver(nt, id, selfn);
+    comp_grow_node_arrays(c);
+    c->nscope[selfn] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* An implicit-self call inside a class or module method, of a name the
    program defines as an instance method of Object that no class method of
    the chain answers: self is the class or module, an Object, so CRuby finds
@@ -49437,6 +49474,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_enum_walk_calls", desugar_enum_walk_calls(c));          /* enum.map { break } -> __enumw_map(enum) { } */
     ch |= AN_PASS("desugar_enum_method_recv", desugar_enum_method_recv(c));         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= AN_PASS("give_native_self_calls_a_receiver", give_native_self_calls_a_receiver(c));  /* native class: implicit self -> self.m */
+    ch |= AN_PASS("give_exception_self_calls_a_receiver", give_exception_self_calls_a_receiver(c));  /* exception class: message on implicit self -> self.message */
     ch |= AN_PASS("give_object_methods_a_class_self", give_object_methods_a_class_self(c));    /* class method: Object#m on implicit self -> self.m */
     ch |= AN_PASS("give_self_predicates_a_receiver", give_self_predicates_a_receiver(c));    /* is_a?(X) on implicit self -> self.is_a?(X) */
     ch |= AN_PASS("desugar_for_enumerable", desugar_for_enumerable(c));           /* for x in obj -> for x in obj.__enum_to_a */
