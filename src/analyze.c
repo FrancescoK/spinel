@@ -30918,34 +30918,20 @@ static void dyn_callable_index(Compiler *c) {
   }
 }
 
+/* A value position of a method's tail: an absent arm or an empty body is
+   nil, and a `return` is walked with the method's returns. A walk that gave
+   up may be anything. */
+typedef struct { Compiler *c; int depth; } DynTail;
+static int dyn_tail_leaf(const VpLeaf *leaf, void *ud) {
+  const DynTail *t = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  if (leaf->kind == VPK_GAVE_UP) return 1;
+  if (nt_kind(t->c->nt, leaf->node) == NK_ReturnNode) return 0;
+  return dyn_may_callable(t->c, leaf->node, t->depth + 1);
+}
 static int dyn_tail_may_callable(Compiler *c, int n, int depth) {
-  const NodeTable *nt = c->nt;
-  if (n < 0) return 0;   /* an empty body: nil */
-  switch (nt_kind(nt, n)) {
-    case NK_StatementsNode: {
-      int k = 0; const int *b = nt_arr(nt, n, "body", &k);
-      return k > 0 ? dyn_tail_may_callable(c, b[k - 1], depth) : 0;
-    }
-    case NK_ParenthesesNode: return dyn_tail_may_callable(c, nt_ref(nt, n, "body"), depth);
-    case NK_ReturnNode: return 0;   /* the returns are walked on their own */
-    case NK_IfNode:
-      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
-             dyn_tail_may_callable(c, nt_ref(nt, n, "subsequent"), depth);
-    case NK_UnlessNode:
-      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
-             dyn_tail_may_callable(c, nt_ref(nt, n, "else_clause"), depth);
-    case NK_ElseNode: return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth);
-    case NK_BeginNode:
-      if (nt_ref(nt, n, "else_clause") >= 0)
-        return dyn_tail_may_callable(c, nt_ref(nt, n, "else_clause"), depth) ||
-               dyn_tail_may_callable(c, nt_ref(nt, n, "rescue_clause"), depth);
-      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
-             dyn_tail_may_callable(c, nt_ref(nt, n, "rescue_clause"), depth);
-    case NK_RescueNode:
-      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
-             dyn_tail_may_callable(c, nt_ref(nt, n, "subsequent"), depth);
-    default: return dyn_may_callable(c, n, depth + 1);
-  }
+  DynTail t = { c, depth };
+  return for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS | VPS_BEGIN, dyn_tail_leaf, &t);
 }
 
 /* What method mi returns: its body's last value and every `return`. */
