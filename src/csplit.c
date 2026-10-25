@@ -49,7 +49,8 @@ typedef struct {
                            the quotes), or 0 when the unit has none */
   size_t mflen;
   int msys;             /* its system-header flags: bit 0 = 3, bit 1 = 4 */
-  int mret;             /* it carries flag 2 (the return from an include) */
+  int mflags;           /* its include flags: bit 0 = 1 (the entry into an
+                           include), bit 1 = 2 (the return from one) */
   long mline;           /* the line st is on, as the marker counts */
   int unit;             /* the unit tag in effect at st (an index into the
                            --incremental split's tag table), or -1 (untagged) */
@@ -79,7 +80,7 @@ static size_t skip_lit(const char *t, size_t n, size_t i);
 /* Read the marker at t[i..] (is_marker said yes) into the current position:
    the file and flags it names, and the line the NEXT line has. Returns the
    offset of the newline ending the marker line (or n). */
-static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size_t *mflen, int *msys, int *mret, long *ln) {
+static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size_t *mflen, int *msys, int *mflags, long *ln) {
   size_t e = i;
   while (e < n && t[e] != '\n') e++;
   size_t p = i + 1;
@@ -90,13 +91,14 @@ static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size
   if (p < e && t[p] == '"') {
     size_t q = skip_lit(t, e, p);
     *mfile = p; *mflen = q - p;
-    int sys = 0, ret = 0;
+    int sys = 0, fl = 0;
     for (size_t r = q; r < e; r++) {
       if (t[r] == '3' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 1;
       else if (t[r] == '4' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 2;
-      else if (t[r] == '2' && (r + 1 >= e || t[r + 1] == ' ')) ret = 1;
+      else if (t[r] == '1' && (r + 1 >= e || t[r + 1] == ' ')) fl |= 1;
+      else if (t[r] == '2' && (r + 1 >= e || t[r + 1] == ' ')) fl |= 2;
     }
-    *msys = sys; *mret = ret;
+    *msys = sys; *mflags = fl;
   }
   *ln = v;
   return e;
@@ -647,19 +649,19 @@ static int cs_lex(const char *t, size_t n, Item **items, int *nitems, UnitPragma
      the line that follows it). */
   {
     size_t mfile = 0, mflen = 0, pos = 0;
-    int msys = 0, mret = 0;
+    int msys = 0, mflags = 0;
     long ln = 1;
-    if (is_marker(t, 0, n)) { pos = read_marker(t, 0, n, &mfile, &mflen, &msys, &mret, &ln); if (pos < n) pos++; }
+    if (is_marker(t, 0, n)) { pos = read_marker(t, 0, n, &mfile, &mflen, &msys, &mflags, &ln); if (pos < n) pos++; }
     for (int k = 0; k < nit; k++) {
       while (pos < it[k].st) {
         if (t[pos] == '\n') {
           ln++; pos++;
-          if (is_marker(t, pos, n)) { pos = read_marker(t, pos, n, &mfile, &mflen, &msys, &mret, &ln); if (pos < n) pos++; }
+          if (is_marker(t, pos, n)) { pos = read_marker(t, pos, n, &mfile, &mflen, &msys, &mflags, &ln); if (pos < n) pos++; }
           continue;
         }
         pos++;
       }
-      it[k].mfile = mfile; it[k].mflen = mflen; it[k].msys = msys; it[k].mret = mret; it[k].mline = ln;
+      it[k].mfile = mfile; it[k].mflen = mflen; it[k].msys = msys; it[k].mflags = mflags; it[k].mline = ln;
     }
   }
 
@@ -994,18 +996,33 @@ static char *cs_canon_markers(const char *t, size_t n, size_t *nout) {
   return o;
 }
 
+/* Does the marker item name the runtime header, `.../spinel_rt.h`? */
+static int names_rt_header(const Item *x, const char *t) {
+  static const char tail[] = "spinel_rt.h\"";
+  size_t tl = sizeof tail - 1;
+  if (x->mflen < tl + 1 || memcmp(t + x->mfile + x->mflen - tl, tail, tl) != 0) return 0;
+  char c = t[x->mfile + x->mflen - tl - 1];
+  return c == '"' || c == '/';
+}
+
 /* The runtime region is every item before the return from
    `#include "spinel_rt.h"`: the first marker that names the main file (the
-   file of the text's first marker) with flag 2. Nothing but comments and
-   defines precede that include in the generated C, and everything after it
-   is the program's, whatever file a marker names. -1 when there is no such
-   marker. */
+   file of the text's first marker) with flag 2 after the entry into
+   spinel_rt.h (flag 1). The entry is looked for first because clang, unlike
+   gcc, returns to the main file with flag 2 once already, from its
+   <built-in> and <command line> block, before the include. Nothing but
+   comments and defines precede that include in the generated C, and
+   everything after its return is the program's, whatever file a marker
+   names. -1 when either marker is missing. */
 static int cs_regions(Item *it, int nit, const char *t) {
-  int k0 = -1, kb = -1;
+  int k0 = -1, ke = -1, kb = -1;
   for (int k = 0; k < nit && k0 < 0; k++) if (it[k].kind == IT_MARK && it[k].mflen) k0 = k;
   if (k0 < 0) return -1;
-  for (int k = k0 + 1; k < nit && kb < 0; k++)
-    if (it[k].kind == IT_MARK && it[k].mret && it[k].mflen == it[k0].mflen &&
+  for (int k = k0 + 1; k < nit && ke < 0; k++)
+    if (it[k].kind == IT_MARK && (it[k].mflags & 1) && names_rt_header(&it[k], t)) ke = k;
+  if (ke < 0) return -1;
+  for (int k = ke + 1; k < nit && kb < 0; k++)
+    if (it[k].kind == IT_MARK && (it[k].mflags & 2) && it[k].mflen == it[k0].mflen &&
         memcmp(t + it[k].mfile, t + it[k0].mfile, it[k0].mflen) == 0)
       kb = k;
   if (kb < 0) return -1;
