@@ -41,7 +41,8 @@ VALUE rb_str_intern(VALUE);
 VALUE rb_funcall(VALUE, ID, int, ...);
 VALUE rb_funcallv(VALUE, ID, int, const VALUE *);
 #define RB_BLOCK_CALL_FUNC_ARGLIST(yielded, data) VALUE yielded, VALUE data, int argc, const VALUE *argv, VALUE blockarg
-typedef VALUE (*rb_block_call_func_t)(VALUE, VALUE, int, const VALUE *, VALUE);
+typedef VALUE rb_block_call_func(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg));
+typedef rb_block_call_func *rb_block_call_func_t;
 VALUE rb_block_call(VALUE, ID, int, const VALUE *, rb_block_call_func_t, VALUE);
 VALUE rb_iv_get(VALUE, const char *);
 VALUE rb_iv_set(VALUE, const char *, VALUE);

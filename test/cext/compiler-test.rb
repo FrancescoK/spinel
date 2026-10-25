@@ -118,4 +118,5 @@ cruby_oracle('sealed')
 cruby_oracle('const_defined')
 cruby_oracle('symbol_ids')
 cruby_oracle('feed')
+cruby_oracle('formats')
 puts 'C extension compiler bridge: CRuby oracle and GC modes passed'

@@ -4,6 +4,7 @@
 #include "sp_exc.h"
 #include "sp_setjmp.h"
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -77,12 +78,84 @@ VALUE rb_exc_new(VALUE klass, const char *message, long length) {
 VALUE rb_exc_new_cstr(VALUE klass, const char *message) {
     return rb_exc_new(klass, message, (long)strlen(message));
 }
+const char *sp_poly_to_s(sp_RbVal);
+const char *sp_poly_inspect(sp_RbVal);
+/* printf's conversions, plus CRuby's "%"PRIsVALUE: an integer conversion
+ * followed by \v takes a VALUE and prints its to_s, or its inspect with the
+ * + flag. Each conversion is formatted on its own, so the argument list is
+ * read by the conversion's own type. */
+static void append(char **out, size_t *length, size_t *capacity, const char *text, size_t n) {
+    if (*length + n + 1 > *capacity) {
+        size_t next = (*length + n + 1) * 2;
+        char *grown = realloc(*out, next);
+        if (!grown) { free(*out); sp_raise_cls("NoMemoryError", "exception format allocation failed"); }
+        *out = grown; *capacity = next;
+    }
+    memcpy(*out + *length, text, n); *length += n; (*out)[*length] = 0;
+}
 static const char *format(const char *fmt, va_list args) {
-    va_list measure; va_copy(measure, args);
-    int length = vsnprintf(NULL, 0, fmt, measure); va_end(measure);
-    if (length < 0) sp_raise_cls("ArgumentError", "invalid exception format");
-    char *s = sp_str_alloc((size_t)length);
-    vsnprintf(s, (size_t)length + 1, fmt, args);
+    char *out = NULL; size_t length = 0, capacity = 0;
+    append(&out, &length, &capacity, "", 0);
+    for (const char *p = fmt; *p;) {
+        if (*p != '%') { const char *q = strchr(p, '%'); size_t n = q ? (size_t)(q - p) : strlen(p); append(&out, &length, &capacity, p, n); p += n; continue; }
+        if (p[1] == '%') { append(&out, &length, &capacity, "%", 1); p += 2; continue; }
+        const char *start = p++;
+        int plus = 0;
+        while (*p && strchr("-+ #0", *p)) { if (*p == '+') plus = 1; p++; }
+        int star = 0;
+        if (*p == '*') { star++; p++; } else while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.') { p++; if (*p == '*') { star++; p++; } else while (*p >= '0' && *p <= '9') p++; }
+        int longs = 0, size_t_arg = 0, short_arg = 0;
+        for (;; p++) {
+            if (*p == 'l') longs++;
+            else if (*p == 'z' || *p == 't' || *p == 'j') size_t_arg = 1;
+            else if (*p == 'h') short_arg = 1;
+            else if (*p == 'L' || *p == 'q') longs = 2;
+            else break;
+        }
+        char conversion = *p;
+        if (!conversion) sp_raise_cls("ArgumentError", "invalid exception format");
+        p++;
+        char spec[64]; size_t spec_length = (size_t)(p - start);
+        if (spec_length >= sizeof spec) sp_raise_cls("ArgumentError", "invalid exception format");
+        memcpy(spec, start, spec_length); spec[spec_length] = 0;
+        int widths[2] = {0, 0};
+        for (int i = 0; i < star; i++) widths[i] = va_arg(args, int);
+        if ((conversion == 'i' || conversion == 'd') && *p == '\v') {
+            p++;
+            VALUE value = longs ? (VALUE)va_arg(args, VALUE) : (VALUE)va_arg(args, int);
+            const char *text = plus ? sp_poly_inspect(sp_cext_rbval(value)) : sp_poly_to_s(sp_cext_rbval(value));
+            append(&out, &length, &capacity, text, strlen(text));
+            continue;
+        }
+        char piece[512]; int n;
+#define PIECE(arg) (star == 2 ? snprintf(piece, sizeof piece, spec, widths[0], widths[1], arg) : \
+                    star == 1 ? snprintf(piece, sizeof piece, spec, widths[0], arg) : snprintf(piece, sizeof piece, spec, arg))
+        switch (conversion) {
+        case 'd': case 'i': case 'u': case 'x': case 'X': case 'o': case 'c':
+            if (size_t_arg) n = PIECE(va_arg(args, size_t));
+            else if (longs >= 2) n = PIECE(va_arg(args, long long));
+            else if (longs == 1) n = PIECE(va_arg(args, long));
+            else { (void)short_arg; n = PIECE(va_arg(args, int)); }
+            break;
+        case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A':
+            n = longs >= 2 ? PIECE(va_arg(args, long double)) : PIECE(va_arg(args, double)); break;
+        case 's': {
+            const char *text = va_arg(args, const char *);
+            n = PIECE(text ? text : "(null)");
+            if (n >= (int)sizeof piece && !star && spec_length == 2) { append(&out, &length, &capacity, text, strlen(text)); continue; }
+            break;
+        }
+        case 'p': n = PIECE(va_arg(args, void *)); break;
+        default: sp_raise_cls("ArgumentError", "invalid exception format");
+        }
+#undef PIECE
+        if (n < 0) sp_raise_cls("ArgumentError", "invalid exception format");
+        if (n >= (int)sizeof piece) n = (int)sizeof piece - 1;
+        append(&out, &length, &capacity, piece, (size_t)n);
+    }
+    char *s = sp_str_alloc(length);
+    memcpy(s, out, length + 1); free(out);
     return s;
 }
 void rb_raise(VALUE klass, const char *fmt, ...) {
