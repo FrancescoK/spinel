@@ -15452,15 +15452,6 @@ static void narrow_poly_int_locals(Compiler *c) {
             if (ty_is_array(rt) || ty_is_obj_array(rt)) { claimed[av[0]] = 1; has_index = 1; }
           }
         }
-        else if (sp_streq(ty, "IndexNode")) {
-          int recv = nt_ref(nt, id, "receiver");
-          TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-          if (ty_is_array(rt) || ty_is_obj_array(rt)) {
-            int args = nt_ref(nt, id, "arguments"); int an = 0;
-            const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            for (int k2 = 0; k2 < an; k2++) if (is_read[av[k2]]) { claimed[av[k2]] = 1; has_index = 1; }
-          }
-        }
       }
       /* every read must be claimed, and at least one must be an index (which
          proves the value is an integer, making a poly-source coercion sound). */

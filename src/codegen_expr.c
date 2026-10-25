@@ -3993,7 +3993,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* A composite expression answers "expression" even when its OPERANDS
        are undefined -- defined? never evaluates its argument. */
     else if (vk == NK_AndNode || vk == NK_OrNode ||
-             sp_streq(vt, "NotNode") || vk == NK_RangeNode ||
+             vk == NK_RangeNode ||
              vk == NK_HashNode || vk == NK_KeywordHashNode ||
              vk == NK_InterpolatedStringNode ||
              vk == NK_RegularExpressionNode ||
