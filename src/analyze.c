@@ -45109,10 +45109,8 @@ static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   if (t == TY_POLY) {
     const ClsSet *s = cls_fact_node(c, v);
     if (!s) return 0;
-    for (int i = 0; i < s->n; i++) {
-      int k = s->cls[i];
+    for (int k = cls_set_next(s, -1); k >= 0; k = cls_set_next(s, k))
       if (k < c->nclasses && k != set_cid && !is_descendant(c, k, set_cid)) return 0;
-    }
     return sid_kinds_ok(cls_fact_kinds(c, v)) && sid_kinds_ok(cls_fact_contents_kinds(c, v));
   }
   return 0;
@@ -48504,8 +48502,8 @@ static int ur_may_reach(Compiler *c, const UrCtx *u, const Scope *t, int n, int 
   int r = nt_kind(c->nt, n) == NK_CallNode ? nt_ref(c->nt, n, "receiver") : -1;
   const ClsSet *f = r >= 0 && !ur_retyped(c, u, n) ? cls_fact_node(c, r) : NULL;
   if (!f || f->all) return 1;
-  for (int i = 0; i < f->n; i++)
-    if (!cls_fact_bounded(c, f->cls[i]) || ur_ancestor(c, k, f->cls[i])) return 1;
+  for (int fk = cls_set_next(f, -1); fk >= 0; fk = cls_set_next(f, fk))
+    if (!cls_fact_bounded(c, fk) || ur_ancestor(c, k, fk)) return 1;
   return 0;
 }
 typedef struct { const char *name; int mi; } UrCand;

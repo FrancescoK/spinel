@@ -42,12 +42,6 @@ enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
    only inherits it (#4509), so the record is the NODE whose value made the
    slot degrade; the node's own origin (Compiler.norigin) leads on from there
    to the expression the poly was born at. */
-/* The user classes a value can hold (analyze_cls.c, #8530): `all` for every
-   class, else the class indices, sorted, at most CLS_SET_MAX of them. A
-   member at or past nclasses is the Class object of (member - nclasses),
-   which a call dispatches to class methods. `bv`: the value may also be a
-   builtin (a container, a Proc), whose own methods then answer too. */
-#define CLS_SET_MAX 16
 /* The tables infer_type reads are written only through setters that count
    each change in comp_ty_edits, so that its memo can tell whether an
    earlier query's answer still holds (#8852). Their fields are const under
@@ -67,9 +61,36 @@ static inline TyKind ty_ref_set(TyRef r, TyKind t) {
   return t;
 }
 
-/* bv: a builtin value with no class of the program's; os: an OpenStruct,
-   whose members answer any name (size, length, count, empty?) */
-typedef struct { unsigned char all, n, bv, os; int cls[CLS_SET_MAX]; } ClsSet;
+/* The user classes a value can hold (analyze_cls.c, #8530): `all` for every
+   class, else a set of class indices with no bound on how many: a sparse
+   bitset, its nw nonzero words w at word indices wi (ascending), n members.
+   A member at or past nclasses is the Class object of (member - nclasses),
+   which a call dispatches to class methods. `bv`: the value may also be a
+   builtin (a container, a Proc), whose own methods then answer too. Read
+   with cls_set_has and cls_set_next. */
+typedef struct { unsigned char all, bv, os; int n, nw; unsigned long long *w; int *wi; } ClsSet;
+/* the position of the first word at word index q or past it */
+static inline int cls_set_word_from(const ClsSet *s, int q) {
+  int lo = 0, hi = s->nw;
+  while (lo < hi) { int m = (lo + hi) >> 1; if (s->wi[m] < q) lo = m + 1; else hi = m; }
+  return lo;
+}
+static inline int cls_set_has(const ClsSet *s, int k) {
+  if (k < 0) return 0;
+  int p = cls_set_word_from(s, k >> 6);
+  return p < s->nw && s->wi[p] == (k >> 6) && ((s->w[p] >> (k & 63)) & 1);
+}
+/* the member after k (k = -1 for the first), -1 past the last */
+static inline int cls_set_next(const ClsSet *s, int k) {
+  int i = k + 1, q = i >> 6;
+  for (int p = cls_set_word_from(s, q); p < s->nw; p++) {
+    unsigned long long m = s->w[p];
+    if (s->wi[p] == q) m &= ~0ULL << (i & 63);
+    if (m) return s->wi[p] * 64 + __builtin_ctzll(m);
+  }
+  return -1;
+}
+void cls_pool_free(ClsSet *pool, int n);   /* a pool of sets and their words */
 
 typedef struct {
   int node;      /* the argument, written value or returned value whose type degraded the slot; -1 = untraced */

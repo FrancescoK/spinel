@@ -464,7 +464,7 @@ void comp_free(Compiler *c) {
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
-  free(c->cls_fact); free(c->cls_pool); free(c->cls_kind);
+  free(c->cls_fact); cls_pool_free(c->cls_pool, c->ncls_pool); free(c->cls_kind);
   free(c->send_param_memo);
   free(c->node_ord); free(c->node_base); free(c->node_pbase);
   for (int k = 0; k < c->pbase_key_slots; k++) free(c->pbase_keys[k]);

@@ -2610,8 +2610,9 @@ int cplan_visibility_class(Compiler *c, int id, int ci) {
     if (ty_is_object(rt)) ci = ty_object_class(rt);
   }
   const ClsSet *s = cls_fact_node(c, recv);
-  if (s && !s->bv && s->n == 1 && cls_fact_bounded(c, s->cls[0]))
-    return layout_only && s->cls[0] != ci ? -1 : s->cls[0];
+  int one = s && !s->bv && s->n == 1 ? cls_set_next(s, -1) : -1;
+  if (one >= 0 && cls_fact_bounded(c, one))
+    return layout_only && one != ci ? -1 : one;
   int n = 0;
   if (ci >= 0 && cls_fact_bounded(c, ci)) comp_descendants(c, ci, &n);
   return ci >= 0 && cls_fact_bounded(c, ci) && n == 0 ? ci : -1;
