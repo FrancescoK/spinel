@@ -21752,6 +21752,134 @@ int desugar_index_assign_user_recv(Compiler *c) {
   return changed;
 }
 
+/* ---- `r[k] = v` on an object whose `[]=` is the program's ----
+   An index assignment answers v, whatever `[]=` returns (a `[]=` that
+   answers :ok, or one that calls `super(k, v * 2)`). The call answered what
+   the method returned. Where the value is taken, the node becomes
+     (__ixr_N = r; __ixk_N_0 = k; (__ixv_N = v; __ixr_N[__ixk_N_0] = __ixv_N; __ixv_N))
+   so each part runs once, in Ruby's order, and the expression answers the
+   held value (ix_held_store). self and a literal key stay where they are.
+   The receiver is typed as such a class, or is a box that can hold one. A
+   key list with a splat, a block or keywords is left alone, and so are a
+   class's own `self.[]=` and a reopened builtin's `[]=`. */
+static int ixa_literal(const NodeTable *nt, int n) {
+  switch (nt_kind(nt, n)) {
+    case NK_SymbolNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    default: return 0;
+  }
+}
+static int ixa_hold(NodeTable *nt, const char *name, int value) {
+  int w = nt_new_node(nt, "LocalVariableWriteNode");
+  if (w < 0) return -1;
+  nt_node_set_str(nt, w, "name", name); nt_node_set_int(nt, w, "depth", 0);
+  nt_node_set_ref(nt, w, "value", value);
+  return w;
+}
+int desugar_index_assign_value(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *parent = NULL;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !nt_attr_write(nt, id) || nt_safe_nav(nt, id)) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "[]=") || nt_ref(nt, id, "block") >= 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (recv < 0 || !av || an < 2) continue;
+    if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
+    int user = 0;
+    if (ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      user = cid >= 0 && cid < c->nclasses && comp_method_in_chain(c, cid, "[]=", NULL) >= 0;
+    }
+    /* a box that can hold an object of such a class (one with a
+       construction site, as desugar_index_op_write_user asks) */
+    else if (rt == TY_POLY) {
+      int n = 0;
+      const int *ks = poly_recv_classes(c, id, &n);
+      for (int i = 0; i < (ks ? n : c->nclasses) && !user; i++) {
+        int pk = ks ? ks[i] : i;
+        user = c->classes[pk].ctor_reachable && !is_builtin_reopen(c->classes[pk].name) &&
+               comp_method_in_chain(c, pk, "[]=", NULL) >= 0;
+      }
+    }
+    if (!user) continue;
+    if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    /* a detached store (desugar_masgn_store_evidence's type evidence) has no parent */
+    if (parent[id] < 0) continue;
+    if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
+    /* defined?(r[k] = v) keeps the call it names */
+    if (nt_kind(nt, parent[id]) == NK_DefinedNode) continue;
+    /* nt_new_node can move the table: copy what is read from it first */
+    int nkeys = an - 1;
+    int *keys = malloc(sizeof(int) * (size_t)an), *body = malloc(sizeof(int) * (size_t)(an + 1));
+    if (!keys || !body) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < an; i++) keys[i] = av[i];
+    int val = keys[nkeys];
+    int may_private = nt_ignore_visibility(nt, id);
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    char tag[40]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, id));
+    char rname[48], vname[48], kname[64];
+    snprintf(rname, sizeof rname, "__ixr_%s", tag);
+    snprintf(vname, sizeof vname, "__ixv_%s", tag);
+    Scope *sc = comp_scope_of(c, id);
+    int base = nt->count, nb = 0, ok = 1;
+    int self_recv = nt_kind(nt, recv) == NK_SelfNode;
+    int recv2 = recv;
+    if (!self_recv) {
+      int rw = ixa_hold(nt, rname, recv);
+      if (rw < 0 || (recv2 = ixw_read(nt, rname)) < 0) ok = 0;
+      else { body[nb++] = rw; scope_local_intern(sc, rname); }
+    }
+    for (int i = 0; i < nkeys && ok; i++) {
+      if (ixa_literal(nt, keys[i])) continue;
+      snprintf(kname, sizeof kname, "__ixk_%s_%d", tag, i);
+      int kw = ixa_hold(nt, kname, keys[i]);
+      if (kw < 0 || (keys[i] = ixw_read(nt, kname)) < 0) { ok = 0; break; }
+      body[nb++] = kw;
+      scope_local_intern(sc, kname);
+    }
+    int vr = ok ? ixw_read(nt, vname) : -1;
+    int sa = vr >= 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
+    int set = sa >= 0 ? nt_new_node(nt, "CallNode") : -1;
+    if (set >= 0) {
+      keys[nkeys] = vr;
+      nt_node_set_arr(nt, sa, "arguments", keys, nkeys + 1);
+      nt_node_set_str(nt, set, "name", "[]=");
+      nt_node_set_ref(nt, set, "receiver", recv2);
+      nt_node_set_ref(nt, set, "arguments", sa);
+      nt_set_ignore_visibility(nt, set, may_private);
+      nt_node_set_int(nt, set, "node_line", line);
+      nt_node_set_int(nt, set, "node_file", file);
+    }
+    /* the holds first, then (v = value; r[k] = v; v) */
+    int held = set >= 0 ? ix_held_store(nt, vname, val, set, -1) : -1;
+    int st = held >= 0 ? nt_new_node(nt, "StatementsNode") : -1;
+    if (st >= 0) {
+      body[nb++] = held;
+      nt_node_set_arr(nt, st, "body", body, nb);
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_int(nt, id, "node_line", line);
+      nt_node_set_int(nt, id, "node_file", file);
+      nt_node_set_ref(nt, id, "body", st);
+      scope_local_intern(sc, vname);
+      changed = 1;
+    }
+    free(keys); free(body);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    int cb = c->node_cbody ? c->node_cbody[id] : -1;
+    for (int j = base; j < nt->count; j++) { c->nscope[j] = encl; if (c->node_cbody) c->node_cbody[j] = cb; }
+  }
+  free(parent);
+  return changed;
+}
+
 /* ---- `Klass.attr op= v` / `||=` / `&&=` on a class object ----
    The attribute op-assign emitters serve object receivers; a CONSTANT
    receiver (a class-level accessor, `Config.limit += 5`) was refused. The
