@@ -26,7 +26,9 @@ class Foo
   end
 end
 
-p Foo.new.show
+foo = Foo.new
+p foo.show
 p [$gstr, $gpoly, $grange, $gobj.class, CSTR, CPOLY, CRANGE, COBJ.class]
 GC.start
+p foo.show
 p "survived gc"
