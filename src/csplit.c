@@ -35,19 +35,33 @@
 #include <errno.h>
 #include "csplit.h"
 
-typedef enum { IT_HDR, IT_FN, IT_VAR, IT_PROTO, IT_MARK } ItemKind;
+typedef enum { IT_HDR, IT_FN, IT_VAR, IT_PROTO, IT_MARK, IT_UNIT } ItemKind;
 typedef struct {
   size_t st, en;        /* [st, en) in the text */
   ItemKind kind;
-  size_t body;          /* IT_FN: offset of the body's `{` */
+  size_t body;          /* IT_FN: offset of the body's `{`; IT_UNIT: the
+                           pragma's index in the UnitPragma table */
   char name[128];
   int keep_inline;      /* IT_FN: stays `static inline` in the header */
   size_t mfile;         /* the line marker in effect at st: its "file" (with
                            the quotes), or 0 when the unit has none */
   size_t mflen;
   int msys;             /* its system-header flags: bit 0 = 3, bit 1 = 4 */
+  int mret;             /* it carries flag 2 (the return from an include) */
   long mline;           /* the line st is on, as the marker counts */
+  int unit;             /* the IT_UNIT item in effect at st, or -1 (untagged) */
+  int region;           /* 0 = the runtime region, 1 = the program region */
+  int home;             /* the unit the item is written to, or -1 (header or
+                           declaration table only) */
+  int drop;             /* a variable's occurrence that is not its definition */
 } Item;
+
+/* `#pragma spinel unit <tag> <group>`, which an --incremental build's
+   codegen writes where a method, constructor, dispatcher or main begins
+   (unit_begin_in in codegen_util.c). The sizes are codegen's UNIT_TAG_MAX:
+   a longer word is not one codegen wrote, and declines. */
+#define CS_TAG_MAX 192
+typedef struct { char tag[CS_TAG_MAX]; char group[CS_TAG_MAX]; } UnitPragma;
 
 /* Is t[i..] a line marker `# N "file" ...`? (a `#` at the start of a line) */
 static int is_marker(const char *t, size_t i, size_t n) {
@@ -62,7 +76,7 @@ static size_t skip_lit(const char *t, size_t n, size_t i);
 /* Read the marker at t[i..] (is_marker said yes) into the current position:
    the file and flags it names, and the line the NEXT line has. Returns the
    offset of the newline ending the marker line (or n). */
-static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size_t *mflen, int *msys, long *ln) {
+static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size_t *mflen, int *msys, int *mret, long *ln) {
   size_t e = i;
   while (e < n && t[e] != '\n') e++;
   size_t p = i + 1;
@@ -73,12 +87,13 @@ static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size
   if (p < e && t[p] == '"') {
     size_t q = skip_lit(t, e, p);
     *mfile = p; *mflen = q - p;
-    int sys = 0;
+    int sys = 0, ret = 0;
     for (size_t r = q; r < e; r++) {
       if (t[r] == '3' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 1;
       else if (t[r] == '4' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 2;
+      else if (t[r] == '2' && (r + 1 >= e || t[r + 1] == ' ')) ret = 1;
     }
-    *msys = sys;
+    *msys = sys; *mret = ret;
   }
   *ln = v;
   return e;
@@ -442,20 +457,48 @@ static int cmpstr(const void *a, const void *b) {
   return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-int c_split(const char *pre_path, const char *out_dir, int nparts,
-            char (*part_paths)[4096], char *hdr_path, size_t hdr_sz) {
-  FILE *in = fopen(pre_path, "rb");
-  if (!in) return -1;
-  fseek(in, 0, SEEK_END);
-  long fl = ftell(in);
-  fseek(in, 0, SEEK_SET);
-  if (fl <= 0) { fclose(in); return -1; }
-  char *t = malloc((size_t)fl + 1);
-  size_t n = fread(t, 1, (size_t)fl, in);
-  fclose(in);
-  t[n] = 0;
+/* Read one word of a unit pragma ([A-Za-z0-9_], as unit_sanitize leaves
+   it) at t[*i..en) into out. 0 when there is none or it is too long. */
+static int pragma_word(const char *t, size_t *i, size_t en, char *out) {
+  size_t p = *i;
+  while (p < en && (t[p] == ' ' || t[p] == '\t')) p++;
+  size_t s = p;
+  while (p < en && (t[p] == '_' || (t[p] >= '0' && t[p] <= '9') || (t[p] >= 'a' && t[p] <= 'z') || (t[p] >= 'A' && t[p] <= 'Z'))) p++;
+  if (p == s || p - s >= CS_TAG_MAX) return 0;
+  memcpy(out, t + s, p - s); out[p - s] = 0;
+  *i = p;
+  return 1;
+}
 
+/* Is the directive line [st, en) a unit pragma? 1 (read into *u) when it is
+   `#pragma spinel unit <tag> <group>`, 0 when it is some other directive
+   (a system header's `#pragma GCC ...` stays a header item), -1 when it is
+   a unit pragma of another shape: the reader would not know which unit the
+   items after it belong to. */
+static int unit_pragma(const char *t, size_t st, size_t en, UnitPragma *u) {
+  static const char *const lead[3] = { "pragma", "spinel", "unit" };
+  size_t i = st + 1;
+  for (int w = 0; w < 3; w++) {
+    while (i < en && (t[i] == ' ' || t[i] == '\t')) i++;
+    size_t s = i, wl = strlen(lead[w]);
+    while (i < en && is_idch(t[i])) i++;
+    if (i - s != wl || memcmp(t + s, lead[w], wl) != 0) return 0;
+  }
+  if (!pragma_word(t, &i, en, u->tag) || !pragma_word(t, &i, en, u->group)) return -1;
+  while (i < en && (t[i] == ' ' || t[i] == '\t' || t[i] == '\r')) i++;
+  return i == en ? 1 : -1;
+}
+
+/* The item lexer: [0, n) of the preprocessed text as a list of items in text
+   order (a function, a declaration, a directive line or a line marker each),
+   with the line marker in effect at each, and each function's keep_inline
+   resolved against the prototypes. Shared by c_split and the --incremental
+   split, so both read the text the same way. 0, or -1 when the text holds
+   something this reader does not read (with SPINEL_SPLIT_DEBUG saying
+   where). *prags: the unit pragmas, which IT_UNIT items index. */
+static int cs_lex(const char *t, size_t n, Item **items, int *nitems, UnitPragma **prags, int *nprags) {
   Item *it = NULL; int nit = 0, cap = 0;
+  UnitPragma *up = NULL; int nup = 0, upcap = 0;
   int ok = 1;
   size_t i = 0;
   while (i < n && ok) {
@@ -465,10 +508,18 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     Item *x = &it[nit];
     memset(x, 0, sizeof *x);
     x->st = i;
+    x->unit = -1; x->home = -1;
     if (t[i] == '#') {   /* a line marker, or a directive line cc -E kept (#pragma) */
       int mark = is_marker(t, i, n);
       while (i < n && t[i] != '\n') i++;
-      x->en = i; x->kind = mark ? IT_MARK : IT_HDR; nit++;
+      x->en = i; x->kind = mark ? IT_MARK : IT_HDR;
+      if (!mark) {
+        if (nup == upcap) { upcap = upcap ? upcap * 2 : 256; up = realloc(up, sizeof *up * (size_t)upcap); }
+        int u = unit_pragma(t, x->st, x->en, &up[nup]);
+        if (u < 0) { ok = 0; break; }
+        if (u) { x->kind = IT_UNIT; x->body = (size_t)nup++; }
+      }
+      nit++;
       continue;
     }
     int d = 0;
@@ -584,7 +635,7 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
   if (!ok) {
     if (getenv("SPINEL_SPLIT_DEBUG"))
       fprintf(stderr, "c_split: declined at item %d: %.200s\n", nit, nit < cap ? t + it[nit].st : "");
-    free(t); free(it); return -1;
+    free(it); free(up); return -1;
   }
 
   /* The line marker in effect at each item's start: one walk over the text,
@@ -592,19 +643,19 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
      the line that follows it). */
   {
     size_t mfile = 0, mflen = 0, pos = 0;
-    int msys = 0;
+    int msys = 0, mret = 0;
     long ln = 1;
-    if (is_marker(t, 0, n)) { pos = read_marker(t, 0, n, &mfile, &mflen, &msys, &ln); if (pos < n) pos++; }
+    if (is_marker(t, 0, n)) { pos = read_marker(t, 0, n, &mfile, &mflen, &msys, &mret, &ln); if (pos < n) pos++; }
     for (int k = 0; k < nit; k++) {
       while (pos < it[k].st) {
         if (t[pos] == '\n') {
           ln++; pos++;
-          if (is_marker(t, pos, n)) { pos = read_marker(t, pos, n, &mfile, &mflen, &msys, &ln); if (pos < n) pos++; }
+          if (is_marker(t, pos, n)) { pos = read_marker(t, pos, n, &mfile, &mflen, &msys, &mret, &ln); if (pos < n) pos++; }
           continue;
         }
         pos++;
       }
-      it[k].mfile = mfile; it[k].mflen = mflen; it[k].msys = msys; it[k].mline = ln;
+      it[k].mfile = mfile; it[k].mflen = mflen; it[k].msys = msys; it[k].mret = mret; it[k].mline = ln;
     }
   }
 
@@ -623,6 +674,28 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     }
     free(pin);
   }
+  *items = it; *nitems = nit; *prags = up; *nprags = nup;
+  return 0;
+}
+
+int c_split(const char *pre_path, const char *out_dir, int nparts,
+            char (*part_paths)[4096], char *hdr_path, size_t hdr_sz) {
+  FILE *in = fopen(pre_path, "rb");
+  if (!in) return -1;
+  fseek(in, 0, SEEK_END);
+  long fl = ftell(in);
+  fseek(in, 0, SEEK_SET);
+  if (fl <= 0) { fclose(in); return -1; }
+  char *t = malloc((size_t)fl + 1);
+  size_t n = fread(t, 1, (size_t)fl, in);
+  fclose(in);
+  t[n] = 0;
+
+  Item *it = NULL; int nit = 0;
+  UnitPragma *up = NULL; int nup = 0;
+  if (cs_lex(t, n, &it, &nit, &up, &nup) != 0) { free(t); return -1; }
+  free(up);   /* the parts are cut by size, not at the unit pragmas */
+  int ok = 1;
   /* A name kept static inline keeps its prototypes as written; every other
      function's prototypes lose `static` and any inline word. */
   int nfn = 0; size_t fn_bytes = 0;
@@ -665,6 +738,8 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     switch (x->kind) {
       case IT_MARK:
         break;   /* replayed where the items it covered go out */
+      case IT_UNIT:
+        break;   /* a cut for the --incremental split only */
       case IT_HDR:
         out_sync(&oh, t, x);
         fwrite(t + x->st, 1, x->en - x->st, oh.f); fputc('\n', oh.f);
