@@ -2222,6 +2222,51 @@ static void cf_native_class_answer(CF *f, int v, int x, const char *nm, int argc
   cf_all(f, v);
 }
 
+static int cf_poison_class_call(CF *f, int v, const char *key, const char *nm, const int *argv, int argc, int blk) {
+  const NodeTable *nt = f->nt;
+  if (!key || !cf_poison_const(key)) return 0;
+  /* its value, and its block's parameters, come from anywhere; its
+     arguments are only stored (a Fiber's yield hands them to a resume,
+     whose value is one of these). Fiber.yield answers what a resume
+     passes: the channel, which a resume with arguments makes anything
+     (the enumerators the compiler makes resume with none). */
+  if (key && sp_streq(key, "Fiber") && sp_streq(nm, "yield")) { cf_flow(f, f->fiber_ch, v); return 1; }
+  /* Thread.current is one object for the walk, whose [] and []= the
+     builtin rules read as a container's: what the program stores
+     under any key is what a read answers, not every class (#8837: the
+     blog's 58 reads of its thread-local state). */
+  if (key && sp_streq(key, "Thread") && sp_streq(nm, "current") && argc == 0) {
+    int tls = cf_entry(f, -1, "#thread_current");
+    cf_add_set(f, tls, cf_bv_set(f));
+    if (f->directed) cf_el_obj(f, tls);
+    cf_flow(f, tls, v);
+    return 1;
+  }
+  /* Thread.new(a, b) { |x, y| }: the block's parameters are the
+     arguments; Fiber.new { |x| }: the first resume's, the channel. The
+     thread or fiber itself is anything (its value, its storage). */
+  if (key && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+      ((sp_streq(key, "Thread") && (sp_streq(nm, "new") || sp_streq(nm, "start") || sp_streq(nm, "fork"))) ||
+       (sp_streq(key, "Fiber") && sp_streq(nm, "new")))) {
+    const char *names[CF_YARGS];
+    int plain = 1;
+    int n = cf_block_params(f, blk, names, CF_YARGS, &plain, NULL);
+    int body = nt_ref(nt, blk, "body");
+    if (!plain) cf_all_block_params(f, blk);
+    else if (sp_streq(key, "Thread")) {
+      int splat = nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK);
+      if (splat) cf_all_block_params(f, blk);
+      else for (int i = 0; i < n; i++) if (names[i]) { int pe = cf_lv(f, body >= 0 ? body : blk, names[i]); if (i < argc) cf_flow(f, argv[i], pe); }
+    }
+    else for (int i = 0; i < n; i++) if (names[i]) cf_flow(f, f->fiber_ch, cf_lv(f, body >= 0 ? body : blk, names[i]));
+    cf_all(f, v);
+    return 1;
+  }
+  cf_all(f, v);
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_all(f, blk); }
+  return 1;
+}
+
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
@@ -2244,6 +2289,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       if (cm < 0 && cf_sg_access(f, v, kc, nm, argv, argc)) continue;
       if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && cf_user_target(f, v, mm, argv, argc, blk)) continue; }
       if (cf_class_has_natives(f, kc)) { cf_native_class_answer(f, v, kc, nm, argc); continue; }
+      if (cf_poison_class_call(f, v, c->classes[kc].name, nm, argv, argc, blk)) continue;
       builtin = 1;
       continue;
     }
@@ -2610,6 +2656,7 @@ static void cf_call(CF *f, int v) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       return;
     }
+    if (cf_poison_class_call(f, v, k->name, nm, argv, argc, blk)) return;
     /* a method of Class or Module: nothing of the program's own comes out,
        except through a block */
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
@@ -2620,48 +2667,7 @@ static void cf_call(CF *f, int v) {
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
     const char *cn = nt_str(nt, r, "name");
     const char *key = cf_const_key(cn);
-    if (cn && (cf_poison_const(cn) || (key && cf_poison_const(key)))) {
-      /* its value, and its block's parameters, come from anywhere; its
-         arguments are only stored (a Fiber's yield hands them to a resume,
-         whose value is one of these). Fiber.yield answers what a resume
-         passes: the channel, which a resume with arguments makes anything
-         (the enumerators the compiler makes resume with none). */
-      if (key && sp_streq(key, "Fiber") && sp_streq(nm, "yield")) { cf_flow(f, f->fiber_ch, v); return; }
-      /* Thread.current is one object for the walk, whose [] and []= the
-         builtin rules read as a container's: what the program stores
-         under any key is what a read answers, not every class (#8837: the
-         blog's 58 reads of its thread-local state). */
-      if (key && sp_streq(key, "Thread") && sp_streq(nm, "current") && argc == 0) {
-        int tls = cf_entry(f, -1, "#thread_current");
-        cf_add_set(f, tls, cf_bv_set(f));
-        if (f->directed) cf_el_obj(f, tls);
-        cf_flow(f, tls, v);
-        return;
-      }
-      /* Thread.new(a, b) { |x, y| }: the block's parameters are the
-         arguments; Fiber.new { |x| }: the first resume's, the channel. The
-         thread or fiber itself is anything (its value, its storage). */
-      if (key && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
-          ((sp_streq(key, "Thread") && (sp_streq(nm, "new") || sp_streq(nm, "start") || sp_streq(nm, "fork"))) ||
-           (sp_streq(key, "Fiber") && sp_streq(nm, "new")))) {
-        const char *names[CF_YARGS];
-        int plain = 1;
-        int n = cf_block_params(f, blk, names, CF_YARGS, &plain, NULL);
-        int body = nt_ref(nt, blk, "body");
-        if (!plain) cf_all_block_params(f, blk);
-        else if (sp_streq(key, "Thread")) {
-          int splat = nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK);
-          if (splat) cf_all_block_params(f, blk);
-          else for (int i = 0; i < n; i++) if (names[i]) { int pe = cf_lv(f, body >= 0 ? body : blk, names[i]); if (i < argc) cf_flow(f, argv[i], pe); }
-        }
-        else for (int i = 0; i < n; i++) if (names[i]) cf_flow(f, f->fiber_ch, cf_lv(f, body >= 0 ? body : blk, names[i]));
-        cf_all(f, v);
-        return;
-      }
-      cf_all(f, v);
-      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_all(f, blk); }
-      return;
-    }
+    if (cf_poison_class_call(f, v, key, nm, argv, argc, blk)) return;
     /* a constant holding a value of the program's own (`REG = Registry.new`)
        is a receiver like any other; a builtin class or module answers
        builtin values, built from the arguments (`Set.new(list)`,
