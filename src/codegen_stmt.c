@@ -1455,7 +1455,7 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
   lv_set_type(&slot, TY_STRBUF);
-  { { slot.str_shared = 1; comp_touch_scope(slot.owner); } comp_touch_scope(slot.owner); }
+  slot.str_shared = 1;
   emit_strbuf_value(c, &slot, v, b);
 }
 /* A proven fresh value can keep a small payload inside its new handle.
@@ -5504,7 +5504,7 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
   lv_set_type(&slot, TY_STRBUF);
-  { { slot.str_shared = shared ? 1 : 0; comp_touch_scope(slot.owner); } comp_touch_scope(slot.owner); }
+  slot.str_shared = shared ? 1 : 0;
   /* --share-strings: a value that ran ahead with its handle taken
      (emit_arg_temp) is that handle: its statements ran there */
   int held = shared ? ran_first_handle(v) : -1;
@@ -19083,7 +19083,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
       lv_set_type(&slot, TY_STRBUF);
-      { { slot.str_shared = 1; comp_touch_scope(slot.owner); } comp_touch_scope(slot.owner); }
+      slot.str_shared = 1;
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, &slot, v, b);
     }

@@ -5483,8 +5483,8 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       dl->is_param = sl.is_param;
       dl->is_block_param = sl.is_block_param;
       lv_set_proc_ret(dl, sl.proc_ret);
-      { { dl->is_cell = sl.is_cell; comp_touch_scope(dl->owner); } comp_touch_scope(dl->owner); }
-      { { dl->byref_out = sl.byref_out; comp_touch_scope(dl->owner); } comp_touch_scope(dl->owner); }
+      { dl->is_cell = sl.is_cell; comp_touch_scope(dl->owner); }
+      { dl->byref_out = sl.byref_out; comp_touch_scope(dl->owner); }
       dl->borrowed_volatile = sl.borrowed_volatile;
     }
     break;
@@ -21164,7 +21164,7 @@ char *codegen_program(const NodeTable *nt) {
       static const char *const fns[2] = { "message", "to_s" };
       for (int k = 0; k < 2; k++) {
         int mi = comp_method_in_chain(c, i, fns[k], NULL);
-        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) { { c->scopes[mi].reachable = 1; comp_touch_scope(c->scopes[mi].idx); } comp_touch_scope(c->scopes[mi].idx); }
+        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) { c->scopes[mi].reachable = 1; comp_touch_scope(c->scopes[mi].idx); }
       }
     }
   }

@@ -719,7 +719,7 @@ static unsigned char *sh_dead_nodes(Compiler *c) {
          a reopening's method is) */
       if (!m->reachable && !was[s] && m->def_node >= 0) { sh_mark_subtree(nt, m->def_node, g_dead); sh_mark_subtree(nt, m->body, g_dead);
         if (getenv("SPINEL_SHARE_DEAD")) fprintf(stderr, "share dead: %s%s%s (scope %d, was %d)\n", m->class_id >= 0 ? c->classes[m->class_id].name : "", m->class_id >= 0 ? (m->is_cmethod ? "." : "#") : "", m->name ? m->name : "?", s, was[s]); }
-      { { m->reachable = was[s]; comp_touch_scope(m->idx); } comp_touch_scope(m->idx); }
+      { m->reachable = was[s]; comp_touch_scope(m->idx); }
     }
     for (size_t i = 0; i < n; i++) if (live[i]) g_dead[i] = 0;
     free(live); free(was);

@@ -620,10 +620,10 @@ void compute_reachable(Compiler *c, int typed) {
   }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    { { sc->reachable = 0; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); }
+    { sc->reachable = 0; comp_touch_scope(sc->idx); }
     int is_root = (s == 0 || !sc->name || sp_streq(sc->name, "initialize") ||
                    method_name_implicitly_invoked(sc->name) || sc->is_ext_entry);
-    if (is_root) { { { sc->reachable = 1; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); } queue[qtail++] = s; }
+    if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
   /* "called_names" tracks every method name reached from any reachable scope.
@@ -671,26 +671,26 @@ void compute_reachable(Compiler *c, int typed) {
      or `self.` call in a class's instance method): every scope of the name
      but the class methods, which no instance can reach. */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
-      if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; \
+      if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
           if(!c->scopes[_u].reachable && c->scopes[_u].is_cmethod && cr_class_is_ancestor(c, c->scopes[_u].class_id, c->scopes[_t].class_id)) \
-            { { { c->scopes[_u].reachable = 1; comp_touch_scope(c->scopes[_u].idx); } comp_touch_scope(c->scopes[_u].idx); } queue[qtail++]=_u; } } } \
+            { { c->scopes[_u].reachable = 1; comp_touch_scope(c->scopes[_u].idx); } queue[qtail++]=_u; } } } \
     else if(_mn && _mn[0]=='\x02'){ if(!anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
       for(int _k=0;_k<c->nclasses;_k++){ if(comp_class_is_module(c,&c->classes[_k])) continue; \
         for(int _p=_k,_h=0;_p>=0&&_p<c->nclasses&&_h<64;_p=c->classes[_p].parent,_h++){ \
           int _t=comp_method_in_chain(c,_p,_mn+1,NULL); \
-          if(_t>=0 && !c->scopes[_t].reachable){ { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          if(_t>=0 && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if(c->scopes[_t].class_id<0 && !c->scopes[_t].is_cmethod && !c->scopes[_t].reachable) \
-          { { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
     else if(_mn && _mn[0]=='\x03'){ if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_mn+1)){ CN_ADD(_mn); \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].reachable) \
-          { { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
       if(!c->scopes[_t].reachable) \
-        { { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } while(0)
+        { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } while(0)
 
   while (qhead < qtail) {
     int s = queue[qhead++];
@@ -1122,7 +1122,7 @@ void compute_instantiated(Compiler *c, int early) {
     c->classes[k].ctor_site = c->classes[k].instantiated;
     if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
   }
-  for (int k = 0; k < c->nclasses; k++) { { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); } comp_touch_class(c->classes[k].idx); }
+  for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
   comp_touch_global();   /* instantiated and ctor_reachable moved: inference reads them (respond_to? on a box, the plans) */
 }
@@ -2129,7 +2129,7 @@ void mark_proc_captures(Compiler *c) {
         if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
             lv->type != TY_FLOAT && lv->type != TY_POLY && !heap_ptr)
           continue;   /* capture type without a usable cell: leave by value */
-        { { lv->is_cell = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+        { lv->is_cell = 1; comp_touch_scope(lv->owner); }
         if (outlives) lv->cell_outlives = 1;
         if (shadow) lv->cell_shadow = 1;
         /* A write in this proc's body, its own frame's or a block's nested
@@ -13684,14 +13684,14 @@ static int narrow_int_table_ivars(Compiler *c, int in_round) {
       }
       if (ok && saw_table) {
         ivar_set_type(cl, iv, TY_INT_ARRAY_ARRAY);
-        { { cl->ivar_int_table[iv] = 1; comp_touch_class(cl->idx); } comp_touch_class(cl->idx); }
+        { cl->ivar_int_table[iv] = 1; comp_touch_class(cl->idx); }
         if (!pinned) narrowed = 1;
       }
       else if (pinned) {
         /* back on the poly array its write reads, for the evidence of the
            rounds to come */
         ivar_set_type(cl, iv, TY_POLY_ARRAY);
-        { { cl->ivar_int_table[iv] = 0; comp_touch_class(cl->idx); } comp_touch_class(cl->idx); }
+        { cl->ivar_int_table[iv] = 0; comp_touch_class(cl->idx); }
         narrowed = 1;
       }
     }
@@ -14488,7 +14488,7 @@ static int narrow_object_arrays(Compiler *c) {
       if (cl->ivar_oa_type[iv] != TY_UNKNOWN) {
         /* this pass's own narrowing from the last round: back on the poly
            array, the evidence decides again (the same reset the locals get) */
-        ivar_set_type(cl, iv, TY_POLY_ARRAY); { { cl->ivar_int_table[iv] = 0; comp_touch_class(cl->idx); } comp_touch_class(cl->idx); }
+        ivar_set_type(cl, iv, TY_POLY_ARRAY); { cl->ivar_int_table[iv] = 0; comp_touch_class(cl->idx); }
       }
       if (cl->ivar_types[iv] != TY_POLY_ARRAY || cl->ivar_int_table[iv]) continue;
       if (class_ivar_pinned(cl, ivn)) continue;
@@ -18197,7 +18197,7 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
     if (!an_byref_group_member_string(c, m, pi)) continue;
     if (captured) handle[k] |= 1u << pi;
     LocalVar *q = scope_local(m, m->pnames[pi]);
-    if (q && !q->byref_out) { { { q->byref_out = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } did = 1; }
+    if (q && !q->byref_out) { { q->byref_out = 1; comp_touch_scope(q->owner); } { q->is_cell = 1; comp_touch_scope(q->owner); } did = 1; }
   }
   return did;
 }
@@ -18945,8 +18945,8 @@ static void compute_byref_out_params(Compiler *c) {
       if (!polyr[si] && !(cellh[si] & (1u << j))) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (!q || !q->byref_out) continue;
-      { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = q->cell_outlives; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); }
-      lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); }
+      { q->byref_out = 0; comp_touch_scope(q->owner); } { q->is_cell = q->cell_outlives; comp_touch_scope(q->owner); }
+      lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); }
     }
   }
   /* the share facts built from here on ask the same answer */
@@ -19299,9 +19299,9 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   ClassInfo *tc = &c->classes[top];
   int ti = comp_ivar_index(tc, nm);
   ivar_set_type(tc, ti, TY_STRBUF);
-  { { tc->ivar_str_shared[ti] = 1; comp_touch_class(tc->idx); } comp_touch_class(tc->idx); }
+  { tc->ivar_str_shared[ti] = 1; comp_touch_class(tc->idx); }
   ivar_set_type(ci, iv, TY_STRBUF);
-  { { ci->ivar_str_shared[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { ci->ivar_str_shared[iv] = 1; comp_touch_class(ci->idx); }
   /* The inherited field has this representation in every descendant,
      including one with no ivar node of its own (and so no share holder):
      the ancestor's methods reach it through their own struct, in either
@@ -19317,7 +19317,7 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
       int si = comp_ivar_index(sc, nm);
       if (si < 0 || (sc->ivar_types[si] != TY_STRING && sc->ivar_types[si] != TY_STRBUF)) continue;
       ivar_set_type(sc, si, TY_STRBUF);
-      { { sc->ivar_str_shared[si] = 1; comp_touch_class(sc->idx); } comp_touch_class(sc->idx); }
+      { sc->ivar_str_shared[si] = 1; comp_touch_class(sc->idx); }
     }
   }
   return 1;
@@ -20673,7 +20673,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
         int yo = block_param_user_yield_only(c, snm, sns);
         if (yo && c->share &&
             repr_local_shares(c, sns, snv)) {
-          if (snv->type != TY_STRBUF || !snv->str_shared) { lv_set_type(snv, TY_STRBUF); { { snv->str_shared = 1; comp_touch_scope(snv->owner); } comp_touch_scope(snv->owner); } ch = 1; }
+          if (snv->type != TY_STRBUF || !snv->str_shared) { lv_set_type(snv, TY_STRBUF); { snv->str_shared = 1; comp_touch_scope(snv->owner); } ch = 1; }
           if (!c->strbuf_box[sn]) { comp_set_strbuf_box(c, sn, 1); ch = 1; }
         }
       }
@@ -20684,7 +20684,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (snv->is_param && !snv->is_cell &&
         an_param_idx(sns, snm) >= 0 &&
         (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
-      lv_set_type(snv, TY_STRBUF); { { snv->str_shared = 1; comp_touch_scope(snv->owner); } comp_touch_scope(snv->owner); } { { snv->byref_out = 0; comp_touch_scope(snv->owner); } comp_touch_scope(snv->owner); }
+      lv_set_type(snv, TY_STRBUF); { snv->str_shared = 1; comp_touch_scope(snv->owner); } { snv->byref_out = 0; comp_touch_scope(snv->owner); }
       comp_set_strbuf_box(c, sn, 1);
       return 1;
     }
@@ -20722,7 +20722,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
-    lv_set_type(snv, TY_STRBUF); { { snv->str_shared = 1; comp_touch_scope(snv->owner); } comp_touch_scope(snv->owner); }
+    lv_set_type(snv, TY_STRBUF); { snv->str_shared = 1; comp_touch_scope(snv->owner); }
     comp_set_strbuf_box(c, sn, 1);
     return 1;
   }
@@ -21858,7 +21858,7 @@ int cext_demand_string(Compiler *c, int value) {
     LocalVar *slot = name ? comp_const(c, name) : NULL;
     if (slot && (slot->type == TY_STRING || slot->type == TY_STRBUF)) {
       int changed = slot->type != TY_STRBUF || !slot->str_shared || !c->strbuf_box[value];
-      lv_set_type(slot, TY_STRBUF); { { slot->str_shared = 1; comp_touch_scope(slot->owner); } comp_touch_scope(slot->owner); } comp_set_strbuf_box(c, value, 1);
+      lv_set_type(slot, TY_STRBUF); { slot->str_shared = 1; comp_touch_scope(slot->owner); } comp_set_strbuf_box(c, value, 1);
       /* All reads of this holder must retain its identity across a C mutation. */
       for (int read = 0; read < c->nt->count; read++) {
         NodeKind kind = nt_kind(c->nt, read);
@@ -22427,7 +22427,7 @@ static int strbuf_demand_leaf(const VpLeaf *lf, void *ud) {
       }
       if (!vlv || !strbuf_slot_eligible(c, vn, vs, vlv)) return 0;
       if (strbuf_mut_kind(c, vn, vs) < 0) return 0;
-      lv_set_type(vlv, TY_STRBUF); { { vlv->str_shared = 1; comp_touch_scope(vlv->owner); } comp_touch_scope(vlv->owner); }
+      lv_set_type(vlv, TY_STRBUF); { vlv->str_shared = 1; comp_touch_scope(vlv->owner); }
       comp_set_strbuf_box(c, node, 1);
       sbd_gen++;
       w->changed = 1;
@@ -23137,7 +23137,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
       if (!g_one_string &&   /* (the one-String mode: the typed container holds the handle) */
           (ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !(ci->cvar_elems_shared[i] & ELEMS_POLY)) {
         cvar_set_type(ci, i, TY_POLY_ARRAY);
-        { { ci->cvar_elems_shared[i] |= ELEMS_POLY; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+        { ci->cvar_elems_shared[i] |= ELEMS_POLY; comp_touch_class(ci->idx); }
         changed = 1;
       }
     }
@@ -23379,7 +23379,7 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash)
     int ki = comp_ivar_index(kc, nm);
     if (ki < 0 || kc->ivar_types[ki] != typed) continue;
     ivar_set_type(kc, ki, boxed);
-    if (!hash) { { kc->ivar_elems_shared[ki] |= ELEMS_POLY; comp_touch_class(kc->idx); } comp_touch_class(kc->idx); }
+    if (!hash) { kc->ivar_elems_shared[ki] |= ELEMS_POLY; comp_touch_class(kc->idx); }
     changed = 1;
   }
   return changed;
@@ -23580,18 +23580,18 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
            a seeded parameter takes the handle as an inferred one does
            (reassert_rbs_param_seeds keeps it) */
         if (lv->rbs_seeded && lv->rbs_type != TY_STRING) continue;
-        if (lv->byref_out) { { { lv->byref_out = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } { { lv->is_cell = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } }
-        lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+        if (lv->byref_out) { { lv->byref_out = 0; comp_touch_scope(lv->owner); } { lv->is_cell = 0; comp_touch_scope(lv->owner); } }
+        lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); }
         changed = 1;
       }
       /* a block's parameter holds the handle as a local does: what binds it
          (a yield, an iterator) hands over the handle */
       else if (lv->is_block_param) {
-        lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+        lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); }
         changed = 1;
       }
       else if (strbuf_slot_eligible(c, lv->name, s, lv)) {
-        lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+        lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); }
         changed = 1;
       }
     }
@@ -23605,7 +23605,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
            String Array written into it is wrapped element by element */
         ClassInfo *ci = &c->classes[sh->cid];
         if (it == TY_POLY_ARRAY && !(ci->ivar_elems_shared[iv] & ELEMS_POLY)) {
-          { { ci->ivar_elems_shared[iv] |= ELEMS_POLY; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+          { ci->ivar_elems_shared[iv] |= ELEMS_POLY; comp_touch_class(ci->idx); }
           changed = 1;
           changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
         }
@@ -23669,7 +23669,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;
       if (repr_of_slot(c, gv).share) continue;
       lv_set_type(gv, TY_STRBUF);
-      { { gv->str_shared = 1; comp_touch_scope(gv->owner); } comp_touch_scope(gv->owner); }
+      { gv->str_shared = 1; comp_touch_scope(gv->owner); }
       changed = 1;
     }
   }
@@ -23872,8 +23872,8 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
   int ht = tgtv->type == TY_STRBUF && tgtv->str_shared;
   if (ms != 1 && mt != 1 && !hs && !ht) return 0;   /* alias set never mutated */
   if (src_param && (srcv->type != TY_STRBUF || !srcv->str_shared || srcv->byref_out)) {
-    if (srcv->byref_out) { { { srcv->byref_out = 0; comp_touch_scope(srcv->owner); } comp_touch_scope(srcv->owner); } { { srcv->is_cell = 0; comp_touch_scope(srcv->owner); } comp_touch_scope(srcv->owner); } }
-    lv_set_type(srcv, TY_STRBUF); { { srcv->str_shared = 1; comp_touch_scope(srcv->owner); } comp_touch_scope(srcv->owner); }
+    if (srcv->byref_out) { { srcv->byref_out = 0; comp_touch_scope(srcv->owner); } { srcv->is_cell = 0; comp_touch_scope(srcv->owner); } }
+    lv_set_type(srcv, TY_STRBUF); { srcv->str_shared = 1; comp_touch_scope(srcv->owner); }
     changed = 1;
   }
   /* A slot that has widened past String cannot carry the shared-mutable
@@ -23882,9 +23882,9 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
      still travel; forcing strbuf back on it only fought whatever widened it,
      every round, to the fixpoint's cap (#4116). */
   if (srcv->type != TY_POLY && (srcv->type != TY_STRBUF || !srcv->str_shared))
-    {  lv_set_type(srcv, TY_STRBUF); { { srcv->str_shared = 1; comp_touch_scope(srcv->owner); } comp_touch_scope(srcv->owner); } changed = 1;  }
+    {  lv_set_type(srcv, TY_STRBUF); { srcv->str_shared = 1; comp_touch_scope(srcv->owner); } changed = 1;  }
   if (tgtv->type != TY_POLY && (tgtv->type != TY_STRBUF || !tgtv->str_shared))
-    {  lv_set_type(tgtv, TY_STRBUF); { { tgtv->str_shared = 1; comp_touch_scope(tgtv->owner); } comp_touch_scope(tgtv->owner); } changed = 1;  }
+    {  lv_set_type(tgtv, TY_STRBUF); { tgtv->str_shared = 1; comp_touch_scope(tgtv->owner); } changed = 1;  }
   return changed;
 }
 
@@ -25927,7 +25927,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
                     (is_eql_or_equal(wn2));
         if (is_eq && !vlv->str_shared) continue; }
       lv_set_type(vlv, TY_STRBUF);
-      { { vlv->str_shared = 1; comp_touch_scope(vlv->owner); } comp_touch_scope(vlv->owner); }
+      { vlv->str_shared = 1; comp_touch_scope(vlv->owner); }
       comp_set_strbuf_box(c, vnode, 1);
       changed = 1;
     }
@@ -26172,7 +26172,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           if (!m5->name || !sp_streq(m5->name, gn5)) continue;
           LocalVar *q5 = scope_local(m5, m5->pnames[j]);
           if (!q5 || (q5->type == TY_STRBUF && q5->str_shared && !q5->byref_out)) continue;
-          lv_set_type(q5, TY_STRBUF); { { q5->str_shared = 1; comp_touch_scope(q5->owner); } comp_touch_scope(q5->owner); } { { q5->byref_out = 0; comp_touch_scope(q5->owner); } comp_touch_scope(q5->owner); }
+          lv_set_type(q5, TY_STRBUF); { q5->str_shared = 1; comp_touch_scope(q5->owner); } { q5->byref_out = 0; comp_touch_scope(q5->owner); }
           changed = 1;
         }
       }
@@ -26217,7 +26217,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       if (tv6 && strbuf_slot_eligible_shape(c, tn6, ws6, tv6) &&
           (tv6->type == TY_STRING || tv6->type == TY_STRBUF) &&
           !(tv6->type == TY_STRBUF && tv6->str_shared)) {
-        lv_set_type(tv6, TY_STRBUF); { { tv6->str_shared = 1; comp_touch_scope(tv6->owner); } comp_touch_scope(tv6->owner); } changed = 1;
+        lv_set_type(tv6, TY_STRBUF); { tv6->str_shared = 1; comp_touch_scope(tv6->owner); } changed = 1;
       } }
   }
 
@@ -26270,7 +26270,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       if (iv2 < 0 || !ci2->ivar_str_shared[iv2]) continue; }
     if (ch2) changed = 1;
     if (llv->type != TY_POLY && (llv->type != TY_STRBUF || !llv->str_shared))
-      {  lv_set_type(llv, TY_STRBUF); { { llv->str_shared = 1; comp_touch_scope(llv->owner); } comp_touch_scope(llv->owner); } changed = 1;  }
+      {  lv_set_type(llv, TY_STRBUF); { llv->str_shared = 1; comp_touch_scope(llv->owner); } changed = 1;  }
   }
   /* external reader alias: `x = obj.reader` where the reader exposes an
      in-place-mutated ivar -- x must hold the handle, so a later obj.bump
@@ -26315,7 +26315,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       if (iv2 < 0 || !c->classes[defc].ivar_str_shared[iv2]) continue; }
     if (!c->strbuf_box[wv]) { comp_set_strbuf_box(c, wv, 1); changed = 1; }
     if (llv2->type != TY_POLY && (llv2->type != TY_STRBUF || !llv2->str_shared))
-      {  lv_set_type(llv2, TY_STRBUF); { { llv2->str_shared = 1; comp_touch_scope(llv2->owner); } comp_touch_scope(llv2->owner); } changed = 1;  }
+      {  lv_set_type(llv2, TY_STRBUF); { llv2->str_shared = 1; comp_touch_scope(llv2->owner); } changed = 1;  }
   }
   /* `r = obj.buf << x`: an append (or replace, clear) answers its receiver,
      so where that is a
@@ -26348,7 +26348,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     for (int k = 0; k < nl; k++)
       if (!c->strbuf_box[links[k]]) { comp_set_strbuf_box(c, links[k], 1); changed = 1; }
     if (llv3->type != TY_STRBUF || !llv3->str_shared)
-      {  lv_set_type(llv3, TY_STRBUF); { { llv3->str_shared = 1; comp_touch_scope(llv3->owner); } comp_touch_scope(llv3->owner); } changed = 1;  }
+      {  lv_set_type(llv3, TY_STRBUF); { llv3->str_shared = 1; comp_touch_scope(llv3->owner); } changed = 1;  }
   }
   /* iteration-variable mutation: `arr.each { |x| x << "!" }` mutates the
      ELEMENT through the block binding, so the container's stored strings
@@ -26420,7 +26420,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       if (strbuf_mut_kind(c, sp4, ss4) != 1 && !cap_wrap_mutates_param(c, blk4, sp4) &&
           !block_yields_param_to_lender(c, blk4, sp4, &cbl)) continue;
       changed |= strbuf_store_leaf(c, recv4, 0, SB_DEMAND);
-      if (sv4->type != TY_STRBUF || !sv4->str_shared) { lv_set_type(sv4, TY_STRBUF); { { sv4->str_shared = 1; comp_touch_scope(sv4->owner); } comp_touch_scope(sv4->owner); } changed = 1; }
+      if (sv4->type != TY_STRBUF || !sv4->str_shared) { lv_set_type(sv4, TY_STRBUF); { sv4->str_shared = 1; comp_touch_scope(sv4->owner); } changed = 1; }
       continue;
     }
     /* Hash value parameters still bind copies of stored Strings
@@ -26479,7 +26479,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           bpv4->type != TY_POLY) continue;
       changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
       if (bpv4->type != TY_POLY && (bpv4->type != TY_STRBUF || !bpv4->str_shared))
-        {  lv_set_type(bpv4, TY_STRBUF); { { bpv4->str_shared = 1; comp_touch_scope(bpv4->owner); } comp_touch_scope(bpv4->owner); } changed = 1;  }
+        {  lv_set_type(bpv4, TY_STRBUF); { bpv4->str_shared = 1; comp_touch_scope(bpv4->owner); } changed = 1;  }
       continue;
     }
     /* an Array literal receiver (`[x].each { |u| ... }`) is its own store
@@ -26593,7 +26593,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     changed |= lit4 ? strbuf_container_source_walk(c, recv4, 0, SB_DEMAND)
                     : strbuf_demand_container_stores(c, contn4, conts4);
     if (bpv4->type != TY_POLY && (bpv4->type != TY_STRBUF || !bpv4->str_shared))
-      {  lv_set_type(bpv4, TY_STRBUF); { { bpv4->str_shared = 1; comp_touch_scope(bpv4->owner); } comp_touch_scope(bpv4->owner); } changed = 1;  }
+      {  lv_set_type(bpv4, TY_STRBUF); { bpv4->str_shared = 1; comp_touch_scope(bpv4->owner); } changed = 1;  }
   }
   if (bpa_built) an_local_aliases_free(&bpa);
   an_caller_blocks_free(&cbl);
@@ -26653,7 +26653,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         if (tlv->type != TY_UNKNOWN && tlv->type != TY_STRING &&
             tlv->type != TY_STRBUF && tlv->type != TY_POLY) continue;
         if (tlv->type != TY_POLY && (tlv->type != TY_STRBUF || !tlv->str_shared))
-          {  lv_set_type(tlv, TY_STRBUF); { { tlv->str_shared = 1; comp_touch_scope(tlv->owner); } comp_touch_scope(tlv->owner); } changed = 1;  }
+          {  lv_set_type(tlv, TY_STRBUF); { tlv->str_shared = 1; comp_touch_scope(tlv->owner); } changed = 1;  }
       }
       continue;
     }
@@ -26663,7 +26663,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     comp_set_strbuf_box(c, wv, 1); changed = 1;
     if (fresh3) c->scopes[mi3].ret_pub_fresh = 1;
     if (clv3->type != TY_POLY && (clv3->type != TY_STRBUF || !clv3->str_shared))
-      {  lv_set_type(clv3, TY_STRBUF); { { clv3->str_shared = 1; comp_touch_scope(clv3->owner); } comp_touch_scope(clv3->owner); } changed = 1;  }
+      {  lv_set_type(clv3, TY_STRBUF); { clv3->str_shared = 1; comp_touch_scope(clv3->owner); } changed = 1;  }
   }
   /* --share-strings: the same call as a String mutator's receiver (`get <<
      x`), whose String the rule shares, hands out the handle it publishes */
@@ -26719,7 +26719,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     if (strbuf_container_stores_nonstring(c, contn5, conts5)) continue;
     if (!c->strbuf_box[wv]) { comp_set_strbuf_box(c, wv, 1); changed = 1; }
     if (llv5->type != TY_POLY && (llv5->type != TY_STRBUF || !llv5->str_shared))
-      {  lv_set_type(llv5, TY_STRBUF); { { llv5->str_shared = 1; comp_touch_scope(llv5->owner); } comp_touch_scope(llv5->owner); } changed = 1;  }
+      {  lv_set_type(llv5, TY_STRBUF); { llv5->str_shared = 1; comp_touch_scope(llv5->owner); } changed = 1;  }
   }
   /* A poly local or ivar a String mutator runs on (`x = c ? "s".dup : [1];
      x.replace("z")`), directly or through a callee's parameter: the string
@@ -27647,7 +27647,7 @@ static int promote_params_stored_in_shared_ivars(Compiler *c,
       int iv2 = comp_ivar_index(ci2, ivname);
       if (iv2 < 0 || !ci2->ivar_str_shared[iv2]) continue; }
     if (pp->type != TY_POLY && (pp->type != TY_STRBUF || !pp->str_shared))
-      {  lv_set_type(pp, TY_STRBUF); { { pp->str_shared = 1; comp_touch_scope(pp->owner); } comp_touch_scope(pp->owner); } { { pp->byref_out = 0; comp_touch_scope(pp->owner); } comp_touch_scope(pp->owner); } changed = 1;  }
+      {  lv_set_type(pp, TY_STRBUF); { pp->str_shared = 1; comp_touch_scope(pp->owner); } { pp->byref_out = 0; comp_touch_scope(pp->owner); } changed = 1;  }
   }
   return changed;
 }
@@ -28114,7 +28114,7 @@ static int mark_reader_read_only_operands(Compiler *c) {
        a fresh one (test/reader_alias_takes_handle) */
     comp_set_strbuf_box(c, v7, 1);
     comp_sn_retype(c, v7, TY_STRBUF);
-    lv_set_type(tv7, TY_STRBUF); { { tv7->str_shared = 1; comp_touch_scope(tv7->owner); } comp_touch_scope(tv7->owner); } changed = 1;
+    lv_set_type(tv7, TY_STRBUF); { tv7->str_shared = 1; comp_touch_scope(tv7->owner); } changed = 1;
   }
   return changed;
 }
@@ -29260,7 +29260,7 @@ static int an_unlend_local(Compiler *c, const char *vn, Scope *vs) {
         if (!mk->name || !sp_streq(mk->name, gname) || j >= mk->nparams) continue;
         LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
         if (!q || !q->byref_out) continue;
-        { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } changed = 1;
+        { q->byref_out = 0; comp_touch_scope(q->owner); } { q->is_cell = 0; comp_touch_scope(q->owner); } lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } changed = 1;
       }
     }
   }
@@ -29284,7 +29284,7 @@ static int pull_local_into_handle(Compiler *c, LocalVar *alv, const char *vn, Sc
   if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
       alv->type != TY_STRBUF && alv->type != TY_POLY) return changed;
   if (alv->type != TY_POLY && (alv->type != TY_STRBUF || !alv->str_shared))
-    {  lv_set_type(alv, TY_STRBUF); { { alv->str_shared = 1; comp_touch_scope(alv->owner); } comp_touch_scope(alv->owner); } changed = 1;  }
+    {  lv_set_type(alv, TY_STRBUF); { alv->str_shared = 1; comp_touch_scope(alv->owner); } changed = 1;  }
   return changed;
 }
 static int convert_byref_handle_params(Compiler *c,
@@ -29381,10 +29381,10 @@ static int convert_byref_handle_params(Compiler *c,
       }
       if (!saw_handle) continue;
       if (pp->byref_out || strbuf_mut) {
-        { { pp->byref_out = 0; comp_touch_scope(pp->owner); } comp_touch_scope(pp->owner); }
-        { { pp->is_cell = 0; comp_touch_scope(pp->owner); } comp_touch_scope(pp->owner); }
+        { pp->byref_out = 0; comp_touch_scope(pp->owner); }
+        { pp->is_cell = 0; comp_touch_scope(pp->owner); }
         lv_set_type(pp, TY_STRBUF);
-        { { pp->str_shared = 1; comp_touch_scope(pp->owner); } comp_touch_scope(pp->owner); }
+        { pp->str_shared = 1; comp_touch_scope(pp->owner); }
         changed = 1;
       }
       /* pull the remaining plain-local args into the shared set */
@@ -29432,8 +29432,8 @@ static int convert_byref_handle_params(Compiler *c,
                alv->type == TY_STRBUF)) {
             if (alv->type != TY_STRBUF || !alv->str_shared) {
               /* a lent slot's cell goes with it, as above */
-              if (alv->byref_out) { { alv->is_cell = 0; comp_touch_scope(alv->owner); } comp_touch_scope(alv->owner); }
-              lv_set_type(alv, TY_STRBUF); { { alv->str_shared = 1; comp_touch_scope(alv->owner); } comp_touch_scope(alv->owner); } { { alv->byref_out = 0; comp_touch_scope(alv->owner); } comp_touch_scope(alv->owner); }
+              if (alv->byref_out) { alv->is_cell = 0; comp_touch_scope(alv->owner); }
+              lv_set_type(alv, TY_STRBUF); { alv->str_shared = 1; comp_touch_scope(alv->owner); } { alv->byref_out = 0; comp_touch_scope(alv->owner); }
               changed = 1;
             }
             continue;
@@ -29557,8 +29557,8 @@ static int convert_byref_handle_params(Compiler *c,
         if (dh == sh) continue;
         LocalVar *o = dh ? src : dst;
         if (o->type != TY_STRING && o->type != TY_STRBUF) continue;
-        if (o->byref_out) { { { o->byref_out = 0; comp_touch_scope(o->owner); } comp_touch_scope(o->owner); } { { o->is_cell = 0; comp_touch_scope(o->owner); } comp_touch_scope(o->owner); } }
-        lv_set_type(o, TY_STRBUF); { { o->str_shared = 1; comp_touch_scope(o->owner); } comp_touch_scope(o->owner); }
+        if (o->byref_out) { { o->byref_out = 0; comp_touch_scope(o->owner); } { o->is_cell = 0; comp_touch_scope(o->owner); } }
+        lv_set_type(o, TY_STRBUF); { o->str_shared = 1; comp_touch_scope(o->owner); }
         changed = 1;
       }
     }
@@ -29609,8 +29609,8 @@ static int convert_byref_handle_params(Compiler *c,
       if (!q || !q->byref_out) continue;
       if (h < 0 && (h = anh_find(&hnames, mk->name)) < 0) break;
       if (!(hbits[h] & (1u << j))) continue;
-      { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); }
-      lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); }
+      { q->byref_out = 0; comp_touch_scope(q->owner); } { q->is_cell = 0; comp_touch_scope(q->owner); }
+      lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); }
       changed = 1;
     }
   }
@@ -31385,7 +31385,7 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
   if (lv->is_param) {
     if (lv->is_block_param || an_param_idx(vs, vn) < 0) return 0;
     if (lv->type != TY_STRBUF || !lv->str_shared) {
-      lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } { { lv->byref_out = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } changed = 1;
+      lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); } { lv->byref_out = 0; comp_touch_scope(lv->owner); } changed = 1;
     }
     if (mark_read && !c->strbuf_box[a]) { comp_set_strbuf_box(c, a, 1); comp_sn_retype(c, a, TY_STRBUF); changed = 1; }
     return changed;
@@ -31419,13 +31419,13 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
           if (j >= mk->nparams) continue;
           LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
           if (!q || !q->byref_out) continue;
-          { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } changed = 1;
+          { q->byref_out = 0; comp_touch_scope(q->owner); } { q->is_cell = 0; comp_touch_scope(q->owner); } lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } changed = 1;
         }
       }
     }
     if (!strbuf_slot_eligible_shape(c, vn, vs, lv)) return changed;
   }
-  if (lv->type != TY_STRBUF || !lv->str_shared) { lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } changed = 1; }
+  if (lv->type != TY_STRBUF || !lv->str_shared) { lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); } changed = 1; }
   if (mark_read && !c->strbuf_box[a]) { comp_set_strbuf_box(c, a, 1); comp_sn_retype(c, a, TY_STRBUF); changed = 1; }
   return changed;
 }
@@ -31472,7 +31472,7 @@ static int dyn_convert_params(Compiler *c) {
         const char *pn = dyn_lit_param_name(c, lit, k);
         LocalVar *lv = pn ? scope_local(bs, pn) : NULL;
         if (!lv || lv->type != TY_STRING || lv->is_cell) continue;
-        lv_set_type(lv, TY_STRBUF); { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); } changed = 1;
+        lv_set_type(lv, TY_STRBUF); { lv->str_shared = 1; comp_touch_scope(lv->owner); } changed = 1;
       }
     }
   }
@@ -31488,7 +31488,7 @@ static int dyn_convert_params(Compiler *c) {
         if (!(app & (1u << j))) continue;
         LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
         if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
-        lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
+        lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
       }
       /* its keywords the same way (`method(:m).call(k: s)`): bound by name,
          and appended to as a copy while they kept the value ABI */
@@ -31497,7 +31497,7 @@ static int dyn_convert_params(Compiler *c) {
         if (!(dyn_meth_kw_bits(c, mi, m->pnames[j], NULL) & 1u)) continue;
         LocalVar *q = scope_local(m, m->pnames[j]);
         if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
-        lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
+        lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
       }
     }
   }
@@ -31515,7 +31515,7 @@ static int dyn_convert_params(Compiler *c) {
       if (!(app & (1u << j))) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
-      lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
+      lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
     }
   }
   free(tg);
@@ -31677,7 +31677,7 @@ static int ctor_convert_params(Compiler *c) {
       /* TY_STRBUF: retained in a shared ivar (#4363), or typed from a
          handle argument */
       if (q->type != TY_STRING && q->type != TY_STRBUF) continue;
-      lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
+      lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } q->dyn_handle = 1; changed = 1;
     }
   }
   return changed;
@@ -31866,7 +31866,7 @@ static int ctor_pull_args(Compiler *c) {
           if (!src || !src->is_param || src->is_block_param || src->is_cell) continue;
           if (src->type != TY_STRING && src->type != TY_STRBUF) continue;
           if (src->type != TY_STRBUF || !src->str_shared) {
-            lv_set_type(src, TY_STRBUF); { { src->str_shared = 1; comp_touch_scope(src->owner); } comp_touch_scope(src->owner); } { { src->byref_out = 0; comp_touch_scope(src->owner); } comp_touch_scope(src->owner); } changed = 1;
+            lv_set_type(src, TY_STRBUF); { src->str_shared = 1; comp_touch_scope(src->owner); } { src->byref_out = 0; comp_touch_scope(src->owner); } changed = 1;
           }
         }
       }
@@ -31923,7 +31923,7 @@ static int ctor_pull_args(Compiler *c) {
             LocalVar *q2 = m2->pnames[j2] ? scope_local(m2, m2->pnames[j2]) : NULL;
             if (!q2 || q2->dyn_handle || (q2->type != TY_STRING && q2->type != TY_STRBUF)) continue;
             if (ctor_param_arg(c, m2, u, first, j2) != a) continue;
-            lv_set_type(q2, TY_STRBUF); { { q2->str_shared = 1; comp_touch_scope(q2->owner); } comp_touch_scope(q2->owner); } q2->dyn_handle = 1; changed = 1;
+            lv_set_type(q2, TY_STRBUF); { q2->str_shared = 1; comp_touch_scope(q2->owner); } q2->dyn_handle = 1; changed = 1;
           }
         }
         changed |= dyn_pull_arg(c, a, 1);
@@ -32187,7 +32187,7 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
       if (!t || t->is_cell) continue;
       if (t->type == TY_STRBUF && t->str_shared) { into_h = 1; continue; }
       if (pass || !is_h || t->type != TY_STRING || !an_block_kw_lent(c, blk, key)) continue;
-      lv_set_type(t, TY_STRBUF); { { t->str_shared = 1; comp_touch_scope(t->owner); } comp_touch_scope(t->owner); } changed = 1;
+      lv_set_type(t, TY_STRBUF); { t->str_shared = 1; comp_touch_scope(t->owner); } changed = 1;
     }
     if (pass && into_h && !is_h) changed |= dyn_pull_arg(c, v, 0);
     for (int ei = !pass && h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
@@ -32236,7 +32236,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
         if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, aliases, bs, bp))
           continue;
-        lv_set_type(t, TY_STRBUF); { { t->str_shared = 1; comp_touch_scope(t->owner); } comp_touch_scope(t->owner); } changed = 1;
+        lv_set_type(t, TY_STRBUF); { t->str_shared = 1; comp_touch_scope(t->owner); } changed = 1;
       }
     if (ak != NK_LocalVariableReadNode) continue;
     /* A parameter a nil or other argument widened to POLY boxes what it
@@ -32305,7 +32305,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       if (t->type == TY_POLY && !yield_lowers_block(c, mi) &&
           an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
       if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k, call_plain_argc(c, y))) continue;
-      lv_set_type(t, TY_STRBUF); { { t->str_shared = 1; comp_touch_scope(t->owner); } comp_touch_scope(t->owner); } changed = 1;
+      lv_set_type(t, TY_STRBUF); { t->str_shared = 1; comp_touch_scope(t->owner); } changed = 1;
     }
     if (pass && into_h && !local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
     /* a call site handing the method a proc (`run(s, &pr)`,
@@ -32351,7 +32351,7 @@ static int yield_splice_handles(Compiler *c) {
                      !q->inline_alias && an_subtree_lends_local(c, m->body, m->pnames[j], 0);
       if (!captured && (!an_local_is_handle_or_aliased(c, &aliases, an) || !an_inline_param_lent(c, mi, j, blk)))
         continue;
-      lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } changed = 1;
+      lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } { q->byref_out = 0; comp_touch_scope(q->owner); } changed = 1;
     }
   }
   /* instance_exec binds its arguments to its block's parameters as a yield
@@ -32376,7 +32376,7 @@ static int yield_splice_handles(Compiler *c) {
       if (!t || t->is_cell) continue;
       if (local_is_handle(c, av[k])) {
         if (t->type == TY_STRING && an_block_param_lent(c, blk, k, call_plain_argc(c, u))) {
-          lv_set_type(t, TY_STRBUF); { { t->str_shared = 1; comp_touch_scope(t->owner); } comp_touch_scope(t->owner); } changed = 1;
+          lv_set_type(t, TY_STRBUF); { t->str_shared = 1; comp_touch_scope(t->owner); } changed = 1;
         }
       }
       else if (t->type == TY_STRBUF && t->str_shared) changed |= dyn_pull_arg(c, av[k], 0);
@@ -32604,7 +32604,7 @@ static int block_splat_pull_args(Compiler *c, int blk, const int *av, int n) {
       LocalVar *t = scope_local(bs, bp);
       if (!t) continue;
       if (t->type == TY_STRING && !t->is_cell && an_block_name_lent(c, blk, bp)) {
-        lv_set_type(t, TY_STRBUF); { { t->str_shared = 1; comp_touch_scope(t->owner); } comp_touch_scope(t->owner); } changed = 1;
+        lv_set_type(t, TY_STRBUF); { t->str_shared = 1; comp_touch_scope(t->owner); } changed = 1;
       }
       /* a boxed one appends through the handle its box holds; a captured
          String one is a cell bound from a copy */
@@ -32810,7 +32810,7 @@ static int promote_default_alias_params(Compiler *c) {
       for (int b = 0; b < 2; b++) {
         LocalVar *q = both[b];
         if (q->type == TY_STRBUF && q->str_shared && !q->byref_out) continue;
-        lv_set_type(q, TY_STRBUF); { { q->str_shared = 1; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->byref_out = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); } { { q->is_cell = 0; comp_touch_scope(q->owner); } comp_touch_scope(q->owner); }
+        lv_set_type(q, TY_STRBUF); { q->str_shared = 1; comp_touch_scope(q->owner); } { q->byref_out = 0; comp_touch_scope(q->owner); } { q->is_cell = 0; comp_touch_scope(q->owner); }
         changed = 1;
       }
     }
@@ -33797,13 +33797,13 @@ static int fwd_super_string_params(Compiler *c) {
         if (!p || !p->is_param || p->is_block_param) continue;
         /* a String into a boxed parameter: the child's takes the handle */
         if (d->type == TY_POLY && p->type == TY_STRING && !p->byref_out && !p->is_cell) {
-          lv_set_type(p, TY_STRBUF); { { p->str_shared = 1; comp_touch_scope(p->owner); } comp_touch_scope(p->owner); } changed = 1;
+          lv_set_type(p, TY_STRBUF); { p->str_shared = 1; comp_touch_scope(p->owner); } changed = 1;
         }
         /* a box, which carries the caller's handle (fwd_poly_param_handed_on),
            into a lent slot: the parent's takes the handle, as a handle
            argument at a call converts one (convert_byref_handle_params) */
         else if (p->type == TY_POLY && d->byref_out) {
-          { { d->byref_out = 0; comp_touch_scope(d->owner); } comp_touch_scope(d->owner); } { { d->is_cell = 0; comp_touch_scope(d->owner); } comp_touch_scope(d->owner); } lv_set_type(d, TY_STRBUF); { { d->str_shared = 1; comp_touch_scope(d->owner); } comp_touch_scope(d->owner); } changed = 1;
+          { d->byref_out = 0; comp_touch_scope(d->owner); } { d->is_cell = 0; comp_touch_scope(d->owner); } lv_set_type(d, TY_STRBUF); { d->str_shared = 1; comp_touch_scope(d->owner); } changed = 1;
         }
       }
     }
@@ -34269,7 +34269,7 @@ int make_yield_proc_forms(Compiler *c) {
     { dst->class_id = src->class_id; comp_touch_scope(dst->idx); }
     { dst->is_cmethod = src->is_cmethod; comp_touch_scope(dst->idx); }
     { dst->body = nb; comp_touch_scope(dst->idx); }
-    { { dst->reachable = 1; comp_touch_scope(dst->idx); } comp_touch_scope(dst->idx); }
+    { dst->reachable = 1; comp_touch_scope(dst->idx); }
     dst->yields = 0;
     { dst->nparams = src->nparams; comp_touch_scope(dst->idx); }
     dst->nrequired = src->nrequired;
@@ -40545,7 +40545,7 @@ static void mark_nullable_int_locals(Compiler *c) {
          every path (a top-level statement of initialize) */
       if ((ci->ivar_types[iv] == TY_FLOAT || (ci->ivar_types[iv] == TY_INT && !is_toplevel)) &&
           !ivar_assigned_in_initialize(c, k, ci->ivars[iv]))
-        { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+        { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); }
   }
   /* Method returns propagate through this fixpoint too (a pass-through method
      is nilable because its callee is), so the cap has to clear a chain of
@@ -40896,7 +40896,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       int iv = comp_ivar_index(ci, nt_str(nt, id, "name"));
       if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
       if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
-      if (nullable_int_value(c, v) || infer_type(c, v) == TY_POLY) { { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } changed = 1; }
+      if (nullable_int_value(c, v) || infer_type(c, v) == TY_POLY) { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } changed = 1; }
     }
     /* ... and through a multiple assignment: a target the right side can
        leave nil (`@@g, @@h = 7`, `bx.v, bx.w = nil, 6`, `o.x, o.y = 3`)
@@ -40968,7 +40968,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           else {
             if (ci->ivar_nullable_int[iv]) continue;
             if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
-            { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } changed = 1;
+            { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } changed = 1;
           }
         }
       }
@@ -40996,7 +40996,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       }
       if (iv < 0 || !ci || ci->ivar_nullable_int[iv]) continue;
       if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
-      if (nullable_int_value(c, av[1])) { { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } changed = 1; }
+      if (nullable_int_value(c, av[1])) { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } changed = 1; }
     }
     /* ... and through a setter that is no ivar write in the program: an
        attr_writer's or a Struct member's `o.x = v` */
@@ -41027,7 +41027,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         else if (comp_method_in_chain(c, cid, wn, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
         if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
         if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
-        { { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } changed = 1;
+        { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } changed = 1;
       }
     }
     /* A Struct's or Data's custom initialize forwarding its parameters
@@ -41050,7 +41050,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         if (m < 0 || m >= sci->nmembers) m = pi < sci->nmembers ? pi : -1;
         if (m < 0 || sci->ivar_nullable_int[m]) continue;
         if (sci->ivar_types[m] != TY_INT && sci->ivar_types[m] != TY_FLOAT) continue;
-        { { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } comp_touch_class(sci->idx); } changed = 1;
+        { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } changed = 1;
       }
     }
     /* `s[:x] = v` / `s["x"] = v` / `s[0] = v` on a Struct (or a boxed value
@@ -41086,7 +41086,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         }
         if (m < 0 || sci->ivar_nullable_int[m]) continue;
         if (sci->ivar_types[m] != TY_INT && sci->ivar_types[m] != TY_FLOAT) continue;
-        { { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } comp_touch_class(sci->idx); } changed = 1;
+        { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } changed = 1;
       }
     }
     /* `d.with(x: v)` on a Struct or Data: the copy's member takes v, nil
@@ -41112,7 +41112,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         int m = comp_ivar_index(sci, ivb);
         if (m < 0 || m >= sci->nmembers || sci->ivar_nullable_int[m]) continue;
         if (sci->ivar_types[m] != TY_INT && sci->ivar_types[m] != TY_FLOAT) continue;
-        { { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } comp_touch_class(sci->idx); } changed = 1;
+        { sci->ivar_nullable_int[m] = 1; comp_touch_class(sci->idx); } changed = 1;
       }
     }
     /* `o.instance_variable_set(:@x, v)` with a nil, or a nullable number,
@@ -41138,7 +41138,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           int piv = comp_ivar_index(pci, ivn);
           if (piv < 0 || pci->ivar_nullable_int[piv]) continue;
           if (pci->ivar_types[piv] != TY_INT && pci->ivar_types[piv] != TY_FLOAT) continue;
-          { { pci->ivar_nullable_int[piv] = 1; comp_touch_class(pci->idx); } comp_touch_class(pci->idx); } changed = 1;
+          { pci->ivar_nullable_int[piv] = 1; comp_touch_class(pci->idx); } changed = 1;
         }
         continue;
       }
@@ -41147,7 +41147,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       for (int k = scid; k >= 0 && siv < 0; k = c->classes[k].parent) { sci = &c->classes[k]; siv = comp_ivar_index(sci, ivn); }
       if (siv < 0 || sci->ivar_nullable_int[siv]) continue;
       if (sci->ivar_types[siv] != TY_INT && sci->ivar_types[siv] != TY_FLOAT) continue;
-      if (nt_kind(nt, sav[1]) == NK_NilNode || nullable_int_value(c, sav[1])) { { { sci->ivar_nullable_int[siv] = 1; comp_touch_class(sci->idx); } comp_touch_class(sci->idx); } changed = 1; }
+      if (nt_kind(nt, sav[1]) == NK_NilNode || nullable_int_value(c, sav[1])) { { sci->ivar_nullable_int[siv] = 1; comp_touch_class(sci->idx); } changed = 1; }
     }
     /* A Struct's generated constructor sets its members: from a nil
        argument, or to nil when the construction does not supply one
@@ -41197,7 +41197,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           if (kv && sp_streq(kv, ci->ivars[m] + 1)) vnode = nt_ref(nt, ke[e], "value");
         }
         if (vnode < 0 ? !ci->is_data : nullable_int_value(c, vnode)) {
-          { { ci->ivar_nullable_int[m] = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } changed = 1;
+          { ci->ivar_nullable_int[m] = 1; comp_touch_class(ci->idx); } changed = 1;
         }
       }
       }
@@ -50821,7 +50821,7 @@ static int an_lower_yielders(Compiler *c) {
     if (yblk) {
       lv_set_type(yblk, TY_PROC);
       yblk->is_param = 1;
-      { { yblk->is_cell = 1; comp_touch_scope(yblk->owner); } comp_touch_scope(yblk->owner); }
+      { yblk->is_cell = 1; comp_touch_scope(yblk->owner); }
     }
     lowered_recursive_yield = 1;
     again_ret = 1;
@@ -50871,7 +50871,7 @@ static void an_phase_procs(Compiler *c) {
     scope_set_ret(m, is_struct ? ty_object(m->class_id) : TY_POLY);
     m->blk_param = strdup("__yblk__");
     LocalVar *yblk = scope_local_intern(m, "__yblk__");
-    if (yblk) { lv_set_type(yblk, TY_PROC); yblk->is_param = 1; { { yblk->is_cell = 1; comp_touch_scope(yblk->owner); } comp_touch_scope(yblk->owner); } }
+    if (yblk) { lv_set_type(yblk, TY_PROC); yblk->is_param = 1; { yblk->is_cell = 1; comp_touch_scope(yblk->owner); } }
   }
 
   /* mark locals captured by escaping procs (they need heap cells) */
@@ -52633,9 +52633,9 @@ static void an_phase_storage(Compiler *c) {
       if (an_strbuf_alias_source(c, nt_ref(c->nt, u, "value")) < 0) { pure_alias = 0; break; }
     }
     if (!pure_alias) continue;
-    { { src->str_shared = 1; comp_touch_scope(src->owner); } comp_touch_scope(src->owner); }
+    { src->str_shared = 1; comp_touch_scope(src->owner); }
     lv_set_type(tgt, TY_STRBUF);
-    { { tgt->str_shared = 1; comp_touch_scope(tgt->owner); } comp_touch_scope(tgt->owner); }
+    { tgt->str_shared = 1; comp_touch_scope(tgt->owner); }
   }
 }
 
@@ -53530,7 +53530,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       int pb = a_proc_body(c, id);
       if (pb < 0 || !subtree_has_yield_node(c, pb, 0)) continue;
       LocalVar *bl = scope_local_intern(d, d->blk_param);
-      if (bl) { { bl->is_cell = 1; comp_touch_scope(bl->owner); } comp_touch_scope(bl->owner); }
+      if (bl) { bl->is_cell = 1; comp_touch_scope(bl->owner); }
       break;
     }
   }

@@ -16,7 +16,7 @@ TyKind one_elem_decl_type(const char *k, TyKind et) {
    reader is the plain one */
 const char *one_elem_get_sfx(const char *k) { return k && sp_streq(k, "Str") ? "_e" : ""; }
 void one_elem_bind_slot(LocalVar *lv, TyKind bt) {
-  if (lv && bt == TY_STRBUF) { { lv->str_shared = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+  if (lv && bt == TY_STRBUF) { lv->str_shared = 1; comp_touch_scope(lv->owner); }
 }
 
 /* An sp_oint / sp_ofloat expression where the dispatcher wants the node
@@ -7637,9 +7637,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       }
     }
     Buf ab; memset(&ab, 0, sizeof ab);
-    { { p->byref_out = 0; comp_touch_scope(p->owner); } comp_touch_scope(p->owner); }   /* reenter for the plain coerced value */
+    { p->byref_out = 0; comp_touch_scope(p->owner); }   /* reenter for the plain coerced value */
     emit_arg_or_default(c, m, idx, provided, &ab);
-    { { p->byref_out = 1; comp_touch_scope(p->owner); } comp_touch_scope(p->owner); }
+    { p->byref_out = 1; comp_touch_scope(p->owner); }
     emit_lent_temp(ab.p, out);
     free(ab.p);
     return;
@@ -10099,9 +10099,9 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
   LocalVar *plv = scope_local(m, m->pnames[i]);
   if (plv && plv->byref_out) {
     Buf vb; memset(&vb, 0, sizeof vb);
-    { { plv->byref_out = 0; comp_touch_scope(plv->owner); } comp_touch_scope(plv->owner); }
+    { plv->byref_out = 0; comp_touch_scope(plv->owner); }
     emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
-    { { plv->byref_out = 1; comp_touch_scope(plv->owner); } comp_touch_scope(plv->owner); }
+    { plv->byref_out = 1; comp_touch_scope(plv->owner); }
     emit_lent_temp(vb.p, out);
     free(vb.p);
     return;
@@ -11571,9 +11571,9 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
   if (sp && sp->byref_out) {
     Buf vb; memset(&vb, 0, sizeof vb);
-    { { sp->byref_out = 0; comp_touch_scope(sp->owner); } comp_touch_scope(sp->owner); }
+    { sp->byref_out = 0; comp_touch_scope(sp->owner); }
     emit_gathered_param(c, m, i, ct, &vb);
-    { { sp->byref_out = 1; comp_touch_scope(sp->owner); } comp_touch_scope(sp->owner); }
+    { sp->byref_out = 1; comp_touch_scope(sp->owner); }
     emit_lent_temp(vb.p, out);
     free(vb.p);
     return;
@@ -11679,9 +11679,9 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     /* an element (or the default it falls back to) has no caller variable
        to write back to: bind the value, then lend a temp */
     Buf vb; memset(&vb, 0, sizeof vb);
-    { { sp->byref_out = 0; comp_touch_scope(sp->owner); } comp_touch_scope(sp->owner); }
+    { sp->byref_out = 0; comp_touch_scope(sp->owner); }
     emit_elem_param(c, m, i, off, tmp, at, gathered, hold, &vb);
-    { { sp->byref_out = 1; comp_touch_scope(sp->owner); } comp_touch_scope(sp->owner); }
+    { sp->byref_out = 1; comp_touch_scope(sp->owner); }
     emit_lent_temp(vb.p, out);
     free(vb.p);
     return;

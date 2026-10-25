@@ -907,7 +907,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->idx = c->nclasses - 1;
   comp_ver_grow(&comp_class_ver, &comp_class_ver_cap, c->nclasses);
   comp_touch_global_r(5);    /* a new class is a change of the tables */
-  { { ci->ctor_reachable = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }   /* conservatively, until compute_instantiated's early pass has looked */
+  { ci->ctor_reachable = 1; comp_touch_class(ci->idx); }   /* conservatively, until compute_instantiated's early pass has looked */
   ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
@@ -978,13 +978,13 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->civars = ci->civars ? ci->civars * 2 : 8;
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
     ci->ivar_types = realloc((TyKind *)ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
-    { { ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-    { { ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-    { { ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    { ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars); comp_touch_class(ci->idx); }
+    { ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars); comp_touch_class(ci->idx); }
+    { ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars); comp_touch_class(ci->idx); }
     ci->ivar_oa_type = realloc(ci->ivar_oa_type, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_oa_seed = realloc(ci->ivar_oa_seed, sizeof(int) * (size_t)ci->civars);
     ci->ivar_oa_conflict = realloc(ci->ivar_oa_conflict, (size_t)ci->civars);
-    { { ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    { ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars); comp_touch_class(ci->idx); }
     ci->ivar_nullable_int_elem = realloc(ci->ivar_nullable_int_elem, (size_t)ci->civars);
     ci->ivar_arr_elem_arr_or_nil = realloc(ci->ivar_arr_elem_arr_or_nil, (size_t)ci->civars);
     ci->ivar_alias_wide = realloc(ci->ivar_alias_wide, (size_t)ci->civars);
@@ -992,13 +992,13 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   ci->ivars[ci->nivars] = strdup(name);
   ((TyKind *)ci->ivar_types)[ci->nivars] = TY_UNKNOWN;
   comp_touch_class(ci->idx);    /* a new ivar is a change of the table */
-  { { ci->ivar_str_shared[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-  { { ci->ivar_elems_shared[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-  { { ci->ivar_int_table[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { ci->ivar_str_shared[ci->nivars] = 0; comp_touch_class(ci->idx); }
+  { ci->ivar_elems_shared[ci->nivars] = 0; comp_touch_class(ci->idx); }
+  { ci->ivar_int_table[ci->nivars] = 0; comp_touch_class(ci->idx); }
   ci->ivar_oa_type[ci->nivars] = TY_UNKNOWN;
   ci->ivar_oa_seed[ci->nivars] = 0;
   ci->ivar_oa_conflict[ci->nivars] = 0;
-  { { ci->ivar_nullable_int[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { ci->ivar_nullable_int[ci->nivars] = 0; comp_touch_class(ci->idx); }
   ci->ivar_nullable_int_elem[ci->nivars] = 0;
   ci->ivar_arr_elem_arr_or_nil[ci->nivars] = 0;
   ci->ivar_alias_wide[ci->nivars] = 0;
@@ -1091,14 +1091,14 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
     ci->cvar_types = realloc((TyKind *)ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
     ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
-    { { ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    { ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars); comp_touch_class(ci->idx); }
   }
   ci->cvars[ci->ncvars] = strdup(name);
   ((TyKind *)ci->cvar_types)[ci->ncvars] = TY_UNKNOWN;
   comp_touch_class(ci->idx);    /* a new cvar is a change of the table */
   ci->cvar_nullable_int[ci->ncvars] = 0;
   ci->cvar_str_shared[ci->ncvars] = 0;
-  { { ci->cvar_elems_shared[ci->ncvars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { ci->cvar_elems_shared[ci->ncvars] = 0; comp_touch_class(ci->idx); }
   return ci->ncvars++;
 }
 
@@ -4250,10 +4250,10 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->is_param = 0;
   lv->is_block_param = 0;
   lv_set_proc_ret(lv, TY_UNKNOWN);
-  { { lv->is_cell = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+  { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   lv->cell_shadow = 0;
   lv->cell_outlives = 0;
-  { { lv->byref_out = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+  { lv->byref_out = 0; comp_touch_scope(lv->owner); }
   lv->inline_alias = 0;
   lv->init_guarded = 0;
   lv->rbs_seeded = 0;
@@ -4262,7 +4262,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->poly_dispatch_widened = 0;
   lv->or_written = 0;
   lv->maybe_unset = 0;
-  { { lv->str_shared = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+  { lv->str_shared = 0; comp_touch_scope(lv->owner); }
   lv->str_append = 0;
   lv->poly_hash_pin = 0;
   lv->poly_array_pin = 0;

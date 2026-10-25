@@ -3127,7 +3127,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     }
     { dst->class_id = newci; comp_touch_scope(dst->idx); }
     { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }    /* an instance method of the singleton subclass */
-    { { dst->reachable = src->reachable; comp_touch_scope(dst->idx); } comp_touch_scope(dst->idx); }
+    { dst->reachable = src->reachable; comp_touch_scope(dst->idx); }
     dst->yields = src->yields;
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
@@ -4556,7 +4556,7 @@ static const char *alias_body_copy(Compiler *c, int k, int want, const char *od)
   { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
   dst->is_include_copy = src->is_include_copy;
   { dst->origin_module_ci = src->origin_module_ci; comp_touch_scope(dst->idx); }
-  { { dst->reachable = 1; comp_touch_scope(dst->idx); } comp_touch_scope(dst->idx); }
+  { dst->reachable = 1; comp_touch_scope(dst->idx); }
   dst->yields = src->yields;
   dst->nrequired = src->nrequired;
   dst->rest_idx = src->rest_idx;
@@ -4603,7 +4603,7 @@ void settle_mixin_aliases(Compiler *c) {
         if (copy >= 0) {
           free(cls->alias_old[i]);
           cls->alias_old[i] = strdup(c->scopes[copy].name);
-          { { c->scopes[copy].reachable = 1; comp_touch_scope(c->scopes[copy].idx); } comp_touch_scope(c->scopes[copy].idx); }
+          { c->scopes[copy].reachable = 1; comp_touch_scope(c->scopes[copy].idx); }
           comp_class_shape_changed();
           fm = comp_method_in_chain(c, k, nw, NULL);
           ok = fm >= 0 && c->scopes[fm].def_node == want;
@@ -6774,7 +6774,7 @@ static void mark_array_subclasses(Compiler *c) {
       c->classes[i].ary_root = r + 1;
       c->classes[i].ary_hash = sp_streq(par, "Hash");
       c->classes[i].ary_str = sp_streq(par, "String");
-      if (c->classes[i].ary_str) { { c->classes[r].ary_kind = TY_STRBUF; comp_touch_class(c->classes[r].idx); } comp_touch_class(c->classes[r].idx); }
+      if (c->classes[i].ary_str) { c->classes[r].ary_kind = TY_STRBUF; comp_touch_class(c->classes[r].idx); }
       c->has_arysub = 1;
     }
   }
@@ -7241,7 +7241,7 @@ static const char *include_shadow_copy(Compiler *c, int ci, int mod, const char 
     Scope *sc = &c->scopes[s];
     if (sc->class_id == ci && !sc->is_cmethod && sc->name && !strncmp(sc->name, "__inc ", 6) &&
         sc->def_node == c->scopes[src].def_node && sp_streq(comp_prep_user_name(sc->name), m)) {
-      { { sc->reachable = 1; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); }
+      { sc->reachable = 1; comp_touch_scope(sc->idx); }
       return sc->name;
     }
   }
@@ -7289,7 +7289,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(inc_shadow);
       if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
-      else { { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); } comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
+      else { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       own = -1;
     }
     /* A builtin class's own method comes before an included module's, as
@@ -7401,7 +7401,7 @@ else {
     { dst->class_id = ci; comp_touch_scope(dst->idx); }
     { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
     dst->is_include_copy = 1;
-    { { dst->reachable = src->reachable; comp_touch_scope(dst->idx); } comp_touch_scope(dst->idx); }
+    { dst->reachable = src->reachable; comp_touch_scope(dst->idx); }
     dst->yields = src->yields;
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
@@ -7905,7 +7905,7 @@ void unmark_referenced_module_sources(Compiler *c) {
       Scope *sc = &c->scopes[si];
       if (sc->class_id != ci || sc->is_cmethod || !sc->name || !sp_streq(sc->name, mn)) continue;
       sc->is_transplanted_source = 0;
-      { { sc->reachable = 1; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); }
+      { sc->reachable = 1; comp_touch_scope(sc->idx); }
     }
   }
 }
@@ -8011,7 +8011,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         comp_cprep_chain_add(cif, ac->name, shadow);
         reached = 1;
       }
-      if (!reached) { { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); } comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
+      if (!reached) { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       src = &c->scopes[ms];
     }
     /* Always a clone re-walked against `ci`, as include does: a shared
@@ -9226,7 +9226,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             dst->is_include_copy = 1;
             dst->is_prepend_copy = 1;
             { dst->origin_module_ci = mod_id + 1; comp_touch_scope(dst->idx); }   /* #owner names the module */
-            { { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); } comp_touch_scope(dst->idx); }
+            { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); }
             dst->yields = sc->yields;
             dst->nrequired = sc->nrequired;
             dst->rest_idx = sc->rest_idx;
@@ -9304,10 +9304,10 @@ void inherit_members(Compiler *c) {
                   *old_ne = ci->ivar_nullable_int_elem, *old_ae = ci->ivar_arr_elem_arr_or_nil,
                   *old_aw = ci->ivar_alias_wide;
     TyKind *old_oa = ci->ivar_oa_type; int *old_os = ci->ivar_oa_seed;
-    ci->ivars = NULL; ci->ivar_types = NULL; { { ci->ivar_str_shared = NULL; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } { { ci->ivar_elems_shared = NULL; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-    { { ci->ivar_int_table = NULL; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    ci->ivars = NULL; ci->ivar_types = NULL; { ci->ivar_str_shared = NULL; comp_touch_class(ci->idx); } { ci->ivar_elems_shared = NULL; comp_touch_class(ci->idx); }
+    { ci->ivar_int_table = NULL; comp_touch_class(ci->idx); }
     ci->ivar_oa_type = NULL; ci->ivar_oa_seed = NULL; ci->ivar_oa_conflict = NULL;
-    { { ci->ivar_nullable_int = NULL; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } ci->ivar_nullable_int_elem = NULL; ci->ivar_arr_elem_arr_or_nil = NULL;
+    { ci->ivar_nullable_int = NULL; comp_touch_class(ci->idx); } ci->ivar_nullable_int_elem = NULL; ci->ivar_arr_elem_arr_or_nil = NULL;
     ci->ivar_alias_wide = NULL;
     ci->nivars = ci->civars = 0;
     #define IV_SIDE_COPY(dst, di, src, si) do { \
@@ -9385,10 +9385,10 @@ void inherit_members(Compiler *c) {
       /* an own slot keeps its side fields; one the parent also carries took
          the parent's above */
       if (comp_ivar_index(pc, old[k]) < 0 && old_oa) {
-        { { ci->ivar_str_shared[idx] = old_ss[k]; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); } { { ci->ivar_elems_shared[idx] = old_es[k]; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
-        { { ci->ivar_int_table[idx] = old_it[k]; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+        { ci->ivar_str_shared[idx] = old_ss[k]; comp_touch_class(ci->idx); } { ci->ivar_elems_shared[idx] = old_es[k]; comp_touch_class(ci->idx); }
+        { ci->ivar_int_table[idx] = old_it[k]; comp_touch_class(ci->idx); }
         ci->ivar_oa_type[idx] = old_oa[k]; ci->ivar_oa_seed[idx] = old_os[k];
-        ci->ivar_oa_conflict[idx] = old_oc[k]; { { ci->ivar_nullable_int[idx] = old_ni[k]; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+        ci->ivar_oa_conflict[idx] = old_oc[k]; { ci->ivar_nullable_int[idx] = old_ni[k]; comp_touch_class(ci->idx); }
         ci->ivar_nullable_int_elem[idx] = old_ne[k]; ci->ivar_arr_elem_arr_or_nil[idx] = old_ae[k];
         ci->ivar_alias_wide[idx] = old_aw[k];
       }

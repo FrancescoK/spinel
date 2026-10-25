@@ -3015,7 +3015,7 @@ static int boxed_store_hash_subclass_evidence(Compiler *c, TyKind kt, TyKind vt)
     if (now == TY_UNKNOWN) continue;
     fold_container_evidence(c, &now, 0, 0, kt, vt);
     if (now != was && !ty_is_hash(now)) now = TY_POLY_POLY_HASH;
-    if (now != was) { { { c->classes[k].ary_kind = now; comp_touch_class(c->classes[k].idx); } comp_touch_class(c->classes[k].idx); } changed = 1; }
+    if (now != was) { { c->classes[k].ary_kind = now; comp_touch_class(c->classes[k].idx); } changed = 1; }
   }
   return changed;
 }
@@ -6687,7 +6687,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
         if (!apply && !got) return 0;
         ch |= got;
       }
-      if (apply && !o->ret_poly_array_pin) { { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } comp_touch_scope(o->idx); } ch = 1; }
+      if (apply && !o->ret_poly_array_pin) { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } ch = 1; }
       any = 1;
     }
     if (any) return apply ? ch : 1;
@@ -6720,7 +6720,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
         if (!apply && !got) return 0;
         ch |= got;
       }
-      if (apply && !o->ret_poly_array_pin) { { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } comp_touch_scope(o->idx); } ch = 1; }
+      if (apply && !o->ret_poly_array_pin) { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } ch = 1; }
     }
     return apply ? ch : 1;
   }
@@ -6746,7 +6746,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
     ch |= got;
   }
   if (!apply) return 1;
-  if (!yields && !m->ret_poly_array_pin) { { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } comp_touch_scope(m->idx); } ch = 1; }
+  if (!yields && !m->ret_poly_array_pin) { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } ch = 1; }
   return ch;
 }
 
@@ -7556,7 +7556,7 @@ static int widen_method_value_sources(Compiler *c, int v, int mi, TyKind elem, i
   }
   if (n > 0 && leaves_need_pin(c, lv, n, elem) && leaves_widen_to_poly_array(c, lv, n, 0)) {
     ch |= leaves_widen_to_poly_array(c, lv, n, 1);
-    if (!m->ret_poly_array_pin) { { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } comp_touch_scope(m->idx); } ch = 1; }
+    if (!m->ret_poly_array_pin) { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } ch = 1; }
     wbas_touch();
     return ch;
   }
@@ -18015,7 +18015,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      stops being an array at all loses the pin. */
   if (sc->ret_poly_array_pin) {
     if (r == TY_UNKNOWN || r == TY_POLY || (ty_is_array(r) && !ty_is_ptr_array(r))) r = TY_POLY_ARRAY;
-    else { { sc->ret_poly_array_pin = 0; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); }
+    else { sc->ret_poly_array_pin = 0; comp_touch_scope(sc->idx); }
   }
   /* Post-backstop re-runs fill returns whose body only settled after the
      main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there

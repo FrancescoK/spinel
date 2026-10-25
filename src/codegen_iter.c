@@ -643,7 +643,7 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     if (gslot) refuse_lent_global_rebound(c, an, gref.p, m->name, m->pnames[i]);
     alias_mask |= 1u << i;
     lv->inline_alias++;
-    { { lv->is_cell = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+    { lv->is_cell = 1; comp_touch_scope(lv->owner); }
     if (!gslot && splice_alias_detachable(c, blk, an, argv, pargc)) {
       int tok = view_push_splice(an, tag, m->pnames[i]);
       if (*splice_tok < 0) *splice_tok = tok;
@@ -733,7 +733,7 @@ void inline_alias_release(Compiler *c, Scope *m, unsigned alias_mask, int splice
   for (int i = 0; i < m->nparams && i < 32; i++) {
     if (!(alias_mask & (1u << i))) continue;
     LocalVar *lv = scope_local(m, m->pnames[i]);
-    if (lv && --lv->inline_alias == 0) { { lv->is_cell = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+    if (lv && --lv->inline_alias == 0) { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   }
 }
 /* Declare inlined method `mi`'s locals under renamed names, all but the
@@ -2064,13 +2064,13 @@ void block_alias_hold(BlockAliases *al, Scope *s, LocalVar *lv) {
   al->s[al->n] = s;
   al->nm[al->n++] = lv->name;
   lv->inline_alias++;
-  { { lv->is_cell = 1; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+  { lv->is_cell = 1; comp_touch_scope(lv->owner); }
 }
 
 void block_aliases_release(BlockAliases *al) {
   for (int i = 0; i < al->n; i++) {
     LocalVar *lv = scope_local(al->s[i], al->nm[i]);
-    if (--lv->inline_alias == 0) { { lv->is_cell = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
+    if (--lv->inline_alias == 0) { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   }
 }
 
@@ -5995,7 +5995,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       /* (one representation: the element is the handle, and so is the
          parameter that holds it, its body inferred over that slot) */
       TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;
-      if (bt == TY_STRBUF) { { clv0->str_shared = 1; comp_touch_scope(clv0->owner); } comp_touch_scope(clv0->owner); }
+      if (bt == TY_STRBUF) { clv0->str_shared = 1; comp_touch_scope(clv0->owner); }
       lv_set_type(clv0, bt);
       arm_body_infer(c, ARM_SITE_SPLIT, block, bt, sb_bb, sb_bn);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
@@ -6003,7 +6003,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       emit_loop_body(c, body, b, spIndent);
       spIndent--;
       emit_indent(b, spIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0); { { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); } comp_touch_scope(clv0->owner); }
+      lv_set_type(clv0, csaved0); { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); }
     }
     else {
       if (p0) {
@@ -6083,7 +6083,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
       TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;   /* (one representation: see the split form) */
-      if (bt == TY_STRBUF) { { clv0->str_shared = 1; comp_touch_scope(clv0->owner); } comp_touch_scope(clv0->owner); }
+      if (bt == TY_STRBUF) { clv0->str_shared = 1; comp_touch_scope(clv0->owner); }
       lv_set_type(clv0, bt);
       arm_body_infer(c, ARM_SITE_SCAN, block, bt, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
@@ -6091,7 +6091,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0); { { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); } comp_touch_scope(clv0->owner); }
+      lv_set_type(clv0, csaved0); { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); }
     }
     else {
       if (p0) {
@@ -6174,13 +6174,13 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         if (use_shadow) {
           int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
           TyKind bt = one_elem_bind_type(TY_STRING); int ss0 = slv->str_shared;   /* (one representation: see the split form) */
-          if (bt == TY_STRBUF) { { slv->str_shared = 1; comp_touch_scope(slv->owner); } comp_touch_scope(slv->owner); }
+          if (bt == TY_STRBUF) { slv->str_shared = 1; comp_touch_scope(slv->owner); }
           lv_set_type(slv, bt);
           arm_body_infer(c, ARM_SITE_STR_UPTO, block, bt, sbb, sbn);
           emit_indent(b, indent + 1);
           buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get_e(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
-          lv_set_type(slv, saved); { { slv->str_shared = ss0; comp_touch_scope(slv->owner); } comp_touch_scope(slv->owner); }
+          lv_set_type(slv, saved); { slv->str_shared = ss0; comp_touch_scope(slv->owner); }
         }
         else {
           emit_indent(b, indent + 1);

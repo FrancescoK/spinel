@@ -8757,7 +8757,7 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
      declares */
   if (named) {
     LocalVar *plv = scope_local(ms, ms->blk_param);
-    if (plv) { plv->is_param = 0; plv->is_block_param = 0; lv_set_type(plv, TY_UNKNOWN); { { plv->is_cell = 0; comp_touch_scope(plv->owner); } comp_touch_scope(plv->owner); } }
+    if (plv) { plv->is_param = 0; plv->is_block_param = 0; lv_set_type(plv, TY_UNKNOWN); { plv->is_cell = 0; comp_touch_scope(plv->owner); } }
   }
   free(ms->blk_param);
   ms->blk_param = NULL;
@@ -22725,7 +22725,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
       Scope *reach_s = s;
       Scope body_s;
       int reach_ci = bk == -2 && (!s || s->class_id < 0) ? c->node_cbody[id] : bk;
-      if (reach_ci >= 0) { memset(&body_s, 0, sizeof body_s); { body_s.class_id = reach_ci; comp_touch_scope(body_s.idx); } reach_s = &body_s; }
+      if (reach_ci >= 0) { memset(&body_s, 0, sizeof body_s); body_s.class_id = reach_ci; reach_s = &body_s; }
       int libs[32];
       int nlibs = ffi_bare_reach(c, reach_s, libs, 32);
       if (nlibs == 0) continue;
