@@ -1924,7 +1924,7 @@ static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
                  : ty_is_hash(*d->slot) && ty_is_hash(*r->slot) ? TY_POLY_POLY_HASH : TY_UNKNOWN;
       AliasSide *w = top == TY_UNKNOWN ? NULL : *d->slot == top ? r : *r->slot == top ? d : NULL;
       if (!w) continue;
-      ty_ref_set(w->slot, top);
+      ty_ref_set(c, w->slot, top);
       prop = 1;
       if (w->local) continue;
       changed = 1;
@@ -1978,7 +1978,7 @@ static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
 /* Folds one piece of container evidence into `slot` (see the usage fold in
    infer_write_types). Returns 0 where the evidence does not apply to the
    slot, leaving it untouched. */
-static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
+static int fold_container_evidence(Compiler *c, TyRef slot, int is_push, int is_splice,
                                    TyKind kt, TyKind vt) {
   if (is_push) {
     /* explicit push/append: definitely array.  A PolyArray stays PolyArray
@@ -1989,12 +1989,12 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
     /* If a [] read already promoted this slot to a hash type, the push
        wins: a variable that is pushed to is an array, not a hash.
        Reset the slot so the array promotion below can fire. */
-    if (ty_is_hash(*slot)) ty_ref_set(slot, TY_UNKNOWN);
+    if (ty_is_hash(*slot)) ty_ref_set(c, slot, TY_UNKNOWN);
     if (*slot != TY_UNKNOWN && !ty_is_array(*slot)) return 0;
     if (*slot == TY_POLY_ARRAY) return 0;  /* already widest array type */
     TyKind want = ty_array_of(vt);
     if (*slot != TY_UNKNOWN && want != *slot) want = TY_POLY_ARRAY;
-    ty_ref_set(slot, want);
+    ty_ref_set(c, slot, want);
   }
   else if (is_splice) {
     /* arr[s,l] = rhs / arr[range] = rhs: a source whose elements the typed
@@ -2006,9 +2006,9 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
        range key alone is not (h[1..2] = v is a legal hash write). */
     if (vt == TY_UNKNOWN || vt == TY_POLY) { /* no evidence / exempt */ }
     else if (ty_is_array(*slot)) {
-      if (*slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot)) ty_ref_set(slot, TY_POLY_ARRAY);
+      if (*slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot)) ty_ref_set(c, slot, TY_POLY_ARRAY);
     }
-    else if (*slot == TY_UNKNOWN && kt != TY_RANGE) ty_ref_set(slot, ty_array_of(vt));
+    else if (*slot == TY_UNKNOWN && kt != TY_RANGE) ty_ref_set(c, slot, ty_array_of(vt));
   }
   else if (*slot == TY_POLY_POLY_HASH) {
     /* already widest hash type; no further promotion needed */
@@ -2026,7 +2026,7 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
        index was handed to the int setter (#4832). */
     if (vt != TY_UNKNOWN && vt != TY_POLY &&
         *slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot))
-      ty_ref_set(slot, TY_POLY_ARRAY);
+      ty_ref_set(c, slot, TY_POLY_ARRAY);
   }
   else if (kt == TY_INT) {
     /* int key []= on a non-array slot: infer an int-keyed hash */
@@ -2036,10 +2036,10 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
     if (hv == TY_UNKNOWN) hv = TY_POLY_POLY_HASH;  /* int key + unknown val type */
     if (*slot != TY_UNKNOWN && *slot != hv) {
       /* widen to poly-poly if mismatch */
-      if (ty_is_hash(*slot)) { ty_ref_set(slot, TY_POLY_POLY_HASH); }
+      if (ty_is_hash(*slot)) { ty_ref_set(c, slot, TY_POLY_POLY_HASH); }
       return 0;
     }
-    ty_ref_set(slot, hv);
+    ty_ref_set(c, slot, hv);
   }
   else if (kt == TY_STRING) {
     if (vt == TY_UNKNOWN) return 0;
@@ -2050,26 +2050,26 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
        keys only poly-keyed, as the int-key branch widens: retyping it
        String-keyed left the value it was assigned no slot to land in, and
        keeping it dropped the other key */
-    if (*slot != TY_UNKNOWN && ty_hash_key(*slot) != TY_STRING) { ty_ref_set(slot, TY_POLY_POLY_HASH); return 1; }
+    if (*slot != TY_UNKNOWN && ty_hash_key(*slot) != TY_STRING) { ty_ref_set(c, slot, TY_POLY_POLY_HASH); return 1; }
     /* a str-keyed hash that has seen >1 value type widens to StrPoly */
     if (*slot != TY_UNKNOWN && *slot != hv &&
         (*slot == TY_STR_INT_HASH || *slot == TY_STR_STR_HASH || *slot == TY_STR_POLY_HASH))
       hv = TY_STR_POLY_HASH;
-    ty_ref_set(slot, hv);
+    ty_ref_set(c, slot, hv);
   }
   else if (kt == TY_SYMBOL) {
     /* symbol key -> SymPolyHash (boxed values) */
     if (vt == TY_UNKNOWN) return 0;
     /* into a Hash keyed by another class: poly-keyed, as above */
-    if (ty_is_hash(*slot) && *slot != TY_SYM_POLY_HASH) { ty_ref_set(slot, TY_POLY_POLY_HASH); return 1; }
+    if (ty_is_hash(*slot) && *slot != TY_SYM_POLY_HASH) { ty_ref_set(c, slot, TY_POLY_POLY_HASH); return 1; }
     if (*slot != TY_UNKNOWN && *slot != TY_SYM_POLY_HASH) return 0;
-    ty_ref_set(slot, TY_SYM_POLY_HASH);
+    ty_ref_set(c, slot, TY_SYM_POLY_HASH);
   }
   else if (kt != TY_UNKNOWN) {
     /* non-standard key type (array, object, etc.): heterogeneous hash */
     if (vt == TY_UNKNOWN) return 0;
     if (*slot != TY_UNKNOWN && !ty_is_hash(*slot)) return 0;
-    ty_ref_set(slot, TY_POLY_POLY_HASH);
+    ty_ref_set(c, slot, TY_POLY_POLY_HASH);
   }
   return 1;
 }
@@ -3001,9 +3001,9 @@ static int boxed_store_hash_subclass_evidence(Compiler *c, TyKind kt, TyKind vt)
     if (comp_method_in_chain(c, k, "[]=", NULL) >= 0) continue;
     TyKind was = c->classes[k].ary_kind, now = was;
     if (now == TY_UNKNOWN) continue;
-    fold_container_evidence(&now, 0, 0, kt, vt);
+    fold_container_evidence(c, &now, 0, 0, kt, vt);
     if (now != was && !ty_is_hash(now)) now = TY_POLY_POLY_HASH;
-    if (now != was) { c->classes[k].ary_kind = now; changed = 1; }
+    if (now != was) { { { c->classes[k].ary_kind = now; comp_touch_class(c->classes[k].idx); } comp_touch_class(c->classes[k].idx); } changed = 1; }
   }
   return changed;
 }
@@ -3021,14 +3021,14 @@ static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push,
   if (c->classes[root].ary_hash) {
     if (is_push || is_splice) return 1;
     if (now == TY_UNKNOWN && kt == TY_UNKNOWN) return 1;
-    fold_container_evidence(&now, 0, 0, kt, vt);
+    fold_container_evidence(c, &now, 0, 0, kt, vt);
     if (now != was && !ty_is_hash(now)) now = TY_POLY_POLY_HASH;
-    if (now != was) { *slot = now; *changed = 1; }
+    if (now != was) { *slot = now; *changed = 1; comp_touch_class(root); }
     return 1;
   }
-  fold_container_evidence(&now, is_push || !is_splice, is_splice && !is_push, TY_INT, vt);
+  fold_container_evidence(c, &now, is_push || !is_splice, is_splice && !is_push, TY_INT, vt);
   if (now != was && !array_new_copies(now)) now = TY_POLY_ARRAY;
-  if (now != was) { *slot = now; *changed = 1; }
+  if (now != was) { *slot = now; *changed = 1; comp_touch_class(root); }
   return 1;
 }
 
@@ -3111,9 +3111,9 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
   int nhash = nslot && ty_is_hash(*nslot) && is_idx_write && !is_push && !is_splice;
   if (!nslot || (!nhash && ((!ty_is_array(*nslot)) || *nslot == TY_POLY_ARRAY))) return 0;
   TyKind nt2 = *nslot;
-  fold_container_evidence(&nt2, is_push, is_splice, kt, vt);
+  fold_container_evidence(c, &nt2, is_push, is_splice, kt, vt);
   if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
-  ty_ref_set(nslot, nt2);
+  ty_ref_set(c, nslot, nt2);
   return 1;
 }
 
@@ -3719,7 +3719,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           TyKind hvt = vt == TY_POLY && !is_merge ? ty_hash_val(lv->type) : vt;
           if (hkt == TY_UNKNOWN || hvt == TY_UNKNOWN) continue;
           TyKind folded = lv->type;
-          int fits = fold_container_evidence(&folded, 0, 0, hkt, hvt);
+          int fits = fold_container_evidence(c, &folded, 0, 0, hkt, hvt);
           if (fits && folded == lv->type) continue;
           lv_set_type(lv, TY_POLY_POLY_HASH); lv->push_widened = 1; changed = 1;
           continue;
@@ -4064,7 +4064,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         /* A boxed value is exempt, as it is for an array element: the typed
            setter converts it at run time (#651). */
         if (!is_push && tvt == TY_POLY && ty_is_hash(tbefore)) tvt = ty_hash_val(tbefore);
-        int fits = fold_container_evidence(tslot, is_push, is_splice, (TyKind)kt, tvt);
+        int fits = fold_container_evidence(c, tslot, is_push, is_splice, (TyKind)kt, tvt);
         /* A hash the evidence does not fit widens to the poly-keyed variant,
            and so do the hash literals the ivar is assigned: they take their
            variant from the ivar's own `@c[k] = v` sites, which never see this
@@ -4074,7 +4074,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            slot as it is for a Symbol key. */
         if (!is_push && ty_is_hash(tbefore) &&
             (*tslot != tbefore || (!fits && kt != TY_UNKNOWN && tvt != TY_UNKNOWN))) {
-          ty_ref_set(tslot, TY_POLY_POLY_HASH);
+          ty_ref_set(c, tslot, TY_POLY_POLY_HASH);
           widen_ivar_hash_literals(c, &ivw_ix, tcls[ti], tiv[ti]);
         }
         sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
@@ -4106,7 +4106,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (!is_push && !is_splice && vt == TY_POLY && vnode >= 0 && ty_is_array(*slot) && *slot != TY_POLY_ARRAY &&
         !ty_is_array(ty_array_elem(*slot)) && node_is_empty_container(c, vnode))
       vt = TY_POLY_ARRAY;
-    int fits = fold_container_evidence(slot, is_push, is_splice, kt, vt);
+    int fits = fold_container_evidence(c, slot, is_push, is_splice, kt, vt);
     /* An ivar hash the write does not fit widens to the poly-keyed variant,
        with the literals the ivar is assigned, as a write through its getter
        does: other sites (a getter's `c[1] = 2`) settled the key, and the fold
@@ -4120,7 +4120,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         ((!fits && kt != TY_UNKNOWN && vt != TY_UNKNOWN) ||
          (ty_is_hash(*slot) && ty_hash_key(*slot) != ty_hash_key(before)) ||
          (*slot != before && ivar_has_param_write(c, &ivw_ix, watch_cls, watch_nm)))) {
-      ty_ref_set(slot, TY_POLY_POLY_HASH);
+      ty_ref_set(c, slot, TY_POLY_POLY_HASH);
       widen_ivar_hash_literals(c, &ivw_ix, watch_cls, watch_nm);
       sp_ivwatch(watch_nm, "usage_idxwrite_misfit", before, *slot);
       changed = 1;
@@ -5877,7 +5877,7 @@ static int widen_arg_hash(Compiler *c, int arg) {
     }
     if (!saw) return 0;
   }
-  ty_ref_set(slot, TY_POLY_POLY_HASH);
+  ty_ref_set(c, slot, TY_POLY_POLY_HASH);
   return 1;
 }
 
@@ -6149,7 +6149,7 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       if (is_push || is_splice || lt == TY_POLY_POLY_HASH || kt == TY_UNKNOWN || vt == TY_UNKNOWN) continue;
       TyKind hvt = vt == TY_POLY && ty_is_hash(lt) ? ty_hash_val(lt) : vt;
       TyKind folded = ty_is_hash(lt) ? lt : TY_UNKNOWN;
-      int fits = fold_container_evidence(&folded, 0, 0, kt, hvt);
+      int fits = fold_container_evidence(c, &folded, 0, 0, kt, hvt);
       if (ty_is_hash(lt) && fits && folded == lt) continue;
       changed |= want_poly_hash(c, l);
     }
@@ -6586,7 +6586,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
     if (!ns || !ty_is_array(*ns) || ty_is_ptr_array(*ns) || !named_writes_fresh(c, v)) return 0;
     if (!apply) return 1;
     if (*ns == TY_POLY_ARRAY) return 0;
-    ty_ref_set(ns, TY_POLY_ARRAY);
+    ty_ref_set(c, ns, TY_POLY_ARRAY);
     return 1;
   }
   /* An ivar, read here or through an attr_reader, widens after the
@@ -6655,7 +6655,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
         if (!apply && !got) return 0;
         ch |= got;
       }
-      if (apply && !o->ret_poly_array_pin) { o->ret_poly_array_pin = 1; ch = 1; }
+      if (apply && !o->ret_poly_array_pin) { { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } comp_touch_scope(o->idx); } ch = 1; }
       any = 1;
     }
     if (any) return apply ? ch : 1;
@@ -6688,7 +6688,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
         if (!apply && !got) return 0;
         ch |= got;
       }
-      if (apply && !o->ret_poly_array_pin) { o->ret_poly_array_pin = 1; ch = 1; }
+      if (apply && !o->ret_poly_array_pin) { { { o->ret_poly_array_pin = 1; comp_touch_scope(o->idx); } comp_touch_scope(o->idx); } ch = 1; }
     }
     return apply ? ch : 1;
   }
@@ -6714,7 +6714,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
     ch |= got;
   }
   if (!apply) return 1;
-  if (!yields && !m->ret_poly_array_pin) { m->ret_poly_array_pin = 1; ch = 1; }
+  if (!yields && !m->ret_poly_array_pin) { { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } comp_touch_scope(m->idx); } ch = 1; }
   return ch;
 }
 
@@ -6772,7 +6772,7 @@ static int widen_arg_array(Compiler *c, int arg) {
   }
   if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_ConstantReadNode) {
     TyRef ns = named_array_slot(c, arg);
-    if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { ty_ref_set(ns, TY_POLY_ARRAY); return 1; }
+    if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { ty_ref_set(c, ns, TY_POLY_ARRAY); return 1; }
     return 0;
   }
   return widen_array_sources(c, arg);
@@ -6919,7 +6919,7 @@ int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
       }
       if (ty_is_hash(al->type) && al->type != TY_POLY_POLY_HASH) {
         TyKind folded = al->type;
-        if (fold_container_evidence(&folded, 0, 0, hk, hv) && folded == al->type) return 0;
+        if (fold_container_evidence(c, &folded, 0, 0, hk, hv) && folded == al->type) return 0;
         lv_set_type(al, TY_POLY_POLY_HASH); al->push_widened = 1;
         return 1;
       }
@@ -6928,7 +6928,7 @@ int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
   }
   if (!ty_is_hash(at) || at == TY_POLY_POLY_HASH) return 0;
   TyKind folded = at;
-  if (fold_container_evidence(&folded, 0, 0, hk, hv) && folded == at) return 0;
+  if (fold_container_evidence(c, &folded, 0, 0, hk, hv) && folded == at) return 0;
   return widen_arg_hash(c, arg);
 }
 static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind elem, int depth,
@@ -7524,7 +7524,7 @@ static int widen_method_value_sources(Compiler *c, int v, int mi, TyKind elem, i
   }
   if (n > 0 && leaves_need_pin(c, lv, n, elem) && leaves_widen_to_poly_array(c, lv, n, 0)) {
     ch |= leaves_widen_to_poly_array(c, lv, n, 1);
-    if (!m->ret_poly_array_pin) { m->ret_poly_array_pin = 1; ch = 1; }
+    if (!m->ret_poly_array_pin) { { { m->ret_poly_array_pin = 1; comp_touch_scope(m->idx); } comp_touch_scope(m->idx); } ch = 1; }
     wbas_touch();
     return ch;
   }
@@ -7567,15 +7567,15 @@ static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth
 
 /* 1 when a key `k` or value `v` merged into a container of type `ct` is
    one `ct` cannot hold; a boxed or unknown one is left to the store. */
-static int merged_kv_misfits(TyKind ct, TyKind k, TyKind v) {
+static int merged_kv_misfits(Compiler *c, TyKind ct, TyKind k, TyKind v) {
   if (k == TY_STRBUF) k = TY_STRING;
   if (v == TY_STRBUF) v = TY_STRING;
   TyKind f = ct;
-  if (k != TY_POLY && k != TY_UNKNOWN && (!fold_container_evidence(&f, 0, 0, k, ty_hash_val(ct)) || f != ct)) return 1;
+  if (k != TY_POLY && k != TY_UNKNOWN && (!fold_container_evidence(c, &f, 0, 0, k, ty_hash_val(ct)) || f != ct)) return 1;
   f = ct;
   /* (nil is a value the store holds in any slot) */
   if (v != TY_POLY && v != TY_UNKNOWN && v != TY_NIL &&
-      (!fold_container_evidence(&f, 0, 0, ty_hash_key(ct), v) || f != ct)) return 1;
+      (!fold_container_evidence(c, &f, 0, 0, ty_hash_key(ct), v) || f != ct)) return 1;
   return 0;
 }
 /* A merged literal's value `n`: an empty `[]` or `{}`, which infers
@@ -7592,12 +7592,12 @@ static TyKind merged_val_ty(Compiler *c, int n) {
    checks then; a literal's own elements still show theirs. */
 static int merged_hash_misfits(Compiler *c, int a, TyKind t, TyKind ct) {
   if (!ty_is_hash(t)) return 0;
-  if (merged_kv_misfits(ct, ty_hash_key(t), ty_hash_val(t))) return 1;
+  if (merged_kv_misfits(c, ct, ty_hash_key(t), ty_hash_val(t))) return 1;
   int h = nt_paren_single(c->nt, a), en = 0;
   const int *el = h >= 0 && nt_kind(c->nt, h) == NK_HashNode ? nt_arr(c->nt, h, "elements", &en) : NULL;
   for (int i = 0; i < en; i++)
     if (nt_kind(c->nt, el[i]) == NK_AssocNode &&
-        merged_kv_misfits(ct, infer_type(c, nt_ref(c->nt, el[i], "key")), merged_val_ty(c, nt_ref(c->nt, el[i], "value"))))
+        merged_kv_misfits(c, ct, infer_type(c, nt_ref(c->nt, el[i], "key")), merged_val_ty(c, nt_ref(c->nt, el[i], "value"))))
       return 1;
   return 0;
 }
@@ -7632,9 +7632,9 @@ int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *
       continue;
     }
     TyKind f = ct;
-    if (isk && (!fold_container_evidence(&f, 0, 0, t, ty_hash_val(ct)) || f != ct)) return 1;
+    if (isk && (!fold_container_evidence(c, &f, 0, 0, t, ty_hash_val(ct)) || f != ct)) return 1;
     f = ct;
-    if (isv && (!fold_container_evidence(&f, 0, 0, ty_hash_key(ct), t) || f != ct)) return 1;
+    if (isv && (!fold_container_evidence(c, &f, 0, 0, ty_hash_key(ct), t) || f != ct)) return 1;
     if (ism && merged_hash_misfits(c, a, t, ct)) return 1;
   }
   return 0;
@@ -7965,8 +7965,8 @@ static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   }
   if (!slot || (*slot != TY_UNKNOWN && !ty_is_array(*slot))) return 0;
   TyKind was = *slot, now = was;
-  if (!fold_container_evidence(&now, 1, 0, TY_UNKNOWN, elem) || !ty_is_array(now) || now == was) return 0;
-  ty_ref_set(slot, now);
+  if (!fold_container_evidence(c, &now, 1, 0, TY_UNKNOWN, elem) || !ty_is_array(now) || now == was) return 0;
+  ty_ref_set(c, slot, now);
   return 1;
 }
 
@@ -8207,7 +8207,7 @@ static int cext_pin_array_producer(Compiler *c, int v) {
       LocalVar *copy = scope_local_intern(other, name);
       lv_set_type(copy, TY_POLY_ARRAY);copy->poly_array_pin=1;copy->rbs_seeded=1;
     }
-    if (other->body == v) other->body = parens;
+    if (other->body == v) { other->body = parens; comp_touch_scope(other->idx); }
   }
   return 1;
 }
@@ -8501,7 +8501,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         (p->boxed_store_key != TY_UNKNOWN || src_misfit)) {
       TyKind folded = at;
       int fits = p->boxed_store_key == TY_UNKNOWN ||
-                 fold_container_evidence(&folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
+                 fold_container_evidence(c, &folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
       if (src_misfit || !fits || folded != at) changed |= widen_arg_hash(c, anode);
     }
     if (merged == TY_PROC) {
@@ -9566,7 +9566,7 @@ static int struct_member_widens_arg(Compiler *c, int v, TyKind mt, TyKind at) {
   if (at == mt) return 0;
   AliasSide sd;
   if (nt_kind(c->nt, v) == NK_CallNode && alias_side(c, v, &sd)) {
-    ty_ref_set(sd.slot, mt);
+    ty_ref_set(c, sd.slot, mt);
     alias_ivar_widened(c, NULL, &sd, mt);
     return 1;
   }
@@ -17971,7 +17971,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      stops being an array at all loses the pin. */
   if (sc->ret_poly_array_pin) {
     if (r == TY_UNKNOWN || r == TY_POLY || (ty_is_array(r) && !ty_is_ptr_array(r))) r = TY_POLY_ARRAY;
-    else sc->ret_poly_array_pin = 0;
+    else { { sc->ret_poly_array_pin = 0; comp_touch_scope(sc->idx); } comp_touch_scope(sc->idx); }
   }
   /* Post-backstop re-runs fill returns whose body only settled after the
      main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there

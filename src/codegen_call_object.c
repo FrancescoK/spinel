@@ -932,7 +932,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       Scope *ie_sc = comp_scope_of(c, id);
       int ie_flip = ie_sc && ie_sc->is_cmethod;
       int ie_sv_cm = ie_flip ? ie_sc->is_cmethod : 0, ie_sv_cls = ie_flip ? ie_sc->class_id : -1;
-      if (ie_flip) { comp_scope_move_begin(c, (int)(ie_sc - c->scopes)); ie_sc->is_cmethod = 0; ie_sc->class_id = cls_id; }
+      if (ie_flip) { comp_scope_move_begin(c, (int)(ie_sc - c->scopes)); { ie_sc->is_cmethod = 0; comp_touch_scope(ie_sc->idx); } { ie_sc->class_id = cls_id; comp_touch_scope(ie_sc->idx); } }
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
@@ -1104,7 +1104,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       block_aliases_release(&ie_al);
       if (ie_al.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
       g_ie_class_id = saved_ie;
-      if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }
+      if (ie_flip) { { ie_sc->is_cmethod = ie_sv_cm; comp_touch_scope(ie_sc->idx); } { ie_sc->class_id = ie_sv_cls; comp_touch_scope(ie_sc->idx); } comp_scope_move_end(); }
       g_self = saved_self2;
       g_self_deref = saved_deref2;
       /* The call boxed for a forwarded block whose sites answer different

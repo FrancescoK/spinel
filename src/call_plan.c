@@ -681,6 +681,14 @@ CallPlan cplan_exception_render(Compiler *c, int id, int xcm) {
   return p;
 }
 
+/* a plan answered is what the asker reads next: the method's value and
+   parameters, the owning class's slots (infer_type's memo, imemo_dep_*) */
+static const CallPlan *cplan_dep(const CallPlan *p) {
+  if (p->mi >= 0) IMEMO_DEP_SCOPE(p->mi);
+  if (p->send_fallback >= 0) IMEMO_DEP_SCOPE(p->send_fallback);
+  if (p->owner_ci >= 0) IMEMO_DEP_CLASS(p->owner_ci);
+  return p;
+}
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   static CallPlan ctx;
   if (self_ci < 0) return cplan_user(c, id);
@@ -694,7 +702,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
     int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, self_ci, name, 1);
     cplan_set(&ctx, mi, self_ci, UC_INST, form);
     ctx.chain = 1;
-    return &ctx;
+    return cplan_dep(&ctx);
   }
   if (flags & CPX_TARGET) return &ctx;
   /* a miss is no method, but a dispatch on the class still has a form: a
@@ -713,7 +721,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
     assert(g_tmp == tmp0);
 #endif
   }
-  return &ctx;
+  return cplan_dep(&ctx);
 }
 
 const CallPlan *cplan_user(Compiler *c, int id) {
@@ -723,7 +731,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   if (plain && id < g_cp_cap && g_cp_have[id]) {
     const char *mn = g_cp_name[id];
-    if (mn ? nm && sp_streq(mn, nm) : !nm) return &g_cp_memo[id];
+    if (mn ? nm && sp_streq(mn, nm) : !nm) return cplan_dep(&g_cp_memo[id]);
     plain = 0;
   }
 #ifndef NDEBUG
@@ -733,7 +741,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
 #ifndef NDEBUG
   assert(g_tmp == tmp0);   /* resolving emits nothing */
 #endif
-  if (!plain) return &fresh;
+  if (!plain) return cplan_dep(&fresh);
   if (id >= g_cp_cap) {
     int ncap = g_cp_cap ? g_cp_cap : 1024;
     while (ncap <= id) ncap *= 2;
@@ -748,7 +756,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   free(g_cp_name[id]);
   g_cp_name[id] = nm ? strdup(nm) : NULL;
   g_cp_have[id] = 1;
-  return &g_cp_memo[id];
+  return cplan_dep(&g_cp_memo[id]);
 }
 
 const CallPlan *cplan_user_fresh(Compiler *c, int id) {
@@ -756,7 +764,7 @@ const CallPlan *cplan_user_fresh(Compiler *c, int id) {
   cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE);
   if (id < 0 || id >= c->node_cap) return &fresh;
   cplan_resolve(c, id, &fresh);
-  return &fresh;
+  return cplan_dep(&fresh);
 }
 
 /* The class a constructor call builds: a constant receiver's, or the class
@@ -1063,6 +1071,8 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
   int n = g_ct_n[id];
   if (n > cap) return CPT_UNKNOWN;
   if (n > 0) memcpy(out, g_ct_pool + g_ct_off[id], (size_t)n * sizeof *out);
+  /* (the targets are what the asker reads next: their values, their parameters) */
+  for (int i = 0; i < n; i++) IMEMO_DEP_SCOPE(out[i]);
   return n;
 }
 

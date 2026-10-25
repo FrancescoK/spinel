@@ -76,6 +76,43 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v) {
 
 /* see compiler.h: every change of a table infer_type reads */
 unsigned long comp_ty_edits;
+/* the owners' versions (compiler.h): per scope, per class, and the program's */
+unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
+int comp_scope_ver_cap, comp_class_ver_cap;
+int *comp_touch_log;
+unsigned long comp_touch_count[3];
+unsigned long comp_touch_why[8];
+int comp_touch_last_why;
+int comp_ref_owner(Compiler *c, TyRef r) {
+  uintptr_t p = (uintptr_t)r;
+  for (int k = 0; k < c->nclasses; k++) {
+    const ClassInfo *ci = &c->classes[k];
+    if (ci->ivar_types && p >= (uintptr_t)ci->ivar_types && p < (uintptr_t)(ci->ivar_types + ci->nivars)) return -(k + 2);
+    if (ci->cvar_types && p >= (uintptr_t)ci->cvar_types && p < (uintptr_t)(ci->cvar_types + ci->ncvars)) return -(k + 2);
+  }
+  /* a LocalVar's type: the record around it names its scope, checked
+     against that scope's table before it is believed */
+  const LocalVar *lv = (const LocalVar *)((const char *)r - offsetof(LocalVar, type));
+  int o = lv->owner;
+  if (o >= 0 && o < c->nscopes) {
+    const Scope *s = &c->scopes[o];
+    if (s->locals && lv >= s->locals && lv < s->locals + s->nlocals) return o;
+  }
+  if (o == -1 && ((c->gvars && lv >= c->gvars && lv < c->gvars + c->ngvars) ||
+                  (c->consts && lv >= c->consts && lv < c->consts + c->nconsts))) return -1;
+  /* in no table: a value of the caller's own (`TyKind now; fold(&now)`),
+     which no inference reads */
+  return COMP_REF_NONE;
+}
+static void comp_ver_grow(unsigned long **ver, int *cap, int need) {
+  if (need <= *cap) return;
+  int ncap = *cap ? *cap : 256;
+  while (ncap < need) ncap *= 2;
+  unsigned long *nv = realloc(*ver, sizeof(unsigned long) * (size_t)ncap);
+  if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(nv + *cap, 0, sizeof(unsigned long) * (size_t)(ncap - *cap));
+  *ver = nv; *cap = ncap;
+}
 
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
@@ -558,11 +595,12 @@ static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
   lv = &(*arr)[(*n)++];
   memset(lv, 0, sizeof(*lv));
   lv->name = strdup(name);
+  lv->owner = -1;     /* the program's, until a scope claims it (scope_local_intern) */
   *(TyKind *)&lv->type = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new slot is a change of the table */
+  comp_touch_global_r(4);    /* a new slot is a change of the table */
   return lv;
 }
-LocalVar *comp_gvar(Compiler *c, const char *name) { return lv_find(c->gvars, c->ngvars, name); }
+LocalVar *comp_gvar(Compiler *c, const char *name) { IMEMO_DEP_GLOBAL(); return lv_find(c->gvars, c->ngvars, name); }
 LocalVar *comp_gvar_intern(Compiler *c, const char *name) { return lv_intern(&c->gvars, &c->ngvars, &c->cgvars, name); }
 const char *comp_resolve_gvar(Compiler *c, const char *name) {
   for (int i = 0; i < c->ngvar_aliases; i++)
@@ -642,6 +680,7 @@ int comp_class_owned_const(Compiler *c, int k, const char *nm, const int *cands,
 static int *cst_idx; static int cst_cap, cst_n = -1; static const LocalVar *cst_base;
 LocalVar *comp_const(Compiler *c, const char *name) {
   if (!name) return NULL;
+  IMEMO_DEP_GLOBAL();
   if (c->nconsts < 16) return lv_find(c->consts, c->nconsts, name);
   if (cst_n != c->nconsts || cst_base != c->consts) {
     int cap = 64;
@@ -697,13 +736,15 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   memset(s, 0, sizeof(*s));
   s->ret_param = -1;
   s->name = name ? strdup(name) : NULL;
-  s->def_node = def_node;
-  s->body = -1;
-  s->class_id = -1;
+  { s->def_node = def_node; comp_touch_scope(s->idx); }
+  { s->body = -1; comp_touch_scope(s->idx); }
+  { s->class_id = -1; comp_touch_scope(s->idx); }
   s->rest_idx = -1;
   s->kwrest_idx = -1;
   *(TyKind *)&s->ret = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new scope is a change of the tables */
+  s->idx = c->nscopes - 1;
+  comp_ver_grow(&comp_scope_ver, &comp_scope_ver_cap, c->nscopes);
+  comp_touch_global_r(5);    /* a new scope is a change of the tables */
   scope_set_ret_noblock(s, TY_UNKNOWN);
   scope_set_ret_pin_guard(s, -1);
   why_reset(&s->ret_why);
@@ -859,15 +900,17 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
     c->classes = realloc(c->classes, sizeof(ClassInfo) * (size_t)c->cclasses);
   }
   ClassInfo *ci = &c->classes[c->nclasses++];
-  comp_ty_edits++;    /* a new class is a change of the tables */
   c->anon_struct_ids_valid = 0;
   memset(ci, 0, sizeof(*ci));
-  ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
+  ci->idx = c->nclasses - 1;
+  comp_ver_grow(&comp_class_ver, &comp_class_ver_cap, c->nclasses);
+  comp_touch_global_r(5);    /* a new class is a change of the tables */
+  { { ci->ctor_reachable = 1; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }   /* conservatively, until compute_instantiated's early pass has looked */
   ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
-  ci->def_node = def_node;
+  { ci->def_node = def_node; comp_touch_scope(ci->idx); }
   if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -920,6 +963,7 @@ int comp_class_index(Compiler *c, const char *name) {
 }
 
 int comp_ivar_index(ClassInfo *ci, const char *name) {
+  IMEMO_DEP_CLASS(ci->idx);
   for (int i = 0; i < ci->nivars; i++)
     if (sp_streq(ci->ivars[i], name)) return i;
   return -1;
@@ -932,27 +976,27 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->civars = ci->civars ? ci->civars * 2 : 8;
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
     ci->ivar_types = realloc((TyKind *)ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
-    ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars);
-    ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars);
-    ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars);
+    { { ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    { { ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+    { { ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
     ci->ivar_oa_type = realloc(ci->ivar_oa_type, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_oa_seed = realloc(ci->ivar_oa_seed, sizeof(int) * (size_t)ci->civars);
     ci->ivar_oa_conflict = realloc(ci->ivar_oa_conflict, (size_t)ci->civars);
-    ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars);
+    { { ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
     ci->ivar_nullable_int_elem = realloc(ci->ivar_nullable_int_elem, (size_t)ci->civars);
     ci->ivar_arr_elem_arr_or_nil = realloc(ci->ivar_arr_elem_arr_or_nil, (size_t)ci->civars);
     ci->ivar_alias_wide = realloc(ci->ivar_alias_wide, (size_t)ci->civars);
   }
   ci->ivars[ci->nivars] = strdup(name);
   ((TyKind *)ci->ivar_types)[ci->nivars] = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new ivar is a change of the table */
-  ci->ivar_str_shared[ci->nivars] = 0;
-  ci->ivar_elems_shared[ci->nivars] = 0;
-  ci->ivar_int_table[ci->nivars] = 0;
+  comp_touch_class(ci->idx);    /* a new ivar is a change of the table */
+  { { ci->ivar_str_shared[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { { ci->ivar_elems_shared[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
+  { { ci->ivar_int_table[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
   ci->ivar_oa_type[ci->nivars] = TY_UNKNOWN;
   ci->ivar_oa_seed[ci->nivars] = 0;
   ci->ivar_oa_conflict[ci->nivars] = 0;
-  ci->ivar_nullable_int[ci->nivars] = 0;
+  { { ci->ivar_nullable_int[ci->nivars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
   ci->ivar_nullable_int_elem[ci->nivars] = 0;
   ci->ivar_arr_elem_arr_or_nil[ci->nivars] = 0;
   ci->ivar_alias_wide[ci->nivars] = 0;
@@ -967,7 +1011,7 @@ int comp_member_intern(ClassInfo *ci, const char *name) {
   if (idx < ci->nmembers) return idx;
   int m = ci->nmembers;
   if (idx != m) {
-    comp_ty_edits++;  /* the ivars are renumbered */
+    comp_touch_class(ci->idx);  /* the ivars are renumbered */
 #define IV_SWAP(arr, T) do { T _t = ci->arr[idx]; ((T *)ci->arr)[idx] = ci->arr[m]; ((T *)ci->arr)[m] = _t; } while (0)
     IV_SWAP(ivars, char *);
     IV_SWAP(ivar_types, TyKind);
@@ -994,6 +1038,7 @@ int comp_member_index(ClassInfo *ci, const char *name) {
 }
 
 int comp_cvar_index(ClassInfo *ci, const char *name) {
+  IMEMO_DEP_CLASS(ci->idx);
   for (int i = 0; i < ci->ncvars; i++)
     if (sp_streq(ci->cvars[i], name)) return i;
   return -1;
@@ -1044,14 +1089,14 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
     ci->cvar_types = realloc((TyKind *)ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
     ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
-    ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars);
+    { { ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars); comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
   }
   ci->cvars[ci->ncvars] = strdup(name);
   ((TyKind *)ci->cvar_types)[ci->ncvars] = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new cvar is a change of the table */
+  comp_touch_class(ci->idx);    /* a new cvar is a change of the table */
   ci->cvar_nullable_int[ci->ncvars] = 0;
   ci->cvar_str_shared[ci->ncvars] = 0;
-  ci->cvar_elems_shared[ci->ncvars] = 0;
+  { { ci->cvar_elems_shared[ci->ncvars] = 0; comp_touch_class(ci->idx); } comp_touch_class(ci->idx); }
   return ci->ncvars++;
 }
 
@@ -1146,7 +1191,7 @@ static int *tm_next = NULL, *tm_head = NULL;
    which is only stable while scope shape is fixed (e.g. hash_new_default_arg's
    per-node memo) can stamp their cache and discard it when the epoch changes. */
 static unsigned sm_gen = 0;
-void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) sm_gen++; sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
+void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) { sm_gen++; comp_touch_global(); } sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
 int comp_scope_index_is_frozen(void) { return sm_frozen; }
 unsigned comp_scope_index_gen(void) { return sm_gen; }
 /* Scopes from `from` on into the chains, ascending so the highest scope
@@ -1218,11 +1263,15 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
 }
 
 int comp_method_in_class(Compiler *c, int class_id, const char *name) {
-  return sm_lookup(c, class_id, name, 0);
+  int mi = sm_lookup(c, class_id, name, 0);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
-  return sm_lookup(c, class_id, name, 1);
+  int mi = sm_lookup(c, class_id, name, 1);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 /* (name, instance or class side) -> per class, the method a chain lookup
    answers and the class that defines it. A poly dispatch, an arity plan and
@@ -1234,7 +1283,7 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
    dropped when the index's epoch, the scope or class count, or the class
    shape (comp_class_shape_changed) moves. */
 static unsigned cmc_shape = 0;
-void comp_class_shape_changed(void) { cmc_shape++; }
+void comp_class_shape_changed(void) { cmc_shape++; comp_touch_global(); }   /* (a parent link or an alias: every answer may read a chain) */
 unsigned comp_class_shape_gen(void) { return cmc_shape; }
 static char **cmc_name; static unsigned char *cmc_cm; static int **cmc_ans;
 static int **cmc_resp; static int *cmc_nresp;   /* per slot: the responders (comp_name_responders), -1 unbuilt */
@@ -1342,12 +1391,17 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
   if (mi >= 0 && def_class) *def_class = dc;
   return mi;
 }
+/* (the method found is what the asker reads next: its value, its parameters) */
 int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  return chain_lookup(c, class_id, name, def_class, 1);
+  int mi = chain_lookup(c, class_id, name, def_class, 1);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  return chain_lookup(c, class_id, name, def_class, 0);
+  int mi = chain_lookup(c, class_id, name, def_class, 0);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 /* See compiler.h. Built on the first ask from the memo's slot, which the
@@ -1423,6 +1477,7 @@ static const Compiler *rdo_c; static unsigned rdo_tgen, rdo_shape; static int rd
 const int *comp_name_reader_owners(Compiler *c, const char *name, int *n) {
   *n = 0;
   if (!name) return NULL;
+  IMEMO_DEP_GLOBAL();   /* (the owners are read over every class) */
   if (rdo_c != c || rdo_tgen != comp_table_gen || rdo_shape != cmc_shape || rdo_ncls != c->nclasses) {
     for (int i = 0; i < rdo_cap; i++) { free(rdo_name[i]); rdo_name[i] = NULL; free(rdo_list[i]); rdo_list[i] = NULL; }
     rdo_cnt = 0; rdo_c = c; rdo_tgen = comp_table_gen; rdo_shape = cmc_shape; rdo_ncls = c->nclasses;
@@ -1474,6 +1529,7 @@ int comp_ty_ary_root(Compiler *c, TyKind t) {
 TyKind comp_ary_kind(Compiler *c, int cid) {
   int r = comp_ary_root(c, cid);
   if (r < 0) return TY_UNKNOWN;
+  IMEMO_DEP_CLASS(r);   /* (the root's kind is what the asker reads) */
   TyKind k = c->classes[r].ary_kind;
   if (k != TY_UNKNOWN || g_infer_optimistic) return k;
   return c->classes[r].ary_hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
@@ -2673,7 +2729,7 @@ int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, i
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   name = comp_resolve_alias(c, class_id, name);
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)
-    if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
+    if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; IMEMO_DEP_CLASS(cid); return 1; }
   return 0;
 }
 /* Whether a strict subclass of class_id answers `name` with a method or a
@@ -2893,6 +2949,7 @@ static struct pc_entry *pc_memo(Compiler *c, const char *name) {
 }
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
   if (!name) { *n = 0; return NULL; }
+  IMEMO_DEP_GLOBAL();   /* (the candidates are read over every class) */
   struct pc_entry *e = pc_memo(c, name);
   if (!e || mv_n) {
     /* scope shape may still change: answer fresh, and keep nothing */
@@ -3211,6 +3268,7 @@ static void cc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) 
 }
 const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n) {
   if (!name) { *n = 0; return NULL; }
+  IMEMO_DEP_GLOBAL();   /* (the candidates are read over every class) */
   if (!sm_frozen) {
     struct pc_entry *e = calloc(1, sizeof *e);
     cc_build(c, name, &e->cands, &e->n);
@@ -3312,9 +3370,10 @@ void comp_descendants_reset(void) {
    the end of nscope (desugar_value_callable_forwards asks of the receivers
    of calls appended since). */
 Scope *comp_scope_of(Compiler *c, int node_id) {
-  if (node_id < 0 || node_id >= c->node_cap) return &c->scopes[0];
+  if (node_id < 0 || node_id >= c->node_cap) { IMEMO_DEP_SCOPE(0); return &c->scopes[0]; }
   int idx = c->nscope[node_id];
   if (idx < 0 || idx >= c->nscopes) idx = 0;
+  IMEMO_DEP_SCOPE(idx);
   return &c->scopes[idx];
 }
 
@@ -3980,7 +4039,13 @@ int comp_bare_gets_is_argf(Compiler *c) {
 }
 
 static int comp_method_index_direct(Compiler *c, const char *name);
+static int comp_method_index_1(Compiler *c, const char *name);
 int comp_method_index(Compiler *c, const char *name) {
+  int mi = comp_method_index_1(c, name);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);   /* (the method found is what the asker reads next) */
+  return mi;
+}
+static int comp_method_index_1(Compiler *c, const char *name) {
   int mi = comp_method_index_direct(c, name);
   if (mi >= 0) return mi;
   /* Only when nothing owns the name: a top-level `alias b a` registers on the
@@ -4044,7 +4109,13 @@ int class_is_blank_slate(Compiler *c, int ci) {
    An extend at the top level adds the module to main alone: a bare call
    reaches it only where self is main, and elsewhere CRuby raises
    NoMethodError (or runs Kernel's method of the name). */
+static int comp_included_method_index_1(Compiler *c, const char *name, int call_id);
 int comp_included_method_index(Compiler *c, const char *name, int call_id) {
+  int mi = comp_included_method_index_1(c, name, call_id);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);   /* (the method found is what the asker reads next) */
+  return mi;
+}
+static int comp_included_method_index_1(Compiler *c, const char *name, int call_id) {
   if (!name) return -1;
   int main_self = 1;
   if (call_id >= 0) {
@@ -4098,6 +4169,7 @@ static void scope_lidx_build(Scope *s) {
   for (int i = 0; i < s->nlocals; i++) scope_lidx_add(s, i);
 }
 LocalVar *scope_local(Scope *s, const char *name) {
+  IMEMO_DEP_SCOPE(s->idx);
   if (s->nlocals >= SCOPE_LIDX_MIN) {
     if (!s->lidx || s->nlocals * 2 > s->lidx_cap) scope_lidx_build(s);
     if (s->lidx) {
@@ -4133,17 +4205,18 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   memset(lv, 0, sizeof *lv);
   lv->name = strdup(name);
   *(TyKind *)&lv->type = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new local is a change of the scope's table */
+  lv->owner = s->idx;
+  comp_touch_scope(s->idx);    /* a new local is a change of the scope's table */
   why_reset(&lv->why);
   lv->last_src = -1;
   lv->gc_root = 0;
   lv->is_param = 0;
   lv->is_block_param = 0;
   lv_set_proc_ret(lv, TY_UNKNOWN);
-  lv->is_cell = 0;
+  { { lv->is_cell = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
   lv->cell_shadow = 0;
   lv->cell_outlives = 0;
-  lv->byref_out = 0;
+  { { lv->byref_out = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
   lv->inline_alias = 0;
   lv->init_guarded = 0;
   lv->rbs_seeded = 0;
@@ -4152,7 +4225,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->poly_dispatch_widened = 0;
   lv->or_written = 0;
   lv->maybe_unset = 0;
-  lv->str_shared = 0;
+  { { lv->str_shared = 0; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
   lv->str_append = 0;
   lv->poly_hash_pin = 0;
   lv->poly_array_pin = 0;

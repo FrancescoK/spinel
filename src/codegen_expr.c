@@ -3056,7 +3056,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
       lv_set_type(&slot, TY_STRBUF);
-      slot.str_shared = 1;
+      { { slot.str_shared = 1; comp_touch_scope(slot.owner); } comp_touch_scope(slot.owner); }
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, &slot, v, b);
       emit_cvar_set_flag_after(c, cid, nm, b);
