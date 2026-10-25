@@ -1,0 +1,4 @@
+before
+LESS=-R -Fe
+paged:Usage: prog [options]
+paged:    -x                               an x
