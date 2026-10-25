@@ -11,4 +11,5 @@ false
 "log: logged\n"
 "string name echo n"
 "expression"
+NoMethodError
 "top\n"

@@ -64,6 +64,11 @@ class Named
   def run = `echo n`
 end
 
+class Blank < BasicObject
+  def `(cmd) = "blank " + super
+  def run = `echo blank`
+end
+
 p Shell.new.run
 p Shell.new.runs(2)
 p Plain.new.run
@@ -76,4 +81,9 @@ p Wrapped.new.run
 p Logged.new.run
 p Named.new.run
 p defined?(`echo never`)
+begin
+  Blank.new.run
+rescue ::NoMethodError => e
+  p e.class
+end
 p `echo top`

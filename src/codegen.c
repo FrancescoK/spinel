@@ -14803,9 +14803,12 @@ static int super_member_nilbit(Compiler *c, ClassInfo *cls, int a, int v, Buf *b
 }
 /* `super` in a ` override no ancestor defines is Kernel#`: it runs the
    command and answers its output (infer's twin, bt_super). A super of
-   another shape (a splat, no argument, two) is refused. */
-static void emit_super_backtick(Compiler *c, int id, Scope *s, Buf *b) {
+   another shape (a splat, no argument, two) is refused. 0 where self has
+   no Kernel#` above it (a BasicObject subclass): the caller raises
+   NoMethodError. */
+static int emit_super_backtick(Compiler *c, int id, Scope *s, Buf *b) {
   int arg, shape = an_super_backtick_shape(c, id, s, &arg);
+  if (shape < 0) return 0;
   if (!shape) {
     unsupported_feature(c, id, "unsupported `super` in a program-defined `: "
                         "only super(cmd) or a bare super in a def of one parameter reaches Kernel#`");
@@ -14827,6 +14830,7 @@ static void emit_super_backtick(Compiler *c, int id, Scope *s, Buf *b) {
   if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_STRING, rb.p, b);
   else buf_puts(b, rb.p);
   free(rb.p);
+  return 1;
 }
 
 void emit_super(Compiler *c, int id, Buf *b) {
@@ -14952,7 +14956,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       return;
     }
     /* `super` in a class-level ` override is Kernel#` too */
-    if (cmi < 0 && sp_streq(uname, "`")) { emit_super_backtick(c, id, s, b); return; }
+    if (cmi < 0 && sp_streq(uname, "`") && emit_super_backtick(c, id, s, b)) return;
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
@@ -15398,7 +15402,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       }
     }
     /* `super` in a ` override no ancestor defines is Kernel#` */
-    if (uname && sp_streq(uname, "`")) { emit_super_backtick(c, id, s, b); return; }
+    if (uname && sp_streq(uname, "`") && emit_super_backtick(c, id, s, b)) return;
     /* `super` from the program's own send, __send__ or public_send that no
        ancestor of the program defines is Object's: it dispatches on the name
        at run time, which no emitted code here does, so it is refused rather

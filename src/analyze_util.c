@@ -4516,10 +4516,12 @@ int an_kernel_const_recv(Compiler *c, int id, int recv, int fresh) {
 /* The String a `super` in a ` override (call `id` in scope `s`) hands
    Kernel#`: 1 for super(x) with one plain argument (*arg is x), 2 for a
    zero-argument super in a def of one required parameter and nothing
-   else, 0 for any other shape. */
+   else, 0 for any other shape, -1 where no Kernel#` is above self. */
 int an_super_backtick_shape(Compiler *c, int id, const Scope *s, int *arg) {
   const NodeTable *nt = c->nt;
   *arg = -1;
+  /* a BasicObject instance has no Kernel above it: NoMethodError */
+  if (!s->is_cmethod && s->class_id >= 0 && class_is_blank_slate(c, s->class_id)) return -1;
   if (nt_kind(nt, id) == NK_SuperNode) {
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;

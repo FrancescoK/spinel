@@ -11318,7 +11318,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int subs_super = s->is_cmethod && uname && sp_streq(uname, "subclasses") &&
                      nt_ref(nt, id, "arguments") < 0;
     /* and `super` in a ` override reaches Kernel#`: the command's output */
-    int bt_arg, bt_super = uname && sp_streq(uname, "`") && an_super_backtick_shape(c, id, s, &bt_arg);
+    int bt_arg, bt_super = uname && sp_streq(uname, "`") && an_super_backtick_shape(c, id, s, &bt_arg) > 0;
     TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING
                 : an_super_object_text(c, id, (int)(s - c->scopes)) ? TY_STRING
                 : bt_super ? TY_STRING
