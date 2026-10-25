@@ -174,6 +174,9 @@ VALUE rb_hash_new(void);
 VALUE rb_hash_new_capa(long);
 VALUE rb_hash_aset(VALUE, VALUE, VALUE);
 VALUE rb_ary_new_capa(long);
+#define rb_ary_new2 rb_ary_new_capa
+VALUE rb_ary_subseq(VALUE, long, long);
+VALUE rb_hash_aref(VALUE, VALUE);
 VALUE rb_ary_push(VALUE, VALUE);
 VALUE rb_ary_pop(VALUE);
 void rb_ary_store(VALUE, long, VALUE);

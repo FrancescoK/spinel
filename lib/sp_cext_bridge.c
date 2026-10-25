@@ -392,6 +392,17 @@ void rb_ary_store(VALUE v,long index,VALUE item) {
     if(index==a->len)sp_PolyArray_push(a,value);
     else { sp_gc_wb(a);a->data[index]=value; }
 }
+/* A new Array of the elements from begin, as CRuby's rb_ary_subseq: nil when
+ * begin is past the end or either bound is negative. */
+VALUE rb_ary_subseq(VALUE v,long begin,long length) {
+    sp_PolyArray *a=array(v);
+    if(begin>a->len || begin<0 || length<0)return Qnil;
+    if(length>a->len-begin)length=a->len-begin;
+    sp_PolyArray *slice=sp_PolyArray_new();SP_GC_ROOT(slice);
+    for(long i=0;i<length;i++)sp_PolyArray_push(slice,a->data[begin+i]);
+    return sp_cext_value(sp_box_poly_array(slice));
+}
+VALUE rb_hash_aref(VALUE hash,VALUE key) { return sp_cext_value(sp_cext_hash_get(sp_cext_rbval(hash),sp_cext_rbval(key))); }
 VALUE rb_ary_entry(VALUE v,long i) { sp_PolyArray *a=array(v);if(i<0)i+=a->len;return i<0||i>=a->len?Qnil:sp_cext_value(a->data[i]); }
 long sp_cext_array_len(VALUE v) { return (long)array(v)->len; }
 ID rb_intern(const char *name) {

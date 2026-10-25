@@ -74,6 +74,7 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
     "class name during Init" => ['rb_class2name(rb_cObject);', "rb_class2name"],
     "number conversion during Init" => ['NUM2LONG(INT2FIX(1));', "NUM2LONG"],
     "value type during Init" => ['TYPE(rb_cObject);', "rb_type"],
+    "hash read during Init" => ['rb_hash_aref(rb_cObject, Qnil);', "rb_hash_aref"],
     "Ruby execution" => ['rb_funcall(rb_cObject, rb_intern("name"), 0);', "rb_funcall"],
     "invalid constant lookup" => ['rb_const_get(rb_cObject, rb_intern("lower"));', "ASCII constant names"],
     "eval" => ['rb_eval_string("ENV[\\\"HOME\\\"]");', "rb_eval_string"],
