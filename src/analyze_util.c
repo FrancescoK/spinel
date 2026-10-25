@@ -3131,6 +3131,7 @@ static int pinned_block_form_ret(Compiler *c, int mi, TyKind *out) {
 }
 
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
+  IMEMO_DEP_SCOPE(mi);   /* (the method's value is read here) */
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block
      answers from the block arm, typed per call site like a yield tail */

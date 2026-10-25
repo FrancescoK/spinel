@@ -1466,7 +1466,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
       char svn[32]; snprintf(svn, sizeof svn, "__sv%d", ++g_tmp);
       LocalVar *lv = scope_local_intern(esc, svn);
       lv_set_type(lv, at);
-      lv->str_shared = shr;
+      { { lv->str_shared = shr; comp_touch_scope(lv->owner); } comp_touch_scope(lv->owner); }
       /* the temporary holds the argument's value, nil included: an
          Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
          slot's nil, or the setter's -2^63 check reads it as -2^63 */
@@ -1526,7 +1526,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
           memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
           esc->nlocals--;
           scope_locals_removed(esc);
-          comp_ty_edits++;
+          comp_touch_scope(esc->idx);
           break;
         }
       return 1;

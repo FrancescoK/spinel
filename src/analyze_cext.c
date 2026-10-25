@@ -373,7 +373,7 @@ static void lower_constant_stub(Compiler *c, int mi) {
   int root = tmp_body >= 0 ? nt_import_subtree((NodeTable *)c->nt, tmp, tmp_body) : -1;
   nt_free(tmp); free(body.p);
   if (root < 0) unsupported_feature(c, sc->def_node, "invalid C extension constant stub");
-  nt_node_set_ref((NodeTable *)c->nt, sc->def_node, "body", root); sc->body = root;
+  nt_node_set_ref((NodeTable *)c->nt, sc->def_node, "body", root); { sc->body = root; comp_touch_scope(sc->idx); }
   nt_node_set_int((NodeTable *)c->nt, sc->def_node, "cext_const_lowered", 1);
   comp_grow_node_arrays(c);
   for (int id = start; id < c->nt->count; id++) {
@@ -422,7 +422,7 @@ void register_cext_layouts(Compiler *c) {
      * TypedData_Make_Struct / TypedData_Wrap_Struct; the layout is the same */
     if (cc->allocator >= 0 || cc->allocator == -2) {
       c->classes[cid].cext_layout = 1;
-      c->classes[cid].instantiated = 1;
+      c->classes[cid].instantiated = 1; comp_touch_class(cid);
       c->classes[cid].cext_extension = cc->extension + 1;
       c->classes[cid].cext_allocator = cc->allocator >= 0 ? cc->allocator : -1;
     }

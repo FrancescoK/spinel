@@ -5483,8 +5483,8 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       dl->is_param = sl.is_param;
       dl->is_block_param = sl.is_block_param;
       lv_set_proc_ret(dl, sl.proc_ret);
-      dl->is_cell = sl.is_cell;
-      dl->byref_out = sl.byref_out;
+      { { dl->is_cell = sl.is_cell; comp_touch_scope(dl->owner); } comp_touch_scope(dl->owner); }
+      { { dl->byref_out = sl.byref_out; comp_touch_scope(dl->owner); } comp_touch_scope(dl->owner); }
       dl->borrowed_volatile = sl.borrowed_volatile;
     }
     break;
@@ -10056,7 +10056,7 @@ else if (orecv >= 0 && onm) {
     g_self = proc_cmethod_self(c, bs, cm_self_p, sizeof cm_self_p);
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
   int bs_moved = ie_cls >= 0 && sv_bcls >= 0;
-  if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); bs->class_id = ie_cls; bs->is_cmethod = 0; }
+  if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); { bs->class_id = ie_cls; comp_touch_scope(bs->idx); } { bs->is_cmethod = 0; comp_touch_scope(bs->idx); } }
   /* The proc body reads its captured self by value for a value-type class
      (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
      body must match. g_self_deref is global, so override it for the body and
@@ -10641,7 +10641,7 @@ else if (orecv >= 0 && onm) {
   g_conv_hold = sv_conv_hold;
   g_self_deref = sv_deref;
   g_ie_class_id = sv_iec; g_ie_rself_on = sv_rself_on;
-  if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
+  if (bs) { { bs->class_id = sv_bcls; comp_touch_scope(bs->idx); } { bs->is_cmethod = sv_bcm; comp_touch_scope(bs->idx); } }
   if (bs_moved) comp_scope_move_end();
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   memcpy(g_ensure_stack, sv_estk, sizeof sv_estk);
@@ -21164,7 +21164,7 @@ char *codegen_program(const NodeTable *nt) {
       static const char *const fns[2] = { "message", "to_s" };
       for (int k = 0; k < 2; k++) {
         int mi = comp_method_in_chain(c, i, fns[k], NULL);
-        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) c->scopes[mi].reachable = 1;
+        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) { { c->scopes[mi].reachable = 1; comp_touch_scope(c->scopes[mi].idx); } comp_touch_scope(c->scopes[mi].idx); }
       }
     }
   }
@@ -21515,9 +21515,9 @@ char *codegen_program(const NodeTable *nt) {
       int ob = c->scopes[s].body;
       int nb = deferred_raise_body(c, ob, s, dmsg);
       if (nb >= 0) {
-        c->scopes[s].body = nb;
+        { c->scopes[s].body = nb; comp_touch_scope(c->scopes[s].idx); }
         EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
-        c->scopes[s].body = ob;
+        { c->scopes[s].body = ob; comp_touch_scope(c->scopes[s].idx); }
       }
       continue;
     }
@@ -21533,9 +21533,9 @@ char *codegen_program(const NodeTable *nt) {
       int ob = c->scopes[s].body;
       int nb = deferred_raise_body(c, ob, s, dmsg);
       if (nb >= 0) {
-        c->scopes[s].body = nb;
+        { c->scopes[s].body = nb; comp_touch_scope(c->scopes[s].idx); }
         EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
-        c->scopes[s].body = ob;
+        { c->scopes[s].body = ob; comp_touch_scope(c->scopes[s].idx); }
       }
     }
   }
