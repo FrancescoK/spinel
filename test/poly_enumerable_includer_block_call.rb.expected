@@ -35,3 +35,9 @@ private method 'select' called for an instance of Object
 ["ab"]
 ["ab"]
 ["picker", "[\"ab\"]"]
+[1]
+[1]
+1
+[:picker_map]
+[:picker, [1]]
+-2
