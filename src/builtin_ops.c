@@ -1309,7 +1309,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "readchar",       0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "readpartial",    0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "sysread",        0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
-  { TY_IO, "ftype",          0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_stat_ftype($r)", TY_UNKNOWN },
+  { TY_IO, "ftype",          0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_stat_ftype(sp_stat_extended_recv($r, \"ftype\"))", TY_UNKNOWN },   /* a stat's; a File handle has none */
   { TY_IO, "ftype",          0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "pread",          0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "write",          0, 127, BF_ANY, TY_INT,      BOPE_NONE },

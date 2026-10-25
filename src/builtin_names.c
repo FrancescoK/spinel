@@ -1592,3 +1592,10 @@ int stat_field_slot(const char *name) {
 int boxed_stat_name(const char *name) {
   return sp_streq(name, "mode") || stat_field_slot(name) >= 0;
 }
+/* File::Stat's readers that a boxed receiver always dispatches on, where a
+   class of the program's own keeps its arm: mtime, atime and ftype (their
+   TY_IO rows say what each answers). ctime is left out: on a boxed
+   receiver it may be Time#ctime's String as well. */
+int boxed_stat_reader(const char *name) {
+  return sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ftype");
+}
