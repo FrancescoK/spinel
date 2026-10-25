@@ -28,7 +28,25 @@
    and an error in a part names the part instead of the program. The
    markers' include-stack flags (1 and 2) are not replayed, only the
    system-header ones (3 and 4): the items leave the unit's order, and a
-   stack that does not match is worth a warning of its own. */
+   stack that does not match is worth a warning of its own.
+
+   c_split_units is the other reader of the same items, for --incremental
+   (docs/internals/incremental-build.md). There the parts are not for
+   parallelism but for a cache of objects, so a part's text has to stay the
+   same when the program changes elsewhere. It cuts at the `#pragma spinel
+   unit <tag> <group>` lines codegen writes under that flag only, where each
+   method, constructor, dispatcher and main begins. The items before the
+   return from `#include "spinel_rt.h"` are the runtime region, which goes to
+   sp_rt.h and to rt units that every program built with the same flags
+   shares; the rest is the program region, which goes to sp_program.h and to
+   units packed by a jump consistent hash of the group or the item's family,
+   so that growing the program moves few items between units. Every program
+   name a unit uses but does not define reaches it through a declaration
+   written into that unit, not through the shared header, so adding a method
+   changes only the units that define and call it. A pragma written where a
+   method began and then abandoned (an EMIT_COLLECT_UNIT re-emission) leaves
+   its proc segments in the text under a tag no body uses: they become dead
+   external functions that the link's --gc-sections drops. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -835,12 +853,9 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
 
    Every unit is named by the SHA-256 of its text without the line markers
    (`-g` keeps them), so the same text compiles under the same name in every
-   build. A pragma written where a method began and then abandoned (an
-   EMIT_COLLECT_UNIT re-emission) leaves its proc segments in the text under
-   a tag no body uses: they become dead external functions that the link's
-   --gc-sections drops. A method named like `_fzl_<hex>` or `sp_pd_<hex>`
-   puts that name in a pragma line, where codegen's text scanners may take it
-   for a literal reference: the worst case is one unused literal definition.
+   build. A method named like `_fzl_<hex>` or `sp_pd_<hex>` puts that name
+   in a pragma line, where codegen's text scanners may take it for a literal
+   reference: the worst case is one unused literal definition.
    SPINEL_UNIT_DROP_DECL=<name> (internal, for the gate) leaves that one
    declaration out of the table, to prove a missing declaration is a compile
    error rather than an object. */

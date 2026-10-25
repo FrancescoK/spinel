@@ -493,7 +493,10 @@ own host has no say in it: it may well have pthread when the device does not.
 mtimes across the project, its dependencies, and the compiler binary).
 There is no file-granular incremental mode -- whole-program type
 specialization spans every source -- but compiles are fast and package C
-objects are reused from the cache. `spin clean` removes `build/`.
+objects are reused from the cache. `spinel --incremental` (a unit-level
+object cache, [internals/incremental-build.md](internals/incremental-build.md))
+is available directly; `spin` does not use it yet. `spin clean` removes
+`build/`.
 
 ## Command summary
 

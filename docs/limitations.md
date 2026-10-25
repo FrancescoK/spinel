@@ -684,6 +684,12 @@ still works.
   wait (a `sleep`, a `Queue#pop`, a `join`, a `Mutex#lock`, an IO wait) or
   `Thread.pass`, not in the middle of a computation as CRuby can;
   `Thread#kill` of the main thread is a no-op, where CRuby ends the process.
+- **An `--incremental` build is slower code than a release build.** It is a
+  development-build mode: the program is compiled as many units, so methods
+  are not inlined across units, and short methods lose the inline hint they
+  get in a single-unit build. The answers are the same; release builds
+  (without `--incremental`) are unchanged. See
+  [internals/incremental-build.md](internals/incremental-build.md).
 
 ### Intentional incompatibilities with CRuby
 
@@ -1288,10 +1294,11 @@ parses.
 
 A note on identity: equal frozen literals are one object, as in CRuby
 with frozen string literals. `"abc".equal?("abc")` is `true`, the same
-text in two methods (or in two parts of a `--jobs=N` split build) is the
-same object, an adjacent-literal fold (`"ab" "c"`) is the object the plain
-`"abc"` is, and a literal in a loop yields one object on every pass. An
-interpolated string (`"#{x}"`) is built anew each time, in CRuby too.
+text in two methods (or in two parts of a `--jobs=N` split build, or in two
+units of an `--incremental` build) is the same object, an adjacent-literal
+fold (`"ab" "c"`) is the object the plain `"abc"` is, and a literal in a
+loop yields one object on every pass. An interpolated string (`"#{x}"`) is
+built anew each time, in CRuby too.
 
 What still differs is the run-time intern table behind `String#-@` /
 `dedup`. CRuby puts every frozen literal in it when the code is loaded, so

@@ -61,6 +61,10 @@ How the compiler is built and where it is going. Not needed to *use* Spinel.
 - **[internals/architecture.md](internals/architecture.md)** -- where a change
   goes: the layer that owns each decision, its entry points, how the old way
   looks in a diff, and the verifiers that keep each layer and the C in step.
+- **[internals/incremental-build.md](internals/incremental-build.md)** --
+  `--incremental`: the generated C cut into units after the preprocessor, an
+  object cache keyed by each unit's text, and why the frontend still runs in
+  full on every build.
 - **[internals/gc.md](internals/gc.md)** -- the collector: two heaps, the marker
   byte that identifies a heap string, explicit roots, a full mark with a
   generational sweep, and the limits that follow from having no write barrier.
