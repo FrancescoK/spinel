@@ -1,0 +1,6 @@
+prog: careful
+prog: missing argument: -n
+prog: boom
+[1, "prog: boom"]
+prog: invalid option: --nope
+[1, "prog: invalid option: --nope"]

@@ -1340,7 +1340,8 @@ XXX
   # See Kernel#warn.
   #
   def warn(mesg = $!)
-    super("#{program_name}: #{mesg}")
+    return if $VERBOSE.nil?
+    $stderr.puts "#{program_name}: #{mesg.to_s}"
   end
 
   #
@@ -1351,7 +1352,9 @@ XXX
   # See Kernel#abort.
   #
   def abort(mesg = $!)
-    super("#{program_name}: #{mesg}")
+    mesg = "#{program_name}: #{mesg.to_s}"
+    $stderr.puts mesg
+    raise SystemExit.new(1, mesg)
   end
 
   #
