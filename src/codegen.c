@@ -10716,11 +10716,28 @@ int is_exc_name(const char *n) {
 }
 
 /* Returns 1 if user class ci (or any ancestor) directly inherits a builtin exception. */
+/* The answers, per class: 0 not asked yet, 1 no, 2 yes. The walk below reads
+   the class table (its parent links, or the superclass names where a link
+   is not yet made) and the superclass nodes, so the answers hold while the
+   table keeps its count and its shape (comp_class_shape_gen); the poly
+   dispatch asks for every class of every candidate list it resolves. */
+static unsigned char *g_excsub;
+static int g_excsub_n = -1;
+static unsigned g_excsub_gen;
+static const Compiler *g_excsub_c;
 int class_is_exc_subclass(Compiler *c, int ci) {
+  if (g_excsub_c != c || g_excsub_n != c->nclasses || g_excsub_gen != comp_class_shape_gen()) {
+    free(g_excsub);
+    g_excsub = calloc((size_t)c->nclasses + 1, 1);
+    g_excsub_n = c->nclasses; g_excsub_gen = comp_class_shape_gen(); g_excsub_c = c;
+  }
+  int memo = g_excsub && ci >= 0 && ci < g_excsub_n;
+  if (memo && g_excsub[ci]) return g_excsub[ci] == 2;
+  int ans = 0;
   for (int k = ci, guard = 0; k >= 0 && guard < 256; guard++) {
     int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
     const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
-    if (superclass_builtin_exc_name(c->nt, sc)) return 1;
+    if (superclass_builtin_exc_name(c->nt, sc)) { ans = 1; break; }
     int next = c->classes[k].parent;
     /* The parent links are not resolved yet when the rescue-arm specialization
        asks, so a two-level chain (`class B < A; class A < StandardError`) ended
@@ -10729,7 +10746,8 @@ int class_is_exc_subclass(Compiler *c, int ci) {
     if (next == k) break;
     k = next;
   }
-  return 0;
+  if (memo) g_excsub[ci] = (unsigned char)(ans ? 2 : 1);
+  return ans;
 }
 
 /* True when one of the program's exception classes defines `name` itself:
@@ -10757,15 +10775,23 @@ static int exc_ivar_classes(Compiler *c) {
 static unsigned char *g_excf;
 static int g_excf_n = -1, g_excf_any;
 static const Compiler *g_excf_c;
+/* the reopenings (bit 2), in declaration order: the few of them are what
+   exc_reopen_definers walks, asked per class of every poly dispatch it
+   resolves, where a scan of the whole table for them grew with the classes */
+static int *g_excf_reopen, g_excf_nreopen;
 static void excf_fill(Compiler *c) {
   if (g_excf_c == c && g_excf_n == c->nclasses) return;
-  free(g_excf);
+  free(g_excf); free(g_excf_reopen);
   g_excf = calloc((size_t)c->nclasses + 1, 1);
-  g_excf_n = c->nclasses; g_excf_c = c; g_excf_any = 0;
+  g_excf_reopen = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
+  g_excf_n = c->nclasses; g_excf_c = c; g_excf_any = 0; g_excf_nreopen = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
     g_excf[k] = 1;
-    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") < 0) { g_excf[k] |= 2; g_excf_any = 1; }
+    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") < 0) {
+      g_excf[k] |= 2; g_excf_any = 1;
+      if (g_excf_reopen) g_excf_reopen[g_excf_nreopen++] = k;
+    }
   }
 }
 int any_exc_reopen(Compiler *c) { excf_fill(c); return g_excf_any; }
@@ -10788,9 +10814,9 @@ int class_is_exc_reopen(Compiler *c, int ci) {
 int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max) {
   int n = 0;
   excf_fill(c);
-  if (!g_excf_any) return 0;
-  for (int k = 0; k < c->nclasses && n < max; k++) {
-    if (!(g_excf[k] & 2)) continue;
+  if (!g_excf_any || !g_excf_reopen) return 0;
+  for (int i = 0; i < g_excf_nreopen && n < max; i++) {
+    int k = g_excf_reopen[i];
     int mi = comp_method_in_chain(c, k, mname, NULL);
     if (mi < 0 || c->scopes[mi].class_id != k) continue;
     out[n++] = k;
