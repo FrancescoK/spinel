@@ -4233,15 +4233,18 @@ static int sp_req_dir_sum(const pm_parser_t *pp, const pm_node_t *n, char *out, 
    `#{` raises LoadError at run time, as any computed one). */
 static int sp_req_splice_relative(SpReqSiteScan *s, const pm_call_node_t *call, const char *path) {
   const char *t = s->text;
-  char buf[640];
   size_t cs = (size_t)((const char *)call->base.location.start - t), ce = (size_t)((const char *)call->base.location.end - t);
-  if (memchr(t + cs, '\n', ce - cs) || strlen(path) > 512) return 0;
+  if (memchr(t + cs, '\n', ce - cs)) return 0;
   SpReqSite place;
   memset(&place, 0, sizeof place);
   place.kw = cs; place.end = ce;
   sp_req_site_place(s, (const pm_node_t *)call, &place);
-  snprintf(buf, sizeof buf, "require_relative \"%s\"", path);
-  sp_req_edit_put(sp_req_edit_new(s, cs, ce), buf, 0, strlen(path), &place);
+  size_t plen = strlen(path), cap = plen + 20;
+  char *buf = malloc(cap);
+  if (!buf) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  snprintf(buf, cap, "require_relative \"%s\"", path);
+  sp_req_edit_put(sp_req_edit_new(s, cs, ce), buf, 0, plen, &place);
+  free(buf);
   return 1;
 }
 
@@ -4304,10 +4307,14 @@ static int sp_req_dir_relative(SpReqSiteScan *s, const pm_call_node_t *call, con
 /* A computed path Spinel cannot resolve: the call raises LoadError at run
    time, naming the path, as a `"#{x}"` one does. */
 static int sp_req_unresolved(SpReqSiteScan *s, const pm_call_node_t *call, const pm_node_t *arg) {
-  char path[512];
   if (!s->dir || call->block || call->arguments->arguments.size != 1) return 0;
-  snprintf(path, sizeof path, "#{%.*s}", (int)(arg->location.end - arg->location.start), (const char *)arg->location.start);
-  return sp_req_splice_relative(s, call, path);
+  size_t alen = (size_t)(arg->location.end - arg->location.start), cap = alen + 4;
+  char *path = malloc(cap);
+  if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  snprintf(path, cap, "#{%.*s}", (int)alen, (const char *)arg->location.start);
+  int r = sp_req_splice_relative(s, call, path);
+  free(path);
+  return r;
 }
 
 /* Only blanks and `;`, then the line's end or a comment, from `p` on. */
