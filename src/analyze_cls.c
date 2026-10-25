@@ -56,9 +56,19 @@ int class_has_exc_name(Compiler *c, int ci);   /* codegen.c */
 
 typedef struct { int cls; const char *name; int el; } CFEntry;
 typedef struct { const char *name; int *mi; int n; int *cmi; int ncm; int *rd; int nrd; int *wr; int nwr; } CFByName;
+/* per method, what binding a call's arguments asks at every call of its
+   name in every round: which parameters are keywords, and each parameter's
+   element (-2 before the first ask); made at the first bind (cf_params) */
+typedef struct { unsigned char *kw; int *el; } CFParams;
+/* per name, whether a builtin answers it and whether one fills its
+   arguments' containers (cf_kbuiltin_name, cf_kfills): 0 not asked, 1 no,
+   2 yes. Both read tables the solve does not write. */
+typedef struct { const char *name; unsigned char kb, kf; } CFKName;
 
 typedef struct CF {
   Compiler *c; const NodeTable *nt; int *par; int nnodes;
+  CFParams *pm;                         /* per scope (cf_params) */
+  CFKName *kn; int kn_cap, kn_n;        /* by name (cf_kname) */
   int nel, cel; int *uf; int *set;      /* union-find: parent, and the root's pool index */
   ClsSet *pool; int npool, cpool; int *ph; int phcap;
   int nwu;                              /* the words a set may span (classes, then Class objects) */
@@ -724,6 +734,46 @@ static int cf_kfills(const char *nm) {
   int kk2[4], nk2 = bop_share_kinds(nm, kk2, 4), fills = nk2 == 0 && cf_kbuiltin_name(nm);
   for (int i = 0; i < nk2; i++) fills |= kk2[i] == BSH_FILL1 || kk2[i] == BSH_FILL2 || kk2[i] == BSH_PACK;
   return fills;
+}
+/* the name's record (CFKName), made on the first ask */
+static CFKName *cf_kname(CF *f, const char *nm) {
+  if (f->kn_n * 2 >= f->kn_cap) {
+    int ncap = f->kn_cap ? f->kn_cap * 2 : 1024;
+    CFKName *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) cf_oom();
+    for (int k = 0; k < f->kn_cap; k++) {
+      if (!f->kn[k].name) continue;
+      unsigned j = sp_strhash(f->kn[k].name) & (unsigned)(ncap - 1);
+      while (nv[j].name) j = (j + 1) & (unsigned)(ncap - 1);
+      nv[j] = f->kn[k];
+    }
+    free(f->kn); f->kn = nv; f->kn_cap = ncap;
+  }
+  unsigned j = sp_strhash(nm) & (unsigned)(f->kn_cap - 1);
+  while (f->kn[j].name) {
+    if (sp_streq(f->kn[j].name, nm)) return &f->kn[j];
+    j = (j + 1) & (unsigned)(f->kn_cap - 1);
+  }
+  f->kn[j].name = strdup(nm);
+  if (!f->kn[j].name) cf_oom();
+  f->kn_n++;
+  return &f->kn[j];
+}
+/* cf_kbuiltin_name and cf_kfills, answered once per name for the solve:
+   the tables they read (the share rows, the operator and answer lists,
+   the poly faces) do not change while it runs, and the walk asked them at
+   every call of the name in every round */
+static int cf_kbuiltin_name_of(CF *f, const char *nm) {
+  if (!nm) return 0;
+  CFKName *k = cf_kname(f, nm);
+  if (!k->kb) k->kb = (unsigned char)(cf_kbuiltin_name(nm) ? 2 : 1);
+  return k->kb == 2;
+}
+static int cf_kfills_of(CF *f, const char *nm) {
+  if (!nm) return 0;
+  CFKName *k = cf_kname(f, nm);
+  if (!k->kf) k->kf = (unsigned char)(cf_kfills(nm) ? 2 : 1);
+  return k->kf == 2;
 }
 /* a builtin that only asks about its arguments, storing none of them */
 static int cf_kquery(const char *nm) {
@@ -1591,22 +1641,42 @@ static int cf_owner_loop(CF *f, int v) {
 
 /* ---- parameters ---- */
 
-/* is parameter idx of method m a keyword parameter? */
-static int cf_param_is_kw(CF *f, Scope *m, int idx) {
+/* method mi's parameter record (CFParams), made at the first bind: the
+   keyword parameters are the ones a keyword of the def's parameter list
+   names (a rest or a keyword-rest parameter is neither) */
+static CFParams *cf_params(CF *f, int mi) {
+  CFParams *p = &f->pm[mi];
+  if (p->el) return p;
+  Scope *m = &f->c->scopes[mi];
   const NodeTable *nt = f->nt;
-  if (m->def_node < 0 || idx == m->rest_idx || idx == m->kwrest_idx) return 0;
-  int pn = nt_ref(nt, m->def_node, "parameters");
+  int n = m->nparams > 0 ? m->nparams : 0;
+  p->kw = calloc((size_t)n + 1, 1);
+  p->el = malloc(sizeof(int) * ((size_t)n + 1));
+  if (!p->kw || !p->el) cf_oom();
+  for (int i = 0; i <= n; i++) p->el[i] = -2;
+  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
   int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
   for (int i = 0; i < kn; i++) {
     const char *nm = nt_str(nt, kws[i], "name");
-    if (nm && m->pnames[idx] && sp_streq(nm, m->pnames[idx])) return 1;
+    if (!nm) continue;
+    for (int idx = 0; idx < n; idx++)
+      if (idx != m->rest_idx && idx != m->kwrest_idx && m->pnames[idx] && sp_streq(nm, m->pnames[idx])) p->kw[idx] = 1;
   }
-  return 0;
+  return p;
 }
+/* is parameter idx of method m a keyword parameter? */
+static int cf_param_is_kw(CF *f, Scope *m, int idx) {
+  if (idx < 0 || idx >= m->nparams) return 0;
+  return cf_params(f, (int)(m - f->c->scopes))->kw[idx];
+}
+/* parameter idx's element, -1 for none: the local's, which the first ask
+   makes and the record keeps */
 static int cf_param_el(CF *f, int mi, int idx) {
   Scope *m = &f->c->scopes[mi];
   if (idx < 0 || idx >= m->nparams || !m->pnames[idx]) return -1;
-  return cf_lv_in(f, mi, m->pnames[idx]);
+  CFParams *p = cf_params(f, mi);
+  if (p->el[idx] == -2) p->el[idx] = cf_lv_in(f, mi, m->pnames[idx]);
+  return p->el[idx];
 }
 static void cf_all_params_at(CF *f, int mi, int line) {
   Scope *m = &f->c->scopes[mi];
@@ -1976,7 +2046,7 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
      none */
   if (f->kon && !kfresh && v >= 0 && v < f->nnodes && nt_kind(nt, v) == NK_CallNode) {
     int r0 = nt_ref(nt, v, "receiver");
-    if (r0 >= 0 && comp_ntype(f->c, r0) == TY_POLY && !cf_kbuiltin_name(nm)) kfresh = 1;   /* (no other note) */
+    if (r0 >= 0 && comp_ntype(f->c, r0) == TY_POLY && !cf_kbuiltin_name_of(f, nm)) kfresh = 1;   /* (no other note) */
   }
   /* an operator of a builtin: a builtin value (a number, a bool, a new
      container of the operands' elements), never the operand itself; `<<`
@@ -2477,7 +2547,7 @@ static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int ar
   if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_flow(f, blk, v); }
   /* (the kinds: code the walk does not see may store into an argument's
      containers, but a query stores nothing) */
-  int kesc = f->kon && cf_kfills(nm);
+  int kesc = f->kon && cf_kfills_of(f, nm);
   for (int a = 0; a < argc; a++) {
     NodeKind k = nt_kind(f->nt, argv[a]);
     if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
@@ -2815,7 +2885,7 @@ static void cf_call(CF *f, int v) {
         cf_store(f, recv_el, an);
         /* (the kinds: the argument of a builtin that fills no argument's
            container stays its own, whatever its receiver) */
-        if (f->kon && !cf_kfills(nm) && an >= 0 && cf_kfirst(f, an, 16)) { cf_push_int(&f->kqs, &f->nkqs, &f->ckqs, recv_el); cf_push_int(&f->kqs, &f->nkqs, &f->ckqs, an); }
+        if (f->kon && !cf_kfills_of(f, nm) && an >= 0 && cf_kfirst(f, an, 16)) { cf_push_int(&f->kqs, &f->nkqs, &f->ckqs, recv_el); cf_push_int(&f->kqs, &f->nkqs, &f->ckqs, an); }
       }
     cf_call_any(f, v, nm, argv, argc, blk);
     return;
@@ -4242,6 +4312,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     for (int i = 0; i < f.cel; i++) { f.why_el[i] = -1; f.usz[i] = 1; }
   }
   f.lv_el = calloc((size_t)c->nscopes + 1, sizeof *f.lv_el);
+  f.pm = calloc((size_t)c->nscopes + 1, sizeof *f.pm);
+  if (!f.pm) cf_oom();
   f.nlv = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
   f.ret_el = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
   f.yval_el = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
@@ -4469,7 +4541,10 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   free(f.par); free(f.uf); free(f.set); free(f.ph);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
   free(f.sw); free(f.swi);
-  for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); }
+  for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); free(f.pm[mi].kw); free(f.pm[mi].el); }
+  free(f.pm);
+  for (int k = 0; k < f.kn_cap; k++) free((char *)f.kn[k].name);
+  free(f.kn);
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol); free(f.dead);
   free(f.def_mi); free(f.why); free(f.why_el); free(f.usz); free(f.uev); free(f.open); free(f.exec_esc); free(f.exec_blk); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
