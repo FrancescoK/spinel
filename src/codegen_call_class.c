@@ -2560,7 +2560,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp[a]);
     }
-    buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+    emit_class_value_new_switch(rt2, kt, 0, b);
     CtorArityArms aerr = {0};
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
@@ -2717,8 +2717,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     int kt = ++g_tmp, rt2 = ++g_tmp;
     buf_printf(b, "({ sp_Class _t%d = ", kt); emit_expr(c, recv, b); buf_printf(b, "; ");
     int sv_cbt = hoist_ctor_block(c, id, b);
-    buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", rt2);
-    buf_printf(b, "switch(_t%d.cls_id){", kt);
+    emit_class_value_new_switch(rt2, kt, 0, b);
     CtorArityArms aerr = {0};
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name)) continue;
@@ -2871,7 +2870,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       if (boxed_arg_wants_root(c, argv[a])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp[a]);
       else buf_puts(b, "; ");
     }
-    buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+    emit_class_value_new_switch(rt2, kt, 1, b);
     CtorArityArms aerr = {0};
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
