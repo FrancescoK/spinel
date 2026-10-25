@@ -305,6 +305,9 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
 SPINEL_HDRS += src/decide.h
 SPINEL_OBJ  += build/csrc/decide.o
+# --incremental: the hashes that name a unit and key its cached object.
+SPINEL_HDRS += src/sha256.h
+SPINEL_OBJ  += build/csrc/sha256.o
 
 build/csrc:
 	@mkdir -p build/csrc

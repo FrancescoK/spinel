@@ -57,6 +57,7 @@ extern const char *g_ext_target;
 extern const char *g_ext_feature;
 extern char *g_ext_header_text;
 extern char *g_ext_shim_text;
+void unit_incremental_set(int on);   /* codegen_util.c: --incremental's unit pragmas */
 /* Native Windows builds its programs differently, over the lib/win32 shim,
    and says how in a header of its own (SPINEL_PLATFORM_CFLAGS / _LIBS go on
    every program's command line, "@LIB@" in them spelled as the runtime's lib
@@ -479,6 +480,12 @@ static void usage(void) {
     "  --cc=CMD    C compiler (default: cc)\n"
     "  --jobs=N    compile the generated C as N units in parallel\n"
     "              (default: split only a unit of 4 MB or more; --jobs=1 never)\n"
+    "  --incremental  Development build: compile the C in units, reuse the cached\n"
+    "              objects of units whose text did not change (not with -S, --emit-*)\n"
+    "  --unit-bytes=N[K|M]  With --incremental: the target size of one unit\n"
+    "              (default 256K); another size shares no cached object\n"
+    "  --cache-stats  With --incremental: print the cache hits and misses\n"
+    "              on stderr after the build\n"
     "  --target=wasm32-wasi  Build a WebAssembly module for a WASI host with the\n"
     "              wasi-sdk at $WASI_SDK (default /opt/wasi-sdk); Integer is 32-bit,\n"
     "              and Fiber, Thread, processes and sockets are not available there\n"
@@ -532,6 +539,118 @@ static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_ce
   }
   bi_put(bi, "include", lib_dir);
   { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
+}
+
+/* The C compiler is half of what a spinel build is, so name it too: a bug
+   report that turns out to be a codegen/compiler interaction is otherwise
+   missing the other half. Reports whatever `--cc=` selected, when that
+   flag came first; a compiler that cannot be run leaves the line as it
+   was rather than saying anything about it. */
+static int print_version(const char *cc_cmd) {
+  char ccv[512] = {0};
+  char ccq[1024];
+  /* Ask the preprocessor what the compiler is rather than `--version`,
+     whose first word is the name it was invoked by: `cc --version` says
+     "cc (Ubuntu ...) 13.3.0" for gcc, which names the symlink, not the
+     compiler. __clang_version__ / __GNUC__ say which family and which
+     version; the invocation name is added only when it differs. */
+  snprintf(ccq, sizeof ccq, "%s -E -dM -x c /dev/null 2>/dev/null", cc_cmd);
+  FILE *fp = popen(ccq, "r");
+  if (fp) {
+    char line[512], clangv[128] = {0};
+    int gmaj = -1, gmin = 0, gpat = 0, apple = 0;
+    while (fgets(line, sizeof line, fp)) {
+      static const char cvk[] = "#define __clang_version__ \"";
+      if (!strncmp(line, cvk, sizeof cvk - 1)) {
+        char *q = strchr(line + sizeof cvk - 1, '"'); if (q) *q = '\0';
+        snprintf(clangv, sizeof clangv, "%s", line + sizeof cvk - 1);
+        char *sp = strchr(clangv, ' '); if (sp) *sp = '\0';   /* "18.1.3 (1ubuntu1)" -> "18.1.3" */
+      }
+      else if (!strncmp(line, "#define __apple_build_version__ ", 32)) apple = 1;
+      else if (!strncmp(line, "#define __GNUC__ ", 17)) gmaj = atoi(line + 17);
+      else if (!strncmp(line, "#define __GNUC_MINOR__ ", 23)) gmin = atoi(line + 23);
+      else if (!strncmp(line, "#define __GNUC_PATCHLEVEL__ ", 28)) gpat = atoi(line + 28);
+    }
+    pclose(fp);
+    const char *family = clangv[0] ? "clang" : gmaj >= 0 ? "gcc" : NULL;
+    if (family) {
+      const char *base = strrchr(cc_cmd, '/'); base = base ? base + 1 : cc_cmd;
+      int named = !strncmp(base, family, strlen(family));
+      /* Apple's clang numbers itself differently from LLVM's; say which */
+      if (clangv[0]) snprintf(ccv, sizeof ccv, "%s%s %s%s%s%s", apple ? "apple " : "", family, clangv, named ? "" : " (", named ? "" : base, named ? "" : ")");
+      else snprintf(ccv, sizeof ccv, "%s %d.%d.%d%s%s%s", family, gmaj, gmin, gpat, named ? "" : " (", named ? "" : base, named ? "" : ")");
+    }
+  }
+  if (!ccv[0]) {   /* a compiler the preprocessor probe cannot read: its own first line */
+    snprintf(ccq, sizeof ccq, "%s --version 2>/dev/null", cc_cmd);
+    fp = popen(ccq, "r");
+    if (fp) {
+      if (fgets(ccv, sizeof ccv, fp)) {
+        char *nl = strchr(ccv, '\n');
+        if (nl) *nl = '\0';
+      }
+      pclose(fp);
+    }
+  }
+  /* The release name first, since it is what a person reads; the build
+     revision in parentheses is what tells two builds of one release
+     apart, and tools/spin.rb's spinel_rev reads it from there as the
+     toolchain identity for its probe records. */
+  if (ccv[0]) printf("spinel %s (%s) [%s]\n", SPINEL_RELEASE, SPINEL_BUILD_REV, ccv);
+  else printf("spinel %s (%s)\n", SPINEL_RELEASE, SPINEL_BUILD_REV);
+  return 0;
+}
+
+/* --incremental and the two flags that only mean something with it. The
+   native step reads them where it builds, so they live here rather than in
+   main's locals. */
+static struct {
+  int on, cache_stats;
+  size_t unit_bytes;     /* --unit-bytes=N[K|M]: marker-free bytes per unit */
+  const char *needs;     /* the companion flag given, for its refusal without --incremental */
+  const char *bad;       /* a --unit-bytes= that is not a size */
+} inc_flags = { 0, 0, 256 * 1024, NULL, NULL };
+/* 1 when a is one of the three (a malformed size is kept for
+   incremental_begin to refuse), 0 otherwise */
+static int incremental_opt(const char *a) {
+  if (sp_streq(a, "--incremental")) inc_flags.on = 1;
+  else if (sp_streq(a, "--cache-stats")) { inc_flags.cache_stats = 1; inc_flags.needs = "--cache-stats"; }
+  else if (!strncmp(a, "--unit-bytes=", 13)) {
+    char *e = NULL;
+    unsigned long long v = (a[13] >= '0' && a[13] <= '9') ? strtoull(a + 13, &e, 10) : 0;
+    int sh = e && (*e == 'K' || *e == 'k') ? 10 : e && (*e == 'M' || *e == 'm') ? 20 : 0;
+    if (e && sh) e++;
+    if (!e || *e || v == 0 || v > (1ULL << 40) >> sh) inc_flags.bad = a + 13;
+    else inc_flags.unit_bytes = (size_t)(v << sh);
+    inc_flags.needs = "--unit-bytes";
+  }
+  else return 0;
+  return 1;
+}
+/* After option parsing, before the frontend runs, so a refused combination
+   leaves nothing half built: the modes that print or emit something other
+   than a native binary, and wasm32-wasi (never split), do not combine with
+   --incremental. Otherwise turns the unit pragmas on. 1: refused (said
+   why), 0: go on. */
+static int incremental_begin(int stdout_mode, int print_build, int emit_rbs, int emit_types, int emit_symbol_map, int target_wasi) {
+  if (inc_flags.bad) {
+    fprintf(stderr, "spinel: --unit-bytes expects a size such as 256K or 1M, got '%s'\n", inc_flags.bad);
+    return 1;
+  }
+  if (!inc_flags.on) {
+    if (inc_flags.needs) fprintf(stderr, "spinel: %s needs --incremental\n", inc_flags.needs);
+    return inc_flags.needs != NULL;
+  }
+  const char *with = stdout_mode ? "-S" : print_build ? "--print-build" : emit_rbs ? "--emit-rbs"
+                   : emit_types ? "--emit-types" : emit_symbol_map ? "--emit-symbol-map"
+                   : g_ext_init_name ? "--ext-init" : g_ext_entries ? "--ext-entry" : g_ext_target ? "--ext"
+                   : target_wasi ? "--target=wasm32-wasi" : NULL;
+  if (with) {
+    fprintf(stderr, "spinel: --incremental cannot be combined with %s\n", with);
+    return 1;
+  }
+  unit_incremental_set(1);
+  return 0;
 }
 
 int main(int argc, char **argv) {
@@ -598,6 +717,7 @@ int main(int argc, char **argv) {
     else if (!strncmp(a, "--output=", 9)) { output = a + 9; i++; }
     else if (!strncmp(a, "--cc=", 5))     { cc_cmd = a + 5; i++; }
     else if (!strncmp(a, "--jobs=", 7))   { cc_jobs = atoi(a + 7); i++; }
+    else if (incremental_opt(a))           { i++; }
     else if (!strncmp(a, "--target=", 9)) {
       if (sp_streq(a + 9, "wasm32-wasi")) target_wasi = 1;
       else if (sp_streq(a + 9, "native")) target_wasi = 0;
@@ -706,68 +826,10 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
-    /* The C compiler is half of what a spinel build is, so name it too: a bug
-       report that turns out to be a codegen/compiler interaction is otherwise
-       missing the other half. Reports whatever `--cc=` selected, when that
-       flag came first; a compiler that cannot be run leaves the line as it
-       was rather than saying anything about it. */
     /* `-v` is the `ruby -v` spelling, so a tool that asks every Ruby it
        drives for its version the same way (ruby/ruby-bench does) gets
        an answer instead of the usage text. */
-    else if (sp_streq(a, "--version") || sp_streq(a, "-v")) {
-      char ccv[512] = {0};
-      char ccq[1024];
-      /* Ask the preprocessor what the compiler is rather than `--version`,
-         whose first word is the name it was invoked by: `cc --version` says
-         "cc (Ubuntu ...) 13.3.0" for gcc, which names the symlink, not the
-         compiler. __clang_version__ / __GNUC__ say which family and which
-         version; the invocation name is added only when it differs. */
-      snprintf(ccq, sizeof ccq, "%s -E -dM -x c /dev/null 2>/dev/null", cc_cmd);
-      FILE *fp = popen(ccq, "r");
-      if (fp) {
-        char line[512], clangv[128] = {0};
-        int gmaj = -1, gmin = 0, gpat = 0, apple = 0;
-        while (fgets(line, sizeof line, fp)) {
-          static const char cvk[] = "#define __clang_version__ \"";
-          if (!strncmp(line, cvk, sizeof cvk - 1)) {
-            char *q = strchr(line + sizeof cvk - 1, '"'); if (q) *q = '\0';
-            snprintf(clangv, sizeof clangv, "%s", line + sizeof cvk - 1);
-            char *sp = strchr(clangv, ' '); if (sp) *sp = '\0';   /* "18.1.3 (1ubuntu1)" -> "18.1.3" */
-          }
-          else if (!strncmp(line, "#define __apple_build_version__ ", 32)) apple = 1;
-          else if (!strncmp(line, "#define __GNUC__ ", 17)) gmaj = atoi(line + 17);
-          else if (!strncmp(line, "#define __GNUC_MINOR__ ", 23)) gmin = atoi(line + 23);
-          else if (!strncmp(line, "#define __GNUC_PATCHLEVEL__ ", 28)) gpat = atoi(line + 28);
-        }
-        pclose(fp);
-        const char *family = clangv[0] ? "clang" : gmaj >= 0 ? "gcc" : NULL;
-        if (family) {
-          const char *base = strrchr(cc_cmd, '/'); base = base ? base + 1 : cc_cmd;
-          int named = !strncmp(base, family, strlen(family));
-          /* Apple's clang numbers itself differently from LLVM's; say which */
-          if (clangv[0]) snprintf(ccv, sizeof ccv, "%s%s %s%s%s%s", apple ? "apple " : "", family, clangv, named ? "" : " (", named ? "" : base, named ? "" : ")");
-          else snprintf(ccv, sizeof ccv, "%s %d.%d.%d%s%s%s", family, gmaj, gmin, gpat, named ? "" : " (", named ? "" : base, named ? "" : ")");
-        }
-      }
-      if (!ccv[0]) {   /* a compiler the preprocessor probe cannot read: its own first line */
-        snprintf(ccq, sizeof ccq, "%s --version 2>/dev/null", cc_cmd);
-        fp = popen(ccq, "r");
-        if (fp) {
-          if (fgets(ccv, sizeof ccv, fp)) {
-            char *nl = strchr(ccv, '\n');
-            if (nl) *nl = '\0';
-          }
-          pclose(fp);
-        }
-      }
-      /* The release name first, since it is what a person reads; the build
-         revision in parentheses is what tells two builds of one release
-         apart, and tools/spin.rb's spinel_rev reads it from there as the
-         toolchain identity for its probe records. */
-      if (ccv[0]) printf("spinel %s (%s) [%s]\n", SPINEL_RELEASE, SPINEL_BUILD_REV, ccv);
-      else printf("spinel %s (%s)\n", SPINEL_RELEASE, SPINEL_BUILD_REV);
-      return 0;
-    }
+    else if (sp_streq(a, "--version") || sp_streq(a, "-v")) return print_version(cc_cmd);
     else if (sp_streq(a, "-e")) {
       if (++i < argc) {
         if (eval_used) s_add(&eval_src, "\n");
@@ -832,6 +894,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "spinel: -E (run) cannot be combined with -o/-c/-S\n");
     return 2;
   }
+  if (incremental_begin(stdout_mode, print_build, emit_rbs, emit_types, emit_symbol_map, target_wasi)) return 1;
 
   const char *ov_define = NULL;
   if (sp_streq(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";

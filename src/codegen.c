@@ -3936,6 +3936,19 @@ void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
   else
     buf_printf(b, "sp_%s", mc_top(c, s->name));
 }
+/* The group --incremental packs a method's unit by: its file and its class
+   (a class method `def self.x` goes with the class too), so the methods of
+   one class in one file share a unit and an edit misses only that one. */
+static const char *class_unit_group(Compiler *c, int class_id, int node, char *out, size_t sz) {
+  char fk[UNIT_TAG_MAX];
+  unit_file_key(c->nt, node, fk, sizeof fk);
+  const ClassInfo *ci = class_id >= 0 ? &c->classes[class_id] : NULL;
+  snprintf(out, sz, "%s__%s", fk, !ci ? "top" : ci->c_name ? ci->c_name : ci->name);
+  return out;
+}
+static const char *method_unit_group(Compiler *c, Scope *s, char *out, size_t sz) {
+  return class_unit_group(c, s->class_id, s->def_node, out, sz);
+}
 
 /* A poly each-receiver can be a user object at runtime (e.g. a Set operand
    whose parameter also sees Array arguments at another call site, so it
@@ -4176,7 +4189,9 @@ static void mih_count_calls(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, id) mih_count_call(c, id);
 }
 static int method_inline_hint(Compiler *c, Scope *s) {
-  if (g_debug) return 0;                      /* debug builds want real frames */
+  /* debug builds want real frames; an --incremental unit's callers in other
+     units would need the body */
+  if (g_debug || g_incremental) return 0;
   if (!s->name || s->body < 0 || s->yields) return 0;
   const NodeTable *nt = c->nt;
   /* Codegen appends a few nodes as it goes, and each append used to rebuild
@@ -4968,7 +4983,7 @@ static int method_inline_force(Compiler *c, Scope *s) {
   { const char *e = env_force;
     if (e && *e) { if (*e == '0') return 0; }
     else if (!g_inline_hot) return 0; }
-  if (g_debug) return 0;
+  if (g_debug || g_incremental) return 0;
   const NodeTable *nt = c->nt;
   if (g_fi_nt != nt || g_fi_ntcount != nt->count || g_fi_nscopes != c->nscopes || !g_fi_state)
     fi_build(c);
@@ -7124,7 +7139,10 @@ static void emit_rbs_cont_ret_wrapper(Compiler *c, Scope *s, const char *sig, Bu
 }
 void emit_method(Compiler *c, Scope *s, Buf *b) {
   { Buf nb; memset(&nb, 0, sizeof nb); emit_method_cname(c, s, &nb);
-    unit_begin(nb.p && !strncmp(nb.p, "sp_", 3) ? nb.p + 3 : nb.p ? nb.p : "method"); free(nb.p); }
+    char grp[UNIT_TAG_MAX];
+    unit_begin_in(b, nb.p && !strncmp(nb.p, "sp_", 3) ? nb.p + 3 : nb.p ? nb.p : "method",
+                  method_unit_group(c, s, grp, sizeof grp));
+    free(nb.p); }
   /* an IO handle has no slots for a program's instance variables */
   if (s->class_id >= 0 && !s->is_cmethod && io_family_class(c, s->class_id) &&
       scope_uses_ivars(c, (int)(s - c->scopes)))
@@ -11509,7 +11527,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   /* Native (C-backed) class: constructor + methods live in the package; nothing
      is generated here (see the native_method externs + .new emission). */
   if (ci->is_native_class) return;
-  { char nt_[UNIT_TAG_MAX]; snprintf(nt_, sizeof nt_, "new_%s", ci->c_name ? ci->c_name : ci->name); unit_begin(nt_); }
+  { char nt_[UNIT_TAG_MAX], grp[UNIT_TAG_MAX]; snprintf(nt_, sizeof nt_, "new_%s", ci->c_name ? ci->c_name : ci->name);
+    unit_begin_in(b, nt_, class_unit_group(c, (int)(ci - c->classes), ci->def_node, grp, sizeof grp)); }
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
     int sinit_def = cid;
@@ -20804,7 +20823,7 @@ static void prepare_obj_cmp_dispatch(Compiler *c) {
    their own (unit_begin): a temp or name in them does not count on from the
    class constructors before them. */
 static void emit_obj_dispatchers(Compiler *c, Buf *body) {
-  unit_begin("dispatch");
+  unit_begin_in(body, "dispatch", "dispatch");
   if (g_uses_marshal) emit_marshal_dispatch(c, body);
   if (g_emit_obj_dispatch) emit_obj_inspect_dispatch(c, body);
   emit_obj_to_hash_dispatch(c, body);
@@ -20817,6 +20836,22 @@ static void emit_obj_dispatchers(Compiler *c, Buf *body) {
   emit_obj_to_a_dispatch(c, body);
   emit_obj_to_ary_dispatch(c, body);
   emit_obj_with_dispatch(c, body);
+}
+/* The program after its header region: the procs' prototypes, the
+   poly-dispatch prototypes, the procs, the bodies, the poly-dispatch
+   definitions. With --incremental the two resets keep the dispatch helpers
+   out of whatever unit the text before them ended in; without it they write
+   nothing. */
+static void emit_program_tail(Compiler *c, Buf *b, Buf *body) {
+  emit_exc_text_tail(c, b);
+  if (g_proc_protos.len) { buf_puts(b, g_proc_protos.p); buf_puts(b, "\n"); }
+  unit_pragma_reset(b);   /* g_pd_protos carries no pragma of its own */
+  if (g_pd_protos.len) { buf_puts(b, g_pd_protos.p); buf_puts(b, "\n"); }
+  if (g_procs.len) { buf_puts(b, g_procs.p); buf_puts(b, "\n"); }
+  buf_puts(b, body->p ? body->p : "");
+  unit_pragma_reset(b);
+  /* last: an arm may call a helper the body defines (a value type's boxer) */
+  if (g_pd_defs.len) { buf_puts(b, "\n"); buf_puts(b, g_pd_defs.p); }
 }
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
@@ -21425,6 +21460,7 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
       EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
+  unit_pragma_reset(body);   /* nothing comes here today; nothing may join the last constructor's unit */
   /* user-object Marshal dispatchers (after every class struct + pool define) */
   emit_obj_dispatchers(c, body);
   for (int s = 1; s < c->nscopes; s++) {
@@ -21480,7 +21516,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
-  unit_begin("dispatch2");
+  unit_begin_in(body, "dispatch2", "dispatch");
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
   if (c->gen_comparable) emit_obj_comparable_dispatch(c, body);
   if (g_has_user_binop) emit_user_binop_dispatch(c, body);
@@ -21509,7 +21545,7 @@ char *codegen_program(const NodeTable *nt) {
         if (!sty || !sp_streq(sty, "PostExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         end_count++;
-        { char et[32]; snprintf(et, sizeof et, "end_%d", end_count); unit_begin(et); }
+        { char et[32]; snprintf(et, sizeof et, "end_%d", end_count); unit_begin_in(body, et, "main"); }
         buf_printf(body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
         size_t end_frame_ins = body->len;
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
@@ -21519,7 +21555,7 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
 
-  unit_begin("main");
+  unit_begin_in(body, "main", "main");
   size_t main_frame_ins = 0, main_open = 0;
   int sv_main_cv = g_c_ret_void;
   if (g_ext_init_name) {
@@ -21698,6 +21734,7 @@ char *codegen_program(const NodeTable *nt) {
        own teardown among them (sp_at_exit_run does the same with hooks) */
     else buf_puts(body, "  _sp_main_rc = 0;\n  sp_fin_run_exit();\n}\n");
     g_c_ret_void = sv_main_cv;
+    unit_pragma_reset(body);   /* the display hooks and int main change with any class, not with main */
     emit_cls_user_display_hooks(c, body);
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
@@ -21724,13 +21761,7 @@ char *codegen_program(const NodeTable *nt) {
       buf_splice(&b, isa_ext_at, isa_ext);
     free(isa_ext);
   }
-  emit_exc_text_tail(c, &b);
-  if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
-  if (g_pd_protos.len) { buf_puts(&b, g_pd_protos.p); buf_puts(&b, "\n"); }
-  if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }
-  buf_puts(&b, body->p ? body->p : "");
-  /* last: an arm may call a helper the body defines (a value type's boxer) */
-  if (g_pd_defs.len) { buf_puts(&b, "\n"); buf_puts(&b, g_pd_defs.p); }
+  emit_program_tail(c, &b, body);
   free(body->p);
   free(body);
   /* Over the whole program, not per function: methods, procs, block bodies,
