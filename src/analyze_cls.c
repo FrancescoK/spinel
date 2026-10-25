@@ -985,6 +985,20 @@ static int cf_inst_class(CF *f, int si) {
   Scope *s = &f->c->scopes[si];
   return s->def_node >= 0 && !s->is_cmethod && s->class_id >= 0 ? s->class_id : -1;
 }
+/* the receiver of node v's call on self, -1 for none: an instance's self,
+   or a class method's Class object (as its `self` reads it), so that
+   `def self.me = itself` answers the class */
+static int cf_self_recv(CF *f, int v, int si, const char *nm) {
+  int ik = cf_inst_class(f, si);
+  if (ik >= 0) return cf_selfless_fn(nm) ? -1 : f->self_el[ik];
+  Scope *s = &f->c->scopes[si];
+  if (cf_selfless_fn(nm) || s->def_node < 0 || !s->is_cmethod || s->class_id < 0) return -1;
+  int t = cf_entry(f, -(v + 2), "#cself");
+  if (cf_open_self(f, s->class_id)) { cf_all(f, t); return t; }
+  cf_add_set(f, t, cf_classvals_of(f, f->desc[s->class_id]));
+  if (f->mod[s->class_id]) cf_add_set(f, t, cf_classval(f, s->class_id));
+  return t;
+}
 /* the ivar slots node v's scope reads `name` from, into out (at most max) */
 static int cf_ivar_els(CF *f, int v, const char *name, int *out, int max) {
   Compiler *c = f->c;
@@ -2435,11 +2449,7 @@ static void cf_call(CF *f, int v) {
      builtin: not the method the class defines of the name after it, whose
      answer is not the receiver */
   if (nt_int(nt, v, "builtin_only", 0)) {
-    int recv_el = r;
-    if (r < 0) {
-      int ik = cf_inst_class(f, cf_scope_of(f, v));
-      recv_el = ik >= 0 && !cf_selfless_fn(nm) ? f->self_el[ik] : -1;
-    }
+    int recv_el = r < 0 ? cf_self_recv(f, v, cf_scope_of(f, v), nm) : r;
     cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
     return;
   }
@@ -2575,8 +2585,7 @@ static void cf_call(CF *f, int v) {
     }
     /* self is the receiver (`def seal = freeze` answers self, a bare
        `each` in an Array subclass iterates self) */
-    int ik = cf_inst_class(f, si);
-    cf_builtin_rule(f, v, ik >= 0 && !cf_selfless_fn(nm) ? f->self_el[ik] : -1, argv, argc, blk, nm);
+    cf_builtin_rule(f, v, cf_self_recv(f, v, si, nm), argv, argc, blk, nm);
     return;
   }
   int x = cf_is_class_const(f, r);
