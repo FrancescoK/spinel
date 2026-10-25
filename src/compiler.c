@@ -1949,7 +1949,7 @@ static int const_top_level_walk(Compiler *c, int node, const char *cn, int depth
       int cp = nt_ref(nt, node, "constant_path");
       /* a qualified definition (`module A::B`) defines B under A, so only
          an unqualified path can define the TOP-LEVEL name */
-      if (cp >= 0 && nt_type(nt, cp) && sp_streq(nt_type(nt, cp), "ConstantReadNode"))
+      if (cp >= 0 && nt_type(nt, cp) && nt_kind(nt, cp) == NK_ConstantReadNode)
         nm = nt_str(nt, cp, "name");
     }
     else nm = nt_str(nt, node, "name");
@@ -2206,7 +2206,7 @@ int call_is_setter_assign(const NodeTable *nt, int id) {
    true (1), false (0) or nil (-1, the receiver's own): -2 for any other
    argument list. */
 int proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv) {
-  if (argc != 1 || !nt_type(nt, argv[0]) || !sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+  if (argc != 1 || !nt_type(nt, argv[0]) || nt_kind(nt, argv[0]) != NK_KeywordHashNode)
     return -2;
   int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
   if (en != 1) return -2;
