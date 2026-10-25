@@ -3866,7 +3866,10 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     else if (sp_streq(vt, "TrueNode")) res = "true";
     else if (sp_streq(vt, "FalseNode")) res = "false";
     else if (sp_streq(vt, "IntegerNode") || sp_streq(vt, "FloatNode") ||
-             sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode")) res = "expression";
+             sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode") ||
+             /* a backtick literal, also as the call desugar_user_backtick made of it */
+             sp_streq(vt, "XStringNode") || sp_streq(vt, "InterpolatedXStringNode") ||
+             (sp_streq(vt, "CallNode") && nt_int(nt, v, "xstr_call", 0))) res = "expression";
     else if (sp_streq(vt, "GlobalVariableReadNode")) {
       const char *gn = nt_str(nt, v, "name");
       /* runtime-provided special globals exist regardless of writes */

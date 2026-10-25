@@ -6164,6 +6164,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     }
   }
 
+  /* Kernel.`("cmd"): the command's output */
+  if (recv >= 0 && sp_streq(name, "`") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+      an_kernel_const_recv(c, id, recv, 1)) { *out = TY_STRING; return 1; }
+
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name), fvia = UC_TOP;
@@ -6203,6 +6207,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (sp_streq(name, "Hash") && argc == 1) { *out = kconv_hash_kind(c, argv[0]); return 1; }
     if ((is_format_alias(name)) && argc >= 1) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "system") && argc >= 1) { *out = TY_POLY; return 1; }  /* true, false, or nil when the command cannot run */
+    if (sp_streq(name, "`") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) { *out = TY_STRING; return 1; }  /* the command's output */
     if (sp_streq(name, "trap") && argc >= 1) { *out = TY_POLY; return 1; }  /* the previous handler: a command string or a Proc */
     /* at_exit answers the Proc it registered, so the handler stays callable (#3727) */
     if (sp_streq(name, "at_exit") && nt_ref(nt, id, "block") >= 0) { *out = TY_PROC; return 1; }
@@ -11312,8 +11317,11 @@ TyKind infer_uncached(Compiler *c, int id) {
        an Array of classes (emit_super's twin) */
     int subs_super = s->is_cmethod && uname && sp_streq(uname, "subclasses") &&
                      nt_ref(nt, id, "arguments") < 0;
+    /* and `super` in a ` override reaches Kernel#`: the command's output */
+    int bt_arg, bt_super = uname && sp_streq(uname, "`") && an_super_backtick_shape(c, id, s, &bt_arg);
     TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING
                 : an_super_object_text(c, id, (int)(s - c->scopes)) ? TY_STRING
+                : bt_super ? TY_STRING
                 : subs_super ? TY_POLY_ARRAY
                 : rto_super ? TY_BOOL
                 : freeze_super ? ty_object(s->class_id) : TY_UNKNOWN;

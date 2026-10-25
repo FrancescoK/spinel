@@ -12020,6 +12020,67 @@ static int desugar_system_options(Compiler *c) {
   return changed;
 }
 
+/* `cmd` / %x(cmd #{x}) -> `("cmd"), when the program defines a method
+   named ` itself: CRuby runs a backtick literal as a receiverless call of
+   that name, so a user's `def `(cmd)` answers it wherever self reaches the
+   def. Where self does not reach it, the call still runs the command (the
+   bare ` call, emit_kernel_call). Without such a def every literal stays
+   as it is. */
+static int desugar_user_backtick(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* a def of the name, or an alias, alias_method or define_method that
+     names it (by a Symbol or a String), or a method named by a value the
+     program computes */
+  int own = an_prog_names_method("`");
+  if (!own)
+    NT_FOREACH_KIND(nt, NK_DefNode, d) own |= sp_streq(nt_str(nt, d, "name"), "`");
+  if (!own) return 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_XStringNode && k != NK_InterpolatedXStringNode) continue;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    int arg, args = nt_new_node(nt, "ArgumentsNode");
+    if (args < 0) continue;
+    if (k == NK_XStringNode) {
+      /* the command's bytes move to a String literal of their own,
+         frozen, as CRuby hands it */
+      arg = nt_clone_subtree(nt, id);
+      if (arg < 0) continue;
+      nt_node_set_type(nt, arg, "StringNode");
+      nt_node_set_int(nt, arg, "fzl", 1);
+    } else {
+      int pn = 0;
+      const int *pv = nt_arr(nt, id, "parts", &pn);
+      int *parts = malloc(sizeof(int) * (size_t)(pn > 0 ? pn : 1));
+      if (!parts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      if (pn > 0) memcpy(parts, pv, sizeof(int) * (size_t)pn);
+      arg = nt_new_node(nt, "InterpolatedStringNode");
+      if (arg >= 0) nt_node_set_arr(nt, arg, "parts", parts, pn);
+      free(parts);
+      if (arg < 0) continue;
+    }
+    nt_node_set_int(nt, arg, "node_line", line);
+    nt_node_set_int(nt, arg, "node_file", file);
+    nt_node_set_int(nt, arg, "node_col", col);
+    nt_node_set_arr(nt, args, "arguments", &arg, 1);
+    nt_node_reset(nt, id, "CallNode");
+    nt_node_set_str(nt, id, "name", "`");
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "arguments", args);
+    nt_node_set_ref(nt, id, "block", -1);
+    nt_set_ignore_visibility(nt, id, 1);
+    nt_node_set_int(nt, id, "xstr_call", 1);   /* defined? answers "expression" */
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* IO.popen(cmd, mode) { |io| ... } / IO.popen(cmd, &:read) ->
    IO.__sp_popen(...): the block form reads the command's output through a
    pipe and reaps the child (builtins/io_popen.rb, spliced by the parser).
@@ -47090,6 +47151,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_socket_open(c);                /* TCPSocket.open(h, p) -> TCPSocket.new(h, p) */
   desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
   desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
+  desugar_user_backtick(c);              /* `cmd` -> `("cmd") beside a def of ` */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   desugar_explicit_initialize_calls(c);  /* initialize(x) in a method -> a copy of it as a method */
   desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + `__noarg inspect` = inspect */

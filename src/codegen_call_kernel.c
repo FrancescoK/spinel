@@ -1323,6 +1323,18 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     return 1;
   }
 
+  /* `("cmd"): Kernel#` itself, which a backtick literal is beside a def of
+     ` (desugar_user_backtick), where self does not reach that def, and
+     Kernel.`("cmd") */
+  if (sp_streq(name, "`") && argc == 1 && nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+      (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF) &&
+      (recv < 0 ? !bare_call_class_owned(c, id) : an_kernel_const_recv(c, id, recv, 0))) {
+    buf_puts(b, "sp_backtick(");
+    emit_str_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
+
   /* system(cmd, ...) expr: run, and answer true, false or nil */
   if (recv < 0 && sp_streq(name, "system") && argc >= 1 && !bare_call_class_owned(c, id)) {
     if (emit_system_splat(c, id, argv, argc, b)) return 1;
