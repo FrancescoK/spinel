@@ -25,6 +25,9 @@ Neither archive nor recorder sources enter the regular Spinel runtime.
    tokens. This sees macro-expanded calls and adjacent string literals, and
    skips system/restricted-header declarations. Literal `rb_intern` names and
    literal `rb_funcall` argument counts form the future send-table inputs.
+   `SYM2ID` of a Symbol the program made is a computed ID: a call through it is
+   sent as Ruby sends a computed name (`recv.__send__(name, ...)`, over the
+   methods the program defines), after the literal names.
    Computed `rb_intern` arguments/argument counts and taking these API function
    addresses refuse. This collects dispatch inputs; full ID-flow checking is
    part of the later send-table bridge.
