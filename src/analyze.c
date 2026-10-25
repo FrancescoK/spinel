@@ -1283,7 +1283,11 @@ static int a_scope_forwards_block_to_poly(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   if (!m->blk_param) return 0;
-  for (int nid = 0; nid < nt->count; nid++) {
+  /* (the scope's calls off the calls-by-scope chain: this and the two walks
+     below read every node of the program for each method a block is handed
+     to, 2.3 million per ask on a Rails application, half of a sample inside
+     the post-fixpoint phase) */
+  for (int nid = comp_scall_first(c, mi); nid >= 0; nid = comp_scall_next(c, nid)) {
     if (c->nscope[nid] != mi) continue;
     const char *ty = nt_type(nt, nid);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
@@ -1352,7 +1356,7 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   if (!m->blk_param) return 0;
-  for (int nid = 0; nid < nt->count; nid++) {
+  for (int nid = comp_scall_first(c, mi); nid >= 0; nid = comp_scall_next(c, nid)) {
     if (c->nscope[nid] != mi) continue;
     const char *ty = nt_type(nt, nid);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
@@ -1593,7 +1597,7 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   if (!m->blk_param || !m->yields || depth > 4) return 0;
-  for (int nid = 0; nid < nt->count; nid++) {
+  for (int nid = comp_scall_first(c, mi); nid >= 0; nid = comp_scall_next(c, nid)) {
     if (c->nscope[nid] != mi) continue;
     if (nt_kind(nt, nid) != NK_CallNode) continue;
     if (!a_call_forwards_blk_param(nt, nid, m)) continue;
