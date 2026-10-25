@@ -2285,7 +2285,7 @@ static void mark_ie_nonobj(Compiler *c, int node) {
   if (node < 0 || node >= g_ie_node_class_cap) return;
   NodeKind k = nt_kind(c->nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
-  g_ie_nonobj[node] = 1;
+  if (!g_ie_nonobj[node]) { g_ie_nonobj[node] = 1; comp_touch_node(c, node); }
   int nr = nt_num_refs(c->nt, node);
   for (int i = 0; i < nr; i++) mark_ie_nonobj(c, nt_ref_at(c->nt, node, i));
   int na = nt_num_arrs(c->nt, node);
@@ -2302,7 +2302,7 @@ void mark_ie_subtree(Compiler *c, int node, int cls) {
   if (!ty) return;
   /* a nested def/class starts a fresh self; don't bleed the rebind into it */
   if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return;
-  g_ie_node_class[node] = cls;
+  if (g_ie_node_class[node] != cls) { g_ie_node_class[node] = cls; comp_touch_node(c, node); }
   int nr = nt_num_refs(c->nt, node);
   for (int i = 0; i < nr; i++) mark_ie_subtree(c, nt_ref_at(c->nt, node, i), cls);
   int na = nt_num_arrs(c->nt, node);
@@ -3277,17 +3277,24 @@ void build_ie_map(Compiler *c) {
     if (!grown) return;  /* OOM: keep the old map rather than leak/deref NULL */
     unsigned char *gn = realloc(g_ie_nonobj, (size_t)nt->count);
     if (!gn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = g_ie_node_class_cap; i < nt->count; i++) { grown[i] = -1; gn[i] = 0; }
     g_ie_node_class = grown;
     g_ie_nonobj = gn;
     g_ie_node_class_cap = nt->count;
   }
-  memset(g_ie_nonobj, 0, (size_t)g_ie_node_class_cap);
+  /* (each entry that changes moves its node's scope: the build runs
+     inferences of its own, which read the map as it stands) */
+  for (int i = 0; i < g_ie_node_class_cap; i++)
+    if (g_ie_nonobj[i]) { g_ie_nonobj[i] = 0; comp_touch_node(c, i); }
   int *pend = malloc(sizeof(int) * (size_t)nt->count);
   if (!pend) return;
   int pend_n = nt->count;
   ie_forward_memo_reset();
   g_ief_ready = 0;
-  for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
+  for (int i = 0; i < nt->count; i++) {
+    pend[i] = -1;
+    if (g_ie_node_class[i] != -1) { g_ie_node_class[i] = -1; comp_touch_node(c, i); }
+  }
   ie_param_n = 0;
   for (int pass = 0; pass < 2; pass++)
   for (int id = 0; id < nt->count; id++) {
@@ -3371,7 +3378,10 @@ int *ie_body_retype(Compiler *c, int body, int cls) {
 void ie_body_restore(Compiler *c, int *snap) {
   if (!snap) return;
   int n = snap[0];
-  for (int i = 0; i < n; i++) { comp_set_ntype(c, i, (TyKind)snap[1 + i]); g_ie_node_class[i] = snap[1 + n + i]; }
+  for (int i = 0; i < n; i++) {
+    comp_set_ntype(c, i, (TyKind)snap[1 + i]);
+    if (g_ie_node_class[i] != snap[1 + n + i]) { g_ie_node_class[i] = snap[1 + n + i]; comp_touch_node(c, i); }
+  }
   free(snap);
 }
 
