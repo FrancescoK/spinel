@@ -1795,6 +1795,7 @@ int g_gen_obj_with = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
+int g_uses_thread_current = 0;   /* Thread.current read or written, and no other use of threads (#10210) */
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_uses_traps = 0;   /* Signal.trap: a delivered trap runs at the same safe points */
 int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */

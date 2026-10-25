@@ -17761,14 +17761,52 @@ static unsigned char *scan_dsl_arg_nodes(Compiler *c) {
   return m;
 }
 
+int *du_parent_map(const NodeTable *nt);
+/* Is constant read i (`Thread`) only the receiver of `.current`, whose
+   value is only read or written as the thread's storage (`[]`, `[]=`,
+   `key?`, an op-assign of an element, its name)? Such a program runs on
+   the main thread alone (#10210). *par is the parent map, made once. */
+static int thread_current_only(const NodeTable *nt, int **par, int i) {
+  if (!*par) *par = du_parent_map(nt);
+  int p = (*par)[i];
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || nt_ref(nt, p, "receiver") != i ||
+      nt_ref(nt, p, "arguments") >= 0 || nt_ref(nt, p, "block") >= 0) return 0;
+  const char *m = nt_str(nt, p, "name");
+  if (!m || !sp_streq(m, "current")) return 0;
+  int q = (*par)[p];
+  if (q < 0) return 0;
+  NodeKind k = nt_kind(nt, q);
+  if ((k == NK_IndexOrWriteNode || k == NK_IndexAndWriteNode || k == NK_IndexOperatorWriteNode) &&
+      nt_ref(nt, q, "receiver") == p) return 1;
+  /* an element's op-assign, desugared: `__ixr_N = Thread.current`, then
+     only `__ixr_N[k]` and `__ixr_N[k] = v` */
+  if (k == NK_LocalVariableWriteNode) {
+    const char *tn = nt_str(nt, q, "name");
+    if (!tn || strncmp(tn, "__ixr_", 6)) return 0;
+    for (int r = 0; r < nt->count; r++) {
+      if (nt_kind(nt, r) != NK_LocalVariableReadNode || !nt_str(nt, r, "name") || !sp_streq(nt_str(nt, r, "name"), tn)) continue;
+      int u = (*par)[r];
+      const char *um = u >= 0 && nt_kind(nt, u) == NK_CallNode && nt_ref(nt, u, "receiver") == r ? nt_str(nt, u, "name") : NULL;
+      if (!um || !(sp_streq(um, "[]") || sp_streq(um, "[]="))) return 0;
+    }
+    return 1;
+  }
+  if (k != NK_CallNode || nt_ref(nt, q, "receiver") != p || nt_ref(nt, q, "block") >= 0) return 0;
+  static const char *const safe[] = { "[]", "[]=", "key?", "keys", "fetch", "name", "name=",
+    "thread_variable_get", "thread_variable_set", "thread_variable?", NULL };
+  const char *qm = nt_str(nt, q, "name");
+  for (int j = 0; qm && safe[j]; j++) if (sp_streq(qm, safe[j])) return 1;
+  return 0;
+}
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
-  g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0; g_uses_traps = 0;
+  g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_thread_current = 0; g_uses_finalizers = 0; g_uses_traps = 0;
   g_uses_ensure = 0;
   g_uses_program_name = 0;
   g_reads_match_regs = 0;
+  int *cpar = NULL;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
@@ -17835,6 +17873,11 @@ static void scan_prologue_features(Compiler *c) {
         }
       }
       if (sp_streq(nm, "Regexp")) g_uses_regex = 1;
+      /* a program that only reads and writes Thread.current's storage runs
+         on the one main thread the single-threaded runtime has as well: it
+         keeps that runtime (#10210: the threaded one cost every collection
+         and, with a trap, a scheduler) */
+      else if (sp_streq(nm, "Thread") && thread_current_only(nt, &cpar, i)) g_uses_thread_current = 1;
       else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") ||
                sp_streq(nm, "Mutex") || sp_streq(nm, "Monitor") ||
                sp_streq(nm, "ConditionVariable")) g_uses_threads = 1;
@@ -17888,6 +17931,7 @@ static void scan_prologue_features(Compiler *c) {
       }
     }
   }
+  free(cpar);
   /* Generic object reflection: when a native package declared it consumes
      object->hash reflection (native_obj_reflect, e.g. json) and the program
      defines any Struct, emit + install sp_obj_to_hash. No feature is named
@@ -21542,7 +21586,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(body, "    SP_GC_SAVE();\n");
     main_frame_ins = body->len;
     if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
-    if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
+    if (g_uses_threads || g_uses_thread_current) buf_puts(body, "    sp_sched_init();\n");
     if (g_uses_program_name) buf_puts(body, "    sp_program_name = sp_str_empty;\n");
     if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
   }
@@ -21577,7 +21621,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
   /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
      sp_tu_init so it chains whatever globals hook that installed. */
-  if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
+  if (g_uses_threads || g_uses_thread_current) buf_puts(body, "    sp_sched_init();\n");
   /* SIGINT and SIGTERM raise Interrupt / SignalException in the main thread, as CRuby's do
      (#7202); a program with threads keeps the system default, since the signal may arrive on
      any OS thread of the scheduler */

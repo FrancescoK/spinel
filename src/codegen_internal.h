@@ -1115,6 +1115,7 @@ extern int g_gen_obj_with;  /* >=1 instantiated Data: emit+install sp_obj_with (
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
+extern int g_uses_thread_current;
 extern int g_uses_finalizers;
 extern int g_uses_traps;
 /* #9222: the program polls for a delivered signal at its safe points (a
