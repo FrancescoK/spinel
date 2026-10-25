@@ -971,6 +971,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
               const char *sop = fold_seed_op_sym(c, id, argc, argv);
               TyKind et = ty_array_elem(rt);
               int arith = sop && is_arith_op(sop);
+              /* `&`, `|` and `^` keep a Bignum element's width: an int seed
+                 folded over one does not fit an sp_int either */
+              int boxes = arith || (sop && is_bit_op(sop));
               /* A seed of another class is not an accumulator this element type
                  can hold at all: `[1, 2, 3].reduce(0.5, :+)` accumulates Float
                  and a Bignum seed does not fit an sp_int. Those fold boxed, and
@@ -984,7 +987,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                  arithmetic operator: the accumulator promotes to the boxed
                  element and the result is a boxed poly (#3220). A plain poly
                  array's element type is unknown, so gate on the literal. */
-              else if (arith && rt == TY_POLY_ARRAY && recv >= 0 &&
+              else if (boxes && rt == TY_POLY_ARRAY && recv >= 0 &&
                        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
                 int ren = 0; const int *rev = nt_arr(nt, recv, "elements", &ren);
                 int boxed_num = 0;
@@ -1000,7 +1003,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                  a zip.map): the elements may be Float/Rational/etc., so an int
                  seed cannot unbox the boxed accumulator without reinterpreting
                  the bits. Keep the result boxed (#3238). */
-              else if (arith && et == TY_POLY) it = TY_POLY;
+              else if (boxes && et == TY_POLY) it = TY_POLY;
             }
             /* The same rule for a seed that is not a number at all -- a String,
                nil, true/false, a Rational. `[1, 2].reduce("x", :*)` accumulates
