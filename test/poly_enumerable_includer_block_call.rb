@@ -57,3 +57,19 @@ def near(target, names)
 end
 p near(:ax, Set[:ab, :cd, :ax]), near(:zz, %w[ab cd])
 p Finder.new(words: Picker.new(%w[ab cd])).starting("a")
+
+# the elements are what #each yields, not what a #to_a of the class's own
+# answers
+class Twofold
+  include Enumerable
+  def each = (yield 1; self)
+  def to_a = [2]
+end
+class Shelf
+  def initialize(v) = @v = v
+  def get = @v
+end
+[Twofold.new, Picker.new([1])].each do |v|
+  s = Shelf.new(v).get
+  p s.map { |x| x }, s.select { |x| x }, s.sum { |x| x }
+end

@@ -12528,8 +12528,26 @@ static int obj_to_a_reader(Compiler *c, int cid) {
   }
   return -1;
 }
-int obj_to_a_has(Compiler *c, int cid) {
-  return obj_to_a_method(c, cid, NULL) >= 0 || obj_to_a_reader(c, cid) >= 0;
+/* The C text of class cid's elements as its #each yields them, boxed: the
+   __enum_to_a synthesized for a class with an #each that includes
+   Enumerable, which walks #each whatever the class's own #to_a answers.
+   V is the boxed receiver. 0 when the class has none to call. */
+int obj_each_elems_text(Compiler *c, int cid, const char *v, char *out, size_t cap) {
+  int defc = -1;
+  int mi = comp_method_in_chain(c, cid, "__enum_to_a", &defc);
+  if (mi < 0 || defc < 0 || c->scopes[mi].nparams != 0 || !scope_has_callable_symbol(c, mi)) return 0;
+  int vobj = comp_ty_value_obj(c, ty_object(defc));
+  char callx[256];
+  snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)(%s).v.p)" : "sp_%s_%s((sp_%s *)(%s).v.p)",
+           c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, v);
+  TyKind mret = (TyKind)c->scopes[mi].ret;
+  if (mret == TY_POLY) { snprintf(out, cap, "%s", callx); return 1; }
+  if (!ty_is_array(mret)) return 0;
+  Buf bx; memset(&bx, 0, sizeof bx);
+  emit_boxed_text(c, mret, callx, &bx);
+  snprintf(out, cap, "%s", bx.p ? bx.p : "sp_box_nil()");
+  free(bx.p);
+  return 1;
 }
 int obj_to_a_any(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++) {
