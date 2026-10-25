@@ -3317,7 +3317,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v);   /* with the Hash key machinery be
    true is not the typed one. */
 static inline sp_int sp_poly_object_id(sp_RbVal v) {
   switch (v.tag) {
-    case SP_TAG_INT: return 2 * v.v.i + 1;
+    case SP_TAG_INT: return (sp_int)(2 * (uintptr_t)v.v.i + 1);   /* (unsigned: an Integer past half the range wraps, as the typed arm does) */
     case SP_TAG_SYM: return (sp_int)v.v.i * 2;
     case SP_TAG_BOOL: return v.v.i ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID;
     case SP_TAG_NIL: return SP_NIL_OBJECT_ID;

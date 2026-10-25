@@ -1,3 +1,4 @@
+# spinel: int64
 # An immediate's object_id is the same whether the value is read typed or
 # out of a box: an Array's element, a Hash's key, a method's boxed answer
 def boxed_id(x) = x.object_id
@@ -38,3 +39,7 @@ p syms.map(&:object_id).include?(b.object_id)
 p [:a.object_id == [:b][0].object_id, 1.object_id == [2][0].object_id]
 p({k: 1}.keys[0].object_id == :k.object_id)
 p 3.object_id == [3][0].object_id
+
+# an Integer past half the range: the typed and boxed ids agree
+big = 2**62 - 1
+p [big][0].object_id == big.object_id, boxed_id(-big) == (-big).object_id
