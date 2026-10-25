@@ -6330,6 +6330,12 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     }
     if (computed) {
       TyKind rt = infer_type(c, recv);
+      /* A receiver not typed yet (a block's parameter: `a.map(&name)` is
+         `a.map { |x| x.send(name) }`) waits while the fixpoint has more to
+         say. Lowered now, its arms were the program's classes' methods and
+         literals alone, and a String's `size` was no arm of the dispatch,
+         which is never lowered again: the send raised NoMethodError. */
+      if (rt == TY_UNKNOWN && g_infer_optimistic) continue;
       if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own);
       else if (rt == TY_POLY || rt == TY_UNKNOWN) {
         int cap = 0; ANameHash seen; memset(&seen, 0, sizeof seen);
