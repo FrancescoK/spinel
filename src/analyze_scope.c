@@ -1588,7 +1588,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       if (child_class >= 0 && nt_ref(c->nt, id, "superclass") >= 0 &&
           c->classes[child_class].def_node >= 0 &&
           nt_ref(c->nt, c->classes[child_class].def_node, "superclass") < 0) {
-        { c->classes[child_class].def_node = id; comp_touch_scope(c->classes[child_class].idx); }
+        { c->classes[child_class].def_node = id; comp_touch_class(c->classes[child_class].idx); }
       }
     }
   }

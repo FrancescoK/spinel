@@ -912,7 +912,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
-  { ci->def_node = def_node; comp_touch_scope(ci->idx); }
+  { ci->def_node = def_node; comp_touch_class(ci->idx); }
   if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -1429,6 +1429,12 @@ const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n
     else free(r);
   }
   *n = cmc_nresp[j];
+  /* (the responders are read over every class, and each method found is
+     what the asker reads next) */
+  if (imemo_dep_on) {
+    imemo_dep_global();
+    for (int i = 0; i < cmc_nresp[j]; i++) imemo_dep_scope(cmc_resp[j][2 * i + 1]);
+  }
   return cmc_resp[j];
 }
 
@@ -2214,9 +2220,11 @@ unsigned comp_table_gen = 0;   /* bumped when a reader or alias table grows (pol
 void comp_add_reader(ClassInfo *ci, const char *name) {
   comp_table_gen++;
   name_add(&ci->readers, &ci->nreaders, &ci->creaders, name);
+  comp_touch_class(ci->idx);
 }
 void comp_add_writer(ClassInfo *ci, const char *name) {
   name_add(&ci->writers, &ci->nwriters, &ci->cwriters, name);
+  comp_touch_class(ci->idx);
 }
 int comp_is_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->readers, ci->nreaders, name); }
 void comp_add_own_reader(ClassInfo *ci, const char *name) {
@@ -2732,8 +2740,12 @@ int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, i
 
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   name = comp_resolve_alias(c, class_id, name);
-  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)
-    if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; IMEMO_DEP_CLASS(cid); return 1; }
+  /* (every class asked, a miss included: a reader added to one of them
+     later changes the answer) */
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    IMEMO_DEP_CLASS(cid);
+    if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
+  }
   return 0;
 }
 /* Whether a strict subclass of class_id answers `name` with a method or a
