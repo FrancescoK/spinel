@@ -1,0 +1,28 @@
+0
+-7
+1099511627776
+-1099511627776
+1
+-1
+1000000000000000
+42
+12
+-8
+-42
+[TypeError, "no implicit conversion from nil to integer"]
+[TypeError, "no implicit conversion of true into Integer"]
+[TypeError, "no implicit conversion of false into Integer"]
+[TypeError, "no implicit conversion of String into Integer"]
+[TypeError, "no implicit conversion of Symbol into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of NumbersPlain into Integer"]
+[RangeError, "bignum too big to convert into 'long'"]
+[RangeError, "bignum too big to convert into 'long'"]
+[RangeError, "float 1e+20 out of range of integer"]
+[RangeError, "float NaN out of range of integer"]
+[RangeError, "float Inf out of range of integer"]
+[RangeError, "integer 1099511627776 too big to convert to 'int'"]
+[RangeError, "integer -1099511627776 too small to convert to 'int'"]
+[RangeError, "integer 25000000000 too big to convert to 'int'"]
+[TypeError, "no implicit conversion from nil to integer"]
+[TypeError, "no implicit conversion of String into Integer"]

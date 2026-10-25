@@ -218,19 +218,31 @@ sp_RbVal sp_cext_duplicate(sp_RbVal value,int keep_frozen) {
     if(keep_frozen && hdr->frozen)((sp_gc_hdr *)ptr-1)->frozen=1;
     return copy;
 }
-int rb_num2int(VALUE value) {
+/* NUM2LONG and NUM2INT answer as CRuby's rb_num2long / rb_num2int, with the
+ * same messages; an object of the program converts through its to_int. */
+long rb_num2long(VALUE value) {
     sp_RbVal number=sp_cext_rbval(value);
-    if(number.tag==SP_TAG_INT) {
-        if(number.v.i<INT_MIN || number.v.i>INT_MAX)rb_raise(rb_eRangeError,"integer out of range of int");
-        return (int)number.v.i;
+    if(number.tag==SP_TAG_INT)return (long)number.v.i;
+    if(number.tag==SP_TAG_FLT) {
+        double d=number.v.f;
+        if(d<-(double)LONG_MIN && d>=(double)LONG_MIN)return (long)d;
+        char text[32];
+        if(isnan(d))snprintf(text,sizeof text,"NaN");
+        else if(isinf(d))snprintf(text,sizeof text,d<0?"-Inf":"Inf");
+        else snprintf(text,sizeof text,"%-.10g",d);
+        rb_raise(rb_eRangeError,"float %s out of range of integer",text);
     }
-    if(number.tag==SP_TAG_FLT || number.tag==SP_TAG_BIGINT) {
-        double converted=number.tag==SP_TAG_FLT ? number.v.f : sp_bigint_to_double(number.v.p);
-        double integer=trunc(converted);
-        if(!isfinite(integer) || integer<INT_MIN || integer>INT_MAX)rb_raise(rb_eRangeError,"number out of range of int");
-        return (int)integer;
-    }
-    rb_raise(rb_eTypeError,"expected a numeric value");
+    if(number.tag==SP_TAG_BIGINT)rb_raise(rb_eRangeError,"bignum too big to convert into 'long'");
+    if(number.tag==SP_TAG_OBJ && number.cls_id>=0)return (long)sp_cext_object_to_int(number);
+    if(number.tag==SP_TAG_NIL)rb_raise(rb_eTypeError,"no implicit conversion from nil to integer");
+    if(number.tag==SP_TAG_BOOL)rb_raise(rb_eTypeError,"no implicit conversion of %s into Integer",number.v.b?"true":"false");
+    rb_raise(rb_eTypeError,"no implicit conversion of %s into Integer",rb_class2name(rb_obj_class(value)));
+}
+int rb_num2int(VALUE value) {
+    long number=rb_num2long(value);
+    if(number>INT_MAX)rb_raise(rb_eRangeError,"integer %ld too big to convert to 'int'",number);
+    if(number<INT_MIN)rb_raise(rb_eRangeError,"integer %ld too small to convert to 'int'",number);
+    return (int)number;
 }
 void rb_check_type(VALUE value,int type) {
     sp_RbVal object=sp_cext_rbval(value);
