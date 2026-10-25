@@ -4678,6 +4678,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     int tv = ++g_tmp; char tvb[24]; snprintf(tvb, sizeof tvb, "_t%d", tv);
     emit_indent(g_pre, din);
     if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    /* (one representation: a handle slot takes the tail's String of either
+       face as the handle) */
+    else if (bt == TY_STRBUF) { buf_printf(g_pre, "sp_String *_t%d = NULL;\n", tv); g_bv_dest_ty = TY_STRBUF; }
     else { emit_ctype(c, bt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value_from_compiler(c, bt)); }
     emit_block_value_into(c, block, tvb, vpoly, din);
     /* Ruby truthiness of the block value: only nil/false are falsy. C
