@@ -26,6 +26,10 @@ int sp_system_prog_envp(const char *prog, int argc, const char *const *argv, cha
    the words of a line it does not run (one malloc block, NULL-terminated;
    Process.spawn and system share both) */
 int sp_cmdline_shell_p(const char *line);
+/* start a child for system and backticks: the shell runs line, or prog
+   runs with argv; see sp_system.c for the answer and out_fd/close_fd */
+int sp_system_start(const char *line, const char *prog, char *const *argv, char **envp,
+                    int out_fd, int close_fd, int *exec_errno);
 char **sp_cmdline_words(const char *line, int *argc_out);
 
 #endif

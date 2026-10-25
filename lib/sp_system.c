@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #if defined(_WIN32)
 #include <spawn.h>
@@ -112,6 +113,85 @@ int sp_system_prog_envp(const char *prog, int argc, const char *const *argv, cha
   return sp_system_run(prog, argc, argv, envp);
 }
 
+/* Start a child: the shell runs line when line is not NULL, else prog runs
+   with argv (execvp, which searches the PATH of envp when envp is set).
+   envp NULL keeps this process's environment. out_fd >= 0 becomes the
+   child's stdout, and close_fd >= 0 is closed in the child. Answers the
+   child's pid; 0 when its exec failed, with *exec_errno set, the child
+   reaped and its exit 127 in $? (CRuby's answer for a program that cannot
+   run); -1 when no child could be made, with $? -1. */
+int sp_system_start(const char *line, const char *prog, char *const *argv, char **envp,
+                    int out_fd, int close_fd, int *exec_errno) {
+  *exec_errno = 0;
+#if defined(_WIN32)
+  /* posix_spawn where there is no fork (see sp_process.c) */
+  pid_t pid = 0;
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  if (close_fd >= 0) posix_spawn_file_actions_addclose(&fa, close_fd);
+  if (out_fd >= 0 && out_fd != 1) {
+    posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
+    posix_spawn_file_actions_addclose(&fa, out_fd);
+  }
+  int rc;
+  if (line) {
+    char *av[] = { (char *)"sh", (char *)"-c", (char *)line, NULL };
+    rc = posix_spawn(&pid, "/bin/sh", &fa, NULL, av, envp ? envp : environ);
+  }
+  else rc = posix_spawnp(&pid, prog, &fa, NULL, argv, envp ? envp : environ);
+  posix_spawn_file_actions_destroy(&fa);
+  if (rc != 0) { *exec_errno = rc; sp_last_status = 127 << 8; return 0; }
+  return (int)pid;
+#else
+  /* The child writes its exec errno here when the exec fails. Both ends
+     are close-on-exec, so a started program closes the write end and the
+     parent reads nothing (as Process.spawn tells its failure, sp_process.c). */
+  extern int sp_io_make_pipe(int fds[2]);
+  int err_pipe[2];
+  if (sp_io_make_pipe(err_pipe) < 0) { sp_last_status = -1; return -1; }
+  pid_t pid = fork();
+  if (pid < 0) {
+    close(err_pipe[0]); close(err_pipe[1]);
+    sp_last_status = -1;
+    return -1;
+  }
+  if (pid == 0) {
+    close(err_pipe[0]);
+    if (close_fd >= 0) close(close_fd);
+    if (out_fd >= 0) {
+      if (out_fd != 1) { dup2(out_fd, 1); close(out_fd); }
+      else fcntl(1, F_SETFD, 0);
+    }
+    /* the child's own copy of the pointer: execl and execvp pass it on, and
+       execvp searches the PATH it holds, as CRuby looks the command up in
+       the child's environment */
+    if (envp) environ = envp;
+    if (line) execl("/bin/sh", "sh", "-c", line, (char *)NULL);
+    else if (prog && *prog) execvp(prog, argv);
+    else errno = ENOENT;   /* a line of no words: CRuby's exec of "" */
+    int e = errno;
+    (void)!write(err_pipe[1], &e, sizeof e);
+    _exit(127);
+  }
+  close(err_pipe[1]);
+  int e = 0;
+  ssize_t got;
+  do { got = read(err_pipe[0], &e, sizeof e); } while (got < 0 && errno == EINTR);
+  close(err_pipe[0]);
+  if (got > 0) {
+    /* the child could not exec and is exiting 127: reap it here, so $?
+       reads its 127 as under CRuby and no zombie is left */
+    int st = 0; pid_t r;
+    do { r = waitpid(pid, &st, 0); } while (r < 0 && errno == EINTR);
+    if (r == pid) { sp_last_status = st; sp_last_pid = (int)pid; }
+    else sp_last_status = 127 << 8;
+    *exec_errno = e;
+    return 0;
+  }
+  return (int)pid;
+#endif
+}
+
 /* prog NULL: argv[0] is the program, and a lone command line goes through
    CRuby's shell rule */
 static int sp_system_run(const char *prog, int argc, const char *const *argv, char **envp) {
@@ -133,65 +213,11 @@ static int sp_system_run(const char *prog, int argc, const char *const *argv, ch
     }
   }
   fflush(NULL);
-#if defined(_WIN32)
-  /* posix_spawn where there is no fork (see sp_process.c): a program that
-     cannot be started leaves $? at the 127 its failed exec exits with */
-  pid_t pid = 0;
-  {
-    int rc;
-    if (via_shell) {
-      char *av[] = { (char *)"sh", (char *)"-c", (char *)argv[0], NULL };
-      rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, av, envp ? envp : environ);
-    }
-    else rc = posix_spawnp(&pid, prog ? prog : argv[0], NULL, NULL, (char *const *)argv, envp ? envp : environ);
-    free(words);
-    if (rc != 0) { sp_last_status = 127 << 8; return -1; }
-  }
-#else
-  /* The child writes its exec errno here when the exec fails. Both ends
-     are close-on-exec, so a started program closes the write end and the
-     parent reads nothing (as Process.spawn tells its failure, sp_process.c). */
-  extern int sp_io_make_pipe(int fds[2]);
-  int err_pipe[2];
-  if (sp_io_make_pipe(err_pipe) < 0) { free(words); sp_last_status = -1; return -1; }
-  pid_t pid = fork();
-  if (pid < 0) {
-    close(err_pipe[0]); close(err_pipe[1]); free(words);
-    sp_last_status = -1;
-    return -1;
-  }
-  if (pid == 0) {
-    close(err_pipe[0]);
-    /* the child's own copy of the pointer: execl and execvp pass it on, and
-       execvp searches the PATH it holds, as CRuby looks the command up in
-       the child's environment */
-    if (envp) environ = envp;
-    if (via_shell) {
-      execl("/bin/sh", "sh", "-c", argv[0], (char *)NULL);
-    }
-    else {
-      execvp(prog ? prog : argv[0], (char * const *)argv);
-    }
-    int e = errno;
-    (void)!write(err_pipe[1], &e, sizeof e);
-    _exit(127);
-  }
-  free(words);
-  close(err_pipe[1]);
   int exec_errno = 0;
-  ssize_t got;
-  do { got = read(err_pipe[0], &exec_errno, sizeof exec_errno); } while (got < 0 && errno == EINTR);
-  close(err_pipe[0]);
-  if (got > 0) {
-    /* the child could not exec and is exiting 127: reap it here, so $?
-       reads its 127 as under CRuby and no zombie is left */
-    int st = 0; pid_t r;
-    do { r = waitpid(pid, &st, 0); } while (r < 0 && errno == EINTR);
-    if (r == pid) { sp_last_status = st; sp_last_pid = (int)pid; }
-    else sp_last_status = 127 << 8;
-    return -1;
-  }
-#endif
+  int pid = sp_system_start(via_shell ? argv[0] : NULL, prog ? prog : argv[0],
+                            (char *const *)argv, envp, -1, -1, &exec_errno);
+  free(words);
+  if (pid <= 0) return -1;
   /* Same rule as Process.waitpid2 (#4381): a blocking wait answers for the OS
      worker, and a started green thread is pinned to its worker, so it would
      stall the very thread that may have to drain this child's output before it
