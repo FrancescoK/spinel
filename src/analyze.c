@@ -30571,6 +30571,16 @@ static int dyn_name_in(const char *s, const char *const *list) {
   for (int i = 0; list[i]; i++) if (sp_streq(s, list[i])) return 1;
   return 0;
 }
+/* A value position of an if, an unless or parentheses: a missing arm is
+   nil, which nothing calls, and a walk that gave up may be anything. An arm
+   is a smaller subtree, not a step through a name: no depth. */
+typedef struct { Compiler *c; int k, depth; DynReach *r; } DynArms;
+static int dyn_reach_arm(const VpLeaf *leaf, void *ud) {
+  DynArms *a = ud;
+  if (leaf->kind == VPK_GAVE_UP) a->r->unknown = 1;
+  else if (leaf->kind != VPK_NIL) dyn_reach_value(a->c, leaf->node, a->k, a->depth, a->r);
+  return 0;
+}
 static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   const NodeTable *nt = c->nt;
   if (v < 0 || depth > 4) { r->unknown = 1; return; }
@@ -30597,22 +30607,8 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   }
   /* a value chosen at run time: each arm's */
   if (vk == NK_IfNode || vk == NK_UnlessNode || vk == NK_ParenthesesNode) {
-    int arms[2] = { -1, -1 };
-    if (vk == NK_ParenthesesNode) arms[0] = nt_ref(nt, v, "body");
-    else {
-      arms[0] = nt_ref(nt, v, "statements");
-      arms[1] = nt_ref(nt, v, vk == NK_UnlessNode ? "else_clause" : "subsequent");
-    }
-    for (int ai = 0; ai < 2; ai++) {
-      int arm = arms[ai];
-      if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
-      /* a missing arm is nil, which nothing calls */
-      if (arm < 0) continue;
-      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
-      if (nt_kind(nt, arm) == NK_StatementsNode && bn == 0) continue;
-      /* an arm is a smaller subtree, not a step through a name: no depth */
-      dyn_reach_value(c, bb && bn > 0 ? bb[bn - 1] : arm, k, depth, r);
-    }
+    DynArms a = { c, k, depth, r };
+    for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, dyn_reach_arm, &a);
     return;
   }
   /* nil is never called; a Symbol is called as its to_proc, which sends
