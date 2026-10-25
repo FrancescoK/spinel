@@ -53360,7 +53360,14 @@ static void an_phase_enum_late(Compiler *c) {
   int any = AN_PASS("desugar_builtin_enum_calls_late", desugar_builtin_enum_calls(c));
   if (!any) { g_enum_late = 0; return; }
   AN_PASS_V("mark_empty_literal_args", mark_empty_literal_args(c));
-  for (int iter = 0; iter < 32; iter++) {
+  /* The types widen until they settle, and then the rewrite looks again
+     for a call they settled for: the loop ends only where both found
+     nothing, never right after a rewrite, so every copy the rewrite calls
+     is typed. Each call is rewritten once, so the rewrites end; the
+     widening rounds are capped as the fixpoint's are (an_round_cap_step),
+     which tells an oscillation from a long chain. */
+  AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+  for (int iter = 0;; iter++) {
     int ch = 0;
     infer_memo_boundary(); ch |= infer_param_types(c);
     infer_memo_boundary(); ch |= infer_default_param_types(c);
@@ -53370,9 +53377,15 @@ static void an_phase_enum_late(Compiler *c) {
     infer_memo_boundary(); ch |= infer_return_types(c);
     infer_memo_boundary(); ch |= infer_global_const_types(c);
     infer_memo_boundary();
-    if (desugar_builtin_enum_calls(c)) { ch = 1; mark_empty_literal_args(c); }
-    if (!ch) break;
+    if (ch) {
+      an_round_cap_step(c, &rc, iter);
+      if (iter + 1 < rc.cap) continue;
+      break;
+    }
+    if (!desugar_builtin_enum_calls(c)) break;
+    mark_empty_literal_args(c);
   }
+  free(rc.seen);
   infer_memo_boundary();
   g_enum_late = 0;
 }
