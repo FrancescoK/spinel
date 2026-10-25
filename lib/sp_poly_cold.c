@@ -745,8 +745,22 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
   return sp_poly_slice(v, sp_poly_arg_int_chk(a), sp_poly_arg_int_chk(b));
 }
 
+/* Object's copy machinery allocates a receiver before initialize_copy fails.
+   Do not copy a queue's synchronization state or return the original handle. */
+sp_queue *sp_Queue_copy_error(sp_queue *q) {
+  if (!q) return NULL;  /* a nullable typed receiver is nil, whose copy is nil */
+  SP_GC_ROOT(q);
+  sp_queue *copy = sp_Queue_max(q) > 0 ? sp_SizedQueue_new(sp_Queue_max(q)) : sp_Queue_new();
+  SP_GC_ROOT(copy);
+  sp_RbVal original = sp_box_obj(q, SP_BUILTIN_QUEUE);
+  sp_raise_nomethod(sp_nomethod_msg_args("initialize_copy", sp_box_obj(copy, SP_BUILTIN_QUEUE), 1, &original));
+  return NULL;
+}
+
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
 {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p)
+    sp_Queue_copy_error((sp_queue *)v.v.p);
 #ifdef SP_CEXT
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && sp_cext_data_class_fn && sp_cext_data_class_fn(v.cls_id))
     return sp_cext_duplicate(v, keep_frozen);

@@ -1229,6 +1229,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_QUEUE, "frozen?", 0, 0, BF_ANY, TY_BOOL,  BOPE_NONE },
   { TY_QUEUE, "nil?",    0, 0, BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "(($r) == NULL)" },
   { TY_QUEUE, "itself",  0, 0, BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "$r" },
+  /* Queue and SizedQueue have no initialize_copy: dup and clone raise
+     NoMethodError for it (sp_Queue_copy_error) */
+  { TY_QUEUE, "dup",     0, 0, BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "sp_Queue_copy_error($r)" },
+  { TY_QUEUE, "clone",   0, 0, BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "sp_Queue_copy_error($r)" },
   { TY_QUEUE, "pop",     0, 2,            BF_ANY, TY_POLY,  BOPE_QUEUE_POP },
   { TY_QUEUE, "pop",     0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
   { TY_QUEUE, "shift",   0, 2,            BF_ANY, TY_POLY,  BOPE_QUEUE_POP },
