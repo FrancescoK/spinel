@@ -15142,7 +15142,7 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
   int saved_setter = g_setter_stmt_id;
-  if (nt_kind(c->nt, id) == NK_CallNode && name_is_plain_setter(nt_str(c->nt, id, "name")))
+  if (nt_kind(c->nt, id) == NK_CallNode && call_is_setter_assign(c->nt, id))
     g_setter_stmt_id = id;
   emit_with_prelude(c, id, b, indent, emit_stmt_inner);
   g_setter_stmt_id = saved_setter;

@@ -16658,7 +16658,7 @@ static int empty_hash_write_lit(Compiler *c, int v) {
     const char *nm = nt_str(nt, v, "name");
     int args = nt_ref(nt, v, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (name_is_plain_setter(nm) && an == 1 && av)
+    if (call_is_setter_assign(nt, v) && an == 1 && av)
       return empty_hash_write_lit(c, av[0]);
   }
   return an_or_empty_hash_fallback(c, v);
