@@ -649,6 +649,7 @@ int desugar_blk_param_writes(Compiler *c);
 int desugar_rest_param_writes(Compiler *c);
 int desugar_yield_in_closure(Compiler *c);
 int desugar_index_assign_user_recv(Compiler *c);
+int desugar_index_assign_value(Compiler *c);
 int desugar_method_added_hook(Compiler *c);
 int desugar_io_console_modes(Compiler *c);
 int desugar_reader_index_write(Compiler *c);
