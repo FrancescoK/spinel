@@ -21753,6 +21753,38 @@ int call_misses_self_method(Compiler *c, int id) {
          g_emitting_class_id >= 0 && comp_method_in_chain(c, g_emitting_class_id, name, NULL) < 0 &&
          an_user_defines_method(c, name);
 }
+/* The builtin class a receiver of type t is an instance of, for the
+   unresolved-call refusal below, or NULL. */
+static const char *unresolved_builtin_class(TyKind t) {
+  if (ty_is_array(t)) return "Array";
+  if (ty_is_hash(t)) return "Hash";
+  if (t == TY_STRING || t == TY_STRBUF) return "String";
+  if (t == TY_INT) return "Integer";
+  if (t == TY_FLOAT) return "Float";
+  if (t == TY_SYMBOL) return "Symbol";
+  if (t == TY_RANGE) return "Range";
+  return NULL;
+}
+/* A call on a receiver of a builtin type known here, whose class has the
+   method (CRuby's own table, builtin_arity.inc), that no emitter took: the
+   analysis missed a route for it, and the NoMethodError the gate below
+   would raise is no answer CRuby gives. Refused instead, naming the method;
+   under --defer-refusals it raises NotImplementedError where it runs. Only
+   a call the program wrote: an arm a rewrite builds is guarded by a test
+   that may never pass here (desugar_builtin_enum_calls' `is_a?(K) ?
+   recv.m : ...` for a class of the program's own, the arities and block
+   forms of desugar_builtin_splat_forward, desugar_unpack_block's block
+   test), and is left to the gate. */
+int an_written_call(int id);
+static void unresolved_builtin_refusal(Compiler *c, int id, int recv, const char *nm, TyKind t) {
+  if (recv < 0 || !nm || !an_written_call(id)) return;
+  const char *cls = unresolved_builtin_class(t);
+  if (!cls || !builtin_method_known(cls, nm)) return;
+  char msg[256];
+  snprintf(msg, sizeof msg, "%s#%s on a value typed as %s, a call no route of the compiler took "
+           "(CRuby calls the method; this would raise NoMethodError)", cls, nm, cls);
+  unsupported(c, id, msg);
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -22464,6 +22496,9 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
         unsupported(c, id, "a lazy chain held in an instance, class or global variable or a "
                            "constant (an Enumerator::Lazy is fused into the call that forces it; "
                            "keep the chain in a local or force it where it is built)");
+      /* after the refusals of particular shapes above, whose words say what
+         to do instead: this one only names the method */
+      unresolved_builtin_refusal(c, id, recv, nm, grt);
       if (g_gate_raise) {
         /* Scalar slot: the comma-expr yields a typed default the surrounding C
            accepts directly. Poly slot: emit the recognizable sp_raise_nomethod
