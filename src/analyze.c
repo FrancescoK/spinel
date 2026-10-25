@@ -53366,6 +53366,8 @@ void analyze_program(Compiler *c) {
   /* the classes a value can hold, decided once from the program's shape
      (#8530): the fixpoint's binding of a boxed receiver's call reads it */
   AN_PHASE("cls_facts", an_cls_facts(c));
+  /* (measurement) SPINEL_CLS_ONLY: stop after the class facts */
+  if (getenv("SPINEL_CLS_ONLY")) { fflush(stderr); exit(0); }
   double tm_fp = sp_timing_now();
   an_phase_infer_fixpoint(c);
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
@@ -53411,6 +53413,7 @@ void analyze_program(Compiler *c) {
   { c->share_args = NULL; handle_arg_tab_free(&hat); }
   /* the block bodies codegen types per arm, typed here once (#7483) */
   AN_PHASE("arm_facts", an_arm_facts(c));
+  cls_fact_use_report(c);   /* (measurement, SPINEL_CLS_USE) */
   sp_timing_end(tm_an, "analysis", "");
 }
 

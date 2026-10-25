@@ -763,8 +763,23 @@ static void cf_unite_at(CF *f, int a, int b, int line) {
   }
   f->changed = 1;
 }
+/* (measurement) SPINEL_CLS_SKIP=L1,L2,...: an every-class set a rule at one
+   of those lines (or seeding cause, 9000x) adds is not added. Unsound: it
+   bounds what each root costs, the harness the closed-world stages are
+   measured in (#8837). */
+static int cf_skip_line(int line) {
+  static int init, n, ls[256];
+  if (!init) {
+    init = 1;
+    const char *e = getenv("SPINEL_CLS_SKIP");
+    while (e && *e && n < 256) { ls[n++] = atoi(e); e = strchr(e, ','); if (e) e++; }
+  }
+  for (int i = 0; i < n; i++) if (ls[i] == line) return 1;
+  return 0;
+}
 static void cf_add_set_at(CF *f, int x, int pidx, int line) {
   if (x < 0) return;
+  if (pidx == CF_ALL && cf_skip_line(line)) return;
   if (f->directed) {
     /* (the kinds: a value from anywhere, or an object of a class the kinds
        cannot stand on) */
@@ -1531,11 +1546,12 @@ static int cf_param_el(CF *f, int mi, int idx) {
   if (idx < 0 || idx >= m->nparams || !m->pnames[idx]) return -1;
   return cf_lv_in(f, mi, m->pnames[idx]);
 }
-static void cf_all_params(CF *f, int mi) {
+static void cf_all_params_at(CF *f, int mi, int line) {
   Scope *m = &f->c->scopes[mi];
-  for (int i = 0; i < m->nparams; i++) cf_all(f, cf_param_el(f, mi, i));
-  if (m->blk_param && m->blk_param[0]) cf_all(f, cf_lv_in(f, mi, m->blk_param));
+  for (int i = 0; i < m->nparams; i++) cf_add_set_at(f, cf_param_el(f, mi, i), CF_ALL, line);
+  if (m->blk_param && m->blk_param[0]) cf_add_set_at(f, cf_lv_in(f, mi, m->blk_param), CF_ALL, line);
 }
+#define cf_all_params(f, mi) cf_all_params_at((f), (mi), __LINE__)
 /* the call's arguments to method mi's parameters */
 static void cf_bind_args(CF *f, int mi, const int *argv, int argc) {
   const NodeTable *nt = f->nt;
@@ -2365,9 +2381,14 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
 
 /* the call on a receiver that can be anything: every method of the name
    takes the arguments and the block; the value is anything */
-static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc, int blk) {
+static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int argc, int blk, int line) {
   Compiler *c = f->c;
-  cf_all(f, v);
+  /* (measurement) SPINEL_CLS_ANYSITE=<line>: the sites that rule makes anything */
+  if (getenv("SPINEL_CLS_ANYSITE") && f->set[v] != CF_ALL && atoi(getenv("SPINEL_CLS_ANYSITE")) == line && v < f->nnodes) {
+    const char *fp = nt_file_path(f->nt, (int)nt_int(f->nt, v, "node_file", 0));
+    fprintf(stderr, "cls-anysite: %s:%d %s\n", fp ? fp : "?", (int)nt_int(f->nt, v, "node_line", 0), nm);
+  }
+  cf_add_set_at(f, v, CF_ALL, line);
   /* a reader of the name answers its ivar's object: the call's value holds
      each such object, so what is stored into it (`x.items << y`) reaches the
      containers the readers answer, as on a known receiver. Without it the
@@ -2414,6 +2435,8 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
   (void)c;
 }
 
+/* (the call site's line is the root's, for SPINEL_CLS_FLOW=why and SKIP) */
+#define cf_call_any(f, v, nm, argv, argc, blk) cf_call_any_at((f), (v), (nm), (argv), (argc), (blk), __LINE__)
 static void cf_send_writers(CF *f, int v, int r, const int *argv, int argc) {
   Compiler *c = f->c;
   /* (a computed name of another kind leaves every name dynamic: every
@@ -4299,7 +4322,17 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         int pe = cf_param_el(&f, mi, 0);
         if (pe >= 0) cf_add_set(&f, pe, cf_classvals_of(&f, f.desc[s->class_id]));
       }
-      else cf_all_params(&f, mi);
+      else {
+        /* the seeding's cause as a pseudo rule line (SPINEL_CLS_FLOW=why,
+           SPINEL_CLS_SKIP): 90001 a protocol name, 90002 a prelude helper,
+           90003 a module_function, 90004 an opaque or dynamic name, 90005 a
+           proc form, a lowered yield or a synthesized scope, 90006 the rest
+           (a C extension's stub) */
+        int why = sd_proto ? 90001 : sd_prelude ? 90002 : sd_modfn ? 90003 :
+                  (cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi))) ? 90004 :
+                  (s->is_proc_form || s->is_lowered_yield || s->cs_synth) ? 90005 : 90006;
+        cf_all_params_at(&f, mi, why);
+      }
     }
     if (s->blk_param && s->blk_param[0]) {
       int be = cf_lv_in(&f, mi, s->blk_param);
@@ -4352,13 +4385,13 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   if (directed && getenv("SPINEL_CLS_FLOW_OPATH")) { int a = 0, b = 0; if (sscanf(getenv("SPINEL_CLS_FLOW_OPATH"), "%d,%d", &a, &b) == 2) cf_opath(&f, a, b); }
   if (directed && getenv("SPINEL_CLS_FLOW")) fprintf(stderr, "cls-flow-stats: elements %d objects %d edges %ld pts-adds %ld drain-visits %ld rounds %d\n", f.nel, f.nobj, f.st_edges, f.st_pts, f.st_drain, f.round + 1);
   if (directed && getenv("SPINEL_CLS_FLOW") && sp_streq(getenv("SPINEL_CLS_FLOW"), "why")) {
-    int cap = 8192; int *cnt = calloc((size_t)cap * 2, sizeof(int));
+    int cap = 100000; int *cnt = calloc((size_t)cap * 2, sizeof(int));   /* (the seeding's 9000x lines too) */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int r = nt_ref(nt, id, "receiver");
       if (r < 0 || f.set[r] != CF_ALL) continue;
       int o = f.orig[r]; if (o < -cap || o > cap) o = 0;
       cnt[o + cap]++;
-      if (getenv("SPINEL_CLS_FLOW_EACH")) fprintf(stderr, "cls-flow-any: line %d %s orig %d\n", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", o);
+      if (getenv("SPINEL_CLS_FLOW_EACH")) { const char *efp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0)); fprintf(stderr, "cls-flow-any: %s:%d %s orig %d\n", efp && *efp ? efp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", o); }
     }
     for (int o = 0; o < cap * 2; o++)
       if (cnt[o]) fprintf(stderr, "cls-flow-why: %s line %d: %d receivers\n", o - cap > 0 ? "every-class rule at" : o - cap < 0 ? "a set past the cap at" : "unknown", o - cap < 0 ? cap - o : o - cap, cnt[o]);
@@ -4402,11 +4435,16 @@ static void cf_flow_compare(Compiler *c, const int *df, const ClsSet *dp, int dn
   long calls = 0, any_u = 0, any_d = 0, same = 0, narrower = 0, wider = 0;
   /* the arms (cf_arms) of the calls a program's method may answer */
   long ucalls = 0, arms_u = 0, arms_d = 0, mono_u = 0, mono_d = 0;
+  /* the same, the program's own files only (not builtins/) */
+  long pcalls = 0, pany_d = 0, pucalls = 0, parms_d = 0, pmono_d = 0, parms_all = 0;
   struct { const char *nm; int n; } *amemo = calloc(8192, sizeof *amemo);
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int r = nt_ref(nt, id, "receiver");
     if (r < 0 || r >= dn || r >= c->cls_fact_n) continue;
     calls++;
+    const char *pfp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    int prog = !(pfp && strstr(pfp, "builtins/"));
+    if (prog) { pcalls++; if (df[r] == 0) pany_d++; }
     int u = c->cls_fact[r], d = df[r];
     const ClsSet *us = &c->cls_pool[u], *ds = &dp[d];
     const char *anm = nt_str(nt, id, "name");
@@ -4418,6 +4456,7 @@ static void cf_flow_compare(Compiler *c, const int *df, const ClsSet *dp, int dn
       if (all > 0) {
         int au = u == 0 ? all : cf_arms(c, us, 0, anm), ad = d == 0 ? all : cf_arms(c, ds, 0, anm);
         ucalls++; arms_u += au; arms_d += ad; mono_u += au <= 1; mono_d += ad <= 1;
+        if (prog) { pucalls++; parms_d += ad; pmono_d += ad <= 1; parms_all += all; }
       }
     }
     if (u == 0) any_u++;
@@ -4450,6 +4489,8 @@ static void cf_flow_compare(Compiler *c, const int *df, const ClsSet *dp, int dn
           calls, any_u, calls ? 100.0 * any_u / calls : 0.0, any_d, calls ? 100.0 * any_d / calls : 0.0, same, narrower, wider);
   fprintf(stderr, "cls-flow-arms: %ld calls a program's method may answer; arms unified %ld directed %ld; at most one arm unified %ld (%.1f%%) directed %ld (%.1f%%)\n",
           ucalls, arms_u, arms_d, mono_u, ucalls ? 100.0 * mono_u / ucalls : 0.0, mono_d, ucalls ? 100.0 * mono_d / ucalls : 0.0);
+  fprintf(stderr, "cls-flow-prog: %ld receivers, ANY %ld; %ld calls a program's method may answer, arms every-class %ld fact %ld, at most one arm %ld\n",
+          pcalls, pany_d, pucalls, parms_all, parms_d, pmono_d);
   free(amemo);
 }
 
@@ -4600,4 +4641,69 @@ int cls_fact_idx(Compiler *c, int node) {
   if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return -1;
   int p = c->cls_fact[node];
   return p <= 0 || p >= c->ncls_pool ? -1 : p;
+}
+
+/* SPINEL_CLS_USE=1 (=2 per site): what the consumers can lose, the measure
+   the closed-world stages are judged by (#8837). On the settled types, each
+   call whose receiver is typed poly (a box) is counted with the program's
+   methods of its name: the arms every class allows, and those the class
+   fact allows. A receiver typed as one class is not counted here; one whose
+   class has subclasses with methods of the name is reported apart. */
+void cls_fact_use_report(Compiler *c) {
+  const char *e = getenv("SPINEL_CLS_USE");
+  if (!e || !c->cls_fact) return;
+  const NodeTable *nt = c->nt;
+  long calls = 0, poly = 0, poly_any = 0, poly_multi_all = 0, arms_all = 0, arms_fact = 0, mono_all = 0, mono_fact = 0;
+  long obj = 0, obj_virt = 0, obj_any = 0, oarms_all = 0, oarms_fact = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (r < 0 || !nm || r >= c->cls_fact_n) continue;
+    calls++;
+    TyKind t = infer_type(c, r);
+    int p = c->cls_fact[r];
+    const ClsSet *s = p == CF_ALL || p >= c->ncls_pool ? NULL : &c->cls_pool[p];
+    if (t == TY_POLY) {
+      poly++;
+      int aa = cf_arms(c, NULL, 1, nm);
+      int af = !s || (s->n == 0 && !s->bv && !s->os) ? aa : cf_arms(c, s, 0, nm);
+      if (!s) poly_any++;
+      if (aa >= 2) poly_multi_all++;
+      arms_all += aa; arms_fact += af; mono_all += aa <= 1; mono_fact += af <= 1;
+      if (e[0] == '2') {
+        const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+        /* the receiver's shape: a call's answer, a parameter, another local, an ivar */
+        NodeKind rk = nt_kind(nt, r);
+        const char *shape = rk == NK_CallNode ? "call" : rk == NK_InstanceVariableReadNode ? "ivar" : rk == NK_SelfNode ? "self" : "other";
+        if (rk == NK_LocalVariableReadNode) {
+          int si = c->nscope && r < nt->count ? c->nscope[r] : -1;
+          LocalVar *lv = si >= 0 && si < c->nscopes ? scope_local(&c->scopes[si], nt_str(nt, r, "name")) : NULL;
+          shape = lv && lv->is_param ? "param" : lv && lv->is_block_param ? "blockparam" : "local";
+        }
+        fprintf(stderr, "cls-use: %s:%d %s poly fact %s arms %d/%d shape %s\n", fp && *fp ? fp : "?",
+                (int)nt_int(nt, id, "node_line", 0), nm, !s ? "ANY" : "set", af, aa, shape);
+      }
+    }
+    else if (ty_is_object(t)) {
+      int k = ty_object_class(t);
+      if (k < 0 || k >= c->nclasses) continue;
+      obj++;
+      int nd = 0; const int *ds = comp_descendants(c, k, &nd);
+      if (nd == 0) continue;
+      ClsSet sub; memset(&sub, 0, sizeof sub);
+      sub.cls[sub.n++] = k;
+      for (int i = 0; i < nd && sub.n < CLS_SET_MAX; i++) sub.cls[sub.n++] = ds[i];
+      int aa = cf_arms(c, &sub, 0, nm);
+      if (aa < 2) continue;
+      obj_virt++;
+      ClsSet m; memset(&m, 0, sizeof m);
+      if (!s) { m = sub; obj_any++; }
+      else for (int i = 0; i < sub.n; i++) for (int j = 0; j < s->n; j++) if (s->cls[j] == sub.cls[i]) { m.cls[m.n++] = sub.cls[i]; break; }
+      int af = !s || m.n == 0 ? aa : cf_arms(c, &m, 0, nm);
+      oarms_all += aa; oarms_fact += af;
+    }
+  }
+  fprintf(stderr, "cls-use: %ld receivers; poly %ld (fact ANY %ld, name with 2+ program methods %ld): arms every-class %ld fact %ld, at most one arm every-class %ld fact %ld\n",
+          calls, poly, poly_any, poly_multi_all, arms_all, arms_fact, mono_all, mono_fact);
+  fprintf(stderr, "cls-use: object receivers %ld, with 2+ arms in the subtree %ld (fact ANY %ld): arms subtree %ld fact %ld\n", obj, obj_virt, obj_any, oarms_all, oarms_fact);
 }

@@ -1953,6 +1953,7 @@ int        comp_is_nested_int_array_literal(Compiler *c, int node); /* `[[ints],
    pass did not see, a value it cannot bound). A class the set leaves out
    is one no instance of which reaches the node (analyze_cls.c, #8530). */
 const ClsSet *cls_fact_node(Compiler *c, int node);
+void cls_fact_use_report(Compiler *c);   /* SPINEL_CLS_USE: the consumers' arms (#8837) */
 /* Is class k one the fact bounds: a class the program defines, whose
    instances the pass follows from their construction? A reopened builtin's,
    a native class's and a module's are not. */
