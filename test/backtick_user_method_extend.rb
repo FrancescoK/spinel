@@ -30,3 +30,18 @@ begin
 rescue NoMethodError => e
   p e.class
 end
+
+# main's singleton class (the extend) comes before Object (an include)
+module First
+  def tag = "extend"
+end
+module Second
+  def tag = "include"
+end
+extend First
+include Second
+p tag
+class K
+  def tag_here = tag
+end
+p K.new.tag_here

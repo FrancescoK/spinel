@@ -7,3 +7,5 @@
 "s\n"
 "M main"
 NoMethodError
+"extend"
+"include"
