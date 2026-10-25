@@ -53342,6 +53342,40 @@ static void an_phase_nullable_returns(Compiler *c, const NodeTypes *promoted) {
    wrote are below it, the ones a rewrite made above (an_written_call) */
 static int g_an_src_nodes = -1;
 int an_written_call(int id) { return g_an_src_nodes < 0 || id < g_an_src_nodes; }
+/* An Enumerable call whose receiver only the post-fixpoint backstops
+   typed (`out = []` with no typed push, defaulted to an Array there) was
+   never rewritten onto its builtins/enumerable.rb copy: the rewrite runs
+   inside the fixpoint, which saw the receiver untyped. It is rewritten
+   now. The copy existed from the start (desugar_builtins makes it before
+   the scopes, and the fixpoint's rewrites went over its body), so what it
+   lacks is types: its parameters from the call, its locals, its block's
+   parameters and its answer, and what reads that answer. The passes that
+   give them run until none changes, with the rewrite among them for a
+   call the copy's own body makes. Types only widen, so the rounds end; a
+   slot the re-narrow would have narrowed stays wider, which costs speed,
+   never an answer. A program with no such call does none of this. */
+int g_enum_late;   /* desugar_builtin_enum_calls runs for an_phase_enum_late */
+static void an_phase_enum_late(Compiler *c) {
+  g_enum_late = 1;
+  int any = AN_PASS("desugar_builtin_enum_calls_late", desugar_builtin_enum_calls(c));
+  if (!any) { g_enum_late = 0; return; }
+  AN_PASS_V("mark_empty_literal_args", mark_empty_literal_args(c));
+  for (int iter = 0; iter < 32; iter++) {
+    int ch = 0;
+    infer_memo_boundary(); ch |= infer_param_types(c);
+    infer_memo_boundary(); ch |= infer_default_param_types(c);
+    infer_memo_boundary(); ch |= infer_write_types(c);
+    infer_memo_boundary(); ch |= infer_block_params(c);
+    infer_memo_boundary(); ch |= infer_ivar_types(c);
+    infer_memo_boundary(); ch |= infer_return_types(c);
+    infer_memo_boundary(); ch |= infer_global_const_types(c);
+    infer_memo_boundary();
+    if (desugar_builtin_enum_calls(c)) { ch = 1; mark_empty_literal_args(c); }
+    if (!ch) break;
+  }
+  infer_memo_boundary();
+  g_enum_late = 0;
+}
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   g_an_src_nodes = c->nt->count;
@@ -53360,6 +53394,7 @@ void analyze_program(Compiler *c) {
   an_pass_report();
   an_shadow_report();
   AN_PHASE("post_fixpoint", an_phase_post_fixpoint(c));
+  AN_PHASE("enum_late", an_phase_enum_late(c));
   AN_PHASE("procs", an_phase_procs(c));
   AN_PHASE("method_backstops", an_phase_method_backstops(c));
   NodeTypes promoted = { NULL, 0 };
