@@ -14,6 +14,7 @@
 #define _DARWIN_C_SOURCE 1
 #endif
 #include <stdint.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -31,6 +32,16 @@ typedef uintptr_t VALUE;
 typedef uintptr_t ID;
 typedef intptr_t SIGNED_VALUE;
 typedef pid_t rb_pid_t;
+
+/* config.h's helper for a -D value an extension prints (racc's
+   RACC_INFO_VERSION) */
+#define STRINGIZE(expr) STRINGIZE0(expr)
+#define STRINGIZE0(expr) #expr
+/* "%"PRIsVALUE in an rb_raise format takes a VALUE and prints its to_s, or
+   its inspect with the + flag, as CRuby's does */
+#define PRI_VALUE_PREFIX "l"
+#define RUBY_PRI_VALUE_MARK "\v"
+#define PRIsVALUE PRIiPTR RUBY_PRI_VALUE_MARK
 
 #define Qfalse ((VALUE)0x00)
 #define Qnil   ((VALUE)0x08)
