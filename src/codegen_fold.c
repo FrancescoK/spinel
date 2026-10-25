@@ -7023,8 +7023,8 @@ static void scope_param_shape(Compiler *c, Scope *m) {
   if (pn >= 0) {
     m->ps_kws = nt_arr(nt, pn, "keywords", &m->ps_nkw);
     int kwr = nt_ref(nt, pn, "keyword_rest");
-    const char *kwr_type = kwr >= 0 ? nt_type(nt, kwr) : NULL;
-    m->ps_fwd = kwr_type && sp_streq(kwr_type, "ForwardingParameterNode");
+    NodeKind kwr_type_k = nt_kind(nt, kwr);
+    m->ps_fwd = kwr_type_k == NK_ForwardingParameterNode;
   }
   if (pn >= 0 && nt_kind(nt, pn) == NK_ParametersNode) {
     int on = 0, postn = 0;
@@ -9978,8 +9978,8 @@ static int ds_hash_keys_not_symbols(TyKind t) {
 static void kw_param_names(const NodeTable *nt, const int *kws, int kn, int required, Buf *out) {
   for (int ki = 0; ki < kn; ki++) {
     const char *kpn = nt_str(nt, kws[ki], "name");
-    const char *kty = nt_type(nt, kws[ki]);
-    if (kpn && (!required || (kty && sp_streq(kty, "RequiredKeywordParameterNode"))))
+    NodeKind kk = nt_kind(nt, kws[ki]);
+    if (kpn && (!required || (kk == NK_RequiredKeywordParameterNode)))
       buf_printf(out, "\"%s\", ", kpn);
   }
 }
@@ -10602,9 +10602,9 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   /* a `**` or a computed key may name any keyword: which are missing is
      the run time's (emit_ds_kwarg_check, on the hash they merge into) */
   for (int i = 0; i < kn && !P->spread && !P->computed; i++) {
-    const char *kty = nt_type(nt, kws[i]);
+    NodeKind kk = nt_kind(nt, kws[i]);
     const char *kpn = nt_str(nt, kws[i], "name");
-    if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
+    if (kk != NK_RequiredKeywordParameterNode || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
     char iv[300];
     kw_key_inspect(kpn, 1, iv, sizeof iv);
     kw_names_add(P->missing, sizeof P->missing, &P->nmissing, iv);
@@ -10767,7 +10767,7 @@ static int arity_unjudged(Compiler *c, Scope *m) {
         strncmp(m->pnames[i], "__bam_", 6) != 0) return 1;
   int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
   int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kwr >= 0 && nt_type(c->nt, kwr) && sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
+  return kwr >= 0 && nt_kind(c->nt, kwr) == NK_ForwardingParameterNode;
 }
 
 int splat_operand_is_scalar(TyKind t) {

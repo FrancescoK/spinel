@@ -293,10 +293,10 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
     }
     return 0;
   }
-  default: {
-    const char *ty = nt_type(nt, n);
-    return ty && sp_streq(ty, "ArgumentsNode") && poll_pure_kids(c, n, ret_ok);
-  }
+  case NK_ArgumentsNode:
+    return poll_pure_kids(c, n, ret_ok);
+  default:
+    return 0;
   }
 }
 static int poll_pure_shape(Compiler *c, int si) {
@@ -7481,7 +7481,7 @@ static void collect_numbered_reads(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   NodeKind k = nt_kind(c->nt, id);
   if (k == NK_BlockNode || k == NK_LambdaNode) return;
-  if (k == NK_LocalVariableReadNode || (nt_type(c->nt, id) && sp_streq(nt_type(c->nt, id), "ItLocalVariableReadNode"))) {
+  if (k == NK_LocalVariableReadNode || k == NK_ItLocalVariableReadNode) {
     const char *nm = nt_str(c->nt, id, "name");
     if (nm && ((nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && (!nm[2] || nm[2] == '_')) ||
                (nm[0] == 'i' && nm[1] == 't' && (!nm[2] || nm[2] == '_'))))
@@ -7501,7 +7501,7 @@ static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
      a `-> { _1 }` has no node at all: they are the ones its body reads (an
      enclosing block's cannot be read there, as Ruby refuses it) */
   if (bp_node < 0 || nt_kind(nt, bp_node) == NK_NumberedParametersNode ||
-      (nt_type(nt, bp_node) && sp_streq(nt_type(nt, bp_node), "ItParametersNode"))) {
+      nt_kind(nt, bp_node) == NK_ItParametersNode) {
     collect_numbered_reads(c, nt_ref(nt, blk, "body"), out);
     return;
   }
@@ -9101,9 +9101,8 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
            parameter, not the enclosing scope's `nm`. Numbered and `it`
            parameters have no node of their own, and the list carries their
            renamed spelling. */
-        const char *pt = pn >= 0 ? nt_type(nt, pn) : NULL;
         NodeKind pk = nt_kind(nt, pn);
-        if (pt && (pk == NK_NumberedParametersNode || sp_streq(pt, "ItParametersNode"))) return 1;
+        if (pk == NK_NumberedParametersNode || pk == NK_ItParametersNode) return 1;
         if (!subtree_has_param_named_pub(nt, pn, nm)) return 1;
         break;
       }
@@ -9665,9 +9664,9 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       int kwrest = nt_ref(nt, pn, "keyword_rest");
       int has_req_kw = 0, has_opt_kw = 0;
       for (int i = 0; i < nkw; i++) {
-        const char *kt = nt_type(nt, kw[i]);
-        if (kt && sp_streq(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
-        else if (kt && sp_streq(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
+        NodeKind kt_k = nt_kind(nt, kw[i]);
+        if (kt_k == NK_RequiredKeywordParameterNode) has_req_kw = 1;
+        else if (kt_k == NK_OptionalKeywordParameterNode) has_opt_kw = 1;
       }
       NodeKind kwk = nt_kind(nt, kwrest);
       int has_kwrest = kwk == NK_KeywordRestParameterNode;
@@ -9675,8 +9674,8 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       /* `|a,|`'s rest is an ImplicitRestNode: it names nothing and collects
          nothing, and CRuby reports the signature as exactly its required
          count (`lambda { |a,| }.arity == 1`). */
-      const char *rest_ty = rest >= 0 ? nt_type(nt, rest) : NULL;
-      if (rest_ty && sp_streq(rest_ty, "ImplicitRestNode")) rest = -1;
+      NodeKind rest_k = nt_kind(nt, rest);
+      if (rest_k == NK_ImplicitRestNode) rest = -1;
       /* Only a rest parameter makes a PROC's arity negative: optional
          keywords and a keyword rest leave it at the required count, where a
          LAMBDA reports them as negative -- unless a required keyword is there
@@ -10138,7 +10137,7 @@ else if (orecv >= 0 && onm) {
   { int pnk = proc_params_node(c, create);
     int kwr = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     if (kwr >= 0) has_kwrest = 1;
-    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "NoKeywordsParameterNode")) no_kw = 1; }
+    if (kwr >= 0 && nt_kind(nt, kwr) == NK_NoKeywordsParameterNode) no_kw = 1; }
   /* The trailing argument is keywords when it is a Hash the call site passed
      as keywords (_sp_proc_kwpos, read before anything below can call another
      proc, and cleared whatever this proc's shape is). A caller that does not
@@ -10157,7 +10156,7 @@ else if (orecv >= 0 && onm) {
     int rn = pnr >= 0 ? nt_ref(nt, pnr, "rest") : -1;
     has_rest_marker = rn >= 0;
     as_lead_only = !nopts && !nposts && !has_kwp &&
-                   (rn < 0 ? arity > 1 : arity >= 1 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ImplicitRestNode")); }
+                   (rn < 0 ? arity > 1 : arity >= 1 && nt_kind(nt, rn) == NK_ImplicitRestNode); }
   int as_gate = !is_lambda && !as_lead_only && block_auto_splats(arity, nopts, nposts, has_rest_marker);
   if (!has_kwp && as_gate)
     buf_puts(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n");
@@ -10431,7 +10430,7 @@ else if (orecv >= 0 && onm) {
     int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     { int nreqkw = 0;
       for (int j = 0; j < nkw2; j++)
-        if (nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) nreqkw++;
+        if (nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode) nreqkw++;
       if (kwr0 < 0 || nreqkw) {
         buf_puts(pb, "    { static const char *const _pkw[] = {");
         for (int j = 0; j < nkw2; j++) {
@@ -10441,7 +10440,7 @@ else if (orecv >= 0 && onm) {
         buf_puts(pb, "0}, *const _pkr[] = {");
         for (int j = 0; j < nkw2; j++) {
           const char *kn = nt_str(nt, kwn[j], "name");
-          if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+          if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
             buf_printf(pb, "\"%s\", ", param_public_name(kn));
         }
         buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
@@ -10453,7 +10452,7 @@ else if (orecv >= 0 && onm) {
           buf_puts(pb, " && (0");
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+            if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
               buf_printf(pb, " || !sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))",
                          comp_sym_intern(c, param_public_name(kn)));
           }
@@ -10464,7 +10463,7 @@ else if (orecv >= 0 && onm) {
           char miss[512] = "", km[600]; int nm = 0;
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (!kn || !nt_type(nt, kwn[j]) || !sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) continue;
+            if (!kn || nt_kind(nt, kwn[j]) != NK_RequiredKeywordParameterNode) continue;
             char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(kn));
             kw_names_add(miss, sizeof miss, &nm, iv);
           }
@@ -14011,8 +14010,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
     if (i != s->kwrest_idx && callee_param_is_declared_kwarg(c, s, s->pnames[i]) &&
         !callee_param_is_declared_kwarg(c, pm, s->pnames[i])) extra++;
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kty && sp_streq(kty, "RequiredKeywordParameterNode") && kpn &&
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kk == NK_RequiredKeywordParameterNode && kpn &&
         !callee_param_is_declared_kwarg(c, s, kpn)) missing++;
   }
   if (!own && !missing && !(extra && pm->kwrest_idx < 0)) return;
@@ -14036,8 +14036,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   }
   buf_printf(g_pre, "0}, *const _kr%d[] = {", chk);
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kpn && kty && sp_streq(kty, "RequiredKeywordParameterNode")) buf_printf(g_pre, "\"%s\", ", kpn);
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kpn && kk == NK_RequiredKeywordParameterNode) buf_printf(g_pre, "\"%s\", ", kpn);
   }
   buf_printf(g_pre, "0}, *const _kl%d[] = {", chk);
   for (int i = 0; i < s->nparams; i++)
@@ -17836,7 +17837,7 @@ static void scan_prologue_features(Compiler *c) {
        an ensure clause runs. The landings that give it back (a catch, a
        wrapped break, a proc's home) are emitted only in a program that
        holds one with a body: elsewhere there is nothing to give back. */
-    if (sp_streq(ty, "EnsureNode") && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
+    if (ty_k == NK_EnsureNode && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
     /* trap / Signal.trap: the handler only records a delivery, and the proc
        runs at the safe points below (sp_sig_run_pending, lib/sp_cold.c) */
     if (ty_k == NK_CallNode && nt_str(nt, i, "name") && sp_streq(nt_str(nt, i, "name"), "trap"))

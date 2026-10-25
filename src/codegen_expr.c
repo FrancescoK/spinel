@@ -5761,7 +5761,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  if (sp_streq(ty, "MatchWriteNode")) {
+  if (ty_k == NK_MatchWriteNode) {
     /* `/(?<n>..)/ =~ str`: run the match (setting the match registers), bind
        each named group to its local (NULL = nil when it did not participate),
        and yield the `=~` result (match index, or nil). */

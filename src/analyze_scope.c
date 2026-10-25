@@ -159,8 +159,8 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
      `bar(...)` body forwards them directly -- no rest/splat machinery (#1288). */
   {
     int kwr = nt_ref(c->nt, pn, "keyword_rest");
-    if (kwr >= 0 && nt_type(c->nt, kwr) &&
-        sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode") && s->name) {
+    if (kwr >= 0 &&
+        nt_kind(c->nt, kwr) == NK_ForwardingParameterNode && s->name) {
       /* Concrete leading params (`def f(a, ...)`) consume the first call args;
          only the remainder is forwarded, so synthesize one __fwd_ slot per
          forwarded arg, not per total arg. The zero-leading case (`def f(...)`)
@@ -197,8 +197,8 @@ static int scope_is_forwarding(Compiler *c, Scope *s) {
   int pn = nt_ref(c->nt, s->def_node, "parameters");
   if (pn < 0) return 0;
   int kwr = nt_ref(c->nt, pn, "keyword_rest");
-  return kwr >= 0 && nt_type(c->nt, kwr) &&
-         sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
+  return kwr >= 0 &&
+         nt_kind(c->nt, kwr) == NK_ForwardingParameterNode;
 }
 
 /* The method `s`'s body forwards `...` to (a `callee(...)` call, `super(...)`
@@ -4785,8 +4785,8 @@ void register_aliases(Compiler *c) {
        shifts every class index and is not free */
     int have_tl_alias = 0;
     for (int pid = 0; pid < nt->count && !have_tl_alias; pid++) {
-      const char *pty = nt_type(nt, pid);
-      if (!pty || !sp_streq(pty, "ProgramNode")) continue;
+      NodeKind pk = nt_kind(nt, pid);
+      if (pk != NK_ProgramNode) continue;
       int sb = nt_ref(nt, pid, "statements");
       int sn = 0; const int *ss = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
       for (int k = 0; k < sn; k++) {
@@ -4798,8 +4798,8 @@ void register_aliases(Compiler *c) {
       int tl = comp_class_index(c, "Toplevel");
       if (tl < 0) { comp_class_new(c, "Toplevel", -1); tl = c->nclasses - 1; }
       for (int pid = 0; pid < nt->count; pid++) {
-        const char *pty = nt_type(nt, pid);
-        if (!pty || !sp_streq(pty, "ProgramNode")) continue;
+        NodeKind pk = nt_kind(nt, pid);
+        if (pk != NK_ProgramNode) continue;
         register_aliases_body(c, &c->classes[tl], nt_ref(nt, pid, "statements"));
       }
     }

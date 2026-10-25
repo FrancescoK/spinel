@@ -491,9 +491,9 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallTargetNode, u)
     if (nt_str(nt, u, "name")) sh_ivw_add(F, nt_str(nt, u, "name"), u);
   /* an attribute's `+=` (and the other operators) the desugar keeps as is,
-     a node of no kind of its own, by the reader's name */
-  NT_FOREACH_KIND(nt, NK_NONE, u)
-    if (sp_streq(nt_type(nt, u), "CallOperatorWriteNode") && nt_str(nt, u, "name"))
+     by the reader's name */
+  NT_FOREACH_KIND(nt, NK_CallOperatorWriteNode, u)
+    if (nt_str(nt, u, "name"))
       sh_ivw_add(F, nt_str(nt, u, "name"), u);
   if (F->nivw) qsort(F->ivw, (size_t)F->nivw, sizeof *F->ivw, sh_named_cmp);
 }
