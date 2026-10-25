@@ -86,6 +86,7 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
     "computed symbol ID" => ['SYM2ID(rb_str_intern(rb_str_new_cstr("name")));', "runtime-computed"],
     "dynamic eval" => ['const char *code = "1"; rb_eval_string(code);', "literal"],
     "dynamic ivar" => ['const char *name = "@x"; rb_iv_get(rb_cObject, name);', "literal"],
+    "catch during Init" => ['rb_catch("tag", 0, Qnil);', "rb_catch"],
     "vector call during Init" => ['rb_funcallv(rb_cObject, rb_intern("name"), 0, 0);', "rb_funcallv"],
     "API address" => ['ID (*intern)(const char *) = rb_intern; intern("strip");', "rb_intern"],
     "dynamic arity" => ['int argc = 0; rb_funcall(rb_cObject, rb_intern("name"), argc);', "rb_funcall"],

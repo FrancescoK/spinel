@@ -44,6 +44,10 @@ extern void *(*sp_cext_class_alloc_fn)(int);
 extern sp_RbVal (*sp_cext_class_lookup_fn)(const char *);
 extern void *(*sp_cext_object_alloc_fn)(int);
 extern int (*sp_cext_data_class_fn)(int);
+/* catch and throw over the generated unit's catch stack (rb_catch, rb_throw,
+ * rb_iter_break) */
+extern sp_RbVal (*sp_cext_catch_fn)(sp_RbVal, sp_RbVal (*)(void *), void *);
+extern void (*sp_cext_throw_fn)(sp_RbVal, sp_RbVal);
 
 VALUE sp_cext_value(sp_RbVal value);
 sp_RbVal sp_cext_rbval(VALUE value);

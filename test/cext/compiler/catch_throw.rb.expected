@@ -1,0 +1,14 @@
+[:returned, :cext_jump]
+[:thrown, :cext_jump]
+"raised in step"
+5
+["uncaught throw :ruby_jump", :ruby_jump, 1]
+[10, 20, nil]
+[10, [10]]
+ensure ran
+[1, 2, nil]
+5
+ensure ran
+2
+ensure ran
+:finished
