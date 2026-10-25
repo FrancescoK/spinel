@@ -20,3 +20,4 @@ p none_yet.filter_map { |x| x }
 p none_yet.tally
 p none_yet.count { |x| x }
 p none_yet.select { |x| x }
+p none_yet.map(&:to_s)

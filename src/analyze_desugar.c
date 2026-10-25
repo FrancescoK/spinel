@@ -12803,6 +12803,14 @@ int enumerator_own_with_object(Compiler *c, int id) {
   return 1;
 }
 
+/* Is block blk the parser's `&:m` (`{ |_spx| _spx.m }`)? */
+static int enum_sym_proc_block(const NodeTable *nt, int blk) {
+  int bp = nt_ref(nt, blk, "parameters");
+  int ps = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  int rn = 0; const int *reqs = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+  const char *pn = rn == 1 ? nt_str(nt, reqs[0], "name") : NULL;
+  return pn && sp_streq(pn, "_spx");
+}
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -13016,6 +13024,13 @@ int desugar_builtin_enum_calls(Compiler *c) {
     }
     else if (rt == TY_POLY) ok = 1;   /* a class of its own definition is dispatched below */
     if (!ok) continue;
+    /* after the fixpoint (an_phase_enum_late) only a block the program
+       wrote, or none: one given by `&` (`&blk`, or `&:m`, which the parser
+       writes as `{ |_spx| _spx.m }`) is typed by passes that do not run
+       again there, and such a call keeps its route as before */
+    { extern int g_enum_late;
+      int lb = nt_ref(nt, id, "block");
+      if (g_enum_late && lb >= 0 && (nt_kind(nt, lb) != NK_BlockNode || enum_sym_proc_block(nt, lb))) continue; }
     int copy = (int)nt_int(nt, id, "enum_copy", -1);
     if (copy < 0 || copy >= nt->count) continue;   /* no copy was made for this site */
     const char *gn = nt_str(nt, copy, "name");
