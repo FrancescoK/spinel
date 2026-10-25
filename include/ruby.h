@@ -84,6 +84,10 @@ VALUE rb_ll2inum(long long);
 VALUE rb_float_new(double);
 #define NUM2INT(v) rb_num2int((VALUE)(v))
 #define LL2NUM(v) rb_ll2inum((long long)(v))
+long rb_num2long(VALUE);
+#define NUM2LONG(v) rb_num2long((VALUE)(v))
+#define INT2NUM(v) LL2NUM((int)(v))
+#define LONG2NUM(v) LL2NUM((long)(v))
 #define DBL2NUM(v) rb_float_new((double)(v))
 #define ID2SYM(id) (((VALUE)(id) << RUBY_SPECIAL_SHIFT) | RUBY_SYMBOL_FLAG)
 #ifdef SP_CEXT_RECORDER

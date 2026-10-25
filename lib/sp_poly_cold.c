@@ -32,6 +32,10 @@ sp_RbVal sp_cext_plain_object_new(void) {
 sp_RbVal sp_cext_hash_new(void) {
   return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
 }
+/* an object of the program as an Integer: its to_int, else CRuby's TypeError */
+sp_int sp_cext_object_to_int(sp_RbVal object) {
+  return sp_poly_arg_int_obj(object);
+}
 void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
   if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
     sp_raise_cls("TypeError", "expected a widened Hash");

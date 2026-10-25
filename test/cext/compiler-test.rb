@@ -110,4 +110,5 @@ end
 cruby_oracle('display')
 cruby_oracle('dispatch')
 cruby_oracle('object_class')
+cruby_oracle('numbers')
 puts 'C extension compiler bridge: CRuby oracle and GC modes passed'
