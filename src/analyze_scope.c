@@ -31,8 +31,8 @@ static int forwarding_call_arity(Compiler *c, const char *mname) {
   const NodeTable *nt = c->nt;
   int maxarg = 0;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_CallNode) continue;
     const char *cn = nt_str(nt, id, "name");
     if (!cn || !sp_streq(cn, mname)) continue;
     int a = nt_ref(nt, id, "arguments");
@@ -51,8 +51,8 @@ static void add_kwhash_key_params(const NodeTable *nt, Scope *s, int kwh) {
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     int key = nt_ref(nt, els[e], "key");
-    const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-    const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+    NodeKind kk = nt_kind(nt, key);
+    const char *kn = (kk == NK_SymbolNode) ? nt_str(nt, key, "value") : NULL;
     if (!kn) continue;
     int dup = 0;
     for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
@@ -78,8 +78,8 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
   }
   int rp = nt_ref(c->nt, pn, "rest");
   if (rp >= 0) {
-    const char *rpty = nt_type(c->nt, rp);
-    if (rpty && sp_streq(rpty, "RestParameterNode")) {
+    NodeKind rpk = nt_kind(c->nt, rp);
+    if (rpk == NK_RestParameterNode) {
       const char *rname = nt_str(c->nt, rp, "name");
       /* An anonymous `*` (Ruby 3.0 `def m(a, *) = f(a, *)`) has no name; give it
          a synthetic one so it is a real rest local, and the anonymous `*` at the
@@ -112,15 +112,16 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
   const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
   for (int i = 0; i < kn; i++) {
     const char *pty = nt_type(c->nt, kws[i]);
+    NodeKind pk = nt_kind(c->nt, kws[i]);
     if (!pty) continue;
     const char *pname = nt_str(c->nt, kws[i], "name");
-    int dv = sp_streq(pty, "OptionalKeywordParameterNode") ? nt_ref(c->nt, kws[i], "value") : -1;
+    int dv = pk == NK_OptionalKeywordParameterNode ? nt_ref(c->nt, kws[i], "value") : -1;
     if (pname) scope_add_param(s, pname, dv);
   }
   int kwrp = nt_ref(c->nt, pn, "keyword_rest");
   if (kwrp >= 0) {
-    const char *kwrpty = nt_type(c->nt, kwrp);
-    if (kwrpty && sp_streq(kwrpty, "KeywordRestParameterNode")) {
+    NodeKind kwrpk = nt_kind(c->nt, kwrp);
+    if (kwrpk == NK_KeywordRestParameterNode) {
       const char *kwrname = nt_str(c->nt, kwrp, "name");
       /* An anonymous `**` (`def m(**) = f(**)`) has no name; give it a synthetic
          one so it is a real kwrest local that the anonymous `**` at the forwarding
@@ -177,8 +178,8 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
          it (#1288). Collect the union of keys across the call sites. */
       const NodeTable *nt = c->nt;
       for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "CallNode") || !nt_str(nt, id, "name") ||
+        NodeKind k = nt_kind(nt, id);
+        if (k != NK_CallNode || !nt_str(nt, id, "name") ||
             !sp_streq(nt_str(nt, id, "name"), s->name)) continue;
         int a = nt_ref(nt, id, "arguments");
         int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -209,14 +210,15 @@ static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
   int first = -1, one = 1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind k = nt_kind(nt, id);
     if (!ty || comp_scope_of(c, id) != s) continue;
-    int is_super = sp_streq(ty, "ForwardingSuperNode");
+    int is_super = k == NK_ForwardingSuperNode;
     if (!is_super) {
-      if (!sp_streq(ty, "CallNode") && !sp_streq(ty, "SuperNode")) continue;
+      if (k != NK_CallNode && k != NK_SuperNode) continue;
       int a = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
       if (!nt_argv_only_forwarding(nt, av, an)) continue;
-      is_super = sp_streq(ty, "SuperNode");
+      is_super = k == NK_SuperNode;
     }
     int mi = -1;
     if (is_super) {
@@ -251,8 +253,8 @@ static int new_site_reaches(Compiler *c, int id, int init) {
   const char *cn = nt_str(nt, id, "name");
   if (!cn || !sp_streq(cn, "new")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode")))
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode)
     return 0;
   int cid = comp_class_index(c, nt_str(nt, recv, "name"));
   return cid >= 0 && comp_method_in_chain(c, cid, "initialize", NULL) == init;
@@ -277,8 +279,8 @@ static void initialize_forwarding_params(Compiler *c, int init) {
      they are refused rather than compiled wrong. */
   int pos_min = -1, pos_max = -1;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_CallNode || !new_site_reaches(c, id, init)) continue;
     int a = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (nt_argv_only_forwarding(nt, av, an)) continue;
@@ -560,17 +562,18 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 char *dm_lit_str(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, lit);
+  NodeKind k = nt_kind(nt, lit);
   if (!ty) return NULL;
-  if (sp_streq(ty, "IntegerNode")) {
+  if (k == NK_IntegerNode) {
     char buf[32]; snprintf(buf, sizeof buf, "%lld", (long long)nt_int(nt, lit, "value", 0));
     return strdup(buf);
   }
-  if (sp_streq(ty, "StringNode")) {
+  if (k == NK_StringNode) {
     const char *s = nt_str(nt, lit, "content");
     if (!s) s = nt_str(nt, lit, "unescaped");
     return s ? strdup(s) : NULL;
   }
-  if (sp_streq(ty, "SymbolNode")) { const char *s = nt_str(nt, lit, "value"); return s ? strdup(s) : NULL; }
+  if (k == NK_SymbolNode) { const char *s = nt_str(nt, lit, "value"); return s ? strdup(s) : NULL; }
   return NULL;
 }
 
@@ -581,25 +584,26 @@ char *dm_lit_str(Compiler *c, int lit) {
 char *dm_eval_name(Compiler *c, int node, const char *bv, int lit) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return NULL;
-  if (sp_streq(ty, "StringNode")) {
+  if (ty_k == NK_StringNode) {
     const char *s = nt_str(nt, node, "content");
     if (!s) s = nt_str(nt, node, "unescaped");
     return s ? strdup(s) : NULL;
   }
-  if (sp_streq(ty, "SymbolNode")) { const char *s = nt_str(nt, node, "value"); return s ? strdup(s) : NULL; }
-  if (sp_streq(ty, "LocalVariableReadNode")) {
+  if (ty_k == NK_SymbolNode) { const char *s = nt_str(nt, node, "value"); return s ? strdup(s) : NULL; }
+  if (ty_k == NK_LocalVariableReadNode) {
     const char *nm = nt_str(nt, node, "name");
     if (nm && bv && sp_streq(nm, bv)) return dm_lit_str(c, lit);
     return NULL;
   }
-  if (sp_streq(ty, "EmbeddedStatementsNode")) {
+  if (ty_k == NK_EmbeddedStatementsNode) {
     int body = nt_ref(nt, node, "statements");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn != 1) return NULL;
     return dm_eval_name(c, bb[0], bv, lit);
   }
-  if (sp_streq(ty, "InterpolatedStringNode") || sp_streq(ty, "InterpolatedSymbolNode")) {
+  if (ty_k == NK_InterpolatedStringNode || ty_k == NK_InterpolatedSymbolNode) {
     int pn = 0; const int *parts = nt_arr(nt, node, "parts", &pn);
     char *out = strdup("");
     for (int k = 0; k < pn; k++) {
@@ -618,10 +622,11 @@ char *dm_eval_name(Compiler *c, int node, const char *bv, int lit) {
    subst-var type and return type). */
 TyKind dm_lit_type(Compiler *c, int lit) {
   const char *ty = nt_type(c->nt, lit);
+  NodeKind k = nt_kind(c->nt, lit);
   if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "IntegerNode")) return TY_INT;
-  if (sp_streq(ty, "StringNode"))  return TY_STRING;
-  if (sp_streq(ty, "SymbolNode"))  return TY_SYMBOL;
+  if (k == NK_IntegerNode) return TY_INT;
+  if (k == NK_StringNode)  return TY_STRING;
+  if (k == NK_SymbolNode)  return TY_SYMBOL;
   return TY_UNKNOWN;
 }
 
@@ -770,8 +775,8 @@ static void rca_index(const NodeTable *nt) {
     rca_n = 0;
     if (rca_ids) {
       for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (ty && sp_streq(ty, "ConstantWriteNode")) rca_ids[rca_n++] = id;
+        NodeKind k = nt_kind(nt, id);
+        if (k == NK_ConstantWriteNode) rca_ids[rca_n++] = id;
       }
     }
     rca_nt = nt;
@@ -808,13 +813,13 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
     if (!n || !sp_streq(n, cname)) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0) return NULL;
-    const char *vty = nt_type(nt, v);
-    if (vty && (sp_streq(vty, "ConstantReadNode") || sp_streq(vty, "ConstantPathNode"))) {
+    NodeKind vk = nt_kind(nt, v);
+    if (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode) {
       const char *vn = nt_str(nt, v, "name");
       if (vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn))) return vn;
     }
-    if (vty && sp_streq(vty, "LocalVariableReadNode")) return local_holds_class(c, v);
-    if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+    if (vk == NK_LocalVariableReadNode) return local_holds_class(c, v);
+    if (vk == NK_CallNode && nt_str(nt, v, "name") &&
         sp_streq(nt_str(nt, v, "name"), "class")) {
       int r = nt_ref(nt, v, "receiver");
       if (r >= 0) return builtin_class_of_type(infer_type(c, r));
@@ -913,8 +918,8 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int a = 0; a < an; a++) {
-    const char *aty = nt_type(nt, argv[a]);
-    if (!aty || !sp_streq(aty, "SymbolNode")) continue;
+    NodeKind ak = nt_kind(nt, argv[a]);
+    if (ak != NK_SymbolNode) continue;
     const char *fname = nt_str(nt, argv[a], "value");
     if (!fname) continue;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", fname);
@@ -952,9 +957,9 @@ static const char *dm_defined_name(const NodeTable *nt, int call) {
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an < 1) return NULL;
-  const char *aty = nt_type(nt, argv[0]);
-  if (aty && sp_streq(aty, "SymbolNode")) return nt_str(nt, argv[0], "value");
-  if (aty && sp_streq(aty, "StringNode")) return nt_str(nt, argv[0], "content");
+  NodeKind ak = nt_kind(nt, argv[0]);
+  if (ak == NK_SymbolNode) return nt_str(nt, argv[0], "value");
+  if (ak == NK_StringNode) return nt_str(nt, argv[0], "content");
   return NULL;
 }
 
@@ -966,8 +971,8 @@ static const char *dm_defined_name(const NodeTable *nt, int call) {
    silently skips (blockless, or a dynamic name) from making the block look like a
    pure reopen -- which would no-op the whole call and drop it without a diagnostic. */
 static const char *dm_registerable_name(const NodeTable *nt, int id) {
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode") || nt_ref(nt, id, "block") < 0) return NULL;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode || nt_ref(nt, id, "block") < 0) return NULL;
   return dm_defined_name(nt, id);
 }
 
@@ -985,8 +990,8 @@ static const char *dm_registerable_name(const NodeTable *nt, int id) {
    on the target) and codegen (to emit the call as a no-op). */
 int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return -1;
+  NodeKind ty_k = nt_kind(nt, id);
+  if (ty_k != NK_CallNode) return -1;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_class_eval_family(nm)) return -1;
   /* a literal block: a `&blk` argument has no body to register, and is a
@@ -994,16 +999,16 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   int blk = nt_ref(nt, id, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int recv = nt_ref(nt, id, "receiver");
-  const char *recv_ty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  NodeKind recv_k = nt_kind(nt, recv);
   int ci;
-  if (recv < 0 || (recv_ty && sp_streq(recv_ty, "SelfNode"))) {
+  if (recv < 0 || (recv_k == NK_SelfNode)) {
     /* bare / `self.` receiver reopens the enclosing class -- but only at
        class-body level, where `self` is the class object. */
     if (enclosing_class < 0) return -1;
     ci = enclosing_class;
   }
-  else if (recv_ty && (sp_streq(recv_ty, "ConstantReadNode") ||
-                         sp_streq(recv_ty, "ConstantPathNode"))) {
+  else if ((recv_k == NK_ConstantReadNode ||
+                         recv_k == NK_ConstantPathNode)) {
     const char *recv_name = nt_str(nt, recv, "name");
     if (!recv_name) return -1;
     ci = comp_class_index(c, recv_name);
@@ -1015,8 +1020,8 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   int body = nt_ref(nt, blk, "body");
   int n = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
-    const char *sty = nt_type(nt, stmts[k]);
-    if (sty && sp_streq(sty, "DefNode")) continue;
+    NodeKind sk = nt_kind(nt, stmts[k]);
+    if (sk == NK_DefNode) continue;
     if (dm_registerable_name(nt, stmts[k])) continue;
     return -1;  /* a non-definition statement: not a pure reopen */
   }
@@ -1177,9 +1182,9 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
     return;
   }
-  const char *ty = nt_type(nt, s);
+  NodeKind ty_k = nt_kind(nt, s);
   int cond = k == NK_IfNode || k == NK_UnlessNode || k == NK_StatementsNode ||
-             (ty && sp_streq(ty, "ElseNode"));
+             (ty_k == NK_ElseNode);
   if (!cond || depth > 64) { walk_scope(c, s, scope_idx, target_class); return; }
   c->nscope[s] = scope_idx;
   c->node_cbody[s] = g_cbody_class_id;
@@ -1442,14 +1447,14 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     nt_node_set_int((NodeTable *)c->nt, id, "refusal_dead", 1);
   if (nt_kind(c->nt, id) == NK_DefNode) proc = -1;
   else if (is_proc_create(c, id)) proc = id;
-  const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
   int dm_sclass = g_dm_sclass;
   g_dm_sclass = 0;
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
-  if (ty && sp_streq(ty, "SingletonClassNode")) {
+  if (ty_k == NK_SingletonClassNode) {
     /* `class << self` inside a class body defines class methods on the
        enclosing class; `class << Const` (a constant naming a class/module)
        defines them on that named class instead. A singleton-class block on an
@@ -1459,8 +1464,8 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     int target_class = class_id;
     int supported = 0, native_reopen = 0;
     int sexpr = nt_ref(c->nt, id, "expression");
-    const char *exty = sexpr >= 0 ? nt_type(c->nt, sexpr) : NULL;
-    if (exty && sp_streq(exty, "SelfNode")) {
+    NodeKind exk = nt_kind(c->nt, sexpr);
+    if (exk == NK_SelfNode) {
       supported = 1;
     }
     else if (nt_kind(c->nt, sexpr) == NK_ConstantReadNode || nt_kind(c->nt, sexpr) == NK_ConstantPathNode) {
@@ -1491,7 +1496,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     /* Unsupported receiver: fall through to the generic walk below. */
   }
 
-  if (ty && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) {
+  if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
     int cls_toplevel = class_id < 0 && cp >= 0 &&
@@ -1507,7 +1512,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        `module A::Encoding` names a fresh constant in CRuby, but the generated
        C type is the bare tail name and still collides -- refuse that loudly
        too, as unsupported rather than TypeError. */
-    if (sp_streq(ty, "ModuleNode") && cname &&
+    if (ty_k == NK_ModuleNode && cname &&
         ((is_builtin_class_name(cname) && !is_builtin_module_name(cname)) ||
          (is_untabled_native_class_name(cls_leaf) && !header_qualified(c, cp, class_id)))) {
       int ln = (int)nt_int(c->nt, id, "node_line", 0);
@@ -1587,7 +1592,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       }
     }
   }
-  else if (ty && sp_streq(ty, "DefNode")) {
+  else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
     int new_idx = c->nscopes - 1;
@@ -1611,7 +1616,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     collect_def_params(c, id, s);
     child = new_idx;
   }
-  else if (ty && sp_streq(ty, "CallNode")) {
+  else if (ty_k == NK_CallNode) {
     /* `Klass.class_eval/module_eval { defs }` (and the bare/`self.` forms in a
        class body) reopens the class: its block body's `def` and `define_method`
        become instance methods on it, exactly like a `class Klass ... end` reopen.
@@ -1670,11 +1675,11 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     int dm_cmethod = dm_is_dm && dm_sclass, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
     if (dm_is_dsm) {
       dm_cmethod = 1;
-      const char *dsm_rty = dm_recv >= 0 ? nt_type(c->nt, dm_recv) : NULL;
+      NodeKind dsm_rk = nt_kind(c->nt, dm_recv);
       if (dm_recv < 0) dm_cls = class_id;
-      else if (dsm_rty && (sp_streq(dsm_rty, "ConstantReadNode") || sp_streq(dsm_rty, "ConstantPathNode")))
+      else if (dsm_rk == NK_ConstantReadNode || dsm_rk == NK_ConstantPathNode)
         dm_cls = singleton_const_class(c, dm_recv, class_id);
-      else if (dsm_rty && sp_streq(dsm_rty, "SelfNode")) dm_cls = class_id;
+      else if (dsm_rk == NK_SelfNode) dm_cls = class_id;
       else dm_cls = -1;
       dm_ok = dm_cls >= 0 || dm_cls == -2;
       if (dm_cls == -2) {
@@ -1685,10 +1690,10 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
          singleton method: still create the scope (as an instance method,
          class_id deferred to -1), so register_singleton_defs can reattach it
          to the synthesized subclass. */
-      if (!dm_ok && dm_recv >= 0 && dsm_rty &&
-          (sp_streq(dsm_rty, "ConstantReadNode") || sp_streq(dsm_rty, "LocalVariableReadNode") ||
-           sp_streq(dsm_rty, "InstanceVariableReadNode") || sp_streq(dsm_rty, "ClassVariableReadNode") ||
-           sp_streq(dsm_rty, "GlobalVariableReadNode"))) {
+      if (!dm_ok && dm_recv >= 0 &&
+          (dsm_rk == NK_ConstantReadNode || dsm_rk == NK_LocalVariableReadNode ||
+           dsm_rk == NK_InstanceVariableReadNode || dsm_rk == NK_ClassVariableReadNode ||
+           dsm_rk == NK_GlobalVariableReadNode)) {
         dm_ok = 1; dm_defer = 1; dm_cmethod = 0; dm_cls = -1;
       }
     }
@@ -1714,11 +1719,11 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       int dm_na = 0;
       const int *dm_argv = dm_args >= 0 ? nt_arr(c->nt, dm_args, "arguments", &dm_na) : NULL;
       if (dm_na >= 1) {
-        const char *dm_aty = nt_type(c->nt, dm_argv[0]);
+        NodeKind dm_ak = nt_kind(c->nt, dm_argv[0]);
         const char *dm_mname = NULL;
-        if (dm_aty && sp_streq(dm_aty, "SymbolNode"))
+        if (dm_ak == NK_SymbolNode)
           dm_mname = nt_str(c->nt, dm_argv[0], "value");
-        else if (dm_aty && sp_streq(dm_aty, "StringNode"))
+        else if (dm_ak == NK_StringNode)
           dm_mname = nt_str(c->nt, dm_argv[0], "content");
         int dm_blk = nt_ref(c->nt, id, "block");
         if (dm_mname && dm_blk >= 0) {
@@ -1975,10 +1980,10 @@ static int mf_call_apply(Compiler *c, int ci, int s, int *in_mf, const int *prev
   const int *aargs = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
   if (an == 0) { *in_mf = 1; return 1; }
   for (int ai = 0; ai < an; ai++) {
-    const char *aty = nt_type(nt, aargs[ai]);
+    NodeKind ak = nt_kind(nt, aargs[ai]);
     const char *aval = NULL;
-    if (aty && sp_streq(aty, "SymbolNode")) aval = nt_str(nt, aargs[ai], "value");
-    else if (aty && sp_streq(aty, "DefNode") && nt_ref(nt, aargs[ai], "receiver") < 0)
+    if (ak == NK_SymbolNode) aval = nt_str(nt, aargs[ai], "value");
+    else if (ak == NK_DefNode && nt_ref(nt, aargs[ai], "receiver") < 0)
       aval = nt_str(nt, aargs[ai], "name");
     if (!aval) continue;
     for (int mi = 0; mi < c->nscopes; mi++) {
@@ -2046,8 +2051,8 @@ void register_module_functions(Compiler *c) {
        positional form already makes.) */
     for (int k = 0; k < bn; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
       const char *nm = nt_str(nt, s, "name");
       if (!nm || !sp_streq(nm, "extend")) continue;
       int an = 0;
@@ -2058,6 +2063,7 @@ void register_module_functions(Compiler *c) {
     for (int k = 0; k < bn; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
+      NodeKind sk = nt_kind(nt, s);
       if (!sty) continue;
       /* arms take only a bare module_function of this body, earlier; the
          in_module_function flag keeps its own rules for plain defs */
@@ -2066,7 +2072,7 @@ void register_module_functions(Compiler *c) {
       /* `x = module_function def m`, `p(module_function :m)` */
       mf_apply_nested(c, ci, s, &in_module_function);
       if (arms_mf) mf_mark_cond_arms(c, ci, s, NULL);
-      if (sp_streq(sty, "DefNode") && in_module_function) {
+      if (sk == NK_DefNode && in_module_function) {
         const char *mname = nt_str(nt, s, "name");
         if (!mname) continue;
         for (int mi = 0; mi < c->nscopes; mi++) {
@@ -2083,9 +2089,10 @@ void register_module_functions(Compiler *c) {
 /* Method name carried by a `private`/`public`/`protected` symbol/string arg. */
 static const char *vis_arg_name(const NodeTable *nt, int arg) {
   const char *aty = nt_type(nt, arg);
+  NodeKind ak = nt_kind(nt, arg);
   if (!aty) return NULL;
-  if (sp_streq(aty, "SymbolNode")) return nt_str(nt, arg, "value");
-  if (sp_streq(aty, "StringNode")) {
+  if (ak == NK_SymbolNode) return nt_str(nt, arg, "value");
+  if (ak == NK_StringNode) {
     const char *s = nt_str(nt, arg, "content");
     return s ? s : nt_str(nt, arg, "unescaped");
   }
@@ -2142,7 +2149,7 @@ static void vis_apply_call(Compiler *c, ClassInfo *cls, int s, int kind, int sg,
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an == 0) { *cur = kind; return; }  /* bare: switch the section mode */
   for (int i = 0; i < an; i++) {
-    const char *aty = nt_type(nt, argv[i]);
+    NodeKind ak = nt_kind(nt, argv[i]);
     const char *mn = vis_arg_name(nt, argv[i]);
     if (mn) { vis_record(cls, mn, kind, sg); continue; }
     if (nt_kind(nt, argv[i]) == NK_ArrayNode) {  /* private [:a, :b] */
@@ -2153,12 +2160,12 @@ static void vis_apply_call(Compiler *c, ClassInfo *cls, int s, int kind, int sg,
       }
       continue;
     }
-    if (aty && sp_streq(aty, "DefNode")) {
+    if (ak == NK_DefNode) {
       const char *dn = nt_str(nt, argv[i], "name");
       if (dn && nt_ref(nt, argv[i], "receiver") < 0)
         vis_record(cls, dn, kind, sg);
     }
-    else if (aty && sp_streq(aty, "CallNode")) {
+    else if (ak == NK_CallNode) {
       const char *dn = dm_defined_name(nt, argv[i]);
       const char *acn = nt_str(nt, argv[i], "name");
       if (dn) vis_record(cls, dn, kind, sg);  /* private define_method(:m) { } */
@@ -2255,8 +2262,9 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
     const char *sty = nt_type(nt, s);
+    NodeKind sk = nt_kind(nt, s);
     if (!sty) continue;
-    if (sp_streq(sty, "DefNode")) {
+    if (sk == NK_DefNode) {
       const char *mname = nt_str(nt, s, "name");
       if (nt_int(nt, s, "alias_forwarder", 0)) continue;
       /* `def initialize` is private whatever section it sits in; only a
@@ -2265,19 +2273,19 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
         vis_record(cls, mname, !sg && sp_streq(mname, "initialize") ? SP_VIS_PRIVATE : cur, sg);
       continue;
     }
-    if (!sg && sp_streq(sty, "SingletonClassNode")) {
+    if (!sg && sk == NK_SingletonClassNode) {
       int ex = nt_ref(nt, s, "expression");
       if (ex >= 0 && nt_kind(nt, ex) == NK_SelfNode)
         register_method_visibility_body(c, cls, nt_ref(nt, s, "body"), 1);
       continue;
     }
-    if (sp_streq(sty, "AliasMethodNode")) {
+    if (sk == NK_AliasMethodNode) {
       int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
       if (!sg) vis_alias(cls, nn >= 0 ? vis_arg_name(nt, nn) : NULL, on >= 0 ? vis_arg_name(nt, on) : NULL);
       continue;
     }
     vis_apply_nested(c, cls, s, sg, &cur);
-    if (!sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
+    if (sk != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, s, "name");
     if (!nm) continue;
     if (sp_streq(nm, "alias_method")) {
@@ -2331,25 +2339,26 @@ void register_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind k = nt_kind(nt, id);
     if (!ty) continue;
-    if (sp_streq(ty, "LocalVariableWriteNode") ||
-        sp_streq(ty, "LocalVariableTargetNode") ||
-        sp_streq(ty, "LocalVariableReadNode") ||
-        sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-        sp_streq(ty, "LocalVariableOrWriteNode") ||
-        sp_streq(ty, "LocalVariableAndWriteNode")) {
+    if (k == NK_LocalVariableWriteNode ||
+        k == NK_LocalVariableTargetNode ||
+        k == NK_LocalVariableReadNode ||
+        k == NK_LocalVariableOperatorWriteNode ||
+        k == NK_LocalVariableOrWriteNode ||
+        k == NK_LocalVariableAndWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) {
         LocalVar *lv = scope_local_intern(comp_scope_of(c, id), nm);
-        if (sp_streq(ty, "LocalVariableOrWriteNode")) lv->or_written = 1;
+        if (k == NK_LocalVariableOrWriteNode) lv->or_written = 1;
       }
     }
-    if (sp_streq(ty, "InstanceVariableWriteNode") ||
-        sp_streq(ty, "InstanceVariableReadNode") ||
-        sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
+    if (k == NK_InstanceVariableWriteNode ||
+        k == NK_InstanceVariableReadNode ||
+        k == NK_InstanceVariableOperatorWriteNode ||
         /* the multi-assign target form (`@a, @b = ...`) also defines the ivar,
            so it must be interned for the struct field (#3273). */
-        sp_streq(ty, "InstanceVariableTargetNode")) {
+        k == NK_InstanceVariableTargetNode) {
       const char *nm = nt_str(nt, id, "name");
       Scope *s = comp_scope_of(c, id);
       if (nm && s->class_id >= 0) comp_ivar_intern(&c->classes[s->class_id], nm);
@@ -2509,8 +2518,9 @@ static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap,
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return -1;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return -1;
-  if (sp_streq(ty, "ArrayNode")) {
+  if (ty_k == NK_ArrayNode) {
     int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
     if (en > cap) return -1;
     for (int e = 0; e < en; e++) {
@@ -2559,7 +2569,7 @@ static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap,
      fixed symbol list: freeze (the same list), reverse (order flip),
      sort/sort_by/uniq (deterministic reorder), rotate (fixed shift). The member NAMES and their order are all
      compile-time known, so the Struct is still statically typed. */
-  if (sp_streq(ty, "CallNode")) {
+  if (ty_k == NK_CallNode) {
     int recv = nt_ref(nt, node, "receiver");
     if (recv < 0) return -1;
     const char *mn = nt_str(nt, node, "name");
@@ -2629,9 +2639,9 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
         if (!kn) kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
         if (kn && sp_streq(kn, "keyword_init")) {
           int kv = nt_ref(nt, elems[e], "value");
-          const char *kvt = kv >= 0 ? nt_type(nt, kv) : NULL;
-          if (kvt && sp_streq(kvt, "TrueNode")) cls->kw_init = 1;
-          else if (kvt && sp_streq(kvt, "FalseNode")) cls->kw_init = -1;  /* explicit false */
+          NodeKind kvk = nt_kind(nt, kv);
+          if (kvk == NK_TrueNode) cls->kw_init = 1;
+          else if (kvk == NK_FalseNode) cls->kw_init = -1;  /* explicit false */
         }
       }
       continue;
@@ -3559,14 +3569,15 @@ static void stamp_const_write_encl(Compiler *c, int id, int ci) {
   const NodeTable *nt = c->nt;
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
+  if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     int mci = mn ? comp_class_index(c, mn) : -1;
     if (mci >= 0) ci = mci;
   }
-  else if (sp_streq(ty, "ConstantWriteNode") && ci >= 0)
+  else if (ty_k == NK_ConstantWriteNode && ci >= 0)
     nt_node_set_int((NodeTable *)nt, id, "sg_encl_class", ci);
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) stamp_const_write_encl(c, nt_ref_at(nt, id, i), ci);
@@ -3582,9 +3593,10 @@ void register_structs(Compiler *c) {
   stamp_const_write_encl(c, nt->root_id, -1);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty) continue;
     /* Const = Struct.new(:a, :b) */
-    if (sp_streq(ty, "ConstantWriteNode")) {
+    if (ty_k == NK_ConstantWriteNode) {
       const char *cname = nt_str(nt, id, "name");
       int val = nt_ref(nt, id, "value");
       if (!cname || !is_c_ident(cname) || !is_struct_call(c, val)) continue;
@@ -3611,7 +3623,7 @@ void register_structs(Compiler *c) {
        class_var_static_ci resolves the local's reads to it, so .new/.members
        and the member accessors dispatch like the constant form. #inspect
        omits the synthetic name (CRuby shows `#<struct a=1, b=2>`). */
-    else if (sp_streq(ty, "LocalVariableWriteNode")) {
+    else if (ty_k == NK_LocalVariableWriteNode) {
       int val = nt_ref(nt, id, "value");
       if (!is_struct_call(c, val)) continue;
       char an[48];
@@ -3625,7 +3637,7 @@ void register_structs(Compiler *c) {
        struct/data call is the receiver of another call, with no name to hold it.
        Synthesize an anon class keyed to the call node itself so the receiver
        resolution (.new / .members / .class) can find it. #2682 */
-    else if (sp_streq(ty, "CallNode") && is_struct_call(c, id)) {
+    else if (ty_k == NK_CallNode && is_struct_call(c, id)) {
       /* ...or used as a VALUE anywhere else (`p Struct.new(:a)`, an element,
          a return): the class still has to exist to be printed or passed, and
          with none registered the call reported `Struct.new` as undefined
@@ -3651,7 +3663,7 @@ void register_structs(Compiler *c) {
       }
     }
     /* class X < Struct.new(:a, :b); ... end */
-    else if (sp_streq(ty, "ClassNode")) {
+    else if (ty_k == NK_ClassNode) {
       int sup = nt_ref(nt, id, "superclass");
       if (!is_struct_call(c, sup)) continue;
       int cp = nt_ref(nt, id, "constant_path");
@@ -3771,12 +3783,13 @@ void fix_struct_block_scopes(Compiler *c) {
     const int *stmts = nt_arr(nt, bbody, "body", &bn);
     for (int k = 0; k < bn; k++) {
       const char *sty = nt_type(nt, stmts[k]);
+      NodeKind sk = nt_kind(nt, stmts[k]);
       if (!sty) continue;
       /* `class << self` in the block: walk_scope already made its defs class
          methods, but of no class (the block had none yet), so they were
          missing from the struct and a bare `new` in one had no receiver
          (#4823). Home them the same way. */
-      if (sp_streq(sty, "SingletonClassNode")) {
+      if (sk == NK_SingletonClassNode) {
         int sx = nt_ref(nt, stmts[k], "expression");
         if (sx < 0 || nt_kind(nt, sx) != NK_SelfNode) continue;
         int sb = nt_ref(nt, stmts[k], "body");
@@ -3794,7 +3807,7 @@ void fix_struct_block_scopes(Compiler *c) {
       }
       int dn = stmts[k];
       /* `private def m` / `protected def m` / `public def m` */
-      if (sp_streq(sty, "CallNode") && nt_ref(nt, dn, "receiver") < 0 && nt_ref(nt, dn, "block") < 0) {
+      if (sk == NK_CallNode && nt_ref(nt, dn, "receiver") < 0 && nt_ref(nt, dn, "block") < 0) {
         const char *vn = nt_str(nt, dn, "name");
         int va = nt_ref(nt, dn, "arguments");
         int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
@@ -3802,7 +3815,7 @@ void fix_struct_block_scopes(Compiler *c) {
             vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
           dn = vv[0];
       }
-      if (sp_streq(sty, "IfNode") || sp_streq(sty, "UnlessNode")) {
+      if (sk == NK_IfNode || sk == NK_UnlessNode) {
         struct_home_cond_dm(c, dn, ci);
         continue;
       }
@@ -3837,8 +3850,8 @@ void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton) {
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int a = 0; a < an; a++) {
-    const char *aty = nt_type(nt, argv[a]);
-    if (!aty || !sp_streq(aty, "SymbolNode")) continue;
+    NodeKind ak = nt_kind(nt, argv[a]);
+    if (ak != NK_SymbolNode) continue;
     const char *base = nt_str(nt, argv[a], "value");
     if (!base) continue;
     if (singleton) {
@@ -3951,10 +3964,10 @@ static void register_sclass_attrs(Compiler *c, ClassInfo *cls, int sbody) {
   const int *sstmts = nt_arr(nt, sbody, "body", &sn);
   for (int j = 0; j < sn; j++) {
     int ss = sstmts[j];
-    const char *ssty = nt_type(nt, ss);
-    if (ssty && sp_streq(ssty, "CallNode"))
+    NodeKind ssk = nt_kind(nt, ss);
+    if (ssk == NK_CallNode)
       register_attr_call(c, cls, ss, 1);
-    else if (ssty && sp_streq(ssty, "LocalVariableWriteNode"))
+    else if (ssk == NK_LocalVariableWriteNode)
       register_attrs_in_value(c, cls, nt_ref(nt, ss, "value"), 1);
   }
 }
@@ -3966,8 +3979,9 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
     const char *sty = nt_type(nt, s);
+    NodeKind sk = nt_kind(nt, s);
     if (!sty) continue;
-    if (sp_streq(sty, "CallNode")) {
+    if (sk == NK_CallNode) {
       register_attr_call(c, cls, s, 0);
       /* `private attr_writer :x` declares the writer too: the visibility
          call's argument is the attr call (#4922) */
@@ -3984,11 +3998,11 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
       int cn = 0; const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cn) : NULL;
       for (int q = 0; q < cn; q++) register_attrs_in_value(c, cls, cv[q], 0);
     }
-    else if (sp_streq(sty, "LocalVariableWriteNode") || sp_streq(sty, "ConstantWriteNode") ||
-             sp_streq(sty, "InstanceVariableWriteNode") || sp_streq(sty, "ClassVariableWriteNode") ||
-             sp_streq(sty, "GlobalVariableWriteNode"))
+    else if (sk == NK_LocalVariableWriteNode || sk == NK_ConstantWriteNode ||
+             sk == NK_InstanceVariableWriteNode || sk == NK_ClassVariableWriteNode ||
+             sk == NK_GlobalVariableWriteNode)
       register_attrs_in_value(c, cls, nt_ref(nt, s, "value"), 0);
-    else if (sp_streq(sty, "SingletonClassNode")) {
+    else if (sk == NK_SingletonClassNode) {
       /* class << self; attr_accessor :x; end (a `class << Const` is the
          named class's, register_attrs) */
       int sx = nt_ref(nt, s, "expression");
@@ -4674,8 +4688,9 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
     const char *sty = nt_type(nt, s);
+    NodeKind sk = nt_kind(nt, s);
     if (!sty) continue;
-    if (sp_streq(sty, "AliasMethodNode")) {
+    if (sk == NK_AliasMethodNode) {
       int nn = nt_ref(nt, s, "new_name");
       int on = nt_ref(nt, s, "old_name");
       const char *nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
@@ -4683,7 +4698,7 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       if (!singleton && nw && alias_accessor_declared_after(nt, stmts, n, k, nw)) continue;
       alias_register(c, cls, nw, od, s, singleton);
     }
-    else if (sp_streq(sty, "CallNode")) {
+    else if (sk == NK_CallNode) {
       const char *nm = nt_str(nt, s, "name");
       /* `private alias_method :a, :b` defines the alias it wraps */
       if (nm && nt_ref(nt, s, "receiver") < 0 &&
@@ -4706,13 +4721,13 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
         if (!singleton && anw && alias_accessor_declared_after(nt, stmts, n, k, anw)) continue;
         alias_register(c, cls, anw, aod, s, singleton); }
     }
-    else if (sp_streq(sty, "SingletonClassNode")) {
+    else if (sk == NK_SingletonClassNode) {
       /* `class << self; alias_method :a, :b; end` names a CLASS method; the
          alias table is consulted by the class-method lookup too, so register
          it the same way rather than leaving the name undefined (#3776) */
       register_aliases_body(c, cls, nt_ref(nt, s, "body"));
     }
-    else if (sp_streq(sty, "IfNode") || sp_streq(sty, "UnlessNode")) {
+    else if (sk == NK_IfNode || sk == NK_UnlessNode) {
       /* A statement modifier (`alias a b if cond`) wraps the alias in an IfNode;
          a full if/elsif/else chains through `subsequent`. An alias resolves at
          compile time, so register only the branch the conditions statically
@@ -4722,15 +4737,16 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       int curr = s;
       while (curr >= 0) {
         const char *cty = nt_type(nt, curr);
+        NodeKind ck = nt_kind(nt, curr);
         if (!cty) break;
-        if (sp_streq(cty, "ElseNode")) {
+        if (ck == NK_ElseNode) {
           int branch_body = nt_ref(nt, curr, "statements");
           nt_node_set_int((NodeTable *)nt, branch_body, "singleton_body", singleton);
           register_aliases_body(c, cls, branch_body);
           break;
         }
-        if (!sp_streq(cty, "IfNode") && !sp_streq(cty, "UnlessNode")) break;
-        int is_unless = sp_streq(cty, "UnlessNode");
+        if (ck != NK_IfNode && ck != NK_UnlessNode) break;
+        int is_unless = ck == NK_UnlessNode;
         int pc = alias_pred_const(nt, nt_ref(nt, curr, "predicate"));
         int then_runs = is_unless ? (pc == 0) : (pc == 1);
         int else_runs = is_unless ? (pc == 1) : (pc == 0);
@@ -4774,8 +4790,8 @@ void register_aliases(Compiler *c) {
       int sb = nt_ref(nt, pid, "statements");
       int sn = 0; const int *ss = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
       for (int k = 0; k < sn; k++) {
-        const char *sty2 = nt_type(nt, ss[k]);
-        if (sty2 && sp_streq(sty2, "AliasMethodNode")) { have_tl_alias = 1; break; }
+        NodeKind sty2_k = nt_kind(nt, ss[k]);
+        if (sty2_k == NK_AliasMethodNode) { have_tl_alias = 1; break; }
       }
     }
     if (have_tl_alias) {
@@ -4796,8 +4812,8 @@ void register_undefs_body(Compiler *c, ClassInfo *cls, int body) {
   const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    if (!sty || !sp_streq(sty, "UndefNode")) continue;
+    NodeKind sk = nt_kind(nt, s);
+    if (sk != NK_UndefNode) continue;
     int names_n = 0;
     const int *names = nt_arr(nt, s, "names", &names_n);
     for (int j = 0; j < names_n; j++) {
@@ -4846,10 +4862,11 @@ void register_globals_consts(Compiler *c) {
   /* Pass 2: intern all other globals (skipping alias names). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind k = nt_kind(nt, id);
     if (!ty) continue;
-    if (sp_streq(ty, "GlobalVariableWriteNode") || sp_streq(ty, "GlobalVariableReadNode") ||
-        sp_streq(ty, "GlobalVariableOperatorWriteNode") || sp_streq(ty, "GlobalVariableTargetNode") ||
-        sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    if (k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableReadNode ||
+        k == NK_GlobalVariableOperatorWriteNode || k == NK_GlobalVariableTargetNode ||
+        k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       /* skip alias names - they resolve to the original and need no separate slot */
       if (nm && nm[0] == '$' && is_c_ident(nm + 1) &&
@@ -4858,10 +4875,10 @@ void register_globals_consts(Compiler *c) {
       else if (nm && nm[0] == '$' && nm[1] == '-' && !sp_streq(nm + 1, comp_resolve_gvar(c, nm + 1)))
         comp_gvar_intern(c, comp_resolve_gvar(c, nm + 1));
     }
-    else if (sp_streq(ty, "AliasGlobalVariableNode")) {
+    else if (k == NK_AliasGlobalVariableNode) {
       /* already handled in pass 1 */
     }
-    else if (sp_streq(ty, "ConstantTargetNode") || sp_streq(ty, "ConstantPathTargetNode")) {
+    else if (k == NK_ConstantTargetNode || k == NK_ConstantPathTargetNode) {
       /* target in a multi-write: A, B = expr (a definite write); a path
          target (`Mod::A, ::B = ...`) interns its leaf name flat, as the
          path write does */
@@ -4869,8 +4886,8 @@ void register_globals_consts(Compiler *c) {
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
         comp_const_intern(c, nm)->const_def_write = 1;
     }
-    else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
-             sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
+    else if (k == NK_ConstantPathWriteNode || k == NK_ConstantPathOrWriteNode ||
+             k == NK_ConstantPathAndWriteNode || k == NK_ConstantPathOperatorWriteNode) {
       /* `Mod::X = v` / `Mod::X ||= v`: register the leaf constant by name so it
          gets a runtime slot. The module path is not modeled as a namespace; the
          leaf name is interned flat like a top-level constant. */
@@ -4878,17 +4895,17 @@ void register_globals_consts(Compiler *c) {
       const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) {
         LocalVar *cv = comp_const_intern(c, nm);
-        if (sp_streq(ty, "ConstantPathWriteNode")) cv->const_def_write = 1;
+        if (k == NK_ConstantPathWriteNode) cv->const_def_write = 1;
       }
     }
-    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
-             sp_streq(ty, "ConstantOperatorWriteNode")) {
+    else if (k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+             k == NK_ConstantOperatorWriteNode) {
       /* `CONST ||= v` (and friends) may be the constant's only definition */
       const char *nm = nt_str(nt, id, "name");
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
         comp_const_intern(c, nm);
     }
-    else if (sp_streq(ty, "ConstantWriteNode")) {
+    else if (k == NK_ConstantWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       /* a constant bound to a regex literal is resolved at compile time to a
          precompiled pattern, not stored as a runtime value */
@@ -4912,8 +4929,8 @@ void register_globals_consts(Compiler *c) {
            (i.e. inside initialize or anything it calls) must raise
            NameError, since CONST is not yet bound. */
         int v = nt_ref(nt, id, "value");
-        const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
-        if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+        NodeKind vk = nt_kind(nt, v);
+        if (vk == NK_CallNode && nt_str(nt, v, "name") &&
             sp_streq(nt_str(nt, v, "name"), "new")) {
           int vr = nt_ref(nt, v, "receiver");
           if (vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode &&
@@ -4929,9 +4946,10 @@ void register_globals_consts(Compiler *c) {
 const char *ffi_arg_str(const NodeTable *nt, int nid) {
   if (nid < 0) return NULL;
   const char *ty = nt_type(nt, nid);
+  NodeKind k = nt_kind(nt, nid);
   if (!ty) return NULL;
-  if (sp_streq(ty, "SymbolNode")) return nt_str(nt, nid, "value");
-  if (sp_streq(ty, "StringNode")) return nt_str(nt, nid, "content");
+  if (k == NK_SymbolNode) return nt_str(nt, nid, "value");
+  if (k == NK_StringNode) return nt_str(nt, nid, "content");
   return NULL;
 }
 
@@ -4945,9 +4963,10 @@ static int ffi_type_array_node(Compiler *c, int nid, int *out_repeat, int depth)
   *out_repeat = 1;
   if (nid < 0 || depth > 8) return -1;
   const char *ty = nt_type(nt, nid);
+  NodeKind k = nt_kind(nt, nid);
   if (!ty) return -1;
-  if (sp_streq(ty, "ArrayNode")) return nid;
-  if (sp_streq(ty, "CallNode")) {
+  if (k == NK_ArrayNode) return nid;
+  if (k == NK_CallNode) {
     const char *nm = nt_str(nt, nid, "name");
     int recv = nt_ref(nt, nid, "receiver");
     if (!nm || recv < 0) return -1;
@@ -4967,7 +4986,7 @@ static int ffi_type_array_node(Compiler *c, int nid, int *out_repeat, int depth)
     }
     return -1;
   }
-  if (sp_streq(ty, "ConstantReadNode")) {
+  if (k == NK_ConstantReadNode) {
     const char *cn = nt_str(nt, nid, "name");
     if (!cn) return -1;
     NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
@@ -4983,8 +5002,9 @@ static int ffi_type_array_node(Compiler *c, int nid, int *out_repeat, int depth)
 int ffi_arg_int(const NodeTable *nt, int nid) {
   if (nid < 0) return -1;
   const char *ty = nt_type(nt, nid);
+  NodeKind k = nt_kind(nt, nid);
   if (!ty) return -1;
-  if (sp_streq(ty, "IntegerNode")) return (int)nt_int(nt, nid, "value", 0);
+  if (k == NK_IntegerNode) return (int)nt_int(nt, nid, "value", 0);
   return -1;
 }
 
@@ -5060,13 +5080,14 @@ static char *ffi_fold_str(Compiler *c, int nid) {
   const NodeTable *nt = c->nt;
   if (nid < 0) return NULL;
   const char *ty = nt_type(nt, nid);
+  NodeKind k = nt_kind(nt, nid);
   if (!ty) return NULL;
-  if (sp_streq(ty, "StringNode")) {
+  if (k == NK_StringNode) {
     const char *s = nt_str(nt, nid, "content");
     if (!s) s = nt_str(nt, nid, "unescaped");
     return s ? strdup(s) : NULL;
   }
-  if (sp_streq(ty, "InterpolatedStringNode")) {
+  if (k == NK_InterpolatedStringNode) {
     /* adjacent literals fold; any embedded expression does not */
     int pn = 0; const int *parts = nt_arr(nt, nid, "parts", &pn);
     size_t total = 1;
@@ -5087,7 +5108,7 @@ static char *ffi_fold_str(Compiler *c, int nid) {
     }
     return r;
   }
-  if (sp_streq(ty, "CallNode")) {
+  if (k == NK_CallNode) {
     const char *nm = nt_str(nt, nid, "name");
     int rcv = nt_ref(nt, nid, "receiver");
     int args = nt_ref(nt, nid, "arguments");
@@ -5208,8 +5229,8 @@ void register_ffi_decls(Compiler *c) {
     const char *mod_feat = NULL;
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
       const char *dn = nt_str(nt, s, "name");
       if (dn && sp_streq(dn, "native_lib")) {
@@ -5235,8 +5256,8 @@ void register_ffi_decls(Compiler *c) {
     int native_cid = -1;
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
       const char *dn = nt_str(nt, s, "name");
       if (!dn || !sp_streq(dn, "native_struct")) continue;
@@ -5265,7 +5286,7 @@ void register_ffi_decls(Compiler *c) {
       if (leaf != clsname) {
         NT_FOREACH_KIND(nt, NK_ClassNode, ucn) {
           int ucp = nt_ref(nt, ucn, "constant_path");
-          const char *ucpty = ucp >= 0 ? nt_type(nt, ucp) : NULL;
+          NodeKind ucpk = nt_kind(nt, ucp);
           const char *ucpn = ucp >= 0 ? nt_str(nt, ucp, "name") : NULL;
           if (!ucpn || !sp_streq(ucpn, leaf)) continue;
           /* a class the collision qualifier already registered under its
@@ -5280,16 +5301,17 @@ void register_ffi_decls(Compiler *c) {
              without BEING this class */
           char qn[256];
           qn[0] = 0;
-          if (ucpty && sp_streq(ucpty, "ConstantPathNode")) {
+          if (ucpk == NK_ConstantPathNode) {
             const char *segs[8];
             int nseg = 0, ok = 1;
             for (int par = nt_ref(nt, ucp, "parent"); par >= 0 && ok; ) {
               const char *pty = nt_type(nt, par);
+              NodeKind pk = nt_kind(nt, par);
               const char *pn = nt_str(nt, par, "name");
               if (!pty || !pn || nseg >= 8) { ok = 0; break; }
               segs[nseg++] = pn;
-              if (sp_streq(pty, "ConstantReadNode")) break;
-              if (!sp_streq(pty, "ConstantPathNode")) { ok = 0; break; }
+              if (pk == NK_ConstantReadNode) break;
+              if (pk != NK_ConstantPathNode) { ok = 0; break; }
               par = nt_ref(nt, par, "parent");   /* -1 = root anchor: done */
             }
             if (ok) {
@@ -5320,8 +5342,8 @@ void register_ffi_decls(Compiler *c) {
     }
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
       const char *dname = nt_str(nt, s, "name");
       if (!dname) continue;
@@ -5334,10 +5356,10 @@ void register_ffi_decls(Compiler *c) {
       if (sp_streq(dname, "native_func")) {
         if (an < 4) continue;
         const char *fname = ffi_arg_str(nt, args[0]);
-        const char *arr_ty = nt_type(nt, args[1]);
+        NodeKind arr_k = nt_kind(nt, args[1]);
         const char *ret_spec = ffi_arg_str(nt, args[2]);
         const char *csym = ffi_arg_str(nt, args[3]);
-        if (!fname || !ret_spec || !csym || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        if (!fname || !ret_spec || !csym || arr_k != NK_ArrayNode) continue;
         int en = 0;
         const int *elems = nt_arr(nt, args[1], "elements", &en);
         char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
@@ -5366,10 +5388,10 @@ void register_ffi_decls(Compiler *c) {
         if (an < need) continue;
         const char *mname_m = is_ctor ? "new" : ffi_arg_str(nt, args[0]);
         int arr_i = is_ctor ? 0 : 1;
-        const char *arr_ty = nt_type(nt, args[arr_i]);
+        NodeKind arr_k = nt_kind(nt, args[arr_i]);
         const char *ret_spec = is_ctor ? "" : ffi_arg_str(nt, args[2]);
         const char *csym = ffi_arg_str(nt, args[is_ctor ? 1 : 3]);
-        if (!mname_m || !csym || !ret_spec || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        if (!mname_m || !csym || !ret_spec || arr_k != NK_ArrayNode) continue;
         int en = 0;
         const int *elems = nt_arr(nt, args[arr_i], "elements", &en);
         char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
@@ -5654,9 +5676,9 @@ void register_ffi_decls(Compiler *c) {
       if (sp_streq(dname, "ffi_callback") || sp_streq(dname, "callback")) {
         if (an < 3) continue;
         const char *cbname = ffi_arg_str(nt, args[0]);
-        const char *arr_ty = nt_type(nt, args[1]);
+        NodeKind arr_k = nt_kind(nt, args[1]);
         const char *ret_spec = ffi_arg_str(nt, args[2]);
-        if (!cbname || !ret_spec || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        if (!cbname || !ret_spec || arr_k != NK_ArrayNode) continue;
         int en = 0; const int *elems = nt_arr(nt, args[1], "elements", &en);
         char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
         if (!arg_specs) { perror("malloc"); exit(1); }
@@ -5680,15 +5702,15 @@ void register_ffi_decls(Compiler *c) {
       if (sp_streq(dname, "ffi_struct")) {
         if (an < 2) continue;
         const char *sname = ffi_arg_str(nt, args[0]);
-        const char *arr_ty = nt_type(nt, args[1]);
-        if (!sname || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        NodeKind arr_k = nt_kind(nt, args[1]);
+        if (!sname || arr_k != NK_ArrayNode) continue;
         int en = 0; const int *elems = nt_arr(nt, args[1], "elements", &en);
         FfiField *fields = malloc(sizeof(FfiField) * (size_t)(en > 0 ? en : 1));
         if (!fields) { perror("malloc"); exit(1); }
         int nf = 0;
         for (int ei = 0; ei < en; ei++) {
-          const char *pty = nt_type(nt, elems[ei]);
-          if (!pty || !sp_streq(pty, "ArrayNode")) continue;
+          NodeKind pk = nt_kind(nt, elems[ei]);
+          if (pk != NK_ArrayNode) continue;
           int pn = 0; const int *pair = nt_arr(nt, elems[ei], "elements", &pn);
           if (pn < 2) continue;
           const char *fn = ffi_arg_str(nt, pair[0]);
@@ -6051,10 +6073,11 @@ int infer_global_const_types(Compiler *c) {
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty || store_unchanged(c, id)) continue;
     LocalVar *lv = NULL;
     TyKind vt = TY_UNKNOWN;
-    if (sp_streq(ty, "GlobalVariableWriteNode")) {
+    if (ty_k == NK_GlobalVariableWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
@@ -6074,8 +6097,8 @@ int infer_global_const_types(Compiler *c) {
          needs a concrete slot to be declared and iterated, so give it a poly
          array (it can hold anything pushed later) (#3263). */
       if (vt == TY_UNKNOWN && rn) {
-        const char *vnty = nt_type(nt, vnode);
-        if (vnty && sp_streq(vnty, "ArrayNode")) {
+        NodeKind vnk = nt_kind(nt, vnode);
+        if (vnk == NK_ArrayNode) {
           int en = 0; nt_arr(nt, vnode, "elements", &en);
           if (en == 0) vt = TY_POLY_ARRAY;
         }
@@ -6087,7 +6110,7 @@ int infer_global_const_types(Compiler *c) {
         continue;
       }
     }
-    else if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
+    else if (ty_k == NK_GlobalVariableOperatorWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
@@ -6102,7 +6125,7 @@ int infer_global_const_types(Compiler *c) {
            : (cur == TY_BIGINT || v == TY_BIGINT) ? TY_BIGINT : TY_INT;
       else vt = cur;
     }
-    else if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    else if (ty_k == NK_GlobalVariableOrWriteNode || ty_k == NK_GlobalVariableAndWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
@@ -6113,7 +6136,7 @@ int infer_global_const_types(Compiler *c) {
         continue;
       }
     }
-    else if (sp_streq(ty, "ConstantWriteNode")) {
+    else if (ty_k == NK_ConstantWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_const(c, nm);
       int vnode = nt_ref(nt, id, "value");
@@ -6127,11 +6150,11 @@ int infer_global_const_types(Compiler *c) {
       }
       vt = lit_takes_general_hash(c, lv, vnode, vt, &changed);
     }
-    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
-             sp_streq(ty, "ConstantOperatorWriteNode")) {
+    else if (ty_k == NK_ConstantOrWriteNode || ty_k == NK_ConstantAndWriteNode ||
+             ty_k == NK_ConstantOperatorWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_const(c, nm);
-      int is_orand = !sp_streq(ty, "ConstantOperatorWriteNode");
+      int is_orand = ty_k != NK_ConstantOperatorWriteNode;
       /* An or/and-write-only constant has no definite value before its first
          use, so it must default to nil (poly) for the truthiness check. */
       if (is_orand && lv && !lv->const_def_write)
@@ -6140,12 +6163,12 @@ int infer_global_const_types(Compiler *c) {
         vt = infer_type(c, nt_ref(nt, id, "value"));
       vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
-    else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
-             sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
+    else if (ty_k == NK_ConstantPathWriteNode || ty_k == NK_ConstantPathOrWriteNode ||
+             ty_k == NK_ConstantPathAndWriteNode || ty_k == NK_ConstantPathOperatorWriteNode) {
       int tgt = nt_ref(nt, id, "target");
       const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
       if (nm) lv = comp_const(c, nm);
-      int is_orand = sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode");
+      int is_orand = ty_k == NK_ConstantPathOrWriteNode || ty_k == NK_ConstantPathAndWriteNode;
       /* An or/and-write-only constant has no definite value before its first
          use, so it must default to nil (poly) for the truthiness check. */
       if (is_orand && lv && !lv->const_def_write)
@@ -6154,7 +6177,7 @@ int infer_global_const_types(Compiler *c) {
         vt = infer_type(c, nt_ref(nt, id, "value"));
       vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
-    else if (sp_streq(ty, "MultiWriteNode")) {
+    else if (ty_k == NK_MultiWriteNode) {
       int ln = 0;
       const int *lefts = nt_arr(nt, id, "lefts", &ln);
       int value = nt_ref(nt, id, "value");
@@ -6163,8 +6186,8 @@ int infer_global_const_types(Compiler *c) {
       int rn_count = 0;
       nt_arr(nt, id, "rights", &rn_count);
       for (int i = 0; i < ln; i++) {
-        const char *lty2 = nt_type(nt, lefts[i]);
-        if (!lty2 || !sp_streq(lty2, "GlobalVariableTargetNode")) continue;
+        NodeKind lty2_k = nt_kind(nt, lefts[i]);
+        if (lty2_k != NK_GlobalVariableTargetNode) continue;
         const char *gnm = nt_str(nt, lefts[i], "name");
         const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
         LocalVar *glv = rn2 ? comp_gvar(c, rn2) : NULL;
@@ -6177,10 +6200,10 @@ int infer_global_const_types(Compiler *c) {
       /* handle splat-rest global target (*$rest = ...) */
       int rest_nid2 = nt_ref(nt, id, "rest");
       if (rest_nid2 >= 0) {
-        const char *rsty2 = nt_type(nt, rest_nid2);
-        int rest_inner2 = (rsty2 && sp_streq(rsty2, "SplatNode")) ? nt_ref(nt, rest_nid2, "expression") : -1;
-        const char *rinty2 = rest_inner2 >= 0 ? nt_type(nt, rest_inner2) : NULL;
-        if (rinty2 && sp_streq(rinty2, "GlobalVariableTargetNode")) {
+        NodeKind rsty2_k = nt_kind(nt, rest_nid2);
+        int rest_inner2 = (rsty2_k == NK_SplatNode) ? nt_ref(nt, rest_nid2, "expression") : -1;
+        NodeKind rinty2_k = nt_kind(nt, rest_inner2);
+        if (rinty2_k == NK_GlobalVariableTargetNode) {
           const char *gnm2 = nt_str(nt, rest_inner2, "name");
           const char *rn3 = gnm2 ? comp_resolve_gvar(c, gnm2 + 1) : NULL;
           LocalVar *glv2 = rn3 ? comp_gvar(c, rn3) : NULL;
@@ -6198,7 +6221,7 @@ int infer_global_const_types(Compiler *c) {
       }
       continue;
     }
-    else if (sp_streq(ty, "CallNode")) {
+    else if (ty_k == NK_CallNode) {
       /* CONST << v / CONST.push(v) / CONST.append(v): infer CONST as an
          array whose element type comes from v's type. Only applies when
          the receiver is a direct ConstantReadNode. */
@@ -6213,8 +6236,8 @@ int infer_global_const_types(Compiler *c) {
       if (!is_push && !is_iset) continue;
       int crecv = nt_ref(nt, id, "receiver");
       if (crecv < 0) continue;
-      const char *rty = nt_type(nt, crecv);
-      if (!rty || !sp_streq(rty, "ConstantReadNode")) continue;
+      NodeKind rk = nt_kind(nt, crecv);
+      if (rk != NK_ConstantReadNode) continue;
       const char *cnm2 = nt_str(nt, crecv, "name");
       if (!cnm2) continue;
       lv = comp_const(c, cnm2);
@@ -6264,8 +6287,8 @@ int infer_multiwrite_const_types(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, id) {
     int value = nt_ref(nt, id, "value");
     if (value < 0) continue;
-    const char *vty = nt_type(nt, value);
-    if (vty && sp_streq(vty, "ArrayNode")) continue; /* literal handled in infer_write_types */
+    NodeKind vk = nt_kind(nt, value);
+    if (vk == NK_ArrayNode) continue; /* literal handled in infer_write_types */
     TyKind st = infer_type(c, value);
     if (!ty_is_array(st)) continue;
     TyKind elem = ty_array_elem(st);
@@ -6495,10 +6518,9 @@ static void check_class_redeclarations(Compiler *c) {
     if (k != NK_ClassNode) continue;
     int sc = nt_ref(nt, id, "superclass"), fs = nt_ref(nt, first, "superclass");
     if (sc < 0 || fs < 0) continue;
-    const char *sty = nt_type(nt, sc), *fty = nt_type(nt, fs);
-    if (!sty || !fty) continue;
-    if (!(sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode"))) continue;
-    if (!(sp_streq(fty, "ConstantReadNode") || sp_streq(fty, "ConstantPathNode"))) continue;
+    NodeKind sk = nt_kind(nt, sc), fk = nt_kind(nt, fs);
+    if (!(sk == NK_ConstantReadNode || sk == NK_ConstantPathNode)) continue;
+    if (!(fk == NK_ConstantReadNode || fk == NK_ConstantPathNode)) continue;
     const char *sn = nt_str(nt, sc, "name"), *fn = nt_str(nt, fs, "name");
     if (!sn || !fn || sp_streq(sn, fn)) continue;
     char msg[512];
@@ -6801,12 +6823,12 @@ void resolve_parents(Compiler *c) {
       continue;
     }
     if (sc < 0) continue;
-    const char *sty = nt_type(nt, sc);
+    NodeKind sk = nt_kind(nt, sc);
     /* A module-qualified superclass (`class Child < M::Handler`) is a
        ConstantPathNode whose `name` is the last segment ("Handler").
        Classes are registered under that bare last name, so resolve it the
        same way as an unqualified ConstantReadNode superclass. */
-    if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode"))) {
+    if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) {
       int p = comp_class_index(c, nt_str(nt, sc, "name"));
       /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
          is that class; one whose class only the run time picks is refused,
@@ -7047,8 +7069,8 @@ static int scope_body_has_super(Compiler *c, int scope_idx) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     if (c->nscope[id] != scope_idx) continue;
-    const char *ty = nt_type(nt, id);
-    if (ty && (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode"))) return 1;
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) return 1;
   }
   return 0;
 }
@@ -7163,11 +7185,12 @@ static void intern_scope_ivars(Compiler *c, int ms, int ci) {
   for (int id2 = 0; id2 < nt->count; id2++) {
     if (c->nscope[id2] != ms) continue;
     const char *bty = nt_type(nt, id2);
+    NodeKind bk = nt_kind(nt, id2);
     if (!bty) continue;
-    if (sp_streq(bty, "InstanceVariableWriteNode") ||
-        sp_streq(bty, "InstanceVariableReadNode") ||
-        sp_streq(bty, "InstanceVariableOperatorWriteNode") ||
-        sp_streq(bty, "InstanceVariableOrWriteNode")) {
+    if (bk == NK_InstanceVariableWriteNode ||
+        bk == NK_InstanceVariableReadNode ||
+        bk == NK_InstanceVariableOperatorWriteNode ||
+        bk == NK_InstanceVariableOrWriteNode) {
       const char *ivnm = nt_str(nt, id2, "name");
       if (ivnm) comp_ivar_intern(&c->classes[ci], ivnm);
     }
@@ -7460,13 +7483,13 @@ void process_include_body(Compiler *c, int ci, int body_node) {
           char segs[8][64]; int nseg = 0;
           int qpar = nt_ref(nt, args[j], "parent");
           while (qpar >= 0 && nseg < 8) {
-            const char *pty = nt_type(nt, qpar);
+            NodeKind pk = nt_kind(nt, qpar);
             const char *pn = nt_str(nt, qpar, "name");
-            if (pty && sp_streq(pty, "ConstantReadNode") && pn) {
+            if (pk == NK_ConstantReadNode && pn) {
               snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
               break;
             }
-            if (pty && sp_streq(pty, "ConstantPathNode")) {
+            if (pk == NK_ConstantPathNode) {
               if (pn) snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
               qpar = nt_ref(nt, qpar, "parent");
               continue;
@@ -8048,10 +8071,10 @@ static int class_is_root(Compiler *c, int ci) {
 /* The module a constant argument of `extend` names, or -1. */
 static int extend_arg_module(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  const char *aty = nt_type(nt, arg);
+  NodeKind ak = nt_kind(nt, arg);
   const char *mname = NULL;
-  if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, arg, "name");
-  else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, arg, "name");
+  if (ak == NK_ConstantReadNode) mname = nt_str(nt, arg, "name");
+  else if (ak == NK_ConstantPathNode) mname = nt_str(nt, arg, "name");
   return mname ? comp_class_index(c, mname) : -1;
 }
 
@@ -8245,8 +8268,8 @@ void register_extends(Compiler *c) {
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, s, "name");
       if (!nm || !sp_streq(nm, "extend")) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
@@ -8255,8 +8278,8 @@ void register_extends(Compiler *c) {
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       /* `extend A, B` extends B first, so A ends up in front */
       for (int j = an - 1; j >= 0; j--) {
-        const char *aty = nt_type(nt, args[j]);
-        const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
+        NodeKind ak = nt_kind(nt, args[j]);
+        const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
         int mod_id = mname ? comp_class_index(c, mname) : -1;
         if (mod_id < 0) continue;
         /* extending a module the class already extends is a no-op: it stays
@@ -8575,8 +8598,8 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
      reallocs c->scopes/c->nscope, so use indices and refetch. */
   int scan_n = nt->count;
   for (int id = sn_next(c, mi, -1); id >= 0 && id < scan_n; id = sn_next(c, mi, id)) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_CallNode) continue;
     if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
@@ -8777,8 +8800,8 @@ void specialize_inherited_cls_new(Compiler *c) {
     }
   }
   for (int id = 0; id < node_count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_CallNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     int ci = -1;
     /* `self.class.m` in an instance method: the receiver is whichever class
@@ -8832,8 +8855,8 @@ void specialize_inherited_cls_new(Compiler *c) {
       else continue;
     }
     else {
-      const char *rty = nt_type(nt, recv);
-      if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
       const char *cn = nt_str(nt, recv, "name");
       ci = cn ? comp_class_index(c, cn) : -1;
       if (ci < 0) continue;
@@ -8912,8 +8935,8 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int id = 0; id < node_count; id++) {
       if (nt_kind(nt, id) != NK_CallNode) continue;
       int r = nt_ref(nt, id, "receiver");
-      const char *rty = r >= 0 ? nt_type(nt, r) : NULL;
-      if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      NodeKind rk = nt_kind(nt, r);
+      if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
         ccall[nccall] = id;
         ccnm[nccall] = cls_call_name(c, id);
         ccrc[nccall] = comp_class_index(c, nt_str(nt, r, "name"));
@@ -9105,8 +9128,8 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, s);
+      if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, s, "name");
       if (!nm || !sp_streq(nm, "prepend")) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
@@ -9614,19 +9637,20 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
+      NodeKind sk = nt_kind(nt, s);
       if (!sty || store_unchanged(c, s)) continue;
       if (is_cvar_write_kind(nt_kind(nt, s))) {
         if (cvar_note_write(c, ci, s, nil_only)) changed = 1;
       }
-      else if (sp_streq(sty, "MultiWriteNode")) {
+      else if (sk == NK_MultiWriteNode) {
         int mln = 0;
         const int *mlefts = nt_arr(nt, s, "lefts", &mln);
         int mval = nt_ref(nt, s, "value");
         int men = 0;
         const int *mels = masgn_tuple_rhs(nt, mval) ? nt_arr(nt, mval, "elements", &men) : NULL;
         for (int mi = 0; mi < mln; mi++) {
-          const char *mlty = nt_type(nt, mlefts[mi]);
-          if (!mlty || !sp_streq(mlty, "ClassVariableTargetNode")) continue;
+          NodeKind mlk = nt_kind(nt, mlefts[mi]);
+          if (mlk != NK_ClassVariableTargetNode) continue;
           const char *cnm = nt_str(nt, mlefts[mi], "name");
           if (!cnm) continue;
           ClassInfo *mcl = &c->classes[comp_cvar_owner(c, ci, cnm)];
@@ -9688,9 +9712,9 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an != 2 || !av) continue;
-    const char *aty = nt_type(nt, av[0]);
-    const char *cvn = (aty && sp_streq(aty, "SymbolNode")) ? nt_str(nt, av[0], "value")
-                    : (aty && sp_streq(aty, "StringNode")) ? nt_str(nt, av[0], "content") : NULL;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *cvn = (ak == NK_SymbolNode) ? nt_str(nt, av[0], "value")
+                    : (ak == NK_StringNode) ? nt_str(nt, av[0], "content") : NULL;
     if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
     ClassInfo *scl = &c->classes[comp_cvar_owner(c, cci, cvn)];
     int idx = comp_cvar_intern(scl, cvn);
@@ -9765,9 +9789,8 @@ static void dn_build(Compiler *c) {
 static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
   int tn, en;
   if (!comp_ternary_arms(c->nt, vnode, &tn, &en)) return TY_UNKNOWN;
-  const char *tt = nt_type(c->nt, tn), *et = nt_type(c->nt, en);
-  int t_nil = tt && sp_streq(tt, "NilNode");
-  int e_nil = et && sp_streq(et, "NilNode");
+  int t_nil = nt_kind(c->nt, tn) == NK_NilNode;
+  int e_nil = nt_kind(c->nt, en) == NK_NilNode;
   if (t_nil == e_nil) return TY_UNKNOWN;  /* exactly one arm a literal nil */
   return infer_type(c, t_nil ? en : tn) == TY_INT ? TY_INT : TY_UNKNOWN;
 }
@@ -11345,6 +11368,7 @@ int infer_ivar_types(Compiler *c) {
   if (dn_nscopes != c->nscopes || dn_count != nt->count) dn_build(c);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty || store_unchanged(c, id)) continue;
     /* A top-level method that only READS an ivar (never assigned anywhere)
        gets no slot from the write pass and none from register_locals (which
@@ -11354,7 +11378,7 @@ int infer_ivar_types(Compiler *c) {
        its type unpinned so it stays a nil-valued poly. */
     /* a multiple assignment's target too: `@a, @b = pair` at the top level
        wrote a slot nothing had registered */
-    if (sp_streq(ty, "InstanceVariableReadNode") || sp_streq(ty, "InstanceVariableTargetNode")) {
+    if (ty_k == NK_InstanceVariableReadNode || ty_k == NK_InstanceVariableTargetNode) {
       Scope *s = comp_scope_of(c, id);
       if (s->class_id >= 0) continue;  /* class/instance reads: register_locals */
       const char *nm = nt_str(nt, id, "name");
@@ -11372,10 +11396,10 @@ int infer_ivar_types(Compiler *c) {
       if (ci->nivars != old_ni) changed = 1;
       continue;
     }
-    if (sp_streq(ty, "InstanceVariableWriteNode") ||
-        sp_streq(ty, "InstanceVariableOrWriteNode") ||
-        sp_streq(ty, "InstanceVariableAndWriteNode") ||
-        sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+    if (ty_k == NK_InstanceVariableWriteNode ||
+        ty_k == NK_InstanceVariableOrWriteNode ||
+        ty_k == NK_InstanceVariableAndWriteNode ||
+        ty_k == NK_InstanceVariableOperatorWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       int vnode = nt_ref(nt, id, "value");
       TyKind vt = infer_type(c, vnode);
@@ -11383,7 +11407,7 @@ int infer_ivar_types(Compiler *c) {
          nil_write_type). `@a = @b = nil`: the chain writes nil to every
          target; don't let the inner slot's unified type (from its other
          writes) pin this ivar. */
-      int nil_write = !sp_streq(ty, "InstanceVariableOperatorWriteNode") &&
+      int nil_write = ty_k != NK_InstanceVariableOperatorWriteNode &&
                       (vt == TY_NIL || comp_nil_chain_bottom(nt, vnode) >= 0);
       if (vt == TY_POLY && ivar_nullable_int_ternary(c, vnode) == TY_INT) vt = TY_INT;
       Scope *s = comp_scope_of(c, id);
@@ -11417,7 +11441,7 @@ int infer_ivar_types(Compiler *c) {
          has always had.) */
       { int iec = ie_class_of(c, id);
         if (iec >= 0 && s->class_id >= 0) cls_id2 = iec;
-        else if (iec < -1 && !sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+        else if (iec < -1 && ty_k != NK_InstanceVariableOperatorWriteNode) {
           int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
           for (int q = 0; q < npk; q++) {
             ClassInfo *pci = &c->classes[pk[q]];
@@ -11448,14 +11472,14 @@ int infer_ivar_types(Compiler *c) {
          the nil sentinel's bits into a large negative number (#5470). `<<=`
          and `>>=` the same: nil has no shift, and the int slot shifted the
          sentinel where CRuby raises NoMethodError. */
-      if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_UNKNOWN &&
+      if (ty_k == NK_InstanceVariableOperatorWriteNode && ci->ivar_types[iv] == TY_UNKNOWN &&
           !class_ivar_pinned(ci, nm)) {
         const char *bo = nt_str(nt, id, "binary_operator");
         if (bo && is_int_bit_op(bo)) vt = TY_POLY;
       }
       /* For operator-write (@b += rhs), vt is the RHS type, not the result type.
          When the slot holds a user object, the result is the method's return type. */
-      if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ty_is_object(ci->ivar_types[iv])) {
+      if (ty_k == NK_InstanceVariableOperatorWriteNode && ty_is_object(ci->ivar_types[iv])) {
         const char *op2 = nt_str(nt, id, "binary_operator");
         int cid2 = ty_object_class(ci->ivar_types[iv]);
         int mi2 = op2 ? comp_method_in_chain(c, cid2, op2, NULL) : -1;
@@ -11469,7 +11493,7 @@ int infer_ivar_types(Compiler *c) {
          own array type. Unifying the RHS instead made `@a *= 2` an Integer
          write, boxed the slot, and every `|=` on it went to the integer
          bit operator (#4833). */
-      else if (sp_streq(ty, "InstanceVariableOperatorWriteNode") &&
+      else if (ty_k == NK_InstanceVariableOperatorWriteNode &&
                (ty_is_array(ci->ivar_types[iv]) || ci->ivar_types[iv] == TY_POLY_ARRAY)) {
         const char *op2 = nt_str(nt, id, "binary_operator");
         if (op2 && ((sp_streq(op2, "*") && vt == TY_INT) ||
@@ -11477,12 +11501,12 @@ int infer_ivar_types(Compiler *c) {
                       sp_streq(op2, "+")) && vt == ci->ivar_types[iv])))
           vt = ci->ivar_types[iv];
       }
-      if (!sp_streq(ty, "InstanceVariableOperatorWriteNode"))
+      if (ty_k != NK_InstanceVariableOperatorWriteNode)
         vt = empty_container_write(c, vnode, vt, ci->ivar_types[iv]);
       /* A Time slot's `+= n` / `-= n` with a numeric operand answers a Time
          (Time + Integer / Float); unifying the RHS boxed the slot to poly
          and `@t.hour` after it had no arm (the logger gem's Period). */
-      else if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_TIME) {
+      else if (ty_k == NK_InstanceVariableOperatorWriteNode && ci->ivar_types[iv] == TY_TIME) {
         const char *op2 = nt_str(nt, id, "binary_operator");
         if (op2 && (is_add_sub(op2)) &&
             (vt == TY_INT || vt == TY_FLOAT || vt == TY_BIGINT))
@@ -11520,7 +11544,7 @@ int infer_ivar_types(Compiler *c) {
         }
       }
     }
-    else if (sp_streq(ty, "CallNode")) {
+    else if (ty_k == NK_CallNode) {
       if (sp_streq(nt_str(nt, id, "name"), "instance_variable_set")) {
         if (infer_ivar_set_call(c, id, &nilw)) changed = 1;
         continue;
@@ -11988,17 +12012,18 @@ static char *bc_resolve(Bc *b, int id) {
   const NodeTable *nt = b->nt;
   if (id < 0) return NULL;
   const char *ty = nt_type(nt, id);
+  NodeKind k = nt_kind(nt, id);
   const char *nm = nt_str(nt, id, "name");
   if (!ty || !nm) return NULL;
   char *r = NULL;
-  if (sp_streq(ty, "ConstantReadNode")) {
+  if (k == NK_ConstantReadNode) {
     if (sp_streq(nm, "Object")) return strdup("");
     char *hit = NULL;
     if (bc_lookup(b, nm, &hit) == BC_FOUND && hit) return hit;
     free(hit);
     return strdup(nm);
   }
-  if (sp_streq(ty, "ConstantPathNode")) {
+  if (k == NK_ConstantPathNode) {
     int par = nt_ref(nt, id, "parent");
     if (par < 0) return sp_streq(nm, "Object") ? strdup("") : strdup(nm);
     char *p = bc_resolve(b, par);
@@ -12031,15 +12056,16 @@ static void bc_define(Bc *b, const char *full) {
 }
 
 static int bc_is_const_node(const NodeTable *nt, int id) {
-  const char *t = id >= 0 ? nt_type(nt, id) : NULL;
-  return t && (sp_streq(t, "ConstantReadNode") || sp_streq(t, "ConstantPathNode"));
+  NodeKind k = nt_kind(nt, id);
+  return (k == NK_ConstantReadNode || k == NK_ConstantPathNode);
 }
 
 static const char *bc_sym_arg(const NodeTable *nt, int arg) {
   const char *t = arg >= 0 ? nt_type(nt, arg) : NULL;
+  NodeKind k = nt_kind(nt, arg);
   if (!t) return NULL;
-  if (sp_streq(t, "SymbolNode")) return nt_str(nt, arg, "value");
-  if (sp_streq(t, "StringNode")) {
+  if (k == NK_SymbolNode) return nt_str(nt, arg, "value");
+  if (k == NK_StringNode) {
     const char *s = nt_str(nt, arg, "content");
     return s ? s : nt_str(nt, arg, "unescaped");
   }
@@ -12048,12 +12074,12 @@ static const char *bc_sym_arg(const NodeTable *nt, int arg) {
 
 /* `Class.new(..)`, `Module.new`, `Struct.new(..)`, `Data.define(..)` */
 static int bc_anon_class_call(const NodeTable *nt, int id, int *is_module) {
-  const char *t = id >= 0 ? nt_type(nt, id) : NULL;
-  if (!t || !sp_streq(t, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int rv = nt_ref(nt, id, "receiver");
-  const char *rt = rv >= 0 ? nt_type(nt, rv) : NULL;
-  const char *rn = rt && sp_streq(rt, "ConstantReadNode") ? nt_str(nt, rv, "name") : NULL;
+  NodeKind rk = nt_kind(nt, rv);
+  const char *rn = rk == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
   if (!nm || !rn) return 0;
   *is_module = sp_streq(rn, "Module");
   return (sp_streq(nm, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
@@ -12263,18 +12289,19 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
   const NodeTable *nt = b->nt;
   if (id < 0 || b->give_up) return;
   const char *ty = nt_type(nt, id);
+  NodeKind k = nt_kind(nt, id);
   if (!ty) return;
   const char *top = b->cref[b->ncref - 1];
-  if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
-    int is_mod = sp_streq(ty, "ModuleNode");
+  if (k == NK_ClassNode || k == NK_ModuleNode) {
+    int is_mod = k == NK_ModuleNode;
     int cp = nt_ref(nt, id, "constant_path");
-    const char *cpt = cp >= 0 ? nt_type(nt, cp) : NULL;
+    NodeKind cpk = nt_kind(nt, cp);
     char *full = NULL;
-    if (cpt && sp_streq(cpt, "ConstantReadNode")) {
+    if (cpk == NK_ConstantReadNode) {
       const char *nm = nt_str(nt, cp, "name");
       full = nm ? (top[0] == '?' ? strdup("?") : (sp_streq(nm, "Object") && !*top ? strdup("") : bc_join(top, nm))) : NULL;
     }
-    else if (cpt && sp_streq(cpt, "ConstantPathNode")) {
+    else if (cpk == NK_ConstantPathNode) {
       full = bc_resolve(b, cp);
       if (mode == 2) bc_walk(b, nt_ref(nt, cp, "parent"), self, mode);
     }
@@ -12307,12 +12334,12 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     }
     return;
   }
-  if (sp_streq(ty, "SingletonClassNode")) {
+  if (k == NK_SingletonClassNode) {
     int ex = nt_ref(nt, id, "expression");
     bc_walk(b, ex, self, mode);
-    const char *et = ex >= 0 ? nt_type(nt, ex) : NULL;
+    NodeKind ek = nt_kind(nt, ex);
     char buf[600];
-    if (et && sp_streq(et, "SelfNode") && self && self[0] != '#' && self[0] != '?')
+    if (ek == NK_SelfNode && self && self[0] != '#' && self[0] != '?')
       snprintf(buf, sizeof buf, "#<Class:%s>", self);
     else snprintf(buf, sizeof buf, "#<Class:?>");
     char *mk = bc_own(b, strdup(buf));
@@ -12322,15 +12349,15 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     }
     return;
   }
-  if (sp_streq(ty, "DefNode")) {
+  if (k == NK_DefNode) {
     const char *nm = nt_str(nt, id, "name");
     int rv = nt_ref(nt, id, "receiver");
-    const char *rt = rv >= 0 ? nt_type(nt, rv) : NULL;
+    NodeKind rk = nt_kind(nt, rv);
     if (mode == 0 && nm && sp_streq(nm, "const_missing")) {
       b->has_const_missing = 1;
       /* `def self.const_missing` in a class or module body: that class's */
       const char *cur = b->cref[b->ncref - 1];
-      if (rt && sp_streq(rt, "SelfNode") && self && *self && *self != '?') {
+      if (rk == NK_SelfNode && self && *self && *self != '?') {
         BcMod *cm = bc_mod(b, self, 1);
         if (cm) cm->const_missing = 1; else b->cm_unattributed = 1;
       }
@@ -12342,14 +12369,14 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
       }
       else b->cm_unattributed = 1;
     }
-    const char *ds = (rt && sp_streq(rt, "SelfNode")) ? self : NULL;
+    const char *ds = (rk == NK_SelfNode) ? self : NULL;
     bc_walk(b, nt_ref(nt, id, "parameters"), ds, mode);
     bc_walk(b, nt_ref(nt, id, "body"), ds, mode);
     return;
   }
-  if (sp_streq(ty, "ConstantWriteNode") || sp_streq(ty, "ConstantOrWriteNode") ||
-      sp_streq(ty, "ConstantAndWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode") ||
-      sp_streq(ty, "ConstantTargetNode")) {
+  if (k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode ||
+      k == NK_ConstantAndWriteNode || k == NK_ConstantOperatorWriteNode ||
+      k == NK_ConstantTargetNode) {
     const char *nm = nt_str(nt, id, "name");
     char *full = (nm && top[0] != '?') ? bc_join(top, nm) : NULL;
     if (mode == 0 && full && *top != '#') bc_define(b, full);
@@ -12384,9 +12411,9 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     bc_walk_kids(b, id, self, mode);
     return;
   }
-  if (strncmp(ty, "ConstantPath", 12) == 0 && !sp_streq(ty, "ConstantPathNode")) {
+  if (strncmp(ty, "ConstantPath", 12) == 0 && k != NK_ConstantPathNode) {
     /* A::X = v / A::X ||= v / a ConstantPathTargetNode */
-    int tg = sp_streq(ty, "ConstantPathTargetNode") ? id : nt_ref(nt, id, "target");
+    int tg = k == NK_ConstantPathTargetNode ? id : nt_ref(nt, id, "target");
     if (mode != 2 && tg >= 0) {
       char *full = bc_resolve(b, tg);
       int vv = tg == id ? -1 : nt_ref(nt, id, "value"), am = 0;
@@ -12407,12 +12434,12 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     bc_walk(b, nt_ref(nt, id, "value"), self, mode);
     return;
   }
-  if (sp_streq(ty, "DefinedNode")) {
+  if (k == NK_DefinedNode) {
     int v = nt_ref(nt, id, "value");
-    const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
-    if (mode == 0 && vt && sp_streq(vt, "ConstantPathNode")) b->scoped_defined = 1;
-    if (mode == 2 && vt && sp_streq(vt, "ConstantReadNode")) { bc_check(b, v, 1); return; }
-    if (mode == 2 && vt && sp_streq(vt, "ConstantPathNode")) {
+    NodeKind vk = nt_kind(nt, v);
+    if (mode == 0 && vk == NK_ConstantPathNode) b->scoped_defined = 1;
+    if (mode == 2 && vk == NK_ConstantReadNode) { bc_check(b, v, 1); return; }
+    if (mode == 2 && vk == NK_ConstantPathNode) {
       /* defined?(X::Y) is nil, not NameError, when the head X is unreachable */
       int head = v;
       while (head >= 0 && nt_kind(nt, head) == NK_ConstantPathNode)
@@ -12426,17 +12453,17 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     bc_walk_kids(b, id, self, mode);
     return;
   }
-  if (sp_streq(ty, "ConstantReadNode")) {
+  if (k == NK_ConstantReadNode) {
     if (mode == 2) bc_check(b, id, 0);
     return;
   }
-  if (sp_streq(ty, "CallNode")) {
+  if (k == NK_CallNode) {
     const char *nm = nt_str(nt, id, "name");
     int rv = nt_ref(nt, id, "receiver");
-    const char *rt = rv >= 0 ? nt_type(nt, rv) : NULL;
+    NodeKind rk = nt_kind(nt, rv);
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    int on_self = rv < 0 || (rt && sp_streq(rt, "SelfNode"));
+    int on_self = rv < 0 || (rk == NK_SelfNode);
     /* the receiver a module-level call (include, const_set) acts on */
     char *target = NULL; int target_known = 0;
     if (on_self) { target = self ? strdup(self) : NULL; target_known = self != NULL && self[0] != '?'; }
