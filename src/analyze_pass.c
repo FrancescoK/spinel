@@ -2197,31 +2197,11 @@ static TyRef ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_id
 /* The ivar a getter's exit expression hands back, or NULL: a read of it,
    `@x ||= v`, `@x = v`, or one of those parenthesized or returned. */
 static const char *exit_ivar_name(const NodeTable *nt, int e) {
-  for (int depth = 0; e >= 0 && depth < 8; depth++) {
-    switch (nt_kind(nt, e)) {
-    case NK_InstanceVariableReadNode:
-    case NK_InstanceVariableOrWriteNode:
-    case NK_InstanceVariableWriteNode:
-      return nt_str(nt, e, "name");
-    case NK_ParenthesesNode:
-      e = stmts_tail(nt, nt_ref(nt, e, "body"));
-      break;
-    case NK_StatementsNode:
-      e = stmts_tail(nt, e);
-      break;
-    case NK_ReturnNode: {
-      int a = nt_ref(nt, e, "arguments");
-      int n = 0;
-      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
-      if (!av || n != 1) return NULL;
-      e = av[0];
-      break;
-    }
-    default:
-      return NULL;
-    }
-  }
-  return NULL;
+  int n = -1;
+  if (vp_one(nt, e, VPS_NONE | VP_FOLLOW_RETURN, &n) != VP1_NODE) return NULL;
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_InstanceVariableReadNode || k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableWriteNode
+         ? nt_str(nt, n, "name") : NULL;
 }
 
 /* Every `return` under `node` (not crossing a nested def, class or lambda)
