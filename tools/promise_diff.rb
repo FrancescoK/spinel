@@ -158,8 +158,15 @@ def limitation_rows(rev)
   rows = {}
   return rows if txt.nil?
   section = "(top)"
+  fenced = false
   txt.each_line do |ln|
     l = ln.chomp
+    # (a fenced example's `# spinel: ...` comment is no heading)
+    if l.start_with?("```")
+      fenced = !fenced
+      next
+    end
+    next if fenced
     if l.start_with?("####")
       rows[l.sub(/\A#+\s*/, "")] = section
       next
