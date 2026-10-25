@@ -3089,18 +3089,29 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       emit_exc_message_boxed(c, v, b);
       return 1;
     }
+    /* `cause&.message`: nil for a nil exception */
+    int safe = nt_safe_nav(nt, v);
     if (exc_has_user_msg_override(c)) {
       int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
       buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
       emit_expr(c, recv, b);
       buf_printf(b, "); SP_GC_ROOT(_e%d); ", t);
       int mark = view_bind(recv, "_e%d", t);
-      if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
+      if (!safe && cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
       view_unbind(mark);
       char e[32];
       snprintf(e, sizeof e, "_e%d", t);
+      if (safe) buf_printf(b, "!_e%d ? NULL : ({ ", t);
       emit_exc_override_pickup(c, v, e, t, b);
+      if (safe) buf_puts(b, " });");
       buf_puts(b, " })");
+      return 1;
+    }
+    if (safe) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
+      emit_expr(c, nt_ref(nt, v, "receiver"), b);
+      buf_printf(b, "); _e%d ? sp_exc_kept_message_handle(_e%d) : NULL; })", t, t);
       return 1;
     }
     buf_puts(b, "sp_exc_kept_message_handle((sp_Exception *)(");
