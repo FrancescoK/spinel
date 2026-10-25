@@ -1865,6 +1865,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (scrub_bang_block compiled)"; ok=0; \
 	else grep -q "scrub! with a block" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (scrub_bang_block rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/ffi_source_undeclared_call.rb; \
+	if $(SPINEL) "$$t" -o "$$tmp/fsu" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (an ffi_source call to an undeclared function built)"; ok=0; \
+	else grep -Eq "(undeclared function|implicit declaration of function) .lfind" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (an ffi_source call to an undeclared function refused without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
 	t=test/reject/singleton_on_untraceable_recv.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
