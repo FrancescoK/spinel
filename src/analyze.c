@@ -9578,6 +9578,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     int is_toproc = nm && sp_streq(nm, "to_proc");
     int ex = -1;
     if (is_toproc) {
+      if (nt_int(nt, id, "stp_detached", 0)) continue;   /* handed to its block argument, below */
       ex = nt_ref(nt, id, "receiver");
       if (nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) continue;
     }
@@ -9598,6 +9599,10 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
         if (nt_ref(nt, ba, "expression") == id) { ba_of = ba; break; }
       if (ba_of >= 0) {
         nt_node_set_ref(nt, ba_of, "expression", ex);
+        /* (the call is out of the tree now: a later round's walk of the
+           node table must not rewrite it into the lambda, whose parameter
+           was left declared in the scope) */
+        nt_node_set_int(nt, id, "stp_detached", 1);
         changed = 1;
         continue;
       }
