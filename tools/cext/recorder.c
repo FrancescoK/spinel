@@ -262,6 +262,16 @@ VALUE rb_const_get(VALUE value,ID id) {
     event("reference",value);field("path",full);end();
     return (VALUE)reference;
 }
+VALUE rb_const_get_at(VALUE value,ID id) { return rb_const_get(value,id); }
+/* From the extension's own definitions and the builtins it knows, never from
+ * the program's Ruby: the run-time bridge answers from the same facts, so
+ * both runs of Init take the same path and define the same things. */
+int rb_const_defined(VALUE value,ID id) {
+    const char *name=rb_id2name(id);constant_name(name);
+    if(binding(value,name))return 1;
+    Binding *b=binding(rb_cObject,name);
+    return b && owner(b->value,"rb_const_defined")->builtin;
+}
 VALUE rb_eval_string(const char *s) { (void)s;DENIED("rb_eval_string"); }
 void rb_raise(VALUE v,const char *s,...) { (void)v;(void)s;DENIED("rb_raise"); }
 void rb_exc_raise(VALUE v) { (void)v;DENIED("rb_exc_raise"); }

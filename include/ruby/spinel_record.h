@@ -48,6 +48,8 @@ VALUE rb_iv_set(VALUE, const char *, VALUE);
 VALUE rb_ivar_get(VALUE, ID);
 VALUE rb_ivar_set(VALUE, ID, VALUE);
 VALUE rb_const_get(VALUE, ID);
+VALUE rb_const_get_at(VALUE, ID);
+int rb_const_defined(VALUE, ID);
 VALUE rb_eval_string(const char *);
 VALUE rb_catch(const char *, rb_block_call_func_t, VALUE);
 void rb_throw(const char *, VALUE) SP_CEXT_NORETURN;

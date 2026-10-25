@@ -304,6 +304,13 @@ The restricted C extension API provides `rb_obj_class` and
 so Ruby overrides of `class` and `name` do not affect them. The recorder refuses
 these runtime queries during `Init_`; extensions still require source
 compilation against the restricted headers rather than loading a CRuby binary.
+`rb_const_defined` is answered during `Init_` only, from the extension's own
+definitions so far and the builtin classes the recorder knows, never from the
+program's Ruby, so the recorded `Init_` and the one the program runs take the
+same path: an extension that asks whether its Ruby half already defined a
+class (racc's `Racc::Parser`) defines it itself, and the program's class body
+reopens it. Outside `Init_` it raises RuntimeError. `rb_const_get_at` looks
+in the ancestors too, as `rb_const_get` does.
 
 Limited today, but additively fixable; listed roughly easiest-first.
 
