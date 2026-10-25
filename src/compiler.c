@@ -520,6 +520,7 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);
+  free(c->toplevel_extends);
   free(c->ary_viewed);
   for (int i = 0; i < c->n_ffi_sources; i++) {
     free(c->ffi_sources[i].mod);
@@ -4039,15 +4040,21 @@ int class_is_blank_slate(Compiler *c, int ci) {
    one of its instance methods, or in a block inside one (`call_id`, -1 when
    there is no call site), does not reach the module: CRuby raises
    NoMethodError there, and resolving it ran the module's method instead. A
-   class method's self is a Class, which is an Object, so it still does. */
+   class method's self is a Class, which is an Object, so it still does.
+   An extend at the top level adds the module to main alone: a bare call
+   reaches it only where self is main, and elsewhere CRuby raises
+   NoMethodError (or runs Kernel's method of the name). */
 int comp_included_method_index(Compiler *c, const char *name, int call_id) {
   if (!name) return -1;
+  int main_self = 1;
   if (call_id >= 0) {
     Scope *cs = comp_scope_of(c, call_id);
     if (cs && cs->class_id >= 0 && !cs->is_cmethod &&
         class_is_blank_slate(c, cs->class_id)) return -1;
+    main_self = self_is_main(c, call_id);
   }
   for (int k = c->ntoplevel_includes - 1; k >= 0; k--) {
+    if (c->toplevel_extends[k] && !main_self) continue;
     int ci = c->toplevel_includes[k];
     int mi = comp_method_in_chain(c, ci, name, NULL);
     if (mi >= 0) return mi;
@@ -4055,6 +4062,15 @@ int comp_included_method_index(Compiler *c, const char *name, int call_id) {
     if (mi >= 0) return mi;
   }
   return -1;
+}
+
+/* Whether a module the top level includes (extend 0) or main extends
+   (extend 1) has an instance method `name`. */
+int comp_toplevel_mod_defines(Compiler *c, const char *name, int extend) {
+  for (int k = 0; k < c->ntoplevel_includes; k++)
+    if (c->toplevel_extends[k] == extend && comp_method_in_chain(c, c->toplevel_includes[k], name, NULL) >= 0)
+      return 1;
+  return 0;
 }
 
 /* A scope's locals by name. A short table is scanned; a longer one is read

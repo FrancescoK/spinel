@@ -1,0 +1,12 @@
+"A echo x"
+"x\n"
+"x\n"
+"x\n"
+"x\n"
+"A echo y"
+"y\n"
+NoMethodError
+[8, 2]
+"str\n"
+"5\n"
+6

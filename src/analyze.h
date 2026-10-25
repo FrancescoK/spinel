@@ -174,6 +174,8 @@ int an_prog_never_gives(const char *nm, int defs);
 int an_prog_names_method(const char *nm);
 /* Kernel itself as call id's constant receiver (analyze_util.c) */
 int an_kernel_const_recv(Compiler *c, int id, int recv, int fresh);
+int an_kernel_backtick_recv(Compiler *c, int id, int recv, int fresh, int in_default);
+int *an_blank_slates_lacking(Compiler *c, const char *name, int *n);
 /* The argument shape of a `super` in a ` override (analyze_util.c) */
 int an_super_backtick_shape(Compiler *c, int id, const Scope *s, int *arg);
 int an_prog_meta_by_value(void);

@@ -1324,14 +1324,33 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
 
   /* `("cmd"): Kernel#` itself, which a backtick literal is beside a def of
-     ` (desugar_user_backtick), where self does not reach that def, and
-     Kernel.`("cmd") */
+     ` (desugar_user_backtick), where self does not reach that def (nor a
+     module the top level includes or main extends, as inference asks), and
+     Kernel.`("cmd"), and self's in a poly self dispatch's builtin default */
   if (sp_streq(name, "`") && argc == 1 && nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode &&
       (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF) &&
-      (recv < 0 ? !bare_call_class_owned(c, id) : an_kernel_const_recv(c, id, recv, 0))) {
+      (recv < 0 ? !bare_call_class_owned(c, id) && comp_included_method_index(c, name, id) < 0
+                : an_kernel_backtick_recv(c, id, recv, 0, g_poly_builtin_arm && g_pd_skip == id))) {
+    /* self in the default can be a BasicObject subclass's instance, which
+       has no Kernel#`: it raises, as CRuby does */
+    Buf gb; memset(&gb, 0, sizeof gb);
+    if (recv >= 0 && g_poly_builtin_arm && g_pd_skip == id) {
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_expr(c, recv, &rb);
+      const char *rv = rb.p ? rb.p : "sp_box_nil()";
+      int nbl = 0, *bl = an_blank_slates_lacking(c, "`", &nbl);
+      for (int i = 0; i < nbl; i++)
+        buf_printf(&gb, "%s(%s.tag == SP_TAG_OBJ && %s.cls_id == %d)", gb.p ? " || " : "", rv, rv, bl[i]);
+      free(bl);
+      if (gb.p) {
+        buf_printf(b, "((%s) ? ((void)sp_raise_nomethod(sp_nomethod_msg(\"`\", %s)), (const char *)NULL) : ", gb.p, rv);
+      }
+      free(rb.p);
+    }
     buf_puts(b, "sp_backtick(");
     emit_str_expr(c, argv[0], b);
-    buf_puts(b, ")");
+    buf_puts(b, gb.p ? "))" : ")");
+    free(gb.p);
     return 1;
   }
 

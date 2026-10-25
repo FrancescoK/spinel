@@ -47736,8 +47736,8 @@ static void an_phase_class_structure(Compiler *c) {
 
   /* collect top-level `include <Mod>` / `extend <Mod>` calls so bare method
      calls can resolve to those modules' methods. At the top level the two
-     differ only in who else gets the methods (Object vs main alone); a
-     receiverless call in this file reaches them either way (#3787). */
+     differ in who gets the methods: an include gives them to Object, an
+     extend to main alone (#3787). */
   {
     const NodeTable *nt = c->nt;
     int root_stmts = nt_ref(nt, nt->root_id, "statements");
@@ -47745,8 +47745,8 @@ static void an_phase_class_structure(Compiler *c) {
     const int *stmts = root_stmts >= 0 ? nt_arr(nt, root_stmts, "body", &sn) : NULL;
     for (int i = 0; i < sn; i++) {
       if (!nt_type(nt, stmts[i]) || !sp_streq(nt_type(nt, stmts[i]), "CallNode")) continue;
-      { const char *tn = nt_str(nt, stmts[i], "name");
-        if (!tn || (!sp_streq(tn, "include") && !sp_streq(tn, "extend"))) continue; }
+      const char *tn = nt_str(nt, stmts[i], "name");
+      if (!tn || (!sp_streq(tn, "include") && !sp_streq(tn, "extend"))) continue;
       if (nt_ref(nt, stmts[i], "receiver") >= 0) continue;
       int anode = nt_ref(nt, stmts[i], "arguments");
       int an = 0;
@@ -47758,6 +47758,9 @@ static void an_phase_class_structure(Compiler *c) {
         if (ci < 0) continue;
         c->toplevel_includes = realloc(c->toplevel_includes,
                                        sizeof(int) * (size_t)(c->ntoplevel_includes + 1));
+        c->toplevel_extends = realloc(c->toplevel_extends, (size_t)(c->ntoplevel_includes + 1));
+        if (!c->toplevel_includes || !c->toplevel_extends) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        c->toplevel_extends[c->ntoplevel_includes] = sp_streq(tn, "extend");
         c->toplevel_includes[c->ntoplevel_includes++] = ci;
       }
     }
