@@ -32,6 +32,12 @@ sp_RbVal sp_cext_plain_object_new(void) {
 sp_RbVal sp_cext_hash_new(void) {
   return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
 }
+/* hash[key], with the Hash's default or default proc for a missing key */
+sp_RbVal sp_cext_hash_get(sp_RbVal hash, sp_RbVal key) {
+  if(hash.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(hash.cls_id))
+    sp_raise_cls("TypeError", "expected a Hash");
+  return sp_poly_index_poly(hash, key);
+}
 void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
   if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
     sp_raise_cls("TypeError", "expected a widened Hash");

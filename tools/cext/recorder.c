@@ -316,6 +316,8 @@ VALUE rb_ary_pop(VALUE v) { (void)v;DENIED("rb_ary_pop"); }
 void rb_ary_store(VALUE v,long i,VALUE item) { (void)v;(void)i;(void)item;DENIED("rb_ary_store"); }
 VALUE rb_ary_entry(VALUE v,long i) { (void)v;(void)i;DENIED("rb_ary_entry"); }
 long sp_cext_array_len(VALUE v) { (void)v;DENIED("RARRAY_LEN"); }
+VALUE rb_ary_subseq(VALUE v,long b,long n) { (void)v;(void)b;(void)n;DENIED("rb_ary_subseq"); }
+VALUE rb_hash_aref(VALUE h,VALUE k) { (void)h;(void)k;DENIED("rb_hash_aref"); }
 
 int rb_block_given_p(void) { DENIED("rb_block_given_p"); }
 VALUE rb_block_proc(void) { DENIED("rb_block_proc"); }
