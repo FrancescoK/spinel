@@ -4508,6 +4508,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/hash_one_class_value_unbox.rb -c --no-line-map -o "$$tmp/hcu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_one_class_value_unbox: -c)"; ok=0; }; \
 	awk '/^static inline void \*sp_poly_unbox_cls\(.*\)\{/,/^}/' "$$tmp/hcu.c" > "$$tmp/hcu_u.c"; \
 	grep -Eq 'sp_poly_unbox_cls\(sp_StrPolyHash_get\(lv_h, (lv_key|SP_STR_B\(\(lv_key \? sp_String_cstr\(lv_key\) : NULL\)\))\), 0,' "$$tmp/hcu.c" && grep -q 'v.cls_id==cls))return v.v.p;' "$$tmp/hcu_u.c" && ! grep -q 'sp_class_le' "$$tmp/hcu_u.c" || { echo "infer-test: FAIL (a one-class Hash's object read walks the class chain instead of checking the class id inline)"; ok=0; }; \
+	$(SPINEL) test/obj_array_self_ref_walk.rb -c --no-line-map -o "$$tmp/osr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_self_ref_walk: -c)"; ok=0; }; \
+	grep -q 'sp_PtrArray \* iv_kids;' "$$tmp/osr.c" && grep -q 'sp_PtrArray \* lv_q = NULL;' "$$tmp/osr.c" && grep -q 'sp_PolyArray \* iv_items;' "$$tmp/osr.c" || { echo "infer-test: FAIL (a tree walk ending in each made an object Array polymorphic)"; ok=0; }; \
 	$(SPINEL) test/boxed_recv_class_set_binding.rb -c --no-line-map -o "$$tmp/bcs.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (boxed_recv_class_set_binding: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_Seq_output(sp_Seq \*self, sp_int lv_col, sp_int lv_shift)' "$$tmp/bcs.c" || { echo "infer-test: FAIL (#8530 a call on a boxed receiver bound the parameters of a class it never holds)"; ok=0; }; \
 	$(SPINEL) test/class_ancestor_tests_dynamic.rb -c --no-line-map -o "$$tmp/cat.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_ancestor_tests_dynamic: -c)"; ok=0; }; \
