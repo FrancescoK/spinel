@@ -19775,6 +19775,21 @@ int *cext_container_stores(Compiler *c, const char *name, Scope *scope, int *cou
   }
   free(values.v); *count = all.n; return all.v;
 }
+/* The values element stores (`@q.push(x)`, `@q << x`, `@q[i] = x`) put into
+ * the container an instance variable of class `cls` holds. */
+int *cext_ivar_container_stores(Compiler *c, const char *name, int cls, int *count) {
+  const NodeTable *nt = c->nt;
+  StoreVals all = {0}, values = {0};
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    int r = nt_ref(nt, call, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (!rn || !sp_streq(rn, name) || comp_ivar_owner(c, r) != cls) continue;
+    values.n = 0; array_call_store_values(c, call, &values);
+    for (int j = 0; j < values.n; j++) store_vals_add(&all, values.v[j]);
+  }
+  free(values.v); *count = all.n; return all.v;
+}
 
 static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *conts,
                                         int depth, int mode) {
