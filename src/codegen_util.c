@@ -8262,6 +8262,17 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
     g_want_oint = 0;
     return;
   }
+  /* a plain node that took an unwrap's offer (emit_oint_unwrap_ck) is that
+     unwrap's plain answer already: an Array subclass instance's element
+     read, which the Array's view reads checked (emit_arysub_call) */
+  if (g_ck_node == node && !g_ck_done) {
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_expr(c, node, &pb);
+    if (g_ck_done) buf_puts(b, pb.p ? pb.p : "0");
+    else buf_printf(b, "%s(%s)", oint_of(t), pb.p ? pb.p : "0");
+    free(pb.p);
+    return;
+  }
   buf_printf(b, "%s(", oint_of(t)); emit_expr(c, node, b); buf_puts(b, ")");
 }
 

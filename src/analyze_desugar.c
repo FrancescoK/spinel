@@ -7794,6 +7794,47 @@ static int ixw_read(NodeTable *nt, const char *name) {
   return r;
 }
 
+/* `(v = value; <set>; v)`: an index store that answers the value it
+   assigns, as an op-write does whatever `[]=` returns (a `[]=` that calls
+   `super(k, v * 2)` returns the doubled value). set is the `[]=` call,
+   whose value argument reads v. into, when not -1, is the node that
+   becomes the parentheses. */
+static int ix_held_store(NodeTable *nt, const char *vname, int value, int set, int into) {
+  int vw = nt_new_node(nt, "LocalVariableWriteNode"), vr = ixw_read(nt, vname);
+  int st = nt_new_node(nt, "StatementsNode");
+  if (set < 0 || vw < 0 || vr < 0 || st < 0) return -1;
+  int par = into;
+  if (par >= 0) nt_node_reset(nt, par, "ParenthesesNode");
+  else if ((par = nt_new_node(nt, "ParenthesesNode")) < 0) return -1;
+  nt_node_set_str(nt, vw, "name", vname); nt_node_set_int(nt, vw, "depth", 0);
+  nt_node_set_ref(nt, vw, "value", value);
+  int body[3] = { vw, ix_store_call(nt, set), vr };
+  nt_node_set_arr(nt, st, "body", body, 3);
+  nt_node_set_ref(nt, par, "body", st);
+  return par;
+}
+static int ixw_held_store(NodeTable *nt, int source, const char *rname, const char *vname, int key, int value) {
+  int wa[2] = { key, ixw_read(nt, vname) };
+  if (wa[1] < 0) return -1;
+  return ix_held_store(nt, vname, value, ixw_call(nt, source, rname, "[]=", wa, 2), -1);
+}
+
+/* Does an op-write on an object of class k call the program's [] or []=:
+   a class that defines both, or an Array, Hash or String subclass that
+   defines one of the two, where the call on the instance reaches the
+   builtin's other one (no undef of it, and no private or protected on it,
+   which would make the op-write raise NoMethodError)? */
+static int ixw_builtin_reaches(Compiler *c, int k, const char *name) {
+  return !comp_is_undeffed_in_chain(c, k, name) && comp_method_vis_in_chain(c, k, name) == SP_VIS_PUBLIC;
+}
+static int ixw_user_class(Compiler *c, int k) {
+  int own_get = comp_method_in_chain(c, k, "[]", NULL) >= 0;
+  int own_set = comp_method_in_chain(c, k, "[]=", NULL) >= 0;
+  if (own_get && own_set) return 1;
+  if (!own_get && !own_set) return 0;
+  return comp_ary_root(c, k) >= 0 && ixw_builtin_reaches(c, k, own_get ? "[]=" : "[]");
+}
+
 int desugar_index_op_write_user(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -7811,12 +7852,23 @@ int desugar_index_op_write_user(Compiler *c) {
     if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
     TyKind rt = infer_type(c, recv);
     int ci = ty_is_object(rt) ? ty_object_class(rt) : -1;
+    int user = rt == TY_THREAD || (ci >= 0 && ixw_user_class(c, ci));
+    /* a box that can hold such an object (a class with a construction
+       site, ctor_reachable: the census before the fixpoint): the calls
+       dispatch on the class the box holds, where the op-write took the
+       builtin's [] and []= */
+    if (!user && rt == TY_POLY) {
+      int n = 0;
+      const int *ks = poly_recv_classes(c, id, &n);
+      for (int i = 0; i < (ks ? n : c->nclasses) && !user; i++) {
+        int pk = ks ? ks[i] : i;
+        user = c->classes[pk].ctor_reachable && !is_builtin_reopen(c->classes[pk].name) && ixw_user_class(c, pk);
+      }
+    }
     /* so does one a Struct's own `[]=` can take (a key no literal names on a
        receiver typed as the Struct, or a box that can hold one): written as
        the calls, it stores what the single `[]=` stores, where the op-write
        on a box set an Array's element only and dropped a member's store */
-    int user = rt == TY_THREAD || (ci >= 0 && comp_method_in_chain(c, ci, "[]", NULL) >= 0 &&
-                                   comp_method_in_chain(c, ci, "[]=", NULL) >= 0);
     if (!user && !struct_aset_may_reach(c, id)) continue;
     /* a literal key stays one, so the member it names is the one typed and
        stored (a receiver typed as the Struct then takes the member's writer) */
@@ -7834,9 +7886,10 @@ int desugar_index_op_write_user(Compiler *c) {
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     char opname[64]; if (op) snprintf(opname, sizeof opname, "%s", op);
     int key = argv[0];
-    char rname[48], kname[48];
+    char rname[48], kname[48], vname[48];
     snprintf(rname, sizeof rname, "__ixr_%s", comp_node_tag(c, id));
     snprintf(kname, sizeof kname, "__ixk_%s", comp_node_tag(c, id));
+    snprintf(vname, sizeof vname, "__ixv_%s", comp_node_tag(c, id));
     int first = nt->count;
     int rw = nt_new_node(nt, "LocalVariableWriteNode");
     int kw = lit ? -1 : nt_new_node(nt, "LocalVariableWriteNode");
@@ -7860,14 +7913,12 @@ int desugar_index_op_write_user(Compiler *c) {
       nt_node_set_ref(nt, bin, "receiver", get);
       nt_node_set_str(nt, bin, "name", opname);
       nt_node_set_ref(nt, bin, "arguments", ba);
-      int wa[2] = { k2, bin };
-      last = ix_store_call(nt, ixw_call(nt, id, rname, "[]=", wa, 2));
+      last = ixw_held_store(nt, id, rname, vname, k2, bin);
     }
     else {
       int k2 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
       if (k2 < 0) continue;
-      int wa[2] = { k2, val };
-      int set = ix_store_call(nt, ixw_call(nt, id, rname, "[]=", wa, 2));
+      int set = ixw_held_store(nt, id, rname, vname, k2, val);
       int logic = nt_new_node(nt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       if (set < 0 || logic < 0) continue;
       nt_node_set_ref(nt, logic, "left", get);
@@ -7890,6 +7941,7 @@ int desugar_index_op_write_user(Compiler *c) {
     Scope *sc = comp_scope_of(c, rw);
     scope_local_intern(sc, rname);
     if (!lit) scope_local_intern(sc, kname);
+    scope_local_intern(sc, vname);
     changed = 1;
   }
   return changed;
@@ -21397,9 +21449,9 @@ int desugar_param_default_assigns_local(Compiler *c) {
    receiver and key without side effects (a variable, self, a constant, a
    literal) qualify; anything else stays refused as before. ENV, whose []
    and []= are the environment's, takes any key: one with effects is held
-   in a local first, as desugar_index_op_write_user holds it. The []= call's
-   value is that method's answer, where Ruby answers v -- the same for every
-   []= that returns its value, which is the convention. */
+   in a local first, as desugar_index_op_write_user holds it. The store
+   answers the value it assigns, as Ruby's op-write does, whatever the []=
+   method returns (ix_held_store). */
 static int ix_pure(const NodeTable *nt, int n) {
   if (n < 0) return 0;
   switch (nt_kind(nt, n)) {
@@ -21650,22 +21702,17 @@ int desugar_index_assign_user_recv(Compiler *c) {
     /* a held key makes id `(k = key; <the rewrite>)`, the rewrite a node of its own */
     int tgt = kw >= 0 ? nt_new_node(nt, "CallNode") : id;
     if (tgt < 0) continue;
+    /* the store answers the value it assigns (ix_held_store) */
+    char vname[48]; snprintf(vname, sizeof vname, "__ixv_%s", comp_node_tag(c, id));
+    int vr = ixw_read(nt, vname);
+    int set = vr >= 0 ? ix_index_call(nt, "[]=", recv2, key2, vr, nt_ignore_visibility(nt, id)) : -1;
     if (op) {
-      /* r[k] = (r[k] op v) */
+      /* (v = r[k] op v'; r[k] = v; v) */
       int opc = ix_index_call(nt, op, read, v, -1, 0);
-      int store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, opc, nt_ignore_visibility(nt, id))) : -1;
-      if (store < 0) continue;
-      int na = nt_ref(nt, store, "arguments");
-      nt_node_reset(nt, tgt, "CallNode");
-      nt_set_ignore_visibility(nt, tgt, nt_ignore_visibility(nt, store));
-      nt_node_set_ref(nt, tgt, "receiver", recv2);
-      nt_node_set_str(nt, tgt, "name", "[]=");
-      nt_set_attr_write(nt, tgt, 1);
-      nt_node_set_ref(nt, tgt, "arguments", na);
-      nt_node_set_ref(nt, tgt, "block", -1);
+      if (opc < 0 || ix_held_store(nt, vname, opc, set, tgt) < 0) continue;
     }
     else {
-      int store = ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, v, nt_ignore_visibility(nt, id)));
+      int store = ix_held_store(nt, vname, v, set, -1);
       if (store < 0) continue;
       nt_node_reset(nt, tgt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, tgt, "left", read);
@@ -21680,6 +21727,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
       nt_node_set_ref(nt, id, "body", stmts);
       scope_local_intern(comp_scope_of(c, id), kname);
     }
+    scope_local_intern(comp_scope_of(c, id), vname);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     int cb = c->node_cbody ? c->node_cbody[id] : -1;
