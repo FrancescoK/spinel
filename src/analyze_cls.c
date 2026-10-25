@@ -64,6 +64,12 @@ typedef struct CF {
   int nwu;                              /* the words a set may span (classes, then Class objects) */
   struct { unsigned long long *d; int *t; int nt; } tb[4];   /* scratch sets: dense words, the ones touched */
   unsigned long long *sw; int *swi;     /* a sparse scratch set (cf_union, cf_kmeet, cf_pool_tb) */
+  /* (directed) the runtime, as one object (#8837, Averroes-style): rtc,
+     its contents, holds every value code the walk does not see may hold:
+     the builtin values, and each value handed to such code (cf_escape).
+     An object such code may reach has its contents joined with rtc both
+     ways: the code may store what it holds there, and read what is there. */
+  int rt_obj, rtc;
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
   int *def_mi;                          /* DefNode -> scope */
@@ -505,7 +511,7 @@ static void cf_pts_add(CF *f, int x, int o) {
   int k = f->obj_cont[o];
   for (int i = 0; i < f->nld[x]; i++) cf_edge(f, k, f->ld[x][i]);
   for (int i = 0; i < f->nst[x]; i++) cf_edge(f, f->st[x][i], k);
-  if (f->esc[x]) { f->knoall++; cf_add_set_at(f, k, CF_ALL, __LINE__); f->knoall--; }
+  if (f->esc[x] && f->rtc >= 0) { cf_edge(f, f->rtc, k); cf_edge(f, k, f->rtc); }
   cf_push_int(&f->pdel[x], &f->npdel[x], &f->cpdel[x], o);
   cf_wl_push(f, x);
 }
@@ -513,9 +519,9 @@ static void cf_escape(CF *f, int e) {
   if (e < 0 || f->esc[e]) return;
   if (f->dbg_ptop) fprintf(stderr, "cls-flow-esc: element %d node-line %d kind %s name %s file %s\n", e, e < f->nnodes ? (int)nt_int(f->nt, e, "node_line", 0) : -1, e < f->nnodes ? nt_type(f->nt, e) : "slot", e < f->nnodes && nt_str(f->nt, e, "name") ? nt_str(f->nt, e, "name") : "-", e < f->nnodes && nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) ? nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) : "-");
   f->esc[e] = 1; f->changed = 1;
-  f->knoall++;
-  for (int i = 0; i < f->npts[e]; i++) cf_add_set_at(f, f->obj_cont[f->pts[e][i]], CF_ALL, __LINE__);
-  f->knoall--;
+  /* e's values are the runtime's from now on, and so are the objects they
+     hold (rtc is escaped: cf_pts_add joins each object's contents with it) */
+  cf_edge(f, e, f->rtc);
 }
 /* the object x stands for, made on first use (a literal's, a result's) */
 static int cf_new_obj(CF *f) {
@@ -4316,6 +4322,16 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     for (int k = 0; k < c->nclasses; k++)
       if (!f.mod[k] && class_is_exc_subclass(c, k)) cf_tb_bit(&f, b, k);
     f.exc_set = cf_pool_tb(&f, b, 0, 0);
+  }
+  /* (directed) the runtime's object: its contents begin with the builtin
+     values, and are escaped (an object they come to hold is reachable by
+     the runtime) */
+  f.rt_obj = f.rtc = -1;
+  if (directed) {
+    f.rt_obj = cf_new_obj(&f);
+    f.rtc = f.obj_cont[f.rt_obj];
+    f.esc[f.rtc] = 1;
+    cf_add_set(&f, f.rtc, cf_bv_set(&f));
   }
   f.fiber_ch = cf_new_el(&f);
   /* a yield whose value is read: not one in statement position ahead of
