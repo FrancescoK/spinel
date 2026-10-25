@@ -1297,6 +1297,7 @@ typedef struct {
 
   int *toplevel_includes;  /* class indices of modules included at top level */
   int ntoplevel_includes;
+  unsigned char *toplevel_extends;  /* per entry: 1 for `extend` (main alone), 0 for `include` */
   int has_include_math;    /* program has `include Math`: expose bare PI/E/fns */
   /* some store in the program can put a nil VALUE into a typed Hash of this
      Integer-valued kind (hash_vals_nullable, DESIGN.md D3b-ii) */
@@ -1650,6 +1651,7 @@ TyKind dispatch_ret_over(Compiler *c, int cid, const char *name, int cmeth, int 
 int    comp_ffi_const_at(Compiler *c, int node, int *out);
 int    comp_included_method_index(Compiler *c, const char *name, int call_id);
 int    class_is_blank_slate(Compiler *c, int ci);   /* explicit `< BasicObject` descent */
+int    comp_toplevel_mod_defines(Compiler *c, const char *name, int extend);
 
 /* Locals within a scope. */
 LocalVar *scope_local(Scope *s, const char *name);

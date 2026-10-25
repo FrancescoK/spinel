@@ -1848,6 +1848,7 @@ int g_gen_obj_with = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
+int g_uses_thread_current = 0;   /* Thread.current read or written, and no other use of threads (#10210) */
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_uses_traps = 0;   /* Signal.trap: a delivered trap runs at the same safe points */
 int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
@@ -8312,6 +8313,17 @@ void emit_oint_expr(Compiler *c, int node, TyKind t, Buf *b) {
     g_want_oint = 1;
     emit_expr(c, node, b);
     g_want_oint = 0;
+    return;
+  }
+  /* a plain node that took an unwrap's offer (emit_oint_unwrap_ck) is that
+     unwrap's plain answer already: an Array subclass instance's element
+     read, which the Array's view reads checked (emit_arysub_call) */
+  if (g_ck_node == node && !g_ck_done) {
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_expr(c, node, &pb);
+    if (g_ck_done) buf_puts(b, pb.p ? pb.p : "0");
+    else buf_printf(b, "%s(%s)", oint_of(t), pb.p ? pb.p : "0");
+    free(pb.p);
     return;
   }
   buf_printf(b, "%s(", oint_of(t)); emit_expr(c, node, b); buf_puts(b, ")");

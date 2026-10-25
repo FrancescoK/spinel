@@ -17,6 +17,24 @@ grep -E 'Tests:|scale-test|gate:' gate.log
 The gate does not compile and run again a program whose C has not changed
 since a passing run; `make gate-full` runs everything.
 
+**For the fastest `make gate` runs, gate several branches as one batch.**
+Base them on the same `master` commit and gate them one after another in the
+same checkout, whose result cache then skips most of the programs a branch
+leaves unchanged. Separate checkouts each build their own runtime libraries,
+so sharing one cache between them through `RESULT_CACHE_DIR` saves less.
+
+**Install `sccache` or `ccache`.** `common.mk` then wraps `cc` in it, so a
+build of the compiler reuses each object an earlier build compiled the same
+way, in any checkout.
+
+To keep the machine usable while the gate runs, pin the gate to a chosen set
+of N CPUs and set `MAKEFLAGS=-jN` beside `taskset`: the job count comes from
+`getconf _NPROCESSORS_ONLN`, which counts every CPU.
+
+```sh
+MAKEFLAGS=-j12 taskset -c 0-11 make gate   # N = 12 jobs, on CPUs 0-11 only
+```
+
 **If `make gate` fails on our side, we fix it where the fix is mechanical** (a
 recorded list such as `test/collect/refusals.expected`, a test whose output
 depends on an order the implementation chooses) and say what we changed in the

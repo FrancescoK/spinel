@@ -7,7 +7,7 @@
 #
 # See OptionParser for documentation.
 #
-require 'shellwords'
+require 'set' unless defined?(Set)
 require 'did_you_mean'
 
 #--
@@ -617,7 +617,7 @@ class OptionParser
       @long.each {|s| ldone.fetch(s) {lopts << s}; ldone[s] = true} if @long
       return if sopts.empty? and lopts.empty? # completely hidden
 
-      left = [String.new(sopts.join(', '))]
+      left = [sopts.join(', ')]
       right = desc.dup
 
       while s = lopts.shift
@@ -677,10 +677,10 @@ class OptionParser
         # "(-x -c -r)-l[left justify]"
         if /\A--\[no-\](.+)$/ =~ opt
           o = $1
-          yield("--#{o}", desc.join("").dup)
-          yield("--no-#{o}", desc.join("").dup)
+          yield("--#{o}", desc.join(""))
+          yield("--no-#{o}", desc.join(""))
         else
-          yield("#{opt}", desc.join("").dup)
+          yield("#{opt}", desc.join(""))
         end
       end
     end
@@ -1340,7 +1340,8 @@ XXX
   # See Kernel#warn.
   #
   def warn(mesg = $!)
-    super("#{program_name}: #{mesg}")
+    return if $VERBOSE.nil?
+    $stderr.puts "#{program_name}: #{mesg.to_s}"
   end
 
   #
@@ -1351,7 +1352,9 @@ XXX
   # See Kernel#abort.
   #
   def abort(mesg = $!)
-    super("#{program_name}: #{mesg}")
+    mesg = "#{program_name}: #{mesg.to_s}"
+    $stderr.puts mesg
+    raise SystemExit.new(1, mesg)
   end
 
   #
@@ -1499,7 +1502,7 @@ XXX
       case o
       when Proc, Method
         block = notwice(o, block, 'block')
-      when Array, Hash
+      when Array, Hash, Set
         if Array === o
           o, v = o.partition {|v,| Completion.completable?(v)}
           values = notwice(v, values, 'values') unless v.empty?
@@ -2082,6 +2085,7 @@ XXX
   #
   def environment(env = File.basename($0, '.*'), **keywords)
     env = ENV[env] || ENV[env.upcase] or return
+    require 'shellwords'
     parse(*Shellwords.shellwords(env), **keywords)
   end
 

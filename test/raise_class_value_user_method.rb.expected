@@ -1,0 +1,4 @@
+"w:one"
+[GadgetError, "g:two"]
+[WidgetError, "w:two"]
+"g:GadgetError"

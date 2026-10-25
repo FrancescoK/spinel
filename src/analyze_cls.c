@@ -80,6 +80,12 @@ typedef struct CF {
      An object such code may reach has its contents joined with rtc both
      ways: the code may store what it holds there, and read what is there. */
   int rt_obj, rtc;
+  int dynarg;                 /* (directed) what a Method's or Proc's call, or a send of a computed name, hands on */
+  /* the scalar helpers desugar_builtin_scalar_defs makes (`__int_gcd__1`),
+     sorted by the name of the call desugar_builtin_scalar_calls rewrites
+     into them (`gcd`), and per scope whether it is one */
+  struct { const char *base; int mi; } *scal; int nscal; unsigned char *scal_mi;
+  int (*umemo)[3];            /* cf_union's answers, direct-mapped: (a, b, a | b) */
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
   int *def_mi;                          /* DefNode -> scope */
@@ -105,6 +111,7 @@ typedef struct CF {
   int *usz;                   /* ... per root, its element count */
   int (*uev)[3]; int nuev, cuev;  /* ... each union of two classes: the rule's line, the root, the smaller count */
   unsigned char *exec_esc;    /* per scope: its block parameter may run under another self */
+  unsigned char *blk_local;   /* per scope: its block parameter is only called (cf_collect_blk_local) */
   unsigned char *exec_blk;    /* per node: a block or lambda that may run under another self */
   int pending;            /* calls round 0 left to phase 1 */
   /* directed mode (#8837, SPINEL_CLS_FLOW): a flow is an edge from the
@@ -121,6 +128,8 @@ typedef struct CF {
      contents are its contents (one level, as in Das's one-level flow). */
   int **psucc, *npsucc, *cpsucc;        /* per element: the elements its objects reach (a share) */
   int **pts, *npts, *cpts;              /* per element: the objects it may hold, sorted */
+  unsigned long long **pbit; int *npbit; /* ... and as a bitset, to ask one (npbit words) */
+  int *sent; unsigned char *sentp;      /* per element: the set, and whether a container the walk does not track, last sent on */
   int **pdel, *npdel, *cpdel;           /* per element: the objects added since it was last sent on */
   int **ld, *nld, *cld, **st, *nst, *cst;   /* per element: the loads out of it, the stores into it */
   unsigned char *ptop, *esc;            /* may hold an untracked container; its objects escaped */
@@ -305,10 +314,22 @@ static int cf_pool_tb(CF *f, int b, int bv, int os) {
   for (int j = 0; j < f->tb[b].nt; j++) { s.wi[s.nw] = f->tb[b].t[j]; s.w[s.nw++] = f->tb[b].d[f->tb[b].t[j]]; }
   return cf_pool(f, &s);
 }
+static int cf_union_set(CF *f, int a, int b);
+#define CF_UMEMO (1 << 16)
 static int cf_union(CF *f, int a, int b) {
   if (a == b || b == CF_EMPTY) return a;
   if (a == CF_EMPTY) return b;
   if (a == CF_ALL || b == CF_ALL) return CF_ALL;
+  /* the walk asks the same two sets again along many edges and rounds:
+     the pool's sets are interned, so their union is remembered */
+  if (!f->umemo && !(f->umemo = calloc(CF_UMEMO, sizeof *f->umemo))) cf_oom();
+  unsigned h = ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) & (CF_UMEMO - 1);
+  if (f->umemo[h][2] && f->umemo[h][0] == a && f->umemo[h][1] == b) return f->umemo[h][2] - 1;
+  int u = cf_union_set(f, a, b);
+  f->umemo[h][0] = a; f->umemo[h][1] = b; f->umemo[h][2] = u + 1;
+  return u;
+}
+static int cf_union_set(CF *f, int a, int b) {
   const ClsSet *x = &f->pool[a], *y = &f->pool[b];
   /* the merge, noting whether it is one of the two (as it is along most
      edges once a set has grown: no lookup then) */
@@ -412,7 +433,7 @@ static void cf_grow_directed(CF *f) {
   CF_GROW(f->succ); CF_GROW(f->nsucc); CF_GROW(f->csucc);
   CF_GROW(f->psucc); CF_GROW(f->npsucc); CF_GROW(f->cpsucc);
   CF_GROW(f->inwl); CF_GROW(f->orig); CF_GROW(f->all_seq);
-  CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts);
+  CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts); CF_GROW(f->pbit); CF_GROW(f->npbit); CF_GROW(f->sent); CF_GROW(f->sentp);
   CF_GROW(f->pdel); CF_GROW(f->npdel); CF_GROW(f->cpdel);
   CF_GROW(f->ld); CF_GROW(f->nld); CF_GROW(f->cld);
   CF_GROW(f->st); CF_GROW(f->nst); CF_GROW(f->cst);
@@ -423,7 +444,7 @@ static void cf_grow_directed(CF *f) {
     f->succ[i] = NULL; f->nsucc[i] = 0; f->csucc[i] = 0;
     f->psucc[i] = NULL; f->npsucc[i] = 0; f->cpsucc[i] = 0;
     f->inwl[i] = 0; f->orig[i] = 0; f->all_seq[i] = 0;
-    f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0;
+    f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0; f->pbit[i] = NULL; f->npbit[i] = 0; f->sent[i] = CF_EMPTY; f->sentp[i] = 0;
     f->pdel[i] = NULL; f->npdel[i] = 0; f->cpdel[i] = 0;
     f->ld[i] = NULL; f->nld[i] = 0; f->cld[i] = 0;
     f->st[i] = NULL; f->nst[i] = 0; f->cst[i] = 0;
@@ -482,9 +503,8 @@ static void cf_ptop_set_at(CF *f, int x, int line) {
   cf_wl_push(f, x);
 }
 static int cf_pts_has(CF *f, int x, int o) {
-  int lo = 0, hi = f->npts[x];
-  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
-  return lo < f->npts[x] && f->pts[x][lo] == o;
+  int q = o >> 6;
+  return q < f->npbit[x] && ((f->pbit[x][q] >> (o & 63)) & 1);
 }
 static void cf_edge(CF *f, int src, int dst);
 /* x holds object o */
@@ -511,12 +531,20 @@ static void cf_pts_add(CF *f, int x, int o) {
     { int ko = f->obj_cont[o]; cf_edge(f, ko, ks); cf_edge(f, ks, ko); }
     o = sm;     /* the summary is added like any object: it reaches on, loads and stores apply to it */
   }
-  int lo = 0, hi = f->npts[x];
-  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
-  cf_push_int(&f->pts[x], &f->npts[x], &f->cpts[x], o);
+  if ((o >> 6) >= f->npbit[x]) {
+    int nw = (o >> 6) + 1 + (f->nobj >> 6);
+    unsigned long long *b = realloc(f->pbit[x], sizeof *b * (size_t)nw);
+    if (!b) cf_oom();
+    memset(b + f->npbit[x], 0, sizeof *b * (size_t)(nw - f->npbit[x]));
+    f->pbit[x] = b; f->npbit[x] = nw;
+  }
+  f->pbit[x][o >> 6] |= 1ULL << (o & 63);
+  { int lo = 0, hi = f->npts[x];
+    while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
+    cf_push_int(&f->pts[x], &f->npts[x], &f->cpts[x], o);
+    memmove(&f->pts[x][lo + 1], &f->pts[x][lo], sizeof(int) * (size_t)(f->npts[x] - 1 - lo));
+    f->pts[x][lo] = o; }
   f->st_pts++;
-  memmove(&f->pts[x][lo + 1], &f->pts[x][lo], sizeof(int) * (size_t)(f->npts[x] - 1 - lo));
-  f->pts[x][lo] = o;
   f->changed = 1;
   int k = f->obj_cont[o];
   for (int i = 0; i < f->nld[x]; i++) cf_edge(f, k, f->ld[x][i]);
@@ -602,18 +630,23 @@ static void cf_drain(CF *f) {
        of them itself, cf_edge) */
     int nd = f->npdel[x], *dl = NULL;
     if (nd) { dl = f->pdel[x]; f->pdel[x] = NULL; f->npdel[x] = 0; f->cpdel[x] = 0; }
-    for (int i = 0; i < f->nsucc[x]; i++) {
+    /* the set goes on only when it changed since it last did (a new edge
+       sends it itself, cf_edge); the objects only those gained since */
+    int sx = f->set[x], dosets = sx != f->sent[x] || (f->ptop[x] && !f->sentp[x]);
+    f->sent[x] = sx; f->sentp[x] = f->ptop[x];
+    for (int i = 0; (dosets || nd) && i < f->nsucc[x]; i++) {
       int y = f->succ[x][i];
-      int sx = f->set[x];
-      int u = cf_union(f, f->set[y], sx);
-      if (u != f->set[y]) {
-        if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
-        if (u == CF_ALL) f->all_seq[y] = ++f->seq;
-        f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
-        if (u == CF_ALL) cf_ptop_set(f, y);
+      if (dosets) {
+        int u = cf_union(f, f->set[y], sx);
+        if (u != f->set[y]) {
+          if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
+          if (u == CF_ALL) f->all_seq[y] = ++f->seq;
+          f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
+          if (u == CF_ALL) cf_ptop_set(f, y);
+        }
+        if (f->ptop[x]) cf_ptop_set(f, y);
       }
       for (int j = 0; j < nd; j++) cf_pts_add(f, y, dl[j]);
-      if (f->ptop[x]) cf_ptop_set(f, y);
     }
     for (int i = 0; i < f->npsucc[x]; i++) {
       int y = f->psucc[x][i];
@@ -636,7 +669,17 @@ static void cf_edge(CF *f, int src, int dst) {
   f->st_edges++;
   f->changed = 1;
   if (f->npts[src]) { cf_push_int(&f->fs, &f->nfs, &f->cfs, src); cf_push_int(&f->fs, &f->nfs, &f->cfs, dst); }
-  cf_kick(f, src);
+  /* the set src has goes along the new edge now (the drain sends a set on
+     only when it changed) */
+  int u = cf_union(f, f->set[dst], f->set[src]);
+  if (u != f->set[dst]) {
+    if (u == CF_ALL && !f->orig[dst]) f->orig[dst] = f->orig[src] ? f->orig[src] : -1;
+    if (u == CF_ALL) f->all_seq[dst] = ++f->seq;
+    f->set[dst] = u; cf_wl_push(f, dst);
+    if (u == CF_ALL) cf_ptop_set(f, dst);
+  }
+  if (f->ptop[src]) cf_ptop_set(f, dst);
+  cf_drain(f);
 }
 /* an edge that carries only the objects */
 static void cf_pedge(CF *f, int src, int dst) {
@@ -1765,6 +1808,18 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   Compiler *c = f->c;
   if (blk < 0) return;
   Scope *m = &c->scopes[mi];
+  if (nt_kind(nt, blk) == NK_BlockArgumentNode && f->blk_local) {
+    /* `&blk`, the block parameter of a method that only calls it: mi's
+       yields are that method's, and their values its block's */
+    int e = nt_ref(nt, blk, "expression");
+    int om = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? cf_owner_def(f, e, 1, NULL) : -1;
+    const char *en = e >= 0 ? nt_str(nt, e, "name") : NULL;
+    if (om >= 0 && f->blk_local[om] && en && sp_streq(en, c->scopes[om].blk_param)) {
+      for (int y = 0; y < CF_YARGS; y++) cf_flow(f, f->yarg_el[mi][y], f->yarg_el[om][y]);
+      cf_flow(f, f->yval_el[om], f->yval_el[mi]);
+      return;
+    }
+  }
   if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
     /* `&pr`: the proc's value is its body's, its parameters take anything */
     int e = nt_ref(nt, blk, "expression");
@@ -1793,7 +1848,9 @@ static void cf_bind_block(CF *f, int mi, int blk) {
     }
   }
   if (!plain) { cf_all_block_params(f, blk); return; }
-  if (m->blk_param && m->blk_param[0]) { cf_all_block_params(f, blk); return; }
+  if (m->blk_param && m->blk_param[0] && !(f->blk_local && f->blk_local[mi])) {
+    cf_all_block_params(f, blk); return;
+  }
   if (f->has_super[mi]) { cf_all_block_params(f, blk); return; }
   if (m->is_proc_form) { cf_all_block_params(f, blk); return; }
   if (m->is_lowered_yield) { cf_all_block_params(f, blk); return; }
@@ -2334,13 +2391,30 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
    `:int`, ...), the receiver itself for `:self`, anything for `:any`. A
    name no binding takes answers as Object's method would when it is one
    whose answer is a builtin (`nil?`, `==`, `to_s`), else anything. */
+/* What a native binding answers when its declaration does not tell (`:any`,
+   a name it does not declare): a value the runtime holds (#8837), which
+   in the directed walk is the runtime object's contents, the call's
+   arguments handed to it first (the C side may keep them and give them
+   back); every class in the unified one */
+static void cf_native_runtime_value(CF *f, int v) {
+  if (!f->directed || f->rtc < 0) { cf_all(f, v); return; }
+  if (v >= 0 && v < f->nnodes && nt_kind(f->nt, v) == NK_CallNode) {
+    int a = nt_ref(f->nt, v, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(f->nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      NodeKind k = nt_kind(f->nt, av[i]);
+      cf_escape(f, k == NK_SplatNode ? nt_ref(f->nt, av[i], "expression") : av[i]);
+    }
+  }
+  cf_edge(f, f->rtc, v);
+}
 static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, int argc) {
   Compiler *c = f->c;
   cf_kval(f, v);
   int m = comp_native_method_find(c, k, nm, argc, 0);
   if (m < 0) {
     if (cf_scalar_answer(nm)) cf_add_set(f, v, cf_bv_set(f));
-    else cf_all(f, v);
+    else cf_native_runtime_value(f, v);
     return;
   }
   const char *ret = c->native_methods[m].ret;
@@ -2349,7 +2423,7 @@ static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, i
   TyKind t = native_spec_to_ty(ret);
   if (sp_streq(ret, "string?") || sp_streq(ret, "int?") || sp_streq(ret, "float?") ||
       (t != TY_POLY && t != TY_UNKNOWN)) { cf_add_set(f, v, cf_bv_set(f)); return; }
-  cf_all(f, v);
+  cf_native_runtime_value(f, v);
 }
 
 /* The value of a call on a native class or module itself (`SQL.sqlite3_column_int(stmt, i)`,
@@ -2365,7 +2439,7 @@ static void cf_native_class_answer(CF *f, int v, int x, const char *nm, int argc
     if (c->native_funcs[i].mod && sp_streq(c->native_funcs[i].mod, cn) && sp_streq(c->native_funcs[i].name, nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
   if (comp_native_method_find(c, x, nm, argc, 1) >= 0) { cf_add_set(f, v, f->own[x]); return; }
   if (cf_scalar_answer(nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
-  cf_all(f, v);
+  cf_native_runtime_value(f, v);
 }
 
 static int cf_poison_class_call(CF *f, int v, const char *key, const char *nm, const int *argv, int argc, int blk) {
@@ -2610,6 +2684,59 @@ static void cf_send_writers(CF *f, int v, int r, const int *argv, int argc) {
   }
 }
 
+/* The scalar helpers (#8837, decision 5): desugar_builtin_scalar_calls
+   rewrites `recv.gcd(x)` into `__int_gcd__1(recv, x)` inside the type
+   fixpoint, after this walk, so the walk binds such a call to the helpers
+   of its name itself: the receiver (in a helper's own body, a
+   receiverless call's is its `__self`) to the first parameter, the
+   arguments to the rest, and the helper's value to the call's. A call the
+   desugar leaves alone (a receiver that is no Integer, a splat) binds
+   values the helper never sees, which only widens it. */
+static int cf_scal_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+static void cf_scal_build(CF *f) {
+  Compiler *c = f->c;
+  static const char *const pre[] = { "__int_", "__flt_", "__cmp_" };
+  f->scal_mi = calloc((size_t)c->nscopes + 1, 1);
+  f->scal = malloc(sizeof *f->scal * (size_t)(c->nscopes + 1));
+  if (!f->scal_mi || !f->scal) cf_oom();
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    const char *nm = c->scopes[mi].name;
+    if (!nm || c->scopes[mi].is_cmethod || c->scopes[mi].class_id >= 0 || !cf_prelude_scope(f, mi)) continue;
+    int q = -1;
+    for (int i = 0; i < 3 && q < 0; i++) if (!strncmp(nm, pre[i], 6)) q = i;
+    if (q < 0 || !nm[6]) continue;
+    /* the base name: past the prefix, less a clone's `__<n>` */
+    const char *b = nm + 6, *e = b + strlen(b), *u = strstr(b, "__");
+    if (u && u > b) { const char *d = u + 2; while (*d >= '0' && *d <= '9') d++; if (!*d && d > u + 2) e = u; }
+    char *base = malloc((size_t)(e - b) + 1);
+    if (!base) cf_oom();
+    memcpy(base, b, (size_t)(e - b)); base[e - b] = 0;
+    f->scal[f->nscal].base = base; f->scal[f->nscal].mi = mi; f->nscal++;
+    f->scal_mi[mi] = 1;
+  }
+  qsort(f->scal, (size_t)f->nscal, sizeof *f->scal, cf_scal_cmp);
+}
+static void cf_scal_bind(CF *f, int v, const char *nm, int r, const int *argv, int argc) {
+  if (!f->nscal) return;
+  int lo = 0, hi = f->nscal;
+  while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(f->scal[m].base, nm) < 0) lo = m + 1; else hi = m; }
+  if (lo >= f->nscal || strcmp(f->scal[lo].base, nm)) return;
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(f->nt, argv[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return;   /* (no rewrite) */
+  }
+  int recv = r >= 0 ? r : cf_lv(f, v, "__self");
+  for (int j = lo; j < f->nscal && !strcmp(f->scal[j].base, nm); j++) {
+    int mi = f->scal[j].mi;
+    if (recv >= 0) cf_flow(f, recv, cf_param_el(f, mi, 0));
+    for (int i = 0; i < argc; i++) cf_flow(f, argv[i], cf_param_el(f, mi, i + 1));
+    cf_flow(f, f->ret_el[mi], v);
+  }
+}
+static int cf_blk_call(CF *f, int v, int r, const char *nm, const int *argv, int argc);
+static int cf_blk_call_name(const char *cn);
 static void cf_call(CF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -2624,6 +2751,49 @@ static void cf_call(CF *f, int v) {
     NodeKind k0 = nt_kind(nt, argv[0]);
     const char *lit = k0 == NK_SymbolNode ? nt_str(nt, argv[0], "value") : k0 == NK_StringNode ? nt_str(nt, argv[0], "content") : NULL;
     if (lit) { nm = lit; argv++; argc--; }
+  }
+  cf_scal_bind(f, v, nm, r, argv, argc);
+  if (cf_blk_call(f, v, r, nm, argv, argc)) return;
+  /* `k.superclass` (#8837): the Class objects of the parents of the
+     classes the receiver's Class objects are, and the builtin ones (a
+     runtime class, nil) */
+  if (sp_streq(nm, "superclass") && argc == 0 && r >= 0 && f->directed) {
+    int ps = cf_set_of(f, r);
+    if (ps == CF_EMPTY) { cf_add_set(f, v, cf_bv_set(f)); return; }
+    /* (a Class object the walk does not know, Class.new(Mod)'s, may have
+       any class for its parent) */
+    int only_classes = ps != CF_ALL && !f->pool[ps].bv && !f->pool[ps].os;
+    for (int k = only_classes ? cls_set_next(&f->pool[ps], -1) : -1; k >= 0 && only_classes; k = cls_set_next(&f->pool[ps], k))
+      if (k < c->nclasses || comp_cmethod_in_chain(c, k - c->nclasses, "superclass", NULL) >= 0) only_classes = 0;   /* (an object's own superclass) */
+    if (only_classes) {
+      const ClsSet *rs = &f->pool[ps];
+      int b = cf_tb(f, 1);
+      for (int k = cls_set_next(rs, -1); k >= 0; k = cls_set_next(rs, k)) {
+        if (k < c->nclasses) continue;
+        int par = c->classes[k - c->nclasses].parent;
+        if (par >= 0 && par < c->nclasses) cf_tb_bit(f, b, par + c->nclasses);
+      }
+      cf_add_set(f, v, cf_pool_tb(f, b, 1, 0));
+      return;
+    }
+  }
+  /* a Method's or Proc's call, and a send of a computed name: what it hands
+     on reaches the methods a name the program spells reflectively may
+     call (cf_is_dyn), whose parameters take it (cf_solve) */
+  /* `inject(:m)`, `reduce(init, :m)` and `each_with_object(x, &:m)` hand m
+     the receiver's elements and the memo (cf_collect_dyn names m) */
+  if (f->directed && f->dynarg >= 0 && (sp_streq(nm, "inject") || sp_streq(nm, "reduce") || sp_streq(nm, "each_with_object"))) {
+    if (r >= 0) cf_load(f, r, f->dynarg);
+    for (int i = 0; i < argc; i++) if (nt_kind(nt, argv[i]) != NK_BlockArgumentNode && nt_kind(nt, argv[i]) != NK_SymbolNode) cf_flow(f, argv[i], f->dynarg);
+  }
+  if (f->directed && f->dynarg >= 0 && (cf_blk_call_name(nm) || sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) {
+    int first = sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send");
+    for (int i = first; i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_BlockArgumentNode) continue;
+      if (ak == NK_SplatNode) cf_load(f, nt_ref(nt, argv[i], "expression"), f->dynarg);
+      else cf_flow(f, argv[i], f->dynarg);
+    }
   }
   if (cf_opaque_name(nm)) {
     cf_all(f, v);
@@ -2716,22 +2886,32 @@ static void cf_call(CF *f, int v) {
       int tl = comp_method_index(c, nm);
       if (tl >= 0 && cf_user_target(f, v, tl, argv, argc, blk)) found = 1;
     }
-    /* a module included at top level is Object's, so its method answers a
-       bare call no class or top-level def did */
-    for (int k = 0; k < c->ntoplevel_includes && !found; k++) {
-      int mi = comp_method_in_chain(c, c->toplevel_includes[k], nm, NULL);
+    /* a module included at top level is Object's (and one main extends is
+       main's), so its method answers a bare call no class or top-level def
+       did: the one the call binds (comp_included_method_index) */
+    if (!found) {
+      int mi = comp_included_method_index(c, nm, v);
       if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) found = 1;
     }
     if (found) return;
-    /* a native binding of the class (an ffi_func): anything */
+    /* a native binding of the class (an ffi_func) of the name: what it
+       declares it answers. A name no binding of the class or a subclass
+       takes is no native call, and goes on (#8837: every such call was
+       anything, 2,107 receivers of a large program's) */
     if (s->def_node >= 0 && s->class_id >= 0) {
       const ClsSet *ds = &f->pool[f->desc[s->class_id]];
-      int nat = cf_class_has_natives(f, s->class_id);
+      int nat = cf_class_has_natives(f, s->class_id), whole = c->classes[s->class_id].is_native_class, bound = 0;
       for (int i = cls_set_next(ds, -1); i >= 0 && !nat; i = cls_set_next(ds, i)) nat = cf_class_has_natives(f, i);
       if (nat) {
-        cf_all(f, v);
-        if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
-        return;
+        int self_el = cf_self_recv(f, v, si, nm);
+        if (comp_native_method_find(c, s->class_id, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, s->class_id, nm, argc); bound = 1; }
+        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i))
+          if (i < c->nclasses && i != s->class_id && comp_native_method_find(c, i, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, i, nm, argc); bound = 1; }
+        if (bound || whole) {
+          if (!bound) cf_all(f, v);
+          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+          return;
+        }
       }
     }
     /* a bare call in a block that may run under another self (an exec
@@ -3713,6 +3893,72 @@ static void cf_collect_exec(CF *f) {
   }
   if (procs) NT_FOREACH_KIND(nt, NK_LambdaNode, id) f->exec_blk[id] = 1;
 }
+/* Which methods only call their block parameter: every read of it is the
+   receiver of call, (), [], yield or === with plain arguments (or of
+   arity, nil?, lambda?, parameters), it is never written, stored or
+   passed on, and it does not run under another self. Such a parameter's
+   calls are yields (cf_blk_call), and a literal block given to the method
+   binds as a yielding method's does (cf_bind_block) rather than taking
+   anything (#8837, stage 4). */
+static int cf_blk_call_name(const char *cn) {
+  return cn && (sp_streq(cn, "call") || sp_streq(cn, "()") || sp_streq(cn, "yield") || sp_streq(cn, "===") || sp_streq(cn, "[]"));
+}
+static void cf_collect_blk_local(CF *f) {
+  Compiler *c = f->c;
+  const NodeTable *nt = f->nt;
+  f->blk_local = calloc((size_t)c->nscopes + 1, 1);
+  if (!f->blk_local) cf_oom();
+  for (int mi = 1; mi < c->nscopes; mi++)
+    f->blk_local[mi] = c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] && !f->exec_esc[mi];
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, id) {
+    int mi = cf_owner_def(f, id, 1, NULL);
+    if (mi < 0 || !f->blk_local[mi]) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, c->scopes[mi].blk_param)) continue;
+    int p = f->par ? f->par[id] : -1, ok = 0;
+    /* handed on as the block of a receiverless call of a method of the
+       class's own (`each_line(sep, &blk)`): that method's yields are this
+       one's (cf_bind_block) */
+    if (p >= 0 && nt_kind(nt, p) == NK_BlockArgumentNode) {
+      int pc = f->par[p];
+      while (pc >= 0 && nt_type(nt, pc) && sp_streq(nt_type(nt, pc), "ArgumentsNode")) pc = f->par[pc];
+      const char *cn = pc >= 0 && nt_kind(nt, pc) == NK_CallNode ? nt_str(nt, pc, "name") : NULL;
+      int k = c->scopes[mi].class_id;
+      ok = cn && nt_ref(nt, pc, "receiver") < 0 && nt_ref(nt, pc, "block") == p && k >= 0 && !c->scopes[mi].is_cmethod &&
+           comp_method_in_chain(c, k, cn, NULL) >= 0;
+    }
+    if (p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id) {
+      const char *cn = nt_str(nt, p, "name");
+      if (cn && (sp_streq(cn, "arity") || sp_streq(cn, "nil?") || sp_streq(cn, "lambda?") || sp_streq(cn, "parameters"))) ok = 1;
+      else if (cf_blk_call_name(cn) && nt_ref(nt, p, "block") < 0) {
+        int a = nt_ref(nt, p, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        ok = an <= CF_YARGS;
+        for (int i = 0; i < an && ok; i++) {
+          NodeKind k = nt_kind(nt, av[i]);
+          if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) ok = 0;
+        }
+      }
+    }
+    if (!ok) f->blk_local[mi] = 0;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int mi = cf_owner_def(f, id, 1, NULL);
+    const char *nm = nt_str(nt, id, "name");
+    if (mi >= 0 && f->blk_local[mi] && nm && sp_streq(nm, c->scopes[mi].blk_param)) f->blk_local[mi] = 0;
+  }
+}
+/* `blk.call(a, b)` on a block parameter that is only called: the yield
+   `yield a, b` */
+static int cf_blk_call(CF *f, int v, int r, const char *nm, const int *argv, int argc) {
+  if (r < 0 || !f->blk_local || nt_kind(f->nt, r) != NK_LocalVariableReadNode || !cf_blk_call_name(nm)) return 0;
+  int mi = cf_owner_def(f, r, 1, NULL);
+  const char *rn = nt_str(f->nt, r, "name");
+  if (mi < 0 || !f->blk_local[mi] || !rn || !sp_streq(rn, f->c->scopes[mi].blk_param)) return 0;
+  for (int i = 0; i < argc && i < CF_YARGS; i++) cf_flow(f, argv[i], f->yarg_el[mi][i]);
+  cf_flow(f, f->yval_el[mi], v);
+  return 1;
+}
 /* node v runs in a block that may have another self */
 static int cf_in_exec_block(CF *f, int v) {
   for (int q = f->par ? f->par[v] : -1, d = 0; q >= 0 && d < 100000; q = f->par[q], d++) {
@@ -4247,6 +4493,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
   memset(&f, 0, sizeof f);
+  f.rt_obj = f.rtc = f.dynarg = -1;   /* (made below, in directed mode: none until then) */
   /* directed 2: the walk of the kinds alone (cf_kinds), whose classes are
      not kept */
   f.directed = directed != 0;
@@ -4399,6 +4646,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
      values, and are escaped (an object they come to hold is reachable by
      the runtime) */
   f.rt_obj = f.rtc = -1;
+  if (directed) f.dynarg = cf_new_el(&f);
   if (directed) {
     f.rt_obj = cf_new_obj(&f);
     f.rtc = f.obj_cont[f.rt_obj];
@@ -4441,9 +4689,11 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     }
   }
   cf_collect_exec(&f);
+  cf_collect_blk_local(&f);
   for (int k = 0; k < c->nclasses && !f.has_mm; k++)
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) f.has_mm = 1;
   /* the parameters a call the analysis cannot see binds: anything */
+  cf_scal_build(&f);
   cf_mark_dead_protocols(&f);
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *s = &c->scopes[mi];
@@ -4455,7 +4705,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
     int sd_all = noseed && sp_streq(noseed, "all");
     int sd_proto = cf_protocol_name(s->name) && !(noseed && sp_streq(noseed, "proto")) && !sd_all;
-    int sd_prelude = cf_prelude_scope(&f, mi) && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
+    int sd_prelude = cf_prelude_scope(&f, mi) && !f.scal_mi[mi] && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
     int sd_modfn = s->is_module_function && !(noseed && sp_streq(noseed, "modfn")) && !sd_all;
     if (sd_proto || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi)) ||
         s->is_proc_form || s->is_lowered_yield ||
@@ -4496,7 +4746,12 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         int why = sd_proto ? 90001 : sd_prelude ? 90002 : sd_modfn ? 90003 :
                   (cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi))) ? 90004 :
                   (s->is_proc_form || s->is_lowered_yield || s->cs_synth) ? 90005 : 90006;
-        cf_all_params_at(&f, mi, why);
+        if (why == 90004 && f.dynarg >= 0 && !cf_opaque_name(s->name) && !sd_proto && !sd_prelude && !sd_modfn) {
+            for (int i = 0; i < s->nparams; i++) cf_edge(&f, f.dynarg, cf_param_el(&f, mi, i));
+            if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_bv_set(&f));
+            cf_edge(&f, f.ret_el[mi], f.dynarg);   /* (a memo handed back, a value sent on) */
+          }
+          else cf_all_params_at(&f, mi, why);
       }
     }
     if (s->blk_param && s->blk_param[0]) {
@@ -4538,7 +4793,9 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   }
   if (f.why) cf_why_report(&f);
   /* the pass's own */
-  free(f.par); free(f.uf); free(f.set); free(f.ph);
+  free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
+  for (int i = 0; i < f.nscal; i++) free((char *)f.scal[i].base);
+  free(f.scal); free(f.scal_mi); free(f.blk_local);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
   free(f.sw); free(f.swi);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); free(f.pm[mi].kw); free(f.pm[mi].el); }
@@ -4571,7 +4828,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     free(f.orig);
     for (int i = 0; i < f.dcap; i++) free(f.succ[i]);
     free(f.succ); free(f.nsucc); free(f.csucc); free(f.inwl); free(f.wl); free(f.eh);
-    for (int i = 0; i < f.dcap; i++) { free(f.psucc[i]); free(f.pts[i]); free(f.pdel[i]); free(f.ld[i]); free(f.st[i]); }
+    for (int i = 0; i < f.dcap; i++) { free(f.psucc[i]); free(f.pts[i]); free(f.pbit[i]); free(f.pdel[i]); free(f.ld[i]); free(f.st[i]); }
+    free(f.pbit); free(f.npbit); free(f.sent); free(f.sentp);
     free(f.pdel); free(f.npdel); free(f.cpdel);
     free(f.psucc); free(f.npsucc); free(f.cpsucc); free(f.pts); free(f.npts); free(f.cpts);
     free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst);

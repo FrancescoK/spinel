@@ -30730,6 +30730,47 @@ int g_rto_nil_obj = 0;
    subclasses its instances may have answer differently: the class whose
    instances the call must then ask by their own class id */
 int g_rto_by_cls = -1;
+/* set by respond_to_static_answer when a receiver typed as the base
+   exception is asked for a name only some of the program's exception
+   classes define: the exception's own class answers at run time
+   (emit_respond_to_exc_cls) */
+int g_rto_exc = 0;
+static int rto_exact_class_answer(Compiler *c, int cid, const char *qm,
+                                  int include_all, int foldable);
+/* Does an exception class of the program define qm, public or not, which
+   no builtin exception has? Then a receiver typed as the base exception
+   answers by the class it holds. Not when one of them answers only at run
+   time (its own respond_to?, a private match under a computed include_all). */
+static int rto_exc_by_cls(Compiler *c, const char *qm, int include_all, int foldable) {
+  if (builtin_instance_method_known("Exception", qm) || builtin_instance_method_known("Object", qm)) return 0;
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_exc_subclass(c, k)) continue;
+    if (rto_exact_class_answer(c, k, qm, include_all, foldable) < 0) return 0;
+    any |= obj_responds_answer(c, k, qm) != 0;
+  }
+  return any;
+}
+/* Emit the answer g_rto_exc asked for: true for the exception classes of
+   the program that answer qm, else the builtin exception surface. */
+int emit_respond_to_exc_cls(Compiler *c, int recv, const char *qm, int argc,
+                            const int *argv, Buf *b) {
+  int include_all = argc >= 2 && nt_kind(c->nt, argv[1]) == NK_TrueNode;
+  int t = ++g_tmp;
+  char xv[32]; snprintf(xv, sizeof xv, "_t%d", t);
+  buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "); int _k%d = _t%d ? sp_exc_user_cls_id(sp_box_obj((void *)_t%d, SP_BUILTIN_EXCEPTION)) : 0x7fffffff; (", t, t, t);
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_is_exc_subclass(c, k) && rto_exact_class_answer(c, k, qm, include_all, 1) == 1)
+      buf_printf(b, "_k%d == %d || ", t, k);
+  buf_printf(b, "(_t%d ? sp_poly_responds_builtin(", t);
+  emit_boxed_text(c, TY_EXCEPTION, xv, b);
+  buf_puts(b, ", ");
+  emit_str_literal(b, qm);
+  buf_printf(b, ") : %d)); })", nil_answers_name(qm));
+  return 1;
+}
 /* What an instance whose class is exactly cid answers to Object#respond_to?
    (qm): 1 / 0, or -1 when only the runtime can tell (its class defines
    respond_to?, or a private match under a runtime include_all). */
@@ -30843,6 +30884,7 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
   const NodeTable *nt = c->nt;
   g_rto_nil_obj = 0;
   g_rto_by_cls = -1;
+  g_rto_exc = 0;
   /* respond_to?(sym, include_all=false): by default only public methods
      answer true; a literal `true` 2nd arg includes private+protected. A
      non-literal 2nd arg can't be folded, so a private/protected match is
@@ -31098,6 +31140,13 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
          function now, before respond_universal[] and the per-type surface
          lists -- K-028 follow-up, kilau docs/CATALOG.md -- so it never
          reaches here unresolved.) */
+      /* an exception answers a name the program's exception classes define
+         by the class it holds, where the probe typed `e.label` through
+         whichever class has it */
+      if (rt == TY_EXCEPTION && recv >= 0 && rto_exc_by_cls(c, qm, include_all, foldable)) {
+        g_rto_exc = 1;
+        return -1;
+      }
       if (rt_probe_answer(c, id, &yes)) {
         if (yes && recv >= 0 && rt_probe_unfounded(c, rt, qm)) yes = 0;
         /* a class value that answers yes is the site's to emit: nil responds

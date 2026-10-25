@@ -4513,6 +4513,56 @@ int an_kernel_const_recv(Compiler *c, int id, int recv, int fresh) {
   return rn && sp_streq(rn, "Kernel") && !cplan_const_user(c, id, rn, fresh);
 }
 
+/* Is `recv` a receiver Kernel#` answers call `id` for: the Kernel module
+   (Kernel.`("cmd")), `self` in the builtin default of a poly self dispatch
+   (`in_default`), or a builtin value the call may reach private methods of.
+   A backtick in an instance_eval block became `self.`("cmd")`, or a call on
+   the spliced receiver's temp (ie_subtree_self_calls). Every Object has
+   Kernel's private `, so a String or an Integer self answers it unless the
+   program reopens that class with one; the poly default takes the receivers
+   whose class has no ` of its own, which a BasicObject subclass's instance
+   also reaches (its emitter raises there). A ` the program gives Object or
+   Kernel, or a module the top level includes, sits above Kernel's and
+   answers those receivers instead, which no arm here emits, so they keep the
+   NoMethodError. So does a poly self that main extends with one, since main
+   may be that self. */
+int an_kernel_backtick_recv(Compiler *c, int id, int recv, int fresh, int in_default) {
+  const NodeTable *nt = c->nt;
+  if (an_kernel_const_recv(c, id, recv, fresh)) return 1;
+  if (recv < 0) return 0;
+  int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
+  if ((ob >= 0 && comp_method_in_chain(c, ob, "`", NULL) >= 0) ||
+      (ke >= 0 && comp_method_in_chain(c, ke, "`", NULL) >= 0) ||
+      comp_toplevel_mod_defines(c, "`", 0)) return 0;
+  int self_recv = nt_kind(nt, recv) == NK_SelfNode;
+  if (!self_recv && !nt_ignore_visibility(nt, id)) return 0;
+  TyKind rt = self_recv ? TY_POLY : infer_type(c, recv);
+  /* (a spliced receiver's temp held boxed, as an Integer is under
+     --int-overflow=promote, is a poly self too) */
+  if (rt == TY_POLY) return in_default && !comp_toplevel_mod_defines(c, "`", 1);
+  const char *cn = rt == TY_CLASS || ty_is_object(rt) ? NULL : builtin_class_of_type(rt);
+  if (!cn) return 0;
+  int ci = comp_class_index(c, cn);
+  return ci < 0 || comp_method_in_chain(c, ci, "`", NULL) < 0;
+}
+
+/* The instantiated BasicObject subclasses whose chain has no method `name`
+   (a malloc'd list the caller frees, NULL for none), their count in *n: the
+   receivers a poly dispatch's builtin default reaches that have no Kernel
+   method of the name. */
+int *an_blank_slates_lacking(Compiler *c, const char *name, int *n) {
+  int *out = NULL;
+  *n = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated || !class_is_blank_slate(c, k) || comp_method_in_chain(c, k, name, NULL) >= 0)
+      continue;
+    out = realloc(out, sizeof(int) * (size_t)(*n + 1));
+    if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    out[(*n)++] = k;
+  }
+  return out;
+}
+
 /* The String a `super` in a ` override (call `id` in scope `s`) hands
    Kernel#`: 1 for super(x) with one plain argument (*arg is x), 2 for a
    zero-argument super in a def of one required parameter and nothing

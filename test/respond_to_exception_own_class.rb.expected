@@ -1,0 +1,13 @@
+[GadgetError, false]
+nil
+[false, false, true, true]
+[WidgetError, true]
+"w"
+[true, false, false, true]
+[SubWidgetError, true]
+"w"
+[true, false, false, true]
+[RuntimeError, false]
+nil
+[false, false, false, true]
+[ZeroDivisionError, false, true]

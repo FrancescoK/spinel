@@ -9,17 +9,18 @@ CRuby 4.0 ships.
 - License: Ruby's (`COPYING`) or the 2-clause BSD license (`BSDL`), both
   copied from that commit.
 
-`optparse/*.rb` is unchanged except that six of them (`ac.rb`, `date.rb`,
-`shellwords.rb`, `time.rb`, `uri.rb`, `version.rb`) lose their first line,
+`optparse/*.rb` is unchanged except that five of them (`ac.rb`, `date.rb`,
+`shellwords.rb`, `time.rb`, `uri.rb`) lose their first line,
 `# frozen_string_literal: false`: Spinel freezes every string literal and
 warns that the pragma is ignored, so it warned in every program that
 required one of them, and their literals are frozen either way.
+`version.rb` is left out: it is what `--version=pkg` loads (see below), and
+a program that required it did not compile.
 `optparse.rb` is unchanged except for these hunks, each in its own commit
 with the reason:
 
 | Where | Upstream | Here | Why |
 |---|---|---|---|
-| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | a Set in every program that requires optparse changes how other values are typed: under `--share-strings` a handler such as `{ \|v\| list << v.join("+") }` is refused (#6765) |
 | `Completion.candidate` and its three callers | the table's `&method(:each)` as a block, called with a block | the table as an argument, iterated with `#each` | a Method given as such a block raises NoMethodError |
 | `RequiredArgument#parse`, `parse_in_order` | `&method(:raise)`, `{\|*exc\| raise(*exc)}` | `{ \|klass, word\| raise klass, word }` | a splatted `raise` raises TypeError |
 | `List#accept`, `make_switch` | `pattern.method(:convert).to_proc` | `->(*a) { pattern.convert(*a) }` | refused on a pattern of several classes |
@@ -28,12 +29,10 @@ with the reason:
 | pager of `--help` | `IO.popen(*args, &print)` | `Process.spawn` of the pager reading an `IO.pipe` | `IO.popen` with a write mode is not supported; through the splat it raised ArgumentError on a terminal with `PAGER` set |
 | `--version` | `--version=pkg` loads `optparse/version` | the package name is ignored | that file finds versions by constant names at run time |
 | `version`, `release` | `defined?(@version) && @version` | `@version` | `defined?` answered nil for an ivar set only by `attr_writer` |
-| `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | refused under `--share-strings` |
+| `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | with `&&` the compiler warns in every program that requires optparse that `Release` and `RELEASE` are defined nowhere |
+| `warn`, `abort` | `super("#{program_name}: #{mesg}")` | write the line to `$stderr`; `abort` then raises `SystemExit` | `super` did not reach `Kernel#warn` and `Kernel#abort` (NoMethodError) |
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
 | top of the file | nothing: CRuby loads did_you_mean before the program | `require 'did_you_mean'` | an invalid or ambiguous option names the switches it could have meant |
-| `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
-| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [String.new(sopts.join(', '))]` | the String is changed in place through the Array: refused under `--share-strings`, and in the default build the change is lost once the program uses `Set` |
-| `Switch#compsys` | `desc.join("")` | `desc.join("").dup` | refused under `--share-strings`: the String is handed on and could change in place |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
 

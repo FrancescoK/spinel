@@ -4099,9 +4099,10 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
    run, as CRuby's does: in the single-threaded runtime at the safe points
    the compiler emits for a program that traps (a method's entry, a loop's
    back-edge: sp_sig_pending_flag), right after a Process.kill, and in the
-   waits (sleep, the cooperative IO park, Thread.pass); in the threaded one on
-   a green thread of its own, parked on a wake pipe, so a trap runs while the
-   main thread stays blocked in a read or a sleep. Nothing here but the two
+   waits (sleep, the cooperative IO park, Thread.pass); in the threaded one
+   the same until the program's first thread, and from then on a green thread
+   of its own, parked on a wake pipe, so a trap runs while the main thread
+   stays blocked in a read or a sleep. Nothing here but the two
    atomics and the write(2) is called from the handler. */
 static int sp_sig_pending[SP_SIG_MAX];
 volatile int sp_sig_pending_flag;
@@ -4129,7 +4130,9 @@ void sp_sig_c_handler(int no) {
   int e = errno;
   SP_ATOMIC_FETCH_ADD(&sp_sig_pending[no], 1, __ATOMIC_RELEASE);
 #ifdef SP_THREADS
-  if (sp_sig_wake[1] >= 0) { char b = 0; ssize_t w = write(sp_sig_wake[1], &b, 1); (void)w; }
+  int wfd = SP_ATOMIC_LOAD(&sp_sig_wake[1], __ATOMIC_ACQUIRE);
+  if (wfd >= 0) { char b = 0; ssize_t w = write(wfd, &b, 1); (void)w; }
+  else SP_ATOMIC_STORE(&sp_sig_pending_flag, 1, __ATOMIC_RELEASE);   /* no thread yet: as below */
 #else
   SP_ATOMIC_STORE(&sp_sig_pending_flag, 1, __ATOMIC_RELEASE);
 #endif
@@ -4180,11 +4183,25 @@ static void sp_sig_thread_body(sp_Fiber *f) {
 static void sp_sig_thread_start(void) {
   static int started = 0;
   if (started) return;
-  if (sp_io_make_pipe(sp_sig_wake) != 0) return;
-  for (int e = 0; e < 2; e++) { int fl = fcntl(sp_sig_wake[e], F_GETFL, 0); if (fl >= 0) fcntl(sp_sig_wake[e], F_SETFL, fl | O_NONBLOCK); }
+  int pf[2];
+  if (sp_io_make_pipe(pf) != 0) return;
+  for (int e = 0; e < 2; e++) { int fl = fcntl(pf[e], F_GETFL, 0); if (fl >= 0) fcntl(pf[e], F_SETFL, fl | O_NONBLOCK); }
+  sp_sig_wake[0] = pf[0];
+  SP_ATOMIC_STORE(&sp_sig_wake[1], pf[1], __ATOMIC_RELEASE);   /* the handler writes it from here on */
   started = 1;
   sp_thread *t = sp_Thread_spawn_fiber(sp_Fiber_new(sp_sig_thread_body), sp_box_nil());
   sp_thread_set_internal(t);
+  /* a delivery recorded before the pipe, whose proc has not run yet */
+  if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) { char b = 0; ssize_t w = write(pf[1], &b, 1); (void)w; }
+}
+/* #10210: a trap set before the program's first thread runs as the
+   single-threaded runtime's does, on the main thread at the safe points and
+   the waits (sp_sig_pending_flag), and starts no scheduler. The first thread
+   brings up the workers (sp_Thread_spawn_fiber), and from then on the trap
+   thread runs them. */
+static int sp_sig_trapped;
+void sp_sig_threads_began(void) {
+  if (sp_sig_trapped) sp_sig_thread_start();
 }
 #endif
 void sp_sig_exit_dispatch(void) {
@@ -4210,7 +4227,8 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);S
     if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
     else {
 #ifdef SP_THREADS
-      sp_sig_thread_start();
+      sp_sig_trapped = 1;
+      if (sp_sched_threads_started()) sp_sig_thread_start();
 #endif
       /* the handler only records the delivery (sp_sig_c_handler) */
       struct sigaction sa; memset(&sa, 0, sizeof sa);

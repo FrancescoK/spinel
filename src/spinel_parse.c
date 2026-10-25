@@ -3972,6 +3972,9 @@ static void sp_req_site_place(const SpReqSiteScan *s, const pm_node_t *node, SpR
   st->ctl_stmt_start = sp_line_start_of(t, (size_t)((const char *)ctl->location.start - t));
 }
 
+static int sp_req_dir_relative(SpReqSiteScan *s, const pm_call_node_t *call, const pm_node_t *arg);
+static int sp_req_unresolved(SpReqSiteScan *s, const pm_call_node_t *call, const pm_node_t *arg);
+
 static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
   const pm_parser_t *pp = s->parser;
   if (!sp_pm_name_is(pp, call->name, "require_relative") || !call->arguments) return;
@@ -3979,6 +3982,7 @@ static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
                          !call->call_operator_loc.start || *call->call_operator_loc.start != '.')) return;
   for (int i = 0; i < s->skip->n; i++) if (s->skip->v[i] == (const pm_node_t *)call) return;
   const pm_node_t *arg = call->arguments->arguments.nodes[0];
+  if (sp_req_dir_relative(s, call, arg)) return;
   const pm_location_t *open = NULL, *close = NULL;
   const pm_node_t *lit = arg;
   if (PM_NODE_TYPE(lit) == PM_PARENTHESES_NODE) {
@@ -4017,8 +4021,13 @@ static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
     int adjacent = PM_NODE_TYPE(lit) == PM_INTERPOLATED_STRING_NODE &&
                    !((const pm_interpolated_string_node_t *)lit)->opening_loc.start;
     if (adjacent || binary) {
-      fprintf(stderr, "spinel: %s:%d: require_relative needs its path as one string literal\n",
-              s->path, (int)pm_newline_list_line(&pp->newline_list, call->base.location.start, pp->start_line));
+      /* a literal head is one the user meant as the path; any other head is a
+         path only the run time knows (those of the file's own directory were
+         spliced above): it raises LoadError when reached */
+      int lit_head = adjacent || PM_NODE_TYPE(lit) == PM_STRING_NODE || PM_NODE_TYPE(lit) == PM_INTERPOLATED_STRING_NODE;
+      if (!lit_head && sp_req_unresolved(s, call, arg)) return;
+      fprintf(stderr, "spinel: %s:%d: require_relative needs its path as one string literal\n", s->path,
+              (int)pm_newline_list_line(&pp->newline_list, call->base.location.start, pp->start_line));
       exit(1);
     }
     open = close = NULL;
@@ -4187,6 +4196,133 @@ static void sp_req_edit_put(SpReqEdit *e, const char *str, size_t kw, size_t ple
   st->quote = '"';
 }
 
+/* `__dir__` or `File.dirname(__FILE__)`: the requiring file's directory. */
+static int sp_req_is_dir(const pm_parser_t *pp, const pm_node_t *n) {
+  if (PM_NODE_TYPE(n) != PM_CALL_NODE) return 0;
+  const pm_call_node_t *c = (const pm_call_node_t *)n;
+  if (sp_pm_name_is(pp, c->name, "__dir__")) return !c->receiver && !c->arguments;
+  return sp_pm_name_is(pp, c->name, "dirname") && c->receiver && PM_NODE_TYPE(c->receiver) == PM_CONSTANT_READ_NODE &&
+         sp_pm_name_is(pp, ((const pm_constant_read_node_t *)c->receiver)->name, "File") && c->arguments &&
+         c->arguments->arguments.size == 1 && PM_NODE_TYPE(c->arguments->arguments.nodes[0]) == PM_SOURCE_FILE_NODE;
+}
+
+/* The bytes of a plain quoted literal without escapes or interpolation. */
+static int sp_req_plain(const pm_node_t *n, const char **str, size_t *len) {
+  if (PM_NODE_TYPE(n) != PM_STRING_NODE) return 0;
+  const pm_string_node_t *sn = (const pm_string_node_t *)n;
+  if (!sp_req_quoted_line(&sn->opening_loc, &sn->closing_loc)) return 0;
+  *str = (const char *)sn->content_loc.start; *len = (size_t)(sn->content_loc.end - sn->content_loc.start);
+  return !memchr(*str, '#', *len) && !memchr(*str, '\\', *len);
+}
+
+/* `dir + "a" + "b"...`: the literals' bytes after the directory, appended to
+   `out` (left-associated, as Ruby reads it). */
+static int sp_req_dir_sum(const pm_parser_t *pp, const pm_node_t *n, char *out, size_t cap, size_t *o) {
+  const char *str; size_t len;
+  if (sp_req_is_dir(pp, n)) return 1;
+  if (PM_NODE_TYPE(n) != PM_CALL_NODE) return 0;
+  const pm_call_node_t *c = (const pm_call_node_t *)n;
+  if (!sp_pm_name_is(pp, c->name, "+") || !c->receiver || c->call_operator_loc.start || c->opening_loc.start ||
+      !c->arguments || c->arguments->arguments.size != 1 || !sp_req_plain(c->arguments->arguments.nodes[0], &str, &len) ||
+      !sp_req_dir_sum(pp, c->receiver, out, cap, o) || *o + len + 1 >= cap) return 0;
+  memcpy(out + *o, str, len); *o += len;
+  return 1;
+}
+
+/* The call written as `require_relative "<path>"` where it stands (a path with
+   `#{` raises LoadError at run time, as any computed one). */
+static int sp_req_splice_relative(SpReqSiteScan *s, const pm_call_node_t *call, const char *path) {
+  const char *t = s->text;
+  size_t cs = (size_t)((const char *)call->base.location.start - t), ce = (size_t)((const char *)call->base.location.end - t);
+  if (memchr(t + cs, '\n', ce - cs)) return 0;
+  SpReqSite place;
+  memset(&place, 0, sizeof place);
+  place.kw = cs; place.end = ce;
+  sp_req_site_place(s, (const pm_node_t *)call, &place);
+  size_t plen = strlen(path), cap = plen + 20;
+  char *buf = malloc(cap);
+  if (!buf) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  snprintf(buf, cap, "require_relative \"%s\"", path);
+  sp_req_edit_put(sp_req_edit_new(s, cs, ce), buf, 0, plen, &place);
+  free(buf);
+  return 1;
+}
+
+/* The path `n` spells after the file's own directory, in `out` with its length:
+   `dir + "/x"` (a chain of literals too), `"#{dir}/x"`, `File.join(dir, "x", ...)`,
+   `File.expand_path("x", dir)`, `dir` being `__dir__` or `File.dirname(__FILE__)`.
+   The one fact a require_relative and an autoload take their path from. */
+static int sp_req_dir_literal(const pm_parser_t *pp, const pm_node_t *n, char *out, size_t cap, size_t *olen) {
+  const char *str; size_t len, o = 0;
+  if (PM_NODE_TYPE(n) == PM_INTERPOLATED_STRING_NODE) {             /* "#{__dir__}/x" */
+    const pm_interpolated_string_node_t *is = (const pm_interpolated_string_node_t *)n;
+    if (!sp_req_quoted_line(&is->opening_loc, &is->closing_loc) || *is->opening_loc.start != '"' || is->parts.size != 2 ||
+        PM_NODE_TYPE(is->parts.nodes[0]) != PM_EMBEDDED_STATEMENTS_NODE || PM_NODE_TYPE(is->parts.nodes[1]) != PM_STRING_NODE) return 0;
+    const pm_statements_node_t *es = ((const pm_embedded_statements_node_t *)is->parts.nodes[0])->statements;
+    const pm_string_node_t *tail = (const pm_string_node_t *)is->parts.nodes[1];
+    str = (const char *)tail->content_loc.start; len = (size_t)(tail->content_loc.end - tail->content_loc.start);
+    if (!es || es->body.size != 1 || !sp_req_is_dir(pp, es->body.nodes[0]) || len < 2 || *str != '/' || len >= cap ||
+        memchr(str, '#', len) || memchr(str, '\\', len)) return 0;
+    memcpy(out, str + 1, len - 1); o = len - 1;
+  }
+  else if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
+    const pm_call_node_t *a = (const pm_call_node_t *)n;
+    const pm_node_t **av = a->arguments ? (const pm_node_t **)a->arguments->arguments.nodes : NULL;
+    size_t an = a->arguments ? a->arguments->arguments.size : 0;
+    int file = a->receiver && PM_NODE_TYPE(a->receiver) == PM_CONSTANT_READ_NODE &&
+               sp_pm_name_is(pp, ((const pm_constant_read_node_t *)a->receiver)->name, "File");
+    if (sp_pm_name_is(pp, a->name, "+")) {
+      if (!sp_req_dir_sum(pp, n, out, cap, &o) || o < 2 || out[0] != '/') return 0;
+      memmove(out, out + 1, o); o--;
+    }
+    else if (file && sp_pm_name_is(pp, a->name, "join") && an >= 2 && sp_req_is_dir(pp, av[0])) {
+      for (size_t i = 1; i < an; i++) {
+        if (!sp_req_plain(av[i], &str, &len)) return 0;
+        while (len && *str == '/') { str++; len--; }
+        if (!len) continue;
+        if (o + len + 2 >= cap) return 0;
+        if (o) out[o++] = '/';
+        memcpy(out + o, str, len); o += len;
+      }
+    }
+    else if (file && sp_pm_name_is(pp, a->name, "expand_path") && an == 2 && sp_req_is_dir(pp, av[1]) &&
+             sp_req_plain(av[0], &str, &len) && len && *str != '/' && len < cap) {
+      memcpy(out, str, len); o = len;
+    }
+  }
+  out[o] = 0;
+  *olen = o;
+  return o > 0;
+}
+
+/* A require_relative of such a path: written as `require_relative "x"` where
+   it stands. 0 for any other argument. */
+static int sp_req_dir_relative(SpReqSiteScan *s, const pm_call_node_t *call, const pm_node_t *arg) {
+  char path[512];
+  size_t len;
+  if (!s->dir || call->block || call->arguments->arguments.size != 1 || !sp_req_dir_literal(s->parser, arg, path, sizeof path, &len)) return 0;
+  return sp_req_splice_relative(s, call, path);
+}
+
+/* A computed path Spinel cannot resolve: the call raises LoadError at run
+   time, naming the path, as a `"#{x}"` one does. */
+static int sp_req_unresolved(SpReqSiteScan *s, const pm_call_node_t *call, const pm_node_t *arg) {
+  if (!s->dir || call->block || call->arguments->arguments.size != 1) return 0;
+  size_t alen = (size_t)(arg->location.end - arg->location.start), cap = alen + 4;
+  char *path = malloc(cap);
+  if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  snprintf(path, cap, "#{%.*s}", (int)alen, (const char *)arg->location.start);
+  int r = sp_req_splice_relative(s, call, path);
+  free(path);
+  return r;
+}
+
+/* Only blanks and `;`, then the line's end or a comment, from `p` on. */
+static int sp_req_rest_is_blank(const char *p) {
+  while (*p == ' ' || *p == '\t' || *p == ';') p++;
+  return !*p || *p == '\n' || *p == '\r' || *p == '#';
+}
+
 /* A `%w(...).each` loop whose body is one computed require, every word of
    it naming a file: unrolled. */
 static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
@@ -4206,11 +4342,28 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
       PM_NODE_TYPE(((const pm_statements_node_t *)blk->body)->body.nodes[0]) != PM_CALL_NODE) return 0;
   const pm_call_node_t *req = (const pm_call_node_t *)((const pm_statements_node_t *)blk->body)->body.nodes[0];
   /* a statement, or the receiver of a call that is one (`end.size`): the
-     lines through `end` are what the loop is unrolled into */
+     lines through `end` are what the loop is unrolled into, so that call
+     takes no arguments or block, and nothing but a comment follows the
+     statement on its last line (`end.size; X = 1` would lose `X = 1`). An
+     `if`/`unless` modifier and its condition are part of that statement,
+     and stay what the unrolling does with them (they are not kept). */
   const pm_node_t *parent = s->depth ? s->stack[s->depth - 1] : NULL;
+  const char *fin = (const char *)c->base.location.end;
+  int gi = s->depth - 2, mod = 0;
   if (parent && PM_NODE_TYPE(parent) == PM_CALL_NODE && ((const pm_call_node_t *)parent)->receiver == (const pm_node_t *)c &&
-      s->depth > 1) parent = s->stack[s->depth - 2];
+      s->depth > 1) {
+    const pm_call_node_t *outer = (const pm_call_node_t *)parent;
+    if (outer->arguments || outer->block) return 0;
+    fin = (const char *)outer->base.location.end;
+    parent = s->stack[s->depth - 2];
+    gi = s->depth - 3;
+  }
   if (!parent || PM_NODE_TYPE(parent) != PM_STATEMENTS_NODE) return 0;
+  if (gi >= 0 && sp_node_is_modifier(s->stack[gi]) &&
+      (PM_NODE_TYPE(s->stack[gi]) == PM_IF_NODE || PM_NODE_TYPE(s->stack[gi]) == PM_UNLESS_NODE)) {
+    fin = (const char *)s->stack[gi]->location.end;
+    mod = 1;   /* its condition may go on past the line, the lines it leaves are harmless */
+  }
   size_t w = (size_t)((const char *)c->base.location.start - t), p = sp_line_start_of(t, w);
   for (size_t i = p; i < w; i++) if (t[i] != ' ' && t[i] != '\t') return 0;
   const char *pclose = (const char *)((const pm_block_parameters_node_t *)blk->parameters)->closing_loc.end;
@@ -4223,6 +4376,7 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
     if ((const char *)blk->closing_loc.start > line_end) return 0;
     lo = pclose; hi = (const char *)blk->closing_loc.start;
     after = *line_end ? (size_t)(line_end - t) + 1 : (size_t)(line_end - t);
+    if ((fin > line_end && !mod) || !sp_req_rest_is_blank(fin)) return 0;
   }
   else {                                    /* the do line, the require's line, the end line */
     lo = line_end + 1;
@@ -4234,6 +4388,7 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
     if (ek < el || ek > ee) return 0;
     for (const char *q = el; q < ek; q++) if (*q != ' ' && *q != '\t') return 0;
     after = *ee ? (size_t)(ee - t) + 1 : (size_t)(ee - t);
+    if ((fin > ee && !mod) || !sp_req_rest_is_blank(fin)) return 0;
   }
   char var[64], joined[512];
   const pm_constant_t *vn = pm_constant_pool_id_to_constant(&s->parser->constant_pool,
@@ -4298,40 +4453,13 @@ static void sp_req_autoload(SpReqSiteScan *s, const pm_call_node_t *c) {
                           !(PM_NODE_TYPE(name) == PM_CALL_NODE && PM_NODE_FLAG_P(name, PM_CALL_NODE_FLAGS_VARIABLE_CALL))))
     return;
   const char *fs = NULL; size_t flen = 0; int dir_rel = 0;
+  char dl[512];
   if (PM_NODE_TYPE(arg) == PM_STRING_NODE) {                 /* "path" */
     const pm_string_node_t *sn = (const pm_string_node_t *)arg;
     if (!sp_req_quoted_line(&sn->opening_loc, &sn->closing_loc)) return;
     fs = (const char *)sn->content_loc.start; flen = (size_t)(sn->content_loc.end - sn->content_loc.start);
   }
-  else if (PM_NODE_TYPE(arg) == PM_INTERPOLATED_STRING_NODE) {   /* "#{__dir__}/path" */
-    const pm_interpolated_string_node_t *is = (const pm_interpolated_string_node_t *)arg;
-    if (!sp_req_quoted_line(&is->opening_loc, &is->closing_loc) || *is->opening_loc.start != '"' ||
-        is->parts.size != 2 || PM_NODE_TYPE(is->parts.nodes[0]) != PM_EMBEDDED_STATEMENTS_NODE ||
-        PM_NODE_TYPE(is->parts.nodes[1]) != PM_STRING_NODE) return;
-    const pm_statements_node_t *es = ((const pm_embedded_statements_node_t *)is->parts.nodes[0])->statements;
-    if (!es || es->body.size != 1 || PM_NODE_TYPE(es->body.nodes[0]) != PM_CALL_NODE ||
-        !sp_pm_name_is(pp, ((const pm_call_node_t *)es->body.nodes[0])->name, "__dir__") ||
-        ((const pm_call_node_t *)es->body.nodes[0])->receiver || ((const pm_call_node_t *)es->body.nodes[0])->arguments) return;
-    const pm_string_node_t *rest = (const pm_string_node_t *)is->parts.nodes[1];
-    if (rest->content_loc.end - rest->content_loc.start < 1 || *rest->content_loc.start != '/') return;
-    fs = (const char *)rest->content_loc.start + 1; flen = (size_t)(rest->content_loc.end - rest->content_loc.start) - 1;
-    dir_rel = 1;
-  }
-  else if (PM_NODE_TYPE(arg) == PM_CALL_NODE) {               /* File.expand_path('path', __dir__) */
-    const pm_call_node_t *xc = (const pm_call_node_t *)arg;
-    if (!sp_pm_name_is(pp, xc->name, "expand_path") || !xc->receiver || PM_NODE_TYPE(xc->receiver) != PM_CONSTANT_READ_NODE ||
-        !sp_pm_name_is(pp, ((const pm_constant_read_node_t *)xc->receiver)->name, "File") ||
-        !xc->opening_loc.start || !xc->arguments || xc->arguments->arguments.size != 2 ||
-        PM_NODE_TYPE(xc->arguments->arguments.nodes[0]) != PM_STRING_NODE ||
-        PM_NODE_TYPE(xc->arguments->arguments.nodes[1]) != PM_CALL_NODE ||
-        !sp_pm_name_is(pp, ((const pm_call_node_t *)xc->arguments->arguments.nodes[1])->name, "__dir__") ||
-        ((const pm_call_node_t *)xc->arguments->arguments.nodes[1])->receiver) return;
-    const pm_string_node_t *sn = (const pm_string_node_t *)xc->arguments->arguments.nodes[0];
-    if (!sp_req_quoted_line(&sn->opening_loc, &sn->closing_loc)) return;
-    fs = (const char *)sn->content_loc.start; flen = (size_t)(sn->content_loc.end - sn->content_loc.start);
-    if (memchr(fs, '\\', flen)) return;
-    dir_rel = 1;
-  }
+  else if (sp_req_dir_literal(pp, arg, dl, sizeof dl, &flen)) { fs = dl; dir_rel = 1; }   /* "#{__dir__}/path", File.expand_path('path', __dir__) */
   else return;
   if (memchr(fs, '#', flen)) return;
   const char *kw = (dir_rel || sp_autoload_beside(s->dir, fs, flen)) ? "require_relative" : "require";

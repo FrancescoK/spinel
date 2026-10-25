@@ -1094,6 +1094,16 @@ void compute_instantiated(Compiler *c, int early) {
           int ci = cn ? comp_class_index(c, cn) : -1;
           if (ci >= 0) c->classes[ci].instantiated = 1;
         }
+        /* `raise k, msg` on a Class value (`k = WidgetError`): the runtime
+           builds whichever exception class k holds, so each one of the
+           program's may be an instance */
+        else if (rav[0] >= 0 && (early || comp_ntype(c, rav[0]) == TY_CLASS || comp_ntype(c, rav[0]) == TY_POLY ||
+                                 comp_ntype(c, rav[0]) == TY_UNKNOWN)) {
+          Scope *encl = comp_scope_of(c, id);
+          if (!encl || encl->reachable)
+            for (int k = 0; k < c->nclasses; k++)
+              if (class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
+        }
       }
     }
   }
@@ -5199,6 +5209,44 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
   return changed;
 }
 
+/* Exception's own methods, called on an implicit self from a method of the
+   program's exception class (`def label = "w:#{message}"`): they are read
+   off the receiver, and with none the bare call was a NameError where
+   `self.message` answered. Give it the receiver, unless a Ruby method of the
+   chain (a reopening of the builtin among them) answers the name. */
+static int give_exception_self_calls_a_receiver(Compiler *c) {
+  static const struct { const char *name; int argc_min, argc_max; } own[] = {
+    { "message", 0, 0 }, { "backtrace", 0, 0 }, { "backtrace_locations", 0, 0 }, { "cause", 0, 0 },
+    { "full_message", 0, 1 }, { "detailed_message", 0, 1 }, { "set_backtrace", 1, 1 },
+  };   /* (the renderings' one argument is their keywords, `highlight: false`) */
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int an = 0;
+    const int *av = NULL;
+    { int a = nt_ref(nt, id, "arguments");
+      if (a >= 0) av = nt_arr(nt, a, "arguments", &an); }
+    int hit = 0;
+    for (size_t k = 0; k < sizeof own / sizeof own[0] && !hit; k++)
+      hit = sp_streq(nm, own[k].name) && an >= own[k].argc_min && an <= own[k].argc_max;
+    if (!hit || (an == 1 && !sp_streq(nm, "set_backtrace") && nt_kind(nt, av[0]) != NK_KeywordHashNode)) continue;
+    Scope *osc = comp_scope_of(c, id);
+    int ocid = osc ? osc->class_id : -1;
+    if (ocid < 0 || ocid >= c->nclasses || osc->is_cmethod || !class_is_exc_subclass(c, ocid)) continue;
+    if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
+    int selfn = nt_new_node(nt, "SelfNode");
+    if (selfn < 0) continue;
+    nt_set_self_receiver(nt, id, selfn);
+    comp_grow_node_arrays(c);
+    c->nscope[selfn] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* An implicit-self call inside a class or module method, of a name the
    program defines as an instance method of Object that no class method of
    the chain answers: self is the class or module, an Object, so CRuby finds
@@ -7906,6 +7954,82 @@ static int walk_rewrite_shadowed(Compiler *c, const char *rn) {
   }
   return 0;
 }
+/* a Hash literal, or a merge into one (`{}.merge!(a)` in `{}.merge!(a).merge!(b)`):
+   a Hash nothing else holds */
+static int fresh_hash_merge_recv(const NodeTable *nt, int recv) {
+  recv = nt_paren_single(nt, recv);
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_HashNode) return 1;
+  const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  return rn && (sp_streq(rn, "merge") || is_hash_merge_bang(rn)) &&
+         fresh_hash_merge_recv(nt, nt_ref(nt, recv, "receiver"));
+}
+static int lit_name_is(const NodeTable *nt, int n, const char *nm) {
+  NodeKind k = nt_kind(nt, n);
+  const char *s = k == NK_SymbolNode ? nt_str(nt, n, "value") : k == NK_StringNode ? nt_str(nt, n, "content") : NULL;
+  return s && sp_streq(s, nm);
+}
+/* `nm` bound as a method under `root`: a def, an alias, or an
+   alias_method / define_method naming it or a name only the run time
+   knows (`%i[merge! update].each { |m| define_method(m) ... }`); or a
+   module prepended, whose methods are not followed here (`Hash.prepend(M)`
+   is a `prepend M` in a `class Hash` by now) */
+static int binds_name_under(const NodeTable *nt, int root, const char *nm) {
+  if (root < 0 || root >= nt->count) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_DefNode && nt_ref(nt, root, "receiver") < 0 && nt_str(nt, root, "name") && sp_streq(nt_str(nt, root, "name"), nm)) return 1;
+  if (k == NK_AliasMethodNode && lit_name_is(nt, nt_ref(nt, root, "new_name"), nm)) return 1;
+  const char *cn = k == NK_CallNode ? nt_str(nt, root, "name") : NULL;
+  if (cn && sp_streq(cn, "prepend") && nt_ref(nt, root, "receiver") < 0) return 1;
+  if (cn && (sp_streq(cn, "alias_method") || sp_streq(cn, "define_method"))) {
+    int ca = nt_ref(nt, root, "arguments"), an = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    NodeKind ak = an >= 1 ? nt_kind(nt, av[0]) : NK_NONE;
+    if (an >= 1 && ((ak != NK_SymbolNode && ak != NK_StringNode) || lit_name_is(nt, av[0], nm))) return 1;
+  }
+  for (int j = 0; j < nt_num_refs(nt, root); j++) if (binds_name_under(nt, nt_ref_at(nt, root, j), nm)) return 1;
+  for (int j = 0; j < nt_num_arrs(nt, root); j++) {
+    int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
+    for (int i = 0; i < an; i++) if (binds_name_under(nt, ids[i], nm)) return 1;
+  }
+  return 0;
+}
+static int is_hash_const(const NodeTable *nt, int n) {
+  return n >= 0 && nt_kind(nt, n) == NK_ConstantReadNode && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), "Hash");
+}
+/* the program may give Hash its own `nm` (the pass runs before the
+   classes are registered): its `class Hash` binds the name, or it
+   reaches Hash's methods another way -- a module prepended or included,
+   a class_eval, a refinement -- whose bindings are not followed here */
+static int hash_reopen_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_ClassNode, k) {
+    int cp = nt_ref(nt, k, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (cn && sp_streq(cn, "Hash") && binds_name_under(nt, nt_ref(nt, k, "body"), nm)) return 1;
+  }
+  static const char *const reach[] = { "prepend", "include", "class_eval", "class_exec", "module_eval",
+                                       "module_exec", "define_method", "alias_method", "send", "__send__", NULL };
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *cn = nt_str(nt, call, "name");
+    if (!cn) continue;
+    for (int i = 0; reach[i]; i++)
+      if (sp_streq(cn, reach[i]) && is_hash_const(nt, nt_ref(nt, call, "receiver"))) return 1;
+    if (sp_streq(cn, "refine")) {
+      int ca = nt_ref(nt, call, "arguments"), an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (an >= 1 && is_hash_const(nt, av[0])) return 1;
+    }
+  }
+  return 0;
+}
+/* hash_reopen_defines of `nm` (merge! or update) or of merge, asked once
+   per pass for each (`memo[]` -1 until then) */
+static int hash_merges_own(const NodeTable *nt, const char *nm, int memo[3]) {
+  int i = sp_streq(nm, "merge!") ? 0 : 1;
+  if (memo[i] < 0) memo[i] = hash_reopen_defines(nt, nm);
+  if (memo[2] < 0) memo[2] = hash_reopen_defines(nt, "merge");
+  return memo[i] || memo[2];
+}
 static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   /* (the parent map, made at the first such call of the pass) */
@@ -7926,6 +8050,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int *kept_par = NULL;   /* enum_chain_kept's parent map */
+  int hash_own_merge[3] = { -1, -1, -1 };   /* hash_merges_own's answers */
   /* A string-bounded range literal bound to a variable (`cr = ('a'..'e')`)
      has no sp_Range representation (int bounds only): materialize it into a
      string array at the assignment, like the literal-receiver interpose
@@ -7967,6 +8092,14 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         finite = rgt >= 0 && nt_type(nt, rgt) && sp_streq(nt_type(nt, rgt), "IntegerNode");
       }
       if (finite) { nt_node_set_ref(nt, id, "receiver", lz_recv); continue; }
+    }
+    /* `{}.merge!(h)` / `{"a" => 1}.update(h)`: nothing else holds the
+       literal, so a merge into a new Hash answers the same, and merge
+       folds a hash of another kind into one that holds both; merge! keeps
+       the literal's own variant, which has no arm for it */
+    if (is_hash_merge_bang(nm) && fresh_hash_merge_recv(nt, recv) && !hash_merges_own(nt, nm, hash_own_merge)) {
+      nt_node_set_str(nt, id, "name", "merge");
+      nm = "merge";
     }
     if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
       /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
@@ -14018,12 +14151,31 @@ static int oa_named_cmp(const void *a, const void *b) {
   return strcmp(((const OaNamed *)a)->nm, ((const OaNamed *)b)->nm);
 }
 
+/* Does the call run its block through a builtin walk that ignores the
+   block's value? each & co. on an Array, a Hash, a Range or an Integer,
+   unless the program redefines that walk on the receiver's class. */
+static int oa_ignores_block_value(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  static const char *const walks[] = {
+    "each", "each_with_index", "reverse_each", "each_entry", "times", "upto",
+    "downto", "each_key", "each_value", "each_pair", NULL };
+  const char *nm = nt_str(nt, call, "name");
+  int recv = nt_ref(nt, call, "receiver");
+  if (!nm || recv < 0 || !str_in(nm, walks)) return 0;
+  TyKind rt = infer_type(c, recv);
+  const char *cls = ty_is_array(rt) || ty_is_ptr_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" :
+                    rt == TY_RANGE ? "Range" : rt == TY_INT ? "Integer" : NULL;
+  return cls && !share_builtin_overridden(c, cls, nm);
+}
+
 /* walk_disc[id]: a walk's value is thrown away. An object array walk
    narrows only there: `y = a.each { }` or `a.each { break r }` hands the
    array (or the break value) to a consumer typed for the boxed array, which
    the narrowed sp_PtrArray is not (#4879). These statements throw their
    value away: one that another statement follows, a top-level statement,
-   and the last statement of an Integer's `times` block or of a loop body.
+   the last statement of a loop body, and the last statement of the block
+   of a builtin walk that ignores its block's value (oa_ignores_block_value):
+   `def walk; @kids.each { |k| k.walk }; end` reads no walk's value.
 
    The last statement of a method is the method's value. This pass finds
    the method names whose value something can read. A call of a name reads
@@ -14056,10 +14208,8 @@ static char *oa_walk_disc(Compiler *c, int nc) {
     int body = -1;
     if (k == NK_WhileNode || k == NK_UntilNode) body = nt_ref(nt, id, "statements");
     else if (k == NK_CallNode) {
-      const char *cn = nt_str(nt, id, "name");
-      int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
-      if (cn && sp_streq(cn, "times") && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
-          recv >= 0 && infer_type(c, recv) == TY_INT)
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && oa_ignores_block_value(c, id))
         body = nt_ref(nt, blk, "body");
     }
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
@@ -19697,11 +19847,54 @@ enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK
    number of paths, not of the things walked. A thing walked again within
    the same walk, no shallower than before, answers what it answered (0
    while its walk is still running: a cycle adds nothing); its demands are
-   already made. The memo is dropped when the outermost walk returns. */
+   already made. The memo is dropped when the outermost walk returns.
+
+   Inside the share pass (sb_share_begin / sb_share_end) it is kept across
+   the outermost walks instead: the pass starts one from every holder slot
+   and every store it visits, and the walks fan out over the same methods,
+   containers and parameters, so each slot walked the web the one before it
+   had walked. A thing an earlier walk found changing nothing, in the same
+   state, changes nothing now, and its demands are made: a generation ends
+   wherever the pass reports a change (sb_share_step, as a walk begins: the
+   pass's `changed` is folded into `any` and cleared), so no walk reads a
+   record left before a write it has not seen, and the records that survive
+   to a later walk all answer 0 -- a walk that changed something ended the
+   generation it wrote in. SPINEL_SB_SHADOW=1 walks such a record's thing
+   again all the same and stops the compile if the walk changes anything. */
 enum { SBM_EXPR, SBM_RET, SBM_IVAR, SBM_LOCAL };
-typedef struct { unsigned long long key; int depth, res, gen; } SbMemo;
+typedef struct { unsigned long long key; int depth, res, gen, walk; unsigned char shadow; } SbMemo;
 static SbMemo *sb_memo;
-static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest;
+static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest, sb_walk_id;
+static int sb_shared, *sb_share_changed, *sb_share_any, *sb_share_prev_changed, *sb_share_prev_any;
+static int sb_shadow = -1;
+static int sb_shadow_on(void) {
+  if (sb_shadow < 0) { const char *e = getenv("SPINEL_SB_SHADOW"); sb_shadow = e && *e && *e != '0'; }
+  return sb_shadow;
+}
+/* the pass's `changed` and `any`; the generation ends here, and again at the end */
+static void sb_share_begin(int *changed, int *any) {
+  sb_share_prev_changed = sb_share_changed; sb_share_prev_any = sb_share_any;   /* (the pass around the rule: one level) */
+  sb_shared++; sb_memo_gen++; sb_memo_n = 0;
+  sb_share_changed = changed; sb_share_any = any;
+}
+/* a change the pass reported since the last step ends the generation */
+static void sb_share_step(void) {
+  if (sb_share_changed && *sb_share_changed) { sb_memo_gen++; sb_memo_n = 0; *sb_share_any = 1; *sb_share_changed = 0; }
+}
+/* ... and what was folded into `any` goes back into `changed`.
+   SPINEL_SB_STATS=1 prints, per region, the outermost walks and the records
+   of earlier walks they read. */
+static long sb_share_walks, sb_share_hits;
+static void sb_share_end(void) {
+  if (sb_share_changed) *sb_share_changed |= *sb_share_any;
+  if (getenv("SPINEL_SB_STATS")) {
+    fprintf(stderr, "spinel-sb-share: walks=%ld cross-walk hits=%ld\n", sb_share_walks, sb_share_hits);
+    sb_share_walks = sb_share_hits = 0;
+  }
+  sb_shared--; sb_memo_gen++; sb_memo_n = 0;
+  sb_share_changed = sb_share_prev_changed; sb_share_any = sb_share_prev_any;
+  sb_share_prev_changed = sb_share_prev_any = NULL;
+}
 static unsigned long long sb_memo_key(int kind, int a, int b, int mode) {
   return ((unsigned long long)(unsigned)kind << 60) ^ ((unsigned long long)(unsigned)mode << 52) ^
          ((unsigned long long)(unsigned)a << 24) ^ (unsigned long long)(unsigned)(b + 1);
@@ -19724,17 +19917,37 @@ static SbMemo *sb_memo_slot(unsigned long long key) {
 /* Enter a walk of (kind, a, b, mode) at depth: 1 with *res set when it has
    been walked already, else 0 (the caller walks it and sb_memo_leave's). */
 static int sb_memo_enter(int kind, int a, int b, int mode, int depth, int *res) {
-  if (sb_walk_nest++ == 0) { sb_memo_gen++; sb_memo_n = 0; }
+  if (sb_walk_nest++ == 0) {
+    sb_walk_id++;
+    if (!sb_shared) { sb_memo_gen++; sb_memo_n = 0; }
+    else { sb_share_step(); sb_share_walks++; }
+  }
   unsigned long long key = sb_memo_key(kind, a, b, mode);
   SbMemo *m = sb_memo_slot(key);
-  if (m->gen == sb_memo_gen && m->depth <= depth) { *res = m->res; sb_walk_nest--; return 1; }
+  if (m->gen == sb_memo_gen && m->depth <= depth) {
+    if (sb_shared && m->walk != sb_walk_id) sb_share_hits++;
+    /* (shadow) a record an earlier walk left: walk the thing again, and
+       sb_memo_leave checks that the walk changed nothing */
+    if (sb_shared && m->walk != sb_walk_id && sb_shadow_on()) { m->shadow = 1; m->walk = sb_walk_id; return 0; }
+    *res = m->res; sb_walk_nest--; return 1;
+  }
   if (m->gen != sb_memo_gen) sb_memo_n++;
-  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0;
+  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0; m->walk = sb_walk_id; m->shadow = 0;
   return 0;
 }
 static int sb_memo_leave(int kind, int a, int b, int mode, int res) {
   SbMemo *m = sb_memo_slot(sb_memo_key(kind, a, b, mode));
-  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) m->res |= res;
+  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) {
+    if (m->shadow) {
+      if (res) {
+        fprintf(stderr, "spinel: internal error: the store walk skipped (kind %d, %d, %d, mode %d), which changes the analysis state\n",
+                kind, a, b, mode);
+        exit(70);
+      }
+      m->shadow = 0;
+    }
+    m->res |= res;
+  }
   sb_walk_nest--;
   return res;
 }
@@ -23270,7 +23483,8 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     if (d_in != c->share_sig && d_in != c->share_in_sig) { c->share_sig = d_in; return 1; }
   }
   share_facts_build(c);
-  int changed = one_reflect_widen(c);
+  int changed = one_reflect_widen(c), any = 0;
+  sb_share_begin(&changed, &any);   /* (the walks below share their records; sb_share_end folds `any` back) */
   int nh = 0;
   ShareHolder *slots = slot_holders(c, &nh);
   for (int h = 0; h < nh; h++) {
@@ -23470,6 +23684,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an, rest_read);
   }
   free(rest_read);
+  sb_share_end();
   /* The next round must settle on the types AFTER these promotions.
      Comparing with the pre-promotion types asks for another inference
      round even when no dependent type moved. */
@@ -23840,8 +24055,39 @@ static int an_param_appended_deep_d(Compiler *c, int mi, int j, int depth) {
   }
   return 0;
 }
+/* The answers while the share pass runs (sb_share_begin), per (method,
+   parameter), for the generation: the pass asked for every element argument
+   of every call it visits, each a walk of the callee's body and of what it
+   hands the parameter on to, over the same few methods. A change the pass
+   reports ends the generation (sb_share_step, asked here too), and the
+   question reads only what such a change moves. */
+typedef struct { int mi, j, ans; int gen; } ApdMemo;
+static ApdMemo *apd_tab; static int apd_cap, apd_n;
 static int an_param_appended_deep(Compiler *c, int mi, int j) {
-  return an_param_appended_deep_d(c, mi, j, 0);
+  if (!sb_shared) return an_param_appended_deep_d(c, mi, j, 0);
+  sb_share_step();
+  if (apd_n * 2 >= apd_cap) {
+    int ncap = apd_cap ? apd_cap * 2 : 1024;
+    ApdMemo *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < apd_cap; i++) {
+      if (apd_tab[i].gen != sb_memo_gen) continue;
+      unsigned h = ((unsigned)apd_tab[i].mi * 2654435761u ^ (unsigned)apd_tab[i].j * 40503u) & (unsigned)(ncap - 1);
+      while (nv[h].gen == sb_memo_gen) h = (h + 1) & (unsigned)(ncap - 1);
+      nv[h] = apd_tab[i];
+    }
+    free(apd_tab); apd_tab = nv; apd_cap = ncap; apd_n = 0;
+    for (int i = 0; i < apd_cap; i++) apd_n += apd_tab[i].gen == sb_memo_gen;
+  }
+  unsigned h = ((unsigned)mi * 2654435761u ^ (unsigned)j * 40503u) & (unsigned)(apd_cap - 1);
+  while (apd_tab[h].gen == sb_memo_gen) {
+    if (apd_tab[h].mi == mi && apd_tab[h].j == j) return apd_tab[h].ans;
+    h = (h + 1) & (unsigned)(apd_cap - 1);
+  }
+  int ans = an_param_appended_deep_d(c, mi, j, 0);
+  apd_tab[h] = (ApdMemo){ mi, j, ans, sb_memo_gen };
+  apd_n++;
+  return ans;
 }
 /* An element read handed to a parameter that is appended to (`m(h[:a])`,
    `m(a[0][1])`, `m(@a[0])`): the container's Strings have to become handles
@@ -25484,7 +25730,8 @@ static int pickup_caller_may_be_str(const LocalVar *lv, int demand) {
   return lv->type == TY_UNKNOWN || lv->type == TY_STRING || lv->type == TY_STRBUF || lv->type == TY_POLY;
 }
 static int promote_shared_stored_strings_pass(Compiler *c) {
-  int changed = 0;
+  int changed = 0, any = 0;
+  sb_share_begin(&changed, &any);   /* (the store walks below share their records; sb_share_end folds `any` back) */
   /* --share-strings: the one rule decides first (#6765) */
   changed |= share_default_apply(c, 1);
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -26460,6 +26707,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     }
     sbd_memo_on = 0;
   }
+  sb_share_end();
   return changed;
 }
 
@@ -47621,8 +47869,8 @@ static void an_phase_class_structure(Compiler *c) {
 
   /* collect top-level `include <Mod>` / `extend <Mod>` calls so bare method
      calls can resolve to those modules' methods. At the top level the two
-     differ only in who else gets the methods (Object vs main alone); a
-     receiverless call in this file reaches them either way (#3787). */
+     differ in who gets the methods: an include gives them to Object, an
+     extend to main alone (#3787). */
   {
     const NodeTable *nt = c->nt;
     int root_stmts = nt_ref(nt, nt->root_id, "statements");
@@ -47630,8 +47878,8 @@ static void an_phase_class_structure(Compiler *c) {
     const int *stmts = root_stmts >= 0 ? nt_arr(nt, root_stmts, "body", &sn) : NULL;
     for (int i = 0; i < sn; i++) {
       if (!nt_type(nt, stmts[i]) || !sp_streq(nt_type(nt, stmts[i]), "CallNode")) continue;
-      { const char *tn = nt_str(nt, stmts[i], "name");
-        if (!tn || (!sp_streq(tn, "include") && !sp_streq(tn, "extend"))) continue; }
+      const char *tn = nt_str(nt, stmts[i], "name");
+      if (!tn || (!sp_streq(tn, "include") && !sp_streq(tn, "extend"))) continue;
       if (nt_ref(nt, stmts[i], "receiver") >= 0) continue;
       int anode = nt_ref(nt, stmts[i], "arguments");
       int an = 0;
@@ -47643,6 +47891,9 @@ static void an_phase_class_structure(Compiler *c) {
         if (ci < 0) continue;
         c->toplevel_includes = realloc(c->toplevel_includes,
                                        sizeof(int) * (size_t)(c->ntoplevel_includes + 1));
+        c->toplevel_extends = realloc(c->toplevel_extends, (size_t)(c->ntoplevel_includes + 1));
+        if (!c->toplevel_includes || !c->toplevel_extends) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        c->toplevel_extends[c->ntoplevel_includes] = sp_streq(tn, "extend");
         c->toplevel_includes[c->ntoplevel_includes++] = ci;
       }
     }
@@ -49319,6 +49570,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_enum_walk_calls", desugar_enum_walk_calls(c));          /* enum.map { break } -> __enumw_map(enum) { } */
     ch |= AN_PASS("desugar_enum_method_recv", desugar_enum_method_recv(c));         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= AN_PASS("give_native_self_calls_a_receiver", give_native_self_calls_a_receiver(c));  /* native class: implicit self -> self.m */
+    ch |= AN_PASS("give_exception_self_calls_a_receiver", give_exception_self_calls_a_receiver(c));  /* exception class: message on implicit self -> self.message */
     ch |= AN_PASS("give_object_methods_a_class_self", give_object_methods_a_class_self(c));    /* class method: Object#m on implicit self -> self.m */
     ch |= AN_PASS("give_self_predicates_a_receiver", give_self_predicates_a_receiver(c));    /* is_a?(X) on implicit self -> self.is_a?(X) */
     ch |= AN_PASS("desugar_for_enumerable", desugar_for_enumerable(c));           /* for x in obj -> for x in obj.__enum_to_a */

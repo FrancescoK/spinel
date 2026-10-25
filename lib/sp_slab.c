@@ -193,6 +193,11 @@ static sp_slab_worker sp_slab_wk[SP_SLAB_NWK];
    allocation, and walking every class of all SP_SLAB_NWK workers was most
    of its cost (gc_minor_thread_local_slot, 410k collections) */
 static uint64_t sp_slab_cut[(SP_SLAB_NWK + 63) / 64];
+/* the highest worker that has carved a chunk: only a worker that carved
+   one owns chunks (ch->wid), so no other has an avail list to release,
+   and a full collection's release walks no further (#10210: under
+   SP_THREADS it walked all SP_SLAB_NWK workers of a program that ran one) */
+static int sp_slab_wk_hi = -1;
 uintptr_t sp_slab_base = 0;  /* the reservation (read inline by sp_slab_owns) */
 static uintptr_t sp_slab_brk = 0;   /* how much of it is in use */
 size_t sp_slab_cap = 0;
@@ -610,6 +615,8 @@ static SP_NOINLINE void *sp_slab_refill(sp_slab_worker *wk, int cls, unsigned cs
     ch->hint = 0;
     ch->cls = (uint16_t)cls;
     ch->wid = (uint16_t)(wk - sp_slab_wk);
+    { int wi = (int)(wk - sp_slab_wk), hi = SP_ATOMIC_LOAD(&sp_slab_wk_hi, __ATOMIC_RELAXED);
+      while (wi > hi && !SP_ATOMIC_CAS(&sp_slab_wk_hi, &hi, wi, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {} }
     ch->on_avail = 0;
     ch->in_use = 1;
     /* onto the owner's owned list: the sweep of this worker walks it */
@@ -1592,5 +1599,6 @@ void sp_slab_release(void) {
               live / 1048576.0, nuse * (SP_SLAB_CHUNK / 1048576.0));
     }
   }
-  for (int w = 0; w < SP_SLAB_NWK; w++) sp_slab_release_worker(w);
+  int hi = SP_ATOMIC_LOAD(&sp_slab_wk_hi, __ATOMIC_ACQUIRE);
+  for (int w = 0; w <= hi && w < SP_SLAB_NWK; w++) sp_slab_release_worker(w);
 }

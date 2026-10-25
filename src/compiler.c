@@ -520,6 +520,7 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);
+  free(c->toplevel_extends);
   free(c->ary_viewed);
   for (int i = 0; i < c->n_ffi_sources; i++) {
     free(c->ffi_sources[i].mod);
@@ -4029,7 +4030,8 @@ int class_is_blank_slate(Compiler *c, int ci) {
 }
 
 /* Find a method named `name` in any top-level included module.
-   module_function methods are class-level (is_cmethod=1), so check both.
+   module_function methods are class-level (is_cmethod=1), so check both
+   (toplevel_mod_method).
    Iterate in reverse so the last include wins (Ruby semantics). An include
    brings in the module's INSTANCE methods, so those are asked first: a
    module that also defines `def self.name` answered the singleton for a bare
@@ -4039,22 +4041,68 @@ int class_is_blank_slate(Compiler *c, int ci) {
    one of its instance methods, or in a block inside one (`call_id`, -1 when
    there is no call site), does not reach the module: CRuby raises
    NoMethodError there, and resolving it ran the module's method instead. A
-   class method's self is a Class, which is an Object, so it still does. */
+   class method's self is a Class, which is an Object, so it still does.
+   An extend at the top level adds the module to main alone: a bare call
+   reaches it only where self is main, and elsewhere CRuby raises
+   NoMethodError (or runs Kernel's method of the name). */
+/* Where a bare call at main sits (comp_node_pbases): 0 top-level code
+   (a block there too), 1 the body of a def (or a block in one), 2 the body
+   of a top-level `class << self`, whose self is main's singleton class. */
+static int main_call_site(Compiler *c, int call_id) {
+  if (call_id < 0) return 0;
+  Scope *s = comp_scope_of(c, call_id);
+  if (s && s->def_node >= 0) return 1;
+  int b = call_id < c->node_pbase_n ? c->node_pbase[call_id] : -1;
+  return b >= 0 && nt_kind(c->nt, b) == NK_SingletonClassNode ? 2 : 0;
+}
+/* The method of top-level module entry k that a bare call named `name`
+   reaches: an instance method, else a module method. An extend gives main
+   only a module_function's private copy of one (mf_only): a plain
+   `def self.x` is the module's own. (An include keeps every module method:
+   a builtin module's module functions, ERB::Util's, are spelled
+   `def self.x`.) */
+static int toplevel_mod_method(Compiler *c, int k, const char *name, int mf_only) {
+  int ci = c->toplevel_includes[k];
+  int mi = comp_method_in_chain(c, ci, name, NULL);
+  if (mi >= 0) return mi;
+  mi = comp_cmethod_in_chain(c, ci, name, NULL);
+  return mi >= 0 && (!mf_only || c->scopes[mi].is_module_function) ? mi : -1;
+}
 int comp_included_method_index(Compiler *c, const char *name, int call_id) {
   if (!name) return -1;
+  int main_self = 1;
   if (call_id >= 0) {
     Scope *cs = comp_scope_of(c, call_id);
     if (cs && cs->class_id >= 0 && !cs->is_cmethod &&
         class_is_blank_slate(c, cs->class_id)) return -1;
+    main_self = self_is_main(c, call_id);
   }
-  for (int k = c->ntoplevel_includes - 1; k >= 0; k--) {
-    int ci = c->toplevel_includes[k];
-    int mi = comp_method_in_chain(c, ci, name, NULL);
-    if (mi >= 0) return mi;
-    mi = comp_cmethod_in_chain(c, ci, name, NULL);
-    if (mi >= 0) return mi;
-  }
+  int site = main_self ? main_call_site(c, call_id) : 1;
+  /* a `class << self` body's self is main's singleton class: an Object,
+     which has the includes, and not main, which has the extends */
+  if (site == 2) main_self = 0;
+  /* In top-level code, main's singleton class, which holds the extends, is
+     asked before Object, which holds the includes. A top-level def's self
+     is its caller's, main or another object, so there the entries keep the
+     one order of the program text. */
+  int ext_first = main_self && site == 0;
+  for (int pass = ext_first ? 0 : 1; pass < 2; pass++)
+    for (int k = c->ntoplevel_includes - 1; k >= 0; k--) {
+      int ext = c->toplevel_extends[k];
+      if (pass == 0 ? !ext : ext && (!main_self || ext_first)) continue;
+      int mi = toplevel_mod_method(c, k, name, pass == 0);
+      if (mi >= 0) return mi;
+    }
   return -1;
+}
+
+/* Whether a module the top level includes (extend 0) or main extends
+   (extend 1) has an instance method `name`. */
+int comp_toplevel_mod_defines(Compiler *c, const char *name, int extend) {
+  for (int k = 0; k < c->ntoplevel_includes; k++)
+    if (c->toplevel_extends[k] == extend && comp_method_in_chain(c, c->toplevel_includes[k], name, NULL) >= 0)
+      return 1;
+  return 0;
 }
 
 /* A scope's locals by name. A short table is scanned; a longer one is read

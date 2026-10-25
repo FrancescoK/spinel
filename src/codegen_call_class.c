@@ -443,6 +443,14 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (boxed) buf_puts(b, ")");
         return 1;
       }
+      /* an exception whose class may be one that defines the name */
+      if (g_rto_exc) {
+        int boxed = repr_of(c, id).kind == RK_BOXED;
+        if (boxed) buf_puts(b, "sp_box_bool(");
+        emit_respond_to_exc_cls(c, recv, qm, argc, argv, b);
+        if (boxed) buf_puts(b, ")");
+        return 1;
+      }
       /* the runtime answers: a Range value's builtin surface (the probe has
          no reading for it, #3619), an IO (the handle knows its kind), and a
          poly receiver */

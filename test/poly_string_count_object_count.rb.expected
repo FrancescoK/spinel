@@ -1,0 +1,5 @@
+"foo count"
+ArgumentError
+"object count"
+ArgumentError
+2

@@ -6164,9 +6164,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     }
   }
 
-  /* Kernel.`("cmd"): the command's output */
+  /* Kernel.`("cmd"), or self's Kernel#` in a poly dispatch's builtin
+     default: the command's output */
   if (recv >= 0 && sp_streq(name, "`") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
-      an_kernel_const_recv(c, id, recv, 1)) { *out = TY_STRING; return 1; }
+      an_kernel_backtick_recv(c, id, recv, 1, an_builtin_only && an_bo_recv == recv)) { *out = TY_STRING; return 1; }
 
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
@@ -10469,6 +10470,24 @@ static int range_indexes_seq(Compiler *c, int id) {
   return ty_is_array(rt) || rt == TY_STRING || rt == TY_STRBUF;
 }
 
+/* Is Range end n an element read of a container of boxed values (`a[1]`
+   over a mixed Array, `h[:k]` over a Hash of them)? Such an element can be
+   a String. A boxed value that --int-overflow=promote makes of an Integer
+   cannot, and the receiver of an Integer#[] is no such container. */
+static int range_end_reads_poly_elem(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n) != VP1_NODE) return 0;
+  if (nt_kind(nt, n) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver");
+  if (!nm || recv < 0) return 0;
+  if (!sp_streq(nm, "[]") && !sp_streq(nm, "first") && !sp_streq(nm, "last") &&
+      !sp_streq(nm, "fetch") && !sp_streq(nm, "dig"))
+    return 0;
+  TyKind rt = infer_type(c, recv);
+  return rt == TY_POLY_ARRAY || (ty_is_hash(rt) && ty_hash_val(rt) == TY_POLY);
+}
+
 /* The kind of an empty `[]`, or of a bare `Array.new`, which carries no
    element type either, from the use that fixes it (mark_empty_array_operands),
    else UNKNOWN. */
@@ -10697,7 +10716,10 @@ TyKind infer_uncached(Compiler *c, int id) {
        (index_of, mark_match_ranges), whose ends must be Integers, an
        endless one asked its size (size_recv), Infinity, and every one under
        --int-overflow=promote, where every Integer slot is boxed and the
-       Integer representation is what keeps a Range of them fast. */
+       Integer representation is what keeps a Range of them fast. An end
+       that reads an element of a container of boxed values can be a
+       String in promote mode too (range_end_reads_poly_elem), so such a
+       Range stays boxed. */
     {
       int lo_open = lo < 0 || lt == TY_NIL;
       int hi_open = hi < 0 || ht == TY_NIL;
@@ -10707,7 +10729,8 @@ TyKind infer_uncached(Compiler *c, int id) {
          Array form above. */
       if (lt == TY_SYMBOL || ht == TY_SYMBOL) return TY_POLY;
       if (((lt == TY_POLY && (hi_open || ht == TY_POLY)) || (ht == TY_POLY && lo_open)) &&
-          !g_promote_mode && !range_indexes_seq(c, id) &&
+          (!g_promote_mode || range_end_reads_poly_elem(c, lo) || range_end_reads_poly_elem(c, hi)) &&
+          !range_indexes_seq(c, id) &&
           !(hi < 0 && nt_int(nt, id, "size_recv", 0)))
         return TY_POLY;
     }
