@@ -17776,6 +17776,10 @@ static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *
                                     const char *name, const char *fn, unsigned int_args, Buf *b) {
   int alloc = operand_may_allocate(c, recv);
   for (int i = 0; i < argc; i++) alloc += operand_may_allocate(c, argv[i]);
+  /* a boxed String argument's check can raise TypeError: the receiver's
+     NoMethodError is asked first, as CRuby asks it before the call */
+  for (int i = 0; i < argc; i++)
+    if (!(int_args & (1u << i)) && yield_site_type(c, argv[i]) == TY_POLY) alloc = 2;
   int tr = -1, ta[2] = { -1, -1 }, views[2] = { -1, -1 }, mark = g_n_argov;
   if (alloc > 1) {
     tr = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
