@@ -7547,6 +7547,12 @@ static int sp_poly_both_arrays(sp_RbVal a, sp_RbVal b) {
   return a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) &&
          b.tag == SP_TAG_OBJ && sp_poly_is_array_kind(b.cls_id);
 }
+/* Two Integers, one of them a Bignum: sp_poly_bitop keeps the width, where
+   the int64 arm below cut `28 | 2**64` to 28. */
+static int sp_poly_bitop_wide(sp_RbVal a, sp_RbVal b) {
+  return (a.tag == SP_TAG_INT && b.tag == SP_TAG_BIGINT) ||
+         (a.tag == SP_TAG_BIGINT && (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT));
+}
 static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_NIL) return sp_box_bool(0);
   if (a.tag == SP_TAG_BOOL) return sp_box_bool(a.v.b && sp_poly_truthy(b));
@@ -7559,6 +7565,7 @@ static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("&", a, b);
   /* Integer#& is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("&", a, b);
+  if (sp_poly_bitop_wide(a, b)) return sp_poly_bitop(a, b, 0);
   return sp_box_int(sp_poly_to_i(a) & sp_poly_bit_operand(b, 0));
 }
 static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) {
@@ -7573,6 +7580,7 @@ static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("|", a, b);
   /* Integer#| is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("|", a, b);
+  if (sp_poly_bitop_wide(a, b)) return sp_poly_bitop(a, b, 1);
   return sp_box_int(sp_poly_to_i(a) | sp_poly_bit_operand(b, 0));
 }
 static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
@@ -7581,6 +7589,7 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("^", a, b);
   /* Integer#^ is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("^", a, b);
+  if (sp_poly_bitop_wide(a, b)) return sp_poly_bitop(a, b, 2);
   return sp_box_int(sp_poly_to_i(a) ^ sp_poly_bit_operand(b, 0));
 }
 /* Unary minus on a boxed value. Only Float and Integer were handled, and
