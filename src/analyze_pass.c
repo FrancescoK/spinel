@@ -3643,9 +3643,11 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       /* A proc or lambda literal's boxed parameter written as a Hash
          (`proc { |t| t[:k] = 2 }`): the Hashes its calls hand it take the
-         key and value, as a method's boxed parameter's callers do */
+         key and value, as a method's boxed parameter's callers do. An
+         Integer key (`t[0] = "v"`) too: the write may be an Array's, but
+         only a Hash argument widens here (widen_hash_arg_for_store) */
       if (lv && lv->is_block_param && lv->type == TY_POLY && is_idx_write && !is_push && !is_splice &&
-          kt != TY_UNKNOWN && kt != TY_POLY && kt != TY_INT && vt != TY_UNKNOWN && !g_infer_optimistic) {
+          kt != TY_UNKNOWN && kt != TY_POLY && vt != TY_UNKNOWN && !g_infer_optimistic) {
         int plit = local_proc_literal_param_of(c, lsc, rnm);
         if (plit >= 0) changed |= widen_proc_call_hash_args(c, plit, rnm, (TyKind)kt, (TyKind)vt);
       }
