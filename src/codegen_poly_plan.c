@@ -1781,8 +1781,22 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
   /* string/symbol-tagged poly values answer length/size directly */
   if (is_lengthlike) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_LEN, -1, TY_UNKNOWN, PC_SAME);
-    buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %ssp_str_length(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ", tv, tr, bopen, tv, bclose);
-    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %s(sp_int)sp_str_length(_t%d.v.s)%s; else ", tv, tr, bopen, tv, bclose);
+    if (sp_streq(name, "count")) {
+      /* ...but not count: String#count needs the characters to count, so
+         sp_poly_count raises its ArgumentError here, ahead of an Object or
+         Kernel count the program defines. A String reopening's own count
+         takes its arm below instead, and so does a Symbol, which has no
+         count of its own. */
+      int sci = comp_class_index(c, "String"), dc = -1;
+      int str_own = sci >= 0 && comp_method_in_chain(c, sci, name, &dc) >= 0 && dc == sci;
+      if (!str_own)
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_poly_count(_t%d)%s; else ", tv, tr, bopen, tv, bclose);
+    } else {
+      buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %ssp_str_length(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ", tv, tr, bopen, tv, bclose);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %s(sp_int)sp_str_length(_t%d.v.s)%s; else ", tv, tr, bopen, tv, bclose);
+    }
+  }
+  if (is_lengthlike) {
     /* A handle answers File#size through the runtime's own dispatch,
        which knows whether it is a File (fstat) or an IO (CRuby's
        NoMethodError). This chain is built when a user class owns the
