@@ -2886,10 +2886,11 @@ static void cf_call(CF *f, int v) {
       int tl = comp_method_index(c, nm);
       if (tl >= 0 && cf_user_target(f, v, tl, argv, argc, blk)) found = 1;
     }
-    /* a module included at top level is Object's, so its method answers a
-       bare call no class or top-level def did */
-    for (int k = 0; k < c->ntoplevel_includes && !found; k++) {
-      int mi = comp_method_in_chain(c, c->toplevel_includes[k], nm, NULL);
+    /* a module included at top level is Object's (and one main extends is
+       main's), so its method answers a bare call no class or top-level def
+       did: the one the call binds (comp_included_method_index) */
+    if (!found) {
+      int mi = comp_included_method_index(c, nm, v);
       if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) found = 1;
     }
     if (found) return;
