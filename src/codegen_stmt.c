@@ -50,7 +50,7 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
 }
 
 static int emit_splat_io(Compiler *c, int arg, const char *fn, Buf *b, int indent) {
-  if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "SplatNode")) {
+  if (nt_kind(c->nt, arg) == NK_SplatNode) {
     int sx = nt_ref(c->nt, arg, "expression");
     if (sx >= 0) {
       /* sp_splat_to_array: a value that is no Array is the one argument, a
@@ -216,10 +216,10 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     free(ab.p);
   }
   else if (ty_is_hash(t) &&
-           !(nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "KeywordHashNode") &&
+           !(nt_kind(c->nt, arg) == NK_KeywordHashNode &&
              ({ int _n = 0, _s = 0; const int *_e = nt_arr(c->nt, arg, "elements", &_n);
                 for (int _k = 0; _k < _n; _k++)
-                  if (nt_type(c->nt, _e[_k]) && sp_streq(nt_type(c->nt, _e[_k]), "AssocSplatNode")) _s = 1;
+                  if (nt_kind(c->nt, _e[_k]) == NK_AssocSplatNode) _s = 1;
                 _s; }))) {
     /* puts of a Hash prints its inspect: the boxed value's render, as `print`
        and `puts [h]` already give it. A `**h` argument stays refused: an empty
@@ -258,11 +258,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
     buf_printf(b, "); sp_puts_line(_po ? sp_sprintf(\"#<%s:0x%%016llx>\", %s(unsigned long long)(uintptr_t)_po) : \"\"); }\n", rn, rarg);
   }
-  else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
+  else if (nt_kind(c->nt, arg) == NK_ArrayNode &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     buf_puts(b, "(void)0;  /* puts [] prints nothing */\n");
   }
-  else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "HashNode") &&
+  else if (nt_kind(c->nt, arg) == NK_HashNode &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     /* an inline `{}` carries no key or value type to box it by */
     buf_puts(b, "puts(\"{}\");\n");
@@ -270,7 +270,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_NIL || t == TY_VOID) {
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); putchar('\\n');  /* puts nil */\n");
   }
-  else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ConstantReadNode") &&
+  else if (nt_kind(c->nt, arg) == NK_ConstantReadNode &&
            nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
     /* `puts SomeClass` -- a bare class constant renders its name, or what
        its own class method to_s answers */
@@ -281,8 +281,8 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   else if (t == TY_UNKNOWN &&
            nt_type(c->nt, arg) &&
-           (sp_streq(nt_type(c->nt, arg), "ConstantReadNode") ||
-            sp_streq(nt_type(c->nt, arg), "ConstantPathNode"))) {
+           (nt_kind(c->nt, arg) == NK_ConstantReadNode ||
+            nt_kind(c->nt, arg) == NK_ConstantPathNode)) {
     /* unresolved constant: emit the expression which will raise NameError */
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); putchar('\\n');\n");
   }
@@ -424,8 +424,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
      key usage narrowed stays TY_UNKNOWN; box it (emit_boxed carries the
      default) and inspect through the poly path. */
   if (t == TY_UNKNOWN && nt_type(c->nt, arg) &&
-      (sp_streq(nt_type(c->nt, arg), "HashNode") ||
-       (sp_streq(nt_type(c->nt, arg), "CallNode") &&
+      (nt_kind(c->nt, arg) == NK_HashNode ||
+       (nt_kind(c->nt, arg) == NK_CallNode &&
         nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "new")))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     emit_boxed(c, arg, &hb);
@@ -440,11 +440,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   /* `p Array.new` (no args, no block): a bare Array.new infers TY_UNKNOWN like
      an empty `[]` literal (deferred for push-narrowing), so as a direct p
      argument it never narrows -- print the empty array explicitly. */
-  if (t == TY_UNKNOWN && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
+  if (t == TY_UNKNOWN && nt_kind(c->nt, arg) == NK_CallNode &&
       nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "new") &&
       nt_ref(c->nt, arg, "block") < 0 &&
       ({ int _r = nt_ref(c->nt, arg, "receiver");
-         _r >= 0 && nt_type(c->nt, _r) && sp_streq(nt_type(c->nt, _r), "ConstantReadNode") &&
+         _r >= 0 && nt_kind(c->nt, _r) == NK_ConstantReadNode &&
          nt_str(c->nt, _r, "name") && sp_streq(nt_str(c->nt, _r, "name"), "Array"); }) &&
       ({ int _a = nt_ref(c->nt, arg, "arguments"); int _n = 0;
          if (_a >= 0) nt_arr(c->nt, _a, "arguments", &_n); _n == 0; })) {
@@ -455,7 +455,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   /* `p x.class` prints the class name bare (it is a Class, not a String) --
      unless a member/reader literally named `class` shadows Object#class, in
      which case `x.class` is a genuine String and `p` quotes it (#2975). */
-  if (t == TY_STRING && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
+  if (t == TY_STRING && nt_kind(c->nt, arg) == NK_CallNode &&
       nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "class") &&
       nt_ref(c->nt, arg, "receiver") >= 0 &&
       !({ int _prc = nt_ref(c->nt, arg, "receiver"); TyKind _prt = comp_ntype(c, _prc);
@@ -556,7 +556,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     /* A string-endpoint range has no int sp_Range value; inspect its literal
        endpoints directly (each String quoted), e.g. `"a".."c"`. */
     int rn = nt_paren_single(c->nt, arg);
-    if (rn >= 0 && nt_type(c->nt, rn) && sp_streq(nt_type(c->nt, rn), "RangeNode")) {
+    if (rn >= 0 && nt_kind(c->nt, rn) == NK_RangeNode) {
       int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
         int excl = nt_range_excl(c->nt, rn);
@@ -604,7 +604,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); fputs(\"nil\\n\", stdout);\n");
     g_value_discarded = sv_vd;
   }
-  else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
+  else if (nt_kind(c->nt, arg) == NK_ArrayNode &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     buf_puts(b, "fputs(\"[]\\n\", stdout);\n");  /* p [] */
   }
@@ -738,7 +738,7 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
   int effectful = 0;
   for (int k = 1; k < argc && !effectful; k++) {
     int a = argv[k];
-    if (nt_type(c->nt, a) && sp_streq(nt_type(c->nt, a), "SplatNode")) a = nt_ref(c->nt, a, "expression");
+    if (nt_kind(c->nt, a) == NK_SplatNode) a = nt_ref(c->nt, a, "expression");
     if (a >= 0 && subtree_has_side_effect(c, a)) effectful = 1;
   }
   if (!effectful) return 0;
@@ -752,7 +752,7 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
     Buf apre, abody; memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = &apre; g_indent = indent + 2;
-    if (nt_type(c->nt, a) && sp_streq(nt_type(c->nt, a), "SplatNode")) {
+    if (nt_kind(c->nt, a) == NK_SplatNode) {
       int sx = nt_ref(c->nt, a, "expression");
       buf_printf(&abody, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
       if (sx >= 0) emit_boxed(c, sx, &abody); else buf_puts(&abody, "sp_box_nil()");
@@ -1002,7 +1002,7 @@ else {
     /* Kernel#printf: printf(fmt, args...) with %d/%i/%x/%o/%u rewritten to ll forms */
     emit_indent(b, indent);
     buf_puts(b, "printf(");
-    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "StringNode")) {
+    if (nt_kind(nt, argv[0]) == NK_StringNode) {
       const char *lit = nt_str(nt, argv[0], "unescaped");
       if (!lit) lit = nt_str(nt, argv[0], "content");
       if (!lit) lit = "";
@@ -6826,7 +6826,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
    is a CommentRow), which would otherwise emit an unresolvable call. */
 int static_isa_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
-  if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "CallNode")) return -1;
+  if (pred < 0 || nt_kind(nt, pred) != NK_CallNode) return -1;
   const char *nm = nt_str(nt, pred, "name");
   if (!nm || !is_kind_query(nm)) return -1;
   int recv = nt_ref(nt, pred, "receiver");
@@ -6834,7 +6834,7 @@ int static_isa_cond(Compiler *c, int pred) {
   TyKind rt = comp_ntype(c, recv);
   int args = nt_ref(nt, pred, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "ConstantReadNode")) return -1;
+  if (ac != 1 || !av || nt_kind(nt, av[0]) != NK_ConstantReadNode) return -1;
   const char *target_name = nt_str(nt, av[0], "name");
   if (!target_name) return -1;
   /* A scalar local against a builtin class is answered from its type. Not a
@@ -6998,7 +6998,7 @@ static int ivar_all_writes_nil_scan(Compiler *c, const char *nm) {
    for always-false, -1 otherwise. */
 int static_nil_ivar_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
-  if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "InstanceVariableReadNode")) return -1;
+  if (pred < 0 || nt_kind(nt, pred) != NK_InstanceVariableReadNode) return -1;
   return ivar_all_writes_nil(c, nt_str(nt, pred, "name"));
 }
 
@@ -7011,7 +7011,7 @@ int static_nil_ivar_cond(Compiler *c, int pred) {
    for always-false, -1 otherwise. */
 int static_nil_reader_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
-  if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "CallNode")) return -1;
+  if (pred < 0 || nt_kind(nt, pred) != NK_CallNode) return -1;
   const char *cn = nt_str(nt, pred, "name");
   if (!cn) return -1;
   int args = nt_ref(nt, pred, "arguments");
@@ -7087,7 +7087,7 @@ int static_block_given_cond(Compiler *c, int pred) {
     const char *nm = nt_str(nt, pred, "name");
     if (!nm || !sp_streq(nm, "block_given?")) return -1;
     int r = nt_ref(nt, pred, "receiver");
-    if (r >= 0 && !(nt_type(nt, r) && sp_streq(nt_type(nt, r), "SelfNode"))) return -1;
+    if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) return -1;
   }
   if (g_block_id >= 0) {
     /* the `{ |__fwd| yield __fwd }` a forwarded `&b` became stands for the
@@ -7432,7 +7432,7 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_
   /* a trailing comma (`in [0, 1, ]`) is an ImplicitRestNode: same length
      semantics as a splat rest (at-least), it just binds nothing. */
   int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                  (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
+                  (nt_kind(nt, rest_nid) == NK_SplatNode ||
                    sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
   int npost = 0;
   const int *posts = nt_arr(nt, pat, "posts", &npost);
@@ -7528,7 +7528,7 @@ static void emit_pm_hash_cond_poly(Compiler *c, int pat, const char *hexpr, Buf 
   int en = 0, listed = 0;
   const int *elms = nt_arr(nt, pat, "elements", &en);
   for (int i = 0; i < en; i++) {
-    if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+    if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
     int key = nt_ref(nt, elms[i], "key");
     int vpat = nt_ref(nt, elms[i], "value");
     if (key < 0) continue;
@@ -7623,7 +7623,7 @@ static int pm_hash_value_class(const NodeTable *nt, int vpat) {
   if (sp_streq(vty, "ImplicitNode") || sp_streq(vty, "LocalVariableTargetNode")) return -1;
   if (sp_streq(vty, "CapturePatternNode")) {
     int cv = nt_ref(nt, vpat, "value");
-    if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "ConstantReadNode")) return cv;
+    if (cv >= 0 && nt_kind(nt, cv) == NK_ConstantReadNode) return cv;
   }
   return PM_HASH_VAL_REJECT;
 }
@@ -7957,7 +7957,7 @@ static void emit_pm_deconstruct_keys_arg(Compiler *c, int pat, Buf *b) {
   int tk = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tk, tk);
   for (int i = 0; i < en; i++) {
-    if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+    if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
     int key = nt_ref(nt, elms[i], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
     if (!kn) continue;
@@ -8262,7 +8262,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       if (sp_streq(rty, "ArrayPatternNode")) has_nested = 1;
       else if (sp_streq(rty, "CapturePatternNode")) {
         int val = nt_ref(nt, reqs[i], "value");
-        if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) has_nested = 1;
+        if (val >= 0 && nt_kind(nt, val) == NK_ArrayPatternNode) has_nested = 1;
       }
     }
     if (has_nested) { buf_puts(b, "0"); return 1; }
@@ -8270,7 +8270,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
        (short-circuits after the length guard so element access is in-bounds). */
     int rest_nid = nt_ref(nt, pat, "rest");
     int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                    (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
+                    (nt_kind(nt, rest_nid) == NK_SplatNode ||
                      sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
     int npost = 0;
     const int *posts = nt_arr(nt, pat, "posts", &npost);
@@ -8281,7 +8281,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       if (sp_streq(rty, "ArrayPatternNode")) has_nested = 1;
       else if (sp_streq(rty, "CapturePatternNode")) {
         int val = nt_ref(nt, posts[i], "value");
-        if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) has_nested = 1;
+        if (val >= 0 && nt_kind(nt, val) == NK_ArrayPatternNode) has_nested = 1;
       }
     }
     if (has_nested) { buf_puts(b, "0"); return 1; }
@@ -8298,7 +8298,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
         if (rty && sp_streq(rty, "ConstantReadNode")) classpat = pn2;
         else if (rty && sp_streq(rty, "CapturePatternNode")) {
           int val = nt_ref(nt, pn2, "value");
-          if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ConstantReadNode"))
+          if (val >= 0 && nt_kind(nt, val) == NK_ConstantReadNode)
             classpat = val;
         }
         if (classpat >= 0) {
@@ -8438,7 +8438,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
     int en = 0;
     const int *elms = nt_arr(nt, pat, "elements", &en);
     for (int i = 0; i < en; i++) {
-      if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) return 0;
+      if (nt_kind(nt, elms[i]) != NK_AssocNode) return 0;
       if (nt_ref(nt, elms[i], "key") < 0) return 0;
       int classpat = pm_hash_value_class(nt, nt_ref(nt, elms[i], "value"));
       if (classpat == PM_HASH_VAL_REJECT) {
@@ -8738,9 +8738,9 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int may_md
   int npost = 0;
   const int *posts = nt_arr(nt, pat, "posts", &npost);
   int rest_nid = nt_ref(nt, pat, "rest");
-  if (rest_nid >= 0 && nt_type(nt, rest_nid) && sp_streq(nt_type(nt, rest_nid), "SplatNode")) {
+  if (rest_nid >= 0 && nt_kind(nt, rest_nid) == NK_SplatNode) {
     int inner = nt_ref(nt, rest_nid, "expression");
-    if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+    if (inner >= 0 && nt_kind(nt, inner) == NK_LocalVariableTargetNode) {
       const char *rnm = nt_str(nt, inner, "name");
       if (rnm) {
         /* the rest captures the middle: elements after the requireds and before
@@ -8786,7 +8786,7 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
   char hbuf[24]; snprintf(hbuf, sizeof hbuf, "_t%d", thd);
   hexpr = hbuf;
   for (int i = 0; i < en; i++) {
-    if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+    if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
     int key = nt_ref(nt, elms[i], "key");
     int vpat = nt_ref(nt, elms[i], "value");
     if (key < 0) continue;
@@ -8794,13 +8794,13 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
     const char *lnm = NULL;
     int sub = -1;
     if (vpat < 0 || (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "ImplicitNode"))) {
-      if (nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")) lnm = nt_str(nt, key, "value");
+      if (nt_kind(nt, key) == NK_SymbolNode) lnm = nt_str(nt, key, "value");
     }
-    else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "LocalVariableTargetNode"))
+    else if (nt_kind(nt, vpat) == NK_LocalVariableTargetNode)
       lnm = nt_str(nt, vpat, "name");
-    else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "CapturePatternNode")) {
+    else if (nt_kind(nt, vpat) == NK_CapturePatternNode) {
       int tgt = nt_ref(nt, vpat, "target");
-      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+      if (tgt >= 0 && nt_kind(nt, tgt) == NK_LocalVariableTargetNode)
         lnm = nt_str(nt, tgt, "name");
       sub = nt_ref(nt, vpat, "value");
     }
@@ -8838,11 +8838,11 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
   buf_printf(b, "if (_t%d >= 0) {\n", tp);
   int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
   for (int s = 0; s < 2; s++) {
-    if (sides[s] < 0 || !nt_type(nt, sides[s]) ||
-        !sp_streq(nt_type(nt, sides[s]), "SplatNode")) continue;
+    if (sides[s] < 0 ||
+        nt_kind(nt, sides[s]) != NK_SplatNode) continue;
     int inner = nt_ref(nt, sides[s], "expression");
-    if (inner < 0 || !nt_type(nt, inner) ||
-        !sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
+    if (inner < 0 ||
+        nt_kind(nt, inner) != NK_LocalVariableTargetNode) continue;
     const char *snm = nt_str(nt, inner, "name");
     if (!snm) continue;
     Buf ss; memset(&ss, 0, sizeof ss);
@@ -8914,7 +8914,7 @@ static const char *pm_target_name(const NodeTable *nt, int pat) {
   if (ty && sp_streq(ty, "LocalVariableTargetNode")) return nt_str(nt, pat, "name");
   if (ty && sp_streq(ty, "CapturePatternNode")) {
     int tgt = nt_ref(nt, pat, "target");
-    if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+    if (tgt >= 0 && nt_kind(nt, tgt) == NK_LocalVariableTargetNode)
       return nt_str(nt, tgt, "name");
   }
   return NULL;
@@ -8967,7 +8967,7 @@ static void emit_pattern_bind(Compiler *c, int id, int subj, const char *lnm, Ty
 typedef struct { int msg, key, lbl, bail; } PmDiag;
 
 static int pm_diag_lit_bound(const NodeTable *nt, int n) {
-  return n < 0 || (nt_type(nt, n) && sp_streq(nt_type(nt, n), "IntegerNode"));
+  return n < 0 || (nt_kind(nt, n) == NK_IntegerNode);
 }
 static int pm_diag_ok(Compiler *c, int pat) {
   const NodeTable *nt = c->nt;
@@ -8996,19 +8996,19 @@ static int pm_diag_ok(Compiler *c, int pat) {
   int is_hash = sp_streq(ty, "HashPatternNode");
   if (!is_arr && !is_find && !is_hash) return 0;
   int k = nt_ref(nt, pat, "constant");
-  if (k >= 0 && !(nt_type(nt, k) && sp_streq(nt_type(nt, k), "ConstantReadNode"))) return 0;
+  if (k >= 0 && nt_kind(nt, k) != NK_ConstantReadNode) return 0;
   if (is_hash) {
     int en = 0;
     const int *elms = nt_arr(nt, pat, "elements", &en);
     for (int i = 0; i < en; i++) {
-      if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) return 0;
+      if (nt_kind(nt, elms[i]) != NK_AssocNode) return 0;
       int key = nt_ref(nt, elms[i], "key");
-      if (key < 0 || !nt_type(nt, key) || !sp_streq(nt_type(nt, key), "SymbolNode")) return 0;
+      if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
       if (!pm_diag_ok(c, nt_ref(nt, elms[i], "value"))) return 0;
     }
     int rest = nt_ref(nt, pat, "rest");
     return rest < 0 || (nt_type(nt, rest) && (sp_streq(nt_type(nt, rest), "NoKeywordsParameterNode") ||
-                                              sp_streq(nt_type(nt, rest), "AssocSplatNode")));
+                                              nt_kind(nt, rest) == NK_AssocSplatNode));
   }
   int n = 0;
   const int *reqs = nt_arr(nt, pat, "requireds", &n);
@@ -9559,8 +9559,8 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       int cnode = nt_ref(nt, pat, "constant");
       int ccid = -1;
       if (cnode >= 0 && nt_type(nt, cnode) &&
-          (sp_streq(nt_type(nt, cnode), "ConstantReadNode") ||
-           sp_streq(nt_type(nt, cnode), "ConstantPathNode"))) {
+          (nt_kind(nt, cnode) == NK_ConstantReadNode ||
+           nt_kind(nt, cnode) == NK_ConstantPathNode)) {
         const char *ccn = nt_str(nt, cnode, "name");
         if (ccn) { const char *ra = resolve_class_alias(c, ccn); if (ra) ccn = ra; ccid = comp_class_index(c, ccn); }
       }
@@ -9690,7 +9690,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         int en = 0;
         const int *elms = nt_arr(nt, pat, "elements", &en);
         for (int i = 0; i < en; i++) {
-          if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+          if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
           int key = nt_ref(nt, elms[i], "key");
           int vpat = nt_ref(nt, elms[i], "value");
           if (key < 0) continue;
@@ -9717,10 +9717,10 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
              the general matcher. A bare LV target is a pure binding (bound
              below), so only presence gates it. */
           int vchk = vpat;
-          if (vchk >= 0 && nt_type(nt, vchk) && sp_streq(nt_type(nt, vchk), "CapturePatternNode"))
+          if (vchk >= 0 && nt_kind(nt, vchk) == NK_CapturePatternNode)
             vchk = nt_ref(nt, vchk, "value");
           if (vchk >= 0 && nt_type(nt, vchk) &&
-              !sp_streq(nt_type(nt, vchk), "LocalVariableTargetNode") &&
+              nt_kind(nt, vchk) != NK_LocalVariableTargetNode &&
               !sp_streq(nt_type(nt, vchk), "ImplicitNode")) {
             int vtmp = ++g_tmp;
             emit_indent(b, indent + 1);
@@ -9753,7 +9753,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         int en2 = 0, listed = 0;
         const int *elms2 = nt_arr(nt, pat, "elements", &en2);
         for (int i = 0; i < en2; i++)
-          if (nt_type(nt, elms2[i]) && sp_streq(nt_type(nt, elms2[i]), "AssocNode")) listed++;
+          if (nt_kind(nt, elms2[i]) == NK_AssocNode) listed++;
         emit_indent(b, indent + 1);
         buf_printf(b, "_t%d = _t%d && (_t%d->len == %dLL);\n", hcond, hcond, arm_t, listed);
       }
@@ -9821,7 +9821,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
     else if (sp_streq(pty, "IfNode")) {
       guard = nt_ref(nt, pat, "predicate");
       int bs = nt_ref(nt, pat, "statements");
-      if (bs >= 0 && nt_type(nt, bs) && sp_streq(nt_type(nt, bs), "StatementsNode")) {
+      if (bs >= 0 && nt_kind(nt, bs) == NK_StatementsNode) {
         int bn = 0;
         const int *body = nt_arr(nt, bs, "body", &bn);
         for (int k = 0; k < bn; k++) {
@@ -9835,13 +9835,13 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
     }
     else if (sp_streq(pty, "CapturePatternNode")) {
       int tgt = nt_ref(nt, pat, "target");
-      if (tgt >= 0 && nt_type(nt, tgt) &&
-          sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
+      if (tgt >= 0 &&
+          nt_kind(nt, tgt) == NK_LocalVariableTargetNode) {
         const char *lnm = nt_str(nt, tgt, "name");
         emit_pattern_bind(c, id, pred, lnm, pt, t, body_indent, b);
       }
       int val = nt_ref(nt, pat, "value");
-      if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode"))
+      if (val >= 0 && nt_kind(nt, val) == NK_ArrayPatternNode)
         array_pat = val;
     }
     else if (sp_streq(pty, "ArrayPatternNode")) {
@@ -9858,7 +9858,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         int en = 0;
         const int *elms = nt_arr(nt, pat, "elements", &en);
         for (int i = 0; i < en; i++) {
-          if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+          if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
           int key = nt_ref(nt, elms[i], "key");
           int vpat = nt_ref(nt, elms[i], "value");
           if (key < 0) continue;
@@ -9866,14 +9866,14 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
           const char *lnm = NULL;
           int vsub = -1;   /* nested container value pattern to descend into */
           if (vpat < 0 || (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "ImplicitNode"))) {
-            if (nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")) lnm = nt_str(nt, key, "value");
+            if (nt_kind(nt, key) == NK_SymbolNode) lnm = nt_str(nt, key, "value");
           }
-          else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "LocalVariableTargetNode")) {
+          else if (nt_kind(nt, vpat) == NK_LocalVariableTargetNode) {
             lnm = nt_str(nt, vpat, "name");
           }
-          else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "CapturePatternNode")) {
+          else if (nt_kind(nt, vpat) == NK_CapturePatternNode) {
             int tgt = nt_ref(nt, vpat, "target");
-            if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+            if (tgt >= 0 && nt_kind(nt, tgt) == NK_LocalVariableTargetNode)
               lnm = nt_str(nt, tgt, "name");
             vsub = nt_ref(nt, vpat, "value");
           }
@@ -9881,8 +9881,8 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
           /* a nested container value ({a: {b:}}, {data: [*, y, *]}) binds its
              inner names from the fetched value through the poly binders */
           if (vsub >= 0 && hvt == TY_POLY && nt_type(nt, vsub) &&
-              (sp_streq(nt_type(nt, vsub), "HashPatternNode") ||
-               sp_streq(nt_type(nt, vsub), "ArrayPatternNode") ||
+              (nt_kind(nt, vsub) == NK_HashPatternNode ||
+               nt_kind(nt, vsub) == NK_ArrayPatternNode ||
                sp_streq(nt_type(nt, vsub), "FindPatternNode"))) {
             Buf vg; memset(&vg, 0, sizeof vg);
             buf_printf(&vg, "sp_%sHash_get(_t%d, ", hn, arm_t);
@@ -9925,11 +9925,11 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         }
         /* `**rest`: copy every pair whose key is not among the listed ones */
         int hp_rest = nt_ref(nt, pat, "rest");
-        if (hp_rest >= 0 && nt_type(nt, hp_rest) &&
-            sp_streq(nt_type(nt, hp_rest), "AssocSplatNode")) {
+        if (hp_rest >= 0 &&
+            nt_kind(nt, hp_rest) == NK_AssocSplatNode) {
           int rin = nt_ref(nt, hp_rest, "value");
-          const char *rnm = (rin >= 0 && nt_type(nt, rin) &&
-                             sp_streq(nt_type(nt, rin), "LocalVariableTargetNode"))
+          const char *rnm = (rin >= 0 &&
+                             nt_kind(nt, rin) == NK_LocalVariableTargetNode)
                             ? nt_str(nt, rin, "name") : NULL;
           if (rnm) {
             TyKind hkt = ty_hash_key(arm_pt);
@@ -9945,7 +9945,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
             else
               buf_printf(b, " _t%d = _t%d->order[_t%d];\n", tk2, arm_t, ti2);
             for (int i = 0; i < en; i++) {
-              if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+              if (nt_kind(nt, elms[i]) != NK_AssocNode) continue;
               int key = nt_ref(nt, elms[i], "key");
               if (key < 0) continue;
               {
@@ -10029,11 +10029,11 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         emit_pm_elem_bind(c, plv, k, ty_array_elem(arr_t), gx, b);
         buf_puts(b, ";\n");
       }
-      if (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-          sp_streq(nt_type(nt, rest_nid), "SplatNode")) {
+      if (rest_nid >= 0 &&
+          nt_kind(nt, rest_nid) == NK_SplatNode) {
         int inner = nt_ref(nt, rest_nid, "expression");
-        if (inner >= 0 && nt_type(nt, inner) &&
-            sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+        if (inner >= 0 &&
+            nt_kind(nt, inner) == NK_LocalVariableTargetNode) {
           const char *rnm = nt_str(nt, inner, "name");
           if (rnm) {
             /* the rest is the middle: skip apn leading, drop npost trailing. */
@@ -10071,10 +10071,10 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       const int *reqs = nt_arr(nt, find_pat, "requireds", &rn);
       /* leading `*head` = elements before the matched window */
       int left = nt_ref(nt, find_pat, "left");
-      if (left >= 0 && nt_type(nt, left) && sp_streq(nt_type(nt, left), "SplatNode")) {
+      if (left >= 0 && nt_kind(nt, left) == NK_SplatNode) {
         int inner = nt_ref(nt, left, "expression");
-        if (inner >= 0 && nt_type(nt, inner) &&
-            sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+        if (inner >= 0 &&
+            nt_kind(nt, inner) == NK_LocalVariableTargetNode) {
           const char *lnm = nt_str(nt, inner, "name");
           if (lnm) {
             emit_indent(b, body_indent);
@@ -10110,10 +10110,10 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       }
       /* trailing `*tail` = elements after the matched window */
       int right = nt_ref(nt, find_pat, "right");
-      if (right >= 0 && nt_type(nt, right) && sp_streq(nt_type(nt, right), "SplatNode")) {
+      if (right >= 0 && nt_kind(nt, right) == NK_SplatNode) {
         int inner = nt_ref(nt, right, "expression");
-        if (inner >= 0 && nt_type(nt, inner) &&
-            sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+        if (inner >= 0 &&
+            nt_kind(nt, inner) == NK_LocalVariableTargetNode) {
           const char *rnm = nt_str(nt, inner, "name");
           if (rnm) {
             emit_indent(b, body_indent);
@@ -10226,7 +10226,7 @@ static int emit_when_string_range(Compiler *c, int cond, int t, Buf *b) {
   /* `when ("a".."e")` wraps the range in parentheses, and the literal check
      below saw only the wrapper -- the arm declined and the whole when folded
      to false (#3694) */
-  while (cond >= 0 && nt_type(nt, cond) && sp_streq(nt_type(nt, cond), "ParenthesesNode")) {
+  while (cond >= 0 && nt_kind(nt, cond) == NK_ParenthesesNode) {
     int pb = nt_ref(nt, cond, "body");
     int pn = 0; const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
     if (pn != 1) break;
@@ -10683,7 +10683,7 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
     /* a when value of a different comparable family never matches */
     buf_puts(b, "0");
   }
-  else if (nt_type(c->nt, cond) && sp_streq(nt_type(c->nt, cond), "SplatNode")) {
+  else if (nt_kind(c->nt, cond) == NK_SplatNode) {
     /* `when *arr`: membership via value equality (see the int-path arm) */
     emit_when_splat_test(c, cond, t, pt, b);
   }
@@ -10885,7 +10885,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
       if (oint_typed) { case_oint_label(c, conds[j], t, b); continue; }
       if (pred >= 0) {
         /* `when *arr` -- array membership test */
-        if (nt_type(nt, conds[j]) && sp_streq(nt_type(nt, conds[j]), "SplatNode")) {
+        if (nt_kind(nt, conds[j]) == NK_SplatNode) {
           int inner = nt_ref(nt, conds[j], "expression");
           TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
           int ta = ++g_tmp;
@@ -11113,7 +11113,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
    poly parameter. */
 static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int subj, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (!nt_type(nt, cond) || !sp_streq(nt_type(nt, cond), "LambdaNode")) return 0;
+  if (nt_kind(nt, cond) != NK_LambdaNode) return 0;
   int lbody = nt_ref(nt, cond, "body");
   if (lbody < 0) return 0;
   int lbn = 0; const int *lbb = nt_arr(nt, lbody, "body", &lbn);
@@ -11520,7 +11520,7 @@ static int find_hoistable_strlen(Compiler *c, int root) {
     int args = nt_ref(nt, root, "arguments");
     int an = 0; if (args >= 0) nt_arr(nt, args, "arguments", &an);
     if (nm && is_len_alias(nm) && an == 0 && recv >= 0 &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+        nt_kind(nt, recv) == NK_LocalVariableReadNode &&
         nt_str(nt, recv, "name") && comp_ntype(c, recv) == TY_STRING)
       return recv;
   }
@@ -11557,8 +11557,8 @@ static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
     if (sp_streq(ty, "CallNode")) {
       const char *mn = nt_str(nt, root, "name");
       int recv = nt_ref(nt, root, "receiver");
-      if (mn && recv >= 0 && nt_type(nt, recv) &&
-          sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+      if (mn && recv >= 0 &&
+          nt_kind(nt, recv) == NK_LocalVariableReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), name)) {
         /* any String mutator, by the table the share analysis reads
            (bop_name_mutates), and the ones that rebind
@@ -12751,7 +12751,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   Repr cr = repr_of(c, coll);
   TyKind ct = cr.as_ty;
 
-  if (ct == TY_RANGE && nt_type(nt, coll) && sp_streq(nt_type(nt, coll), "RangeNode") &&
+  if (ct == TY_RANGE && nt_kind(nt, coll) == NK_RangeNode &&
       nt_ref(nt, coll, "left") >= 0 && nt_ref(nt, coll, "right") >= 0) {
     /* for v in lo..hi -- a plain counted loop. Under --int-overflow=promote the
        counter and/or endpoints may be widened to poly, so coerce each endpoint
@@ -14210,8 +14210,8 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       char enbuf[128];
       if (sp_streq(en, "ConstantPathNode")) {
         int par = nt_ref(nt, exc[i], "parent");
-        const char *pnm = (par >= 0 && nt_type(nt, par) &&
-                           sp_streq(nt_type(nt, par), "ConstantReadNode"))
+        const char *pnm = (par >= 0 &&
+                           nt_kind(nt, par) == NK_ConstantReadNode)
                           ? nt_str(nt, par, "name") : NULL;
         if (pnm && ename) {
           snprintf(enbuf, sizeof enbuf, "%s::%s", pnm, ename);
@@ -14321,7 +14321,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
      same index _rmsg reads). A degenerate no-object raise of that class falls
      back to a freshly built subclass struct so ivar reads stay in-bounds. */
   int spec_cid = -1;
-  int has_bind = (ref >= 0 && nt_type(nt, ref) && sp_streq(nt_type(nt, ref), "LocalVariableTargetNode"));
+  int has_bind = (ref >= 0 && nt_kind(nt, ref) == NK_LocalVariableTargetNode);
   if (has_bind) {
     LocalVar *vlv = scope_local(comp_scope_of(c, ref), nt_str(nt, ref, "name"));
     if (vlv && ty_is_object(vlv->type)) {
@@ -15551,7 +15551,7 @@ static void masgn_target_parts(const NodeTable *nt, int t, int *recv, int *key) 
 }
 /* The second key of an index target that has two (`a[i, n]`), else -1. */
 static int masgn_target_key2(const NodeTable *nt, int t) {
-  if (!sp_streq(nt_type(nt, t), "IndexTargetNode")) return -1;
+  if (nt_kind(nt, t) != NK_IndexTargetNode) return -1;
   int args = nt_ref(nt, t, "arguments"), n = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
   return n == 2 ? av[1] : -1;
@@ -15902,7 +15902,7 @@ static int masgn_store_runs_user_code(Compiler *c, int tgt) {
   masgn_target_parts(c->nt, tgt, &r, &k);
   if (r < 0) return 0;
   TyKind rt = comp_ntype(c, r);
-  if (sp_streq(nt_type(c->nt, tgt), "CallTargetNode")) {
+  if (nt_kind(c->nt, tgt) == NK_CallTargetNode) {
     const char *nm = nt_str(c->nt, tgt, "name");
     int dc = -1;
     return rt == TY_POLY || rt == TY_UNKNOWN ||
@@ -15918,7 +15918,7 @@ static int masgn_store_allocates(Compiler *c, int tgt) {
   if (masgn_store_runs_user_code(c, tgt)) return 1;
   int r, k;
   masgn_target_parts(c->nt, tgt, &r, &k);
-  if (r < 0 || k < 0 || sp_streq(nt_type(c->nt, tgt), "CallTargetNode")) return 0;
+  if (r < 0 || k < 0 || nt_kind(c->nt, tgt) == NK_CallTargetNode) return 0;
   TyKind rt = comp_ntype(c, r);
   return rt == TY_POLY_POLY_HASH || (ty_is_hash(rt) && ty_hash_key(rt) == TY_STRING) ||
          nt_int(c->nt, tgt, "struct_aset", 0);
@@ -16392,7 +16392,7 @@ static void emit_massign_poly_target(Compiler *c, int id, const MasgnTmps *mt, i
   int ln = 0; const int *lefts = nt_arr(nt, tgt, "lefts", &ln);
   int rn = 0; const int *rights = nt_arr(nt, tgt, "rights", &rn);
   int rest = nt_ref(nt, tgt, "rest");
-  int inner = rest >= 0 && nt_type(nt, rest) && sp_streq(nt_type(nt, rest), "SplatNode")
+  int inner = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode
             ? nt_ref(nt, rest, "expression") : -1;
   int tv = ++g_tmp, tn = ++g_tmp;
   emit_indent(b, indent);
@@ -17529,7 +17529,7 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     int r, k;
     masgn_target_parts(nt, flat[i], &r, &k);
     if (r < 0) continue;
-    int index = sp_streq(nt_type(nt, flat[i]), "IndexTargetNode");
+    int index = nt_kind(nt, flat[i]) == NK_IndexTargetNode;
     Repr rr = repr_of(c, r);
     TyKind rt = rr.as_ty;
     int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
@@ -17566,10 +17566,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   if (ln == 2 && vty && sp_streq(vty, "CallNode") && nt_str(nt, value, "name") &&
       sp_streq(nt_str(nt, value, "name"), "pipe")) {
     int vrecv = nt_ref(nt, value, "receiver");
-    if (vrecv >= 0 && nt_type(nt, vrecv) && sp_streq(nt_type(nt, vrecv), "ConstantReadNode") &&
+    if (vrecv >= 0 && nt_kind(nt, vrecv) == NK_ConstantReadNode &&
         nt_str(nt, vrecv, "name") && sp_streq(nt_str(nt, vrecv, "name"), "IO") &&
-        nt_type(nt, lefts[0]) && sp_streq(nt_type(nt, lefts[0]), "LocalVariableTargetNode") &&
-        nt_type(nt, lefts[1]) && sp_streq(nt_type(nt, lefts[1]), "LocalVariableTargetNode")) {
+        nt_kind(nt, lefts[0]) == NK_LocalVariableTargetNode &&
+        nt_kind(nt, lefts[1]) == NK_LocalVariableTargetNode) {
       const char *rn0 = nt_str(nt, lefts[0], "name");
       const char *wn0 = nt_str(nt, lefts[1], "name");
       if (rn0 && wn0) {
@@ -17622,9 +17622,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     if (rsty && sp_streq(rsty, "SplatNode"))
       rest_inner = nt_ref(nt, rest_nid, "expression");
     if (rest_inner >= 0 && nt_type(nt, rest_inner)) {
-      if (sp_streq(nt_type(nt, rest_inner), "LocalVariableTargetNode"))
+      if (nt_kind(nt, rest_inner) == NK_LocalVariableTargetNode)
         rest_var = nt_str(nt, rest_inner, "name");
-      else if (sp_streq(nt_type(nt, rest_inner), "GlobalVariableTargetNode")) {
+      else if (nt_kind(nt, rest_inner) == NK_GlobalVariableTargetNode) {
         const char *gnm_r = nt_str(nt, rest_inner, "name");
         if (gnm_r) rest_gvar = comp_resolve_gvar(c, gnm_r + 1);
         if (!rest_gvar || !comp_gvar(c, rest_gvar))
@@ -17633,7 +17633,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       /* any other target -- an instance or class variable, a constant, an
          attribute or an index -- takes the collected array through
          masgn_store */
-      else if (!sp_streq(nt_type(nt, rest_inner), "SplatNode"))
+      else if (nt_kind(nt, rest_inner) != NK_SplatNode)
         rest_tgt = rest_inner;
     }
   }
@@ -17699,7 +17699,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     int el_empty_hash = elty && (sp_streq(elty, "HashNode") || sp_streq(elty, "KeywordHashNode")) &&
                         (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
     if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
-        nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "LocalVariableTargetNode")) {
+        nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode) {
       const char *lnm = nt_str(nt, lefts[i], "name");
       LocalVar *tlv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
       if (tlv && ((el_empty_arr && ty_is_array(tlv->type)) ||
@@ -17709,7 +17709,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
        ivar takes a fresh boxed container (the temp would otherwise be
        declared `void`, a C error) (#3280) */
     if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
-        nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "InstanceVariableTargetNode")) {
+        nt_kind(nt, lefts[i]) == NK_InstanceVariableTargetNode) {
       Scope *isc0 = comp_scope_of(c, id);
       const char *ivn0 = nt_str(nt, lefts[i], "name");
       if (isc0 && isc0->class_id >= 0 && ivn0) {
@@ -19882,7 +19882,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
         nt_ref(nt, v, "block") < 0) {
       int hr = nt_ref(nt, v, "receiver");
-      const char *hrn = hr >= 0 && nt_type(nt, hr) && sp_streq(nt_type(nt, hr), "ConstantReadNode")
+      const char *hrn = hr >= 0 && nt_kind(nt, hr) == NK_ConstantReadNode
                         ? nt_str(nt, hr, "name") : NULL;
       if (hrn && sp_streq(hrn, "Hash")) {
         /* the count lives on the ArgumentsNode; asking the CallNode for it
@@ -20285,18 +20285,18 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     int ychain = 0;
     if (yrcv >= 0 && ynm && sp_streq(ynm, "<<")) {
       int r2 = yrcv;
-      while (r2 >= 0 && nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "ParenthesesNode")) {
+      while (r2 >= 0 && nt_kind(nt, r2) == NK_ParenthesesNode) {
         int pb = nt_ref(nt, r2, "body"); int pn2 = 0;
         const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn2) : NULL;
         r2 = (pn2 == 1 && pd) ? pd[0] : -1;
       }
-      if (r2 >= 0 && nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "CallNode") &&
+      if (r2 >= 0 && nt_kind(nt, r2) == NK_CallNode &&
           nt_str(nt, r2, "name") && sp_streq(nt_str(nt, r2, "name"), "<<")) {
         int r3 = nt_ref(nt, r2, "receiver");
-        while (r3 >= 0 && nt_type(nt, r3) && sp_streq(nt_type(nt, r3), "CallNode") &&
+        while (r3 >= 0 && nt_kind(nt, r3) == NK_CallNode &&
                nt_str(nt, r3, "name") && sp_streq(nt_str(nt, r3, "name"), "<<"))
           r3 = nt_ref(nt, r3, "receiver");
-        if (r3 >= 0 && nt_type(nt, r3) && sp_streq(nt_type(nt, r3), "LocalVariableReadNode") &&
+        if (r3 >= 0 && nt_kind(nt, r3) == NK_LocalVariableReadNode &&
             nt_str(nt, r3, "name") && sp_streq(nt_str(nt, r3, "name"), g_yielder_name)) {
           emit_stmt(c, r2, b, indent);   /* the earlier push(es) in the chain */
           ychain = 1;
@@ -20306,7 +20306,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     }
     if (ychain ||
         (yrcv >= 0 && ynm && (sp_streq(ynm, "<<") || sp_streq(ynm, "yield")) &&
-        nt_type(nt, yrcv) && sp_streq(nt_type(nt, yrcv), "LocalVariableReadNode") &&
+        nt_kind(nt, yrcv) == NK_LocalVariableReadNode &&
         nt_str(nt, yrcv, "name") && sp_streq(nt_str(nt, yrcv, "name"), g_yielder_name))) {
       /* Emit the Fiber.yield directly: re-dispatching `y.yield(v)` through
          emit_expr would let the yield-keyword inlining intercept it. */
@@ -20349,11 +20349,11 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     if (class_eval_reopen_class(c, id, g_class_body_id) >= 0) return;
     if (cnm && sp_streq(cnm, "each") && nt_ref(nt, id, "block") >= 0) {
       int rcv = nt_ref(nt, id, "receiver");
-      if (rcv >= 0 && nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "ArrayNode")) {
+      if (rcv >= 0 && nt_kind(nt, rcv) == NK_ArrayNode) {
         int eblk = nt_ref(nt, id, "block");
         int ebody = nt_ref(nt, eblk, "body");
         int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
-        if (ebn == 1 && nt_type(nt, ebb[0]) && sp_streq(nt_type(nt, ebb[0]), "CallNode") &&
+        if (ebn == 1 && nt_kind(nt, ebb[0]) == NK_CallNode &&
             nt_str(nt, ebb[0], "name") && sp_streq(nt_str(nt, ebb[0], "name"), "define_method"))
           return;
       }
@@ -22545,9 +22545,9 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
     }
     /* (one-String mode: only a receiver made afresh; any other call can
        answer a String something else holds -- an element, a field) */
-    const char *clr_rn = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") ? nt_str(nt, recv, "name") : NULL;
+    const char *clr_rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
     if (!assignable && sp_streq(name, "clear") && argc == 0 &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+        nt_kind(nt, recv) == NK_CallNode &&
         clr_rn && (sp_streq(clr_rn, "+@") || sp_streq(clr_rn, "dup") || sp_streq(clr_rn, "new"))) {
       /* clear on an unnamed mutable receiver ((+"abc").clear): the temp's
          mutation is unobservable, so evaluate the receiver (a frozen value
@@ -23626,7 +23626,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
          between element-set and slice-splice per call. Not lowered yet; the
          splat value-position support would otherwise feed the built ARRAY
          pointer in as the element index (a resize loop on a garbage index). */
-      if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
+      if (nt_kind(nt, argv[0]) == NK_SplatNode) {
         unsupported(c, id, "splatted index in []= (later slice)");
         return 1;
       }
@@ -23799,7 +23799,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   if (sp_streq(name, "[]=") && argc == 2) {
     /* a splatted index (`recv[*args] = v`) has runtime arity; see the guard
        on the other []= arm. */
-    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
+    if (nt_kind(nt, argv[0]) == NK_SplatNode) {
       unsupported(c, id, "splatted index in []= (later slice)");
       return 1;
     }
@@ -24040,7 +24040,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       /* Ask the SLOT, not the node: a block parameter's node type can read as
          an array kind while its declaration is boxed, and reading the boxed
          local as a typed pointer does not compile (#3850). */
-      if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "LocalVariableReadNode")) {
+      if (nt_kind(nt, argv[a]) == NK_LocalVariableReadNode) {
         Scope *asc = comp_scope_of(c, argv[a]);
         LocalVar *alv = asc ? scope_local(asc, nt_str(nt, argv[a], "name")) : NULL;
         if (alv && alv->type != TY_UNKNOWN) at = alv->type;

@@ -2710,7 +2710,7 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
        sp_streq(name, "zip") || sp_streq(name, "flatten") || sp_streq(name, "compact") ||
        sp_streq(name, "uniq") || sp_streq(name, "sort") || sp_streq(name, "reverse") ||
        sp_streq(name, "shuffle")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+      nt_kind(nt, recv) == NK_ArrayNode) {
     int en = 0; nt_arr(nt, recv, "elements", &en);
     if (en == 0) {
       if (sp_streq(name, "each_index")) {

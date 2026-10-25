@@ -800,10 +800,9 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     char qexc_buf[160];
     #define RAISE_EXC_NAME(nd, leaf) ({ \
         const char *_ln = (leaf); \
-        if (nt_type(nt, nd) && sp_streq(nt_type(nt, nd), "ConstantPathNode")) { \
+        if (nt_kind(nt, nd) == NK_ConstantPathNode) { \
           int _par = nt_ref(nt, nd, "parent"); \
-          const char *_pnm = (_par >= 0 && nt_type(nt, _par) && \
-                              sp_streq(nt_type(nt, _par), "ConstantReadNode")) \
+          const char *_pnm = (_par >= 0 && nt_kind(nt, _par) == NK_ConstantReadNode) \
                              ? nt_str(nt, _par, "name") : NULL; \
           if (_pnm && _ln) { \
             snprintf(qexc_buf, sizeof qexc_buf, "%s::%s", _pnm, _ln); \
@@ -817,9 +816,9 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     if (ac >= 2 && nt_argv_kwh(nt, av, ac) >= 0) {
       int kn = 0;
       const int *kel = nt_arr(nt, av[ac - 1], "elements", &kn);
-      if (kn == 1 && nt_type(nt, kel[0]) && sp_streq(nt_type(nt, kel[0]), "AssocNode")) {
+      if (kn == 1 && nt_kind(nt, kel[0]) == NK_AssocNode) {
         int kk = nt_ref(nt, kel[0], "key");
-        if (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode") &&
+        if (kk >= 0 && nt_kind(nt, kk) == NK_SymbolNode &&
             nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "cause")) {
           cause_node = nt_ref(nt, kel[0], "value");
           ac--;
@@ -829,7 +828,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     if (cause_node >= 0) {
       /* record that cause: was given (so cause: nil suppresses the implicit
          cause), then evaluate it -- a nil literal / value carries as NULL (#2990) */
-      int cause_is_nil = nt_type(nt, cause_node) && sp_streq(nt_type(nt, cause_node), "NilNode");
+      int cause_is_nil = nt_kind(nt, cause_node) == NK_NilNode;
       /* The cause must be an exception or nil: one the program can be known
          to hold as anything else is CRuby's TypeError, raised once the first
          argument is known to be raisable (a wrong first argument is the
@@ -856,7 +855,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
                       repr_of(c, cause_node).exc));
       int first_const = ac > 0 && nt_type(nt, av[0]) &&
                         comp_ntype(c, av[0]) != TY_STRING && comp_ntype(c, av[0]) != TY_STRBUF &&
-                        (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"));
+                        (nt_kind(nt, av[0]) == NK_ConstantReadNode || nt_kind(nt, av[0]) == NK_ConstantPathNode);
       const char *first_cn = first_const ? nt_str(nt, av[0], "name") : NULL;
       int first_xc = first_cn ? comp_class_index(c, first_cn) : -1;
       TyKind first_ty = ac > 0 && !first_const ? comp_ntype(c, av[0]) : TY_UNKNOWN;
@@ -922,7 +921,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
                        " : sp_raise(sp_exc_no_msg))");
     }
     else if (ac == 1 && nt_type(nt, av[0]) &&
-             (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode")) &&
+             (nt_kind(nt, av[0]) == NK_ConstantReadNode || nt_kind(nt, av[0]) == NK_ConstantPathNode) &&
              /* A String constant is the message, as a String variable is. */
              comp_ntype(c, av[0]) != TY_STRING && comp_ntype(c, av[0]) != TY_STRBUF &&
              /* a constant holding an exception INSTANCE (`ERR = RuntimeError.new(..)`;
@@ -989,7 +988,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
              comp_ntype(c, av[0]) != TY_STRING && comp_ntype(c, av[0]) != TY_STRBUF &&
-             (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
+             (nt_kind(nt, av[0]) == NK_ConstantReadNode || nt_kind(nt, av[0]) == NK_ConstantPathNode)) {
       /* `raise Cls, arg` on a user exception subclass with an initialize is
          `raise Cls.new(arg)`: construct the object so its ivars are set and
          the message comes from the class's initialize/super, then carry it.

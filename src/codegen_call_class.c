@@ -594,7 +594,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* a constant path receiver (`CGI::EscapeExt.method_defined?`, cgi/escape.rb)
      names its class by the leaf, as constant paths resolve here */
   if (md_family && recv >= 0 && argc >= 1 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+      (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
@@ -777,7 +777,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* const_get(name, false) searches only the receiver's own constants */
     int cg_own = 0;
     const char *cg_rnm = cg_qm ? const_get_recv_name(c, id, recv) : NULL;
-    if (cg_qm && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
+    if (cg_qm && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
       if (cg_rnm && !const_owned_by_class(c, cg_rnm, cg_qm)) cg_own = 1;
     }
     /* A receiver known only at run time (a local, a parameter) searches the
@@ -951,7 +951,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      recorded in a flat namespace, so this consults the global const and class
      tables rather than the receiver's own constants. */
   if (sp_streq(name, "const_defined?") && recv >= 0 && argc >= 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+      nt_kind(nt, recv) == NK_ConstantReadNode) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
@@ -973,7 +973,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int yes = const_defined_from(c, cd_rnm, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
-      if (yes && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
+      if (yes && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
         if (cd_rnm && !const_owned_by_class(c, cd_rnm, qm)) yes = 0;
       }
       /* a constant not assigned yet is not defined: asked at run time */
@@ -1591,8 +1591,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
            options keep the prior ignored-with-string-keys behavior. */
         if (sp_streq(nvmod, "JSON") && sp_streq(name, "parse") && argc == 2 &&
             nt_type(nt, argv[1]) &&
-            (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
-             sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
+            (nt_kind(nt, argv[1]) == NK_KeywordHashNode ||
+             nt_kind(nt, argv[1]) == NK_HashNode)) {
           /* object_class: OpenStruct (with ostruct required) makes every
              parsed object an OpenStruct, deep, as CRuby's parser does;
              symbolize_names then changes nothing, the members are symbols
@@ -2158,7 +2158,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* self.field = val  /  self.field  inside a class method or module body --
      and the same call written without a receiver, which a method reached
      through `extend` makes ordinary (#3788) */
-  if ((recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) ||
+  if ((recv >= 0 && nt_kind(nt, recv) == NK_SelfNode) ||
       (recv < 0 && argc == 0 && nt_ref(nt, id, "block") < 0)) {
     Scope *_sgencl = comp_scope_of(c, id);
     int _sg_cid = (_sgencl && _sgencl->is_cmethod && _sgencl->class_id >= 0)
@@ -2543,7 +2543,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           is exactly as dynamic as a class-valued variable. The zero-arg arm
           below has dispatched it all along; the argument-taking form was
           refused as an unsupported node shape (#4202). */
-       (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"))) &&
+       (nt_kind(nt, recv) == NK_SelfNode)) &&
       repr_of(c, id).kind == RK_BOXED) {
     int kt = ++g_tmp, rt2 = ++g_tmp;
     /* Keyword arguments: the positional-only arms below counted the keyword
@@ -2718,8 +2718,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      then cast to the struct pointer (#3992). */
   if (recv >= 0 && sp_streq(name, "new") && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      !sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
+      nt_kind(nt, recv) != NK_ConstantReadNode &&
+      nt_kind(nt, recv) != NK_ConstantPathNode &&
       class_var_static_ci(c, recv) < 0 && self_class_static_ci(c, recv) < 0 &&
       argc == 0) {
     int kt = ++g_tmp, rt2 = ++g_tmp;
@@ -3043,7 +3043,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
   }
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+      (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
     int acid = comp_class_index(c, nt_str(nt, recv, "name"));
     if (acid >= 0 && (!class_is_exc_subclass(c, acid) ||
         comp_cmethod_in_chain(c, acid, "allocate", NULL) < 0)) {
@@ -3088,8 +3088,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 
   /* namespaced class M::Sub.new -> check for user-defined `def self.new` first,
      then fall back to sp_<Sub>_new(args) */
-  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+  if (recv >= 0 && sp_streq(name, "new") &&
+      nt_kind(nt, recv) == NK_ConstantPathNode) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
     /* native (C-backed) class reached as ::Name (root-qualified) */
@@ -3175,8 +3175,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 
   /* Cls.exception(msg) is Cls.new for a builtin exception reached by its
      path, too (Errno::ENOENT.exception) */
-  if (recv >= 0 && sp_streq(name, "exception") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
+  if (recv >= 0 && sp_streq(name, "exception") &&
+      nt_kind(nt, recv) == NK_ConstantPathNode &&
       comp_class_index(c, nt_str(nt, recv, "name")) < 0) {
     const char *qn = superclass_builtin_exc_name(nt, recv);
     if (qn) {
@@ -3495,7 +3495,7 @@ void emit_class_value_constants(Compiler *c, const char *cv, int inherit, Buf *b
 static int emit_class_value_singleton_methods(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   (void)id;
   if (!sp_streq(name, "singleton_methods") || argc > 1) return 0;
-  const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+  const char *cn2 = nt_kind(nt, recv) == NK_ConstantReadNode
                     ? nt_str(nt, recv, "name") : NULL;
   int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
   int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
@@ -3513,7 +3513,7 @@ static int emit_class_value_singleton_methods(Compiler *c, int id, Buf *b, const
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name")) {
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
     if (ci >= 0) {
@@ -3536,7 +3536,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
      Object instance, so the class is Object -- the SelfNode has no C slot at
      top level and previously fell through unsupported (#3035) */
   if (recv >= 0 && sp_streq(name, "class") && argc == 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
+      nt_kind(nt, recv) == NK_SelfNode &&
       self_is_main(c, recv)) {
     buf_puts(b, "((sp_Class){(sp_int)-116, SPL(\"Object\")})");
     return 1;
@@ -3549,7 +3549,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        Override the inferred type to TY_POLY so we get sp_poly_class_name(self).
        Exception: TrueClass/FalseClass use int self; keep TY_BOOL for ternary. */
     if (g_emitting_class_id >= 0 &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
+        nt_kind(nt, recv) == NK_SelfNode &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
       const char *ecn = c->classes[g_emitting_class_id].name;
       /* an IO reopening's self is the sp_File handle, an Enumerator's the sp_Enumerator */
@@ -3794,8 +3794,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        the class-method dispatch below. */
     int cls_shadowed = 0;
     if (nt_type(nt, recv) &&
-        (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-         sp_streq(nt_type(nt, recv), "ConstantPathNode")) &&   /* `Outer::Nested.name(x)`: the leaf keys the class (#4526) */
+        (nt_kind(nt, recv) == NK_ConstantReadNode ||
+         nt_kind(nt, recv) == NK_ConstantPathNode) &&   /* `Outer::Nested.name(x)`: the leaf keys the class (#4526) */
         nt_str(nt, recv, "name")) {
       int sci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (sci >= 0 && comp_cmethod_in_chain(c, sci, name, NULL) >= 0) cls_shadowed = 1;
@@ -3858,7 +3858,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        handle of the class the value names; a user class method of that name
        keeps the dispatch below. */
     if (sp_streq(name, "current") && argc == 0 && nt_type(nt, recv) &&
-        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+        nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) {
       int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
       if (ncc == 0) {
         char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_cl%d.cls_id", _clt);
@@ -3971,8 +3971,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        #2674 */
     if (sp_streq(name, "constants") && argc <= 1) {
       const char *rcn = nt_type(nt, recv) &&
-                        (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-                         sp_streq(nt_type(nt, recv), "ConstantPathNode"))
+                        (nt_kind(nt, recv) == NK_ConstantReadNode ||
+                         nt_kind(nt, recv) == NK_ConstantPathNode)
                         ? nt_str(nt, recv, "name") : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       /* `self.constants` (a bare `constants` is given self by desugar): in a
@@ -4042,7 +4042,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       const char *argt = nt_type(nt, argv[0]);
       int is_false_arg = argt && sp_streq(argt, "FalseNode");
       if (is_false_arg) {
-        const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+        const char *cn2 = nt_kind(nt, recv) == NK_ConstantReadNode
                           ? nt_str(nt, recv, "name") : NULL;
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
@@ -4149,7 +4149,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     /* Module#class_variables: the registered cvars, own + ancestors (#2719) */
     if (sp_streq(name, "class_variables") && argc == 0) {
-      const char *rcn9 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+      const char *rcn9 = nt_kind(nt, recv) == NK_ConstantReadNode
                          ? nt_str(nt, recv, "name") : NULL;
       int rci9 = rcn9 ? comp_class_index(c, rcn9) : -1;
       if (rci9 >= 0) {
@@ -4262,7 +4262,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     /* klass.is_a?/kind_of?(Module|Class|Object|BasicObject) */
     if (argc == 1 && is_kind_query(name)) {
       int exact = sp_streq(name, "instance_of?");
-      const char *cn2 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
+      const char *cn2 = nt_kind(nt, argv[0]) == NK_ConstantReadNode
                         ? nt_str(nt, argv[0], "name") : NULL;
       if (cn2) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -4804,7 +4804,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* X.class.name / .to_s -> identity when .class yields a string;
      for user-object receivers .class now yields TY_CLASS, so wrap with sp_class_to_s. */
   if (recv >= 0 && argc == 0 && is_name_reader(name) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     if (comp_ntype(c, recv) == TY_CLASS) {
       /* every .class now yields an sp_Class (the poly path included, via
@@ -4822,7 +4822,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   }
   /* obj.class.cmeth(...) -> dispatch class method on obj's runtime class
      Emits a cls_id switch: each case calls the right class method. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     int robj = nt_ref(nt, recv, "receiver");
     TyKind rrt = robj >= 0 ? comp_ntype(c, robj) : TY_UNKNOWN;
@@ -5030,7 +5030,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      fold and let the normal class-method dispatch emit the call. */
   if (recv >= 0 && argc == 0 &&
       is_name_reader(name) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0 &&
       comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, recv, "name")), name, NULL) < 0) {
     { int qci = comp_class_index(c, nt_str(nt, recv, "name"));
@@ -5055,7 +5055,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* bare `name` inside a class method body -> the class name */
   if (argc == 0 && (recv < 0 ? sp_streq(name, "name") :
       (is_name_reader(name) &&
-       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
+       nt_kind(nt, recv) == NK_SelfNode &&
        !nt_int(nt, recv, "sclass_value", 0)))) {   /* a singleton class's is its own */
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&

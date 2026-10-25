@@ -62,7 +62,7 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   Scope *m = &c->scopes[mi];
   if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
   int body = m->body;
-  if (body < 0 || !nt_type(c->nt, body) || !sp_streq(nt_type(c->nt, body), "StatementsNode")) return -1;
+  if (body < 0 || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
   int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
   if (n != 1) return -1;
   int call = st[0];
@@ -1165,7 +1165,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      with this call's args + block (target then splices the block normally). */
   {
     int blk0 = nt_ref(nt, id, "block");
-    if (blk0 >= 0 && nt_type(nt, blk0) && sp_streq(nt_type(nt, blk0), "BlockNode")) {
+    if (blk0 >= 0 && nt_kind(nt, blk0) == NK_BlockNode) {
       int t = pure_forwarding_target(c, mi, 0);
       if (t >= 0) mi = t;
     }
@@ -1209,14 +1209,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int fwd_value = -1;   /* the block argument's value, for g_yield_proc_expr */
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
-  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+  if (block >= 0 && nt_kind(nt, block) == NK_BlockArgumentNode) {
     /* A forwarded `&blk` whose blk is a real (materialized) proc local -- e.g.
        the enclosing method nil-checks its &block, so it can't be an inlined
        literal block -- has no block body to splice; the inlined callee's
        `yield` must call the proc instead. */
     int fexpr = nt_ref(nt, block, "expression");
-    const char *pn = (fexpr >= 0 && nt_type(nt, fexpr) &&
-                      sp_streq(nt_type(nt, fexpr), "LocalVariableReadNode"))
+    const char *pn = (fexpr >= 0 &&
+                      nt_kind(nt, fexpr) == NK_LocalVariableReadNode)
                      ? nt_str(nt, fexpr, "name") : NULL;
     Scope *encl = pn ? comp_scope_of(c, id) : NULL;
     LocalVar *plv = encl ? scope_local(encl, pn) : NULL;
@@ -1671,7 +1671,7 @@ int is_block_call(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_or_yield(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   /* Inside an Enumerator.new generator the block's first param is the YIELDER
      (g_block_param_name == g_yielder_name); `y.yield(v)` lowers to Fiber.yield
@@ -1694,7 +1694,7 @@ int is_blockless_block_param_call(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   return rn && sp_streq(rn, g_block_param_name);
 }
@@ -2270,7 +2270,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       if (ykw >= 0 && kwh_tmp < 0) {
         int en2 = 0; const int *els2 = nt_arr(nt, ykw, "elements", &en2);
         for (int e2 = 0; e2 < en2; e2++) {
-          if (!nt_type(nt, els2[e2]) || !sp_streq(nt_type(nt, els2[e2]), "AssocNode")) continue;
+          if (nt_kind(nt, els2[e2]) != NK_AssocNode) continue;
           int kn2 = nt_ref(nt, els2[e2], "key");
           int vn2 = nt_ref(nt, els2[e2], "value");
           if (kn2 < 0 || vn2 < 0) continue;
@@ -2281,7 +2281,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
             continue;
           }
           /* a pair consumed by a named keyword param stays out of the rest */
-          const char *ksym = nt_type(nt, kn2) && sp_streq(nt_type(nt, kn2), "SymbolNode")
+          const char *ksym = nt_kind(nt, kn2) == NK_SymbolNode
                                ? nt_str(nt, kn2, "value") : NULL;
           int consumed = 0;
           for (int ki2 = 0; ksym; ki2++) {
@@ -2784,7 +2784,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
   }
   if (splat_tmp < 0 && yc == 1 && yargs) {
     int inner = -1;
-    if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
+    if (nt_kind(nt, yargs[0]) == NK_SplatNode)
       inner = nt_ref(nt, yargs[0], "expression");
     /* CRuby auto-splat: a single (non-splat) Array yielded to a block taking
        more than one binding slot destructures across the params
@@ -3439,20 +3439,20 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
            nt_type(nt, bd3[bn3 - 1]) &&
-           (sp_streq(nt_type(nt, bd3[bn3 - 1]), "IfNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "UnlessNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "CaseNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "CaseMatchNode") ||
+           (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseMatchNode ||
             /* `wrap { risky rescue fallback }`: the statement form of a
                rescue modifier is an if/else over setjmp, whose two arms
                compute the value and drop it. Same void tail as the rest. */
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "RescueModifierNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "BeginNode") ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_RescueModifierNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_BeginNode ||
             /* a loop's value is nil: into a boxed slot, the boxed nil its
                expression form ends in (as statements the splice's value was
                the loop's trailing counter decrement, an int, #9488) */
-            (want_poly && (sp_streq(nt_type(nt, bd3[bn3 - 1]), "WhileNode") ||
-                           sp_streq(nt_type(nt, bd3[bn3 - 1]), "UntilNode"))) ||
+            (want_poly && (nt_kind(nt, bd3[bn3 - 1]) == NK_WhileNode ||
+                           nt_kind(nt, bd3[bn3 - 1]) == NK_UntilNode)) ||
             block_tail_needs_value_form(c, bd3[bn3 - 1]))) {
     /* A GNU statement-expression's value is its last statement only when that
        statement is an EXPRESSION; a trailing if/case/begin STATEMENT yields
@@ -3498,7 +3498,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                putchar's int rather than the call's own. Emitting the tail as an
                expression is what makes the splice's value the block's value
                (#3781). */
-            (nt_type(nt, bd3[bn3 - 1]) && sp_streq(nt_type(nt, bd3[bn3 - 1]), "CallNode") &&
+            (nt_kind(nt, bd3[bn3 - 1]) == NK_CallNode &&
              repr_of(c, bd3[bn3 - 1]).kind == RK_BOXED) ||
             /* a scalar tail into the poly slot the yield was typed for (a
                block answering an Integer where another site's answers a
@@ -3508,7 +3508,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
             comp_ntype(c, bd3[bn3 - 1]) == TY_STRING || comp_ntype(c, bd3[bn3 - 1]) == TY_BOOL ||
             comp_ntype(c, bd3[bn3 - 1]) == TY_SYMBOL) &&
            nt_type(nt, bd3[bn3 - 1]) &&
-           !sp_streq(nt_type(nt, bd3[bn3 - 1]), "ReturnNode")) {
+           nt_kind(nt, bd3[bn3 - 1]) != NK_ReturnNode) {
     /* concrete-typed bare tail into a poly slot: box it (#3278) */
     if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
@@ -3682,8 +3682,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        build -- `@v = yield`, `t += yield i`, and a bare `yield` in a method
        carrying a rescue all stopped a program that CRuby runs. */
     int bn2 = 0; const int *bd2 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn2) : NULL;
-    int tail_ret = bn2 > 0 && nt_type(nt, bd2[bn2 - 1]) &&
-                   sp_streq(nt_type(nt, bd2[bn2 - 1]), "ReturnNode");
+    int tail_ret = bn2 > 0 &&
+                   nt_kind(nt, bd2[bn2 - 1]) == NK_ReturnNode;
     if (tail_ret || stmts_diverge(c, bbody)) {
       /* The filler is read as the value of the statement expression, so the
          type it has to have is the CONSUMER's -- want_ty -- not the type of
@@ -3736,7 +3736,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
   if (!name || recv < 0 || block < 0) return 0;
-  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (nt_kind(nt, block) != NK_BlockNode) return 0;
   if (repr_of(c, recv).kind != RK_BOXED) return 0;
   /* Only receivers whose poly value comes out of a BUILTIN container -- an
      index read (`arr[i]`) or an element accessor (first/last/fetch/...) -- or
@@ -4509,7 +4509,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int is_then = is_then_alias(name);
   if (!is_tap && !is_then) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind et = repr_of(c, recv).as_ty;
@@ -4788,9 +4788,9 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name || !sp_streq(name, "with_index")) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return 0;
   const char *rnm = nt_str(nt, recv, "name");
   int is_take = rnm && sp_streq(rnm, "take_while");
   int is_drop = rnm && sp_streq(rnm, "drop_while");
@@ -4947,7 +4947,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, id, "block");
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
-  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (nt_kind(nt, block) != NK_BlockNode) return 0;
   /* `e.each { }` over an Enumerator answers what its underlying each does:
      a generator's body value, a materialized one's collection. The walk
      runs once; the `to_a` hop in front of it is never evaluated. */
@@ -4997,7 +4997,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      array: Enumerable#reverse_each / #each_with_index return the enumerable.
      Bind obj once, materialize the array from that binding, iterate, yield obj. */
   int objn = -1;
-  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+  if (nt_kind(nt, recv) == NK_CallNode) {
     const char *rnm = nt_str(nt, recv, "name");
     if (rnm && sp_streq(rnm, "__enum_to_a")) objn = nt_ref(nt, recv, "receiver");
     else if (nt_str(nt, recv, "enum_recv")) objn = nt_ref(nt, recv, "receiver");
@@ -5070,7 +5070,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   /* the step's setup: locals fresh, and a redo's label after them */
   if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
   int rd_lbl = emit_iter_step_stmts(c, body, b, indent + 1, NULL);
-  if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, indent + 1);
+  if (nt_kind(nt, bb[bn - 1]) == NK_NextNode) emit_stmt(c, bb[bn - 1], b, indent + 1);
   else {
     /* the predicate in its own buffer: a multi-statement terminal (a block
        ending in an if/else expression) lowers its statements through g_pre,
@@ -6115,7 +6115,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
      emitter required one, so a paramless block fell through to NoMethodError
      (the `throw` idiom under catch is written that way) (#3858). */
   if (sp_streq(name, "each") && rt == TY_RANGE && !p0 && block >= 0 &&
-      nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode") &&
+      nt_kind(nt, block) == NK_BlockNode &&
       !range_float_begin(c, recv)) {
     int t0 = ++g_tmp, ts0 = ++g_tmp, te0 = ++g_tmp, ti0 = ++g_tmp;
     Buf rb0; memset(&rb0, 0, sizeof rb0); emit_expr(c, recv, &rb0);
@@ -6143,7 +6143,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     {
       /* a beginless range cannot be enumerated from nil (#3066) */
       int rn0 = nt_paren_single(c->nt, recv);
-      if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
+      if (rn0 >= 0 && nt_kind(nt, rn0) == NK_RangeNode &&
           nt_ref(nt, rn0, "left") < 0) {
         emit_indent(b, indent);
         buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n");
@@ -6151,7 +6151,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
       }
     }
     int rnode = nt_paren_single(c->nt, recv);
-    if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
+    if (rnode >= 0 && nt_kind(nt, rnode) == NK_RangeNode) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
         int excl = nt_range_excl(nt, rnode);
@@ -7643,8 +7643,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      cursor is not touched), so a `break` in the block ends it. */
   int ewi_walk = sp_streq(name, "each_with_index");
   if ((sp_streq(name, "each") || ewi_walk) && recv >= 0 && nt_kind(nt, recv) == NK_CallNode &&
-      nt_str(nt, recv, "enum_each_wrap") && nt_type(nt, block) &&
-      sp_streq(nt_type(nt, block), "BlockNode")) {
+      nt_str(nt, recv, "enum_each_wrap") &&
+      nt_kind(nt, block) == NK_BlockNode) {
     int er = nt_ref(nt, recv, "receiver");
     if (er >= 0 && comp_ntype(c, er) == TY_ENUMERATOR) {
       int tres = g_enum_walk_res; g_enum_walk_res = 0;
@@ -7758,7 +7758,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      dispatch above takes precedence: a user class owning the name has to see
      the call, and its own `each` is not a container walk.) */
   { int rfb = resolve_forwarded_block(c, block);
-    if (rfb < 0 || (nt_type(nt, rfb) && sp_streq(nt_type(nt, rfb), "BlockArgumentNode"))) {
+    if (rfb < 0 || (nt_kind(nt, rfb) == NK_BlockArgumentNode)) {
       const char *inm = nt_str(nt, id, "name");
       int irecv = nt_ref(nt, id, "receiver");
       const char *pen = inm ? poly_enum_op_for(inm) : NULL;
@@ -8078,7 +8078,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     /* no limit (or an explicit nil limit): Integer#step iterates unboundedly
        until the block breaks (#2582). Integer receiver + integer step only. */
     int no_limit = sargc == 0 ||
-                   (nt_type(nt, sargv[0]) && sp_streq(nt_type(nt, sargv[0]), "NilNode"));
+                   (nt_kind(nt, sargv[0]) == NK_NilNode);
     if (no_limit && rt == TY_INT &&
         (sargc < 2 || comp_ntype(c, sargv[1]) != TY_FLOAT)) {
       int tr = step_recv_hoists(c, id, sargc, sargv) ? step_bind_recv(c, id, recv, "sp_int", emit_int_expr, sargc, sargv, b, indent) : 0;
