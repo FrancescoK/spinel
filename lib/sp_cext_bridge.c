@@ -540,6 +540,57 @@ static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
     sp_exc_disarm(); sp_cext_unlock();
     return result;
 }
+sp_RbVal (*sp_cext_catch_fn)(sp_RbVal, sp_RbVal (*)(void *), void *);
+void (*sp_cext_throw_fn)(sp_RbVal, sp_RbVal);
+/* A C body run under a Ruby catch: its handles are released when it returns
+ * and when a throw or a raise leaves it. */
+typedef struct { rb_block_call_func_t fn; VALUE tag, data; } CatchBody;
+static sp_RbVal catch_body(void *p) {
+    CatchBody *body = p;
+    sp_cext_arena_mark mark = sp_cext_arena_enter();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    VALUE result = body->fn(body->tag, body->data, 0, NULL, Qnil);
+    sp_RbVal value = sp_cext_rbval(result);
+    sp_exc_disarm(); sp_cext_arena_restore(mark);
+    return value;
+}
+static sp_RbVal catch_under(sp_RbVal tag, sp_RbVal (*fn)(void *), void *p) {
+    if (!sp_cext_catch_fn || !sp_cext_throw_fn) rb_raise(rb_eRuntimeError, "C extension catch hook is missing");
+    return sp_cext_catch_fn(tag, fn, p);
+}
+VALUE rb_catch(const char *tag, rb_block_call_func_t fn, VALUE data) {
+    VALUE symbol = ID2SYM(rb_intern(tag));
+    CatchBody body = {fn, symbol, data};
+    return sp_cext_value(catch_under(sp_cext_rbval(symbol), catch_body, &body));
+}
+void rb_throw(const char *tag, VALUE value) {
+    if (!sp_cext_throw_fn) rb_raise(rb_eRuntimeError, "C extension catch hook is missing");
+    sp_cext_throw_fn(sp_box_sym((sp_sym)rb_intern(tag)), sp_cext_rbval(value));
+    abort();
+}
+/* rb_block_call runs its call under a catch whose tag is the block call
+ * itself, so rb_iter_break leaves the iteration as a Ruby break does: the
+ * ensures between run, and rb_block_call returns the break value. */
+typedef struct IterCall {
+    VALUE receiver; const char *name; int argc; const VALUE *argv; sp_Proc *block;
+    sp_RbVal tag; struct IterCall *outer;
+} IterCall;
+static SP_TLS IterCall *iteration;
+static sp_RbVal iterate(void *p) {
+    IterCall *call = p;
+    return sp_cext_rbval(dispatch(0, call->name, call->receiver, call->argc, call->argv, call->block));
+}
 VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block_call_func_t fn, VALUE data) {
     if (!fn) return rb_funcallv(receiver, id, argc, argv);
     CextCallback *cap = sp_gc_alloc(sizeof(*cap), NULL, callback_scan);
@@ -547,8 +598,32 @@ VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block
     cap->callback = fn; cap->data = sp_cext_rbval(data); cap->outer = current_block;
     sp_Proc *block = sp_proc_new_meta((void *)callback_trampoline, cap, callback_scan, -1, FALSE, 0, NULL, NULL);
     SP_GC_ROOT(block);
-    return dispatch(0, rb_id2name(id), receiver, argc, argv, block);
+    sp_RbVal tag = sp_box_obj(cap, SP_BUILTIN_OBJECT);
+    IterCall call = {receiver, rb_id2name(id), argc, argv, block, tag, iteration};
+    IterCall *volatile outer = iteration;
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); iteration = outer; sp_gc_nroots = roots;
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    iteration = &call;
+    sp_RbVal result = catch_under(tag, iterate, &call);
+    sp_exc_disarm(); iteration = outer;
+    return sp_cext_value(result);
 }
+void rb_iter_break_value(VALUE value) {
+    if (!iteration) sp_raise_cls("LocalJumpError", "break from proc-closure");
+    sp_cext_throw_fn(iteration->tag, sp_cext_rbval(value));
+    abort();
+}
+void rb_iter_break(void) { rb_iter_break_value(Qnil); }
 #endif
 
 #ifdef SP_CEXT

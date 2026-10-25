@@ -20633,8 +20633,33 @@ static void emit_cext_runtime(Compiler *c, Buf *b) {
       }
       buf_printf(b, "return sp_box_obj(o, %d); }\n", k);
     }
+    /* rb_catch / rb_throw / rb_iter_break: a catch over this unit's catch
+     * stack around a C body, as an emitted `catch` arm does */
     buf_puts(b, "sp_raise_cls(\"TypeError\", \"unknown C extension exception class\");\n}\n"
+                 "static sp_RbVal _sp_cext_catch(sp_RbVal tag, sp_RbVal (*body)(void *), void *ctx) {\n"
+                 "unsigned char kind; const char *name = sp_catch_tag_of(tag, &kind);\n"
+                 "sp_RbVal result;\n"
+                 "sp_catch_check_depth();\n"
+                 "sp_catch_tag[sp_catch_top] = name;\n"
+                 "sp_catch_tag_kind[sp_catch_top] = kind;\n"
+                 "sp_catch_val[sp_catch_top] = sp_box_nil();\n"
+                 "sp_catch_exc_top[sp_catch_top] = sp_exc_top;\n"
+                 "sp_catch_rootmark[sp_catch_top] = sp_gc_nroots;\n"
+                 "sp_catch_top++;\n"
+                 "if (setjmp(sp_catch_stack[sp_catch_top-1]) == 0) {\n"
+                 "result = body(ctx);\n"
+                 "sp_catch_top--;\n"
+                 "}\n"
+                 "else {\n"
+                 "sp_catch_top--;\n"
+                 "sp_gc_nroots = sp_catch_rootmark[sp_catch_top];\n"
+                 "result = sp_catch_val[sp_catch_top];\n"
+                 "}\n"
+                 "return result;\n}\n"
+                 "static void _sp_cext_throw(sp_RbVal tag, sp_RbVal value) { sp_throw_boxed(tag, value); }\n"
                  "static void _sp_cext_setup(void) {\n"
+                 "sp_cext_catch_fn = _sp_cext_catch;\n"
+                 "sp_cext_throw_fn = _sp_cext_throw;\n"
                  "sp_cext_dispatch_fn = _sp_cext_dispatch;\n"
                  "sp_cext_exception_new_fn = _sp_cext_exception_new;\n"
                  "sp_cext_class_lookup_fn = _sp_cext_class_lookup;\n"

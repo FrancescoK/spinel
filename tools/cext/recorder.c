@@ -338,6 +338,10 @@ VALUE rb_ivar_get(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_get"); }
 VALUE rb_ivar_set(VALUE v, ID id, VALUE a) { (void)v;(void)id;(void)a;DENIED("rb_ivar_set"); }
 
 VALUE rb_block_call(VALUE v, ID id, int n, const VALUE *a, rb_block_call_func_t f, VALUE d) { (void)v;(void)id;(void)n;(void)a;(void)f;(void)d;DENIED("rb_block_call"); }
+VALUE rb_catch(const char *t,rb_block_call_func_t f,VALUE d) { (void)t;(void)f;(void)d;DENIED("rb_catch"); }
+void rb_throw(const char *t,VALUE v) { (void)t;(void)v;DENIED("rb_throw"); }
+void rb_iter_break(void) { DENIED("rb_iter_break"); }
+void rb_iter_break_value(VALUE v) { (void)v;DENIED("rb_iter_break_value"); }
 
 ID sp_cext_scanned_sym2id(VALUE v) { return (ID)(v >> RUBY_SPECIAL_SHIFT); }
 VALUE rb_str_intern(VALUE v) { (void)v;DENIED("rb_str_intern"); }

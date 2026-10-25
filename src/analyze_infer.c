@@ -7547,6 +7547,8 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
       }
       TyKind tt = scan_throw_type(c, tag);
       if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
+      /* rb_throw in a C extension throws a value the analysis cannot see */
+      if (c->n_cext_extensions) result = TY_POLY;
     }
     { *out = result == TY_UNKNOWN ? TY_NIL : result; return 1; }
   }

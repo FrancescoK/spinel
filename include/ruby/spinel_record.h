@@ -47,6 +47,10 @@ VALUE rb_ivar_get(VALUE, ID);
 VALUE rb_ivar_set(VALUE, ID, VALUE);
 VALUE rb_const_get(VALUE, ID);
 VALUE rb_eval_string(const char *);
+VALUE rb_catch(const char *, rb_block_call_func_t, VALUE);
+void rb_throw(const char *, VALUE) SP_CEXT_NORETURN;
+void rb_iter_break(void) SP_CEXT_NORETURN;
+void rb_iter_break_value(VALUE) SP_CEXT_NORETURN;
 
 /* CRuby answers these by calling the Ruby method, so they are rb_funcall with
  * a literal name: the scanner records the name, and an override answers as it
