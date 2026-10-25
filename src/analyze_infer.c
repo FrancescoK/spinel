@@ -6164,9 +6164,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     }
   }
 
-  /* Kernel.`("cmd"): the command's output */
+  /* Kernel.`("cmd"), or self's Kernel#` in a poly dispatch's builtin
+     default: the command's output */
   if (recv >= 0 && sp_streq(name, "`") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
-      an_kernel_const_recv(c, id, recv, 1)) { *out = TY_STRING; return 1; }
+      an_kernel_backtick_recv(c, id, recv, 1, an_builtin_only && an_bo_recv == recv)) { *out = TY_STRING; return 1; }
 
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
