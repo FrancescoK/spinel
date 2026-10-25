@@ -12803,13 +12803,25 @@ int enumerator_own_with_object(Compiler *c, int id) {
   return 1;
 }
 
-/* Is block blk the parser's `&:m` (`{ |_spx| _spx.m }`)? */
+/* Is block blk the parser's `&:m`: `{ |_spx| _spx.m }`, its one required
+   parameter `_spx` and its body one call of `m` on that parameter, with no
+   arguments and no block (a block the program writes in that shape is the
+   same block)? A desugar that met it already marks it (sym_proc). */
 static int enum_sym_proc_block(const NodeTable *nt, int blk) {
+  if (nt_str(nt, blk, "sym_proc")) return 1;
   int bp = nt_ref(nt, blk, "parameters");
   int ps = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
   int rn = 0; const int *reqs = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
   const char *pn = rn == 1 ? nt_str(nt, reqs[0], "name") : NULL;
-  return pn && sp_streq(pn, "_spx");
+  if (!pn || !sp_streq(pn, "_spx")) return 0;
+  int on = 0, kn = 0; nt_arr(nt, ps, "optionals", &on); nt_arr(nt, ps, "keywords", &kn);
+  if (on || kn || nt_ref(nt, ps, "rest") >= 0 || nt_ref(nt, ps, "block") >= 0) return 0;
+  int body = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bs[0]) != NK_CallNode) return 0;
+  int call = bs[0], r = nt_ref(nt, call, "receiver");
+  const char *rn2 = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+  return rn2 && sp_streq(rn2, "_spx") && nt_ref(nt, call, "arguments") < 0 && nt_ref(nt, call, "block") < 0;
 }
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;

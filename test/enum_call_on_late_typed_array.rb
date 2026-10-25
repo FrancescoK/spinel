@@ -21,3 +21,6 @@ p none_yet.tally
 p none_yet.count { |x| x }
 p none_yet.select { |x| x }
 p none_yet.map(&:to_s)
+# a block the program writes with a parameter named like the parser's
+# `&:m` one is still a block of its own
+p none_yet.drop_while { |_spx| _spx + 1 }
