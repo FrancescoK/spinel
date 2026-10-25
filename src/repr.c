@@ -246,6 +246,13 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int bn = 0; const int *bs = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
       return (bn > 0 && node_is_oint(c, bs[bn - 1])) || (bb >= 0 && block_next_may_be_nil(c, bb, 0));
     }
+    /* Array's, Hash's or String's own method on an instance of a subclass
+       of one (comp_arysub_call, a `super` into it too): the rows below for
+       the container the instance holds, as the call's emitter reads it
+       (emit_arysub_call) */
+    { TyKind ak = TY_UNKNOWN;
+      if (r >= 0 && comp_arysub_call(c, node, rt, &ak) && (ty_is_array(ak) || ty_is_hash(ak) || ak == TY_STRING))
+        rt = ak; }
     /* a method the program defines, resolved as the call emitter resolves
        it: its C function answers an oint iff method_ret_is_oint */
     int mi = -1;
