@@ -140,7 +140,7 @@ static int g_imemo_cap = 0;
    the inference open now (a stack by depth); a nested answer's owners join
    its asker's, kept or computed. */
 #define IMEMO_DEPS 8
-#define IMEMO_REC_MAX 256
+#define IMEMO_REC_MAX 4096   /* (an inference this deep is a chain of that many links) */
 typedef struct { unsigned long at; int n; int dep[IMEMO_DEPS]; } ImemoDeps;
 static ImemoDeps *g_imemo_deps = NULL;
 typedef struct { int n; int dep[IMEMO_DEPS]; } ImemoRec;
@@ -11943,9 +11943,12 @@ TyKind infer_type(Compiler *c, int id) {
     g_imemo_gen = 1;
     g_imemo_clean = 1;
   }
-  /* a record deeper than the stack holds is not kept, and its asker's owners
-     are everything: what it would have noted went unrecorded */
-  int memo_ok = infer_memo_usable() && g_imemo_rec_n < IMEMO_REC_MAX;
+  /* an inference deeper than the record stack holds records nothing: its
+     answer, and its asker's, depend on the program (kept only while no
+     table changes at all, the rule before owners). It still asks the memo:
+     a long chain past the stack's depth re-inferred each link below once
+     per asker, exponential in the chain's length (#4467) */
+  int memo_ok = infer_memo_usable();
   if (g_imemo_rec_n >= IMEMO_REC_MAX) g_imemo_rec[IMEMO_REC_MAX - 1].n = -1;
   int kept = 0, stale = 0;
   TyKind kept_t = TY_UNKNOWN, stale_t = TY_UNKNOWN;
