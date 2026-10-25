@@ -210,19 +210,32 @@ static inline void sp_String_set_bin_enc(sp_String*s,const char*t){
   if(sp_str_is_binary(t)){s->binary=1;sp_fd_publish(s);}
   else if(s->binary){s->binary=0;sp_str_as_text(s->data);sp_fd_publish(s);}
 }
+/* The encoding `s << t` leaves s in, read before t's tl bytes go in, as
+   CRuby's compatibility rule picks it (sp_str_cat_binary): an ASCII-only
+   operand keeps the receiver's, an ASCII-only receiver takes the operand's
+   -- `+"hdr" << png.b` is ASCII-8BIT -- and two runs with high bytes in
+   different encodings stay binary. The bytes are scanned only when the two
+   encodings differ. */
+static inline void sp_String_append_enc(sp_String*s,const char*t,size_t tl){
+  int tb=sp_str_is_binary(t);
+  if(SP_EXPECT((int)s->binary==tb,1))return;
+  for(size_t i=0;i<tl;i++)
+    if((unsigned char)t[i]>=0x80){
+      if(sp_str_ascii_only(s->data)&&!tb){s->binary=0;sp_str_as_text(s->data);}
+      else s->binary=1;
+      return;
+    }
+}
 /* the first tl bytes of t: the append form of an interpolation (emit_interp_append) */
-static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)tl);}
+static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_String_append_enc(s,t,tl);sp_fd_append_len(s,t,(int64_t)tl);}
 /* append_as_bytes preserves the handle's encoding as well as embedded NULs. */
 static inline void sp_String_append_bytes(sp_String*s,const char*t){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
 static inline void sp_String_append_bin(sp_String*s,const char*t){
   if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;
   if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}
-  if (s->binary && !sp_str_is_binary(t) &&
-      !sp_str_ascii_only(t) && sp_str_ascii_only(s->data)) {
-    s->binary=0;
-    sp_str_as_text(s->data);
-  }
-  sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));
+  size_t tl=sp_str_byte_len(t);
+  sp_String_append_enc(s,t,tl);
+  sp_fd_append_len(s,t,(int64_t)tl);
 }
 /* Handle wrap for CODEGEN-emitted sources only: every spinel-emitted string
    carries a marker byte at s[-1], so the frozen state (0xf1: an explicit
