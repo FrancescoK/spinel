@@ -1,0 +1,50 @@
+[5, 2]
+[P, 1, 2]
+[S, 1, 2]
+[D, 1, 2]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for nil"]
+[NoMethodError, "undefined method 'new' for an instance of Symbol"]
+arg
+[Q, 1, 2]
+arg
+[S, 1, 2]
+arg
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+arg
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+arg
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+arg
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+arg
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+arg
+[NoMethodError, "undefined method 'new' for nil"]
+S
+P
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for nil"]
+Z
+P
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for an instance of Integer"]
+[NoMethodError, "undefined method 'new' for nil"]
+[NoMethodError, "undefined method 'new' for an instance of Symbol"]
+P
+[NoMethodError, "undefined method 'new' for an instance of P"]
+[NoMethodError, "undefined method 'new' for an instance of Q"]
+[NoMethodError, "undefined method 'new' for an instance of Float"]
+Q
+[NoMethodError, "undefined method 'new' for an instance of P"]
+[NoMethodError, "undefined method 'new' for an instance of Float"]

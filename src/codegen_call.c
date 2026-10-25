@@ -12688,6 +12688,13 @@ static void emit_kwsplat_empty_check(Compiler *c, int id, int kwh, const char *l
   }
 }
 
+/* See codegen_call_arms.h. */
+void emit_class_value_new_switch(int rt2, int kt, int boxed, Buf *b) {
+  buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", rt2);
+  if (boxed) buf_printf(b, "switch (_t%d.tag == SP_TAG_CLASS ? _t%d.cls_id : -1) {", kt, kt);
+  else buf_printf(b, "switch(_t%d.cls_id){", kt);
+}
+
 int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -12696,7 +12703,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   buf_printf(b, "({ %s _t%d = ", boxed ? "sp_RbVal" : "sp_Class", kt); emit_expr(c, recv, b);
   buf_puts(b, "; ");
   int sv_cbt = hoist_ctor_block(c, id, b);
-  buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+  emit_class_value_new_switch(rt2, kt, boxed, b);
   /* the operand of a sole `*splat`, or the SplatNode itself for an anonymous
      `*` forwarding the method's rest (`k.new(*)`) */
   int sole_splat = argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode ? nt_ref(nt, argv[0], "expression") : -1;
