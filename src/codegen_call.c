@@ -9931,6 +9931,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (g_plan_check) pa_resume(pa_frame0);
       if (g_plan_check) pa_flags(form);
       emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, pform, b);
+      emit_poly_enum_includer_arms0(c, id, name, ret, tv, tr, blk_tmp0, pform, b);
       cplan_poly_free(pform);
       if (g_plan_check) pa_resume(pa_frame0);
       emit_poly_cases0(c, id, recv, name, &ps, ret, tv, tr, b);

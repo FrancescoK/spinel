@@ -718,6 +718,49 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
   free(arms);
 }
 
+/* The block-taking Enumerable methods a class with an #each that mixes in
+   Enumerable answers through Enumerable, for which the builtin walk of its
+   elements (sp_poly_enum_proc over the elements its #to_a or #each gives)
+   is the answer; NULL for another name: a Hash-only walk, a mutator, or a
+   walk that answers the receiver (each_with_index, reverse_each), which
+   the elements' Array would stand in for. */
+static const char *poly_enum_includer_op(const char *name) {
+  static const char *const names[] = {
+    "map", "collect", "select", "filter", "find_all", "reject", "find", "detect",
+    "find_index", "sort_by", "count", "sum", "any?", "all?", "none?", "uniq", "to_h", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return poly_enum_op_for(name);
+  return NULL;
+}
+
+/* A zero-argument poly dispatch with a block that exists because a user
+   class defines the name: the instances of a class that answers it through
+   Enumerable (Set, a class of the program's with an #each that includes
+   it) had no arm and fell to the NoMethodError. They walk their elements
+   with the shared proc, as a builtin container does in the pre-arm. P's
+   arms are the classes that answer it themselves. */
+void emit_poly_enum_includer_arms0(Compiler *c, int id, const char *name, TyKind ret, int tv, int tr,
+                                   int blk_tmp0, const PolyPlan *p, Buf *b) {
+  const char *op = blk_tmp0 >= 0 && nt_ref(c->nt, id, "block") >= 0 ? poly_enum_includer_op(name) : NULL;
+  if (!op || !obj_to_a_any(c)) return;
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->instantiated || ci->is_native_class || comp_class_is_module(c, ci)) continue;
+    int armed = 0;
+    for (int i = 0; p && i < p->n && !armed; i++) armed = p->arm[i].key == k;
+    if (armed || !comp_enum_reaches(c, k) || !comp_enum_answers_first(c, k, name) || !obj_to_a_has(c, k)) continue;
+    buf_printf(b, " case %d:", k);
+    any = 1;
+  }
+  if (!any) return;
+  char pcall[192];
+  snprintf(pcall, sizeof pcall, "sp_poly_enum_proc(sp_obj_to_a_fn(_t%d), %s, _t%d)", tv, op, blk_tmp0);
+  buf_printf(b, " _t%d = ", tr);
+  if (ret == TY_POLY) buf_puts(b, pcall);
+  else emit_unbox_text(c, ret, pcall, b);
+  buf_puts(b, "; break;");
+}
+
 /* Reuse the typed Struct writer with the receiver and arguments already
    evaluated by the dispatch. The arm's views leave the original call intact. */
 static void emit_poly_struct_set(Compiler *c, int id, const PolyUserArgs *U, int k, Buf *b) {

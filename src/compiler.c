@@ -2801,6 +2801,9 @@ int comp_enum_answers_first(Compiler *c, int cid, const char *name) {
 int comp_comparable_answers_first(Compiler *c, int cid, const char *name) {
   return mixin_answers_first(c, cid, name, 1);
 }
+int comp_enum_reaches(Compiler *c, int cid) {
+  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 0, 0);
+}
 int comp_comparable_reaches(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1, 0);
 }

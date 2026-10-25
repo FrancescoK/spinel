@@ -1,0 +1,37 @@
+[3, 1]
+[3, 1, 2]
+[2]
+3
+[3, 2, 1]
+2
+false
+6
+[5]
+[5, 4]
+[4]
+5
+[5, 4]
+2
+true
+9
+[7]
+[7, 8]
+[8]
+7
+[8, 7]
+2
+true
+15
+[:picker, [1]]
+[:picker_map]
+[:picker_reject]
+:picker_find
+:picker_sort
+-1
+:picker_any
+-2
+private method 'select' called for an instance of Listy
+private method 'select' called for an instance of Object
+["ab"]
+["ab"]
+["picker", "[\"ab\"]"]
