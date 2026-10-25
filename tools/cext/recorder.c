@@ -309,6 +309,7 @@ long rb_num2long(VALUE v) { (void)v;DENIED("NUM2LONG"); }
 VALUE rb_obj_class(VALUE v) { (void)v;DENIED("rb_obj_class"); }
 const char *rb_class2name(VALUE v) { (void)v;DENIED("rb_class2name"); }
 void rb_check_type(VALUE v,int t) { (void)v;(void)t;DENIED("Check_Type"); }
+int rb_type(VALUE v) { (void)v;DENIED("rb_type"); }
 VALUE rb_ll2inum(long long n) { (void)n;DENIED("LL2NUM"); }
 VALUE rb_float_new(double n) { (void)n;DENIED("DBL2NUM"); }
 VALUE rb_ary_new_capa(long n) { (void)n;DENIED("rb_ary_new_capa"); }

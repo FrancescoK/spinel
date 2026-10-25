@@ -244,11 +244,31 @@ int rb_num2int(VALUE value) {
     if(number<INT_MIN)rb_raise(rb_eRangeError,"integer %ld too small to convert to 'int'",number);
     return (int)number;
 }
+int rb_type(VALUE value) { return sp_cext_type(sp_cext_rbval(value),sp_cext_data_class_fn); }
+/* CRuby's builtin_types names for Check_Type's message */
+static const char *type_name(int type) {
+    switch(type) {
+    case T_NIL: return "nil"; case T_OBJECT: return "Object"; case T_CLASS: return "Class";
+    case T_MODULE: return "Module"; case T_FLOAT: return "Float"; case T_STRING: return "String";
+    case T_REGEXP: return "Regexp"; case T_ARRAY: return "Array"; case T_FIXNUM: return "Integer";
+    case T_HASH: return "Hash"; case T_STRUCT: return "Struct"; case T_BIGNUM: return "Integer";
+    case T_FILE: return "File"; case T_TRUE: return "true"; case T_FALSE: return "false";
+    case T_SYMBOL: return "Symbol"; case T_DATA: return "Data"; case T_MATCH: return "MatchData";
+    case T_RATIONAL: return "Rational"; case T_COMPLEX: return "Complex";
+    default: return "unknown";
+    }
+}
 void rb_check_type(VALUE value,int type) {
     sp_RbVal object=sp_cext_rbval(value);
     if(type==T_STRING && (object.tag==SP_TAG_STR || (object.tag==SP_TAG_OBJ && object.cls_id==SP_BUILTIN_STRBUF)))return;
     if(type==T_ARRAY && object.tag==SP_TAG_OBJ && object.cls_id==SP_BUILTIN_POLY_ARRAY)return;
-    rb_raise(rb_eTypeError,"unexpected C extension argument type");
+    int actual=rb_type(value);
+    /* an Array the analysis did not widen, or a String or Array subclass:
+     * C could not use it as one */
+    if(actual==type && (type==T_STRING || type==T_ARRAY))rb_raise(rb_eTypeError,"unexpected C extension argument type");
+    if(actual==type)return;
+    const char *name=value==Qnil ? "nil" : value==Qtrue ? "true" : value==Qfalse ? "false" : rb_class2name(rb_obj_class(value));
+    rb_raise(rb_eTypeError,"wrong argument type %s (expected %s)",name,type_name(type));
 }
 VALUE rb_ll2inum(long long number) { return sp_cext_value(sp_box_int(number)); }
 VALUE rb_float_new(double number) { return sp_cext_value(sp_box_float(number)); }

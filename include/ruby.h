@@ -103,7 +103,15 @@ void ruby_xfree(void *);
 #define xfree ruby_xfree
 void *sp_cext_allocv(VALUE *, size_t, size_t);
 #define RB_ALLOCV_N(type,handle,count) ((type *)sp_cext_allocv(&(handle),sizeof(type),(size_t)(count)))
-enum { T_STRING = 5, T_ARRAY = 7 };
+/* CRuby's value_type.h numbers */
+enum { T_NONE = 0x00, T_OBJECT = 0x01, T_CLASS = 0x02, T_MODULE = 0x03, T_FLOAT = 0x04,
+       T_STRING = 0x05, T_REGEXP = 0x06, T_ARRAY = 0x07, T_HASH = 0x08, T_STRUCT = 0x09,
+       T_BIGNUM = 0x0a, T_FILE = 0x0b, T_DATA = 0x0c, T_MATCH = 0x0d, T_COMPLEX = 0x0e,
+       T_RATIONAL = 0x0f, T_NIL = 0x11, T_TRUE = 0x12, T_FALSE = 0x13, T_SYMBOL = 0x14,
+       T_FIXNUM = 0x15, T_UNDEF = 0x16 };
+int rb_type(VALUE);
+#define TYPE(v) rb_type((VALUE)(v))
+#define RB_TYPE_P(v,t) (rb_type((VALUE)(v)) == (t))
 VALUE rb_obj_class(VALUE);
 const char *rb_class2name(VALUE);
 void rb_check_type(VALUE, int);

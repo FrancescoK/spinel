@@ -1,0 +1,37 @@
+[NilClass, 17, false]
+[TrueClass, 18, false]
+[FalseClass, 19, false]
+[Integer, 21, false]
+[Integer, 21, false]
+[Float, 4, false]
+[Symbol, 20, false]
+[String, 5, false]
+[String, 5, false]
+[Array, 7, false]
+[Array, 7, false]
+[Hash, 8, true]
+[Hash, 8, true]
+[Class, 2, false]
+[Module, 3, false]
+[TypesPlain, 1, false]
+[TypesError, 1, false]
+[Range, 9, false]
+[Regexp, 6, false]
+[Range, 9, false]
+[MatchData, 13, false]
+[Proc, 12, false]
+[Time, 12, false]
+[TypesStruct, 9, false]
+[TypesData, 9, false]
+[TypesArray, 7, false]
+{"a" => 1}
+[3]
+"wrong argument type nil (expected Hash)"
+"wrong argument type true (expected Hash)"
+"wrong argument type Integer (expected Hash)"
+"wrong argument type String (expected Hash)"
+"wrong argument type Array (expected Hash)"
+"wrong argument type Symbol (expected Hash)"
+"wrong argument type Float (expected Hash)"
+"wrong argument type TypesPlain (expected Hash)"
+"wrong argument type Hash (expected Array)"

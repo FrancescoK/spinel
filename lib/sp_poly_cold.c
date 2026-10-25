@@ -36,6 +36,46 @@ sp_RbVal sp_cext_hash_new(void) {
 sp_int sp_cext_object_to_int(sp_RbVal object) {
   return sp_poly_arg_int_obj(object);
 }
+/* CRuby's T_* number for a value: an extension data class instance is
+   T_DATA, an instance of a program class that inherits from a builtin answers
+   as that builtin, a Struct's or a Data's T_STRUCT. */
+static int sp_cext_class_type(int cls_id) {
+  if (!sp_class_kind_of_name_fn) return T_OBJECT;
+  if (sp_class_kind_of_name_fn(cls_id, "Array")) return T_ARRAY;
+  if (sp_class_kind_of_name_fn(cls_id, "Hash")) return T_HASH;
+  if (sp_class_kind_of_name_fn(cls_id, "String")) return T_STRING;
+  if (sp_class_kind_of_name_fn(cls_id, "Struct") || sp_class_kind_of_name_fn(cls_id, "Data")) return T_STRUCT;
+  return T_OBJECT;
+}
+int sp_cext_type(sp_RbVal v, int (*data_class)(int)) {
+  switch (v.tag) {
+  case SP_TAG_NIL: return T_NIL;
+  case SP_TAG_BOOL: return v.v.b ? T_TRUE : T_FALSE;
+  case SP_TAG_INT: return v.v.i >= RUBY_FIXNUM_MIN && v.v.i <= RUBY_FIXNUM_MAX ? T_FIXNUM : T_BIGNUM;
+  case SP_TAG_BIGINT: return T_BIGNUM;
+  case SP_TAG_FLT: return T_FLOAT;
+  case SP_TAG_SYM: return T_SYMBOL;
+  case SP_TAG_STR: return T_STRING;
+  case SP_TAG_CLASS:
+    return sp_class_is_module_fn && sp_class_is_module_fn((sp_Class){v.cls_id, NULL}) ? T_MODULE : T_CLASS;
+  case SP_TAG_OBJ:
+    if (v.cls_id == SP_BUILTIN_STRBUF) return T_STRING;
+    if (sp_poly_is_array_kind(v.cls_id)) return T_ARRAY;
+    if (sp_poly_is_hash_kind(v.cls_id)) return T_HASH;
+    if (v.cls_id >= 0) return data_class && data_class(v.cls_id) ? T_DATA : sp_cext_class_type(v.cls_id);
+    switch (v.cls_id) {
+    case SP_BUILTIN_REGEX: return T_REGEXP;
+    case SP_BUILTIN_RANGE: case SP_BUILTIN_FLOAT_RANGE: case SP_BUILTIN_STR_RANGE: return T_STRUCT;
+    case SP_BUILTIN_IO: return T_FILE;
+    case SP_BUILTIN_MATCHDATA: return T_MATCH;
+    case SP_BUILTIN_COMPLEX: return T_COMPLEX;
+    case SP_BUILTIN_RATIONAL: case SP_BUILTIN_BIG_RATIONAL: return T_RATIONAL;
+    case SP_BUILTIN_OBJECT: case SP_BUILTIN_BASIC_OBJECT: case SP_BUILTIN_EXCEPTION: return T_OBJECT;
+    default: return T_DATA;
+    }
+  default: return T_OBJECT;
+  }
+}
 void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
   if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
     sp_raise_cls("TypeError", "expected a widened Hash");
