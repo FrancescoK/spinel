@@ -3309,6 +3309,22 @@ static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
 static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
   return sp_poly_literal_identity(v).v.p;
 }
+static sp_int sp_rbval_hash_key(sp_RbVal v);   /* with the Hash key machinery below */
+/* A boxed value's #object_id: an immediate's is the one its typed form
+   answers (an Integer's 2n+1, a Symbol's id * 2, true's, nil's, a Float's
+   key), so `[x][0].object_id == x.object_id`; any other is its identity.
+   The box's payload was read as the id, which for an Integer, a Symbol and
+   true is not the typed one. */
+static inline sp_int sp_poly_object_id(sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_INT: return 2 * v.v.i + 1;
+    case SP_TAG_SYM: return (sp_int)v.v.i * 2;
+    case SP_TAG_BOOL: return v.v.i ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID;
+    case SP_TAG_NIL: return SP_NIL_OBJECT_ID;
+    case SP_TAG_FLT: return sp_rbval_hash_key(v);
+    default: return (sp_int)(uintptr_t)sp_poly_identity_ptr(v);
+  }
+}
 /* --share-strings: a String Array moved into a boxed Array with each
    element as the handle a change through another name reaches. A
    handle's own bytes box that handle (sp_poly_literal_identity), a frozen
