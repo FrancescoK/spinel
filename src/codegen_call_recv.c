@@ -8015,6 +8015,19 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
 /* A String receiver's conversions and comparisons: lines with keywords,
    bytes, codepoints, unpack / unpack1, chars, to_i, eql? and equal?
    (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
+/* String#to_i([base]), #hex and #oct, which promote mode types poly: a
+   Bignum past sp_int. Ahead of the rows, which answer an sp_int. */
+static int str_arms_int_promote(Compiler *c, int id, Buf *b, const char *name, int argc, const int *argv, const char *r) {
+  if (!str_int_promotes(name, argc) || repr_of(c, id).kind != RK_BOXED) return 0;
+  if (sp_streq(name, "hex"))      buf_printf(b, "sp_str_to_i_promote(sp_nil_recv_named(%s, \"hex\"), 16, 0)", r);
+  else if (sp_streq(name, "oct")) buf_printf(b, "sp_str_oct_promote(%s)", r);
+  else {
+    buf_printf(b, "sp_str_to_i_promote(%s, ", r);
+    if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "-1");
+    buf_puts(b, ", 0)");
+  }
+  return 1;
+}
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r) {
   /* lines(sep, chomp: true): a separator and the keyword together (#3546) */
   if (sp_streq(name, "lines") && argc == 2 &&
@@ -8067,12 +8080,6 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (oint_kind(u1t)) oint_close(c, id, b);
   }
   else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
-  /* promote mode types the call poly: a Bignum past sp_int */
-  else if (sp_streq(name, "to_i") && argc <= 1 && repr_of(c, id).kind == RK_BOXED) {
-    buf_printf(b, "sp_str_to_i_promote(%s, ", r);
-    if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "-1");
-    buf_puts(b, ", 0)");
-  }
   else if (sp_streq(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
   else if (sp_streq(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   /* String#eql?(x): byte-equal only when x is itself String-typed (no
@@ -10007,6 +10014,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     else if (str_arms_pattern(c, id, b, nt, name, argc, argv, r)) ;
     /* the receiver is a spinel string, so its own byte length is what the
        symbol's name is -- a NUL in it is a byte of the name (#nul) */
+    else if (str_arms_int_promote(c, id, b, name, argc, argv, r)) ;
     /* the arms that read only the receiver text and the arguments:
        builtin-op rows (builtin_ops.c) */
     else if (emit_builtin_op_text(c, id, recv, TY_STRING, name, r, b)) ;

@@ -5115,9 +5115,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
-    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
-       It reads the mode, so it sits ahead of the to_i row. */
-    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
+    /* promote mode: a String#to_i, #hex or #oct past sp_int is a Bignum
+       (sp_str_to_i_promote). It reads the mode, so it sits ahead of the rows. */
+    if (g_promote_mode && str_int_promotes(name, argc)) { *out = TY_POLY; return 1; }
     /* builtin-op rows (builtin_ops.c): the calls typed by name, arity, block
        form and, for the rows that guard it, the argument's kind (casecmp's
        and lines' separator) */
