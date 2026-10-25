@@ -53388,8 +53388,13 @@ static void an_phase_nullable_returns(Compiler *c, const NodeTypes *promoted) {
   free(rc.seen);
   g_ret_no_new_poly = 0;
 }
+/* the node table's size when the analysis began: the calls the program
+   wrote are below it, the ones a rewrite made above (an_written_call) */
+static int g_an_src_nodes = -1;
+int an_written_call(int id) { return g_an_src_nodes < 0 || id < g_an_src_nodes; }
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
+  g_an_src_nodes = c->nt->count;
   an_note_written_names(c->nt);
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
