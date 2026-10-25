@@ -6555,9 +6555,11 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
   if (mi < 0 && cn && cr >= 0 && tblk < 0 &&
       (crt == TY_CLASS || crt == TY_POLY || crt == TY_UNKNOWN || ty_is_object(crt))) {
     int ch = 0, any = 0;
-    for (int t = 1; t < c->nscopes; t++) {
+    /* (the methods of the name off the scopes-by-name index, ascending as
+       the scan of every scope was) */
+    for (int t = an_scopes_named_first(c, cn); t >= 1; t = an_scopes_named_next(c, cn, t)) {
       Scope *o = &c->scopes[t];
-      if (!o->name || !sp_streq(o->name, cn) || o->class_id < 0) continue;
+      if (o->class_id < 0) continue;
       for (int d = 0; d < depth; d++) if (stack[d] == t) return !apply;
       int ol[16];
       int on = method_value_leaves(c, t, ol, 16);
@@ -6585,9 +6587,11 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
   if (method_has_other_body(c, mi)) {
     int ch = 0;
     stack[depth] = mi;
-    for (int t = 1; t < c->nscopes; t++) {
+    /* (the scopes of the method's name off the index, mi among them, in
+       the ascending order the scan of every scope visited) */
+    for (int t = an_scopes_named_first(c, m->name); t >= 1; t = an_scopes_named_next(c, m->name, t)) {
       Scope *o = &c->scopes[t];
-      if (t != mi && !(o->name && sp_streq(o->name, m->name) && o->is_cmethod == m->is_cmethod &&
+      if (t != mi && !(o->is_cmethod == m->is_cmethod &&
                        (o->class_id == m->class_id ||
                         (o->class_id >= 0 && m->class_id >= 0 && is_descendant(c, o->class_id, m->class_id)))))
         continue;
@@ -7388,8 +7392,11 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
   TyKind crt = r >= 0 ? infer_type(c, r) : TY_UNKNOWN;
   if (r < 0 || !(crt == TY_POLY || crt == TY_CLASS || ty_is_object(crt))) return 0;
   int ch = 0;
-  for (int t = 1; t < c->nscopes; t++)
-    if (c->scopes[t].name && sp_streq(c->scopes[t].name, nm) && c->scopes[t].class_id >= 0)
+  /* (the methods of the name off the scopes-by-name index, ascending as the
+     scan of every scope was: a Rails application has 118,000 scopes, and
+     the walk asked at every unresolved call it reached) */
+  for (int t = an_scopes_named_first(c, nm); t >= 1; t = an_scopes_named_next(c, nm, t))
+    if (c->scopes[t].class_id >= 0)
       ch |= widen_method_value_sources(c, v, t, elem, depth, 1);
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *cls = &c->classes[k];
