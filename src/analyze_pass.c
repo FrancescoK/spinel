@@ -3195,13 +3195,19 @@ static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an)
     if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_read(c, sc, argv[ai]));
   return ch;
 }
+static void wbas_share_begin(int *changed, int *any);
+static void wbas_share_step(int *changed, int *any);
+static void wbas_share_end(void);
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
-  int changed = 0;
+  int changed = 0, any = 0;
+  /* the walks the stores start share what they found unchanged, until a
+     store reports a change (widen_boxed_array_sources) */
+  wbas_share_begin(&changed, &any);
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
      its element / key+value type from how it is filled. `a << x` /
      `a.push(x)` / `a[i] = x` (int key) -> array; `h[k] = v` / `h[k] op= v`
      (string key) -> hash. Part of the recompute frame so it survives reset. */
-  for (int id = 0; id < nt->count; id++) {
+  for (int id = 0; id < nt->count; id++, wbas_share_step(&changed, &any)) {
     const char *ty = nt_type(nt, id);
     if (!ty || nt_int(nt, id, "dyn_arm", 0)) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
@@ -4168,7 +4174,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
     }
   }
-  return changed;
+  wbas_share_end();
+  return changed | any;
 }
 
 /* A local target `tgt` of a multiple assignment whose right-hand side is
@@ -7098,7 +7105,10 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
    (wbas_share_begin), whose call sites hand the same locals to one
    parameter after another: there a generation also ends wherever the pass
    reports a change, at each node it binds and before each walk in
-   bind_args_params, and it closes with the pass.
+   bind_args_params, and it closes with the pass. The write pass's stores
+   (infer_write_container_usage) share the same way: a boxed receiver's
+   arrays are the same from each of its stores, and a change it reports
+   ends the generation at the next store or walk.
 
    With SPINEL_WBAS_SHADOW set, a visit skipped on the strength of a record
    another walk from outside left is made all the same, in a fresh
@@ -7224,7 +7234,13 @@ static void wbas_share_end(void) {
 }
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
-  if (depth == 0) { wbas_walk++; if (!wbas_shared) wbas_touch(); }
+  if (depth == 0) {
+    wbas_walk++;
+    if (!wbas_shared) wbas_touch();
+    /* a change the sharing pass reported since its last step ends the
+       generation before this walk reads what the earlier ones left */
+    else if (wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
+  }
   v = nt_paren_single(c->nt, v);
   int ch = 0, shadow = 0;
   if (!wbas_seen(0, v, elem, depth, &shadow)) {
