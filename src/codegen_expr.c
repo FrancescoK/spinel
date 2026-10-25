@@ -465,8 +465,15 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
                    neutral, tvp, tvp, tvp);
       }
       else if (t == TY_EXCEPTION) {
-        buf_puts(&conv, "sp_exc_message(");
-        EMIT_IV(); buf_puts(&conv, ")");
+        /* an exception interpolates as its to_s, the same helper e.to_s
+           lowers to: the message alone left a user to_s out */
+        if (exc_has_user_msg_override(c)) {
+          buf_puts(&conv, "sp_user_exc_to_s((sp_Exception *)(");
+          EMIT_IV(); buf_puts(&conv, "))");
+        } else {
+          buf_puts(&conv, "sp_exc_message(");
+          EMIT_IV(); buf_puts(&conv, ")");
+        }
       }
       else if (t == TY_NIL) {
         wkind = WK_NIL;
