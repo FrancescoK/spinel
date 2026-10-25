@@ -5974,6 +5974,51 @@ static int clw_first_named(Compiler *c, NodeKind wk, const char *name) {
   return k >= 0 ? clw_first[slot][k] : -1;
 }
 
+/* The argument index call `call` hands parameter pi of method si by its
+   layout, or -1 (container_literals, the parameter case): the layout is
+   decided from the call's argument nodes and the method's parameter list
+   alone (arg_layout_untyped), so the answer holds while the node table and
+   the scopes do, and is kept per (call, method, parameter). The walk asked
+   the layout again at every caller of the method, at every ask for the
+   parameter, in every round -- on a Rails application most of its time. */
+typedef struct { int call, si, pi, from; } ClaEntry;
+static ClaEntry *cla_tab; static int cla_cap, cla_n;
+static const NodeTable *cla_nt; static unsigned cla_ver, cla_gen; static int cla_count, cla_nscopes;
+static int cla_layout_arg(Compiler *c, int call, int si, Scope *sc, const int *av, int an, int pi) {
+  const NodeTable *nt = c->nt;
+  if (cla_nt != nt || cla_ver != nt->version || cla_count != nt->count || cla_gen != comp_scope_index_gen() ||
+      cla_nscopes != c->nscopes) {
+    cla_n = 0;
+    if (cla_tab) memset(cla_tab, 0, sizeof *cla_tab * (size_t)cla_cap);
+    cla_nt = nt; cla_ver = nt->version; cla_count = nt->count; cla_gen = comp_scope_index_gen(); cla_nscopes = c->nscopes;
+  }
+  if (cla_n * 2 >= cla_cap) {
+    int ncap = cla_cap ? cla_cap * 2 : 4096;
+    ClaEntry *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < cla_cap; i++) {
+      if (!cla_tab[i].call) continue;
+      unsigned h = ((unsigned)cla_tab[i].call * 2654435761u ^ (unsigned)cla_tab[i].si * 40503u ^ (unsigned)cla_tab[i].pi * 97u) & (unsigned)(ncap - 1);
+      while (nv[h].call) h = (h + 1) & (unsigned)(ncap - 1);
+      nv[h] = cla_tab[i];
+    }
+    free(cla_tab); cla_tab = nv; cla_cap = ncap;
+  }
+  /* (keys are stored off by one: a zero call marks an empty slot) */
+  unsigned h = ((unsigned)(call + 1) * 2654435761u ^ (unsigned)si * 40503u ^ (unsigned)pi * 97u) & (unsigned)(cla_cap - 1);
+  while (cla_tab[h].call) {
+    if (cla_tab[h].call == call + 1 && cla_tab[h].si == si && cla_tab[h].pi == pi) return cla_tab[h].from;
+    h = (h + 1) & (unsigned)(cla_cap - 1);
+  }
+  ArgLayout L;
+  call_layout(c, sc, av, an, &L);
+  int from = pi < L.n && L.from[pi] == ARG_NODE ? L.arg[pi] : -1;
+  arg_layout_free(&L);
+  cla_tab[h] = (ClaEntry){ call + 1, si, pi, from };
+  cla_n++;
+  return from;
+}
+
 /* Collects into out[] the container literals `n` can evaluate to, as far
    as the program shows: a literal itself, the literals a variable is
    assigned, and, for an element read `x[k]` (`fetch`, `first`, `last`),
@@ -6034,10 +6079,7 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
         if (!hit) continue;
         int a = nt_ref(nt, call, "arguments"), an = 0;
         const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-        ArgLayout L;
-        call_layout(c, sc, av, an, &L);
-        int from = pi < L.n && L.from[pi] == ARG_NODE ? L.arg[pi] : -1;
-        arg_layout_free(&L);
+        int from = cla_layout_arg(c, call, si, sc, av, an, pi);
         if (from >= 0 && from < an) nout = container_literals(c, av[from], out, nout, cap, depth + 1);
       }
     }
