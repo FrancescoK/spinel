@@ -20818,6 +20818,12 @@ static void emit_obj_dispatchers(Compiler *c, Buf *body) {
   emit_obj_to_ary_dispatch(c, body);
   emit_obj_with_dispatch(c, body);
 }
+static void emit_global_mark_line(Compiler *c, TyKind t, const char *name, Buf *mk) {
+  if (t == TY_STRING) buf_printf(mk, "  sp_mark_string(%s);\n", name);
+  else if (t == TY_POLY) buf_printf(mk, "  sp_mark_rbval(%s);\n", name);
+  else if (t == TY_STR_RANGE) emit_srange_marks(c, name, mk);
+  else if (needs_root(t)) buf_printf(mk, "  if (%s) sp_gc_mark((void *)%s);\n", name, name);
+}
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -21266,29 +21272,22 @@ char *codegen_program(const NodeTable *nt) {
     for (int i = 0; i < c->ngvars; i++) {
       LocalVar *lv = &c->gvars[i];
       if (!is_scalar_ret(lv->type)) continue;
-      if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(gv_%s);\n", lv->name);
-      else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(gv_%s);\n", lv->name);
-      /* a String Range by value: what it carries (it held freed endpoints) */
-      else if (lv->type == TY_STR_RANGE) { char ref[160]; snprintf(ref, sizeof ref, "gv_%s", lv->name); emit_srange_marks(c, ref, &mk); }
-      else if (needs_root(lv->type)) buf_printf(&mk, "  if (gv_%s) sp_gc_mark((void *)gv_%s);\n", lv->name, lv->name);
+      char name[512]; snprintf(name, sizeof name, "gv_%s", lv->name);
+      emit_global_mark_line(c, lv->type, name, &mk);
     }
     for (int i = 0; i < c->nconsts; i++) {
       LocalVar *lv = &c->consts[i];
       if (!is_scalar_ret(lv->type)) continue;
-      if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(cst_%s);\n", lv->name);
-      else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(cst_%s);\n", lv->name);
-      else if (lv->type == TY_STR_RANGE) { char ref[160]; snprintf(ref, sizeof ref, "cst_%s", lv->name); emit_srange_marks(c, ref, &mk); }
-      else if (needs_root(lv->type)) buf_printf(&mk, "  if (cst_%s) sp_gc_mark((void *)cst_%s);\n", lv->name, lv->name);
+      char name[512]; snprintf(name, sizeof name, "cst_%s", lv->name);
+      emit_global_mark_line(c, lv->type, name, &mk);
     }
     for (int i = 0; i < c->nclasses; i++) {
       ClassInfo *ci = &c->classes[i];
       for (int j = 0; j < ci->nivars; j++) {
         TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
         const char *iv = iv_c(ci->ivars[j] + 1);
-        if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(civ_%s_%s);\n", ci->name, iv);
-        else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(civ_%s_%s);\n", ci->name, iv);
-        else if (t == TY_STR_RANGE) { char ref[200]; snprintf(ref, sizeof ref, "civ_%s_%s", ci->name, iv); emit_srange_marks(c, ref, &mk); }
-        else if (needs_root(t)) buf_printf(&mk, "  if (civ_%s_%s) sp_gc_mark((void *)civ_%s_%s);\n", ci->name, iv, ci->name, iv);
+        char name[512]; snprintf(name, sizeof name, "civ_%s_%s", ci->name, iv);
+        emit_global_mark_line(c, t, name, &mk);
       }
       for (int j = 0; j < ci->nsg_readers; j++)
         buf_printf(&mk, "  sp_mark_rbval(sg_%s_%s);\n", ci->name, ci->sg_readers[j]);
@@ -21300,10 +21299,8 @@ char *codegen_program(const NodeTable *nt) {
       for (int j = 0; j < ci->ncvars; j++) {
         TyKind t = ci->cvar_types[j] == TY_UNKNOWN ? TY_INT : ci->cvar_types[j];
         const char *cv = ci->cvars[j] + 2;
-        if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(cvar_%s_%s);\n", ci->name, cv);
-        else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(cvar_%s_%s);\n", ci->name, cv);
-        else if (t == TY_STR_RANGE) { char ref[200]; snprintf(ref, sizeof ref, "cvar_%s_%s", ci->name, cv); emit_srange_marks(c, ref, &mk); }
-        else if (needs_root(t)) buf_printf(&mk, "  if (cvar_%s_%s) sp_gc_mark((void *)cvar_%s_%s);\n", ci->name, cv, ci->name, cv);
+        char name[512]; snprintf(name, sizeof name, "cvar_%s_%s", ci->name, cv);
+        emit_global_mark_line(c, t, name, &mk);
       }
     }
     /* $0 and the proc calling convention's side channel are marked by the
