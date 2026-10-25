@@ -20983,19 +20983,13 @@ static int hash_new_no_string_at(Compiler *c, int v, const char *key, int depth)
 }
 /* Is read r of a local a value method scope si answers: its body's tail
    (through a begin/rescue body), or one of its values? */
+static int scope_answers_leaf(const VpLeaf *leaf, void *ud) {
+  return leaf->kind == VPK_EXPR && leaf->node == *(int *)ud;
+}
 static int scope_answers_read(Compiler *c, int si, int r) {
   const NodeTable *nt = c->nt;
-  for (int n = c->scopes[si].body, d = 0; n >= 0 && d < 16; d++) {
-    n = nt_paren_single(nt, n);
-    if (n == r) return 1;
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_StatementsNode) {
-      int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
-      n = bn > 0 ? bb[bn - 1] : -1;
-    }
-    else if (k == NK_BeginNode) n = nt_ref(nt, n, "statements");
-    else break;
-  }
+  int b = c->scopes[si].body;
+  if (b >= 0 && for_each_value_position(nt, b, VPS_BEGIN | VP_BEGIN_BOTH, scope_answers_leaf, &r)) return 1;
   int out[32];
   int n = method_value_leaves_or_nil(c, si, out, 32);
   for (int i = 0; i < n; i++) if (nt_paren_single(nt, out[i]) == r) return 1;
