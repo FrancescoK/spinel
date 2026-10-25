@@ -714,6 +714,39 @@ static int incremental_write_dir(const char *cmd, size_t src_at, size_t src_end,
   return rc;
 }
 
+/* The native step: the single unit, the --jobs split of a large one, or
+   with --incremental the unit cache (unit_cache.c). A split or an
+   incremental build that fails leaves the single unit to run, unless its
+   STRICT variable says the failure is the answer (for tests of the split
+   itself). main's cc status. */
+static int cc_native_build(const char *cmd, size_t src_at, size_t src_end, const char *c_path,
+                           int cc_jobs, int target_wasi, int want_g, const char *cc_cmd) {
+  int cc_rc = -1;
+  if (inc_flags.on) {
+    IncrementalOpts o = { inc_flags.unit_bytes, inc_flags.cache_stats, want_g, cc_cmd, NULL };
+    cc_rc = cc_incremental_build(cmd, src_at, src_end, c_path, cc_jobs, &o);
+    if (cc_rc != 0 && !getenv("SPINEL_INCREMENTAL_STRICT")) cc_rc = system(cmd);
+    return cc_rc;
+  }
+  /* Unasked, only a large unit is split: a part cannot inline what another
+     part defines, which cost optcarrot's 0.6 MB unit ~10% of its speed, and
+     run time comes before build time. A unit this large is where cc's one
+     core is the build (campfire's 10 MB: 77 s whole, 36 s split). */
+  if (cc_jobs == 0) {
+    struct stat cst;
+    cc_jobs = 1;
+    if (stat(c_path, &cst) == 0 && cst.st_size >= SPLIT_AUTO_BYTES) {
+      long nc = sysconf(_SC_NPROCESSORS_ONLN);
+      cc_jobs = nc > 16 ? 16 : nc > 1 ? (int)nc : 1;
+    }
+  }
+  if (cc_jobs > 1 && !target_wasi)
+    cc_rc = cc_split_build(cmd, src_at, src_end, c_path, cc_jobs);
+  if (cc_rc != 0 && !(cc_jobs > 1 && getenv("SPINEL_SPLIT_STRICT")))
+    cc_rc = system(cmd);   /* the single unit, or the fallback */
+  return cc_rc;
+}
+
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -1631,24 +1664,7 @@ int main(int argc, char **argv) {
   /* -c --incremental: the unit set is the output; nothing is compiled */
   if (c_only && inc_flags.on) { cc_rc = incremental_write_dir(cmd.p, cc_src_at, cc_src_end, c_path, output, basename, want_g, cc_cmd); free(cmd.p); return cc_rc; }
   double tm_ccall = sp_timing_now();
-  /* Unasked, only a large unit is split: a part cannot inline what another
-     part defines, which cost optcarrot's 0.6 MB unit ~10% of its speed, and
-     run time comes before build time. A unit this large is where cc's one
-     core is the build (campfire's 10 MB: 77 s whole, 36 s split). */
-  if (cc_jobs == 0) {
-    struct stat cst;
-    cc_jobs = 1;
-    if (stat(c_path, &cst) == 0 && cst.st_size >= SPLIT_AUTO_BYTES) {
-      long nc = sysconf(_SC_NPROCESSORS_ONLN);
-      cc_jobs = nc > 16 ? 16 : nc > 1 ? (int)nc : 1;
-    }
-  }
-  if (cc_jobs > 1 && !target_wasi)
-    cc_rc = cc_split_build(cmd.p, cc_src_at, cc_src_end, c_path, cc_jobs);
-  /* SPINEL_SPLIT_STRICT: a split that fails is the failure (for tests of the
-     split itself); otherwise the single unit is the fallback */
-  if (cc_rc != 0 && !(cc_jobs > 1 && getenv("SPINEL_SPLIT_STRICT")))
-    cc_rc = system(cmd.p);   /* the single unit, or the fallback */
+  cc_rc = cc_native_build(cmd.p, cc_src_at, cc_src_end, c_path, cc_jobs, target_wasi, want_g, cc_cmd);
   sp_timing_end(tm_ccall, "cc_total", "");
   free(cmd.p);
   if (cc_rc != 0) {

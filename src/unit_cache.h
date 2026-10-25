@@ -3,8 +3,9 @@
 #include <stddef.h>
 
 /* --incremental's native step: preprocess the generated C, split it into
-   units (csplit.c's c_split_units), and with -c write the unit set to a
-   directory instead of building. See unit_cache.c. */
+   units (csplit.c's c_split_units), take each unit's object from the cache
+   or compile it, and link; with -c, write the unit set to a directory
+   instead of building. See unit_cache.c. */
 typedef struct {
   size_t unit_bytes;        /* --unit-bytes */
   int cache_stats;          /* --cache-stats */
