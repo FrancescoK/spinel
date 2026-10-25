@@ -2932,38 +2932,49 @@ int emit_arysub_call(Compiler *c, int id, Buf *b) {
   if (!arysub_view_open(c, id, &v)) return 0;
   int inner_o = node_is_oint(c, id) && oint_kind(repr_of(c, id).as_ty) && !outer_o;
   const char *cn = recv >= 0 && ty_is_object(rt) ? c->classes[ty_object_class(rt)].c_name : NULL;
-  if (inner_o) buf_printf(b, "%s(", oint_arg(repr_of(c, id).as_ty));
+  /* an unwrap's offer for this call (emit_oint_unwrap_ck, `a[0] + 1`): the
+     Array's read takes it and answers the plain value, with the unwrap's
+     own error for nil, so it is not unwrapped again */
+  Buf *ob = b, side; memset(&side, 0, sizeof side);
+  int offered = inner_o && g_ck_node == id && !g_ck_done;
+  if (offered) ob = &side;
+  else if (inner_o) buf_printf(b, "%s(", oint_arg(repr_of(c, id).as_ty));
   if (v.vi >= 0 && v.nat == TY_POLY) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", t);
-    emit_call(c, id, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d.v.p; })", t, cn, t);
+    buf_printf(ob, "({ sp_RbVal _t%d = ", t);
+    emit_call(c, id, ob);
+    buf_printf(ob, "; _t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d.v.p; })", t, cn, t);
   }
   else if (v.copy && cn && comp_ary_is_str(c, ty_object_class(rt))) {
     /* to_s / to_str of a String subclass instance: a String of its bytes,
        which the view already copied */
-    emit_call(c, id, b);
+    emit_call(c, id, ob);
   }
   else if (v.copy) {
-    buf_printf(b, "%s_dup(", arysub_array_ctype(c, ty_object_class(rt)));
-    emit_call(c, id, b);
-    buf_puts(b, ")");
+    buf_printf(ob, "%s_dup(", arysub_array_ctype(c, ty_object_class(rt)));
+    emit_call(c, id, ob);
+    buf_puts(ob, ")");
   }
   else if (v.copy_class) {
     const char *at = arysub_array_ctype(c, ty_object_class(rt));
     int t = ++g_tmp, d = ++g_tmp;
-    buf_printf(b, "({ %s *_t%d = ", at, t);
-    emit_call(c, id, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = (sp_%s *)sp_%s__dup((void *)%s, 0); SP_GC_ROOT(_t%d); "
+    buf_printf(ob, "({ %s *_t%d = ", at, t);
+    emit_call(c, id, ob);
+    buf_printf(ob, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = (sp_%s *)sp_%s__dup((void *)%s, 0); SP_GC_ROOT(_t%d); "
                   "%s_replace(&_t%d->ary, _t%d); _t%d; })",
                t, cn, d, cn, cn, g_argov_text[v.bound], d, at, d, t, d);
   }
   else {
-    if (v.vi >= 0) buf_printf(b, "((sp_%s *)(", cn);
-    emit_call(c, id, b);
-    if (v.vi >= 0) buf_puts(b, "))");
+    if (v.vi >= 0) buf_printf(ob, "((sp_%s *)(", cn);
+    emit_call(c, id, ob);
+    if (v.vi >= 0) buf_puts(ob, "))");
   }
-  if (inner_o) buf_puts(b, ")");
+  if (offered) {
+    if (g_ck_done) buf_puts(b, side.p ? side.p : "0");
+    else buf_printf(b, "%s(%s)", oint_arg(repr_of(c, id).as_ty), side.p ? side.p : "0");
+    free(side.p);
+  }
+  else if (inner_o) buf_puts(b, ")");
   arysub_view_close(c, &v);
   return 1;
 }
