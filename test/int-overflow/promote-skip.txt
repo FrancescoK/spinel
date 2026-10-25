@@ -6,12 +6,12 @@
 #
 # A Range whose ends are boxed keeps the Integer representation under
 # promote, where every Integer slot is boxed and that representation keeps
-# a Range of them fast (infer_type's RangeNode arm): String and Symbol ends
-# out of a mixed container read as numbers there, as they did everywhere.
+# a Range of them fast (infer_type's RangeNode arm). An end that reads an
+# element of a container of boxed values is boxed there too. A String or
+# Float end that arrives through a method's answer or a local is not: the
+# Range raises ArgumentError or NotImplementedError where CRuby walks it.
 test/poly_range_bsearch_float_arm.rb
 test/range_boxed_endpoints.rb
-test/range_symbol_endpoints.rb
-test/string_range_shared_ends_enum.rb
 
 # Date#to_s appends its month-and-day suffix to the year's to_s, which
 # promote boxes: that String route is refused as shared and changed in place
