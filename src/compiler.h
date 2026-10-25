@@ -278,12 +278,6 @@ typedef struct {
                        the rule shares settled in its poly form, and its
                        elements are boxed handles (repr_of_slot's
                        elems_handle) */
-  unsigned char strh_form; /* --share-strings: a String Array the rule
-                       settled as an Array of the Strings' handles
-                       (TY_STRH_ARRAY, share_strh_gate) */
-  unsigned char strh_no; /* ...and one whose container class cannot take that
-                       form yet: it keeps the poly form, for good (the mark
-                       is never cleared, so the fixpoint ends) */
   int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
                        (`s2 = s1`) AND mutated in place, so the whole alias set
                        holds the one sp_String* handle -- reads hand out the live
@@ -923,10 +917,7 @@ typedef struct {
 
 /* The bits of ClassInfo.ivar_elems_shared and cvar_elems_shared */
 enum {
-  ELEMS_POLY = 1,     /* the TY_POLY_ARRAY slot holds its Strings as handles */
-  ELEMS_STRH = 2,     /* the slot is a String Array of handles (TY_STRH_ARRAY) */
-  ELEMS_STRH_NO = 4   /* ...and a container class that cannot take that form,
-                         for good (share_strh_gate) */
+  ELEMS_POLY = 1      /* the TY_POLY_ARRAY slot holds its Strings as handles */
 };
 static inline TyKind ivar_set_type(ClassInfo *ci, int k, TyKind t) {
   if (ci->ivar_types[k] != t) { ((TyKind *)ci->ivar_types)[k] = t; comp_ty_edits++; }
@@ -1434,12 +1425,6 @@ typedef struct {
      boxed (share_plan_box_plain) */
   int *share_parent;
   int share_parent_n;
-  /* --share-strings: per node, an Array literal or a call answering a new
-     Array whose container class cannot take the String handle Array form
-     (share_strh_gate): it keeps the poly form, as the holders of its class
-     do. Grown on demand; never cleared */
-  unsigned char *strh_no;
-  int strh_no_cap;
   /* strbuf_bang_self_local's answers within one outermost query
      (codegen_util.c): per node, the query it was answered in and the
      answer. Its recursion over a receiver chain reaches each link by
@@ -1453,7 +1438,6 @@ typedef struct {
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
   unsigned share_in_sig;   /* the types the last application started from */
-  int strh_demoted;   /* a slot left the String handle Array form after the proc-return re-derivation (share_strh_gate); an_phase_storage re-derives them again */
   /* the methods compute_byref_out_params let take a lent slot
      (an_byref_eligible_scopes), kept for the share facts built after it
      (nbyref_elig scopes; NULL before it runs) */

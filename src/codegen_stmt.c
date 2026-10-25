@@ -206,11 +206,6 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (tr.kind == RK_BOXED) {
     buf_puts(b, "sp_poly_puts("); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
-  /* a String Array of handles (--share-strings): its box, one String a
-     line as any Array's (sp_poly_puts' pointer array arm) */
-  else if (t == TY_STRH_ARRAY) {
-    buf_puts(b, "sp_poly_puts("); emit_boxed(c, arg, b); buf_puts(b, ");\n");
-  }
   else if (t == TY_POLY_ARRAY) {
     int ta = ++g_tmp, ti = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, arg, &ab);
@@ -399,7 +394,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_srange_to_s(_t%d), stdout); }\n", tv);
   }
-  else if (ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
+  else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
     /* print of a collection renders its to_s (== inspect for Array/Hash);
        box once and go through the poly renderer. */
     int tv = ++g_tmp;
@@ -1356,7 +1351,7 @@ static int is_array_new_build(Compiler *c, int v, TyKind want) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int argc = 0; call_args(nt, v, &argc);
-  if (nt_ref(nt, v, "block") < 0 && (argc != 2 || want == TY_STRH_ARRAY)) return 0;
+  if (nt_ref(nt, v, "block") < 0 && argc != 2) return 0;
   int r = nt_ref(nt, v, "receiver");
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode &&
          is_array_new(nt_str(nt, r, "name"), nt_str(nt, v, "name"));
@@ -1391,9 +1386,7 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
       Buf *sv_pre = g_pre;
       if (e > 0 && effect) g_pre = &epre;
       Buf ev; memset(&ev, 0, sizeof ev);
-      /* (a String Array of handles stores each String's handle) */
-      if (want == TY_STRH_ARRAY) emit_strh_elem(c, el[e], &ev);
-      else emit_expr(c, el[e], &ev);
+      emit_expr(c, el[e], &ev);
       g_pre = sv_pre;
       if (epre.p && epre.p[0]) buf_printf(b, " %s", epre.p);
       buf_printf(b, " sp_PtrArray_push(_t%d, %s);", t, ev.p ? ev.p : "");
@@ -5707,16 +5700,6 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else {
       buf_printf(b, "sp_%sHash_new()", hcn);
     }
-  }
-  else if (lv && lv->type == TY_STRH_ARRAY && comp_ntype(c, v) == TY_STR_ARRAY) {
-    /* --share-strings: a String Array no other name holds (the gate keeps
-       every named one in one form) taken as an Array of handles, each
-       String as a handle of its own. Over a READ it would be a copy of
-       storage something else holds (conv_reads_shared_storage) */
-    if (conv_reads_shared_storage(c, v))
-      unsupported(c, v, "widening a typed array READ from an object into a poly slot "
-                        "(the conversion copies, so writes would not be shared)");
-    buf_puts(b, "sp_StrhArray_from_strs("); emit_expr(c, v, b); buf_puts(b, ")");
   }
   else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) && comp_ntype(c, v) != TY_POLY_ARRAY) {
     /* widen typed array literal to PolyArray for this slot */
@@ -18897,7 +18880,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, ptr_array_new_c(ivt));
     /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
        sp_PtrArray with the unboxed element pointers, as the local write does. */
-    else if (ty_is_ptr_array(ivt) && ivt != TY_STRH_ARRAY && v >= 0 && nt_kind(nt, v) == NK_ArrayNode) {
+    else if (ty_is_ptr_array(ivt) && v >= 0 && nt_kind(nt, v) == NK_ArrayNode) {
       int tpa = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
       int pen = 0; const int *pel = nt_arr(nt, v, "elements", &pen);
@@ -19929,7 +19912,6 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
       else buf_puts(b, "sp_PolyArray_new()");
     }
-    else if (v_empty_arr && lv->type == TY_STRH_ARRAY) buf_puts(b, ptr_array_new_c(lv->type));
     else if (v_empty_arr && array_kind(lv->type)) {
       if (v_lit_frozen) { int _ft = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
@@ -23539,7 +23521,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
      nil one */
   if (nt_safe_nav(nt, id) &&
       ((rt == TY_POLY && is_push_alias(name)) ||
-       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil) || sn_str)) {
+       ((ty_is_array(rt) || ty_is_hash(rt)) && repr_of(c, recv).may_nil) || sn_str)) {
     TyKind st = repr_of(c, id).as_ty;
     emit_indent(b, indent);
     buf_puts(b, "(void)(");

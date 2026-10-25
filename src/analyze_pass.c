@@ -1730,35 +1730,6 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
   return changed;
 }
 
-/* --share-strings: may the String Array an ivar of class cid names take the
-   handle form: no mark against it (share_strh_gate)? */
-static int strh_ivar_open(Compiler *c, int cid, const char *nm) {
-  int ki = cid >= 0 && cid < c->nclasses ? comp_ivar_index(&c->classes[cid], nm) : -1;
-  return ki >= 0 && !(c->classes[cid].ivar_elems_shared[ki] & ELEMS_STRH_NO);
-}
-/* ...and the global, constant or class variable read node recv names */
-static int strh_named_open(Compiler *c, int recv) {
-  const char *nm = nt_str(c->nt, recv, "name");
-  if (nm && nt_kind(c->nt, recv) == NK_GlobalVariableReadNode) {
-    const char *rn = comp_resolve_gvar(c, nm + 1);
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    return lv && !lv->strh_no;
-  }
-  if (nm && nt_kind(c->nt, recv) == NK_ConstantReadNode) {
-    LocalVar *lv = comp_const(c, nm);
-    return lv && !lv->strh_no;
-  }
-  if (nm && nt_kind(c->nt, recv) == NK_ClassVariableReadNode) {
-    Scope *s = comp_scope_of(c, recv);
-    int cid = s ? s->class_id : -1;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) return 0;
-    cid = comp_cvar_owner(c, cid, nm);
-    int idx = comp_cvar_index(&c->classes[cid], nm);
-    return idx >= 0 && !(c->classes[cid].cvar_elems_shared[idx] & ELEMS_STRH_NO);
-  }
-  return 0;
-}
 /* The type slot a global, class-variable or constant read names, or NULL. */
 static TyRef named_array_slot(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
@@ -2014,14 +1985,6 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
        regardless of the pushed value type; mixing typed arrays widens to
        PolyArray (ty_unify would return TY_POLY scalar, so use array-aware
        widening instead). */
-    /* (a String Array of handles keeps a String; a value that may be
-       another class widens it, as it widens a String Array, and so does one
-       of no type yet: a bare `Array.new` stays untyped and is boxed, which
-       no handle is) */
-    if (*slot == TY_STRH_ARRAY) {
-      if (vt != TY_STRING && vt != TY_STRBUF) ty_ref_set(slot, TY_POLY_ARRAY);
-      return 1;
-    }
     if (vt == TY_UNKNOWN) return 0;
     /* If a [] read already promoted this slot to a hash type, the push
        wins: a variable that is pushed to is an array, not a hash.
@@ -2032,13 +1995,6 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
     TyKind want = ty_array_of(vt);
     if (*slot != TY_UNKNOWN && want != *slot) want = TY_POLY_ARRAY;
     ty_ref_set(slot, want);
-  }
-  else if (*slot == TY_STRH_ARRAY) {
-    /* a String Array of handles takes a String at an Integer index; any
-       other write widens it, a value of no type yet included (a bare
-       `Array.new` is boxed, which no handle is) */
-    if (is_splice || (kt != TY_INT && kt != TY_UNKNOWN) || (vt != TY_STRING && vt != TY_STRBUF))
-      ty_ref_set(slot, TY_POLY_ARRAY);
   }
   else if (is_splice) {
     /* arr[s,l] = rhs / arr[range] = rhs: a source whose elements the typed
@@ -3173,7 +3129,7 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
      constant of its leaf, as constants are kept */
   TyRef nslot = named_array_slot(c, recv);
   int nhash = nslot && ty_is_hash(*nslot) && is_idx_write && !is_push && !is_splice;
-  if (!nslot || (!nhash && ((!ty_is_array(*nslot) && *nslot != TY_STRH_ARRAY) || *nslot == TY_POLY_ARRAY))) return 0;
+  if (!nslot || (!nhash && ((!ty_is_array(*nslot)) || *nslot == TY_POLY_ARRAY))) return 0;
   TyKind nt2 = *nslot;
   fold_container_evidence(&nt2, is_push, is_splice, kt, vt);
   if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
@@ -3626,7 +3582,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (vt == TY_POLY && vnode >= 0 && (is_push || is_idx_write) &&
         share_str_value_leaves(c, vnode)) {
       TyKind rt0 = infer_type(c, recv);
-      if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY && rt0 != TY_STRH_ARRAY)
+      if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY)
         vt = TY_STRING;
     }
     if (is_idx_write && !is_push && !is_splice && kt != TY_UNKNOWN && infer_type(c, recv) == TY_POLY)
@@ -3714,25 +3670,6 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          binding in bind_call_params, the caller's local too). Widening only:
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
-        /* --share-strings: a String Array of handles takes a String at an
-           Integer index and nothing else; any other store widens the
-           parameter (and so the class of its Array, share_strh_gate) to the
-           general Array, the one that holds a box as it is */
-        if (lv->type == TY_STRH_ARRAY && (is_push || is_idx_write || is_splice)) {
-          TyKind f = TY_STRH_ARRAY;
-          fold_container_evidence(&f, is_push, is_splice, kt, vt);
-          for (int ai = elem_argv ? elem_from : 0; elem_argv && ai < elem_an && f == TY_STRH_ARRAY; ai++) {
-            TyKind et = push_elem_ty(c, elem_argv[ai]);
-            if (et != TY_UNKNOWN && et != TY_STRING && et != TY_STRBUF) f = TY_POLY_ARRAY;
-          }
-          if (f != TY_STRH_ARRAY) {
-            lv_set_type(lv, TY_POLY_ARRAY);
-            lv->strh_no = 1;
-            lv->elems_shared = 1;
-            changed = 1;
-          }
-          continue;
-        }
         if ((!is_push && !is_idx_write && !elem_splat_index) || lv->rbs_seeded) continue;
         /* A boxed key or value is exempt below. When it is another parameter
            of the method, boxed because its callers disagree, each call's
@@ -6137,9 +6074,8 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       if (lt == TY_POLY_ARRAY || vt == TY_UNKNOWN || vt == TY_POLY) continue;
       if (!is_push && kt != TY_INT && kt != TY_POLY) continue;
       if (ty_is_array(lt) && vt == ty_array_elem(lt)) continue;
-      /* (a String fits an Array of Strings, which --share-strings holds as
-         their handles: a TY_STRH_ARRAY, a String handle's value a TY_STRBUF) */
-      if ((lt == TY_STR_ARRAY || lt == TY_STRH_ARRAY) && (vt == TY_STRING || vt == TY_STRBUF)) continue;
+      /* (a String fits an Array of Strings, a String handle's value too) */
+      if (lt == TY_STR_ARRAY && (vt == TY_STRING || vt == TY_STRBUF)) continue;
       if (!c->arr_want || l >= c->node_cap || c->arr_want[l] == TY_POLY_ARRAY) continue;
       comp_set_arr_want(c, l, TY_POLY_ARRAY);
       changed = 1;
@@ -17037,7 +16973,6 @@ int infer_block_params(Compiler *c) {
        known (a call's value, a parameter), the block's own uses typed the
        parameter first: `x << "."` made it an Array, and a String's handle was
        bound into it. */
-    if (rt == TY_STRH_ARRAY) rt = TY_STR_ARRAY;
     const char *p0 = block_param_name(c, block, 0);
     if (!p0 && !block_param_is_multi(c, block, 0)) continue;
 

@@ -565,9 +565,6 @@ void str_form_free(StrForm *sf);
 /* Node v into a slot that holds the shared handle (an ivar's store, its
    `||=`), in the plan's form: emit_str_form's handle face, settled. */
 void emit_str_form_handle(Compiler *c, int v, Buf *b);
-/* Node v as the element a String Array of handles (TY_STRH_ARRAY, #8328
-   step 5) stores: its handle (codegen_call_array.c) */
-void emit_strh_elem(Compiler *c, int v, Buf *b);
 /* The sp_String * an element read, pop or shift of a String Array of
    handles answers (codegen_util.c), and whether an element read reads like
    a variable's slot (a local's Array at a literal or local index) */
@@ -607,8 +604,6 @@ int one_face_is(int t, int node);
 int one_tail_fresh(Compiler *c, int n);   /* a String answer that is a new String: its return clears the published channel */
 int one_str_to_open(Buf *b, TyKind st, const char *fmt, ...);   /* SP_STR_TO(dst, around a String slot write under the mode; close with ")" */
 void one_elem_bind_slot(LocalVar *lv, TyKind bt);
-/* An operation on a String Array of handles (codegen_call_array.c) */
-int emit_strh_call(Compiler *c, int id, Buf *b);
 /* When set, the arms of a boxed `new` (emit_call_new_arms) are only the
    classes it marks: a caller that has already tested the receiver's cls_id
    (emit_boxed_class_aref) keeps the switch to the classes that test admits. */

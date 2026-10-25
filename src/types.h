@@ -175,13 +175,7 @@ typedef enum {
      only the element cast on index differs. Kept last, not beside its sibling:
      abi_sig_token encodes a kind as 100000 + (int)TyKind, so inserting mid-enum
      renumbers every kind after it. */
-  TY_FLOAT_ARRAY_ARRAY,
-  /* --share-strings (#8328, step 5): an Array of Strings the share rule
-     shares and changes in place, holding each String's sp_String * handle
-     (sp_PtrArray stamped SP_PTR_ELEM_STRBUF), so an element read is the
-     String itself. Made only under the flag (share_strh_gate), never by the
-     default build; appended last for the reason above. */
-  TY_STRH_ARRAY
+  TY_FLOAT_ARRAY_ARRAY
 } TyKind;
 
 /* The receiver type an owner bit re-enters the typed emitter with. */
@@ -395,15 +389,13 @@ static inline TyKind ty_poly_handle_face_args(const char *nm, int argc) {
    index differs. ty_ptr_array_elem_ctype names that cast. */
 static inline int    ty_is_ptr_array(TyKind t)   { return ty_is_obj_array(t) ||
                                                           t == TY_INT_ARRAY_ARRAY ||
-                                                          t == TY_FLOAT_ARRAY_ARRAY ||
-                                                          t == TY_STRH_ARRAY; }
+                                                          t == TY_FLOAT_ARRAY_ARRAY; }
 /* The scalar-array element of a nested ptr-array kind ("sp_IntArray" /
    "sp_FloatArray"), or NULL for an object array, whose element C type is the
    class's own struct and has to come from the class table. */
 static inline const char *ty_ptr_array_elem_ctype(TyKind t) {
   if (t == TY_INT_ARRAY_ARRAY)   return "sp_IntArray";
   if (t == TY_FLOAT_ARRAY_ARRAY) return "sp_FloatArray";
-  if (t == TY_STRH_ARRAY)        return "sp_String";
   return 0;   /* types.h has no stddef.h; NULL is not in scope here */
 }
 
@@ -438,7 +430,7 @@ typedef struct {
   unsigned char store_class;  /* repr_store_class (SC_*) */
   unsigned char box_form;     /* the form --repr-check records for box_text (RF_*) */
 } TyTraits;
-#define TY_TRAITS_N ((int)TY_STRH_ARRAY + 1)
+#define TY_TRAITS_N ((int)TY_FLOAT_ARRAY_ARRAY + 1)
 extern const TyTraits ty_traits[TY_TRAITS_N];
 /* the row of builtin kind t, or NULL (a user object's kind) */
 extern int g_traits_promote;   /* --int-overflow=promote (main.c) */

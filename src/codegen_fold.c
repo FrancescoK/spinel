@@ -7495,7 +7495,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
      a Hash parameter, and parentheses around any of them do not change it
      (emit_empty_literal_as sees through them). One the call ran ahead of the
      binding is its temp, below. */
-  if (provided >= 0 && (ty_is_array(pt) || pt == TY_STRH_ARRAY || ty_is_hash(pt)) &&
+  if (provided >= 0 && (ty_is_array(pt) || ty_is_hash(pt)) &&
       !arg_ran_first(provided, 0) && emit_empty_literal_as(c, provided, pt, out))
     return;
   /* Byref string out-param: pass the caller's slot (const char**) so the

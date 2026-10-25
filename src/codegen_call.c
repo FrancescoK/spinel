@@ -1073,7 +1073,7 @@ int sn_guard_pending(Compiler *c, int id) {
       /* an Integer / Float receiver only when it can be nil (its oint form):
          `3&.fdiv(2)` has no guard and no nil to answer */
       ((rt == TY_INT || rt == TY_FLOAT) && node_has_oint_form(c, recv)) ||
-      ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt))
+      ty_is_array(rt) || ty_is_hash(rt))
     return 1;
   /* a link after a pending one (`v&.each_with_index&.to_a`): a chain
      emitter fusing from this terminal would read past the inner guard */
@@ -15018,7 +15018,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       Repr ar = repr_of(c, id);
       TyKind at = ar.as_ty;
       const char *k = (ar.elem == TY_POLY) ? "Poly"
-                    : ty_is_ptr_array(at) && at != TY_STRH_ARRAY ? "Ptr" : array_kind(at);
+                    : ty_is_ptr_array(at) ? "Ptr" : array_kind(at);
       if (k) {
         int tn = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         /* The size goes into an `sp_int` temp; coerce a poly size expression
@@ -15987,8 +15987,6 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    /* a String Array of handles (--share-strings) compares by its Strings' bytes */
-    if (rt == TY_STRH_ARRAY && emit_strh_call(c, id, b)) return 1;
     if (rt == TY_POLY_ARRAY && a0 == TY_POLY_ARRAY) {
       buf_puts(b, eq ? "sp_PolyArray_eq(" : "(!sp_PolyArray_eq(");
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
@@ -23481,7 +23479,7 @@ int ty_runs_no_code(TyKind t) {
   switch (t) {
     case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING:
     case TY_STRBUF: case TY_SYMBOL: case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE:
-    case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_STRH_ARRAY:
+    case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
       return 1;
     default:
       return 0;
@@ -25005,7 +25003,7 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
      it a boxed String is a copy written back to the slot, and the held one
      would be stale) */
   if (rk == NK_LocalVariableReadNode &&
-      (ty_is_object(rty) || ty_is_array(rty) || ty_is_obj_array(rty) || ty_is_hash(rty) || rty == TY_STRH_ARRAY ||
+      (ty_is_object(rty) || ty_is_array(rty) || ty_is_obj_array(rty) || ty_is_hash(rty) ||
        rty == TY_IO || (rty == TY_POLY))) {
     const char *ln = nt_str(nt, r, "name");
     int blk = nt_ref(nt, id, "block");

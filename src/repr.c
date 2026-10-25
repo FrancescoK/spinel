@@ -561,7 +561,7 @@ static int repr_recv_boxed(const Compiler *c, int recv) {
    tells them apart. */
 static void repr_layout(Repr *r, TyKind t) {
   /* (a String Array of handles holds each String as its handle) */
-  r->elem = t == TY_STRH_ARRAY ? TY_STRBUF : ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
+  r->elem = ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
   r->key = ty_hash_key(t);
   r->val = ty_hash_val(t);
   r->range = t == TY_RANGE ? TY_INT : t == TY_FLOAT_RANGE ? TY_FLOAT
@@ -1309,7 +1309,7 @@ ReprForm repr_box_form(const Compiler *c, Repr r) {
   if (r.big) return RF_BIGINT;
   /* an Array of pointers (objects, nested Arrays, a String Array's handles)
      is stamped with what its elements are */
-  if (ty_is_object(r.elem) || ty_is_array(r.elem) || t == TY_STRH_ARRAY) return RF_PTR_ARRAY;
+  if (ty_is_object(r.elem) || ty_is_array(r.elem)) return RF_PTR_ARRAY;
   if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
   return RF_NULLABLE;
 }

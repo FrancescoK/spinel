@@ -3896,20 +3896,12 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   }
   const char *nilm = strh_elem_nil_raise(c, v);
   if (nilm) buf_puts(b, "sp_StrhArray_nn(");
-  if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
-    int pop = is_pop_name(nm);
-    buf_puts(b, pop ? "((sp_String *)sp_PtrArray_pop(" : "((sp_String *)sp_PtrArray_delete_at(");
-    strh_emit_recv(c, v, recv, b);
-    buf_puts(b, pop ? "))" : ", 0))");
-  }
-  else {
-    buf_puts(b, "((sp_String *)sp_PtrArray_get(");
-    strh_emit_recv(c, v, recv, b);
-    buf_puts(b, ", ");
-    if (argc == 1) emit_int_expr(c, argv[0], b);
-    else buf_puts(b, is_first_name(nm) ? "0" : "-1");
-    buf_puts(b, "))");
-  }
+  buf_puts(b, "((sp_String *)sp_PtrArray_get(");
+  strh_emit_recv(c, v, recv, b);
+  buf_puts(b, ", ");
+  if (argc == 1) emit_int_expr(c, argv[0], b);
+  else buf_puts(b, is_first_name(nm) ? "0" : "-1");
+  buf_puts(b, "))");
   if (nilm) buf_printf(b, ", \"%s\")", nilm);
 }
 /* Is v an element read, pop or shift of a String Array of handles, which
@@ -3994,7 +3986,7 @@ int one_str_elem_call(Compiler *c, int v, TyKind rt) {
   int recv0 = nt_ref(nt, v, "receiver");
   if (rt == TY_UNKNOWN && recv0 >= 0) rt = comp_ntype(c, recv0);
   if (rt == TY_STR_ARRAY) {
-    int op = strh_call_op_in(c, v, TY_STRH_ARRAY, 0);
+    int op = strh_call_op_in(c, v, TY_STR_ARRAY, 0);
     if (op == STRH_ELEM || op == STRH_TAKE) return 1;
     /* (an index known only at run time, the call typed a String: its
        emitter reads the element, sp_StrArray_get) */
@@ -4024,16 +4016,11 @@ int strh_handle_call(Compiler *c, int v) {
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
   if (one_str_elem_call(c, v, TY_UNKNOWN)) return 1;
-  /* (comp_ntype, not comp_recv_type: that one only turns a String buffer
-     into a String or an empty literal into a Poly container, never into a
-     String Array of handles, and for a buffer it asks repr_of of the
-     receiver, which asks this of its own receiver, down a chain) */
-  int op = recv >= 0 ? strh_call_op(c, v, comp_ntype(c, recv)) : STRH_NONE;
-  return op == STRH_ELEM || op == STRH_TAKE;
+  return 0;
 }
 /* Is v an element read of a String Array of handles that reads like a
    variable's slot: a variable's Array at an index that is an Integer literal
-   or a local's read (share_strh_gate admits no other), so its handle text
+   or a local's read, so its handle text
    can be read again where it is used? */
 int strh_elem_slot(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
@@ -4056,7 +4043,6 @@ int strh_elem_slot(Compiler *c, int v) {
   }
   if (recv < 0 || !strh_var_read(nt, recv)) return 0;
   TyKind rt = comp_recv_type(c, recv);
-  if (rt == TY_STR_ARRAY) rt = TY_STRH_ARRAY;   /* (one representation: its elements are handles) */
   if (strh_call_op(c, v, rt) != STRH_ELEM) return 0;
   return argc == 0 || nt_kind(nt, argv[0]) == NK_IntegerNode || nt_kind(nt, argv[0]) == NK_LocalVariableReadNode;
 }
@@ -5590,13 +5576,12 @@ void emit_ctype(Compiler *c, TyKind t, Buf *b) {
 /* The constructor of an empty pointer array of kind t: a String Array of
    handles is stamped at birth, so what reads it before anything boxes it
    (inspect) knows what it holds */
-const char *ptr_array_new_c(TyKind t) { return t == TY_STRH_ARRAY ? "sp_StrhArray_new()" : "sp_PtrArray_new()"; }
+const char *ptr_array_new_c(TyKind t) { return "sp_PtrArray_new()"; }
 const char *ptr_array_stamp(Compiler *c, TyKind t) {
   static char buf[64];
   (void)c;
   if (t == TY_INT_ARRAY_ARRAY)   return "SP_PTR_ELEM_INT_ROWS, -1";
   if (t == TY_FLOAT_ARRAY_ARRAY) return "SP_PTR_ELEM_FLT_ROWS, -1";
-  if (t == TY_STRH_ARRAY)        return "SP_PTR_ELEM_STRBUF, -1";
   snprintf(buf, sizeof buf, "SP_PTR_ELEM_OBJ, %d", ty_obj_array_class(t));
   return buf;
 }

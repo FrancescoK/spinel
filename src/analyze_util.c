@@ -4408,7 +4408,7 @@ const char *time_strict_parser_call(Compiler *c, int id) {
 /* The program's parent map (an_parent_map), kept on the Compiler as the
    emitter's is (codegen_parents, the same fields) and rebuilt whenever the
    node table changed, for an analysis that asks where a node sits on every
-   round (share_strh_gate). */
+   round. */
 const int *comp_parent_map(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!c->cg_parent || c->cg_parent_n != nt->count || c->cg_parent_ver != nt->version) {
@@ -4468,7 +4468,7 @@ static int strh_plain_block_params(Compiler *c, int blk) {
 }
 int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
   const NodeTable *nt = c->nt;
-  if (rt != TY_STRH_ARRAY || call < 0 || nt_kind(nt, call) != NK_CallNode) return STRH_NONE;
+  if (rt != TY_STR_ARRAY || call < 0 || nt_kind(nt, call) != NK_CallNode) return STRH_NONE;
   const char *nm = nt_str(nt, call, "name");
   int ca = nt_ref(nt, call, "arguments"), argc = 0, blk = nt_ref(nt, call, "block");
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
@@ -4487,7 +4487,7 @@ int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
       if (vt != TY_STRING && vt != TY_STRBUF && vt != TY_UNKNOWN && vt != TY_POLY) return STRH_NONE;
     }
   /* (the other operand of == is another Array of handles) */
-  if (op == STRH_EQ && !strh_arg_ty_ok(c, av[0], TY_STRH_ARRAY, TY_STRH_ARRAY, unknown_ok)) return STRH_NONE;
+  if (op == STRH_EQ && !strh_arg_ty_ok(c, av[0], TY_STR_ARRAY, TY_STR_ARRAY, unknown_ok)) return STRH_NONE;
   /* (a separator or a needle that is a String) */
   if ((op == STRH_JOIN || op == STRH_INCLUDE) && argc == 1 &&
       !strh_arg_ty_ok(c, av[0], TY_STRING, TY_STRBUF, unknown_ok)) return STRH_NONE;

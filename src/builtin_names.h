@@ -368,11 +368,9 @@ int is_untabled_native_class_name(const char *n);
 
 int is_define_method_name(const char *n); /* define_method */
 int is_alias_method_name(const char *n);  /* alias_method */
-/* --share-strings (#8328 step 5): the operations a String Array of handles
-   (TY_STRH_ARRAY) answers itself, by name, argument count and block (0
-   none, 1 a literal block, 2 a block argument). A container class one of
-   whose names takes any other stays in the poly form (share_strh_gate);
-   inference and codegen answer exactly these. */
+/* The operations a String Array (whose elements are handles) answers
+   itself, by name, argument count and block (0 none, 1 a literal block, 2
+   a block argument). */
 typedef enum {
   STRH_NONE,
   STRH_ELEM,     /* [](i), at(i), first, last: the element, a String */

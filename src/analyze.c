@@ -22780,7 +22780,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *ci = &c->classes[k];
       int i = comp_cvar_index(ci, grn);
-      if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && ci->cvar_types[i] != TY_STRH_ARRAY && !ty_is_hash(ci->cvar_types[i]))) continue;
+      if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && !ty_is_hash(ci->cvar_types[i]))) continue;
       any = 1;
       if (!g_one_string &&   /* (the one-String mode: the typed container holds the handle) */
           (ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !(ci->cvar_elems_shared[i] & ELEMS_POLY)) {
@@ -22793,7 +22793,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
   }
   else {
     LocalVar *gv = kind == SHK_GVAR ? comp_gvar(c, grn) : comp_const(c, grn);
-    if (!gv || (!ty_is_array(gv->type) && gv->type != TY_STRH_ARRAY && !ty_is_hash(gv->type))) return 0;
+    if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
     if (!g_one_string && (gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
         (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
       lv_set_type(gv, TY_POLY_ARRAY);
@@ -23033,7 +23033,7 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash)
   return changed;
 }
 /* The names a program reaches by a name it computes or a block that rebinds
-   self (share_strh_gate): an instance variable, a class variable or a
+   self: an instance variable, a class variable or a
    constant named to instance_variable_get and its kin, or used inside an
    instance_eval, instance_exec, class_eval or module_eval block. A holder so
    reached has uses no read node stands for, so its class keeps the poly
@@ -23107,8 +23107,7 @@ enum { STRH_CAND = 1, STRH_BAD = 2 };
 /* One-String mode: a container a reflective call reaches by its name
    (const_get, instance_variable_get, a send of either, a listing, eval)
    takes values no inference sees stored, so a String Array held there
-   keeps the general form, as share_strh_gate's refusal gave it under the
-   two representations (`Object.const_get("H::L") << 64`). Only a name the
+   keeps the general form, as it did under the two representations (`Object.const_get("H::L") << 64`). Only a name the
    program spells is taken: a name it computes reaches every holder, and
    widening them all left each String Array of a program with a dynamic
    send boxed, where the bytes build kept them typed. Answers whether a
@@ -23211,12 +23210,6 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     if (sh->kind == SHK_LOCAL) {
       Scope *s = &c->scopes[sh->scope];
       LocalVar *lv = &s->locals[sh->local];
-      /* (an Array of handles: what is stored into it is demanded as the
-         handle, as a poly Array's stores are) */
-      if (lv->type == TY_STRH_ARRAY) {
-        changed |= strbuf_demand_container_stores(c, lv->name, s);
-        continue;
-      }
       if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
         changed |= strbuf_demand_container_stores(c, lv->name, s);
         continue;
@@ -23253,12 +23246,6 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       int iv = comp_ivar_index(&c->classes[sh->cid], sh->name);
       if (iv < 0) continue;
       TyKind it = c->classes[sh->cid].ivar_types[iv];
-      /* an Array of handles: what is stored into it is demanded as the
-         handle, as a poly Array's stores are */
-      if (it == TY_STRH_ARRAY) {
-        changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
-        continue;
-      }
       if (ty_is_array(it) || ty_is_hash(it)) {
         changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
         /* a poly Array holds its Strings as handles, as a local's does: a
@@ -34316,9 +34303,8 @@ static void check_seed_contradictions(Compiler *c) {
        not a contradiction (#9626). So is a String Hash the seed pins, in
        its String-keyed poly form. */
     if (slot == TY_POLY_ARRAY && ci->ivar_elems_shared && (ci->ivar_elems_shared[iv] & ELEMS_POLY) &&
-        (val == TY_STR_ARRAY || val == TY_STRH_ARRAY))
+        (val == TY_STR_ARRAY))
       continue;
-    if (slot == TY_STRH_ARRAY && val == TY_STR_ARRAY) continue;
     if (slot == TY_STR_POLY_HASH && val == TY_STR_STR_HASH) continue;
     if (!seed_contradicts(c, slot, val, 0)) continue;
     int ln  = (int)nt_int(nt, id, "node_line", 0);
@@ -34445,7 +34431,7 @@ static void check_seed_contradictions(Compiler *c) {
          holding the shared handles (ret_elems_shared): a String Array the
          body answers is wrapped into it, the same Ruby type (#9626) */
       if (sc->ret_elems_shared && slot == TY_POLY_ARRAY &&
-          (val == TY_STR_ARRAY || val == TY_STRH_ARRAY || val == TY_POLY_ARRAY))
+          (val == TY_STR_ARRAY || val == TY_POLY_ARRAY))
         continue;
       if (!seed_contradicts(c, slot, val, 1)) continue;
       int ln  = (int)nt_int(nt, sites[k], "node_line", 0);
@@ -34616,8 +34602,6 @@ static int reassert_rbs_param_seeds(Compiler *c) {
       if (lv->rbs_type == TY_STRING && lv->type == TY_STRBUF && lv->str_shared) continue;
       /* and a String Array whose Strings it shares, boxed as their handles */
       if (lv->rbs_type == TY_STR_ARRAY && lv->type == TY_POLY_ARRAY && lv->elems_shared) continue;
-      /* ...or as an Array of those handles */
-      if (lv->rbs_type == TY_STR_ARRAY && lv->type == TY_STRH_ARRAY) continue;
       /* and a String Hash whose Strings it shares, boxed as their handles */
       if (lv->rbs_type == TY_STR_STR_HASH && lv->type == TY_STR_POLY_HASH) continue;
       lv_set_type(lv, lv->rbs_type);
@@ -46250,7 +46234,7 @@ static int scan_block_call(Compiler *c, int blk, int node, const char *subj, int
   for (int i = 0; rn && block_param_name(c, blk, i); i++)
     own |= sp_streq(rn, block_param_name(c, blk, i)) && !scan_local_written(nt, nt_ref(nt, blk, "body"), rn);
   int st = bop_share_named(BOP_ANY_ARRAY, nm);
-  int store = r >= 0 && (ty_is_array(rt) || rt == TY_STRH_ARRAY) &&
+  int store = r >= 0 && (ty_is_array(rt)) &&
               (st == BSH_STORE_ALL || st == BSH_STORE_LAST || ((is_count_alias(nm) || is_endpoint_query(nm)) && argc == 0));
   for (int i = 0; i < argc && !store; i++)
     if (!ty_runs_no_code(comp_ntype(c, argv[i]))) return 1;
@@ -49956,7 +49940,7 @@ static void an_phase_post_fixpoint(Compiler *c) {
        array was emitted into a slot shaped for it (`a = ""; a = []` assigned
        an sp_IntArray to a const char *). A non-empty literal already widens
        this way -- the union of the two types is the boxed one (#3990). */
-    else if (!ty_is_array(lv->type) && lv->type != TY_STRH_ARRAY && lv->type != TY_POLY) lv_set_type(lv, TY_POLY);
+    else if (!ty_is_array(lv->type) && lv->type != TY_POLY) lv_set_type(lv, TY_POLY);
   }
   /* Backstop: a local assigned only empty hashes -- a `{}` literal or a bare
      `Hash.new` -- that no key-write ever narrowed stays TY_UNKNOWN, so its
@@ -51981,17 +51965,12 @@ static void an_phase_storage(Compiler *c) {
      fixpoint rather than one after the other (#4363). */
   int late_widened = 0;
   int *conv0 = NULL;
-  unsigned char *strh_ret0 = NULL;   /* --share-strings: the scopes whose value is the String handle Array form */
   {
     conv0 = malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
     if (!conv0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
-    strh_ret0 = calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
-    if (!strh_ret0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    for (int s = 0; s < c->nscopes; s++) strh_ret0[s] = c->scopes[s].ret == TY_STRH_ARRAY;
   }
   HandleArgTab hat;
-  c->strh_demoted = 0;
   /* The refresh below moves node types the rule's facts are built from: a
      variable an expression over a widened read joins can only now meet a
      String the rule shares. Under the rule the loop runs again while the
@@ -52040,15 +52019,6 @@ static void an_phase_storage(Compiler *c) {
       if (!nt0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       memcpy(nt0, c->ntype, sizeof(TyKind) * (size_t)c->nt->count);
     }
-    /* (a value that moved to or from the Array of handles moves every call
-       of its method: the gate sets it, infer_return_types may not) */
-    int strh_moved = 0;
-    for (int s = 0; strh_ret0 && s < c->nscopes; s++)
-      if ((c->scopes[s].ret == TY_STRH_ARRAY) != strh_ret0[s]) { late_widened = strh_moved = 1; strh_ret0[s] ^= 1; }
-    /* (a slot the gate gave up the Array of handles for moves the nodes
-       typed from it: an operation on it, a proc's answer) */
-    int strh_gave_up = c->strh_demoted;
-    if (strh_gave_up) { late_widened = 1; c->strh_demoted = 0; }
     if (late_widened)
       for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
     else if (conv0) {
@@ -52064,24 +52034,6 @@ static void an_phase_storage(Compiler *c) {
           if (sc && conv0[sc - c->scopes]) infer_type(c, id);
         }
     }
-    /* ...and so does a method answering what it answers: the wrapper of a
-       method whose value left the form follows it */
-    for (int again = 0; strh_moved && again < 4; again++) {
-      int rm = infer_return_types(c);
-      if (!rm) break;
-      for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
-    }
-    /* ...and what is derived from the tails after the gate gave a slot up
-       follows it: a proc's answer and a proc local's recorded return (the
-       proc-return phase, which ran before the gate), then the returns of the
-       methods whose tail is such a call, which can answer a proc in turn.
-       Each pass re-infers every node; a slot the next round's gate gives up
-       starts this again, and a slot leaves the form only once */
-    for (int again = 0; strh_gave_up && again < 8; again++) {
-      an_phase_proc_returns(c);
-      if (!infer_return_types(c)) break;
-      for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
-    }
     if (round >= 4 || !memcmp(nt0, c->ntype, sizeof(TyKind) * (size_t)c->nt->count)) break;
     handle_arg_tab_free(&hat);
     late_widened = 0;
@@ -52089,7 +52041,6 @@ static void an_phase_storage(Compiler *c) {
   }
   free(nt0);
   free(conv0);
-  free(strh_ret0);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,

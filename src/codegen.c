@@ -13076,8 +13076,6 @@ static void emit_inspect_ivar_value(Compiler *c, TyKind t, const char *expr, con
   else if (ty_is_array(t) && t != TY_POLY_ARRAY && array_kind(t))
     buf_printf(b, "(%s ? sp_%sArray_inspect(%s) : \"nil\")", expr, array_kind(t), expr);
   else if (t == TY_POLY_ARRAY) buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
-  /* --share-strings: an Array of handles renders as the pointer Array it is */
-  else if (t == TY_STRH_ARRAY) buf_printf(b, "(%s ? sp_PtrArray_inspect_k(%s) : \"nil\")", expr, expr);
   else if (ty_is_hash(t) && ty_hash_cname(t))
     buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(t), expr);
   /* an Integer / Float ivar boxes by its nil bit */
@@ -17883,9 +17881,7 @@ static void scan_prologue_features(Compiler *c) {
   g_emit_obj_dispatch = (c->nclasses > 0);
   {
     int polyish = 0, has_class = 0;
-#define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || _t == TY_STRH_ARRAY || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
-    /* (a String Array of handles renders through the poly walkers, as a
-       boxed pointer array: TY_STRH_ARRAY is one) */
+#define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
     /* a def's Symbol where nothing uses it is no value of the program's
        (an_phase_pre_fixpoint leaves its name out of the table too) */
     int *par = an_parent_map(nt);

@@ -778,7 +778,7 @@ static int nf_method_value(NF *f, int mi, int owner, int dispatch, const char *n
 
 /* the receiver's class an element read misses on (Array, Hash) */
 static int nf_container(TyKind t) {
-  return ty_is_array(t) || ty_is_obj_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_POLY;
+  return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_POLY;
 }
 
 static int nf_next_nil(NF *f, int n, int depth);
@@ -844,11 +844,7 @@ static int nf_call(NF *f, int v) {
       "slice!", "inject", "reduce", "sum", "find_index", "key", "fetch", "assoc", "rassoc", "values_at", NULL };
     for (int i = 0; picks[i]; i++) {
       if (!sp_streq(nm, picks[i])) continue;
-      /* an element of an Array that can hold nil may be nil wherever it is;
-         so is any element of a String Array of handles, whose NULL a
-         consumer reads through the handle (sp_String_cstr) and has no
-         nil-checking variant for, as a typed String does */
-      if (rt == TY_STRH_ARRAY) return NFW_ELEM_NIL;
+      /* an element of an Array that can hold nil may be nil wherever it is */
       return c->ntype[v] == ty_array_elem(rt) && nf_elem_tracked(rt) && nf_elem(f, r, 0) ? NFW_ELEM_NIL
              : NFW_ELEM;
     }
@@ -886,7 +882,7 @@ static int nf_next_nil(NF *f, int n, int depth);
 /* an Array whose elements are pointers, NULL for nil (an Integer or Float
    Array holds the sentinel instead: analyze.c's nullable_int_elem) */
 static int nf_elem_tracked(TyKind t) {
-  return ((ty_is_array(t) || ty_is_obj_array(t)) && nil_fact_tracked(ty_array_elem(t))) || t == TY_STRH_ARRAY;
+  return (ty_is_array(t) || ty_is_obj_array(t)) && nil_fact_tracked(ty_array_elem(t));
 }
 
 /* a nil the program writes, as cplan_nil reads one */
@@ -1977,7 +1973,7 @@ void an_nil_facts(Compiler *c) {
 
 int nil_fact_tracked(TyKind t) {
   return ty_is_object(t) || t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) ||
-         t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_IO;
+         ty_is_hash(t) || t == TY_IO;
 }
 
 int nil_fact_node(const Compiler *c, int node) {
