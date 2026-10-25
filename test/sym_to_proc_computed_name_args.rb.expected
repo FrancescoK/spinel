@@ -1,0 +1,12 @@
+"  ab  "
+"**ab**"
+" ab "
+"---ab---"
+"abc"
+"AB"
+["X", "Y"]
+"wrong number of arguments (given 0, expected 1..2)"
+-2
+true
+"no receiver given"
+"no receiver given"

@@ -9789,6 +9789,18 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     int params = nt_new_node(nt, "ParametersNode");
     nt_node_set_arr(nt, params, "requireds", preq, npar);
+    /* Symbol#to_proc's lambda is `|recv, *args|`, the rest being the
+       method's arguments: with the one parameter it had,
+       `c.to_proc.call("ab", 6)` raised ArgumentError where CRuby centers.
+       A block takes the count sym_block_values gives, one parameter each. */
+    char rn[64];
+    int nsa = npar;
+    if (is_toproc) {
+      snprintf(rn, sizeof rn, "__svp_r_%s", comp_node_tag(c, id));
+      int rp = nt_new_node(nt, "RestParameterNode");
+      nt_node_set_str(nt, rp, "name", rn);
+      nt_node_set_ref(nt, params, "rest", rp);
+    }
     int bparams = nt_new_node(nt, "BlockParametersNode");
     nt_node_set_ref(nt, bparams, "parameters", params);
     int ra = nt_new_node(nt, "LocalVariableReadNode");
@@ -9799,7 +9811,13 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
       sa[k] = nt_new_node(nt, "LocalVariableReadNode");
       nt_node_set_str(nt, sa[k], "name", pn[k]);
     }
-    nt_node_set_arr(nt, sargs, "arguments", sa, npar);
+    if (is_toproc) {
+      int rr = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, rr, "name", rn);
+      sa[nsa] = nt_new_node(nt, "SplatNode");
+      nt_node_set_ref(nt, sa[nsa++], "expression", rr);
+    }
+    nt_node_set_arr(nt, sargs, "arguments", sa, nsa);
     int call = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, call, "name", "send");
     nt_node_set_ref(nt, call, "receiver", ra);
@@ -9817,8 +9835,12 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
       LocalVar *lv = scope_local_intern(sc2, pn[k]);
       if (lv) lv->is_block_param = 1;
     }
+    if (sc2 && is_toproc) {
+      LocalVar *lv = scope_local_intern(sc2, rn);
+      if (lv) lv->is_block_param = 1;
+    }
     if (is_toproc) {
-      /* sym_var.to_proc -> lambda { |x| x.send(sym_var) } */
+      /* sym_var.to_proc -> lambda { |x, *r| x.send(sym_var, *r) } */
       nt_node_set_str(nt, id, "name", "lambda");
       nt_node_set_ref(nt, id, "receiver", -1);
       nt_node_set_ref(nt, id, "block", blk2);
@@ -42333,6 +42355,12 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int recv = nt_ref(nt, id, "receiver");
   /* a receiverless call is self's method, never one of these builtins */
   if (recv < 0) return 0;
+  /* A String's builtins take each argument in a slot of their own and none
+     spreads a splat: a dynamic send's capped name kept its splat call past
+     the arms, which handed concat or squeeze the Array as one argument (a
+     C error, or the Array's inspect appended). Past the cap it raises as
+     the listed variadic names do. */
+  if (variadic == 2 && odyn && infer_type(c, recv) == TY_STRING) variadic = 1;
   /* the builtin's own counts, before a user method's widen them: what the
      kept splat call of a variadic-2 name (slice) reports as its arity */
   int blo = lo, bhi = hi;

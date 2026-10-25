@@ -9471,6 +9471,19 @@ static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf 
   g_ie_rself_on = 1;
 }
 
+/* A lambda's count check, ahead of its parameters' binding. Symbol#to_proc's
+   refuses a call with no receiver by saying so, not by the count its
+   `|recv, *args|` takes. */
+static void emit_lambda_arity_check(Compiler *c, int create, int lreq, int max, Buf *pb) {
+  const NodeTable *nt = c->nt;
+  char kw[256];
+  arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
+  if (nt_int(nt, create, "stp_arity", 0) && lreq == 1)
+    buf_puts(pb, "    if (argc == 0) sp_raise_cls(\"ArgumentError\", \"no receiver given\");\n");
+  buf_puts(pb, "    ");
+  emit_arity_check(pb, "argc", lreq, max, kw);
+  buf_puts(pb, ";\n");
+}
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind ck = nt_kind(nt, create);
@@ -10169,11 +10182,7 @@ else if (orecv >= 0 && onm) {
   int num_extra = proc_numbered_params_node(c, create) < 0 ? nnumbered : 0;
   if (is_lambda) {
     int lreq = arity + nposts + num_extra;
-    char kw[256];
-    arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
-    buf_puts(pb, "    ");
-    emit_arity_check(pb, "argc", lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, kw);
-    buf_puts(pb, ";\n");
+    emit_lambda_arity_check(c, create, lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, pb);
   }
   /* CRuby proc auto-splat: a single Array passed to a non-lambda proc is
      destructured across the parameters by the rule a yield's block follows
