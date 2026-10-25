@@ -27,7 +27,7 @@ with the reason:
 | pager of `--help` | `IO.popen(*args, &print)` | `Process.spawn` of the pager reading an `IO.pipe` | `IO.popen` with a write mode is not supported; through the splat it raised ArgumentError on a terminal with `PAGER` set |
 | `--version` | `--version=pkg` loads `optparse/version` | the package name is ignored | that file finds versions by constant names at run time |
 | `version`, `release` | `defined?(@version) && @version` | `@version` | `defined?` answered nil for an ivar set only by `attr_writer` |
-| `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | refused under `--share-strings` |
+| `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | with `&&` the compiler warns in every program that requires optparse that `Release` and `RELEASE` are defined nowhere |
 | `warn`, `abort` | `super("#{program_name}: #{mesg}")` | write the line to `$stderr`; `abort` then raises `SystemExit` | `super` did not reach `Kernel#warn` and `Kernel#abort` (NoMethodError) |
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
 | top of the file | nothing: CRuby loads did_you_mean before the program | `require 'did_you_mean'` | an invalid or ambiguous option names the switches it could have meant |
