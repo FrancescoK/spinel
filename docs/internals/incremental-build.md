@@ -29,9 +29,7 @@ tables, the class ids and the symbol ids. An edit in one file changes the C
 of methods in another, and a build that kept the old C of an unedited file
 would link code typed for a program that no longer exists, without a word.
 So the frontend runs in full every time, and "did this change" is asked of
-its output. Crystal, Nim, mypyc and Vala made the same choice for the same
-reason; the C or LLVM compilers that got fast rebuilds all got them on the
-backend side.
+its output.
 
 Why the backend is worth caching, measured for the design (2026-10-17,
 4-core Linux, gcc 13.3, `-O2`) on the scale program of `test/scale/gen.sh`:
@@ -40,8 +38,8 @@ Why the backend is worth caching, measured for the design (2026-10-17,
   79 s, of which `cc` was 44 s on 4 cores; the 6,500-line `gen.sh 100`
   built in 32.6 s, of which `cc` was 28.4 s.
 - A method-body edit that keeps its types changes **2 lines** of the
-  167,642 lines of C; an edit that turns a return type from Integer to
-  Float changes 18 (stage 1 below brought that down from 8,418).
+  167,642 lines of C it had then; an edit that turns a return type from
+  Integer to Float changes 18 (stage 1 below brought that down from 8,418).
 - A translation unit that includes the runtime header and nothing else
   takes 0.6 s at `-O2`. That fixed cost is why a unit is a few hundred KB
   of C and not one method: s400 has 8,813 function definitions, which
@@ -352,7 +350,8 @@ cache is off for the build, every unit a miss.
   build before falling back, so a corrupt or foreign object costs one
   fallback, not every build after it.
 - **Prune**: at most once a day, objects untouched for `SPINEL_CACHE_DAYS`
-  (14) days and stale `.tmp.` files go.
+  (14) days and stale `.tmp.` files go. The stamp is written first; a cache
+  where it cannot be written is not walked.
 - **No claims.** Two builds that miss the same unit at once both compile it
   and both store it; the second rename replaces the same bytes. That wastes a
   few seconds of a concurrent cold build and never makes one process wait
@@ -510,7 +509,9 @@ it: `program.c` (the C with its pragmas), `sp_rt.h`, `sp_program.h`, their
 side files, `unit_*.c` and `units.txt`. Two such directories of one source
 are identical (`diff -r`), and each unit compiles on its own with the line
 above. A second run into the same directory removes the unit files the new
-manifest does not list.
+manifest does not list. When the split declines, the run fails and leaves
+`program.c` and `pre.i` (the preprocessed text it declined) in `DIR` to look
+into; a later run into that directory is not refused.
 
 ## Follow-ups
 

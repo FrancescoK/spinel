@@ -11,8 +11,8 @@
    and static functions in every unit that includes it, and the
    preprocessed text says, with its line markers, exactly which items came
    from it. The preprocessed text is also what a cached object depends on,
-   headers and compiler-defined macros included, so a unit's text is the
-   most of its cache key.
+   headers and compiler-defined macros included, so a unit's text is most
+   of its cache key.
 
    With -c, the unit set is the output: written to a directory, nothing
    compiled. Otherwise each unit's object is looked up in a cache under a
@@ -107,14 +107,17 @@ static int inc_presplit(const char *flags, const char *c_path, const char *dir, 
   double tm_split = sp_timing_now();
   rc = c_split_units(pre, dir, &so, res);
   sp_timing_end(tm_split, "cc_split", "");
-  remove(pre);
+  /* a decline leaves -o DIR the text it declined, to look into */
+  if (rc == 0 || !o->out_dir) remove(pre);
   if (rc != 0) *why = "the unit split declined";
   return rc;
 }
 
-/* -c --incremental: preprocess, split into out_dir, write program.c beside
-   the units, stop. A decline is the failure here: there is no single unit
-   to fall back to when the unit set was the thing asked for. */
+/* -c --incremental: write program.c into out_dir, preprocess, split
+   beside it, stop. program.c goes first, so that a decline leaves it in
+   out_dir with pre.i, the text the split declined, to look into. A
+   decline is the failure here: there is no single unit to fall back to
+   when the unit set was the thing asked for. */
 static int inc_write_dir(const char *flags, const char *c_path, const IncrementalOpts *o) {
   const char *dir = o->out_dir;
   char manifest[4200], prog[4200];
@@ -122,15 +125,14 @@ static int inc_write_dir(const char *flags, const char *c_path, const Incrementa
   snprintf(prog, sizeof prog, "%s/program.c", dir);
   struct stat st;
   int had_manifest = stat(manifest, &st) == 0;
+  if (inc_copy(c_path, prog) < 0) {
+    fprintf(stderr, "spinel: incremental: cannot write %s\n", prog);
+    return -1;
+  }
   CSplitResult res;
   const char *why = NULL;
   if (inc_presplit(flags, c_path, dir, o, &res, &why) != 0) {
     fprintf(stderr, "spinel: incremental: %s\n", why);
-    return -1;
-  }
-  if (inc_copy(c_path, prog) < 0) {
-    fprintf(stderr, "spinel: incremental: cannot write %s\n", prog);
-    c_split_result_free(&res);
     return -1;
   }
   if (had_manifest) inc_remove_stale(dir, &res);
@@ -248,10 +250,13 @@ static void inc_unit_obj(const CSplitUnit *u, char *out, size_t sz) {
   if (l >= 2) out[l - 1] = 'o';
 }
 
-/* Put a cached object in place as the unit's work object. 1: a hit. A
-   zero-size object is what an interrupted copy outside spinel's care
-   leaves; it is a miss and goes. The entry's mtime is refreshed, so the
-   prune keeps what builds use. */
+/* Put a cached object in place as the unit's work object: linked, or
+   copied whenever the link fails, as inc_store stores it. A mount without
+   hard links may answer ENOTSUP, EACCES or ENOSYS as well as EXDEV or
+   EPERM, and a cache that stores by copying must hit by copying. 1: a
+   hit; a short copy is a miss. A zero-size object is what an interrupted
+   copy outside spinel's care leaves; it is a miss and goes. The entry's
+   mtime is refreshed, so the prune keeps what builds use. */
 static int inc_lookup(const IncBuild *b, const char *key, const char *obj) {
   char cp[4300];
   inc_obj_path(b, key, cp, sizeof cp);
@@ -259,7 +264,6 @@ static int inc_lookup(const IncBuild *b, const char *key, const char *obj) {
   if (stat(cp, &st) != 0) return 0;
   if (st.st_size == 0) { unlink(cp); return 0; }
   if (link(cp, obj) != 0) {
-    if (errno != EXDEV && errno != EPERM && errno != EMLINK) return 0;
     if (inc_copy(cp, obj) != (long long)st.st_size) { unlink(obj); return 0; }
   }
   utime(cp, NULL);
@@ -405,7 +409,9 @@ static void inc_prune_dir(const char *dir, time_t now, int days) {
 
 /* Once a day at most (the stamp objects/.pruned says when it last ran):
    drop objects no build has hit for SPINEL_CACHE_DAYS days (14). A hit
-   refreshes its object's mtime, so what is in use stays. */
+   refreshes its object's mtime, so what is in use stays. The stamp is
+   written before the walk, and a cache where it cannot be written counts
+   as pruned today: otherwise every build would walk it again. */
 static void inc_prune(const IncBuild *b) {
   char objs[4200], stamp[4300];
   snprintf(objs, sizeof objs, "%s/objects", b->cache);
@@ -414,6 +420,8 @@ static void inc_prune(const IncBuild *b) {
   struct stat st;
   if (stat(objs, &st) != 0) return;
   if (stat(stamp, &st) == 0 && difftime(now, st.st_mtime) < 86400.0) return;
+  FILE *f = fopen(stamp, "w");
+  if (!f || fclose(f) != 0) return;
   const char *e = getenv("SPINEL_CACHE_DAYS");
   int days = e && atoi(e) > 0 ? atoi(e) : 14;
   DIR *d = opendir(objs);
@@ -426,8 +434,6 @@ static void inc_prune(const IncBuild *b) {
     inc_prune_dir(sub, now, days);
   }
   closedir(d);
-  FILE *f = fopen(stamp, "w");
-  if (f) fclose(f);
 }
 
 /* --cache-stats: the summary, whose `units=N hit=H miss=M` prefix the

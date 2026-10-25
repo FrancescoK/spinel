@@ -1408,7 +1408,6 @@ static void cs_assign_units(Split *S) {
   size_t U = S->opts->unit_bytes ? S->opts->unit_bytes : 262144;
   int nit = S->nit;
   int *slot = malloc(sizeof(int) * (size_t)(nit + 1));
-  size_t *tag_w = calloc((size_t)S->ntag + 1, sizeof *tag_w);
   size_t *group_w = calloc((size_t)S->ngroup + 1, sizeof *group_w);
   size_t acc = 0, w_prog = 0, w_common = 0;
   int nrt = 0;
@@ -1422,7 +1421,7 @@ static void cs_assign_units(Split *S) {
       if (acc >= U) { nrt++; acc = 0; }
     }
     else if (st == 1) w_prog += w;
-    else if (st == 2) { tag_w[x->unit] += w; group_w[S->tag_group[x->unit]] += w; }
+    else if (st == 2) group_w[S->tag_group[x->unit]] += w;
   }
   if (acc) nrt++;
   for (int g = 0; g < S->ngroup; g++) if (group_w[g] <= U) w_common += group_w[g];
@@ -1496,25 +1495,33 @@ static void cs_assign_units(Split *S) {
     S->u[S->it[k].home].nitems++;
   }
   for (int j = 0; j < S->nu; j++) { S->u[j].items = malloc(sizeof(int) * (size_t)(S->u[j].nitems + 1)); S->u[j].nitems = 0; }
-  int *gseen = calloc((size_t)S->ngroup + 1, sizeof(int));
-  size_t *glen = calloc((size_t)S->nu + 1, sizeof *glen);
   for (int k = 0; k < nit; k++) {
     Item *x = &S->it[k];
     if (x->home < 0) continue;
     CsUnit *u = &S->u[x->home];
     u->items[u->nitems++] = k;
-    if (!(x->region && x->unit >= 0)) continue;
-    int g = S->tag_group[x->unit];
-    if (gseen[g] == x->home + 1) continue;
-    gseen[g] = x->home + 1;
-    size_t l = strlen(gname[g]);
-    u->groups = realloc(u->groups, glen[x->home] + l + 2);
-    if (glen[x->home]) u->groups[glen[x->home]++] = ',';
-    memcpy(u->groups + glen[x->home], gname[g], l + 1);
-    glen[x->home] += l;
   }
-  free(gseen); free(glen); free(xl); free(su); free(gname); free(tname);
-  free(xbase); free(slot); free(tag_w); free(group_w);
+  /* a unit at a time, so that gseen[g] == j + 1 means listed in this unit:
+     an over-cap group's items alternate between its sub-units */
+  int *gseen = calloc((size_t)S->ngroup + 1, sizeof(int));
+  for (int j = 0; j < S->nu; j++) {
+    CsUnit *u = &S->u[j];
+    size_t glen = 0;
+    for (int i = 0; i < u->nitems; i++) {
+      const Item *x = &S->it[u->items[i]];
+      if (!(x->region && x->unit >= 0)) continue;
+      int g = S->tag_group[x->unit];
+      if (gseen[g] == j + 1) continue;
+      gseen[g] = j + 1;
+      size_t l = strlen(gname[g]);
+      u->groups = realloc(u->groups, glen + l + 2);
+      if (glen) u->groups[glen++] = ',';
+      memcpy(u->groups + glen, gname[g], l + 1);
+      glen += l;
+    }
+  }
+  free(gseen); free(xl); free(su); free(gname); free(tname);
+  free(xbase); free(slot); free(group_w);
 }
 
 /* The SHA-256 of a written file as the cache sees it: without its line
