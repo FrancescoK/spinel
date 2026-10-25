@@ -3219,6 +3219,14 @@ static void sp_thread_scan(void *p) {
   if (t->tls) sp_gc_mark(t->tls);
 }
 
+/* lib/sp_cold.c: a delivered Signal.trap before the first thread runs in
+   the waits below, as the single-threaded runtime's does (#10210) */
+extern volatile int sp_sig_pending_flag;
+void sp_sig_run_pending(void);
+void sp_sig_threads_began(void);
+static inline void sp_sig_run_if_pending(void) {
+  if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
+}
 sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file, sp_int line) {SP_GC_ROOT_RBVAL(arg);SP_GC_ROOT(f);SP_GC_ROOT_STR(file);
   sp_thread *t = sp_Thread_spawn_fiber(f, arg);
   t->birth_file = file;
@@ -3227,8 +3235,11 @@ sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file,
 }
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
 #ifdef SP_THREADS
-  if (!sp_sched_ensure_workers())
-    sp_raise_cls("ThreadError", "failed to start scheduler monitor");
+  if (!g_workers_started) {
+    if (!sp_sched_ensure_workers())
+      sp_raise_cls("ThreadError", "failed to start scheduler monitor");
+    sp_sig_threads_began();   /* a trap set before now moves to its own thread (lib/sp_cold.c) */
+  }
 #endif
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
@@ -3387,9 +3398,8 @@ sp_RbVal sp_Thread_value(sp_thread *t) {
 
 /* lib/sp_cold.c: the single-threaded runtime runs a delivered Signal.trap at
    the waits that hand the scheduler round, a read's park among them; the
-   threaded one never raises the flag (its trap thread runs them) */
-extern volatile int sp_sig_pending_flag;
-void sp_sig_run_pending(void);
+   threaded one raises the flag only before its first thread (its trap thread
+   runs them afterwards) */
 void sp_Thread_pass(void) {
   if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
   SCHED_LOCK();
@@ -3921,11 +3931,12 @@ static int  sp_sched_unpark(sp_thread *t);   /* below */
    not be allocated (the caller raises, after any cleanup of its own). */
 static int sp_sched_sleep_park(double seconds) {
   if (!g_sysmon_started) {   /* the monitor was not started: plain blocking sleep */
-    if (seconds < 0.0) for (;;) pause();   /* nothing else could wake us */
+    /* nothing else could wake us; a trap delivered meanwhile runs */
+    if (seconds < 0.0) for (;;) { pause(); sp_sig_run_if_pending(); }
     struct timespec req; req.tv_sec = (time_t)seconds;
     req.tv_nsec = (long)((seconds - (double)req.tv_sec) * 1e9);
     if (req.tv_nsec < 0) req.tv_nsec = 0; if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
-    while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+    while (nanosleep(&req, &req) == -1 && errno == EINTR) sp_sig_run_if_pending();
     return 0;
   }
   sp_thread *self = g_current;
@@ -4074,10 +4085,17 @@ static int sp_poll_plain(struct pollfd *pp, nfds_t np, double timeout_s) {
       double left = until - sp_monotonic_now();
       int ms = left > 0.0 ? (int)(left * 1000.0) + 1 : 0;
       int pr = poll(pp, np, ms);
-      if (pr > 0) return 1; if (pr == 0) return 0; if (errno == EINTR) continue; return 0;
+      if (pr > 0) return 1; if (pr == 0) return 0;
+      if (errno == EINTR) { sp_sig_run_if_pending(); continue; }
+      return 0;
     }
   }
-  for (;;) { int pr = poll(pp, np, 1000); if (pr > 0) return 1; if (pr == 0 || errno == EINTR) continue; return 0; }
+  for (;;) {
+    int pr = poll(pp, np, 1000);
+    if (pr > 0) return 1;
+    if (pr < 0 && errno == EINTR) sp_sig_run_if_pending();
+    else if (pr != 0) return 0;
+  }
 }
 static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n, double timeout_s,
                                  const unsigned char *cancel) {
