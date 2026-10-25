@@ -1040,6 +1040,14 @@ spinel: test/reject/macro_receiver_write.rb:10: unsupported send with a runtime 
 spinel: test/reject/macro_refused_inner_write.rb:10: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_refused_inner_write.rb [promote] rc=1
 spinel: test/reject/macro_refused_inner_write.rb:10: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
+== test/reject/macro_residual_call_keeps_macro.rb [default] rc=1
+spinel: test/reject/macro_residual_call_keeps_macro.rb:8: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/macro_residual_call_keeps_macro.rb:16: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 2 refusals, nothing written
+== test/reject/macro_residual_call_keeps_macro.rb [promote] rc=1
+spinel: test/reject/macro_residual_call_keeps_macro.rb:8: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/macro_residual_call_keeps_macro.rb:16: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 2 refusals, nothing written
 == test/reject/macro_residual_value.rb [default] rc=1
 spinel: test/reject/macro_residual_value.rb:7: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_residual_value.rb [promote] rc=1
@@ -1068,6 +1076,12 @@ spinel: test/reject/macro_setter_send.rb:5: unsupported send with a runtime meth
 spinel: test/reject/macro_source_line.rb:4: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_source_line.rb [promote] rc=1
 spinel: test/reject/macro_source_line.rb:4: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
+== test/reject/macro_super_override_keeps_macro.rb [default] rc=1
+spinel: test/reject/macro_super_override_keeps_macro.rb:7: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/macro_super_override_keeps_macro.rb [promote] rc=1
+spinel: test/reject/macro_super_override_keeps_macro.rb:7: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/macro_template_top_write.rb [default] rc=1
 spinel: test/reject/macro_template_top_write.rb:9: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_template_top_write.rb [promote] rc=1
