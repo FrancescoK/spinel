@@ -1094,6 +1094,16 @@ void compute_instantiated(Compiler *c, int early) {
           int ci = cn ? comp_class_index(c, cn) : -1;
           if (ci >= 0) c->classes[ci].instantiated = 1;
         }
+        /* `raise k, msg` on a Class value (`k = WidgetError`): the runtime
+           builds whichever exception class k holds, so each one of the
+           program's may be an instance */
+        else if (rav[0] >= 0 && (early || comp_ntype(c, rav[0]) == TY_CLASS || comp_ntype(c, rav[0]) == TY_POLY ||
+                                 comp_ntype(c, rav[0]) == TY_UNKNOWN)) {
+          Scope *encl = comp_scope_of(c, id);
+          if (!encl || encl->reachable)
+            for (int k = 0; k < c->nclasses; k++)
+              if (class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
+        }
       }
     }
   }
