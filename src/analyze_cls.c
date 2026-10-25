@@ -2760,15 +2760,24 @@ static void cf_call(CF *f, int v) {
       if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) found = 1;
     }
     if (found) return;
-    /* a native binding of the class (an ffi_func): anything */
+    /* a native binding of the class (an ffi_func) of the name: what it
+       declares it answers. A name no binding of the class or a subclass
+       takes is no native call, and goes on (#8837: every such call was
+       anything, 2,107 receivers of a large program's) */
     if (s->def_node >= 0 && s->class_id >= 0) {
       const ClsSet *ds = &f->pool[f->desc[s->class_id]];
-      int nat = cf_class_has_natives(f, s->class_id);
+      int nat = cf_class_has_natives(f, s->class_id), whole = c->classes[s->class_id].is_native_class, bound = 0;
       for (int i = cls_set_next(ds, -1); i >= 0 && !nat; i = cls_set_next(ds, i)) nat = cf_class_has_natives(f, i);
       if (nat) {
-        cf_all(f, v);
-        if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
-        return;
+        int self_el = cf_self_recv(f, v, si, nm);
+        if (comp_native_method_find(c, s->class_id, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, s->class_id, nm, argc); bound = 1; }
+        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i))
+          if (i < c->nclasses && i != s->class_id && comp_native_method_find(c, i, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, i, nm, argc); bound = 1; }
+        if (bound || whole) {
+          if (!bound) cf_all(f, v);
+          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+          return;
+        }
       }
     }
     /* a bare call in a block that may run under another self (an exec
