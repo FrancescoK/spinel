@@ -2131,8 +2131,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       int rsep = -1;
       Buf rchomp; memset(&rchomp, 0, sizeof rchomp);
       for (int k = 0; k < argc; k++) {
-        const char *kty = nt_type(nt, argv[k]);
-        if (kty && sp_streq(kty, "KeywordHashNode")) {
+        NodeKind kk = nt_kind(nt, argv[k]);
+        if (kk == NK_KeywordHashNode) {
           int cv = struct_kwarg_value(c, argv[k], "chomp");
           emit_kw_flag(c, cv, &rchomp);
         }

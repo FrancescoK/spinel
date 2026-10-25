@@ -11,8 +11,9 @@
 static int subtree_has_unresolved_const(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "ConstantReadNode")) {
+  if (ty_k == NK_ConstantReadNode) {
     const char *cn = nt_str(c->nt, id, "name");
     if (!cn) return 0;
     if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 0;
@@ -41,8 +42,8 @@ static void interp_flatten_own(const NodeTable *nt, int id, int **out, int **own
   const int *parts = nt_arr(nt, id, "parts", &pn);
   for (int k = 0; k < pn; k++) {
     int pid = parts[k];
-    const char *pty = nt_type(nt, pid);
-    if (pty && sp_streq(pty, "InterpolatedStringNode")) {
+    NodeKind pk = nt_kind(nt, pid);
+    if (pk == NK_InterpolatedStringNode) {
       interp_flatten_own(nt, pid, out, own, n, cap);
       continue;
     }
@@ -289,10 +290,10 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
 
   for (int k = 0; k < n; k++) {
     int pid = parts[k];
-    const char *pty = nt_type(nt, pid);
+    NodeKind pk = nt_kind(nt, pid);
     /* a segment's held parts are read where it ends */
     if (k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
-    if (pty && sp_streq(pty, "StringNode")) {
+    if (pk == NK_StringNode) {
       const char *content = nt_str(nt, pid, "content");
       int off = lits.len;
       long blen = 0;
@@ -316,7 +317,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       nwp++;
       fixed_cap += blen;
     }
-    else if (pty && sp_streq(pty, "EmbeddedStatementsNode")) {
+    else if (pk == NK_EmbeddedStatementsNode) {
       int st = nt_ref(nt, pid, "statements");
       int bn = 0;
       const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
@@ -329,7 +330,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
          it: hoisted to g_pre they ran before the whole enclosing expression,
          so `"#{x}" + "#{x = "b"}"` read x after the assignment (#5574) */
       for (int si = 0; si + 1 < bn; si++) emit_stmt(c, body[si], &decls, 0);
-      const char *ety = expr >= 0 ? nt_type(nt, expr) : NULL;
+      NodeKind ek = nt_kind(nt, expr);
       /* a part of a class the program reopened with its own to_s is already
          `<part>.to_s` (desugar_interp_reopened_to_s) */
       TyKind t = comp_ntype(c, expr);
@@ -338,7 +339,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
          method for a concrete class. Re-resolve the call against the class
          being emitted so the interpolation dispatches on the real return type
          (the same self-class lookup codegen uses for implicit-self calls). */
-      if (t == TY_UNKNOWN && ety && sp_streq(ety, "CallNode") &&
+      if (t == TY_UNKNOWN && ek == NK_CallNode &&
           nt_ref(nt, expr, "receiver") < 0) {
         const char *cn = nt_str(nt, expr, "name");
         Scope *cs = comp_scope_of(c, expr);
@@ -350,8 +351,8 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           if (mi >= 0) t = c->scopes[mi].ret;
         }
       }
-      if (ety && (sp_streq(ety, "LocalVariableWriteNode") || sp_streq(ety, "LocalVariableOperatorWriteNode") ||
-                  sp_streq(ety, "LocalVariableOrWriteNode") || sp_streq(ety, "LocalVariableAndWriteNode"))) {
+      if ((ek == NK_LocalVariableWriteNode || ek == NK_LocalVariableOperatorWriteNode ||
+                  ek == NK_LocalVariableOrWriteNode || ek == NK_LocalVariableAndWriteNode)) {
         emit_stmt(c, expr, &decls, 0);
         const char *vn = nt_str(nt, expr, "name");
         LocalVar *lvp = vn ? scope_local(comp_scope_of(c, expr), vn) : NULL;
@@ -903,17 +904,18 @@ static int fold_int_node(Compiler *c, int id, long long *out, int depth) {
   if (id < 0 || depth > 16) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
+  NodeKind k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "IntegerNode")) {
+  if (k == NK_IntegerNode) {
     if (nt_str(nt, id, "bigval")) return 0;  /* out-of-int64 literal: not a foldable int */
     *out = nt_int(nt, id, "value", 0); return 1;
   }
-  if (sp_streq(ty, "ConstantReadNode")) return fold_int_const_name(c, nt_str(nt, id, "name"), out, depth + 1);
-  if (sp_streq(ty, "ParenthesesNode")) {
+  if (k == NK_ConstantReadNode) return fold_int_const_name(c, nt_str(nt, id, "name"), out, depth + 1);
+  if (k == NK_ParenthesesNode) {
     int bd = nt_ref(nt, id, "body"); int n = 0; const int *bb = bd >= 0 ? nt_arr(nt, bd, "body", &n) : NULL;
     return (n == 1) ? fold_int_node(c, bb[0], out, depth + 1) : 0;
   }
-  if (sp_streq(ty, "CallNode")) {
+  if (k == NK_CallNode) {
     int recv = nt_ref(nt, id, "receiver");
     const char *nm = nt_str(nt, id, "name");
     int args = nt_ref(nt, id, "arguments"); int an = 0;
@@ -950,16 +952,17 @@ static int fold_int_const_name(Compiler *c, const char *name, long long *out, in
   int wnode = -1;
   for (int i = 0; i < c->nt->count; i++) {
     const char *t = nt_type(c->nt, i);
+    NodeKind k = nt_kind(c->nt, i);
     if (!t) continue;
     /* a compound/or/and write mutates the constant slot at runtime -> not a
        stable compile-time value, don't fold. */
-    if (sp_streq(t, "ConstantOperatorWriteNode") || sp_streq(t, "ConstantOrWriteNode") ||
-        sp_streq(t, "ConstantAndWriteNode")) {
+    if (k == NK_ConstantOperatorWriteNode || k == NK_ConstantOrWriteNode ||
+        k == NK_ConstantAndWriteNode) {
       const char *n = nt_str(c->nt, i, "name");
       if (n && sp_streq(n, name)) return 0;
       continue;
     }
-    if (!sp_streq(t, "ConstantWriteNode")) continue;
+    if (k != NK_ConstantWriteNode) continue;
     const char *n = nt_str(c->nt, i, "name");
     if (!n || !sp_streq(n, name)) continue;
     if (wnode >= 0) return 0;   /* reassigned -> not a stable constant */
@@ -1002,16 +1005,17 @@ int loop_has_valued_break(Compiler *c, int root) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
+  NodeKind k = nt_kind(nt, root);
   if (ty) {
-    if (sp_streq(ty, "BreakNode")) {
+    if (k == NK_BreakNode) {
       int a = nt_ref(nt, root, "arguments");
       int an = 0;
       if (a >= 0) nt_arr(nt, a, "arguments", &an);
       return an > 0;
     }
-    if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-        sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-        sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))
+    if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode ||
+        k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode ||
+        k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode)
       return 0;
   }
   int nr = nt_num_refs(nt, root);
@@ -1057,7 +1061,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
 static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *b) {
   const NodeTable *nt = c->nt;
   if (node_is_empty_container(c, nd)) nd = nt_paren_single(c->nt, nd);   /* `([])` is `[]` */
-  const char *bty = nt_type(nt, nd);
+  NodeKind bk = nt_kind(nt, nd);
   if (res_o && oint_kind(res)) { emit_oint_expr(c, nd, res, b); return; }
   if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
   /* A String result beside an arm that picks up a handle (`v.is_a?(String)
@@ -1112,10 +1116,10 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
     emit_bigint_operand_ext(c, nd, b);
     return;
   }
-  if ((ty_is_array(res) || ty_is_hash(res)) && bty && sp_streq(bty, "CallNode") &&
+  if ((ty_is_array(res) || ty_is_hash(res)) && bk == NK_CallNode &&
       repr_of(c, nd).untyped && emit_empty_container_for_slot(c, nd, res, b))
     return;
-  if (ty_is_array(res) && bty && sp_streq(bty, "ArrayNode")) {
+  if (ty_is_array(res) && bk == NK_ArrayNode) {
     int bn = 0; nt_arr(nt, nd, "elements", &bn);
     if (bn == 0) {
       const char *rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
@@ -1125,7 +1129,7 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
     emit_expr(c, nd, b);
     return;
   }
-  if (ty_is_hash(res) && bty && (sp_streq(bty, "HashNode") || sp_streq(bty, "KeywordHashNode"))) {
+  if (ty_is_hash(res) && (bk == NK_HashNode || bk == NK_KeywordHashNode)) {
     int bn = 0; nt_arr(nt, nd, "elements", &bn);
     const char *hc = ty_hash_cname(res);
     if (bn == 0 && hc) { buf_printf(b, "sp_%sHash_new()", hc); return; }
@@ -1158,11 +1162,11 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
    IndexOperatorWriteNode expression form below, which re-reads receiver and
    key after the mutation. */
 static int idx_opw_node_is_cheap(const NodeTable *nt, int node) {
-  const char *t = nt_type(nt, node);
-  return t && (sp_streq(t, "LocalVariableReadNode") ||
-               sp_streq(t, "InstanceVariableReadNode") ||
-               sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
-               sp_streq(t, "StringNode") || sp_streq(t, "SymbolNode"));
+  NodeKind k = nt_kind(nt, node);
+  return (k == NK_LocalVariableReadNode ||
+               k == NK_InstanceVariableReadNode ||
+               k == NK_IntegerNode || k == NK_FloatNode ||
+               k == NK_StringNode || k == NK_SymbolNode);
 }
 
 /* Emit a read of recv[key] for the receiver shapes emit_index_op_write
@@ -1334,10 +1338,11 @@ static void const_path_written(const NodeTable *nt, int id, char *out, size_t ca
   int n = 0, cur = id;
   while (cur >= 0 && n < 16) {
     const char *t = nt_type(nt, cur);
+    NodeKind k = nt_kind(nt, cur);
     const char *nm = t ? nt_str(nt, cur, "name") : NULL;
     if (!nm || !*nm) break;
-    if (sp_streq(t, "ConstantPathNode")) { parts[n++] = nm; cur = nt_ref(nt, cur, "parent"); }
-    else if (sp_streq(t, "ConstantReadNode")) { parts[n++] = nm; break; }
+    if (k == NK_ConstantPathNode) { parts[n++] = nm; cur = nt_ref(nt, cur, "parent"); }
+    else if (k == NK_ConstantReadNode) { parts[n++] = nm; break; }
     else break;
   }
   if (n > 1 && sp_streq(parts[n - 1], "Object")) n--;
@@ -2610,12 +2615,13 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       }
     }
     const char *vty2 = nt_type(nt, v);
+    NodeKind vty2_k = nt_kind(nt, v);
     int ven2 = 0;
-    int v_empty_array2 = vty2 && sp_streq(vty2, "ArrayNode") && (nt_arr(nt, v, "elements", &ven2), ven2 == 0);
+    int v_empty_array2 = vty2_k == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven2), ven2 == 0);
     int v_empty_hash2 = 0;
     if (!v_empty_array2 && vty2) {
       int hen2 = 0;
-      if (sp_streq(vty2, "HashNode") || sp_streq(vty2, "KeywordHashNode"))
+      if (vty2_k == NK_HashNode || vty2_k == NK_KeywordHashNode)
         v_empty_hash2 = (nt_arr(nt, v, "elements", &hen2), hen2 == 0);
     }
     char ref2e[300];
@@ -3451,19 +3457,19 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* M::CONST -> the flat constant named by the final path component */
     const char *nm = nt_str(nt, id, "name");
     int par_idc = nt_ref(nt, id, "parent");
-    const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
+    NodeKind par_tyc_k = nt_kind(nt, par_idc);
     /* the parent's LEAF name also qualifies through a nested path
        (Outer::CSql::TEXT) -- the ffi decl registers under its module's
        unqualified name */
-    const char *par_nmc = (par_tyc && (sp_streq(par_tyc, "ConstantReadNode") ||
-                                       sp_streq(par_tyc, "ConstantPathNode")))
+    const char *par_nmc = ((par_tyc_k == NK_ConstantReadNode ||
+                                       par_tyc_k == NK_ConstantPathNode))
                           ? nt_str(nt, par_idc, "name") : NULL;
     /* A constant naming a CLASS is a written path (Probe::Block::CODE). A
        constant HOLDING one (BLOCK = Probe::Block; BLOCK::CODE) is a receiver
        whose class only the value knows, so it takes the run-time read below --
        treating it as a path looked the leaf up and answered a top-level
        constant of that name (#4259). */
-    if (par_nmc && par_tyc && sp_streq(par_tyc, "ConstantReadNode") &&
+    if (par_nmc && par_tyc_k == NK_ConstantReadNode &&
         comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
         comp_const(c, par_nmc))
       par_nmc = NULL;
@@ -3808,19 +3814,20 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   /* compile-time defined? -> a label string, or nil (NULL) when undefined */
   int v = nt_ref(nt, id, "value");
   const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
+  NodeKind vk = nt_kind(nt, v);
   const char *res = NULL;
   if (vt) {
-    if (sp_streq(vt, "LocalVariableReadNode")) res = "local-variable";
-    else if (sp_streq(vt, "InstanceVariableReadNode")) {
+    if (vk == NK_LocalVariableReadNode) res = "local-variable";
+    else if (vk == NK_InstanceVariableReadNode) {
       /* Return "instance-variable" only when the ivar is known to be assigned. */
       const char *inm = nt_str(nt, v, "name");
       for (int kk = 0; kk < nt->count && !res; kk++) {
-        const char *kt = nt_type(nt, kk);
-        if (kt && sp_streq(kt, "InstanceVariableWriteNode") &&
+        NodeKind kt_k = nt_kind(nt, kk);
+        if (kt_k == NK_InstanceVariableWriteNode &&
             inm && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), inm))
           res = "instance-variable";
         /* a reflective `instance_variable_set(:@x, v)` writes it too */
-        if (kt && sp_streq(kt, "CallNode") && inm && nt_str(nt, kk, "name") &&
+        if (kt_k == NK_CallNode && inm && nt_str(nt, kk, "name") &&
             sp_streq(nt_str(nt, kk, "name"), "instance_variable_set")) {
           int sa = nt_ref(nt, kk, "arguments"), san = 0;
           const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &san) : NULL;
@@ -3851,7 +3858,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         return 1;
       }
     }
-    else if (sp_streq(vt, "ClassVariableReadNode")) {
+    else if (vk == NK_ClassVariableReadNode) {
       /* set or not is a run-time question: the cvar's __set flag */
       HolderRef h;
       Buf ref; memset(&ref, 0, sizeof ref);
@@ -3861,16 +3868,16 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       free(ref.p);
       return 1;
     }
-    else if (sp_streq(vt, "SelfNode")) res = "self";
-    else if (sp_streq(vt, "NilNode")) res = "nil";
-    else if (sp_streq(vt, "TrueNode")) res = "true";
-    else if (sp_streq(vt, "FalseNode")) res = "false";
-    else if (sp_streq(vt, "IntegerNode") || sp_streq(vt, "FloatNode") ||
-             sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode") ||
+    else if (vk == NK_SelfNode) res = "self";
+    else if (vk == NK_NilNode) res = "nil";
+    else if (vk == NK_TrueNode) res = "true";
+    else if (vk == NK_FalseNode) res = "false";
+    else if (vk == NK_IntegerNode || vk == NK_FloatNode ||
+             vk == NK_StringNode || vk == NK_SymbolNode || vk == NK_ArrayNode ||
              /* a backtick literal, also as the call desugar_user_backtick made of it */
-             sp_streq(vt, "XStringNode") || sp_streq(vt, "InterpolatedXStringNode") ||
-             (sp_streq(vt, "CallNode") && nt_int(nt, v, "xstr_call", 0))) res = "expression";
-    else if (sp_streq(vt, "GlobalVariableReadNode")) {
+             vk == NK_XStringNode || vk == NK_InterpolatedXStringNode ||
+             (vk == NK_CallNode && nt_int(nt, v, "xstr_call", 0))) res = "expression";
+    else if (vk == NK_GlobalVariableReadNode) {
       const char *gn = nt_str(nt, v, "name");
       /* runtime-provided special globals exist regardless of writes */
       if (gn && gn[0] == '$' && gn[1] && (!gn[2] || sp_streq(gn + 1, "stdin") ||
@@ -3886,13 +3893,13 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       }
       if (is_load_path_global(gn) || is_loaded_features_global(gn)) res = "global-variable";
       for (int kk = 0; kk < nt->count && !res; kk++) {
-        const char *kt = nt_type(nt, kk);
-        if (kt && (sp_streq(kt, "GlobalVariableWriteNode") || sp_streq(kt, "GlobalVariableOperatorWriteNode")) &&
+        NodeKind kt_k = nt_kind(nt, kk);
+        if ((kt_k == NK_GlobalVariableWriteNode || kt_k == NK_GlobalVariableOperatorWriteNode) &&
             gn && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), gn))
           res = "global-variable";
       }
     }
-    else if (sp_streq(vt, "ConstantReadNode")) {
+    else if (vk == NK_ConstantReadNode) {
       const char *cn = nt_str(nt, v, "name");
       /* a constant not assigned yet is not defined: asked at run time */
       if (cn && const_has_flag(comp_const(c, cn))) {
@@ -3907,13 +3914,13 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           res = "constant";
       }
     }
-    else if (sp_streq(vt, "ConstantPathNode") && nt_kind(nt, nt_ref(nt, v, "parent")) == NK_ConstantReadNode &&
+    else if (vk == NK_ConstantPathNode && nt_kind(nt, nt_ref(nt, v, "parent")) == NK_ConstantReadNode &&
              sp_streq(nt_str(nt, nt_ref(nt, v, "parent"), "name"), "Socket") && sp_feature_required("socket")) {
       /* Socket's constants are the system's: the run time asks its table */
       buf_printf(b, "(sp_sock_const(\"%s\") >= 0 ? SPL(\"constant\") : NULL)", nt_str(nt, v, "name"));
       return 1;
     }
-    else if (sp_streq(vt, "ConstantPathNode")) {
+    else if (vk == NK_ConstantPathNode) {
       /* a fully-resolved qualified path answers "constant"; any unresolved
          segment leaves nil (the segment walk lives in the guard helpers). A
          segment not assigned yet is not defined: asked at run time */
@@ -3931,15 +3938,15 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     /* `sym.to_proc` was lowered to a lambda before this point (the
        "stp_arity" mark): it is still the Symbol's method, not an iterator */
-    else if (sp_streq(vt, "CallNode") && nt_int(nt, v, "stp_arity", 0))
+    else if (vk == NK_CallNode && nt_int(nt, v, "stp_arity", 0))
       res = "method";
     /* an iterator is an expression, whatever it calls */
-    else if (sp_streq(vt, "CallNode") && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
+    else if (vk == NK_CallNode && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
       res = "expression";
     /* see desugar_defined_method_call; a guard known nil at compile time
        leaves the receiver unevaluated. A respond_to? left untyped (an IO
        handle's, which spinel refuses to answer) keeps the answer nil. */
-    else if (sp_streq(vt, "CallNode") && nt_ref(nt, id, "method_cond") >= 0 &&
+    else if (vk == NK_CallNode && nt_ref(nt, id, "method_cond") >= 0 &&
              comp_ntype(c, nt_ref(nt, id, "method_cond")) == TY_BOOL) {
       int ng = 0; const int *gs = nt_arr(nt, id, "method_guards", &ng);
       Buf g; memset(&g, 0, sizeof g);
@@ -3956,7 +3963,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       free(g.p);
       return 1;
     }
-    else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
+    else if (vk == NK_CallNode && nt_ref(nt, v, "receiver") < 0) {
       const char *cn = nt_str(nt, v, "name");
       if (cn && comp_method_index(c, cn) >= 0) res = "method";
       /* an implicit-self call inside a class resolves through the
@@ -3978,44 +3985,44 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     /* An assignment of any kind (local/ivar/gvar/cvar/constant/index/attr,
        plain or operator) answers "assignment" without evaluating. */
-    else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
+    else if (strstr(vt, "WriteNode") || vk == NK_MultiWriteNode)
       res = "assignment";
     /* `defined?(())`: the empty parentheses are nil's own word */
-    else if (sp_streq(vt, "ParenthesesNode") && nt_ref(nt, v, "body") < 0)
+    else if (vk == NK_ParenthesesNode && nt_ref(nt, v, "body") < 0)
       res = "nil";
     /* A composite expression answers "expression" even when its OPERANDS
        are undefined -- defined? never evaluates its argument. */
-    else if (sp_streq(vt, "AndNode") || sp_streq(vt, "OrNode") ||
-             sp_streq(vt, "NotNode") || sp_streq(vt, "RangeNode") ||
-             sp_streq(vt, "HashNode") || sp_streq(vt, "KeywordHashNode") ||
-             sp_streq(vt, "InterpolatedStringNode") ||
-             sp_streq(vt, "RegularExpressionNode") ||
-             sp_streq(vt, "LambdaNode") || sp_streq(vt, "IfNode") ||
-             sp_streq(vt, "UnlessNode") || sp_streq(vt, "CaseNode") ||
-             sp_streq(vt, "DefinedNode") || sp_streq(vt, "BeginNode") ||
-             sp_streq(vt, "ParenthesesNode") ||
-             sp_streq(vt, "InterpolatedRegularExpressionNode") ||
-             sp_streq(vt, "SourceFileNode") || sp_streq(vt, "SourceLineNode") ||
-             sp_streq(vt, "SourceEncodingNode") || sp_streq(vt, "ForNode") ||
-             sp_streq(vt, "WhileNode") || sp_streq(vt, "UntilNode"))
+    else if (vk == NK_AndNode || vk == NK_OrNode ||
+             sp_streq(vt, "NotNode") || vk == NK_RangeNode ||
+             vk == NK_HashNode || vk == NK_KeywordHashNode ||
+             vk == NK_InterpolatedStringNode ||
+             vk == NK_RegularExpressionNode ||
+             vk == NK_LambdaNode || vk == NK_IfNode ||
+             vk == NK_UnlessNode || vk == NK_CaseNode ||
+             vk == NK_DefinedNode || vk == NK_BeginNode ||
+             vk == NK_ParenthesesNode ||
+             vk == NK_InterpolatedRegularExpressionNode ||
+             vk == NK_SourceFileNode || vk == NK_SourceLineNode ||
+             vk == NK_SourceEncodingNode || vk == NK_ForNode ||
+             vk == NK_WhileNode || vk == NK_UntilNode)
       res = "expression";
   }
   /* a CONTAINER literal builds its elements, so an unresolvable constant
      anywhere inside nils the answer; short-circuiting forms (&&/||) do
      not examine their operands (CRuby). */
-  if (res && v >= 0 && vt &&
-      (sp_streq(vt, "ArrayNode") || sp_streq(vt, "HashNode") ||
-       sp_streq(vt, "KeywordHashNode")) &&
+  if (res && v >= 0 &&
+      (vk == NK_ArrayNode || vk == NK_HashNode ||
+       vk == NK_KeywordHashNode) &&
       subtree_has_unresolved_const(c, v)) res = NULL;
   /* dynamic cases: the answer depends on runtime state, so emit a
      conditional instead of a compile-time label. */
-  if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
+  if (!res && vk == NK_BackReferenceReadNode) {
     /* $& / $~ / $` / $' / $+ are defined only after a successful match;
        the backing slot is NULL before one. */
     buf_puts(b, "(sp_re_match_str ? SPL(\"global-variable\") : NULL)");
     return 1;
   }
-  if (!res && vt && sp_streq(vt, "NumberedReferenceReadNode")) {
+  if (!res && vk == NK_NumberedReferenceReadNode) {
     int refn = (int)nt_int(nt, v, "number", 0);
     if (refn >= 1 && refn <= 9) {
       /* value reads use sp_re_captures[n] directly ($N = captures[N]) */
@@ -4027,13 +4034,13 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      received a block, else nil -- the same runtime question as block_given?.
      An inlined yielding scope statically has a block; a lowered scope tests
      its runtime __yblk__ parameter; any other scope has no block. */
-  if (!res && vt && (sp_streq(vt, "SuperNode") || sp_streq(vt, "ForwardingSuperNode"))) {
+  if (!res && (vk == NK_SuperNode || vk == NK_ForwardingSuperNode)) {
     int r = defined_super_reaches(c, v);
     if (r < 0) unsupported(c, id, "defined?(super) where the method super reaches is not known at compile time");
     buf_puts(b, r > 0 ? "SPL(\"super\")" : "NULL");
     return 1;
   }
-  if (!res && vt && sp_streq(vt, "YieldNode")) {
+  if (!res && vk == NK_YieldNode) {
     if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return 1; }
     if (g_current_scope_is_lowered) {
       buf_puts(b, "(");
@@ -4128,8 +4135,8 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
       for (int j = 0; j < n; j++) {
-        const char *ety = nt_type(nt, els[j]);
-        if (ety && sp_streq(ety, "SplatNode")) {
+        NodeKind ek = nt_kind(nt, els[j]);
+        if (ek == NK_SplatNode) {
           /* [*arr] or [*range] -- expand into poly */
           int inner = nt_ref(nt, els[j], "expression");
           if (is_empty_array_lit(nt, inner)) continue;
@@ -4226,8 +4233,8 @@ else {
       return 1;
     }
     for (int j = 0; j < n; j++) {
-      const char *ety = nt_type(nt, els[j]);
-      if (ety && sp_streq(ety, "SplatNode")) {
+      NodeKind ek = nt_kind(nt, els[j]);
+      if (ek == NK_SplatNode) {
         /* [*range] or [*arr] inside a typed array literal */
         int inner = nt_ref(nt, els[j], "expression");
         if (is_empty_array_lit(nt, inner)) continue;
@@ -4317,9 +4324,9 @@ else {
     int sym_poly = (repr_hash_is(hr, TY_SYMBOL, TY_POLY) || repr_hash_is(hr, TY_STRING, TY_POLY));
     int poly_poly = (repr_hash_is(hr, TY_POLY, TY_POLY));
     for (int j = 0; j < n; j++) {
-      const char *ety = nt_type(nt, els[j]);
+      NodeKind ek = nt_kind(nt, els[j]);
       if (kwh_elem_dropped(nt, id, j)) { emit_dropped_value(c, nt_ref(nt, els[j], "value"), g_pre); continue; }
-      if (ety && sp_streq(ety, "AssocSplatNode")) {
+      if (ek == NK_AssocSplatNode) {
         /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
            the splat is emitted before the explicit assocs, so a following key
            overrides the merged one (Ruby's last-wins). Only a same-variant
@@ -4629,8 +4636,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
     buf_puts(g_pre, "}\n");
     /* Else / elsif branch. */
     if (sub >= 0) {
-      const char *sub_ty = nt_type(nt, sub);
-      if (sub_ty && sp_streq(sub_ty, "ElseNode")) {
+      NodeKind sub_k = nt_kind(nt, sub);
+      if (sub_k == NK_ElseNode) {
         emit_indent(g_pre, g_indent);
         buf_puts(g_pre, "else {\n");
         for (int i = 0; i < en - 1; i++) emit_stmt(c, eb[i], g_pre, g_indent + 2);
@@ -5624,6 +5631,7 @@ static int masgn_hold_target_parts(Compiler *c, int id) {
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) unsupported(c, id, "expression (no type)");
 
   /* Hoisted call argument: substitute the rooted temp (see emit_args_filled). */
@@ -5638,7 +5646,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       return;
     }
 
-  if (sp_streq(ty, "IntegerNode")) {
+  if (ty_k == NK_IntegerNode) {
     const char *bigval = nt_str(nt, id, "bigval");
     if (bigval) {
       /* An Integer is immutable, so one slot per distinct literal serves
@@ -5649,18 +5657,18 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     emit_int_lit(b, nt_int(nt, id, "value", 0)); return;
   }
-  if (sp_streq(ty, "FloatNode")) { const char *v = nt_content(nt, id); buf_puts(b, v ? v : "0.0"); return; }
-  if (sp_streq(ty, "ImaginaryNode")) {
+  if (ty_k == NK_FloatNode) { const char *v = nt_content(nt, id); buf_puts(b, v ? v : "0.0"); return; }
+  if (ty_k == NK_ImaginaryNode) {
     int num = nt_ref(nt, id, "numeric");
-    const char *numty = num >= 0 ? nt_type(nt, num) : NULL;
+    NodeKind numk = nt_kind(nt, num);
     buf_puts(b, "((sp_Complex){0.0, (sp_float)(");
     if (num >= 0) emit_expr(c, num, b);
     else buf_puts(b, "0");
     /* 3.5i marks the imaginary component Float-classed; 4i stays Integer */
-    buf_printf(b, "), %d})", numty && sp_streq(numty, "FloatNode") ? 2 : 0);
+    buf_printf(b, "), %d})", numk == NK_FloatNode ? 2 : 0);
     return;
   }
-  if (sp_streq(ty, "RationalNode")) {
+  if (ty_k == NK_RationalNode) {
     const char *rn = nt_str(nt, id, "rat_num");
     const char *rd = nt_str(nt, id, "rat_den");
     int big = (int)nt_int(nt, id, "rat_big", 0);
@@ -5680,34 +5688,34 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, "((sp_Rational){%sLL, %sLL})", rn ? rn : "0", rd ? rd : "1");
     return;
   }
-  if (sp_streq(ty, "StringNode")) {
+  if (ty_k == NK_StringNode) {
     const char *sc = nt_str(nt, id, "content");
     emit_str_literal_src(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0,
                          (int)nt_int(nt, id, "fzl", 0));
     return;
   }
-  if (sp_streq(ty, "SourceFileNode")) {
+  if (ty_k == NK_SourceFileNode) {
     /* __FILE__ is a literal of its file: frozen under that file's pragma. */
     const char *sc = nt_str(nt, id, "content");
     emit_str_literal_n(b, sc ? sc : "", sc ? strlen(sc) : 0,
                        (int)nt_int(nt, id, "fzl", 0));
     return;
   }
-  if (sp_streq(ty, "SourceLineNode")) {
+  if (ty_k == NK_SourceLineNode) {
     buf_printf(b, "%lld", (long long)nt_int(nt, id, "start_line", 0));
     return;
   }
-  if (sp_streq(ty, "SourceEncodingNode")) {
+  if (ty_k == NK_SourceEncodingNode) {
     buf_puts(b, "sp_box_encoding(sp_encoding_utf8())"); return;
   }
-  if (sp_streq(ty, "RegularExpressionNode")) {
+  if (ty_k == NK_RegularExpressionNode) {
     int ri = re_lit_index(c, id);
     if (ri >= 0) buf_printf(b, "sp_re_pat_%d", ri);
     else buf_puts(b, "NULL");
     return;
   }
-  if (sp_streq(ty, "InterpolatedStringNode")) { emit_interp(c, id, b); return; }
-  if (sp_streq(ty, "XStringNode")) {
+  if (ty_k == NK_InterpolatedStringNode) { emit_interp(c, id, b); return; }
+  if (ty_k == NK_XStringNode) {
     /* backtick content is a command argument, never a user-visible string */
     const char *sc = nt_str(nt, id, "content");
     buf_puts(b, "sp_backtick(");
@@ -5715,29 +5723,29 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  if (sp_streq(ty, "InterpolatedXStringNode")) {
+  if (ty_k == NK_InterpolatedXStringNode) {
     buf_puts(b, "sp_backtick(");
     emit_interp(c, id, b);
     buf_puts(b, ")");
     return;
   }
-  if (sp_streq(ty, "InterpolatedSymbolNode")) {
+  if (ty_k == NK_InterpolatedSymbolNode) {
     buf_puts(b, "sp_sym_intern("); emit_interp(c, id, b); buf_puts(b, ")");
     return;
   }
-  if (sp_streq(ty, "TrueNode"))  { buf_puts(b, "1"); return; }
-  if (sp_streq(ty, "FalseNode")) { buf_puts(b, "0"); return; }
-  if (sp_streq(ty, "NilNode"))   { buf_puts(b, "0"); return; }  /* default in numeric/bool context */
-  if (sp_streq(ty, "SymbolNode")) {
+  if (ty_k == NK_TrueNode)  { buf_puts(b, "1"); return; }
+  if (ty_k == NK_FalseNode) { buf_puts(b, "0"); return; }
+  if (ty_k == NK_NilNode)   { buf_puts(b, "0"); return; }  /* default in numeric/bool context */
+  if (ty_k == NK_SymbolNode) {
     /* the node's own byte length: a symbol literal may hold a NUL (#nul) */
     const char *svl = nt_str(nt, id, "value");
     int sid = comp_sym_intern_n(c, svl ? svl : "", svl ? nt_str_len(nt, id, "value") : 0);
     buf_printf(b, "((sp_sym)%d)", sid);
     return;
   }
-  if (sp_streq(ty, "LambdaNode")) { emit_proc_literal(c, id, b); return; }
-  if (sp_streq(ty, "CaseNode")) { emit_case_expr(c, id, b); return; }
-  if (sp_streq(ty, "CaseMatchNode")) {
+  if (ty_k == NK_LambdaNode) { emit_proc_literal(c, id, b); return; }
+  if (ty_k == NK_CaseNode) { emit_case_expr(c, id, b); return; }
+  if (ty_k == NK_CaseMatchNode) {
     /* case/in as a value: declare a result temp, emit the match into g_pre
        with each arm assigning its body value to it, then yield the temp. */
     TyKind rt = repr_of(c, id).as_ty;
@@ -5785,7 +5793,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   }
   if (emit_range_expr(c, id, b, nt, ty)) return;
   if (emit_local_ivar_write_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) {
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode) {
     /* A loop in value position evaluates to nil, unless a valued `break`
        supplies a value. When it can, declare a poly result temp defaulting to
        nil, point the break-value target at it while emitting the loop, and yield
@@ -5799,7 +5807,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (g_pre) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tr, tr);
-        emit_while(c, id, g_pre, g_indent, sp_streq(ty, "UntilNode"));
+        emit_while(c, id, g_pre, g_indent, ty_k == NK_UntilNode);
         buf_printf(b, "_t%d", tr);
       }
       else {
@@ -5807,7 +5815,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
            back to a GCC statement expression, mirroring BeginNode. */
         buf_puts(b, "({ ");
         buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tr, tr);
-        emit_while(c, id, b, 0, sp_streq(ty, "UntilNode"));
+        emit_while(c, id, b, 0, ty_k == NK_UntilNode);
         buf_printf(b, "_t%d; })", tr);
       }
       g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp;
@@ -5816,11 +5824,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* No valued break: run for side effects inside a statement-expression and
        yield the boxed nil. */
     buf_puts(b, "({ ");
-    emit_while(c, id, b, 0, sp_streq(ty, "UntilNode"));
+    emit_while(c, id, b, 0, ty_k == NK_UntilNode);
     buf_puts(b, "sp_box_nil(); })");
     return;
   }
-  if (sp_streq(ty, "ForNode")) {
+  if (ty_k == NK_ForNode) {
     /* A for loop in value position evaluates to its collection, or to a
        `break`'s value (nil for a bare one). The collection -- for a range
        literal, its endpoints -- is evaluated once into temps that the loop
@@ -5870,8 +5878,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     free(lb.p);
     return;
   }
-  if (sp_streq(ty, "IndexOrWriteNode") || sp_streq(ty, "IndexAndWriteNode")) {
-    int is_or2 = sp_streq(ty, "IndexOrWriteNode");
+  if (ty_k == NK_IndexOrWriteNode || ty_k == NK_IndexAndWriteNode) {
+    int is_or2 = ty_k == NK_IndexOrWriteNode;
     int ir = nt_ref(nt, id, "receiver");
     int ia = nt_ref(nt, id, "arguments");
     int iv = nt_ref(nt, id, "value");
@@ -6017,7 +6025,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     return;
   }
-  if (sp_streq(ty, "YieldNode")) {
+  if (ty_k == NK_YieldNode) {
     /* Lowered self-recursive yield method: `yield` calls the synthetic __yblk__ proc. */
     if (g_current_scope_is_lowered) {
       int yargs = nt_ref(nt, id, "arguments");
@@ -6182,7 +6190,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
   if (emit_constant_expr(c, id, b, nt, ty, 0)) return;
   if (emit_defined_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "ParenthesesNode")) {
+  if (ty_k == NK_ParenthesesNode) {
     int body = nt_ref(nt, id, "body");
     int n = 0;
     const int *bd = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
@@ -6268,8 +6276,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   }
   if (emit_array_hash_literal_expr(c, id, b, nt, ty)) return;
   if (emit_if_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "CallNode")) { emit_call(c, id, b); return; }
-  if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
+  if (ty_k == NK_CallNode) { emit_call(c, id, b); return; }
+  if (ty_k == NK_SuperNode || ty_k == NK_ForwardingSuperNode) {
     if (!emit_super_inline(c, id, b, 0, 1)) emit_super(c, id, b);
     return;
   }
@@ -6277,7 +6285,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
 
   /* MultiWriteNode as expression: execute the destructuring (side effect),
      then return the RHS value (Ruby semantics: value of `a, b = arr` is arr). */
-  if (sp_streq(ty, "MultiWriteNode")) {
+  if (ty_k == NK_MultiWriteNode) {
     int value = nt_ref(nt, id, "value");
     /* The right-hand side runs once: a tuple's elements one by one, or any
        other right-hand side whole, are held in temps that the statement and
@@ -6344,7 +6352,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   }
 
   /* ivar OP= as expression: emit the mutation then read back the ivar. */
-  if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+  if (ty_k == NK_InstanceVariableOperatorWriteNode) {
     const char *nm = nt_str(nt, id, "name");
     /* an instance_eval body's slot is its receiver's (see the statement form) */
     int sc = g_ie_class_id >= 0 ? g_ie_class_id : comp_scope_of(c, id)->class_id;
@@ -6409,12 +6417,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  if (sp_streq(ty, "InterpolatedRegularExpressionNode")) {
+  if (ty_k == NK_InterpolatedRegularExpressionNode) {
     /* a dynamic regexp in general value position: the shared pattern emitter
        builds the interpolated source and re_compiles into a prelude temp. */
     if (emit_regex_pat_to_buf(c, id, b)) return;
   }
-  if (sp_streq(ty, "DefNode")) {
+  if (ty_k == NK_DefNode) {
     /* a def in value position: the definition emits separately; the
        expression's value is the method-name symbol. A `def obj.m` is also
        where obj's singleton method starts (emit_sg_activate). */
@@ -6430,11 +6438,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, dn ? dn : ""));
     return;
   }
-  if (sp_streq(ty, "CallOrWriteNode") || sp_streq(ty, "CallAndWriteNode")) {
+  if (ty_k == NK_CallOrWriteNode || ty_k == NK_CallAndWriteNode) {
     /* value position `x = (a.v ||= 5)`: run the conditional write, then read
        the attribute back as the expression's value (the assigned-or-existing
        one, matching CRuby). The guard is the ivar's own (emit_slot_orw_value). */
-    int is_or = sp_streq(ty, "CallOrWriteNode");
+    int is_or = ty_k == NK_CallOrWriteNode;
     int recv = nt_ref(nt, id, "receiver");
     const char *attr = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
@@ -6465,7 +6473,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       return;
     }
   }
-  if (sp_streq(ty, "SplatNode")) {
+  if (ty_k == NK_SplatNode) {
     /* `*x` in unboxed value position (a next/break value flowing into a
        typed PolyArray slot): splat-to-array, then unwrap the pointer. */
     int sp_inner = nt_ref(nt, id, "expression");
@@ -6483,7 +6491,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
      slot back as the value -- Ruby yields the stored (post-op) value. The
      read-back re-evaluates receiver and key, so this path is gated on both
      being effect-free simple reads; anything else keeps the clean reject. */
-  if (sp_streq(ty, "IndexOperatorWriteNode")) {
+  if (ty_k == NK_IndexOperatorWriteNode) {
     int ir = nt_ref(nt, id, "receiver");
     int ia = nt_ref(nt, id, "arguments");
     int iac = 0; const int *iav = ia >= 0 ? nt_arr(nt, ia, "arguments", &iac) : NULL;
@@ -6569,7 +6577,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   /* retry in value position (e.g. the tail of a parenthesized group): the
      jump back to its begin makes the value dead -- emit the goto as a
      prelude statement, exactly like the statement form. */
-  if (sp_streq(ty, "RetryNode")) {
+  if (ty_k == NK_RetryNode) {
     if (g_retry_label) {
       /* inline, not a g_pre prelude: statements sequenced before the retry in
          the same group (e.g. `(c = false; retry)`) must run first. GCC/clang
@@ -6582,7 +6590,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else unsupported(c, id, "retry (outside rescue)");
     return;
   }
-  if (sp_streq(ty, "NextNode") && emit_next_expr(c, id, b)) return;
+  if (ty_k == NK_NextNode && emit_next_expr(c, id, b)) return;
 
   unsupported(c, id, "expression");
 }

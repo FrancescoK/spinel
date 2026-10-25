@@ -2143,8 +2143,8 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     int needs_lift = 0;
     if (arr.elem != TY_POLY && array_kind(art)) {
       TyKind elem_t = arr.elem;
-      const char *rty = nt_type(nt, recv);
-      if (rty && sp_streq(rty, "ArrayNode")) {
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk == NK_ArrayNode) {
         for (int a = 0; a < argc; a++) {
           Repr ar = repr_of(c, argv[a]);
           TyKind at = ar.as_ty;

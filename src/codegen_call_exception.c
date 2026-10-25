@@ -834,13 +834,13 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
          hold nil at run time (a String or an object read from a container)
          raises only when it is not nil, and before the operands. */
       TyKind ckt = comp_ntype(c, cause_node);
-      const char *cty0 = nt_type(nt, cause_node);
-      int cause_lit = cty0 && (sp_streq(cty0, "StringNode") || sp_streq(cty0, "InterpolatedStringNode") ||
-                               sp_streq(cty0, "IntegerNode") || sp_streq(cty0, "FloatNode") ||
-                               sp_streq(cty0, "SymbolNode") || sp_streq(cty0, "TrueNode") ||
-                               sp_streq(cty0, "FalseNode") || sp_streq(cty0, "ArrayNode") ||
-                               sp_streq(cty0, "HashNode") || sp_streq(cty0, "RangeNode") ||
-                               sp_streq(cty0, "RationalNode") || sp_streq(cty0, "ImaginaryNode"));
+      NodeKind cty0_k = nt_kind(nt, cause_node);
+      int cause_lit = (cty0_k == NK_StringNode || cty0_k == NK_InterpolatedStringNode ||
+                               cty0_k == NK_IntegerNode || cty0_k == NK_FloatNode ||
+                               cty0_k == NK_SymbolNode || cty0_k == NK_TrueNode ||
+                               cty0_k == NK_FalseNode || cty0_k == NK_ArrayNode ||
+                               cty0_k == NK_HashNode || cty0_k == NK_RangeNode ||
+                               cty0_k == NK_RationalNode || cty0_k == NK_ImaginaryNode);
       /* a Float that may be nil (a parameter some caller leaves out) is not
          known to be never nil: it is judged at run time with the rest */
       int cause_never_nil = cause_lit ||

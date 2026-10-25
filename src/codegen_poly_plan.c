@@ -2910,8 +2910,8 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      CRuby names the unknown keyword. Such a hash is built whole, of any
      key, in source order, like one a `**` brings (kw_ds, kwall_any). */
   int kwh = -1, pos_argc = argc, kw_ds = 0, kw_strkey = 0;
-  { const char *l_ty = nt_type(nt, argv[argc - 1]);
-    if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
+  { NodeKind l_k = nt_kind(nt, argv[argc - 1]);
+    if (l_k == NK_KeywordHashNode) {
       int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
       int plain = en > 0, nds = 0;
       for (int e = 0; e < en; e++) {

@@ -533,8 +533,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_puts(b, ")");
       return 1;
     }
-    const char *aty0 = nt_type(nt, argv[0]);
-    int lit_shift = aty0 && sp_streq(aty0, "IntegerNode");
+    NodeKind aty0_k = nt_kind(nt, argv[0]);
+    int lit_shift = aty0_k == NK_IntegerNode;
     long long litc = lit_shift ? nt_int(nt, argv[0], "value", 0) : 0;
     /* Every literal `<<` goes through sp_int_shl, whose overflow check is
        the only one there is: the raw C shift below has none, and `x << 9`
@@ -809,15 +809,15 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        `:s.to_s`, a CallNode whose own type is TY_STRING -- so neither the
        node kind nor the inferred type says Symbol on its own. All three
        spellings are asked. */
-    { const char *rvt_s = nt_type(nt, recv);
+    { NodeKind rvt_s_k = nt_kind(nt, recv);
       int recv_is_sym = (comp_ntype(c, recv) == TY_SYMBOL) ||
-                        (rvt_s && sp_streq(rvt_s, "SymbolNode"));
-      if (!recv_is_sym && rvt_s && sp_streq(rvt_s, "CallNode")) {
+                        (rvt_s_k == NK_SymbolNode);
+      if (!recv_is_sym && rvt_s_k == NK_CallNode) {
         const char *rcn = nt_str(nt, recv, "name");
         int rr = nt_ref(nt, recv, "receiver");
-        const char *rrt = rr >= 0 ? nt_type(nt, rr) : NULL;
+        NodeKind rrk = nt_kind(nt, rr);
         if (rcn && sp_streq(rcn, "to_s") &&
-            ((rrt && sp_streq(rrt, "SymbolNode")) || (rr >= 0 && comp_ntype(c, rr) == TY_SYMBOL)))
+            ((rrk == NK_SymbolNode) || (rr >= 0 && comp_ntype(c, rr) == TY_SYMBOL)))
           recv_is_sym = 1;
       }
     if (lrt == TY_STRING && !recv_is_sym &&
@@ -1218,9 +1218,9 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        so the inferred type) is still UNKNOWN -- treat them as such for the fold. */
     TyKind eff_rt = rt;
     if (eff_rt == TY_UNKNOWN) {
-      const char *rvt = nt_type(nt, recv);
-      if (rvt && sp_streq(rvt, "ArrayNode")) eff_rt = TY_POLY_ARRAY;
-      else if (rvt && sp_streq(rvt, "CallNode") && nt_str(nt, recv, "name") &&
+      NodeKind rvk = nt_kind(nt, recv);
+      if (rvk == NK_ArrayNode) eff_rt = TY_POLY_ARRAY;
+      else if (rvk == NK_CallNode && nt_str(nt, recv, "name") &&
                sp_streq(nt_str(nt, recv, "name"), "new")) {
         int rr = nt_ref(nt, recv, "receiver");
         if (rr >= 0 && nt_kind(nt, rr) == NK_ConstantReadNode &&
@@ -1541,7 +1541,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         else buf_printf(b, " sp_strbuf_read_pub(_t%d); })", tC2);
         return 1;
       } }
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     if (str_mut_var_recv(c, recv) || sb_held_shadow(recv)) {
       /* a fresh unfrozen empty: the shared frozen "" would make a later
          mutation of the cleared receiver raise */
@@ -1551,7 +1551,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       return 1;
     }
     /* a direct literal receiver is frozen: FrozenError, as CRuby */
-    if (rty && sp_streq(rty, "StringNode")) {
+    if (rk == NK_StringNode) {
       buf_puts(b, "((const char *)(sp_raise_frozen_str(");
       emit_expr(c, recv, b);
       buf_puts(b, "), (&(\"\\xff\")[1])))");

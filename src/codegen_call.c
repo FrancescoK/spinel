@@ -690,8 +690,8 @@ void emit_re_opts_flags(Compiler *c, int argc, const int *argv, Buf *out) {
    comparison (no per-access 1-char string allocation). */
 static int str_index1(Compiler *c, int node, int *out_recv, int *out_idx) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
   if (!nm || (!sp_streq(nm, "[]") && !sp_streq(nm, "slice"))) return 0;
   if (nt_ref(nt, node, "block") >= 0) return 0;
@@ -708,8 +708,8 @@ static int str_index1(Compiler *c, int node, int *out_recv, int *out_idx) {
 
 /* A bare single-byte string literal, e.g. `"{"`. */
 static int single_byte_lit(Compiler *c, int node, unsigned char *out) {
-  const char *ty = nt_type(c->nt, node);
-  if (!ty || !sp_streq(ty, "StringNode")) return 0;
+  NodeKind k = nt_kind(c->nt, node);
+  if (k != NK_StringNode) return 0;
   const char *s = nt_str(c->nt, node, "unescaped");
   if (!s) s = nt_str(c->nt, node, "content");
   if (!s || s[0] == '\0' || s[1] != '\0') return 0;
@@ -754,12 +754,13 @@ int ie_body_has_break_next(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return 0;
-  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) return 1;
+  if (ty_k == NK_BreakNode || ty_k == NK_NextNode) return 1;
   /* constructs that bind their own break/next */
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_BlockNode || ty_k == NK_LambdaNode || ty_k == NK_DefNode ||
+      ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return 0;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) if (ie_body_has_break_next(c, nt_ref_at(nt, node, i))) return 1;
   int na = nt_num_arrs(nt, node);
@@ -784,13 +785,14 @@ static int brk_iter_returns_self(const char *name) {
 static int brk_recv_is_pure(Compiler *c, int recv) {
   if (recv < 0) return 0;
   const char *t = nt_type(c->nt, recv);
+  NodeKind k = nt_kind(c->nt, recv);
   if (!t) return 0;
-  return sp_streq(t, "LocalVariableReadNode") || sp_streq(t, "InstanceVariableReadNode") ||
-         sp_streq(t, "ClassVariableReadNode") || sp_streq(t, "GlobalVariableReadNode") ||
-         sp_streq(t, "ConstantReadNode") || sp_streq(t, "ConstantPathNode") ||
-         sp_streq(t, "SelfNode") || sp_streq(t, "ArrayNode") || sp_streq(t, "HashNode") ||
-         sp_streq(t, "RangeNode") || sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
-         sp_streq(t, "StringNode") || sp_streq(t, "SymbolNode");
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+  k == NK_ClassVariableReadNode || k == NK_GlobalVariableReadNode ||
+  k == NK_ConstantReadNode || k == NK_ConstantPathNode ||
+  k == NK_SelfNode || k == NK_ArrayNode || k == NK_HashNode ||
+  k == NK_RangeNode || k == NK_IntegerNode || k == NK_FloatNode ||
+  k == NK_StringNode || k == NK_SymbolNode;
 }
 
 /* Unify the value type of every splice-bound break/next in `node` (same
@@ -801,16 +803,17 @@ TyKind ie_splice_value_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) {
+  if (ty_k == NK_BreakNode || ty_k == NK_NextNode) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an > 0) return repr_of(c, av[0]).as_ty;
-    return sp_streq(ty, "NextNode") ? TY_NIL : TY_UNKNOWN;   /* keep in step with ie_block_break_next_ty */
+    return ty_k == NK_NextNode ? TY_NIL : TY_UNKNOWN;   /* keep in step with ie_block_break_next_ty */
   }
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return TY_UNKNOWN;
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_BlockNode || ty_k == NK_LambdaNode || ty_k == NK_DefNode ||
+      ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -1629,7 +1632,8 @@ int poly_call_blk_proc(Compiler *c, int id, int have) {
 int hoist_call_block_proc(Compiler *c, int id) {
   int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   const char *cbt = cblk >= 0 ? nt_type(c->nt, cblk) : NULL;
-  if (!cbt || sp_streq(cbt, "BlockArgumentNode")) return -1;
+  NodeKind cbk = nt_kind(c->nt, cblk);
+  if (!cbt || cbk == NK_BlockArgumentNode) return -1;
   return hoist_block_proc(c, cblk);
 }
 /* The keyword argument of the call's keyword hash naming parameter `pn`, or
@@ -2187,8 +2191,8 @@ int method_scope_arity(Compiler *c, int target, int *out) {
       n_req--;
     int rp = nt_ref(nt, pn, "rest");
     if (rp >= 0) {
-      const char *rty = nt_type(nt, rp);
-      if (rty && sp_streq(rty, "RestParameterNode")) has_rest = 1; else return 0;
+      NodeKind rk = nt_kind(nt, rp);
+      if (rk == NK_RestParameterNode) has_rest = 1; else return 0;
     }
     int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
     if (kn > 0) kw_block = 1;
@@ -2199,7 +2203,8 @@ int method_scope_arity(Compiler *c, int target, int *out) {
     int kwrp = nt_ref(nt, pn, "keyword_rest");
     if (kwrp >= 0) {
       const char *kty = nt_type(nt, kwrp);
-      if (kty && sp_streq(kty, "KeywordRestParameterNode")) kw_block = 1;
+      NodeKind kk = nt_kind(nt, kwrp);
+      if (kk == NK_KeywordRestParameterNode) kw_block = 1;
       else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
     }
   }
@@ -2267,17 +2272,17 @@ static int path_header_class(Compiler *c, int stmt) {
 static int class_body_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count && n < max; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!cn || comp_class_index(c, cn) != ci) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
-      const char *sty = nt_type(nt, stmts[k]);
+      NodeKind sk = nt_kind(nt, stmts[k]);
       const char *nm = NULL, *sh = NULL;
-      if (sty && sp_streq(sty, "ConstantWriteNode")) {
+      if (sk == NK_ConstantWriteNode) {
         nm = nt_str(nt, stmts[k], "name");
         sh = nt_str(nt, stmts[k], "qc_orig_name");
       }
@@ -2287,7 +2292,7 @@ static int class_body_constants(Compiler *c, int ci, const char **out, const cha
          A path header (`class Other::B`, `class ::B`) names a constant of
          the module its path names, not of this one: the path pass lists
          it there. */
-      else if (sty && (sp_streq(sty, "ClassNode") || sp_streq(sty, "ModuleNode"))) {
+      else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
         int ncp = nt_ref(nt, stmts[k], "constant_path");
         if (ncp >= 0 && nt_kind(nt, ncp) == NK_ConstantPathNode) continue;
         class_stmt_const_names(nt, stmts[k], &nm, &sh);
@@ -2336,23 +2341,23 @@ static int class_module_refs(Compiler *c, int ci, const char *kw, int *out, int 
   const NodeTable *nt = c->nt;
   int n = 0;
   for (int id = 0; id < nt->count && n < max; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!cn || comp_class_index(c, cn) != ci) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
-      const char *sty = nt_type(nt, stmts[k]);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, stmts[k]);
+      if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, stmts[k], "name");
       if (!nm || !sp_streq(nm, kw) || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
       int an = nt_ref(nt, stmts[k], "arguments");
       int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
       for (int j = 0; j < ac && n < max; j++) {
-        const char *aty = nt_type(nt, av[j]);
-        const char *mn = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode")))
+        NodeKind ak = nt_kind(nt, av[j]);
+        const char *mn = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode)
                          ? nt_str(nt, av[j], "name") : NULL;
         int mi = mn ? comp_class_index(c, mn) : -1;
         if (mi >= 0) out[n++] = mi;
@@ -2400,8 +2405,8 @@ int collect_class_constants(Compiler *c, int ci, int inherit, const char **out, 
    Answers 1 when it emitted the id. */
 int emit_clock_id(Compiler *c, int node, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty || !sp_streq(ty, "SymbolNode")) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_SymbolNode) return 0;
   const char *nm = nt_str(nt, node, "value");
   static const char *const CLK[] = {
     "CLOCK_MONOTONIC", "CLOCK_REALTIME",
@@ -3080,9 +3085,9 @@ int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Bu
 int lazy_endpoint_is_infinite(Compiler *c, int right) {
   const NodeTable *nt = c->nt;
   if (right < 0) return 1;
-  const char *rty = nt_type(nt, right);
-  if (rty && sp_streq(rty, "NilNode")) return 1;
-  if (rty && sp_streq(rty, "ConstantPathNode")) {
+  NodeKind rk = nt_kind(nt, right);
+  if (rk == NK_NilNode) return 1;
+  if (rk == NK_ConstantPathNode) {
     const char *cpnm = nt_str(nt, right, "name");
     if (cpnm && sp_streq(cpnm, "INFINITY")) {
       int par = nt_ref(nt, right, "parent");
@@ -4736,8 +4741,8 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
     }
     free(pre.p); free(body.p);
   }
-  const char *rvt = recv >= 0 ? nt_type(nt, recv) : NULL;
-  const char *rnm = (rvt && (sp_streq(rvt, "ConstantReadNode") || sp_streq(rvt, "ConstantPathNode")))
+  NodeKind rvk = nt_kind(nt, recv);
+  const char *rnm = (rvk == NK_ConstantReadNode || rvk == NK_ConstantPathNode)
                     ? nt_str(nt, recv, "name") : NULL;
   /* the receiver's class (`self` in a class method too) by its Ruby name */
   const char *rkn = recv >= 0 ? const_get_recv_name(c, id, recv) : NULL;
@@ -4751,7 +4756,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   }
   /* `self` in a class method is the class it runs on, a subclass too */
   Buf sv = {0, 0, 0};
-  if (rvt && sp_streq(rvt, "SelfNode") && rk >= 0 && repr_of(c, recv).as_ty == TY_CLASS) emit_expr(c, recv, &sv);
+  if (rvk == NK_SelfNode && rk >= 0 && repr_of(c, recv).as_ty == TY_CLASS) emit_expr(c, recv, &sv);
   buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); ", t, t, t);
   if (sv.p)
     buf_printf(b, "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %%s::%%s\", sp_class_val_name(sp_box_class(%s)), _n%d)); ",
@@ -4804,8 +4809,8 @@ void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
   int ta = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
   for (int k = 0; k < argc; k++) {
-    const char *ty = nt_type(c->nt, argv[k]);
-    int inner = (ty && sp_streq(ty, "SplatNode")) ? nt_ref(c->nt, argv[k], "expression") : -1;
+    NodeKind ty_k = nt_kind(c->nt, argv[k]);
+    int inner = (ty_k == NK_SplatNode) ? nt_ref(c->nt, argv[k], "expression") : -1;
     if (inner >= 0) {
       int ts = ++g_tmp;
       buf_printf(b, " { sp_RbVal _t%d = sp_splat_to_array(", ts); emit_boxed(c, inner, b);
@@ -5181,8 +5186,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       for (int e = 0; e < kn && only_exc; e++) {
         const int *els = nt_arr(nt, argv[1], "elements", &kn);
         int key = els ? nt_ref(nt, els[e], "key") : -1;
-        const char *kt = key >= 0 ? nt_type(nt, key) : NULL;
-        const char *knm = (kt && sp_streq(kt, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+        NodeKind kk = nt_kind(nt, key);
+        const char *knm = (kk == NK_SymbolNode) ? nt_str(nt, key, "value") : NULL;
         if (!knm || !sp_streq(knm, "exception")) only_exc = 0;
         else exception_node = nt_ref(nt, els[e], "value");
       }
@@ -5328,8 +5333,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       int only_exc = kn > 0;
       for (int e = 0; e < kn && only_exc; e++) {
         int key = els ? nt_ref(nt, els[e], "key") : -1;
-        const char *kt = key >= 0 ? nt_type(nt, key) : NULL;
-        const char *knm = (kt && sp_streq(kt, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+        NodeKind kk = nt_kind(nt, key);
+        const char *knm = (kk == NK_SymbolNode) ? nt_str(nt, key, "value") : NULL;
         if (!knm || !sp_streq(knm, "exception")) only_exc = 0;
         else exception_node = nt_ref(nt, els[e], "value");
       }
@@ -5496,9 +5501,9 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
   }
   if (recv >= 0) {
-    const char *rrty = nt_type(nt, recv);
+    NodeKind rrk = nt_kind(nt, recv);
     /* Complex.polar(magnitude, angle) */
-    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+    if (rrk == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar") && argc >= 1) {
       if (emit_complex_real_args(c, argv, argc, 1, b)) return 1;
       buf_puts(b, "sp_complex_polar(");
@@ -5510,7 +5515,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     /* Complex.rect(re[, im]) / .rectangular: the component-pair constructor. */
-    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+    if (rrk == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") &&
         (is_rectangular_alias(name)) && argc >= 1 && argc <= 2) {
       if (emit_complex_real_args(c, argv, argc, 0, b)) return 1;
@@ -6645,8 +6650,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      string box cannot be emptied in place, so an lvalue receiver takes the
      fresh empty string back, as `insert` does (#3445). */
   if (sp_streq(name, "clear") && argc == 0) {
-    const char *rvtc = nt_type(nt, recv);
-    int wb = rvtc && (sp_streq(rvtc, "LocalVariableReadNode") || sp_streq(rvtc, "InstanceVariableReadNode"));
+    NodeKind rvtc_k = nt_kind(nt, recv);
+    int wb = (rvtc_k == NK_LocalVariableReadNode || rvtc_k == NK_InstanceVariableReadNode);
     if (wb) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " = "); }
     buf_puts(b, "sp_poly_clear("); emit_expr(c, recv, b); buf_puts(b, ")");
     if (wb) buf_puts(b, ")");
@@ -6757,9 +6762,9 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      the typed String mutators do (#3445). An array receiver is mutated
      through its pointer and answers itself, so the write-back is a no-op. */
   if (sp_streq(name, "insert") && argc >= 1) {
-    const char *rvti = nt_type(nt, recv);
-    if (rvti && (sp_streq(rvti, "LocalVariableReadNode") ||
-                 sp_streq(rvti, "InstanceVariableReadNode"))) {
+    NodeKind rvti_k = nt_kind(nt, recv);
+    if ((rvti_k == NK_LocalVariableReadNode ||
+                 rvti_k == NK_InstanceVariableReadNode)) {
       buf_puts(b, "(");
       emit_expr(c, recv, b);
       buf_puts(b, " = ");
@@ -6788,8 +6793,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       }
       buf_printf(b, " sp_poly_insert_n(_t%d, _t%d, _t%d); })", tr, ti, ta);
     }
-    if (rvti && (sp_streq(rvti, "LocalVariableReadNode") ||
-                 sp_streq(rvti, "InstanceVariableReadNode")))
+    if ((rvti_k == NK_LocalVariableReadNode ||
+                 rvti_k == NK_InstanceVariableReadNode))
       buf_puts(b, ")");
     return 1;
   }
@@ -10916,9 +10921,10 @@ static int ctor_default_reads_self(Compiler *c, Scope *m, int node, int depth) {
   if (node < 0 || depth > 60) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
+  NodeKind k = nt_kind(nt, node);
   if (!ty) return 0;
-  if (sp_streq(ty, "SelfNode") || sp_streq(ty, "InstanceVariableReadNode")) return 1;
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, node, "receiver") < 0 && m->class_id >= 0) {
+  if (k == NK_SelfNode || k == NK_InstanceVariableReadNode) return 1;
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0 && m->class_id >= 0) {
     const char *cn = nt_str(nt, node, "name");
     if (cn && (comp_method_in_chain(c, m->class_id, cn, NULL) >= 0 ||
                comp_reader_in_chain(c, m->class_id, cn, NULL) ||
@@ -12760,9 +12766,9 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
        argument too many. */
     if (initm < 0) {
       int mdn = c->classes[ci].def_node;
-      const char *mdt = mdn >= 0 ? nt_type(nt, mdn) : NULL;
+      NodeKind mdk = nt_kind(nt, mdn);
       if (spl < 0 || !splat_operand_ok(c, spl) ||
-          (mdt && sp_streq(mdt, "ModuleNode")) || class_is_exc_subclass(c, ci) ||
+          (mdk == NK_ModuleNode) || class_is_exc_subclass(c, ci) ||
           comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) continue;
       int tsa = ++g_tmp;
       buf_printf(b, "case %d: { sp_PolyArray *_t%d = ", ci, tsa);
@@ -13387,8 +13393,8 @@ int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv, int kw
     for (int e = 0; e < nke; e++) {
       if (nt_kind(nt, elke[e]) != NK_AssocNode) continue;
       int key = nt_ref(nt, elke[e], "key");
-      const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-      const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+      NodeKind kty_k = nt_kind(nt, key);
+      const char *kn = (kty_k == NK_SymbolNode) ? nt_str(nt, key, "value") : NULL;
       if (!kn) { nonsym = 1; continue; }
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
       if (comp_member_index(cls, ivn) >= 0) continue;
@@ -14281,9 +14287,10 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
   const char *rty = nt_type(nt, recv);
+  NodeKind rk = nt_kind(nt, recv);
   /* a local statically holding one class constant dispatches like the
      constant itself (k = Klass; k.new(...)) */
-  if (rty && sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0) {
+  if (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) {
     int ci = class_var_static_ci(c, recv);
     if (emit_native_ctor(c, id, ci, argc, argv, b)) { *out = 1; return 1; }
     if (ci >= 0 && !c->classes[ci].is_struct) {
@@ -14307,16 +14314,16 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
   }
-  if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode") ||
-              (sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0) ||
-              (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {
-    int ci = sp_streq(rty, "LocalVariableReadNode") ? class_var_static_ci(c, recv)
-           : sp_streq(rty, "CallNode") ? anon_struct_ci_for_value(c, recv)
+  if (rty && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
+              (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
+              (rk == NK_CallNode && is_struct_call(c, recv)))) {
+    int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
+           : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
                                                     : comp_class_index(c, nt_str(nt, recv, "name"));
     /* a reopened builtin (`class String; def ...`) with no user-defined
        self.new keeps its builtin constructor: fall past the user-ctor logic
        to the builtin cn handler below (#3109) */
-    int reopen_builtin_new = ci >= 0 && sp_streq(rty, "ConstantReadNode") &&
+    int reopen_builtin_new = ci >= 0 && rk == NK_ConstantReadNode &&
                              is_builtin_reopen(nt_str(nt, recv, "name")) &&
                              comp_cmethod_in_chain(c, ci, "new", NULL) < 0;
     /* native (C-backed) class: the declared constructor (see emit_native_ctor) */
@@ -14472,8 +14479,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         const int *kel2 = nt_arr(nt, argv[argc - 1], "elements", &kn2);
         int key_v = -1, recv_v = -1, other = 0;
         for (int ke = 0; ke < kn2; ke++) {
-          const char *kty = nt_type(nt, kel2[ke]);
-          int kk2 = (kty && sp_streq(kty, "AssocNode")) ? nt_ref(nt, kel2[ke], "key") : -1;
+          NodeKind kk = nt_kind(nt, kel2[ke]);
+          int kk2 = (kk == NK_AssocNode) ? nt_ref(nt, kel2[ke], "key") : -1;
           const char *knm = (kk2 >= 0 && nt_kind(nt, kk2) == NK_SymbolNode)
                               ? nt_str(nt, kk2, "value") : NULL;
           if (knm && sp_streq(knm, "key")) key_v = nt_ref(nt, kel2[ke], "value");
@@ -15068,15 +15075,15 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
           Repr fvtr = repr_of(c, argv[1]);
           TyKind fvt = fvtr.as_ty;
-          const char *fvty = nt_type(nt, argv[1]);
+          NodeKind fvk = nt_kind(nt, argv[1]);
           int fv_en = 0;
-          if (fvty && (sp_streq(fvty, "ArrayNode") || sp_streq(fvty, "HashNode")))
+          if (fvk == NK_ArrayNode || fvk == NK_HashNode)
             nt_arr(nt, argv[1], "elements", &fv_en);
           /* an empty container literal types UNKNOWN: box the container
              itself (ONE object, aliased into every slot like CRuby) */
-          if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "ArrayNode") && fv_en == 0)
+          if (fvt == TY_UNKNOWN && fvk == NK_ArrayNode && fv_en == 0)
             buf_puts(g_pre, "sp_box_poly_array(sp_PolyArray_new())");
-          else if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "HashNode") && fv_en == 0)
+          else if (fvt == TY_UNKNOWN && fvk == NK_HashNode && fv_en == 0)
             buf_puts(g_pre, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
           else if (fvtr.kind != RK_BOXED && !fh) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
           else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
@@ -15194,9 +15201,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             int key = nt_ref(nt, els[e], "key");
             int val = nt_ref(nt, els[e], "value");
             if (key < 0 || val < 0) continue;
-            const char *kty = nt_type(nt, key);
+            NodeKind kk = nt_kind(nt, key);
             buf_printf(b, " sp_SymPolyHash_set(_h%d, ", th);
-            if (kty && sp_streq(kty, "SymbolNode")) {
+            if (kk == NK_SymbolNode) {
               const char *kn = nt_str(nt, key, "value");
               buf_printf(b, "sp_sym_intern(\"%s\")", kn ? kn : "");
             }
@@ -15294,11 +15301,12 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
   /* <StructClass>.members at the class level: the member symbol list */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
     const char *mrty = nt_type(nt, recv);
+    NodeKind mrk = nt_kind(nt, recv);
     int mci = -1;
-    if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
+    if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
       mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
-                      (sp_streq(mrty, "CallNode") && is_struct_call(c, recv))))
+    else if (mrty && (mrk == NK_LocalVariableReadNode ||
+                      (mrk == NK_CallNode && is_struct_call(c, recv))))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
@@ -15315,11 +15323,11 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
      (a Data class is not keyword-init in CRuby's sense: keyword_init? is nil, but
      spinel has no separate nil-class answer here, so report false). */
   if (recv >= 0 && sp_streq(name, "keyword_init?") && argc == 0) {
-    const char *krty = nt_type(nt, recv);
+    NodeKind krk = nt_kind(nt, recv);
     int kci = -1;
-    if (krty && (sp_streq(krty, "ConstantReadNode") || sp_streq(krty, "ConstantPathNode")))
+    if (krk == NK_ConstantReadNode || krk == NK_ConstantPathNode)
       kci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (krty && sp_streq(krty, "LocalVariableReadNode"))
+    else if (krk == NK_LocalVariableReadNode)
       kci = class_var_static_ci(c, recv);
     if (kci >= 0 && c->classes[kci].is_struct &&
         comp_cmethod_in_chain(c, kci, "keyword_init?", NULL) < 0) {
@@ -15497,10 +15505,10 @@ void emit_pre_root(Compiler *c, TyKind t, int tmp) {
    and into fixed buffers that cut a long in-place name short. */
 Buf emit_cmp_self(Compiler *c, int recv, TyKind rt) {
   const NodeTable *nt = c->nt;
-  const char *rty = nt_type(nt, recv);
-  if (rty && (sp_streq(rty, "LocalVariableReadNode") ||
-              sp_streq(rty, "InstanceVariableReadNode") ||
-              sp_streq(rty, "SelfNode"))) {
+  NodeKind rk = nt_kind(nt, recv);
+  if ((rk == NK_LocalVariableReadNode ||
+              rk == NK_InstanceVariableReadNode ||
+              rk == NK_SelfNode)) {
     Buf rb = expr_buf(c, recv);
     if (!rb.p) buf_puts(&rb, "");
     return rb;
@@ -16579,8 +16587,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
      source (the splice degenerates to a pure delete of the [start,len) span). */
   int rhs_empty = 0;
   {
-    const char *rnt = nt_type(c->nt, rhs_node);
-    if (rnt && sp_streq(rnt, "ArrayNode")) {
+    NodeKind rnk = nt_kind(c->nt, rhs_node);
+    if (rnk == NK_ArrayNode) {
       int en = 0; nt_arr(c->nt, rhs_node, "elements", &en);
       rhs_empty = (en == 0);
     }
@@ -17068,8 +17076,8 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
          known here, so only the receiver needs evaluating (sp_str_plus_lit
          roots it across its own allocation). */
       {
-        const char *lt = nt_type(nt, argv[0]);
-        if (lt && sp_streq(lt, "StringNode")) {
+        NodeKind lk = nt_kind(nt, argv[0]);
+        if (lk == NK_StringNode) {
           const char *sc = nt_str(nt, argv[0], "content");
           buf_puts(b, "sp_str_plus_lit(");
           emit_str_expr(c, recv, b); buf_puts(b, ", ");
@@ -18839,8 +18847,8 @@ static void inc_index_build(Compiler *c) {
   if (!inc_head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = 0; k < c->nclasses; k++) inc_head[k] = -1;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     int cls = cn ? comp_class_index(c, cn) : -1;
@@ -18848,8 +18856,8 @@ static void inc_index_build(Compiler *c) {
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn; k++) {
-      const char *sty = nt_type(nt, stmts[k]);
-      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      NodeKind sk = nt_kind(nt, stmts[k]);
+      if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, stmts[k], "name");
       if (!nm || !sp_streq(nm, "include") || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
       int an = 0; const int *aa;
@@ -19417,24 +19425,25 @@ static void sdefs_add(const char *cn, const char *name) {
 }
 static void sdefs_scan(const NodeTable *nt, int id, const char *cn, int in_singleton) {
   const char *ty = id >= 0 ? nt_type(nt, id) : NULL;
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "DefNode")) {
+  if (ty_k == NK_DefNode) {
     /* a def with a receiver of its own is that receiver's (the pass below
        reads those off every DefNode) */
     const char *dn = nt_str(nt, id, "name");
     if (in_singleton && cn && dn && nt_ref(nt, id, "receiver") < 0) sdefs_add(cn, dn);
   }
-  else if (sp_streq(ty, "SingletonClassNode")) {
+  else if (ty_k == NK_SingletonClassNode) {
     /* `class << Const` is entered from the pass over every node; `class <<
        self` from its class's body -- and a singleton's own singleton is not
        the class's */
     int ex = nt_ref(nt, id, "expression");
-    const char *ety = ex >= 0 ? nt_type(nt, ex) : NULL;
-    const char *scn = ety && sp_streq(ety, "ConstantReadNode") && !cn ? nt_str(nt, ex, "name")
-                    : ety && sp_streq(ety, "SelfNode") && cn && !in_singleton ? cn : NULL;
+    NodeKind ek = nt_kind(nt, ex);
+    const char *scn = ek == NK_ConstantReadNode && !cn ? nt_str(nt, ex, "name")
+                    : ek == NK_SelfNode && cn && !in_singleton ? cn : NULL;
     if (scn) sdefs_scan(nt, nt_ref(nt, id, "body"), scn, 1);
   }
-  else if (sp_streq(ty, "CallNode")) {
+  else if (ty_k == NK_CallNode) {
     const char *nm = nt_str(nt, id, "name");
     int an = nt_ref(nt, id, "arguments"); int n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
@@ -19448,16 +19457,16 @@ static void sdefs_scan(const NodeTable *nt, int id, const char *cn, int in_singl
     }
     sdefs_scan(nt, nt_ref(nt, id, "block"), cn, in_singleton);   /* `[1].each do def m` */
   }
-  else if (sp_streq(ty, "StatementsNode")) {
+  else if (ty_k == NK_StatementsNode) {
     int n = 0; const int *st = nt_arr(nt, id, "body", &n);
     for (int i = 0; i < n; i++) sdefs_scan(nt, st[i], cn, in_singleton);
   }
-  else if (sp_streq(ty, "BlockNode")) sdefs_scan(nt, nt_ref(nt, id, "body"), cn, in_singleton);
-  else if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode") || sp_streq(ty, "ElseNode") ||
-           sp_streq(ty, "WhenNode") || sp_streq(ty, "InNode") || sp_streq(ty, "RescueNode") ||
-           sp_streq(ty, "EnsureNode") || sp_streq(ty, "BeginNode") || sp_streq(ty, "CaseNode") ||
-           sp_streq(ty, "CaseMatchNode") || sp_streq(ty, "WhileNode") ||
-           sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode")) {
+  else if (ty_k == NK_BlockNode) sdefs_scan(nt, nt_ref(nt, id, "body"), cn, in_singleton);
+  else if (ty_k == NK_IfNode || ty_k == NK_UnlessNode || ty_k == NK_ElseNode ||
+           sp_streq(ty, "WhenNode") || ty_k == NK_InNode || ty_k == NK_RescueNode ||
+           sp_streq(ty, "EnsureNode") || ty_k == NK_BeginNode || ty_k == NK_CaseNode ||
+           ty_k == NK_CaseMatchNode || ty_k == NK_WhileNode ||
+           ty_k == NK_UntilNode || ty_k == NK_ForNode) {
     static const char *const KEYS[] = { "statements", "subsequent", "else_clause",
                                         "rescue_clause", "ensure_clause" };
     for (size_t k = 0; k < sizeof KEYS / sizeof KEYS[0]; k++)
@@ -19476,21 +19485,22 @@ static int singleton_def_of(Compiler *c, const char *cn, const char *name) {
     g_nsdefs = 0; g_sdefs_nt = nt; g_sdefs_count = nt->count; g_sdefs_version = nt->version;
     for (int id = 0; id < nt->count; id++) {
       const char *ty = nt_type(nt, id);
+      NodeKind k = nt_kind(nt, id);
       if (!ty) continue;
-      if (sp_streq(ty, "DefNode")) {
+      if (k == NK_DefNode) {
         int dr = nt_ref(nt, id, "receiver");
-        const char *rty = dr >= 0 ? nt_type(nt, dr) : NULL;
-        const char *rn = rty && sp_streq(rty, "ConstantReadNode") ? nt_str(nt, dr, "name") : NULL;
+        NodeKind rk = nt_kind(nt, dr);
+        const char *rn = rk == NK_ConstantReadNode ? nt_str(nt, dr, "name") : NULL;
         const char *dn = nt_str(nt, id, "name");
         if (rn && dn) sdefs_add(rn, dn);
       }
-      else if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
+      else if (k == NK_ClassNode || k == NK_ModuleNode) {
         int cp = nt_ref(nt, id, "constant_path");
-        const char *cty = cp >= 0 ? nt_type(nt, cp) : NULL;
-        const char *kn = cty && sp_streq(cty, "ConstantReadNode") ? nt_str(nt, cp, "name") : NULL;
+        NodeKind ck = nt_kind(nt, cp);
+        const char *kn = ck == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
         if (kn) sdefs_scan(nt, nt_ref(nt, id, "body"), kn, 0);
       }
-      else if (sp_streq(ty, "SingletonClassNode")) sdefs_scan(nt, id, NULL, 0);
+      else if (k == NK_SingletonClassNode) sdefs_scan(nt, id, NULL, 0);
     }
   }
   for (int i = 0; i < g_nsdefs; i++)
@@ -19525,15 +19535,16 @@ static int arity_call_block(const NodeTable *nt, int id, int *argc, int *kwh) {
   const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", argc) : NULL;
   for (int i = 0; i < *argc; i++) {
     const char *at = nt_type(nt, argv[i]);
+    NodeKind ak = nt_kind(nt, argv[i]);
     if (i == *argc - 1 && nt_kind(nt, argv[i]) == NK_KeywordHashNode) {
       int en = 0; const int *els = nt_arr(nt, argv[i], "elements", &en);
       for (int e = 0; e < en; e++) if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return -1;
       *kwh = 1;
       continue;
     }
-    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
+    if (at && (ak == NK_SplatNode || ak == NK_KeywordHashNode ||
                nt_kind(nt, argv[i]) == NK_ForwardingArgumentsNode ||
-               sp_streq(at, "BlockArgumentNode")))
+               ak == NK_BlockArgumentNode))
       return -1;
   }
   return with_block;
@@ -19553,8 +19564,8 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   *eval_recv = 1;
   const SpAritySpec *itbl = sp_builtin_arity_spec_tbl;
   const SpAritySpec *ctbl = sp_builtin_cmeth_arity_spec_tbl;
-  const char *rty2 = recv >= 0 ? nt_type(nt, recv) : NULL;
-  if (kwh && (recv < 0 || (rty2 && sp_streq(rty2, "ConstantReadNode")))) return 0;
+  NodeKind rty2_k = nt_kind(nt, recv);
+  if (kwh && (recv < 0 || (rty2_k == NK_ConstantReadNode))) return 0;
   if (recv < 0) {
     /* A bare call resolves to the enclosing class's chain, then to a
        top-level def or a reopened Kernel or Object, and only then to the
@@ -19573,7 +19584,7 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
     if (!arity_spec_row(ctbl, "Kernel", name, with_block, argc, exp, n) || !exp[0]) return 0;
     *eval_recv = 0;
   }
-  else if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+  else if (rty2_k == NK_ConstantReadNode) {
     const char *cn = nt_str(nt, recv, "name");
     if (!cn) return 0;
     /* the analyzer renames Hash.new-with-default; the spec row is "new" */
@@ -21632,6 +21643,7 @@ int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw) {
   int *hoisted_vw = malloc(sizeof(int) * (size_t)(nhn + 1));
   for (int a = 0; a < nhn; a++) {
     const char *aty = nt_type(nt, hn[a]);
+    NodeKind ak = nt_kind(nt, hn[a]);
     if (hds[a]) {
       /* A `**` operand runs where it stands, into a temp of its own type --
          the keyword binders judge a `**` by that type, and a boxed one reached
@@ -21677,14 +21689,14 @@ int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw) {
        left in place, `o.m(@v, f(2))` read what f left in @v (read_rebound_by) */
     int rebound = 0;
     for (int j = a + 1; j < nhn && !rebound; j++) rebound = read_rebound_by(c, hn[a], hn[j]);
-    if (!aty || (!rebound && (sp_streq(aty, "LocalVariableReadNode") ||
-                              sp_streq(aty, "InstanceVariableReadNode"))) ||
-        sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
-        sp_streq(aty, "BlockArgumentNode") || nt_kind(nt, hn[a]) == NK_ForwardingArgumentsNode ||
-        sp_streq(aty, "SelfNode") || sp_streq(aty, "IntegerNode") ||
-        sp_streq(aty, "FloatNode") || sp_streq(aty, "StringNode") ||
-        sp_streq(aty, "SymbolNode") || sp_streq(aty, "NilNode") ||
-        sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode"))
+    if (!aty || (!rebound && (ak == NK_LocalVariableReadNode ||
+                              ak == NK_InstanceVariableReadNode)) ||
+        ak == NK_SplatNode || ak == NK_KeywordHashNode ||
+        ak == NK_BlockArgumentNode || nt_kind(nt, hn[a]) == NK_ForwardingArgumentsNode ||
+        ak == NK_SelfNode || ak == NK_IntegerNode ||
+        ak == NK_FloatNode || ak == NK_StringNode ||
+        ak == NK_SymbolNode || ak == NK_NilNode ||
+        ak == NK_TrueNode || ak == NK_FalseNode)
       continue;
     argov_reserve();
     int ht = hoist_boxed_rooted(c, hn[a]);
@@ -22633,17 +22645,17 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
              reading the ParenthesesNode's kind left the receiver unstaged so
              NoMethodError#receiver answered nil (#3891) */
           int _rvnode = recv >= 0 ? nt_paren_single(c->nt, recv) : -1;
-          const char *_rvty = _rvnode >= 0 ? nt_type(nt, _rvnode) : NULL;
-          int recv_stageable = _rvty && (sp_streq(_rvty, "LocalVariableReadNode") ||
-              sp_streq(_rvty, "SelfNode") || sp_streq(_rvty, "InstanceVariableReadNode") ||
-              sp_streq(_rvty, "ConstantReadNode") || sp_streq(_rvty, "GlobalVariableReadNode") ||
-              sp_streq(_rvty, "ClassVariableReadNode") || sp_streq(_rvty, "IntegerNode") ||
-              sp_streq(_rvty, "FloatNode") || sp_streq(_rvty, "StringNode") ||
-              sp_streq(_rvty, "SymbolNode") ||
-              /* a container literal is side-effect-free to re-emit too, and it
+          NodeKind _rvk = nt_kind(nt, _rvnode);
+          int recv_stageable = (_rvk == NK_LocalVariableReadNode ||
+                                         _rvk == NK_SelfNode || _rvk == NK_InstanceVariableReadNode ||
+                                         _rvk == NK_ConstantReadNode || _rvk == NK_GlobalVariableReadNode ||
+                                         _rvk == NK_ClassVariableReadNode || _rvk == NK_IntegerNode ||
+                                         _rvk == NK_FloatNode || _rvk == NK_StringNode ||
+                                         _rvk == NK_SymbolNode ||
+                                         /* a container literal is side-effect-free to re-emit too, and it
                  is what `[1].nope` hands NoMethodError#receiver (#3811) */
-              sp_streq(_rvty, "ArrayNode") || sp_streq(_rvty, "HashNode") ||
-              sp_streq(_rvty, "KeywordHashNode"));
+                                         _rvk == NK_ArrayNode || _rvk == NK_HashNode ||
+                                         _rvk == NK_KeywordHashNode);
           /* a nullable scalar receiver (a String whose nil is NULL, an
              Integer or a Float that also sees nil) names nil or its class at
              run time: the slot's kind alone cannot say which the value is */
@@ -22769,8 +22781,8 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
 
 /* Whether user class k was written as a module (`module M`). */
 static int class_is_module_def(Compiler *c, int k) {
-  const char *dt = c->classes[k].def_node >= 0 ? nt_type(c->nt, c->classes[k].def_node) : NULL;
-  return dt && sp_streq(dt, "ModuleNode");
+  NodeKind dk = nt_kind(c->nt, c->classes[k].def_node);
+  return dk == NK_ModuleNode;
 }
 
 /* Whether an instance of user class k is_a? user class or module `cid`
@@ -22898,8 +22910,8 @@ static int ffi_buffer_arg(Compiler *c, int arg) {
   if (arg < 0 || nt_kind(nt, arg) != NK_CallNode) return -1;
   if (nt_ref(nt, arg, "arguments") >= 0 || nt_ref(nt, arg, "block") >= 0) return -1;
   int r = nt_ref(nt, arg, "receiver");
-  const char *rty = r >= 0 ? nt_type(nt, r) : NULL;
-  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return -1;
+  NodeKind rk = nt_kind(nt, r);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
   const char *mod = nt_str(nt, r, "name");
   const char *nm = nt_str(nt, arg, "name");
   if (!mod || !nm) return -1;
@@ -24658,8 +24670,8 @@ static int format_arg_calls_own(Compiler *c, int a) {
    is embedded (`"#{s}"`). */
 static int format_is_own_made(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, v);
-  if (ty && sp_streq(ty, "InterpolatedStringNode")) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_InterpolatedStringNode) {
     int n = 0;
     const int *parts = nt_arr(nt, v, "parts", &n);
     for (int i = 0; i < n; i++) {
@@ -24686,9 +24698,10 @@ static int format_arg_is_inert(Compiler *c, int a, int depth) {
   a = nt_paren_single(c->nt, a);
   if (a < 0 || depth > 8) return 0;
   const char *ty = nt_type(nt, a);
+  NodeKind k = nt_kind(nt, a);
   if (!ty) return 0;
-  if (sp_streq(ty, "StringNode") || sp_streq(ty, "GlobalVariableReadNode")) return 1;
-  if (sp_streq(ty, "ArrayNode")) {
+  if (k == NK_StringNode || k == NK_GlobalVariableReadNode) return 1;
+  if (k == NK_ArrayNode) {
     int n = 0; const int *el = nt_arr(nt, a, "elements", &n);
     for (int i = 0; i < n; i++) if (!format_arg_is_inert(c, el[i], depth + 1)) return 0;
     return 1;
@@ -28612,18 +28625,19 @@ static void bm_collect_names(Compiler *c, int id, int writes, const char **out,
                              int cap, int *n) {
   if (id < 0 || *n >= cap) return;
   const char *ty = nt_type(c->nt, id);
-  if (ty && (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
-             sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))) return;
+  NodeKind ty_k = nt_kind(c->nt, id);
+  if ((ty_k == NK_DefNode || ty_k == NK_ClassNode ||
+             ty_k == NK_ModuleNode || ty_k == NK_SingletonClassNode)) return;
   if (ty) {
-    int is_write = sp_streq(ty, "LocalVariableWriteNode") ||
-                   sp_streq(ty, "LocalVariableTargetNode") ||
-                   sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-                   sp_streq(ty, "LocalVariableOrWriteNode") ||
-                   sp_streq(ty, "LocalVariableAndWriteNode");
-    int is_read = sp_streq(ty, "LocalVariableReadNode") ||
-                  sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-                  sp_streq(ty, "LocalVariableOrWriteNode") ||
-                  sp_streq(ty, "LocalVariableAndWriteNode");
+    int is_write = ty_k == NK_LocalVariableWriteNode ||
+                   ty_k == NK_LocalVariableTargetNode ||
+                   ty_k == NK_LocalVariableOperatorWriteNode ||
+                   ty_k == NK_LocalVariableOrWriteNode ||
+                   ty_k == NK_LocalVariableAndWriteNode;
+    int is_read = ty_k == NK_LocalVariableReadNode ||
+                  ty_k == NK_LocalVariableOperatorWriteNode ||
+                  ty_k == NK_LocalVariableOrWriteNode ||
+                  ty_k == NK_LocalVariableAndWriteNode;
     if (writes ? is_write : is_read) {
       const char *nm = nt_str(c->nt, id, "name");
       if (nm) {
@@ -28686,8 +28700,9 @@ static int default_names_local(const char *ty) {
 static void default_collect_names(Compiler *c, int id, const char **out, int cap, int *n) {
   if (id < 0 || *n >= cap) return;
   const char *ty = nt_type(c->nt, id);
-  if (ty && (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
-             sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))) return;
+  NodeKind ty_k = nt_kind(c->nt, id);
+  if ((ty_k == NK_DefNode || ty_k == NK_ClassNode ||
+             ty_k == NK_ModuleNode || ty_k == NK_SingletonClassNode)) return;
   const char *nm = default_names_local(ty) ? nt_str(c->nt, id, "name") : NULL;
   if (nm) {
     int dup = 0;
@@ -29427,22 +29442,23 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
    it is boxed as it is; anywhere else it would be coerced through a method
    of its class. */
 static int push_arg_var_read(const NodeTable *nt, int id) {
-  const char *ty = id >= 0 ? nt_type(nt, id) : NULL;
-  return ty && (sp_streq(ty, "LocalVariableReadNode") ||
-                sp_streq(ty, "InstanceVariableReadNode"));
+  NodeKind k = nt_kind(nt, id);
+  return (k == NK_LocalVariableReadNode ||
+                k == NK_InstanceVariableReadNode);
 }
 static int push_arg_keeps_slot(Compiler *c, int id, TyKind art) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind k = nt_kind(nt, id);
   if (!ty) return 0;
   if (repr_of(c, id).kind == RK_BOXED && art != TY_POLY_ARRAY) return 0;
-  if (sp_streq(ty, "IntegerNode") || sp_streq(ty, "FloatNode") ||
-      sp_streq(ty, "StringNode") || sp_streq(ty, "SymbolNode") ||
-      sp_streq(ty, "NilNode") || sp_streq(ty, "TrueNode") || sp_streq(ty, "FalseNode") ||
-      sp_streq(ty, "SelfNode") || push_arg_var_read(nt, id))
+  if (k == NK_IntegerNode || k == NK_FloatNode ||
+      k == NK_StringNode || k == NK_SymbolNode ||
+      k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode ||
+      k == NK_SelfNode || push_arg_var_read(nt, id))
     return 1;
-  if (!sp_streq(ty, "CallNode")) return 0;
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int rv = nt_ref(nt, id, "receiver");
   if (!nm || !sp_streq(nm, "[]") || nt_ref(nt, id, "block") >= 0) return 0;
@@ -29450,8 +29466,9 @@ static int push_arg_keeps_slot(Compiler *c, int id, TyKind art) {
   int n = 0; const int *av = call_args(nt, id, &n);
   if (n != 1 || !av) return 0;
   const char *ity = nt_type(nt, av[0]);
+  NodeKind ik = nt_kind(nt, av[0]);
   if (!ity) return 0;
-  if (sp_streq(ity, "IntegerNode")) return 1;
+  if (ik == NK_IntegerNode) return 1;
   return push_arg_var_read(nt, av[0]) && comp_ntype(c, av[0]) == TY_INT;
 }
 /* True if the push receiver at `recv` is a local or ivar read and every
@@ -29752,8 +29769,8 @@ int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kw
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ta, ta);
   for (int k = 0; k < argc; k++) {
     Buf ab; memset(&ab, 0, sizeof ab);
-    const char *aty = nt_type(nt, argv[k]);
-    if (aty && sp_streq(aty, "SplatNode")) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (ak == NK_SplatNode) {
       int sx = nt_ref(nt, argv[k], "expression");
       if (sx >= 0) emit_boxed(c, sx, &ab);
       int ts = ++g_tmp, ti = ++g_tmp;
@@ -30618,8 +30635,8 @@ int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!s || s->class_id < 0 || s->is_cmethod) return 0;
   int cid = s->class_id;
-  const char *ty = nt_type(nt, id);
-  int fwd = ty && sp_streq(ty, "ForwardingSuperNode");
+  NodeKind ty_k = nt_kind(nt, id);
+  int fwd = ty_k == NK_ForwardingSuperNode;
   int args = fwd ? -1 : nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (!fwd && argc < 1) return 0;
@@ -30891,9 +30908,9 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
      left unresolved rather than guessed (a public match is true either way). */
   int include_all = 0, foldable = 1;
   if (argc >= 2) {
-    const char *a1 = nt_type(nt, argv[1]);
-    if (a1 && sp_streq(a1, "TrueNode")) include_all = 1;
-    else if (a1 && sp_streq(a1, "FalseNode")) include_all = 0;
+    NodeKind a1_k = nt_kind(nt, argv[1]);
+    if (a1_k == NK_TrueNode) include_all = 1;
+    else if (a1_k == NK_FalseNode) include_all = 0;
     else foldable = 0;
   }
   const char *const *uni = respond_universal;
@@ -31015,12 +31032,12 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     resolved = 1;
   }
   if (!resolved) {
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     /* a constant that holds a user object answers as the object does */
-    int cobj = rty && sp_streq(rty, "ConstantReadNode") && ty_is_object(rt) &&
+    int cobj = rk == NK_ConstantReadNode && ty_is_object(rt) &&
                nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) < 0 &&
                builtin_class_id(nt_str(nt, recv, "name")) == 0;
-    if (rty && sp_streq(rty, "ConstantReadNode") && !cobj) {
+    if (rk == NK_ConstantReadNode && !cobj) {
       const char *rcn = nt_str(nt, recv, "name");
       int ci = comp_class_index(c, rcn);
       /* `Struct` and `Data` are core class objects with no user entry, and
@@ -31168,10 +31185,10 @@ int static_respond_to_cond(Compiler *c, int pred) {
   int args = nt_ref(nt, pred, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   if (ac < 1 || !av) return -1;
-  const char *aty = nt_type(nt, av[0]);
+  NodeKind ak = nt_kind(nt, av[0]);
   const char *qm = NULL;
-  if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, av[0], "value");
-  else if (aty && sp_streq(aty, "StringNode")) {
+  if (ak == NK_SymbolNode) qm = nt_str(nt, av[0], "value");
+  else if (ak == NK_StringNode) {
     qm = nt_str(nt, av[0], "content");
     if (!qm) qm = nt_str(nt, av[0], "unescaped");
   }
@@ -32158,8 +32175,8 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
       int has_nil = 0, spread = nt_argv_has_splat(nt, uargv, uargc) && nt_ref(nt, id, "block") < 0;
       for (int a = 0; a < uargc; a++) {
         TyKind at = comp_ntype(c, uargv[a]);
-        const char *anty = nt_type(nt, uargv[a]);
-        if (at == TY_NIL || (anty && sp_streq(anty, "NilNode"))) { has_nil = 1; break; }
+        NodeKind ank = nt_kind(nt, uargv[a]);
+        if (at == TY_NIL || (ank == NK_NilNode)) { has_nil = 1; break; }
       }
       if (has_nil && (urr.elem == TY_INT || urr.elem == TY_FLOAT) && !spread) {
         int en = 0; const int *elems = nt_arr(nt, urecv, "elements", &en);
@@ -32360,9 +32377,9 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
      from the match registers. $~ is a special regexp accessor rather than
      stored MatchData, so index it directly instead of char-indexing a string. */
   {
-    const char *rvty0 = recv >= 0 ? nt_type(nt, recv) : NULL;
-    int recv_is_tilde = rvty0 &&
-        (sp_streq(rvty0, "GlobalVariableReadNode") || sp_streq(rvty0, "BackReferenceReadNode")) &&
+    NodeKind rvty0_k = nt_kind(nt, recv);
+    int recv_is_tilde =
+        (rvty0_k == NK_GlobalVariableReadNode || rvty0_k == NK_BackReferenceReadNode) &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~");
     /* a Symbol or String key names a capture group, so resolve it through the
        MatchData face instead of coercing the key to an index (#3601) */

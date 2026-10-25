@@ -114,9 +114,9 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
   else {
     /* argv[0] is the mutex, argv[1] is the timeout */
     int to_arg = argv[1];
-    const char *aty = nt_type(c->nt, to_arg);
+    NodeKind ak = nt_kind(c->nt, to_arg);
     Repr tr = repr_of(c, to_arg);
-    if (aty && sp_streq(aty, "IntegerNode") &&
+    if (ak == NK_IntegerNode &&
         (int)nt_int(c->nt, to_arg, "value", 0) == 0) {
       buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_condvar_mutex_arg(c, argv[0], b);
       buf_puts(b, "); })");
@@ -231,13 +231,13 @@ int emit_op_queue_pop(Compiler *c, const BopCtx *x, Buf *b) {
     /* Keep the literal non_block cases on their direct runtime arms. A
        false/nil literal means blocking; true means no_wait. */
     if (!timed && pos_argc == 1) {
-      const char *aty = nt_type(nt, argv[0]);
-      if (aty && (sp_streq(aty, "FalseNode") || sp_streq(aty, "NilNode"))) {
+      NodeKind ak = nt_kind(nt, argv[0]);
+      if (ak == NK_FalseNode || ak == NK_NilNode) {
         int q = ++g_tmp;
         buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Queue_pop(_q%d); })", q); return 1;
       }
-      if (aty && sp_streq(aty, "TrueNode")) {
+      if (ak == NK_TrueNode) {
         int q = ++g_tmp;
         buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Queue_pop_nb(_q%d); })", q); return 1;
@@ -391,8 +391,8 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (bbn > 0 && !via_next) {
       Repr ltyr = repr_of(c, bbb[bbn-1]);
       TyKind lty = ltyr.as_ty;
-      const char *lnty = nt_type(nt, bbb[bbn-1]);
-      int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
+      NodeKind lnk = nt_kind(nt, bbb[bbn - 1]);
+      int nil_lit = (lty == TY_NIL && lnk == NK_NilNode);
       int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));
       if (scalar && can_expr) {
         /* The tail is emitted as an EXPRESSION, and an expression's

@@ -268,10 +268,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                !bare_call_class_owned(c, id));
   if (!kconv && recv >= 0) {
     TyKind krt = comp_ntype(c, recv);
-    const char *krty = nt_type(nt, recv);
-    int krecv_ok = krty &&
-        (sp_streq(krty, "LocalVariableReadNode") ||
-         sp_streq(krty, "InstanceVariableReadNode") || sp_streq(krty, "SelfNode"));
+    NodeKind krk = nt_kind(nt, recv);
+    int krecv_ok =
+        (krk == NK_LocalVariableReadNode ||
+         krk == NK_InstanceVariableReadNode || krk == NK_SelfNode);
     int kname_ok = sp_streq(name, "Integer") || sp_streq(name, "Float") ||
         sp_streq(name, "String") || sp_streq(name, "Array") ||
         sp_streq(name, "Hash") ||
@@ -296,15 +296,15 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        slot as a pointer (#3718). */
     int kconv_noraise = 0;
     if (ac > 0 && (is_numeric_class_name(name))) {
-      const char *lty = nt_type(nt, av[ac - 1]);
-      if (lty && sp_streq(lty, "KeywordHashNode")) {
+      NodeKind lk = nt_kind(nt, av[ac - 1]);
+      if (lk == NK_KeywordHashNode) {
         int en = 0; const int *el = nt_arr(nt, av[ac - 1], "elements", &en);
         for (int e = 0; e < en; e++) {
           int k = nt_ref(nt, el[e], "key"), v = nt_ref(nt, el[e], "value");
-          const char *kt = k >= 0 ? nt_type(nt, k) : NULL;
-          const char *kn = (kt && sp_streq(kt, "SymbolNode")) ? nt_str(nt, k, "value") : NULL;
-          const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
-          if (kn && sp_streq(kn, "exception") && vt && sp_streq(vt, "FalseNode"))
+          NodeKind kk = nt_kind(nt, k);
+          const char *kn = (kk == NK_SymbolNode) ? nt_str(nt, k, "value") : NULL;
+          NodeKind vt_k = nt_kind(nt, v);
+          if (kn && sp_streq(kn, "exception") && vt_k == NK_FalseNode)
             kconv_noraise = 1;
         }
         ac--;   /* the rest of this arm counts positionals only */
@@ -686,8 +686,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         return 1;
       }
       if (a0r.range == TY_INT) {
-        const char *atype = nt_type(nt, av[0]);
-        int islit = atype && sp_streq(atype, "RangeNode");
+        NodeKind atype_k = nt_kind(nt, av[0]);
+        int islit = atype_k == NK_RangeNode;
         int lo = islit ? nt_ref(nt, av[0], "left") : -1;
         int hi = islit ? nt_ref(nt, av[0], "right") : -1;
         /* an endless/beginless range has no finite span -> Errno::EDOM (#2544) */
@@ -1377,8 +1377,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   {
     int is_trap = (recv < 0 && sp_streq(name, "trap") && !bare_call_class_owned(c, id));
     if (!is_trap && recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
-      const char *rty2 = nt_type(nt, recv);
-      if (rty2 && (sp_streq(rty2, "ConstantReadNode") || sp_streq(rty2, "ConstantPathNode"))) {
+      NodeKind rty2_k = nt_kind(nt, recv);
+      if (rty2_k == NK_ConstantReadNode || rty2_k == NK_ConstantPathNode) {
         const char *rn = nt_str(nt, recv, "name");
         if (rn && sp_streq(rn, "Signal")) is_trap = 1;
       }
@@ -1413,8 +1413,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
      validation (#2743, #2746, #2747, #2765, #2766, #2773). */
   {
     int erecv = nt_ref(nt, id, "receiver");
-    const char *erty = erecv >= 0 ? nt_type(nt, erecv) : NULL;
-    const char *ern = (erty && sp_streq(erty, "ConstantReadNode")) ? nt_str(nt, erecv, "name") : NULL;
+    NodeKind erk = nt_kind(nt, erecv);
+    const char *ern = (erk == NK_ConstantReadNode) ? nt_str(nt, erecv, "name") : NULL;
     if (ern && sp_streq(ern, "ENV")) {
       const char *enm = nt_str(nt, id, "name");
       int eac = 0; const int *eav = call_args(nt, id, &eac);
@@ -1629,8 +1629,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
   /* ENV[key] -> getenv */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+    NodeKind rty2_k = nt_kind(nt, recv);
+    if (rty2_k == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         buf_puts(b, "sp_env_str(getenv("); emit_env_str(c, argv[0], 0, b); buf_puts(b, "))");
@@ -1640,13 +1640,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
   /* ENV[key] = value -> setenv (value nil unsets, like CRuby) */
   if (recv >= 0 && sp_streq(name, "[]=") && argc == 2) {
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+    NodeKind rty2_k = nt_kind(nt, recv);
+    if (rty2_k == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         TyKind evt = comp_ntype(c, argv[1]);
-        const char *v1ty = nt_type(nt, argv[1]);
-        int lit_nil = v1ty && sp_streq(v1ty, "NilNode");
+        NodeKind v1k = nt_kind(nt, argv[1]);
+        int lit_nil = v1k == NK_NilNode;
         if (evt == TY_STRING || lit_nil) {
           int tk = ++g_tmp, tv = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = ", tk); emit_str_expr(c, argv[0], b);
@@ -1676,8 +1676,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* ENV.size/count/length -> environ entry count */
   if (recv >= 0 && argc == 0 &&
       is_count_alias(name)) {
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+    NodeKind rty2_k = nt_kind(nt, recv);
+    if (rty2_k == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         buf_puts(b, "sp_env_size()");
@@ -1688,8 +1688,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* ENV.key?/has_key?/include?/member?(key) -> getenv presence test */
   if (recv >= 0 && argc == 1 &&
       is_key_query(name)) {
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+    NodeKind rty2_k = nt_kind(nt, recv);
+    if (rty2_k == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         buf_puts(b, "(getenv("); emit_env_str(c, argv[0], 0, b); buf_puts(b, ") != NULL)");
@@ -1699,8 +1699,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
   /* ENV.fetch(key, default) -> getenv with fallback */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 1) {
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+    NodeKind rty2_k = nt_kind(nt, recv);
+    if (rty2_k == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         /* The call's type is String joined with the default's: a String or
