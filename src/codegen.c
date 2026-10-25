@@ -1906,7 +1906,15 @@ void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
    #to_s. The #to_str protocol of the String slots is the wrong one here. */
 void emit_to_s_expr(Compiler *c, int node, Buf *b) {
   TyKind wt = comp_ntype(c, node);
-  if (wt == TY_STRING) { emit_expr(c, node, b); return; }
+  /* (one representation: a read of a slot that hands on its live handle,
+     Repr.handle, is the handle, where the payload slot takes the bytes;
+     SP_STR_B resolves the face on the expression's C type) */
+  if (wt == TY_STRING) {
+    if (g_one_string) buf_puts(b, "SP_STR_B(");
+    emit_expr(c, node, b);
+    if (g_one_string) buf_puts(b, ")");
+    return;
+  }
   /* An UNTYPED node is not a boxed value, and emit_boxed renders one as
      `(expr, sp_box_nil())` -- it evaluates the payload and then throws it
      away. `@wrk.pack("C*")` on a nilable ivar is a const char * typed
