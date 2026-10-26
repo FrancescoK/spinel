@@ -11,8 +11,7 @@
 # `# case <id>:`), flags(cases) and shape(case), and
 # optionally diff_kind(want, got, case), random_cases(n, seed, only) (its
 # cases for --random, in place of pinned_cases of random_rows), FIXED
-# (factors a reduction never steps), SPLIT (a factor the summary counts the
-# cases and findings of each level of) and REFUSAL (the lines of the
+# (factors a reduction never steps) and REFUSAL (the lines of the
 # refusals its programs meet that say neither "unsupported" nor "is not
 # supported"). A probe names,
 # beside it, the lines CRuby prints when a generated program reads a name
@@ -920,7 +919,6 @@ module ProbeCommon
         s << "  #{l}: #{weight(fs)}"
       end
       s << ""
-      s.concat(split_counts(cases)) if @gen.const_defined?(:SPLIT, false)
       s << "wrong answers by factor level (cases with one / cases with the level):"
       @gen::FACTORS.each do |f, levels|
         cells = levels.filter_map do |l|
@@ -931,26 +929,6 @@ module ProbeCommon
         s << "  #{f}: #{cells.join(", ")}"
       end
       s.join("\n") + "\n"
-    end
-
-    # A generator's SPLIT factor (the share probe's mode, each row of which
-    # runs in every level): the cases of each level, how many of them agree
-    # with CRuby, and the findings of each tier and label among them.
-    def split_counts(cases)
-      f = @gen::SPLIT
-      s = ["by #{f}:"]
-      @gen::FACTORS.to_h.fetch(f).each do |l|
-        mine = cases.count { |c| c.realized[f] == l }
-        next if mine.zero?
-        fs = @findings.select { |x| x.c.realized[f] == l }
-        by = fs.group_by { |x| tier(x) }
-        labels = fs.group_by(&:label).sort_by { |_, xs| -weight(xs) }.map { |x, xs| "#{x} #{weight(xs)}" }
-        s << format("  %s: %d cases, %d match, %d wrong, %d refused, %d documented%s", l, mine,
-                    mine - fs.map { |x| x.c.id }.uniq.size, weight(by.fetch("wrong", [])),
-                    weight(by.fetch("refused", [])), weight(by.fetch("documented", [])),
-                    labels.empty? ? "" : " (#{labels.join(", ")})")
-      end
-      s + [""]
     end
 
     # The findings by tier, then by the difference they make (a family), then
@@ -1058,8 +1036,8 @@ module ProbeCommon
     Thread.report_on_exception = false # a worker's failure is reported once, below
     begin
       if random
-        # a generator that numbers its own cases (the share probe's two
-        # modes a row) gives its random ones itself
+        # a generator that numbers its own cases (the share probe, by a
+        # row's place in the draw) gives its random ones itself
         cases = if gen.respond_to?(:random_cases) then gen.random_cases(random, seed, only)
                 else gen.pinned_cases(gen.random_rows(random, seed), only)
                 end

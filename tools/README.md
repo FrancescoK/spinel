@@ -323,11 +323,8 @@ where the other name must not see the mutation), the mutation (`<<`,
 `sub!`, `squeeze!`, `clear`, `force_encoding`, `prepend`), the name it goes
 through, the read (`p`, `equal?`, `object_id ==`, `frozen?`, `size`), how
 the String is made (`+` of a literal, an interpolation, or a frozen
-literal, which each mutation refuses with FrozenError), and the mode. Every
-row runs in both modes, with and without `--share-strings`, and the summary
-counts each label per mode (`by mode:`); the flag does nothing now, so the
-two modes compile the same C. CRuby runs the programs with
-frozen literals, as `ruby --enable-frozen-string-literal` runs the corpus.
+literal, which each mutation refuses with FrozenError). CRuby runs the
+programs with frozen literals, as `ruby --enable-frozen-string-literal` runs the corpus.
 Each case prints the read before and after the mutation, the mutation's
 outcome, then `p` of both names (and their encodings after
 `force_encoding`), so a finding's kind names that last line when it
@@ -335,9 +332,8 @@ differs (`value: value@0` is a mutation the holder did not see), else the
 first line that differs (`before: value` is an identity read). `--shard I/N`
 keeps every N-th row from the I-th (0-based) under the case numbers of the
 whole run, so a case file names the same case in every shard. A pairwise
-run (the default) is 1,248 cases, taking all 2,283 pairs of levels; a
-strength-1 run is 96 cases, about two minutes at `--jobs 2` with the
-reduction (half a minute without) on a loaded machine. A refusal that
+run (the default) is 624 cases, taking all 2,117 pairs of levels, about
+15 seconds at `--jobs 2`; a strength-1 run is 48 cases. A refusal that
 names the route ("(a String is not yet shared by reference through ...)")
 counts as one, in the `refused` tier. Like the other probes it is a probe to run
 by hand, not a gate.

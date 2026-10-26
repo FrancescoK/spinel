@@ -5,14 +5,12 @@
 #
 # A case is one row of FACTORS: what holds a mutable String first, the
 # route that carries it to a second name, the mutation made through one of
-# the two names, the read that observes them, how the String was made, and
-# whether spinel compiles the program with --share-strings.
+# the two names, the read that observes them, and how the String was made.
 #
 # In CRuby every name a String reaches holds the same object, so a mutation
-# through one name is seen through every other. Spinel copies a String by
-# default and refuses the programs whose answer a copy would change; under
-# --share-strings (#6765) a String the share facts share is held as one
-# `sp_String *` handle by every holder. Its answer is wrong wherever some
+# through one name is seen through every other. Spinel holds every String
+# as one `sp_String *` handle in every holder (#9258). Its answer is wrong
+# wherever some
 # value route between two holders passes a copy instead of the handle: the
 # mutation through one name is then lost to the other, without a word.
 # Such routes were found one at a time by hand (`then`, `tap`, a `begin`
@@ -38,10 +36,6 @@
 # of the line that differs: the last `p` when it does (`value: value@1` is
 # a mutation through the holder the second name did not see), else the
 # first line that differs.
-#
-# Every row is also compiled in the other mode (share_probe.rb runs each
-# case with and without --share-strings), so a finding's `mode` says whether
-# the answer is wrong under the flag, without it, or both.
 
 require "prism"
 require_relative "probe_common"
@@ -82,20 +76,15 @@ module ShareGen
     # a frozen literal, which every mutation refuses with FrozenError and a
     # copying route answers unfrozen.
     [:origin, %w[plus_lit interp frozen]],
-    # share: compiled with --share-strings; plain: without
-    [:mode, %w[share plain]],
   ].freeze
   NAMES = FACTORS.map(&:first).freeze
   # The first level of each factor is its simplest; reducing a case walks
   # factors toward it.
   SIMPLEST = FACTORS.to_h { |f, l| [f, l[0]] }.freeze
-  # The factor the summary counts each label under (probe_common.rb).
-  SPLIT = :mode
   # The refusals of a String the compiler cannot share yet, which name the
-  # route and say neither "unsupported" nor "is not supported": without the
-  # flag, a route that would copy ("(a String is not yet shared by reference
-  # through ...)"), and under it, a holder that cannot be the handle.
-  REFUSAL = /^spinel: .*(?:is not yet shared by reference|under --share-strings, the Strings? )/
+  # route and say neither "unsupported" nor "is not supported": a route that
+  # would copy ("(a String is not yet shared by reference through ...)").
+  REFUSAL = /^spinel: .*is not yet shared by reference/
 
   MUTATIONS = {
     "append" => "%s << \"x\"", "concat" => "%s.concat(\"y\")", "replace" => "%s.replace(\"zz\")",
@@ -117,14 +106,13 @@ module ShareGen
     attr_accessor :shard
   end
 
-  # Every row in both modes, the share mode first and the plain one next
-  # to it, numbered in that order (row k's cases are 2k+1 and 2k+2): the
-  # covering array's rows, and those its pairs added, or N random rows
-  # (random_cases, which probe_common.rb asks for --random in place of
-  # pinned_cases, whose numbering from 1 would undo this). With mode
-  # pinned, only that mode, row k's case k+1. A covering row that takes the
-  # pinned levels of a row before it is that row again and is left out
-  # before the rows are numbered; a random row is numbered by its place in
+  # The case of each row, row k numbered k+1: the covering array's rows,
+  # and those its pairs added, or N random rows (random_cases, which
+  # probe_common.rb asks for --random in place of pinned_cases, whose
+  # numbering would not keep a repeated row's number unused). A covering
+  # row that takes the pinned levels of a row before it is that row again
+  # and is left out before the rows are numbered; a random row is numbered
+  # by its place in
   # the sample, and one that repeats an earlier sample (with --only, many
   # do) is left out with its numbers unused, so a draw's later rows keep
   # theirs. A shard keeps every N-th row from the I-th on, under the
@@ -132,29 +120,26 @@ module ShareGen
   # shard and run of one seed.
   def self.covering_cases(t, seed, tries = 100, only = {}, also = [])
     cases, *counts = super
-    [both_modes(cases.map { |c| c.realized.merge(only).except(:mode) }.uniq, only), *counts]
+    [numbered(cases.map { |c| c.realized.merge(only) }.uniq, only), *counts]
   end
 
   def self.random_cases(n, seed, only)
     rows = random_rows(n, seed)
-    cases = both_modes(rows, only)
+    cases = numbered(rows, only)
     raise ArgumentError, "no case takes #{only.map { |f, l| "#{f}=#{l}" }.join(",")}" if cases.empty?
-    left = n - rows.map { |r| r.merge(only).except(:mode) }.uniq.size
+    left = n - rows.map { |r| r.merge(only) }.uniq.size
     warn "share_gen: #{left} of the #{n} random rows repeat an earlier one and are left out" if left.positive?
     cases
   end
 
-  # The cases of `rows` in each mode, row k numbered by its place: a row
-  # that repeats one before it, its mode aside, is left out.
-  def self.both_modes(rows, only)
-    modes = only[:mode] ? [only[:mode]] : FACTORS.to_h[:mode]
-    rows = rows.map { |r| r.merge(only).except(:mode) }
+  # The cases of `rows`, row k numbered by its place: a row that repeats
+  # one before it is left out.
+  def self.numbered(rows, only)
+    rows = rows.map { |r| r.merge(only) }
     first = {}
     rows.each_with_index { |r, k| first[r] ||= k }
     keep = (0...rows.size).select { |k| first[rows[k]] == k && (!shard || k % shard[1] == shard[0]) }
-    keep.flat_map do |k|
-      modes.each_with_index.map { |m, j| render(k * modes.size + j + 1, rows[k].merge(mode: m)) }
-    end
+    keep.map { |k| render(k + 1, rows[k]) }
   end
 
   module_function
@@ -314,20 +299,15 @@ module ShareGen
     Case.new(id, real, src)
   end
 
-  # The flags spinel compiles `cases` with: one program is one mode.
-  def flags(cases)
-    modes = cases.map { |c| c.realized[:mode] }.uniq
-    raise GeneratorError, "the cases of one program take one mode" unless modes.size == 1
-    modes[0] == "share" ? ["--share-strings"] : []
+  # The flags spinel compiles `cases` with: none.
+  def flags(_cases)
+    []
   end
 
   # The cases as one program, under CRuby's frozen string literals (the
-  # oracle is `ruby --enable-frozen-string-literal`). The probe compiles one
-  # mode to a program; the generator's own listing (`any_mode`) is the CRuby
-  # program of them all, each case's mode in its shape.
-  def program(cases, any_mode = false)
-    fl = any_mode ? [] : flags(cases)
-    src = "# frozen_string_literal: true\n" + (fl.empty? ? "" : "# spinel #{fl.join(" ")}\n") +
+  # oracle is `ruby --enable-frozen-string-literal`).
+  def program(cases)
+    src = "# frozen_string_literal: true\n" +
           cases.map { |c| "# case #{c.id}: #{shape(c)}\n" + c.src }.join("\n")
     raise GeneratorError, "a generated program does not parse" unless Prism.parse(src).errors.empty?
     src
@@ -386,5 +366,5 @@ if $PROGRAM_NAME == __FILE__
     warn "#{cs.size} cases, taking #{got} of #{want} #{strength}-way combinations"
   end
   cs = cs.select { |c| c.id == id } if id
-  print ShareGen.program(cs, true)
+  print ShareGen.program(cs)
 end
