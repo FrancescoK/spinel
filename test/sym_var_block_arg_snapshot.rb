@@ -46,3 +46,13 @@ p [1, 2, 3].reduce(&op)
 def f(sym) = ["xY"].map(&sym)
 p f(:upcase)
 p f("down#{"case"}".to_sym)
+
+# an operand ahead of `&s` that rebinds s: s is read in its turn, after it
+def m1(a, &b) = [a, b.call("aB")]
+w = :upcase
+p m1((w = :downcase), &w)
+def m3(a, b, &blk) = [a, b, blk.call("cD")]
+x = :upcase
+p m3(x, (x = :downcase), &x)
+y = :upcase
+p m3(y, [y = :swapcase][0], &y)
