@@ -8,12 +8,13 @@
 #
 # Each required file's top level runs at its require, once, with locals of
 # its own: every test/load_graph program with an .expected prints what
-# CRuby prints (the others are the files they require). What graph mode
-# does not compile yet it refuses by name: a require below a file's top
-# level or one naming no file, an autoload, a load of the entry file, an
-# END block or a write of main's instance variable in a required file, and
-# a prepend after a require of a file that runs code. A required file that
-# only defines things costs no C.
+# CRuby prints and exits as CRuby does, 0 unless a `# spinel: exit N` line
+# in its first lines gives N (the others are the files they require).
+# What graph mode does not compile yet it refuses by name: a require below
+# a file's top level or one naming no file, an autoload, a load of the
+# entry file, an END block or a write of main's instance variable in a
+# required file, and a prepend after a require of a file that runs code. A
+# required file that only defines things costs no C.
 #
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
@@ -84,10 +85,13 @@ loads boot 3 set=packages/set/set.rb builtins/enumerable=builtins/enumerable.rb 
 for e in test/load_graph/*.rb.expected; do
   t=${e%.expected}
   b=$(basename "$t" .rb)
+  want=$(sed -n '1,5s/^# spinel: exit \([0-9][0-9]*\)$/\1/p' "$t")
   if "$SPINEL" --load-model=graph "$t" -o "$tmp/$b" >"$tmp/$b.c.out" 2>&1; then
     "$tmp/$b" >"$tmp/$b.run" 2>/dev/null
+    got=$?
     cmp -s "$tmp/$b.run" "$e" ||
       { fail "$t does not print its .expected"; diff "$e" "$tmp/$b.run" | sed -n 1,10p; }
+    [ "$got" -eq "${want:-0}" ] || fail "$t exits $got, not ${want:-0}"
   else
     fail "$t did not compile"; sed -n 1,5p "$tmp/$b.c.out"
   fi

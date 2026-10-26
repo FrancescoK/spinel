@@ -160,6 +160,8 @@ and coercions; not every handwritten argument or element store uses it.
     A rejection marker followed by `: text` supplies the literal diagnostic
     text to match. In `test/defer/`, `# spinel: defer-refusals: count:output`
     gives the refusal count and stdout, with output lines separated by spaces.
+    In `test/load_graph/`, `# spinel: exit N` gives the exit status a
+    program's run ends with (0 without it).
     The ordinary corpus, `test/share/*.rb`, `test/share_strings_*.rb` and
     `test/share/refuse/*.rb` are still discovered by name. Keep `int64` on
     its own first line when needed; platform and overflow exclusions still
