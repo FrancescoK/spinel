@@ -1628,14 +1628,21 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
     const char *tn = nt_str(nt, nid, "name");
     if (!tn) continue;
     int recv = nt_ref(nt, nid, "receiver");
-    int tmi = -1;
-    if (recv < 0) tmi = comp_self_call_mi(c, nid, tn);
+    int tmi = -1, cls = -1;
+    if (recv < 0) {
+      tmi = comp_self_call_mi(c, nid, tn);
+      if (!m->is_cmethod) cls = m->class_id;
+    }
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, ty_object_class(rt), tn, NULL);
+      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, cls = ty_object_class(rt), tn, NULL);
     }
     if (tmi < 0 || tmi == mi) continue;
     Scope *t = &c->scopes[tmi];
+    /* not spliced despite yielding: the cls_id dispatch hands the block to the proc-form clone */
+    if (cls >= 0 && !t->is_cmethod && scope_proc_form_of(c, tmi) >= 0 &&
+        dispatch_impl_count(c, cls, tn) > 1)
+      return 1;
     if (!t->blk_param) continue;
     if (!t->yields && t->blk_param[0]) return 1;
     if (a_scope_forwards_block_to_keeper(c, tmi, depth + 1)) return 1;
@@ -1764,6 +1771,8 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
       mi = comp_method_in_chain(c, self->class_id, name, NULL);
       if (!self->is_cmethod) cls = self->class_id;
     }
+    /* the class chain misses a top-level def, which a bare call still reaches */
+    if (mi < 0) mi = comp_method_index(c, name);
   }
   else {
     TyKind rt = infer_type(c, recv);
