@@ -2410,6 +2410,7 @@ const void *view_conversion(Compiler *c, int *node);
 int view_push_target(Compiler *c, int node, const char *name);
 const char *view_call_name(Compiler *c, int node);
 int emit_delegated_equality(Compiler *c, int id, int negate, Buf *b);
+int view_type_top(int node, TyKind *kind);   /* the open type view on node, if any */
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
 /* node `id`'s type with no view open, asked without recording it (codegen_util.c) */

@@ -2042,6 +2042,13 @@ int hash_enum_redispatch(Compiler *c, int id) {
     return 1;
   /* blockless each_with_index: an external Enumerator of [[k, v], i] */
   if (block < 0 && sp_streq(name, "each_with_index")) return 1;
+  /* blockless cycle: an Enumerator over the materialized pairs (T4) */
+  if (block < 0 && sp_streq(name, "cycle")) return 1;
+  /* blockless each_slice / each_cons on a yield (T4): a Hash site beside an
+     Array site on one yield rides the pair-array redispatch. A typed Hash
+     receiver keeps its own enumerator, whose each answers the Hash (CRuby). */
+  if (block < 0 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      nt_ref(nt, id, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_YieldNode) return 1;
   /* inject(:op) / reduce(:op): the Symbol-operator fold runs over the [k, v]
      pairs, the same materialization the block form below rides (#3830) */
   if (block < 0 && (is_reduce_alias(name))) return 1;
