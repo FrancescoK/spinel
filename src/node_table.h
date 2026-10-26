@@ -183,6 +183,7 @@ void nt_free(NodeTable *nt);
    Appends nodes and grows nt->count -- parallel per-node arrays must be
    resized to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root);
+void nt_subtree_blank(NodeTable *nt, int id);   /* every node of the subtree a NilNode */
 void nt_swap_nodes(NodeTable *nt, int a, int b);
 /* Copy the subtree at root of src into dst; the new root's id, or -1. */
 int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root);
