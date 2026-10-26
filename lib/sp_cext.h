@@ -11,6 +11,9 @@ void sp_cext_hash_set(sp_RbVal, sp_RbVal, sp_RbVal);
 sp_int sp_cext_object_to_int(sp_RbVal);
 int sp_cext_type(sp_RbVal, int (*)(int));
 sp_RbVal sp_cext_hash_get(sp_RbVal, sp_RbVal);
+int sp_cext_hidden_defined(sp_RbVal, sp_sym);
+sp_RbVal sp_cext_hidden_get(sp_RbVal, sp_sym);
+void sp_cext_hidden_set(sp_RbVal, sp_sym, sp_RbVal);
 
 /* Internal bridge. The compiler/recorder will use this only for opted-in
  * extensions; an ordinary generated translation unit never includes it. */

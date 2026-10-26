@@ -82,6 +82,48 @@ sp_RbVal sp_cext_hash_get(sp_RbVal hash, sp_RbVal key) {
     sp_raise_cls("TypeError", "expected a Hash");
   return sp_poly_index_poly(hash, key);
 }
+/* A C extension's hidden instance variables: a name rb_iv_set takes without
+   the @ (sqlite3's "-instances"), which CRuby keeps where no Ruby code reads
+   it. They live in a Hash of the object's own beside its Ruby ivars
+   (sp_ivtbl_hidden_put), keyed as a builtin value's ivars are, and a program
+   object by its address. */
+static const void *sp_cext_hidden_key(sp_RbVal o) {
+  if (o.tag == SP_TAG_OBJ && o.v.p && o.cls_id >= 0) return o.v.p;
+  return sp_bivar_key(o);
+}
+static sp_PolyPolyHash *sp_cext_hidden_table(sp_RbVal o) {
+  const void *key = sp_cext_hidden_key(o);
+  return key ? (sp_PolyPolyHash *)sp_ivtbl_hidden_get(key) : NULL;
+}
+int sp_cext_hidden_defined(sp_RbVal o, sp_sym name) {
+  sp_PolyPolyHash *t = sp_cext_hidden_table(o);
+  return t && sp_PolyPolyHash_has_key(t, sp_box_sym(name));
+}
+sp_RbVal sp_cext_hidden_get(sp_RbVal o, sp_sym name) {
+  sp_PolyPolyHash *t = sp_cext_hidden_table(o);
+  if (!t || !sp_PolyPolyHash_has_key(t, sp_box_sym(name))) return sp_box_nil();
+  return sp_PolyPolyHash_get(t, sp_box_sym(name));
+}
+void sp_cext_hidden_set(sp_RbVal o, sp_sym name, sp_RbVal value) {
+  if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
+    SP_GC_ROOT_RBVAL(o);
+    const char *what = sp_str_concat((&("\xff" "can't modify frozen ")[1]), sp_poly_class_name(o));
+    SP_GC_ROOT_STR(what);
+    sp_raise_frozen_obj(o, what);
+  }
+  const void *key = sp_cext_hidden_key(o);
+  if (!key)
+    sp_raise_cls("NotImplementedError",
+                 sp_sprintf("a hidden instance variable on a %s is not supported: the value keeps no identity "
+                            "for the variable to live on", sp_poly_class_name(o)));
+  SP_GC_ROOT_RBVAL(o); SP_GC_ROOT_RBVAL(value);
+  sp_PolyPolyHash *t = (sp_PolyPolyHash *)sp_ivtbl_hidden_get(key);
+  if (!t) {
+    t = sp_PolyPolyHash_new();
+    sp_ivtbl_hidden_put(key, t);
+  }
+  sp_PolyPolyHash_set(t, sp_box_sym(name), value);
+}
 void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
   if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
     sp_raise_cls("TypeError", "expected a widened Hash");

@@ -198,6 +198,7 @@ long sp_cext_array_len(VALUE);
 
 extern VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 extern VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+extern VALUE rb_eNotImpError;
 VALUE rb_protect(VALUE (*)(VALUE), VALUE, int *);
 VALUE rb_ensure(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE), VALUE);
 VALUE rb_rescue(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE, VALUE), VALUE);

@@ -88,7 +88,10 @@ module CextRecord
   end
 
   SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_block_call
-               rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_const_get rb_const_get_at rb_eval_string].freeze
+               rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_ivar_defined rb_const_get rb_const_get_at rb_eval_string].freeze
+  # A name without the @ is a hidden ivar (sqlite3's "-instances"): kept where
+  # no Ruby code reads it, so it needs no stub.
+  HIDDEN_IVAR = /\A-[A-Za-z_][A-Za-z_0-9]*\z/
   DYNAMIC_IDS = %w[rb_to_id rb_check_id rb_sym2id].freeze
   # SYM2ID of a Symbol the program made: a call through that ID is sent as
   # Ruby sends a computed name, over the methods the program defines.
@@ -125,7 +128,14 @@ module CextRecord
         arities << arity
       when "rb_iv_get", "rb_iv_set"
         raise Refusal, "#{t}: invalid argument count" unless args.length == (t == "rb_iv_get" ? 2 : 3)
-        ivars << c_string(args[1], t)
+        name = c_string(args[1], t)
+        ivars << name unless name.match?(HIDDEN_IVAR)
+      when "rb_ivar_defined"
+        raise Refusal, "rb_ivar_defined: invalid argument count" unless args.length == 2
+        id = args[1]
+        unless id.length == 4 && id[0] == "rb_intern" && id[1] == "(" && id[3] == ")" && c_string([id[2]], t).match?(HIDDEN_IVAR)
+          raise Refusal, "rb_ivar_defined: only a literal hidden instance variable (rb_intern(\"-name\")) is supported"
+        end
       when "rb_eval_string"
         raise Refusal, "rb_eval_string: expected a literal string" unless args.length == 1
         evals << c_string(args[0], t)
@@ -396,7 +406,7 @@ module CextRecord
     manifest.fetch("evals", []).each { |code| lines << "__cext_eval(#{code.dump})" }
     lines << "__cext_constant_reads()" if manifest["constant_reads"]
     manifest["literal_ids"].each do |name|
-      next if name.start_with?("@")
+      next if name.start_with?("@") || name.match?(HIDDEN_IVAR)
       manifest["funcall_arities"].each { |arity| lines << "__cext_stub(0, #{name.dump}, #{arity})" }
       if manifest["constant_reads"] && name =~ /\A[A-Z][A-Za-z_0-9]*\z/
         lines << "__cext_stub(3, #{name.dump}, 0)"

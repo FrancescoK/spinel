@@ -1,0 +1,11 @@
+false
+nil
+true
+[1, "two"]
+[:@visible]
+false
+1
+["kept", "alive"]
+nil
+false
+FrozenError

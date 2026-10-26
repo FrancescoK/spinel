@@ -48,6 +48,7 @@ VALUE rb_iv_get(VALUE, const char *);
 VALUE rb_iv_set(VALUE, const char *, VALUE);
 VALUE rb_ivar_get(VALUE, ID);
 VALUE rb_ivar_set(VALUE, ID, VALUE);
+VALUE rb_ivar_defined(VALUE, ID);
 VALUE rb_const_get(VALUE, ID);
 VALUE rb_const_get_at(VALUE, ID);
 int rb_const_defined(VALUE, ID);

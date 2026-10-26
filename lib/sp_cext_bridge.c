@@ -544,10 +544,29 @@ VALUE rb_funcall(VALUE receiver, ID id, int argc, ...) {
     for (int i = 0; i < argc; i++) args[i] = va_arg(ap, VALUE);
     va_end(ap); return rb_funcallv(receiver, id, argc, args);
 }
-VALUE rb_iv_get(VALUE receiver, const char *name) { return dispatch(1, name, receiver, 0, NULL, NULL); }
-VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) { return dispatch(2, name, receiver, 1, &value, NULL); }
+/* A name without the @ ("-instances") is a hidden ivar, which no Ruby code
+   reads (sp_cext_hidden_set); the rest are the object's own, reached
+   through the program's ivar stubs. */
+static int hidden_ivar(const char *name) { return name && name[0] && name[0] != '@'; }
+VALUE rb_iv_get(VALUE receiver, const char *name) {
+    if (hidden_ivar(name)) return sp_cext_value(sp_cext_hidden_get(sp_cext_rbval(receiver), (sp_sym)rb_intern(name)));
+    return dispatch(1, name, receiver, 0, NULL, NULL);
+}
+VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) {
+    if (hidden_ivar(name)) {
+        sp_cext_hidden_set(sp_cext_rbval(receiver), (sp_sym)rb_intern(name), sp_cext_rbval(value));
+        return value;
+    }
+    return dispatch(2, name, receiver, 1, &value, NULL);
+}
 VALUE rb_ivar_get(VALUE receiver, ID id) { return rb_iv_get(receiver, rb_id2name(id)); }
 VALUE rb_ivar_set(VALUE receiver, ID id, VALUE value) { return rb_iv_set(receiver, rb_id2name(id), value); }
+VALUE rb_ivar_defined(VALUE receiver, ID id) {
+    const char *name = rb_id2name(id);
+    if (!hidden_ivar(name))
+        rb_raise(rb_eNotImpError, "rb_ivar_defined of a Ruby instance variable (%s) is not supported", name ? name : "?");
+    return sp_cext_hidden_defined(sp_cext_rbval(receiver), (sp_sym)id) ? Qtrue : Qfalse;
+}
 VALUE rb_const_get(VALUE receiver, ID id) { (void)class_name(receiver); return dispatch(3, rb_id2name(id), receiver, 0, NULL, NULL); }
 VALUE rb_const_get_at(VALUE receiver, ID id) { return rb_const_get(receiver, id); }
 VALUE rb_eval_string(const char *code) { return dispatch(4, code, Qnil, 0, NULL, NULL); }

@@ -34,6 +34,7 @@ VALUE rb_cObject, rb_cBasicObject, rb_cClass, rb_cModule;
 VALUE rb_cString, rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cIO;
 VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+VALUE rb_eNotImpError;
 
 static void refuse(const char *api, const char *why) SP_CEXT_NORETURN;
 static void refuse(const char *api, const char *why) {
@@ -133,6 +134,7 @@ void sp_cext_record_begin(const char *name) {
     BUILTIN(rb_eRuntimeError, "RuntimeError", 0); BUILTIN(rb_eTypeError, "TypeError", 0);
     BUILTIN(rb_eArgError, "ArgumentError", 0); BUILTIN(rb_eRangeError, "RangeError", 0);
     BUILTIN(rb_eNoMemError, "NoMemoryError", 0); BUILTIN(rb_eSystemCallError, "SystemCallError", 0);
+    BUILTIN(rb_eNotImpError, "NotImplementedError", 0);
 #undef BUILTIN
     for (Node *n=nodes; n; n=n->next) { n->builtin=1; bind(rb_cObject,n->name,(VALUE)n); }
 }
@@ -355,6 +357,7 @@ VALUE rb_iv_get(VALUE v, const char *s) { (void)v;(void)s;DENIED("rb_iv_get"); }
 VALUE rb_iv_set(VALUE v, const char *s, VALUE a) { (void)v;(void)s;(void)a;DENIED("rb_iv_set"); }
 VALUE rb_ivar_get(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_get"); }
 VALUE rb_ivar_set(VALUE v, ID id, VALUE a) { (void)v;(void)id;(void)a;DENIED("rb_ivar_set"); }
+VALUE rb_ivar_defined(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_defined"); }
 
 VALUE rb_block_call(VALUE v, ID id, int n, const VALUE *a, rb_block_call_func_t f, VALUE d) { (void)v;(void)id;(void)n;(void)a;(void)f;(void)d;DENIED("rb_block_call"); }
 VALUE rb_catch(const char *t,rb_block_call_func_t f,VALUE d) { (void)t;(void)f;(void)d;DENIED("rb_catch"); }

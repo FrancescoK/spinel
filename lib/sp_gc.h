@@ -592,6 +592,12 @@ void sp_oom_die(void);
    entry of an object it frees (lib/sp_gc.c). */
 void *sp_ivtbl_get(const void *obj);
 void sp_ivtbl_put(const void *obj, void *tbl);
+#ifdef SP_CEXT
+/* The same for the names a C extension sets without the @ (rb_iv_set(obj,
+   "-x", v)), in a table of their own no Ruby code reads (lib/sp_poly_cold.c) */
+void *sp_ivtbl_hidden_get(const void *obj);
+void sp_ivtbl_hidden_put(const void *obj, void *tbl);
+#endif
 /* the TU's rendering of an ivar table, for Random#inspect (set with the first table) */
 extern const char *(*sp_ivtbl_inspect_fn)(void *tbl);
 
