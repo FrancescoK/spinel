@@ -18,7 +18,8 @@
 # that must be a compile error and never an object, reproducible objects,
 # a corpus smoke, two builds sharing an empty cache, the prune, the
 # working directory in a -g build's key, a -g edit as local as a plain one,
-# and a directory spinel did not write left alone.
+# and a directory spinel did not write, or a file in a unit set it did not
+# list, left alone.
 #
 # Every build runs with SPINEL_INCREMENTAL_STRICT=1, so a split or unit
 # compile the fallback would hide fails here instead. The cache lives in
@@ -506,8 +507,23 @@ cp "$T/u18p/units.txt" "$T/d19b/units.txt"; echo "int mine;" > "$T/d19b/program.
 "$SP" "$SM" -c --incremental -o "$T/d19b" > "$T/d19b.err" 2>&1; rb=$?
 ka=0; grep -qx 'int mine;' "$T/d19a/program.c" && ka=1
 kb=0; grep -qx 'int mine;' "$T/d19b/program.c" && kb=1
-o=0; [ $ra != 0 ] && [ $rb != 0 ] && [ $ka = 1 ] && [ $kb = 1 ] && o=1
-report "19 a units.txt not of spinel's" $o "rc=$ra/$rb program.c-kept=$ka/$kb"
+na=$(grep -c "^spinel: refusing to write into '$T/d19a'" "$T/d19a.err")
+nb=$(grep -c "^spinel: refusing to write into '$T/d19b'" "$T/d19b.err")
+o=0; [ $ra != 0 ] && [ $rb != 0 ] && [ $ka = 1 ] && [ $kb = 1 ] && [ "$na" = 1 ] && [ "$nb" = 1 ] && o=1
+report "19 a units.txt not of spinel's" $o "rc=$ra/$rb refused=$na/$nb program.c-kept=$ka/$kb"
+
+# --- 20 a unit set written over ----------------------------------------------------
+# the units the previous unit set listed and this one does not are removed;
+# a unit_*.c it did not list stays
+cp -R "$T/u18p" "$T/d20"
+echo "int notes;" > "$T/d20/unit_notes.c"
+cp "$T/wb.rb" "$T/s18/prog.rb"
+"$SP" "$T/s18/prog.rb" -c --incremental -o "$T/d20" > "$T/d20.err" 2>&1; r=$?
+listed=$(awk 'NR>2' "$T/d20/units.txt" | grep -c '')
+files=$(find "$T/d20" -name 'unit_*.c' ! -name unit_notes.c | wc -l | tr -d ' ')
+kept=0; [ -f "$T/d20/unit_notes.c" ] && kept=1
+o=0; [ $r = 0 ] && [ "$listed" -gt 0 ] && [ "$files" = "$listed" ] && [ $kept = 1 ] && o=1
+report "20 a unit set written over" $o "rc=$r unit-files=$files listed=$listed unit_notes.c-kept=$kept"
 
 if [ $fail = 0 ]; then echo "incremental-test: pass"; else echo "incremental-test: FAILED:$failed"; fi
 exit $fail

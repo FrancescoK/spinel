@@ -60,28 +60,52 @@ static long long inc_copy(const char *from, const char *to) {
   return (bad | ferror(out) | (fclose(out) != 0)) ? -1 : n;
 }
 
-/* A unit file a previous split wrote and this one did not: removed, so the
-   directory holds the unit set units.txt lists and nothing else. Only when
-   a units.txt of spinel's was there before, which proves the unit files
-   are spinel's too (--force writes beside a directory's own files). */
-static void inc_remove_stale(const char *dir, const CSplitResult *res) {
-  DIR *d = opendir(dir);
-  if (!d) return;
-  struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
-    size_t l = strlen(e->d_name);
-    if (strncmp(e->d_name, "unit_", 5) != 0 || l < 7 || strcmp(e->d_name + l - 2, ".c") != 0) continue;
-    int keep = 0;
-    for (int k = 0; k < res->n && !keep; k++) {
-      const char *b = strrchr(res->units[k].path, '/');
-      keep = strcmp(b ? b + 1 : res->units[k].path, e->d_name) == 0;
+/* The units.txt a previous split wrote, read before this one replaces it:
+   NULL when there is none, or it is not spinel's. */
+static char *inc_prior_manifest(const char *manifest) {
+  if (!c_split_units_manifest(manifest)) return NULL;
+  FILE *f = fopen(manifest, "rb");
+  if (!f) return NULL;
+  size_t cap = 4096, n = 0, r;
+  char *t = malloc(cap);
+  while ((r = fread(t + n, 1, cap - n - 1, f)) > 0)
+    if ((n += r) == cap - 1) t = realloc(t, cap *= 2);
+  fclose(f);
+  t[n] = 0;
+  return t;
+}
+
+/* A unit file the previous split listed and this one did not write:
+   removed, so the directory holds the unit set units.txt lists. Only the
+   files the previous units.txt named go; a unit_*.c of anyone else's
+   beside them stays. */
+static void inc_remove_stale(const char *dir, const char *prior, const CSplitResult *res) {
+  const char *ln = prior;
+  for (int row = 0; ln && *ln; row++) {
+    const char *nl = strchr(ln, '\n');
+    const char *f = row >= 2 ? strchr(ln, ' ') : NULL;   /* label file hash ... */
+    if (f && (!nl || f < nl)) {
+      f++;
+      const char *fe = f;
+      while (*fe && *fe != ' ' && *fe != '\n') fe++;
+      char name[256];
+      size_t l = (size_t)(fe - f);
+      if (l >= 7 && l < sizeof name && !strncmp(f, "unit_", 5) && !memchr(f, '/', l)) {
+        memcpy(name, f, l); name[l] = 0;
+        int keep = 0;
+        for (int k = 0; k < res->n && !keep; k++) {
+          const char *b = strrchr(res->units[k].path, '/');
+          keep = strcmp(b ? b + 1 : res->units[k].path, name) == 0;
+        }
+        if (!keep && !strcmp(name + l - 2, ".c")) {
+          char p[4200];
+          snprintf(p, sizeof p, "%s/%s", dir, name);
+          remove(p);
+        }
+      }
     }
-    if (keep) continue;
-    char p[4200];
-    snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
-    remove(p);
+    ln = nl ? nl + 1 : NULL;
   }
-  closedir(d);
 }
 
 /* Preprocess c_path with the build's flags and split it into dir. 0, or
@@ -124,18 +148,21 @@ static int inc_write_dir(const char *flags, const char *c_path, const Incrementa
   char manifest[4200], prog[4200];
   snprintf(manifest, sizeof manifest, "%s/units.txt", dir);
   snprintf(prog, sizeof prog, "%s/program.c", dir);
-  int had_manifest = c_split_units_manifest(manifest);
+  char *prior = inc_prior_manifest(manifest);
   if (inc_copy(c_path, prog) < 0) {
     fprintf(stderr, "spinel: incremental: cannot write %s\n", prog);
+    free(prior);
     return -1;
   }
   CSplitResult res;
   const char *why = NULL;
   if (inc_presplit(flags, c_path, dir, o, &res, &why) != 0) {
     fprintf(stderr, "spinel: incremental: %s\n", why);
+    free(prior);
     return -1;
   }
-  if (had_manifest) inc_remove_stale(dir, &res);
+  if (prior) inc_remove_stale(dir, prior, &res);
+  free(prior);
   fprintf(stderr, "Wrote %s (%d units)\n", dir, res.n);
   c_split_result_free(&res);
   return 0;
