@@ -5092,6 +5092,14 @@ source-marker-test: $(SPINEL)
 magic-comment-test: $(SPINEL)
 	@tools/magic_comment_check.sh
 
+# Under --load-model=graph each require's LoadNode carries the file its own
+# call loads, and the libraries CRuby has at boot come first in load order
+# (#9898). make test runs it.
+.PHONY: load-graph-test
+test-run: load-graph-test
+load-graph-test: $(SPINEL)
+	@tools/load_graph_check.sh
+
 # SIGINT with no trap: an Interrupt in the main thread (test/signal_default_interrupt.rb),
 # and when nothing rescues it the ensure runs and the process ends by SIGINT, a parent reads 130 (#7202).
 signal-default-test: $(SPINEL)
