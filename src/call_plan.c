@@ -407,7 +407,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     cplan_resolve_poly(c, name, p, pcs, npc);
     return;
   }
-  if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
+  /* a reopening of the exception classes that defines the name stands for
+     the call; otherwise the call goes on to the Object fallback below */
+  if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); if (p->mi >= 0) return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
   /* a call written under a builtin alias (detect, collect_concat) that the
      desugar renamed to the builtin's own name reaches a reopen's method of
@@ -464,7 +466,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
-  const char *bcls = builtin_class_of_type(rt);
+  const char *bcls = object_fallback_class_of_type(rt);
   if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, name, p);
 }
 
