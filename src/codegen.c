@@ -578,6 +578,7 @@ void poll_pure_proto(Compiler *c, int si, Buf *b) {
 #include "call_plan.h"
 #include "repr.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* classes whose pool a proc or fiber body has declared, per program */
 static unsigned char *g_pool_fwd = NULL;
@@ -17910,6 +17911,22 @@ static int thread_current_only(const NodeTable *nt, int **par, int i) {
   for (int j = 0; qm && safe[j]; j++) if (sp_streq(qm, safe[j])) return 1;
   return 0;
 }
+/* Is loop node id's value one the program can see besides nil: a valued
+   break inside it? */
+static int loop_value_live(Compiler *c, int id) {
+  return loop_has_valued_break(c, nt_ref(c->nt, id, "statements"));
+}
+/* A position of a method's answer that holds a poly, Array or Hash value
+   (a jump the walk does not follow, or one it gave up on, may) */
+static int scan_ret_leaf_polyish(const VpLeaf *leaf, void *ud) {
+  Compiler *c = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  if (leaf->kind != VPK_EXPR) return 1;
+  NodeKind k = nt_kind(c->nt, leaf->node);
+  if ((k == NK_WhileNode || k == NK_UntilNode) && !loop_value_live(c, leaf->node)) return 0;
+  TyKind t = c->ntype[leaf->node];
+  return t == TY_POLY || ty_is_array(t) || ty_is_hash(t);
+}
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
@@ -18138,13 +18155,25 @@ static void scan_prologue_features(Compiler *c) {
       if (dsl && dsl[i]) continue;
       int si = c->nscope[i];
       if (si > 0 && si < c->nscopes && scope_types_unseen(c, si)) continue;
+      /* a value the program throws away (a loop's, a statement's, a
+         DSL call's like attr_reader's) is never handed to a renderer */
+      if (an_node_dropped(c, i)) continue;
+      /* a statement list's value is its last statement's, judged on its
+         own; a loop with no valued break answers nil */
+      NodeKind ik = nt_kind(nt, i);
+      if (ik == NK_StatementsNode || ((ik == NK_WhileNode || ik == NK_UntilNode) && !loop_value_live(c, i))) continue;
       SP_TT(c->ntype[i]);
     }
     free(dsl);
     free(par);
     for (int sc = 0; sc < c->nscopes; sc++) {
       if (sc > 0 && scope_types_unseen(c, sc)) continue;
-      SP_TT(c->scopes[sc].ret);
+      /* a method's answer is a value where some position of its body
+         answers one (a loop with no valued break, a missing else: nil) */
+      if (c->scopes[sc].ret == TY_POLY && sc > 0 && c->scopes[sc].body >= 0 &&
+          !for_each_value_position(nt, c->scopes[sc].body, VP_FOLLOW_RETURN | VPS_ALL, scan_ret_leaf_polyish, c))
+        ;
+      else SP_TT(c->scopes[sc].ret);
       for (int l = 0; l < c->scopes[sc].nlocals; l++) SP_TT(c->scopes[sc].locals[l].type);
     }
     for (int k = 0; k < c->nclasses; k++)
