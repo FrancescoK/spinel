@@ -22699,4 +22699,20 @@ static inline const char *sp_strface_write_through(const char *recv, const char 
 }
 #endif
 
+static SP_UNUSED sp_Time *sp_time_add_r(const sp_Time *t, sp_Rational offset, int subtract) {
+  int32_t ns;
+  int64_t seconds = sp_time_sec_split_r(offset, &ns);
+  sp_Time result = *t;
+  if (subtract) { result.tv_sec -= seconds; result.tv_nsec -= ns; }
+  else { result.tv_sec += seconds; result.tv_nsec += ns; }
+  return sp_time_ref(sp_timev_norm(result));
+}
+
+static SP_UNUSED sp_Time *sp_time_add_boxed(sp_Time *t, sp_RbVal offset, int subtract) {
+  if (sp_poly_is_rational(offset)) return sp_time_add_r(t, sp_poly_as_rational(offset), subtract);
+  SP_GC_ROOT_RBVAL(offset);
+  sp_RbVal boxed = sp_box_time(t);
+  return sp_poly_as_time_chk(subtract ? sp_poly_sub(boxed, offset) : sp_poly_add(boxed, offset));
+}
+
 #endif /* SP_RUNTIME_H */
