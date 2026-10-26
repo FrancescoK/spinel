@@ -8206,6 +8206,12 @@ static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const 
     const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
+  /* Symbol#to_proc answers a Proc whatever the name (desugar_symbol_var_block_arg
+     makes it the lambda). A local it is written to is a Proc from the first
+     round, so the lambda's `.call` sites type its parameter before the
+     Integer default does -- and before a send of a computed name lowers its
+     arms for that default. */
+  if (sp_streq(name, "to_proc") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_PROC;
   /* Symbol#<=> is defined only between Symbols; String included, any other
      operand is not comparable and the result is nil (#3081) */
   if (sp_streq(name, "<=>") && argc == 1) {
