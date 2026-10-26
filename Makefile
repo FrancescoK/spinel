@@ -4521,6 +4521,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	    ! grep -Eq 'else if \(_t[0-9]+.tag == SP_TAG_CLASS\)' "$$tmp/ivg.c" || { echo "infer-test: FAIL ($$t: an instance-only getter boxes class ivars)"; ok=0; }; \
 	  done; \
 	done; \
+	$(SPINEL) test/poly_length_unbuilt_class.rb -c --no-line-map -o "$$tmp/plu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_length_unbuilt_class: -c)"; ok=0; }; \
+	grep -q 'sp_int sp_count(sp_RbVal lv_x) {' "$$tmp/plu.c" || { echo "infer-test: FAIL (a class nothing constructs widened a poly receiver's return)"; ok=0; }; \
 	$(SPINEL) test/byref_string_selective_volatile.rb -c --no-line-map -o "$$tmp/bsv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (byref_string_selective_volatile: -c)"; ok=0; }; \
 	for m in rb_plain_append unrelated_begin; do \
 	  grep -q "sp_$$m($(STR_BYREF_S)) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \
