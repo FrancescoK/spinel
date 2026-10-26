@@ -13,7 +13,8 @@
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
      - the program's top-level statements in load order (prog_top_stmts):
-       a load at the top level runs its file's top level there, once;
+       a load at the top level runs its file's top level there, once; and
+       with them the files no load there places (prog_visit_files);
      - what the program refuses for now: a require that is not a top-level
        statement, one that resolves to no file at compile time, an autoload
        (prog_refuse_loads), and the statements the readers of the top level
@@ -66,32 +67,31 @@ void prog_file_scopes(Compiler *c) {
 }
 
 /* The walk of the files' top levels, each in its own scope, as main's is
-   walked in scope 0 (walk_scope). Under --load-model=graph it goes statement
-   by statement in load order (prog_top_seq), so what a later statement
-   defines is registered after what an earlier one does, whichever file
-   holds each: an alias of a method a required file defines, a reopening's
-   methods. Then each file no load at the top level reaches. A LoadNode
-   names its file and holds no node of it, so no walk enters another file. */
+   walked in scope 0 (walk_scope). Under --load-model=graph it goes in load
+   order (prog_visit_files), so what a later statement defines is registered
+   after what an earlier one does, whichever file holds each: an alias of a
+   method a required file defines, a reopening's methods. A LoadNode names
+   its file and holds no node of it, so no walk enters another file. */
+typedef struct { Compiler *c; unsigned char *claimed; } ProgWalk;
+static void prog_walk_node(void *ud, int node, int f) {
+  ProgWalk *w = ud;
+  Compiler *c = w->c;
+  int r = nt_root(c->nt, f);
+  if (node != r && !w->claimed[f]) {   /* the file's root and statement list, as a walk of the root claims them */
+    int st = prog_root_stmts(c, f);
+    c->nscope[r] = c->file_scope[f]; c->node_cbody[r] = -1;
+    if (st >= 0) { c->nscope[st] = c->file_scope[f]; c->node_cbody[st] = -1; }
+  }
+  w->claimed[f] = 1;
+  walk_scope(c, node, c->file_scope[f], -1);
+}
 void prog_walk_files(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!prog_graph(c)) { walk_scope(c, nt->root_id, 0, -1); return; }
-  int n = nt_nroots(nt), sn = 0, *file = NULL;
-  int *seq = prog_top_seq(c, &sn, &file);
-  unsigned char *walked = calloc((size_t)n, 1);
-  if (!walked) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = 0; k < sn; k++) {
-    int f = file[k];
-    if (!walked[f]) {   /* the file's root and statement list, as a walk of the root claims them */
-      walked[f] = 1;
-      int r = nt_root(nt, f), st = prog_root_stmts(c, f);
-      c->nscope[r] = c->file_scope[f]; c->node_cbody[r] = -1;
-      if (st >= 0) { c->nscope[st] = c->file_scope[f]; c->node_cbody[st] = -1; }
-    }
-    walk_scope(c, seq[k], c->file_scope[f], -1);
-  }
-  for (int f = 0; f < n; f++)
-    if (!walked[f]) walk_scope(c, nt_root(nt, f), c->file_scope[f], -1);
-  free(walked); free(seq); free(file);
+  ProgWalk w = { c, calloc((size_t)nt_nroots(nt), 1) };
+  if (!w.claimed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_visit_files(c, prog_walk_node, &w);
+  free(w.claimed);
 }
 
 /* The LoadNode that first runs file f's top level, in the load order the
@@ -164,6 +164,22 @@ int *prog_top_seq(const Compiler *c, int *n, int **file) {
   if (file) *file = q.file;
   else free(q.file);
   return q.stmt;
+}
+
+/* The program's files in load order, for a pass that reads what an
+   earlier statement defined: fn(ud, stmt, file) for each top-level
+   statement as prog_top_seq orders them, then fn(ud, root, file) for each
+   file none of them is in (one no load at the top level places, or the
+   entry when it has no statement). */
+void prog_visit_files(const Compiler *c, void (*fn)(void *ud, int node, int file), void *ud) {
+  int n = nt_nroots(c->nt), sn = 0, *file = NULL;
+  int *seq = prog_top_seq(c, &sn, &file);
+  unsigned char *seen = calloc((size_t)(n > 0 ? n : 1), 1);
+  if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < sn; k++) { seen[file[k]] = 1; fn(ud, seq[k], file[k]); }
+  for (int f = 0; f < n; f++)
+    if (!seen[f] && nt_root(c->nt, f) >= 0) fn(ud, nt_root(c->nt, f), f);
+  free(seen); free(seq); free(file);
 }
 
 /* ---- the program's order ----

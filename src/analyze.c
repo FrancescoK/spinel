@@ -4203,6 +4203,14 @@ static void qc_free_headers(void) {
   qc_hdr_nt = NULL; qc_hdr_cc = NULL;
   qc_free_defs();
 }
+/* One top-level statement (or a file's root) of the header walk, from the
+   top level's path. */
+static void qc_resolve_top(void *ud, int node, int file) {
+  (void)ud; (void)file;
+  char path[QC_MAXDEPTH][64];
+  unsigned char lex[QC_MAXDEPTH + 1] = {1};
+  qc_resolve_walk(qc_hdr_nt, node, path, 0, lex);
+}
 static void qc_resolve_headers(Compiler *c) {
   const NodeTable *nt = c->nt;
   qc_free_headers();
@@ -4212,10 +4220,9 @@ static void qc_resolve_headers(Compiler *c) {
   if (!qc_hdr_base || !qc_hdr_alias) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < qc_nhdr; i++) qc_hdr_base[i] = qc_hdr_alias[i] = -1;
   qc_hdr_nt = nt; qc_hdr_cc = c;
-  char path[QC_MAXDEPTH][64];
-  unsigned char lex[QC_MAXDEPTH + 1] = {1};
-  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
-    qc_resolve_walk(nt, nt_root(nt, r), path, 0, lex);
+  /* in load order (prog_visit_files): a header reads the classes, modules
+     and aliases defined before it, a required file's among them */
+  prog_visit_files(c, qc_resolve_top, NULL);
   qc_refuse_holder_headers(c);
 }
 

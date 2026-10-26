@@ -129,6 +129,7 @@ int prog_defines_only(const Compiler *c, int i);
 int prog_ordered_load(const Compiler *c, int id);
 void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
 int *prog_top_seq(const Compiler *c, int *n, int **file);
+void prog_visit_files(const Compiler *c, void (*fn)(void *ud, int node, int file), void *ud);
 /* Does node a run before node b, as the program runs its files
    (analyze_program.c)? PROG_UNKNOWN where no order is known: a file loaded
    only from a method, a condition or a block, against another file. */
