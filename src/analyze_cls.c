@@ -95,6 +95,7 @@ typedef struct CF {
   unsigned char *has_super;             /* per scope: a super in it, which hands the block on */
   unsigned char *protocol;              /* per scope: the runtime may call it with its own arguments */
   unsigned char *dead;                  /* per scope: a protocol method of a runtime module the program never names (cf_mark_dead_protocols) */
+  int pr_built, pr_n[24], *pr_mi[24], *pr_disp[24];   /* cf_protocol_returns by name (cf_proto_ret_build) */
   const char **dyn; int ndyn, cdyn;     /* method names a send, a method(:m) or a define_method names */
   int dyn_all, all_ivars, has_mm;
   int exc_set;                          /* every user exception class */
@@ -1886,24 +1887,62 @@ static int cf_drops_block_value(const char *nm) {
    them */
 /* the methods a builtin calls back on the objects it is handed, whose
    values it may answer or build from (flatten's to_ary, sort's <=>) */
+static const char *const cf_proto_ret_names[] = { "to_ary", "to_a", "to_h", "to_hash", "to_s", "to_str", "to_proc",
+  "to_path", "to_io", "to_int", "to_i", "coerce", "<=>", "==", "call", "succ", "exception", "message",
+  "inspect", "hash", "eql?", "each", "dup", "clone", NULL };
+#define CF_PRN 24
+/* per name of cf_proto_ret_names, the program's methods of it, each with
+   the classes whose chain answers with it: built on first use */
+static void cf_proto_ret_build(CF *f) {
+  Compiler *c = f->c;
+  f->pr_built = 1;
+  int *by = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
+  if (!by) cf_oom();
+  for (int q = 0; q < CF_PRN; q++) {
+    f->pr_n[q] = 0; f->pr_mi[q] = NULL; f->pr_disp[q] = NULL;
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = comp_method_in_chain(c, k, cf_proto_ret_names[q], NULL);
+      by[k] = mi >= 0 && !cf_prelude_scope(f, mi) ? mi : -1;   /* (the compiler's own answers as the builtin) */
+    }
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = by[k];
+      if (mi < 0) continue;
+      int seen = 0;
+      for (int i = 0; i < f->pr_n[q]; i++) if (f->pr_mi[q][i] == mi) seen = 1;
+      if (seen) continue;
+      int b = cf_tb(f, 3);
+      for (int j = k; j < c->nclasses; j++) if (by[j] == mi) cf_tb_bit(f, b, j);
+      f->pr_mi[q] = realloc(f->pr_mi[q], sizeof(int) * (size_t)(f->pr_n[q] + 1));
+      f->pr_disp[q] = realloc(f->pr_disp[q], sizeof(int) * (size_t)(f->pr_n[q] + 1));
+      if (!f->pr_mi[q] || !f->pr_disp[q]) cf_oom();
+      f->pr_mi[q][f->pr_n[q]] = mi; f->pr_disp[q][f->pr_n[q]] = cf_pool_tb(f, b, 0, 0); f->pr_n[q]++;
+    }
+  }
+  free(by);
+}
+static int cf_sets_meet(const ClsSet *a, const ClsSet *b) {
+  for (int i = 0, j = 0; i < a->nw && j < b->nw; ) {
+    if (a->wi[i] < b->wi[j]) i++;
+    else if (b->wi[j] < a->wi[i]) j++;
+    else { if (a->w[i] & b->w[j]) return 1; i++; j++; }
+  }
+  return 0;
+}
 static void cf_protocol_returns(CF *f, int v, int el) {
-  static const char *const names[] = { "to_ary", "to_a", "to_h", "to_hash", "to_s", "to_str", "to_proc",
-    "to_path", "to_io", "to_int", "to_i", "coerce", "<=>", "==", "call", "succ", "exception", "message",
-    "inspect", "hash", "eql?", "each", "dup", "clone", NULL };
   if (el < 0) return;
   int pidx = cf_set_of(f, el);
   if (pidx == CF_ALL || pidx == CF_EMPTY) return;
+  if (!f->pr_built) cf_proto_ret_build(f);
   const ClsSet *x = &f->pool[pidx];
-  for (int k = cls_set_next(x, -1); k >= 0; k = cls_set_next(x, k)) {
-    if (k < 0 || k >= f->c->nclasses) continue;
-    for (int q = 0; names[q]; q++) {
-      int mi = comp_method_in_chain(f->c, k, names[q], NULL);
-      if (mi < 0 || cf_prelude_scope(f, mi)) continue;   /* the compiler's own answer as the builtin */
+  if (x->n == 0) return;
+  for (int q = 0; q < CF_PRN; q++)
+    for (int i = 0; i < f->pr_n[q]; i++) {
+      if (!cf_sets_meet(x, &f->pool[f->pr_disp[q][i]])) continue;
+      int mi = f->pr_mi[q][i];
       cf_flow(f, f->ret_el[mi], v);
-      if (sp_streq(names[q], "each"))
+      if (q == 21)   /* each */
         for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[mi][y], v); cf_store(f, v, f->yarg_el[mi][y]); }
     }
-  }
 }
 /* a builtin whose value is a scalar no program class is: a comparison, a
    count or size, a conversion to a String, a number or a Symbol, a
@@ -2487,12 +2526,24 @@ static int cf_poison_class_call(CF *f, int v, const char *key, const char *nm, c
   return 1;
 }
 
+/* cf_user_target, once per method in one call (its answer kept) */
+static int cf_user_target(CF *f, int v, int mi, const int *argv, int argc, int blk);
+static int cf_user_target_once(CF *f, int v, int mi, const int *argv, int argc, int blk, int *seen, int *res, int *n) {
+  for (int i = 0; i < *n; i++) if (seen[i] == mi) return res[i];
+  int r = cf_user_target(f, v, mi, argv, argc, blk);
+  if (*n < 256) { seen[*n] = mi; res[*n] = r; (*n)++; }
+  return r;
+}
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
   int builtin = pidx == CF_EMPTY || s->bv || s->os;
   char base[256] = "";
   int is_w = setter_base_name(nm, base, sizeof base);
+  /* a method many of the classes answer with is bound once (a receiver
+     that may be any of hundreds of classes, a protocol method's parameter) */
+  int ut_mi[256], ut_r[256], nut = 0;
+#define CF_UT(mi) cf_user_target_once(f, v, (mi), argv, argc, blk, ut_mi, ut_r, &nut)
   for (int k = cls_set_next(s, -1); k >= 0; k = cls_set_next(s, k)) {
     if (k >= c->nclasses) {
       /* the Class object: a construction, a class method, else Class's own */
@@ -2504,9 +2555,9 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
         continue;
       }
       int cm = comp_cmethod_in_chain(c, kc, nm, NULL);
-      if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) continue;
+      if (cm >= 0 && CF_UT(cm)) continue;
       if (cm < 0 && cf_sg_access(f, v, kc, nm, argv, argc)) continue;
-      if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && cf_user_target(f, v, mm, argv, argc, blk)) continue; }
+      if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && CF_UT(mm)) continue; }
       if (cf_class_has_natives(f, kc)) { cf_native_class_answer(f, v, kc, nm, argc); continue; }
       if (cf_poison_class_call(f, v, c->classes[kc].name, nm, argv, argc, blk)) continue;
       builtin = 1;
@@ -2514,7 +2565,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     }
     if (k < 0) { builtin = 1; continue; }
     int mi = comp_method_in_chain(c, k, nm, NULL);
-    if (mi >= 0) { if (!cf_user_target(f, v, mi, argv, argc, blk)) builtin = 1; continue; }
+    if (mi >= 0) { if (!CF_UT(mi)) builtin = 1; continue; }
     if (comp_reader_in_chain(c, k, nm, NULL)) {
       /* the reader an alias names reads its own ivar (`alias loc location`) */
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
@@ -2529,7 +2580,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       continue;
     }
     int tl = comp_method_index(c, nm);
-    if (tl >= 0 && cf_user_target(f, v, tl, argv, argc, blk)) continue;
+    if (tl >= 0 && CF_UT(tl)) continue;
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) {
       cf_all(f, v);
       for (int a = 0; a < argc; a++) cf_all(f, argv[a]);
@@ -2580,6 +2631,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     }
     cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
   }
+#undef CF_UT
 }
 
 /* the call on a receiver that can be anything: every method of the name
@@ -4803,6 +4855,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   for (int k = 0; k < f.kn_cap; k++) free((char *)f.kn[k].name);
   free(f.kn);
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol); free(f.dead);
+  for (int q = 0; q < CF_PRN; q++) if (f.pr_built) { free(f.pr_mi[q]); free(f.pr_disp[q]); }
   free(f.def_mi); free(f.why); free(f.why_el); free(f.usz); free(f.uev); free(f.open); free(f.exec_esc); free(f.exec_blk); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
   free(f.ent);
@@ -5046,9 +5099,22 @@ const ClsSet *cls_fact_node(Compiler *c, int node) {
   return &c->cls_pool[p];
 }
 
-/* See compiler.h. */
+/* See compiler.h. The answer is the class's alone: kept per class (a
+   consumer asks it of every class for each poly receiver) */
+static int cls_fact_bounded_raw(Compiler *c, int k);
+static const Compiler *cfb_c; static signed char *cfb; static int cfb_n;
 int cls_fact_bounded(Compiler *c, int k) {
   if (k < 0 || k >= c->nclasses) return 0;
+  if (cfb_c != c || cfb_n != c->nclasses) {
+    free(cfb); cfb = malloc((size_t)c->nclasses + 1);
+    if (!cfb) cf_oom();
+    memset(cfb, -1, (size_t)c->nclasses + 1);
+    cfb_c = c; cfb_n = c->nclasses;
+  }
+  if (cfb[k] < 0) cfb[k] = (signed char)cls_fact_bounded_raw(c, k);
+  return cfb[k];
+}
+static int cls_fact_bounded_raw(Compiler *c, int k) {
   ClassInfo *ci = &c->classes[k];
   if (ci->is_native_class || !ci->name) return 0;
   /* a reopened builtin's instances are the runtime's values, an IO's and
