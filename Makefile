@@ -1768,7 +1768,7 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	done; \
 	grep -Ev '^(root-elide|root-frame|inline-force|pd-hoist)@' "$$t.log" > "$$t.allow"; \
 	$(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.denied" && \
-	SPINEL_NO_PD_HOIST=1 SPINEL_LINE_MAP=1 $(SPINEL) --no-root-elision --no-root-frame --no-inline-hot $$f -c -o "$$t.c" >/dev/null 2>&1 && \
+	SPINEL_NO_PD_HOIST=1 $(SPINEL) --line-map --no-root-elision --no-root-frame --no-inline-hot $$f -c -o "$$t.c" >/dev/null 2>&1 && \
 	cmp -s "$$t.denied" "$$t.c" || \
 	  { echo "decisions-test: FAIL (denying the kinds that have a switch does not emit what the switches emit)"; ok=0; }; \
 	printf '# only this one\n\nroot-frame@Sprites#place\n' > "$$t.allow"; \

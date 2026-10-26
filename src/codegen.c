@@ -16779,7 +16779,7 @@ static void class_ruby_name_into(Buf *b, const char *cn) {
 }
 
 /* Resolve the source file/line of a method's `def`, falling back gracefully
-   when positions weren't stamped (no SPINEL_DEBUG / SPINEL_LINE_MAP). */
+   when positions weren't stamped (no --debug / --line-map). */
 int scope_def_line(Compiler *c, Scope *s) {
   if (s->def_node < 0) return 0;
   return (int)nt_int(c->nt, s->def_node, "node_line", 0);
@@ -17516,7 +17516,7 @@ static int types_json_return_nullable(Compiler *c, const Scope *s, int *nullable
 /* Build the position-keyed type + diagnostics JSON for the ruby-lsp addon:
    every node with a concrete inferred type keyed by {file,line,col}, plus one
    warning per method whose signature degraded to untyped. Positions come from
-   the parser's node_line/node_col/node_file (the SPINEL_DEBUG machinery), so
+   the parser's node_line/node_col/node_file (the --debug machinery), so
    the driver enables it. */
 static char *build_types_json(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -21028,11 +21028,11 @@ char *codegen_program(const NodeTable *nt) {
   sp_yield_site_type_hook = sp_yield_site_type;
 
   /* `#line` directives are emitted only when the parser stamped per-node
-     source lines (SPINEL_LINE_MAP / SPINEL_DEBUG); the same env gates both
-     sides so codegen and the AST agree. */
-  g_line_map = (getenv("SPINEL_LINE_MAP") || getenv("SPINEL_DEBUG")) ? 1 : 0;
-  g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
-  g_check_stores = getenv("SPINEL_CHECK_STORES") ? 1 : 0;
+     source lines (--line-map / --debug); the same options gate both sides
+     so codegen and the AST agree. */
+  g_line_map = (g_opt_line_map || g_opt_debug) ? 1 : 0;
+  g_debug = g_opt_debug;
+  g_check_stores = g_opt_check_stores;
   /* The unresolved-call gate raises NoMethodError, matching CRuby (a silent
      wrong answer is the worst failure mode); set here, as codegen starts */
   g_gate_raise = 1;
@@ -21048,8 +21048,8 @@ char *codegen_program(const NodeTable *nt) {
      unit so the driver writes no binary. */
   /* --profile: write the symbol map next to the binary, then continue to
      the real build (offline symbolization input for perf tooling, #1336). */
-  const char *psym_out = getenv("SPINEL_PROFILE_SYMBOL_MAP");
-  if (psym_out && *psym_out) {
+  const char *psym_out = g_opt_profile_symbol_map;
+  if (psym_out) {
     char *json = build_symbol_map_json(c);
     write_text_file(psym_out, json);
     free(json);
@@ -21057,18 +21057,17 @@ char *codegen_program(const NodeTable *nt) {
   /* --warn-widen, once, before the analysis-only modes return: the slots
      are settled here (the RBS below reads them), and emission below changes
      none of them (checked over the corpus). */
-  { const char *ww = getenv("SPINEL_WARN_WIDEN");
-    if (ww && *ww) each_widened_slot(c, warn_widened_slot, NULL); }
-  const char *sym_out = getenv("SPINEL_EMIT_SYMBOL_MAP");
-  if (sym_out && *sym_out) {
+  if (g_opt_warn_widen) each_widened_slot(c, warn_widened_slot, NULL);
+  const char *sym_out = g_opt_emit_symbol_map;
+  if (sym_out) {
     char *json = build_symbol_map_json(c);
     write_text_file(sym_out, json);
     free(json);
     comp_free(c);
     return strdup("");
   }
-  const char *rbs_out = getenv("SPINEL_EMIT_RBS");
-  if (rbs_out && *rbs_out) {
+  const char *rbs_out = g_opt_emit_rbs;
+  if (rbs_out) {
     char *rbs = build_rbs_text(c);
     write_text_file(rbs_out, rbs);
     free(rbs);
@@ -21079,8 +21078,7 @@ char *codegen_program(const NodeTable *nt) {
      a codegen verdict, and the JSON that answered "no diagnostics" for a
      program the compile refuses was worth less than no JSON (#4509). The C
      is discarded. */
-  const char *types_out = getenv("SPINEL_EMIT_TYPES");
-  if (types_out && !*types_out) types_out = NULL;
+  const char *types_out = g_opt_emit_types;
 
   /* Reject runtime-name send before any emission so the diagnostic fires
      regardless of how the call's result is later consumed. */
@@ -21763,7 +21761,7 @@ char *codegen_program(const NodeTable *nt) {
      the captured frames demangle to Class#method. Optimized/release builds
      leave sp_bt_enabled = 0 (frames inline away), keeping the empty-array
      behavior. */
-  if (getenv("SPINEL_DEBUG")) {
+  if (g_opt_debug) {
     buf_puts(body, "    sp_bt_enabled = 1;\n");
     buf_puts(body, "    sp_bt_srcfile = ");
     emit_str_literal(body, c->nt->source_file ? c->nt->source_file : "source.rb");
@@ -21948,8 +21946,7 @@ char *codegen_program(const NodeTable *nt) {
     char *json = build_types_json(c);
     write_text_file(types_out, json);
     free(json);
-    { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
-      if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
+    if (!g_opt_emit_types_keep_c) { free(b.p); b.p = NULL; }
   }
   { int deferred = defer_refusals() ? g_ndiags : g_deferred_diags;
     if (deferred > 0)
@@ -21966,7 +21963,6 @@ char *codegen_program(const NodeTable *nt) {
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
   comp_free(c);
-  { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
-    if (types_out && !(keep && *keep)) return strdup(""); }
+  if (types_out && !g_opt_emit_types_keep_c) return strdup("");
   return b.p;
 }

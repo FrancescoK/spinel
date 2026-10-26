@@ -12053,7 +12053,7 @@ TyKind infer_type(Compiler *c, int id) {
        arm scans the scopes by name, +10% analysis on optcarrot and +23% on
        a 2000-ivar class when it ran on every plain compile */
     static int want = -1;
-    if (want < 0) { const char *ww = getenv("SPINEL_WARN_WIDEN"), *et = getenv("SPINEL_EMIT_TYPES"); want = ((ww && *ww) || (et && *et)) ? 1 : 0; }
+    if (want < 0) want = (g_opt_warn_widen || g_opt_emit_types) ? 1 : 0;
     if (want && id < c->node_cap) c->norigin[id] = why_node_origin(c, id, t);
   }
   /* memo_ok still holds here: every mode section inside infer_uncached

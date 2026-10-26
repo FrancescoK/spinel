@@ -691,7 +691,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
-    else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
+    else if (sp_streq(a, "--defer-refusals")) { g_opt_defer_refusals = 1; i++; }
     /* (Strings are always shared now, #6765: the flag is kept so a build
        script that passes it still works) */
     else if (sp_streq(a, "--share-strings")) { i++; }
@@ -913,7 +913,7 @@ int main(int argc, char **argv) {
   }
 
   /* --rbs: extract advisory seeds via the sibling spinel_rbs_extract binary
-     and hand them to the analyzer through SPINEL_RBS_SEED. An empty result is a
+     and hand them to the analyzer through g_opt_rbs_seed. An empty result is a
      silent no-op; a missing extractor is warned about, since --rbs was asked for
      explicitly and the seeds would otherwise vanish without a trace (#1792). */
   char seed_path[4096] = {0};
@@ -939,7 +939,7 @@ int main(int argc, char **argv) {
       int rc = system(cmd.p);
       free(cmd.p);
       if (rc == 0 && file_exists(seed_path)) {
-        set_env("SPINEL_RBS_SEED", seed_path);
+        g_opt_rbs_seed = strdup(seed_path);
       }
       else {
         remove(seed_path);
@@ -948,53 +948,53 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Source mapping: codegen emits #line when SPINEL_DEBUG / SPINEL_LINE_MAP
-     is set. --debug/-g use the fuller debug path; otherwise line-map (on by
+  /* Source mapping: codegen emits #line under --debug or --line-map.
+     --debug/-g use the fuller debug path; otherwise line-map (on by
      default) just adds #line. The parser stamps node positions in every
-     compile (SPINEL_POSITIONS): the analysis reads them, and a node a rewrite
+     compile (g_opt_positions): the analysis reads them, and a node a rewrite
      made has none (cplan_nil's unset temp), so --no-line-map suppresses only
      the #line directives and decides what the default compile decides. The
-     emit modes that need positions force SPINEL_DEBUG below. */
-  if (debug) set_env("SPINEL_DEBUG", "1");
-  else if (line_map) set_env("SPINEL_LINE_MAP", "1");
-  set_env("SPINEL_POSITIONS", "1");
+     emit modes that need positions force the debug mode below. */
+  if (debug) g_opt_debug = 1;
+  else if (line_map) g_opt_line_map = 1;
+  g_opt_positions = 1;
   /* --warn-widen places each warning at its slot, which needs the parser's
      positions: forced past --no-line-map, as --emit-types forces them. */
-  if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
+  if (warn_widen) { g_opt_line_map = 1; g_opt_warn_widen = 1; }
   /* --check-stores reports each store at its Ruby line, so it needs them too */
-  if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
+  if (check_stores) { g_opt_line_map = 1; g_opt_check_stores = 1; }
   /* A decision key names its site by position: forced the same way. */
   if (refuse_log_overwrite(getenv("SPINEL_DECISIONS_LOG"))) return 1;
-  if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
+  if (decide_setup()) g_opt_line_map = 1;
 
   /* Analyze-only emit modes write their artifact from inside codegen_program
-     and produce an empty translation unit; route the output path via env. */
+     and produce an empty translation unit; the output path goes with them. */
   char emit_out[4096];
   if (emit_rbs) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".rbs", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_EMIT_RBS", emit_out);
+    g_opt_emit_rbs = strdup(emit_out);
   }
   else if (emit_types) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".types.json", sizeof emit_out - strlen(emit_out) - 1); }
     /* The positions the JSON carries need the parser's line map, not the
-       debug build: SPINEL_DEBUG also turns codegen's g_debug on, which drops
+       debug build: --debug also turns codegen's g_debug on, which drops
        `static`/always_inline from every method and switches the backtrace
        substrate on, so the C of `--emit-types -S` was the debug compile's,
        not what -S alone emits. Forced past --no-line-map, since the JSON
        is nothing without positions. */
-    set_env("SPINEL_LINE_MAP", "1");
-    set_env("SPINEL_EMIT_TYPES", emit_out);
+    g_opt_line_map = 1;
+    g_opt_emit_types = strdup(emit_out);
     /* `--emit-types -o x.json -S`: the JSON and the C of the same compile,
        in one run rather than two (a consumer showing both, rubys/spinel-ide) */
-    if (stdout_mode) set_env("SPINEL_EMIT_TYPES_KEEP_C", "1");
+    if (stdout_mode) g_opt_emit_types_keep_c = 1;
   }
   else if (emit_symbol_map) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".symbols.json", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_DEBUG", "1");
-    set_env("SPINEL_EMIT_SYMBOL_MAP", emit_out);
+    g_opt_debug = 1;
+    g_opt_emit_symbol_map = strdup(emit_out);
   }
   if (profile) {
     /* --profile also writes the symbol map next to the binary (offline
@@ -1002,7 +1002,7 @@ int main(int argc, char **argv) {
        real build after writing it (#1336). */
     char psym[4096];
     snprintf(psym, sizeof psym, "%s.symbols.json", output ? output : basename);
-    set_env("SPINEL_PROFILE_SYMBOL_MAP", psym);
+    g_opt_profile_symbol_map = strdup(psym);
   }
 
   /* ---------- pipeline: parse -> AST -> codegen ---------- */

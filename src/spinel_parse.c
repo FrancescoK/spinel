@@ -47,11 +47,11 @@ static int node_counter;
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
 static const char *g_source_file = "";
-/* When SPINEL_DEBUG, SPINEL_LINE_MAP or SPINEL_POSITIONS is 1, flatten()
-   emits a per-node `node_line` field, which codegen places C `#line`
-   directives by and the analysis reads. The compiler driver sets
-   SPINEL_POSITIONS for every compile; off otherwise, so the AST text format
-   (and golden tests) are unchanged. */
+/* Under g_opt_debug, g_opt_line_map or g_opt_positions, flatten() emits a
+   per-node `node_line` field, which codegen places C `#line` directives by
+   and the analysis reads. The compiler driver sets g_opt_positions for
+   every compile; off otherwise, so the AST text format (and golden tests)
+   are unchanged. */
 static int g_emit_line = 0;
 /* The buffer-line -> (file, line) map is built for every program, not only
    under g_emit_line: `__FILE__` and `__dir__` in a required file answer
@@ -60,7 +60,7 @@ static int g_emit_line = 0;
    PUSH/POP marker lines it is rebuilt from are comments. g_emit_line still
    decides whether nodes carry their line for `#line` directives. */
 static int g_src_map = 1;
-/* --emit-types (SPINEL_EMIT_TYPES) also gets each node's END position, so a
+/* --emit-types (g_opt_emit_types) also gets each node's END position, so a
    consumer can pick the tightest span under a cursor: `pts`, `pts.map { }`
    and `.inspect` all start at one column. Only then: two more attributes on
    every node are node-table fields the ordinary compile has no use for (#4522). */
@@ -6455,26 +6455,23 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   return nt;
 }
 
+int g_opt_debug, g_opt_line_map, g_opt_positions, g_opt_warn_widen, g_opt_check_stores,
+    g_opt_defer_refusals, g_opt_emit_types_keep_c;
+const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_profile_symbol_map,
+           *g_opt_rbs_seed;
+
 /* Whether flatten stamps each node's position (node_line / node_file /
-   node_col, and its end where a report reads it), from the environment the
-   debug and report modes set; set before the requires are resolved, so the
-   resolvers insert the PUSH/POP markers the multi-file source map is
-   rebuilt from. */
-static void sp_parse_positions_from_env(void) {
-  const char *dbg = getenv("SPINEL_DEBUG");
-  const char *lm = getenv("SPINEL_LINE_MAP");
-  const char *ps = getenv("SPINEL_POSITIONS");
-  int on = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0')
-        || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0')
-        || (ps  != NULL && ps[0]  == '1' && ps[1]  == '\0');
+   node_col, and its end where a report reads it), as the debug and report
+   modes ask; set before the requires are resolved, so the resolvers insert
+   the PUSH/POP markers the multi-file source map is rebuilt from. */
+static void sp_parse_positions_from_opts(void) {
+  int on = g_opt_debug || g_opt_line_map || g_opt_positions;
   g_emit_line = on ? 1 : 0;
-  const char *et = getenv("SPINEL_EMIT_TYPES");
-  const char *ww = getenv("SPINEL_WARN_WIDEN");
-  g_emit_end = (on && ((et && *et) || (ww && *ww))) ? 1 : 0;
+  g_emit_end = (on && (g_opt_emit_types || g_opt_warn_widen)) ? 1 : 0;
 }
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
-  sp_parse_positions_from_env();
+  sp_parse_positions_from_opts();
   if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {
@@ -6593,9 +6590,9 @@ else {
        of the time it is being typed into, and its marker belongs on the
        token, not on line 1. */
     fprintf(stderr, "Parse errors in '%s':\n", source_file);
-    const char *types_out = getenv("SPINEL_EMIT_TYPES");
-    FILE *jf = (types_out && *types_out) ? fopen(types_out, "w") : NULL;
-    if (types_out && *types_out && !jf) fprintf(stderr, "spinel: cannot write '%s'\n", types_out);
+    const char *types_out = g_opt_emit_types;
+    FILE *jf = types_out ? fopen(types_out, "w") : NULL;
+    if (types_out && !jf) fprintf(stderr, "spinel: cannot write '%s'\n", types_out);
     if (jf) fputs("{\n  \"types\": [\n\n  ],\n  \"diagnostics\": [\n", jf);
     int nd = 0;
     pm_diagnostic_t *diag;

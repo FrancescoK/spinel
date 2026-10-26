@@ -37,7 +37,7 @@ int collect_mode(void) { return 1; }
    build goes on. */
 int defer_refusals(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_defer_refusals;
   return v;
 }
 /* ...and for one node: under the switch, or in a file whose
@@ -57,10 +57,10 @@ int collect_emit_anyway(void) {
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
   return v;
 }
-/* 1 under --emit-types (main.c sets SPINEL_EMIT_TYPES to the JSON's path). */
+/* 1 under --emit-types (g_opt_emit_types: the JSON's path). */
 int emit_types_on(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_EMIT_TYPES"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_emit_types != NULL;
   return v;
 }
 /* 1 when a check that can go on past a refusal (the seal's) goes on to
@@ -79,7 +79,7 @@ int g_ndecide_cap = 0;
 int g_nd_call_id = -1;
 void nd_stamp(int id, int kind) {
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0) return;
   if (id >= g_ndecide_cap) {
     int ncap = g_ndecide_cap ? g_ndecide_cap : 1024;
@@ -457,7 +457,7 @@ void ucall_report(Compiler *c) {
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (g_plan_check) ucall_observe(c, id, mi, owner_ci, add);
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0 || mi < 0 || mi >= c->nscopes) return;
   Scope *m = &c->scopes[mi];
   if (!m->name || !*m->name) return;

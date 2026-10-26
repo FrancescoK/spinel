@@ -515,4 +515,12 @@ int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be
 int        nt_num_arrs(const NodeTable *nt, int id);
 const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
 
+/* What the driver's flags ask of the parse, the analysis and codegen:
+   src/main.c sets them, spinel_parse.c defines them. A string is a path to
+   write, or NULL. */
+extern int g_opt_debug, g_opt_line_map, g_opt_positions, g_opt_warn_widen, g_opt_check_stores,
+           g_opt_defer_refusals, g_opt_emit_types_keep_c;
+extern const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_profile_symbol_map,
+                  *g_opt_rbs_seed;
+
 #endif

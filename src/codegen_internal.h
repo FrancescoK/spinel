@@ -964,7 +964,7 @@ extern TyKind g_yield_slot_ty;
 extern const char *g_yield_proc_ref_fallback2;
 extern TyKind g_yield_slot_ty_fallback2;
 
-/* When set (SPINEL_LINE_MAP / SPINEL_DEBUG), emit `#line N "file"` directives
+/* When set (--line-map / --debug), emit `#line N "file"` directives
    at statement boundaries so a C compile error is reported against the
    original Ruby source line. Set once by codegen_program. */
 extern int g_line_map;

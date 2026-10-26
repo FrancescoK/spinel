@@ -5779,12 +5779,12 @@ void rename_shadowing_block_params(Compiler *c) {
 
 /* ---- --rbs advisory type seeds ----
    spinel_rbs_extract emits line-oriented seeds, read from the file named by
-   SPINEL_RBS_SEED. Before the fixpoint we pin the named params / returns /
+   g_opt_rbs_seed. Before the fixpoint we pin the named params / returns /
    ivars to the seeded type; guards at the inference write sites then keep the
    fixpoint from widening a pinned slot (legacy "RBS wins" semantics). Type
    tokens with no precise C kind (poly*, sym_array, obj_X_ptr_array, unknown
    classes) are skipped, so a seed never makes inference worse. Entirely inert
-   when SPINEL_RBS_SEED is unset -- the normal compile path is unchanged. */
+   when g_opt_rbs_seed is unset -- the normal compile path is unchanged. */
 
 static int seed_class_index(Compiler *c, const char *name);
 /* builtin_value_kind for a seed's `_`-joined name: a qualified builtin
@@ -48975,9 +48975,9 @@ static void an_phase_pre_fixpoint(Compiler *c) {
 
   /* Apply --rbs advisory seeds (pin param/return/ivar types) before the
      fixpoint so the inference passes observe the pinned types from round one.
-     No-op unless SPINEL_RBS_SEED names a seed file. */
+     No-op unless --rbs made a seed file (g_opt_rbs_seed). */
   {
-    const char *seed = getenv("SPINEL_RBS_SEED");
+    const char *seed = g_opt_rbs_seed;
     apply_inline_rbs(c);
     if (seed && *seed) apply_rbs_seeds(c, seed);
     if (g_inline_rbs_bad) exit(1);
