@@ -1,6 +1,8 @@
 #include <limits.h>
+#include <ctype.h>
 #include "codegen_internal.h"
 #include "call_plan.h"
+#include "codegen_call_arms.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */

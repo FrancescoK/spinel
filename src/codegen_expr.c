@@ -4,6 +4,7 @@
 #include "holder.h"
 #include "call_plan.h"
 #include "value_pos.h"
+#include "codegen_call_arms.h"
 
 /* defined? support: does this subtree reference a constant the compiler
    cannot resolve? Any such reference makes the whole defined? answer nil

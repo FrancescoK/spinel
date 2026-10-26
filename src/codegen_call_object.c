@@ -10,6 +10,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include <ctype.h>
 
 /* ---- nil out of band: an emitter whose C result is an sp_oint / sp_ofloat
    leaves it bare when the node is one (node_is_oint: the dispatcher's

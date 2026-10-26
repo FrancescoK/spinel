@@ -8,6 +8,7 @@
 #include "repr.h"
 #include "call_plan.h"
 #include "share.h"
+#include "codegen_call_arms.h"
 
 /* ---- --plan-check: the arms one emitted switch wrote ----
    A frame per switch being written; a nested dispatch (an argument's

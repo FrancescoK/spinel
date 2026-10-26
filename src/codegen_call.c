@@ -7,6 +7,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "value_pos.h"
+#include <ctype.h>
 /* the `&.` proc call currently being emitted inside its own nil guard */
 int g_sn_proc_node = -1;
 

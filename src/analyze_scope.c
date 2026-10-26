@@ -1,8 +1,10 @@
 #include "analyze_internal.h"
 #include "builtin_names.h"
 #include "call_plan.h"
+#include "share.h"
 #include "value_pos.h"
 #include <stdint.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 
