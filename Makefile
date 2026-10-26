@@ -322,10 +322,10 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/package_facts.inc src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/node_kinds.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
+SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/package_facts.inc src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/node_kinds.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h src/ct_value.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
-               build/csrc/ffi_spec.o \
+               build/csrc/ffi_spec.o build/csrc/ct_value.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
                build/csrc/analyze_cext.o build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_cls.o build/csrc/analyze_arm.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
                build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/value_pos.o build/csrc/codegen_poly_plan.o build/csrc/share_plan.o build/csrc/codegen_str.o \
@@ -435,7 +435,7 @@ build/csrc/codegen_util.o: build/csrc/sp_rt_names.h
 
 FORCE:
 
-build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/inline_rbs.c src/rbs_map.h src/node_table.h src/types.h $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
+build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/ct_value.h src/inline_rbs.c src/rbs_map.h src/node_table.h src/types.h $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) $(INLINE_RBS_CFLAGS) -c src/spinel_parse.c -o $@
 build/csrc/rbs_map.o: src/rbs_map.c src/rbs_map.h $(PLATFORM_HDRS) | build/csrc
 	$(CC) -c $(CFLAGS) -I$(RBS_INC) src/rbs_map.c -o $@
@@ -443,7 +443,7 @@ build/csrc/rbs_map.o: src/rbs_map.c src/rbs_map.h $(PLATFORM_HDRS) | build/csrc
 # Exercise the fallback even when vendor/rbs is present, without replacing
 # the parser object used by the ordinary compiler.
 SPINEL_NO_RBS = build/spinel-no-rbs
-build/csrc/sp_parse_no_rbs.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/node_table.h src/types.h $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
+build/csrc/sp_parse_no_rbs.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/ct_value.h src/node_table.h src/types.h $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) -U SPINEL_INLINE_RBS -c src/spinel_parse.c -o $@
 
 # The compiler links the regexp engine so it can compile a literal at build
@@ -507,7 +507,7 @@ build/csrc-san/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -Isrc -Ibuild/csrc -c $< -o $@
 build/csrc-san/main.o: build/csrc/spinel_rev.h
 build/csrc-san/codegen_util.o: build/csrc/sp_rt_names.h
-build/csrc-san/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/inline_rbs.c src/rbs_map.h src/node_table.h src/types.h $(PRISM_LIB) | build/csrc
+build/csrc-san/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c src/sp_const_loop.c src/ct_value.h src/inline_rbs.c src/rbs_map.h src/node_table.h src/types.h $(PRISM_LIB) | build/csrc
 	@mkdir -p build/csrc-san
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -I$(PRISM_INC) $(INLINE_RBS_CFLAGS) -c src/spinel_parse.c -o $@
 $(SPINEL_SAN): $(SPINEL_SAN_OBJ) build/csrc-san/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(INLINE_RBS_LIBS)
