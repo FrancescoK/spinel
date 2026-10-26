@@ -23528,14 +23528,47 @@ int operand_is_held_read(Compiler *c, int id) {
   return (kt == TY_SYMBOL || kt == TY_STRING || kt == TY_INT) && !operand_may_allocate(c, av[0]) &&
          !prog_has_hash_default_block(c);
 }
+/* Is this call a reader on a boxed receiver that every class the receiver
+   can hold answers by a public attr_reader or Struct member, with no `def`
+   of the name winning over it? The dispatch then reads a field in each arm
+   and runs no code of the program's. A builtin value among them (a nil)
+   answers with its own method or raises NoMethodError, which runs none
+   either when no builtin has the name or every one that has it reads a
+   value, the program defines no method of the name a builtin could take,
+   and no method_missing. */
+static int call_is_poly_field_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) return 0;
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  const ClsSet *s = cls_fact_node(c, recv);
+  if (!s || s->all || s->os || s->n == 0) return 0;
+  if (an_user_defines_method(c, "method_missing")) return 0;
+  if (s->bv && (an_user_defines_method(c, nm) ||
+                (!is_plain_builtin_reader(nm) &&
+                 (builtin_object_method_known(nm) || builtin_instance_name_known(nm)))))
+    return 0;
+  for (int k = cls_set_next(s, -1); k >= 0; k = cls_set_next(s, k)) {
+    if (k >= c->nclasses || c->classes[k].is_native_class) return 0;
+    int rdc = -1, mdc = -1;
+    if (!comp_reader_in_chain(c, k, nm, &rdc)) return 0;
+    if (comp_resolve_member(c, k, nm, 0, &mdc, NULL) != SP_MEMBER_ATTR) return 0;
+    if (comp_method_vis_in_chain(c, k, nm) != SP_VIS_PUBLIC) return 0;
+  }
+  return 1;
+}
+
 /* Can evaluating this subtree store a new value into an ivar, a class
    variable or a global? A write to one does, and so can anything that runs
    Ruby code the subtree does not show -- a user method, a yield, a super.
    What cannot: arithmetic over scalars, an index read of a typed array
-   (`@ref[addr & 3]`), a plain field read (`m.cols`), and an index read of a
-   boxed value in a program with no user `[]` and no Hash default block,
-   recursively; nothing in any of them runs code. Every other call counts,
-   conservatively: a builtin handed a user object can call back into it. */
+   (`@ref[addr & 3]`), a plain field read (`m.cols`), a reader every class
+   of a boxed receiver answers by an attr_reader (`node.name`, #10252), and
+   an index read of a boxed value in a program with no user `[]` and no Hash
+   default block, recursively; nothing in any of them runs code. Every other
+   call counts, conservatively: a builtin handed a user object can call back
+   into it. */
 int subtree_may_reassign_state(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
@@ -23562,7 +23595,9 @@ int subtree_may_reassign_state(Compiler *c, int id) {
                       nt_ref(nt, id, "block") < 0 && repr_of(c, recv).kind == RK_BOXED &&
                       !any_class_defines(c, "[]") && !prog_has_hash_default_block(c);
     int alloc = 0;
-    if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc)) return 1;
+    if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc) &&
+        !call_is_poly_field_read(c, id))
+      return 1;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
