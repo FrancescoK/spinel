@@ -49091,7 +49091,6 @@ static const char *const an_tree_only_passes[] = {
   "desugar_empty_block_body",
   "desugar_file_stat_new",
   "desugar_handle_reopen_self_recv",
-  "desugar_ie_bare_object_calls",
   "desugar_implicit_send",
   "desugar_include_math",
   "desugar_kernel_recv",
