@@ -225,6 +225,9 @@ int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
+int is_rfc2822_alias(const char *n);   /* rfc2822 rfc822 */
+int is_time_native_format(const char *n);   /* iso8601 xmlschema httpdate rfc2822 rfc822: Time#x and Time.x the runtime answers once "time" is required */
+int is_time_parser_name(const char *n);   /* parse strptime and the native formats: Time's class-method parsers */
 int sock_const_always(const char *n); /* Socket constants every platform defines */
 int is_exception_message(const char *n); /* message to_s */
 int is_socket_pair_alias(const char *n); /* pair socketpair */
@@ -421,4 +424,58 @@ int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a
 int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
 int boxed_stat_name(const char *n);   /* mode or a numeric field */
 int boxed_stat_reader(const char *n); /* mtime, atime, ftype */
+/* ---- Lowerings onto a library's method: the shared shape rows ----
+   A call of one of these shapes is lowered by the analysis onto a method or
+   constant a library defines (builtins/*.rb, Set): `system(cmd, out: ...)`
+   onto builtins/system_spawn.rb's __sp_system_spawn, and so on. Each row is
+   the shape, the name it lowers to and the library that defines that name.
+   The desugar a row's family names reads its shape from here; conditions on
+   a value, a type or the rest of the program (the receiver is an
+   Enumerator, the mode is a read, the program defines no `system`) stay in
+   the desugar. A shape is only what the parsed call shows, so graph mode
+   can ask the same rows which libraries a program's trees reach. A
+   rewrite that falls back to a native method when the library is absent
+   (sort_by.with_index, rfind) has no row. */
+enum {
+  LR_SYSTEM_OPTIONS,   /* desugar_system_options */
+  LR_POPEN_BLOCK,      /* desugar_io_popen_block */
+  LR_FOREACH_FIRST,    /* desugar_dir_surface's File.foreach(..).first(n) */
+  LR_ENUM_WALK,        /* desugar_enum_walk_calls */
+  LR_STR_WALK,         /* the String walk with an index (desugar_iter_receivers) */
+  LR_ENUM_NAME,        /* desugar_builtin_enum_calls: a name for a builtins/enumerable.rb definition */
+  LR_INDEX_BLOCK,      /* desugar_builtin_enum_calls: Array#index with a block */
+  LR_WITH_OBJECT,      /* a stored Enumerator's with_object */
+  LR_TO_SET            /* to_set -> Set.new(recv.to_a) */
+};
+/* the receiver: no condition, none, one, the constant recv_name, or a call
+   named recv_name (on the constant recv_const when that is not NULL) */
+enum { LR_RECV_ANY, LR_RECV_NONE, LR_RECV_SOME, LR_RECV_CONST, LR_RECV_CALL };
+enum {
+  LR_BLOCK = 1,          /* a block, literal or `&arg` */
+  LR_BLOCK_LITERAL = 2,  /* a literal block */
+  LR_NO_BLOCK = 4,
+  LR_BREAKS = 8,         /* the literal block's body breaks out of it */
+  LR_KWHASH = 16,        /* an argument is a keyword hash */
+  LR_NO_SPLAT = 32,      /* no argument is a splat */
+  LR_PLAIN_ARGS = 64,    /* no argument is a splat, a keyword hash or a block argument */
+  LR_HAS_RECV = 128,     /* the call has a receiver (for the receiver call: of its own) */
+  LR_NO_ARGS = 256       /* no ArgumentsNode at all (a synthesized call may carry an empty one) */
+};
+typedef struct {
+  int family;                      /* LR_*: the desugar that reads it */
+  const char *name;                /* the call's name */
+  int recv;                        /* LR_RECV_* */
+  const char *recv_name;           /* LR_RECV_CONST: the constant; LR_RECV_CALL: the call */
+  const char *recv_const;          /* LR_RECV_CALL: that call's receiver constant, or NULL */
+  const char *const *recv_calls;   /* when the receiver is a blockless call, its name is one of these (NULL: any) */
+  signed char argc_min, argc_max;  /* the call's argument count (-1: no bound) */
+  unsigned short flags;            /* LR_* bits for the call */
+  signed char rargc_min, rargc_max;   /* LR_RECV_CALL: the receiver call's */
+  unsigned short rflags;
+  const char *target;              /* the method (or, for LR_TO_SET, the constant) it lowers to */
+  const char *lib;                 /* the library that defines target, as a require names it */
+} LowerRow;
+const LowerRow *lower_row_at(int i);              /* the i-th row, NULL past the last */
+const LowerRow *lower_row_of(int family);         /* the family's first row */
+const LowerRow *lower_row_named(int family, const char *name);   /* the family's row for a call name */
 #endif

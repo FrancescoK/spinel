@@ -12425,20 +12425,13 @@ int desugar_builtins(Compiler *c) {
       if (sac >= 1 && nt_kind(nt, sav[0]) == NK_SymbolNode && nt_str(nt, sav[0], "value"))
         cn0 = nt_str(nt, sav[0], "value");
     }
-    /* collect_concat is flat_map under another name: the call takes the
-       name the definition has (a program that defines collect_concat
-       itself keeps its call) */
-    if (cn0 && sp_streq(cn0, "collect_concat") && builtin_enum_name_index("flat_map") >= 0 &&
-        !program_defines_name(nt, n0, "collect_concat")) {
+    /* collect_concat is flat_map under another name, and detect find: the
+       call takes the name the definition has (LR_ENUM_NAME's rows; a
+       program that defines collect_concat or detect itself keeps its call) */
+    const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
+    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name(nt, n0, alias->name)) {
       nt_node_set_str(nt, id, "orig_name", cn0);
-      cn0 = "flat_map";
-      nt_node_set_str(nt, id, "name", cn0);
-    }
-    /* detect is find under another name, the same way */
-    if (cn0 && sp_streq(cn0, "detect") && builtin_enum_name_index("find") >= 0 &&
-        !program_defines_name(nt, n0, "detect")) {
-      nt_node_set_str(nt, id, "orig_name", cn0);
-      cn0 = "find";
+      cn0 = alias->target;
       nt_node_set_str(nt, id, "name", cn0);
     }
     int bi = builtin_enum_name_index(cn0);
@@ -12798,42 +12791,19 @@ int block_body_breaks(const NodeTable *nt, int node) {
    end either way, and the typed emitters are the faster path. */
 int desugar_enum_walk_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  if (comp_method_index(c, "__enumw_map") < 0) return 0;   /* not spliced */
+  if (comp_method_index(c, lower_row_of(LR_ENUM_WALK)->target) < 0) return 0;   /* not spliced */
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *name = nt_str(nt, id, "name");
-    if (!name) continue;
+    /* the shape, a block that can break included (LR_ENUM_WALK's rows) */
+    const LowerRow *r = lower_row_nt(nt, id, LR_ENUM_WALK);
+    if (!r) continue;
+    const char *hn = r->target;
     int recv = nt_ref(nt, id, "receiver");
-    int blk = nt_ref(nt, id, "block");
-    if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    const char *hn = NULL;
-    if ((is_map_alias(name)) && an == 0) hn = "__enumw_map";
-    else if ((is_select_alias(name)) && an == 0) hn = "__enumw_select";
-    else if (sp_streq(name, "reject") && an == 0) hn = "__enumw_reject";
-    else if (sp_streq(name, "filter_map") && an == 0) hn = "__enumw_filter_map";
-    else if ((is_with_object_alias(name)) && an == 1) hn = "__enumw_each_with_object";
-    else if ((is_reduce_alias(name)) && an <= 1) hn = an ? "__enumw_inject1" : "__enumw_inject0";
-    else if ((is_each_window(name)) && an == 1)
-      hn = name[5] == 's' ? "__enumw_each_slice" : "__enumw_each_cons";
-    else if (sp_streq(name, "each_entry") && an == 0) hn = "__enumw_each_entry";
-    else if (sp_streq(name, "with_index") && an <= 1) {
-      /* `arr.map.with_index { }` is map's, answering the mapped array; only
-         an Enumerator that just walks its source (each, cycle, a generator)
-         is a plain walk with a counter */
-      if (nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
-        const char *rn = nt_str(nt, recv, "name");
-        if (!rn || (!sp_streq(rn, "each") && !sp_streq(rn, "cycle") && !sp_streq(rn, "new"))) continue;
-      }
-      hn = "__enumw_with_index";
-    }
-    if (!hn) continue;
     if (nt_safe_nav(nt, id)) continue;
     if (infer_type(c, recv) != TY_ENUMERATOR) continue;
-    if (!block_body_breaks(nt, nt_ref(nt, blk, "body"))) continue;
     int *na = (int *)malloc(sizeof(int) * (size_t)(an + 1));
     if (!na) return changed;
     na[0] = recv; for (int j = 0; j < an; j++) na[j + 1] = av[j];
@@ -13194,15 +13164,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
        both as rb_ary_index): `@choices.index(&block)`, Forwardable's
        delegator shape in tty-prompt's Choices, had no emitter of its own */
     const char *bname = NULL;
-    if (name && sp_streq(name, "index") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "arguments") < 0 &&
-        nt_ref(nt, id, "receiver") >= 0 && builtin_enum_name_index("find_index") >= 0) {
+    const LowerRow *ixr = lower_row_nt(nt, id, LR_INDEX_BLOCK);
+    if (ixr && builtin_enum_name_index(ixr->target) >= 0) {
       TyKind irt = infer_type(c, nt_ref(nt, id, "receiver"));
-      if (ty_is_array(irt) || ty_is_obj_array(irt)) { nt_node_set_str(nt, id, "name", "find_index"); name = nt_str(nt, id, "name"); changed = 1; }
+      if (ty_is_array(irt) || ty_is_obj_array(irt)) { nt_node_set_str(nt, id, "name", ixr->target); name = nt_str(nt, id, "name"); changed = 1; }
       /* a value known only at run time takes find_index's definition for an
          Array and keeps `index` for a class of the program that defines it
          (tty-prompt's Choices beside the Array a filtered list is): the
          dispatch below, under the builtin's name */
-      else if (irt == TY_POLY) bname = "find_index";
+      else if (irt == TY_POLY) bname = ixr->target;
     }
     /* Enumerator#with_object(memo) { } on a value known only at run time
        (a method's blockless `to_enum` beside its `self`) is
@@ -13211,14 +13181,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
        or the NoMethodError CRuby raises): the dispatch below, under
        each_with_object's copy */
     int wo_arm = 0;
-    if (name && sp_streq(name, "with_object") && !nt_int(nt, id, "enum_wo_own", 0) &&
-        nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0 && !nt_safe_nav(nt, id) &&
-        builtin_enum_name_index("each_with_object") >= 0) {
-      int wa = nt_ref(nt, id, "arguments"), wn = 0;
-      if (wa >= 0) nt_arr(nt, wa, "arguments", &wn);
-      if (wn == 1 && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY && !enumerator_own_with_object(c, id)) {
-        bname = "each_with_object"; wo_arm = 1;
-      }
+    const LowerRow *wor = lower_row_nt(nt, id, LR_WITH_OBJECT);
+    if (wor && !nt_int(nt, id, "enum_wo_own", 0) && !nt_safe_nav(nt, id) &&
+        builtin_enum_name_index(wor->target) >= 0 &&
+        infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY && !enumerator_own_with_object(c, id)) {
+      bname = wor->target; wo_arm = 1;
     }
     if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
