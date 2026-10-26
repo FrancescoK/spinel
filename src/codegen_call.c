@@ -4308,6 +4308,36 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* An arm emitted under a silent probe: a refusal inside it longjmps to the
+   caller's setjmp and the arm is dropped. arm_probe_begin points g_pre at
+   the arm's own prelude buffer and saves what the arm may leave changed;
+   arm_probe_dropped unwinds the scope moves and views a dropped arm opened;
+   arm_probe_end puts the rest back. That includes the emitter state an arm
+   repoints while it is emitted (self, while a callee's defaults are spelled
+   with the receiver as self), which left aimed at a dropped arm's buffers
+   had the next arm's self read through them, and the enclosing recovery
+   point, which left pointing into the probe's frame had a later refusal in
+   the same unit jump back into it after it had returned. */
+void arm_probe_begin(ArmProbe *p, Buf *pre) {
+  p->pre = g_pre; p->probe = g_unsup_probe;
+  p->hold = g_conv_hold; p->open_defaults = g_open_defaults;
+  memcpy(p->jb, g_unsup_recover, sizeof p->jb);
+  p->moves = comp_scope_move_depth(); p->views = view_mark();
+  p->state = emit_state_snapshot();
+  g_pre = pre; g_unsup_probe = 1;
+}
+void arm_probe_dropped(ArmProbe *p) {
+  comp_scope_move_unwind(p->moves); view_unwind(p->views);
+}
+void arm_probe_end(ArmProbe *p, int ok) {
+  emit_state_release(p->state, !ok);
+  memcpy(g_unsup_recover, p->jb, sizeof p->jb);
+  g_open_defaults = p->open_defaults;
+  g_conv_hold = p->hold;
+  g_unsup_probe = p->probe;
+  g_pre = p->pre;
+}
+
 static void emit_dyn_name_sym(Compiler *c, int sym, Buf *b) {
   TyKind st = comp_ntype(c, sym);
   if (st == TY_SYMBOL) emit_expr(c, sym, b);
@@ -4461,7 +4491,6 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     g_conv_hold = sv_conv;
   }
   free(sockr.p);
-  Buf *sv_pre = g_pre;
   int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4497,24 +4526,11 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        captured to `pre` and replayed inside the arm's own branch so they run
        only when this arm is taken. */
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    int sv_arm_argov = g_n_argov;
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
     int mi = cplan_user(c, arm)->mi;
     int self_ret = repr_self_handle(c, mi) && repr_call_returns_handle(c, arm);
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     /* an arm answering an Integer or Float that may be nil boxes its oint:
        unwrapped first, its nil raised TypeError where the send answers nil */
     int arm_oint = !self_ret && oint_kind(at) && node_may_be_nil(c, arm);
@@ -4534,13 +4550,9 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       else emit_expr(c, arm, &body);
       ok = 1;
     }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
-    g_open_defaults = sv_open_defaults; view_unbind(sv_arm_argov);
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
+    view_unbind(sv_arm_argov);
     /* the receiver's bytes an arm that does not answer its String reads
        are a read, not a copy: one node stands for the receiver of every arm,
        and the check would report the first arm that reads it */
@@ -4607,7 +4619,6 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   emit_dyn_name_sym(c, sym, b);
   /* a switch over the symbol, as the dynamic send's (emit_dynamic_send) */
   buf_printf(b, "; sp_bool _r%d = 0; switch (_t%d) { ", t, t);
-  Buf *sv_pre = g_pre;
   int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4621,30 +4632,11 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
       for (int q = 0; q < nseen && !dup; q++) dup = seen[q] == sid;
       if (dup) continue; }
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;
-    g_open_defaults = sv_open_defaults;
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
     if (ok) {
       buf_printf(b, "case %d: { ", comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
@@ -4697,7 +4689,6 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
      not an else-if chain: thousands of candidates nest that chain as deep,
      past what the C compiler's parser takes */
   buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; do { ", t, t, def ? "sp_bool" : "sp_RbVal", t);
-  Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
     TyKind at = repr_of(c, arm).as_ty;
@@ -4710,30 +4701,11 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
        that resolves by type but not by codegen longjmps out and is dropped;
        its preludes replay inside its own branch. */
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;
-    g_open_defaults = sv_open_defaults;
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
     if (ok) {
       buf_printf(b, "if (strcmp(_n%d, \"", t); emit_c_escaped(b, nm); buf_puts(b, "\") == 0) { ");
       if (pre.p && pre.len) buf_puts(b, pre.p);

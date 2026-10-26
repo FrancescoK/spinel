@@ -2848,6 +2848,11 @@ typedef struct { jmp_buf outer; Buf *b; size_t len; Buf *pre; size_t pre_len; Co
 void defer_mark(DeferMark *m, Buf *b);
 void defer_rollback(DeferMark *m, char *msg, size_t msz);
 void defer_done(DeferMark *m);
+/* an arm emitted under a silent probe (codegen_call.c) */
+typedef struct { jmp_buf jb; Buf *pre; int probe, open_defaults, moves, views; ConvHold *hold; EmitUnitState *state; } ArmProbe;
+void arm_probe_begin(ArmProbe *p, Buf *pre);
+void arm_probe_dropped(ArmProbe *p);
+void arm_probe_end(ArmProbe *p, int ok);
 extern unsigned g_conv_emitted;  /* implicit conversions emitted so far; read as a delta */
 Buf *conv_hold_begin(Buf *b, int *tmp);
 void conv_hold_end(int tmp);
