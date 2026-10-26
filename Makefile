@@ -222,6 +222,9 @@ $(foreach p,$(BUNDLED_CEXT_PKGS),$(eval $(call BUNDLED_CEXT_RULE,$(p))))
 .PHONY: bundled-cext
 bundled-cext: $(BUNDLED_CEXT_STAMPS)
 
+# A bare `make` builds `all`: the rules the eval above defines come first in
+# the file, and without this the first of them (racc's stamp) was the goal.
+.DEFAULT_GOAL := all
 all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h $(BUNDLED_CEXT_STAMPS)
 
 # ---- Dependencies ----
