@@ -1134,6 +1134,10 @@ int poll_scope_on_cycle(Compiler *c, int si);
 int poll_is_method_name(Compiler *c, const char *nm);
 int poll_pure_method(Compiler *c, int si);
 int poll_pure_loop(Compiler *c, int id);
+int poll_chunk_loop(Compiler *c, int id);
+int poll_pred_quiet(Compiler *c, int pred);
+/* the passes a chunked loop runs between two polls (poll_chunk_loop) */
+#define SP_SIG_CHUNK 1024
 int poll_pure_iter(Compiler *c, int id);
 int poll_pure_wrapped(Compiler *c, int si);
 extern int g_pure_region;
