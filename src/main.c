@@ -43,6 +43,10 @@ extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
 extern int g_require_gate_cli;
+extern int g_dump_load_graph;
+extern int g_parse_table_mode;
+extern int g_load_model_graph;
+extern int sp_parse_reported;
 /* RUBY_DESCRIPTION for the compiled program, in the `ruby -v` shape:
    "spinel <RUBY_VERSION> (<release> revision <rev>)" (codegen appends the
    platform). The version word is the one RUBY_VERSION and
@@ -491,22 +495,45 @@ static void usage(void) {
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --dump-load-graph  Print the files the program loads and what each require\n"
+    "              resolves to, and exit (debug)\n"
+    "  --load-model=MODEL  inline (default): required files are spliced in;\n"
+    "              graph: each file is its own root and a require a load node\n"
+    "              (with --dump-ast only, for now)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
 }
 
-/* --dump-ast (1), --dump-value-positions (2) and --check-value-pos (3) work
-   on the parsed table and stop; the mode a flag names, or 0. */
+/* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3) and
+   --dump-load-graph (4, which the parse prints as it resolves the requires)
+   work on the parsed table and stop; the mode a flag names, or 0. */
 static int table_mode_of(const char *a) {
-  if (sp_streq(a, "--dump-ast")) return 1;
-  if (sp_streq(a, "--dump-value-positions")) return 2;
-  return sp_streq(a, "--check-value-pos") ? 3 : 0;
+  if (sp_streq(a, "--dump-ast")) return g_parse_table_mode = 1;
+  if (sp_streq(a, "--dump-value-positions")) return g_parse_table_mode = 2;
+  if (sp_streq(a, "--dump-load-graph")) return g_parse_table_mode = g_dump_load_graph = 4;
+  return sp_streq(a, "--check-value-pos") ? (g_parse_table_mode = 3) : 0;
+}
+
+/* The flags the parse reads: `--require-gate` refuses an unresolvable
+   require instead of warning past it -- inside a resolved dependency set the
+   universe is known, so a require that resolves to nothing is a bug; `spin
+   build` has always compiled this way through SPINEL_REQUIRE_GATE, and `spin
+   flags` needs to hand the same gate to a caller driving the compiler itself
+   (#4105). `--load-model=inline|graph` picks how required files are loaded:
+   spliced into one program (the default), or each kept as its own root with
+   a load node per require (#9898; the table modes only, for now). 1 when `a`
+   is one of them. */
+static int parse_flag(const char *a) {
+  if (sp_streq(a, "--require-gate")) return g_require_gate_cli = 1;
+  if (sp_streq(a, "--load-model=inline")) { g_load_model_graph = 0; return 1; }
+  if (sp_streq(a, "--load-model=graph")) return g_load_model_graph = 1;
+  return 0;
 }
 static int run_table_mode(const NodeTable *nt, int mode) {
   if (mode == 1) nt_dump(nt, stdout);
   else if (mode == 2) value_pos_dump(nt, stdout);
-  else return value_pos_check();
+  else if (mode == 3) return value_pos_check();
   return 0;
 }
 
@@ -675,12 +702,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--ext-init") && i + 1 < argc) { g_ext_init_name = argv[i + 1]; i += 2; }
     else if (sp_streq(a, "--ext-entry") && i + 1 < argc) { g_ext_entries = argv[i + 1]; i += 2; }
     else if (sp_streq(a, "--ext") && i + 1 < argc) { g_ext_target = argv[i + 1]; i += 2; }
-    /* Refuse an unresolvable require instead of warning past it. Inside a
-       resolved dependency set the universe is known, so a require that
-       resolves to nothing is a bug; `spin build` has always compiled this way
-       through SPINEL_REQUIRE_GATE, and `spin flags` needs to hand the same
-       gate to a caller driving the compiler itself (#4105). */
-    else if (sp_streq(a, "--require-gate")) { g_require_gate_cli = 1; i++; }
+    else if (parse_flag(a))                { i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
     else if (sp_streq(a, "--timing"))      { set_env("SP_TIMING", "1"); i++; }
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
@@ -1011,7 +1033,7 @@ int main(int argc, char **argv) {
   if (eval_path[0]) remove(eval_path);
   if (!nt) {
     /* an inline RBS error has been reported at the annotation */
-    if (!sp_inline_rbs_failed) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
+    if (!sp_inline_rbs_failed && !sp_parse_reported) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
     if (seed_path[0]) remove(seed_path);
     return 1;
   }

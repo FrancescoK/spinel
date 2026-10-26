@@ -7,6 +7,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "value_pos.h"
+#include <ctype.h>
 /* the `&.` proc call currently being emitted inside its own nil guard */
 int g_sn_proc_node = -1;
 
@@ -1177,7 +1178,7 @@ static int program_boxes_class_values(Compiler *c) {
     /* the reads resolved where they stand: `rescue K`, `include K` and its
        kin, `x.is_a?(K)` and its kin */
     if (pk == NK_RescueNode) continue;
-    if (nt_type(nt, par) && sp_streq(nt_type(nt, par), "ArgumentsNode") && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
+    if (nt_kind(nt, par) == NK_ArgumentsNode && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
       const char *cn = nt_str(nt, parent[par], "name");
       if (cn && (sp_streq(cn, "include") || sp_streq(cn, "extend") || sp_streq(cn, "prepend") ||
                  sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?") ||
@@ -2197,15 +2198,14 @@ int method_scope_arity(Compiler *c, int target, int *out) {
     int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
     if (kn > 0) kw_block = 1;
     for (int i = 0; i < kn; i++) {
-      const char *kty = nt_type(nt, kws[i]);
-      if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+      NodeKind kk = nt_kind(nt, kws[i]);
+      if (kk == NK_RequiredKeywordParameterNode) has_req_kw = 1;
     }
     int kwrp = nt_ref(nt, pn, "keyword_rest");
     if (kwrp >= 0) {
-      const char *kty = nt_type(nt, kwrp);
       NodeKind kk = nt_kind(nt, kwrp);
       if (kk == NK_KeywordRestParameterNode) kw_block = 1;
-      else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
+      else if (kk == NK_ForwardingParameterNode) has_forward = 1;
     }
   }
   int req = n_req + n_post + (has_req_kw ? 1 : 0);
@@ -9050,6 +9050,16 @@ static int poly_other_arg_runs(Compiler *c, const int *argv, int pos_argc, int k
   return 0;
 }
 
+/* Does an operand after `k` of ops[0..n), or the keyword hash `kwh` (-1
+   for none), run anything once `k`'s value is taken? One that does can grow
+   the String `k` holds, moving its bytes, before the call binds it. */
+static int later_operand_runs(Compiler *c, const int *ops, int n, int kwh, int k) {
+  if (kwh >= 0 && subtree_has_side_effect(c, kwh)) return 1;
+  for (int j = k + 1; j < n; j++)
+    if (subtree_has_side_effect(c, ops[j])) return 1;
+  return 0;
+}
+
 static int poly_inert(Compiler *c, int node);
 
 /* Is `key` a hash key whose #hash and #eql? are the builtin ones: a
@@ -10161,10 +10171,17 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           /* --share-strings: a value that hands on a shared String's handle
              (a route, `s << x`) runs as that handle, which a handle arm
-             takes; the temp is its read, for an arm that takes the value */
+             takes; the temp is its read, for an arm that takes the value.
+             So does any other String beside a later argument that runs,
+             unless a hoist ran it into a temp already: its bytes taken here
+             were a view of the payload that argument can move by growing
+             the String, and are read again once every argument has run. A
+             literal's are frozen and never move. */
           else if (at == TY_STRING && (setter_late || (ak != NK_LocalVariableReadNode &&
                    ak != NK_InstanceVariableReadNode && strbuf_arg_carries(c, argv[a]) &&
-                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))))) {
+                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))) ||
+                   (ak != NK_StringNode && !arg_ran_first(argv[a], 0) &&
+                    later_operand_runs(c, argv, pos_argc, kwh, a)))) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
@@ -11076,13 +11093,10 @@ static int arg_runs_nothing(Compiler *c, int n) {
     }
     case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
     case NK_KeywordHashNode: case NK_RangeNode: case NK_InterpolatedStringNode:
+    case NK_ArgumentsNode:
       break;
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, n);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
-      break;
-    }
+    default:
+      return subtree_is_pure_read(c, n);
   }
   int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
   for (int i = 0; i < nr; i++) if (!arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;
@@ -12009,7 +12023,7 @@ int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc) {
   }
   if (!kwsplat)
     for (int i = 0; i < nkw; i++) {
-      if (!nt_type(nt, kws[i]) || !sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) continue;
+      if (nt_kind(nt, kws[i]) != NK_RequiredKeywordParameterNode) continue;
       const char *pn2 = nt_str(nt, kws[i], "name");
       int given = 0;
       for (int e = 0; e < ne && !given; e++) {
@@ -12082,7 +12096,13 @@ static int subtree_sees_block(const NodeTable *nt, int node, const char *bname) 
   NodeKind k = nt_kind(nt, node);
   switch (k) {
     case NK_NONE: case NK_DefNode: case NK_ClassNode: case NK_ModuleNode:
-    case NK_SingletonClassNode: return 0;
+    case NK_SingletonClassNode:
+    /* the kinds that had no enumerator while this arm read them as NK_NONE */
+    case NK_ArgumentsNode: case NK_BlockLocalVariableNode: case NK_CallOperatorWriteNode: case NK_EnsureNode:
+    case NK_FindPatternNode: case NK_ForwardingParameterNode: case NK_ImplicitNode: case NK_ImplicitRestNode:
+    case NK_ItLocalVariableReadNode: case NK_ItParametersNode: case NK_MatchWriteNode:
+    case NK_NoKeywordsParameterNode: case NK_ProgramNode: case NK_RequiredKeywordParameterNode:
+    case NK_UnsupportedNode: case NK_WhenNode: return 0;
     case NK_BlockArgumentNode: case NK_YieldNode: case NK_SuperNode:
     case NK_ForwardingSuperNode: case NK_ForwardingArgumentsNode: return 1;
     case NK_CallNode: {
@@ -12314,10 +12334,10 @@ int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t
     req = nr + np2;
     rest = nt_ref(nt, pn, "rest") >= 0;
     int kr = nt_ref(nt, pn, "keyword_rest");
-    if (kr >= 0 && nt_type(nt, kr) && sp_streq(nt_type(nt, kr), "ForwardingParameterNode")) return 0;
+    if (kr >= 0 && nt_kind(nt, kr) == NK_ForwardingParameterNode) return 0;
     const int *kwn = nt_arr(nt, pn, "keywords", &nk);
     for (int i = 0; i < nk; i++) {
-      if (!nt_type(nt, kwn[i]) || !sp_streq(nt_type(nt, kwn[i]), "RequiredKeywordParameterNode")) continue;
+      if (nt_kind(nt, kwn[i]) != NK_RequiredKeywordParameterNode) continue;
       const char *kn = nt_str(nt, kwn[i], "name");
       if (!kn || nkw == (int)(sizeof kws / sizeof kws[0])) return 0;
       kws[nkw++] = kn;
@@ -14286,7 +14306,6 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
 
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
-  const char *rty = nt_type(nt, recv);
   NodeKind rk = nt_kind(nt, recv);
   /* a local statically holding one class constant dispatches like the
      constant itself (k = Klass; k.new(...)) */
@@ -14314,9 +14333,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
   }
-  if (rty && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
-              (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
-              (rk == NK_CallNode && is_struct_call(c, recv)))) {
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
+      (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
+      (rk == NK_CallNode && is_struct_call(c, recv))) {
     int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
            : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
                                                     : comp_class_index(c, nt_str(nt, recv, "name"));
@@ -15300,13 +15319,12 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
   }
   /* <StructClass>.members at the class level: the member symbol list */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
-    const char *mrty = nt_type(nt, recv);
     NodeKind mrk = nt_kind(nt, recv);
     int mci = -1;
     if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
       mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && (mrk == NK_LocalVariableReadNode ||
-                      (mrk == NK_CallNode && is_struct_call(c, recv))))
+    else if (mrk == NK_LocalVariableReadNode ||
+             (mrk == NK_CallNode && is_struct_call(c, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
@@ -19463,8 +19481,8 @@ static void sdefs_scan(const NodeTable *nt, int id, const char *cn, int in_singl
   }
   else if (ty_k == NK_BlockNode) sdefs_scan(nt, nt_ref(nt, id, "body"), cn, in_singleton);
   else if (ty_k == NK_IfNode || ty_k == NK_UnlessNode || ty_k == NK_ElseNode ||
-           sp_streq(ty, "WhenNode") || ty_k == NK_InNode || ty_k == NK_RescueNode ||
-           sp_streq(ty, "EnsureNode") || ty_k == NK_BeginNode || ty_k == NK_CaseNode ||
+           ty_k == NK_WhenNode || ty_k == NK_InNode || ty_k == NK_RescueNode ||
+           ty_k == NK_EnsureNode || ty_k == NK_BeginNode || ty_k == NK_CaseNode ||
            ty_k == NK_CaseMatchNode || ty_k == NK_WhileNode ||
            ty_k == NK_UntilNode || ty_k == NK_ForNode) {
     static const char *const KEYS[] = { "statements", "subsequent", "else_clause",
@@ -23094,7 +23112,7 @@ int subtree_is_pure_read(Compiler *c, int id) {
       LocalVar *cv = cn ? comp_const(c, cn) : NULL;
       return cv && cv->type != TY_UNKNOWN && !cv->init_guarded && !const_has_flag(cv);
     }
-    case NK_ParenthesesNode: case NK_StatementsNode:
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArgumentsNode:
       break;
     case NK_CallNode: {
       int alloc = 0;
@@ -23111,12 +23129,8 @@ int subtree_is_pure_read(Compiler *c, int id) {
         return 0;
       break;
     }
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, id);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return 0;
-      break;
-    }
+    default:
+      return 0;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -23514,14 +23528,47 @@ int operand_is_held_read(Compiler *c, int id) {
   return (kt == TY_SYMBOL || kt == TY_STRING || kt == TY_INT) && !operand_may_allocate(c, av[0]) &&
          !prog_has_hash_default_block(c);
 }
+/* Is this call a reader on a boxed receiver that every class the receiver
+   can hold answers by a public attr_reader or Struct member, with no `def`
+   of the name winning over it? The dispatch then reads a field in each arm
+   and runs no code of the program's. A builtin value among them (a nil)
+   answers with its own method or raises NoMethodError, which runs none
+   either when no builtin has the name or every one that has it reads a
+   value, the program defines no method of the name a builtin could take,
+   and no method_missing. */
+static int call_is_poly_field_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) return 0;
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  const ClsSet *s = cls_fact_node(c, recv);
+  if (!s || s->all || s->os || s->n == 0) return 0;
+  if (an_user_defines_method(c, "method_missing")) return 0;
+  if (s->bv && (an_user_defines_method(c, nm) ||
+                (!is_plain_builtin_reader(nm) &&
+                 (builtin_object_method_known(nm) || builtin_instance_name_known(nm)))))
+    return 0;
+  for (int k = cls_set_next(s, -1); k >= 0; k = cls_set_next(s, k)) {
+    if (k >= c->nclasses || c->classes[k].is_native_class) return 0;
+    int rdc = -1, mdc = -1;
+    if (!comp_reader_in_chain(c, k, nm, &rdc)) return 0;
+    if (comp_resolve_member(c, k, nm, 0, &mdc, NULL) != SP_MEMBER_ATTR) return 0;
+    if (comp_method_vis_in_chain(c, k, nm) != SP_VIS_PUBLIC) return 0;
+  }
+  return 1;
+}
+
 /* Can evaluating this subtree store a new value into an ivar, a class
    variable or a global? A write to one does, and so can anything that runs
    Ruby code the subtree does not show -- a user method, a yield, a super.
    What cannot: arithmetic over scalars, an index read of a typed array
-   (`@ref[addr & 3]`), a plain field read (`m.cols`), and an index read of a
-   boxed value in a program with no user `[]` and no Hash default block,
-   recursively; nothing in any of them runs code. Every other call counts,
-   conservatively: a builtin handed a user object can call back into it. */
+   (`@ref[addr & 3]`), a plain field read (`m.cols`), a reader every class
+   of a boxed receiver answers by an attr_reader (`node.name`, #10252), and
+   an index read of a boxed value in a program with no user `[]` and no Hash
+   default block, recursively; nothing in any of them runs code. Every other
+   call counts, conservatively: a builtin handed a user object can call back
+   into it. */
 int subtree_may_reassign_state(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
@@ -23548,7 +23595,9 @@ int subtree_may_reassign_state(Compiler *c, int id) {
                       nt_ref(nt, id, "block") < 0 && repr_of(c, recv).kind == RK_BOXED &&
                       !any_class_defines(c, "[]") && !prog_has_hash_default_block(c);
     int alloc = 0;
-    if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc)) return 1;
+    if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc) &&
+        !call_is_poly_field_read(c, id))
+      return 1;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -25249,6 +25298,14 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   int la_a = nt_ref(nt, id, "arguments"), la_an = 0;
   const int *la_av = la_a >= 0 ? nt_arr(nt, la_a, "arguments", &la_an) : NULL;
   for (int i = 0; i < la_an && !later_alloc; i++) later_alloc = operand_may_allocate(c, la_av[i]);
+  /* an argument that runs code and is not one of the operands held here
+     (one past where they stop, or one held in parts) runs after all of them */
+  int rest_runs = 0;
+  for (int i = 0; i < la_an && !rest_runs; i++) {
+    int held_whole = 0;
+    for (int j = 0; j < n; j++) if (node[j] == la_av[i]) held_whole = 1;
+    rest_runs = !held_whole && subtree_has_side_effect(c, la_av[i]);
+  }
   *held = -1;
   int harg = strbuf_hash_default_arg(c, id);
   for (int i = 0; i < n; i++) {
@@ -25323,7 +25380,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     }
     /* an operand its own prelude ran into a rooted temp already (an
        Array.new's fill) is that temp: no copy into a second rooted slot */
-    int t = -1, n2 = 0;
+    int t = -1, n2 = 0, hstr = 0;
     char rk[48];
     if (!ko && ob.p && sscanf(ob.p, "_t%d%n", &t, &n2) == 1 && !ob.p[n2] && op.p &&
         snprintf(rk, sizeof rk, ty[i] == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d)" : "SP_GC_ROOT(_t%d)", t) > 0 &&
@@ -25331,10 +25388,18 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       buf_puts(b, *lead ? "" : " ");
     else {
       t = ++g_tmp;
-      if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
+      /* (one representation: a String argument of either face beside a
+         later argument that runs is held as its handle, as a slot's is
+         above, and read from it where the arms use it: its bytes held as
+         they came were a view of the payload that argument can move by
+         growing the String. One nothing runs after keeps its bytes.) */
+      hstr = !ko && ob.p && node[i] != r && ty[i] == TY_STRING &&
+             (rest_runs || later_operand_runs(c, node, n, -1, i));
+      if (hstr) buf_puts(b, "sp_String *");
+      else if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
       /* (one representation: the handle temp takes a value of either face,
          a boxed value's to_s answering bytes included) */
-      if (!ko && ob.p && ty[i] == TY_STRBUF)
+      if (hstr || (!ko && ob.p && ty[i] == TY_STRBUF))
         buf_printf(b, " _t%d = SP_STR_HDL(%s);", t, ob.p);
       else
       buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : ko ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
@@ -25344,7 +25409,8 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       buf_puts(b, *lead ? "\n" : " ");
     }
     free(ob.p); free(op.p);
-    if (ko) view_bind_o(node[i], "_t%d", t); else view_bind(node[i], "_t%d", t);
+    if (hstr) ran_first_bind_read(node[i], t);
+    else if (ko) view_bind_o(node[i], "_t%d", t); else view_bind(node[i], "_t%d", t);
     int tok = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
     if (*held < 0) *held = tok;
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
@@ -26132,12 +26198,12 @@ static int refuse_call_binds(Compiler *c, int pn, int id, int first, int is_bloc
   }
   if (kwh < 0 && !dsplat) {
     for (int i = 0; i < K; i++)
-      if (nt_type(nt, kws[i]) && sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) return 0;
+      if (nt_kind(nt, kws[i]) == NK_RequiredKeywordParameterNode) return 0;
     return 1;
   }
   if (dsplat) return 1;
   for (int i = 0; i < K; i++) {
-    if (!nt_type(nt, kws[i]) || !sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) continue;
+    if (nt_kind(nt, kws[i]) != NK_RequiredKeywordParameterNode) continue;
     const char *kn = nt_str(nt, kws[i], "name");
     int found = 0;
     for (int e = 0; e < nkeys && !found; e++) {
@@ -31771,13 +31837,9 @@ static int sn_arg_runs_nothing(Compiler *c, int n) {
       break;
     }
     case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
-    case NK_KeywordHashNode: case NK_RangeNode: break;
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, n);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
-      break;
-    }
+    case NK_KeywordHashNode: case NK_RangeNode: case NK_ArgumentsNode: break;
+    default:
+      return subtree_is_pure_read(c, n);
   }
   int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
   for (int i = 0; i < nr; i++) if (!sn_arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;

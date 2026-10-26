@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include <ctype.h>
 
 /* One representation: a block parameter bound to a typed String Array's
    element holds the handle the Array keeps (the element is one), so its
@@ -4522,6 +4523,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind elem_t = rr.elem;
 
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+  /* to_a and entries take no block: one given is never called, and the
+     answer is the pairs all the same (it collected nothing) */
+  if (is_toa) block = -1;
   if (is_toh && block >= 0) return 0;   /* block-form to_h maps each pair; not this {elem => index} lowering */
   if (!is_toa && !is_toh && block < 0) return 0;   /* only to_a/entries/to_h work without a block */
 
@@ -4678,6 +4682,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     int tv = ++g_tmp; char tvb[24]; snprintf(tvb, sizeof tvb, "_t%d", tv);
     emit_indent(g_pre, din);
     if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    /* (one representation: a handle slot takes the tail's String of either
+       face as the handle) */
+    else if (bt == TY_STRBUF) { buf_printf(g_pre, "sp_String *_t%d = NULL;\n", tv); g_bv_dest_ty = TY_STRBUF; }
     else { emit_ctype(c, bt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value_from_compiler(c, bt)); }
     emit_block_value_into(c, block, tvb, vpoly, din);
     /* Ruby truthiness of the block value: only nil/false are falsy. C
@@ -7023,8 +7030,8 @@ static void scope_param_shape(Compiler *c, Scope *m) {
   if (pn >= 0) {
     m->ps_kws = nt_arr(nt, pn, "keywords", &m->ps_nkw);
     int kwr = nt_ref(nt, pn, "keyword_rest");
-    const char *kwr_type = kwr >= 0 ? nt_type(nt, kwr) : NULL;
-    m->ps_fwd = kwr_type && sp_streq(kwr_type, "ForwardingParameterNode");
+    NodeKind kwr_type_k = nt_kind(nt, kwr);
+    m->ps_fwd = kwr_type_k == NK_ForwardingParameterNode;
   }
   if (pn >= 0 && nt_kind(nt, pn) == NK_ParametersNode) {
     int on = 0, postn = 0;
@@ -9189,12 +9196,15 @@ static void emit_arg_temp(Compiler *c, int v) {
   }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
-  /* (one representation: a String of either face is held as it is, the C
-     compiler naming the type, and read where it is used, SP_STR_B: a handle
-     so held stays alive and keeps its identity, where a copy of its bytes
-     lost both; one_face below) */
+  /* (one representation: a String of either face is held as its handle,
+     and read where it is used, SP_STR_B: a handle so held stays alive and
+     keeps its identity, where a copy of its bytes lost both. Held as it
+     came, a bytes face was a view into the handle's payload, which a later
+     argument that grows or replaces the String moved: `m((n += 1; s), *r,
+     (s.replace(big); 0))` boxed the freed bytes. A fresh String's handle is
+     the one it was born in, adopted, and a handle is itself; one_face below) */
   int one_face = at == TY_STRING && !to && hb.p && !srange && !wshare && !conversion;
-  if (one_face) buf_printf(g_pre, "__auto_type _t%d = (%s);", t, hb.p);
+  if (one_face) buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s);", t, hb.p);
   else {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));
@@ -9321,15 +9331,26 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
     free(hh.p); free(vb.p);
     return t;
   }
+  /* ...and a String the head holds as its handle, read from it
+     (ran_first_bind_read): that handle, no second hold */
+  int rh = !boxed && ty == TY_STRING && vb.p ? ran_first_read_handle(node) : -1;
+  char rd[40];
+  if (rh >= 0 && snprintf(rd, sizeof rd, "sp_strbuf_read_pub(_t%d)", rh) > 0 && sp_streq(vb.p, rd)) {
+    free(vb.p);
+    one_face_mark(rh, node);
+    return rh;
+  }
   /* boxed from the head's temp, which roots what the box wraps */
   int wrap = !root || (boxed && head_held_box(c, node));
-  /* (one representation: a String of either face is held as it is, the
-     C compiler naming the type, and read where it is used (SP_STR_B); a
+  /* (one representation: a String of either face is held as its handle,
+     as a handle slot's String is, and read where it is used (SP_STR_B); a
      handle so held stays alive and keeps its identity, where a copy of its
-     bytes lost both) */
-  if (!boxed && ty == TY_STRING && vb.p) { buf_printf(b, "__auto_type _t%d = (%s);", t, vb.p); one_face_mark(t, node); }
-  /* ...and a handle slot's String of either face as the handle */
-  else if (!boxed && ty == TY_STRBUF && vb.p) buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+     bytes lost both, and a bytes face held as it came was a view of the
+     payload a later operand that grows the String moved) */
+  if (!boxed && (ty == TY_STRING || ty == TY_STRBUF) && vb.p) {
+    buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+    if (ty == TY_STRING) one_face_mark(t, node);
+  }
   else {
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
@@ -9978,8 +9999,8 @@ static int ds_hash_keys_not_symbols(TyKind t) {
 static void kw_param_names(const NodeTable *nt, const int *kws, int kn, int required, Buf *out) {
   for (int ki = 0; ki < kn; ki++) {
     const char *kpn = nt_str(nt, kws[ki], "name");
-    const char *kty = nt_type(nt, kws[ki]);
-    if (kpn && (!required || (kty && sp_streq(kty, "RequiredKeywordParameterNode"))))
+    NodeKind kk = nt_kind(nt, kws[ki]);
+    if (kpn && (!required || (kk == NK_RequiredKeywordParameterNode)))
       buf_printf(out, "\"%s\", ", kpn);
   }
 }
@@ -10602,9 +10623,9 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   /* a `**` or a computed key may name any keyword: which are missing is
      the run time's (emit_ds_kwarg_check, on the hash they merge into) */
   for (int i = 0; i < kn && !P->spread && !P->computed; i++) {
-    const char *kty = nt_type(nt, kws[i]);
+    NodeKind kk = nt_kind(nt, kws[i]);
     const char *kpn = nt_str(nt, kws[i], "name");
-    if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
+    if (kk != NK_RequiredKeywordParameterNode || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
     char iv[300];
     kw_key_inspect(kpn, 1, iv, sizeof iv);
     kw_names_add(P->missing, sizeof P->missing, &P->nmissing, iv);
@@ -10767,7 +10788,7 @@ static int arity_unjudged(Compiler *c, Scope *m) {
         strncmp(m->pnames[i], "__bam_", 6) != 0) return 1;
   int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
   int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kwr >= 0 && nt_type(c->nt, kwr) && sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
+  return kwr >= 0 && nt_kind(c->nt, kwr) == NK_ForwardingParameterNode;
 }
 
 int splat_operand_is_scalar(TyKind t) {

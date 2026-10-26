@@ -31,6 +31,7 @@ int is_send_family(const char *n);    /* send __send__ public_send */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
+int is_plain_builtin_reader(const char *n); /* name: every builtin with it reads a value */
 int is_tap_alias(const char *n);      /* tap then yield_self */
 int is_tap_name(const char *n);       /* tap */
 int is_quantifier(const char *n);     /* all? any? none? one? */
@@ -306,7 +307,8 @@ int is_comparable_module_name(const char *n);
 int is_enumerable_module_name(const char *n);
 int is_comparable_builtin_name(const char *n);
 typedef enum { BDC_BUILTIN, BDC_IDENTITY, BDC_EQUAL } BuiltinDefaultCmp;
-BuiltinDefaultCmp builtin_default_cmp(int family);
+BuiltinDefaultCmp builtin_default_cmp(int family);   /* asks builtin_class_id */
+int builtin_class_id(const char *name);   /* analyze_util.c: a builtin class's id, 0 for none */
 int builtin_comparable_owns(const char *cls, const char *name); /* Comparable's, on a class including it */
 int builtin_comparable_arity(const char *name);
 int builtin_numeric_owns(const char *cls, const char *name); /* Numeric's, on Integer or Float */

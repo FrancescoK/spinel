@@ -305,6 +305,7 @@ int yield_value_diverges(Compiler *c, int mi);
 int node_is_scope_tail(Compiler *c, int mi, int id);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
+int an_native_defines_method(Compiler *c, const char *name);
 int an_user_recv_defines_method(Compiler *c, const char *name);
 int an_user_define_method(Compiler *c);
 extern int g_yvt_unify_all;
@@ -483,6 +484,27 @@ int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);  /* co
 int subtree_reads_match_globals(Compiler *c, int root);  /* codegen_call_recv.c: $~, $1.. read there */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 int class_is_comparable(Compiler *c, int cid);                   /* codegen_call.c */
+/* More codegen-side helpers the analyzer calls (declared here so no analyzer
+   TU calls one undeclared, as with unsupported_feature above; codegen_internal.h
+   declares the same). */
+int bare_call_class_owned(Compiler *c, int id);                  /* codegen_call.c */
+const int *call_args(const NodeTable *nt, int id, int *argc);    /* codegen_call.c */
+int exc_has_nonstring_msg_override(Compiler *c);                 /* codegen_util.c */
+int interp_is_literal_fold(const NodeTable *nt, int id);         /* codegen_expr.c */
+int is_fresh_array(Compiler *c, int v);                          /* analyze_pass.c */
+int ivar_assigned_in_initialize(Compiler *c, int k, const char *ivn);  /* analyze.c */
+int kwh_lookup(const NodeTable *nt, int kwh, const char *kname); /* codegen_fold.c */
+int lazy_endpoint_is_infinite(Compiler *c, int right);           /* codegen_call.c */
+int proc_form_source(Compiler *c, int s);                        /* codegen_util.c */
+int scope_is_shadowed(Compiler *c, int s);                       /* codegen_util.c */
+int str_append_chain(Compiler *c, int recv, int *chain, int *base);  /* codegen_util.c */
+int strbuf_bang_tail(Compiler *c, int v);                        /* codegen_stmt.c */
+int strbuf_builtin_tail(Compiler *c, int v);                     /* codegen_stmt.c */
+int strbuf_iter_box_tail(Compiler *c, int v);                    /* codegen_stmt.c */
+int strbuf_route_clamp(Compiler *c, int v, int *ops);           /* codegen_stmt.c */
+int subtree_may_reassign_state(Compiler *c, int id);             /* codegen_call.c */
+int subtree_may_run_proc(Compiler *c, int id);                   /* codegen_call.c */
+int subtree_writes_local(Compiler *c, int id, const char *nm);   /* codegen_stmt.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
    reads as a plain String). Shared with the receiver-face helpers. */
 TyKind ivar_value_ty(ClassInfo *ci, int iv);
@@ -563,6 +585,7 @@ void block_sites_index(Compiler *c);
 int block_sites(Compiler *c, int si, const int **sites);
 int block_site_args(Compiler *c, int si, int site, int call);
 int a_super_target(Compiler *c, Scope *m);
+int a_is_fiber_or_gen_create(Compiler *c, int id);   /* analyze.c */
 /* A block's (or a proc literal's) parameters as its binders count them:
    P leading requireds, O optionals, Q posts, R a rest marker (`*r`, `*`,
    a trailing comma), nk keywords; kw when a trailing keyword hash goes to

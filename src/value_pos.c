@@ -343,13 +343,6 @@ Vp1Kind vp_one(const NodeTable *nt, int root, unsigned flags, int *node) {
    or a branch's (a conditional that crossed). */
 enum { VPE_NONE, VPE_WRAP, VPE_BRANCH };
 
-/* A kind the node table has no NK_ value for (a `when` clause, the arguments
-   of a call) is told by its type name. */
-static int vp_is_kind_named(const NodeTable *nt, int id, const char *name) {
-  const char *t = nt_kind(nt, id) == NK_NONE ? nt_type(nt, id) : NULL;
-  return t && strcmp(t, name) == 0;
-}
-
 /* The hand-written upward arms, one per `role: hand` entry of
    value_edges.yml that is neither a jump (the climb reads those) nor a write
    (the rule below the switch). Each reads the same fields as its downward arm
@@ -384,8 +377,8 @@ static int vp_up_hand(const NodeTable *nt, int p, int child, unsigned flags, uns
   }
   VpWriteKind wk = (flags & VP_WRITES) ? vp_write_kind(k) : VPW_NONE;
   if (wk != VPW_NONE && child == nt_ref(nt, p, "value")) return VPE_WRAP;
-  /* a `when` clause has no kind of its own: its statements are its value */
-  if (vp_is_kind_named(nt, p, "WhenNode") && child == nt_ref(nt, p, "statements")) return VPE_WRAP;
+  /* a `when` clause: its statements are its value */
+  if (nt_kind(nt, p) == NK_WhenNode && child == nt_ref(nt, p, "statements")) return VPE_WRAP;
   return VPE_NONE;
 }
 
@@ -429,7 +422,7 @@ VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags,
     up->node = cur; up->parent = p; up->branches = branches; up->reach = reach;
     if (p < 0) return up->kind = VPU_ROOT;
     if (--budget < 0) return up->kind = VPU_GAVE_UP;
-    if (vp_is_kind_named(nt, p, "ArgumentsNode")) {
+    if (nt_kind(nt, p) == NK_ArgumentsNode) {
       int jump = vp_jump_of(nt, par, p, cur, flags);
       if (jump >= 0) { up->parent = jump; return up->kind = VPU_JUMP; }
       return up->kind = VPU_ENDED;
@@ -468,7 +461,7 @@ int vp_up_effect_clause(const NodeTable *nt, const VpUp *up) {
   if (up->kind != VPU_ENDED) return 0;
   if (nt_kind(nt, up->parent) == NK_BeginNode)
     return nt_ref(nt, up->parent, "else_clause") >= 0 && nt_ref(nt, up->parent, "statements") == up->node;
-  return vp_is_kind_named(nt, up->parent, "EnsureNode");
+  return nt_kind(nt, up->parent) == NK_EnsureNode;
 }
 
 /* ---- --dump-value-positions ---- */
@@ -583,7 +576,7 @@ static void vp_dump_converse(const VpDump *d) {
   for (int n = 0; n < nt->count; n++) {
     int branches, hops;
     unsigned reach;
-    if (d->seen[n] || vp_is_kind_named(nt, n, "WhenNode")) continue;
+    if (d->seen[n] || nt_kind(nt, n) == NK_WhenNode) continue;
     if (vp_dump_top(d, n, &branches, &reach, &hops) == d->root) vp_dump_report(d, n, "climbs to the root, but the walk did not visit it");
   }
 }

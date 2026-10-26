@@ -179,19 +179,6 @@ static uint8_t *iob_value_wptr(sp_IOBuffer *b, int64_t off, int width) {
   return iob_base(b) + off;
 }
 
-/* ---- raw loads/stores (byte-assembled: host-endian agnostic) ---- */
-
-static uint64_t iob_load(const uint8_t *p, int width, int be) {
-  uint64_t v = 0;
-  if (be) for (int i = 0; i < width; i++) v = (v << 8) | p[i];
-  else    for (int i = 0; i < width; i++) v |= (uint64_t)p[i] << (8 * i);
-  return v;
-}
-static void iob_store(uint8_t *p, int width, int be, uint64_t v) {
-  if (be) for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * (width - 1 - i)));
-  else    for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * i));
-}
-
 /* ---- value conversion (CRuby NUM2* semantics + messages) ---- */
 
 static int64_t iob_float_to_i64(double f) {
@@ -289,11 +276,11 @@ static sp_RbVal iob_get_core(sp_IOBuffer *b, int ty, int64_t off) {
   iob_readable(b);
   const uint8_t *p = iob_value_ptr(b, off, t->width);
   if (t->flt) {
-    uint64_t raw = iob_load(p, t->width, t->be);
+    uint64_t raw = sp_iob_load(p, t->width, t->be);
     if (t->width == 4) { union { uint32_t u; float f; } u; u.u = (uint32_t)raw; return sp_box_float(u.f); }
     union { uint64_t u; double f; } u; u.u = raw; return sp_box_float(u.f);
   }
-  uint64_t raw = iob_load(p, t->width, t->be);
+  uint64_t raw = sp_iob_load(p, t->width, t->be);
   /* A loaded value goes out as a machine int when it fits sp_int, and as a
      Bignum otherwise. That is by the WIDTH OF sp_int, not of the field: on a
      32-bit build a U32 above 2**31-1 is a Bignum the same way a u64 above
@@ -327,10 +314,10 @@ static sp_int iob_set_core(sp_IOBuffer *b, int ty, int64_t off, sp_RbVal val) {
     uint64_t raw;
     if (t->width == 4) { union { uint32_t u; float f; } u; u.f = (float)f; raw = u.u; }
     else { union { uint64_t u; double f; } u; u.f = f; raw = u.u; }
-    iob_store(p, t->width, t->be, raw);
+    sp_iob_store(p, t->width, t->be, raw);
   }
   else {
-    iob_store(p, t->width, t->be, iob_int_operand(ty, val));
+    sp_iob_store(p, t->width, t->be, iob_int_operand(ty, val));
   }
   return off + t->width;
 }
@@ -440,7 +427,7 @@ sp_int sp_IOBuffer_get_i(sp_IOBuffer *b, sp_int ty, sp_int off) {
   const IobType *t = &iob_types[ty];
   iob_readable(b);
   const uint8_t *p = iob_value_ptr(b, off, t->width);
-  uint64_t raw = iob_load(p, t->width, t->be);
+  uint64_t raw = sp_iob_load(p, t->width, t->be);
   if (t->sign) { int shift = 64 - 8 * t->width; return (int64_t)(raw << shift) >> shift; }
   return (sp_int)raw;
 }
@@ -451,7 +438,7 @@ double sp_IOBuffer_get_f(sp_IOBuffer *b, sp_int ty, sp_int off) {
   const IobType *t = &iob_types[ty];
   iob_readable(b);
   const uint8_t *p = iob_value_ptr(b, off, t->width);
-  uint64_t raw = iob_load(p, t->width, t->be);
+  uint64_t raw = sp_iob_load(p, t->width, t->be);
   if (t->width == 4) { union { uint32_t u; float f; } u; u.u = (uint32_t)raw; return u.f; }
   union { uint64_t u; double f; } u; u.u = raw; return u.f;
 }

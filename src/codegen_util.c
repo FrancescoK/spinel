@@ -6,6 +6,7 @@
 #include "value_pos.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
+#include <ctype.h>
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -326,12 +327,9 @@ static void ucall_resolver_report(Compiler *c) {
                 arm a probe dropped)
    A refusal raised while analysis runs is not codegen's and is not held.
    The report is printed by ucall_report, or at exit for a refused run. */
-/* The parser's stand-in for a Prism node kind it has no case for. It has no
-   node kind of its own (NK_NONE, which several passes read as "no node"), so
-   it is told by its type name. */
+/* The parser's stand-in for a Prism node kind it has no case for. */
 static int unsup_stand_in(const NodeTable *nt, int id) {
-  const char *ty = nt_type(nt, id);
-  return ty && sp_streq(ty, "UnsupportedNode");
+  return nt_kind(nt, id) == NK_UnsupportedNode;
 }
 
 typedef struct { int id; char *msg; } RefuseObs;
@@ -2037,7 +2035,7 @@ static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) 
   if (k == NK_NumberedParametersNode &&
       nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' &&
       (!nm[2] || !strncmp(nm + 2, "__b", 3))) return 1;
-  if (ty && sp_streq(ty, "ItParametersNode") && sp_streq(nm, "it")) return 1;
+  if (k == NK_ItParametersNode && sp_streq(nm, "it")) return 1;
   if (ty && (strstr(ty, "ParameterNode") || k == NK_LocalVariableTargetNode)) {
     const char *pn = nt_str(nt, id, "name");
     /* shadow-renaming rewrites a param's node-table name to NAME__bpNN;
@@ -2728,12 +2726,10 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
         if (ivs_subtree_writes(nt, nt_ref(nt, u, "block"), ivn, 0)) kind = 2;
       }
     }
-    /* `o.x ||= v` and its kin write through the writer too (a
-       CallOperatorWriteNode has no kind of its own: among the unkinded) */
-    static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_NONE };
+    /* `o.x ||= v` and its kin write through the writer too */
+    static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_CallOperatorWriteNode };
     for (int q = 0; q < 3 && kind == 1; q++)
       NT_FOREACH_KIND(nt, CW[q], u) {
-        if (CW[q] == NK_NONE && !(nt_type(nt, u) && sp_streq(nt_type(nt, u), "CallOperatorWriteNode"))) continue;
         const char *rn = nt_str(nt, u, "name"), *wn = nt_str(nt, u, "write_name");
         if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) { kind = 2; break; }
       }
@@ -7309,14 +7305,20 @@ static int stmt_wr_walk(Compiler *c, int stmt, int id, const char ***names, int 
   if (id < 0) return 0;
   if (id < c->stmt_wr_cap) c->stmt_wr_mark[id] = stmt;
   NodeKind k = nt_kind(nt, id);
-  if (k == NK_NumberedParametersNode) return 1;
+  if (k == NK_NumberedParametersNode || k == NK_ItParametersNode) return 1;
   int lv_bind = k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
                 k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
                 k == NK_LocalVariableTargetNode;
   int param = k == NK_RequiredParameterNode || k == NK_OptionalParameterNode ||
               k == NK_RestParameterNode || k == NK_KeywordRestParameterNode ||
               k == NK_OptionalKeywordParameterNode || k == NK_BlockParameterNode;
-  if (k == NK_NONE) {
+  /* a kind read by its type name: NK_NONE, and the kinds that had no
+     enumerator when this was written and carry a name (a block-local
+     variable, an operator write's reader, a required keyword) or are a
+     parameter with none (`...`, `**nil`) */
+  if (k == NK_NONE || k == NK_BlockLocalVariableNode || k == NK_CallOperatorWriteNode ||
+      k == NK_ForwardingParameterNode || k == NK_NoKeywordsParameterNode ||
+      k == NK_RequiredKeywordParameterNode) {
     const char *ty = nt_type(nt, id);
     if (!ty) return 0;
     if (nt_str(nt, id, "name")) param = 1;
@@ -7546,8 +7548,7 @@ void arity_message(char *out, size_t n, int given, int min, int max, const char 
   snprintf(out, n, "wrong number of arguments (given %d, expected %s%s)", given, exp, kw ? kw : "");
 }
 static int param_is_required_kw(const NodeTable *nt, int p) {
-  const char *t = nt_type(nt, p);
-  return t && sp_streq(t, "RequiredKeywordParameterNode");
+  return nt_kind(nt, p) == NK_RequiredKeywordParameterNode;
 }
 /* The required-keyword suffix of a parameter list: a def's ParametersNode or
    a block's BlockParametersNode. "" when it has none. */
@@ -7603,7 +7604,7 @@ int scope_refuses_keywords(Compiler *c, const Scope *m) {
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn >= 0 && nt_kind(c->nt, pn) == NK_BlockParametersNode) pn = nt_ref(c->nt, pn, "parameters");
   int kr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kr >= 0 && nt_type(c->nt, kr) && sp_streq(nt_type(c->nt, kr), "NoKeywordsParameterNode");
+  return kr >= 0 && nt_kind(c->nt, kr) == NK_NoKeywordsParameterNode;
 }
 
 /* ---- The keyword ArgumentErrors, one builder beside the arity one ----

@@ -52,8 +52,12 @@ int an_face_pinned(int node) {
 }
 TyKind face_of(int node) {
   int fn; TyKind fk;
+  /* An inference pin is newer than any codegen face: the emitter opens its
+     faces before it asks the inference. Inside the block of an iterator on
+     an Array subclass instance, an inference of another read of that
+     instance pins its own receiver, and the pin answers for it. */
+  if (an_npin > 0 && an_pin[an_npin - 1].node == node) return an_pin[an_npin - 1].kind;
   if (view_face_top(&fn, &fk)) return fn == node ? fk : TY_UNKNOWN;
-  if (an_npin > 0) return an_pin[an_npin - 1].node == node ? an_pin[an_npin - 1].kind : TY_UNKNOWN;
   return TY_UNKNOWN;
 }
 int face_active(void) {
@@ -4108,7 +4112,6 @@ static TyKind infer_array_new_fill(Compiler *c, int fill) {
 static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && (is_hash_constructor(name))) {
-    const char *rty = nt_type(nt, recv);
     NodeKind rk = nt_kind(nt, recv);
     /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
     if (rk == NK_ConstantPathNode) {
@@ -4166,8 +4169,8 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
     }
-    if (rty && (rk == NK_ConstantReadNode || rk == NK_LocalVariableReadNode ||
-                (rk == NK_CallNode && is_struct_call(c, recv)))) {  /* inline Data.define(...).new (#2682) */
+    if (rk == NK_ConstantReadNode || rk == NK_LocalVariableReadNode ||
+        (rk == NK_CallNode && is_struct_call(c, recv))) {  /* inline Data.define(...).new (#2682) */
       const char *cn = rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
       int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {
@@ -10729,7 +10732,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_RegularExpressionNode ||
       nk == NK_InterpolatedRegularExpressionNode) return TY_REGEX;
   /* `/(?<n>..)/ =~ str` -- the value is the `=~` result (match index or nil). */
-  if (sp_streq(ty, "MatchWriteNode")) return TY_POLY;
+  if (nk == NK_MatchWriteNode) return TY_POLY;
   if (nk == NK_InterpolatedStringNode)  return TY_STRING;
   if (nk == NK_XStringNode || nk == NK_InterpolatedXStringNode) return TY_STRING;
   if (nk == NK_InterpolatedSymbolNode)  return TY_SYMBOL;

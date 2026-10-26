@@ -895,7 +895,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           if (sv2 && (is_shift_op(sv2)) &&
               infer_type(c, argv[0]) == TY_PROC) { *out = TY_POLY; return 1; }
         }
-        const char *a0ty = nt_type(nt, argv[0]);
         NodeKind a0k = nt_kind(nt, argv[0]);
         /* a symbol literal, or a local statically holding one (s = :+) -- and
            only when there is no block: `inject(:s, &:+)` gives the operator in
@@ -904,7 +903,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            call from the elements while the emitter folded from the seed. */
         int is_sym_op = argc == 1 && nt_ref(nt, id, "block") < 0 &&
                         sym_static_value(c, argv[0]) != NULL;
-        (void)a0ty;
         /* `reduce(nil) { |acc, t| acc.nil? ? t : acc + t }` -- the idiom for a
            fold with no natural identity. The seed says nothing about the
            accumulator except that it starts empty, so the fold is boxed: a
@@ -1217,8 +1215,8 @@ int infer_arysub_call(Compiler *c, int id, TyKind *out) {
      included */
   int an = comp_arysub_kernel_array(c, id);
   if (an >= 0 && comp_ty_ary_root(c, infer_type(c, an)) >= 0) { *out = infer_type(c, an); return 1; }
-  /* already re-inferring this receiver as its builtin: under a codegen view
-     face face_of reads only the view's, so ask the inference's own pins */
+  /* already re-inferring this receiver as its builtin: face_of reads the
+     newest pin and the codegen face, so ask every pin of the inference */
   if (recv < 0 || face_of(recv) != TY_UNKNOWN || an_face_pinned(recv)) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
   if (!comp_arysub_call(c, id, rt, &k)) return infer_arysub_arg_call(c, id, rt, out);

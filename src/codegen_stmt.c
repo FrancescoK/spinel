@@ -7435,9 +7435,8 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_
   int rest_nid = nt_ref(nt, pat, "rest");
   /* a trailing comma (`in [0, 1, ]`) is an ImplicitRestNode: same length
      semantics as a splat rest (at-least), it just binds nothing. */
-  int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                  (nt_kind(nt, rest_nid) == NK_SplatNode ||
-                   sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
+  int has_rest = rest_nid >= 0 && (nt_kind(nt, rest_nid) == NK_SplatNode ||
+                                   nt_kind(nt, rest_nid) == NK_ImplicitRestNode);
   int npost = 0;
   const int *posts = nt_arr(nt, pat, "posts", &npost);
   /* With a rest the array need only be long enough to hold the leading
@@ -7498,7 +7497,7 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_
 static int hash_pat_closed(const NodeTable *nt, int pat) {
   int rest = nt_ref(nt, pat, "rest");
   if (rest >= 0)
-    return nt_type(nt, rest) && sp_streq(nt_type(nt, rest), "NoKeywordsParameterNode");
+    return nt_kind(nt, rest) == NK_NoKeywordsParameterNode;
   int en = 0;
   nt_arr(nt, pat, "elements", &en);
   return en == 0;
@@ -7597,14 +7596,14 @@ static int emit_pm_subcond_expr(Compiler *c, int spat, const char *elem, Buf *b)
   const char *pty = nt_type(nt, spat);
   NodeKind pk = nt_kind(nt, spat);
   if (!pty) return 0;
-  if (pk == NK_LocalVariableTargetNode || sp_streq(pty, "ImplicitNode") ||
-      pk == NK_SplatNode || sp_streq(pty, "ImplicitRestNode"))
+  if (pk == NK_LocalVariableTargetNode || pk == NK_ImplicitNode ||
+      pk == NK_SplatNode || pk == NK_ImplicitRestNode)
     return 0;
   if (pk == NK_CapturePatternNode)
     return emit_pm_subcond_expr(c, nt_ref(nt, spat, "value"), elem, b);
   if (pk == NK_ArrayPatternNode) { emit_pm_array_cond(c, spat, elem, 1, 1, b); return 1; }
   if (pk == NK_HashPatternNode) { emit_pm_hash_cond_poly(c, spat, elem, b); return 1; }
-  if (sp_streq(pty, "FindPatternNode")) { emit_pm_find_cond_poly(c, spat, elem, b); return 1; }
+  if (pk == NK_FindPatternNode) { emit_pm_find_cond_poly(c, spat, elem, b); return 1; }
   int tn = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = %s; ", tn, elem);
   Buf sub; memset(&sub, 0, sizeof sub);
@@ -7623,10 +7622,9 @@ static int emit_pm_subcond_expr(Compiler *c, int spat, const char *elem, Buf *b)
 #define PM_HASH_VAL_REJECT (-2)
 static int pm_hash_value_class(const NodeTable *nt, int vpat) {
   if (vpat < 0 || !nt_type(nt, vpat)) return -1;
-  const char *vty = nt_type(nt, vpat);
   NodeKind vk = nt_kind(nt, vpat);
   if (vk == NK_ConstantReadNode) return vpat;
-  if (sp_streq(vty, "ImplicitNode") || vk == NK_LocalVariableTargetNode) return -1;
+  if (vk == NK_ImplicitNode || vk == NK_LocalVariableTargetNode) return -1;
   if (vk == NK_CapturePatternNode) {
     int cv = nt_ref(nt, vpat, "value");
     if (cv >= 0 && nt_kind(nt, cv) == NK_ConstantReadNode) return cv;
@@ -8277,9 +8275,8 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
     /* Length check, then each required literal element must equal its pattern
        (short-circuits after the length guard so element access is in-bounds). */
     int rest_nid = nt_ref(nt, pat, "rest");
-    int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                    (nt_kind(nt, rest_nid) == NK_SplatNode ||
-                     sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
+    int has_rest = rest_nid >= 0 && (nt_kind(nt, rest_nid) == NK_SplatNode ||
+                                     nt_kind(nt, rest_nid) == NK_ImplicitRestNode);
     int npost = 0;
     const int *posts = nt_arr(nt, pat, "posts", &npost);
     /* likewise a nested-array post can never sit inside a typed array. */
@@ -8353,7 +8350,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
     if (val >= 0) return emit_pm_cond_subj(c, val, t, pt, subj, b);
     return 0;
   }
-  if (sp_streq(pty, "FindPatternNode")) {
+  if (pk == NK_FindPatternNode) {
     /* nested find (a hash value, an array element): scan the boxed array.
        The top-level case-arm form keeps its own statement emitter (it must
        also expose the window position for binding). */
@@ -8686,13 +8683,13 @@ static int emit_pm_bind_container_poly(Compiler *c, int spat, const char *src,
   NodeKind sk = nt_kind(nt, spat);
   if (!sty) return 0;
   if (sk != NK_ArrayPatternNode && sk != NK_HashPatternNode &&
-      !sp_streq(sty, "FindPatternNode")) return 0;
+      sk != NK_FindPatternNode) return 0;
   int sub = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "sp_RbVal _t%d = %s;\n", sub, src);
   char se[24]; snprintf(se, sizeof se, "_t%d", sub);
   if (sk == NK_HashPatternNode) emit_pm_bind_hash_poly(c, spat, se, indent, b, sc);
-  else if (sp_streq(sty, "FindPatternNode")) emit_pm_bind_find_poly(c, spat, se, indent, b, sc);
+  else if (sk == NK_FindPatternNode) emit_pm_bind_find_poly(c, spat, se, indent, b, sc);
   else emit_pm_bind_poly(c, spat, se, 1, indent, b, sc);
   return 1;
 }
@@ -8805,7 +8802,7 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
     /* resolve the bound local name: shorthand uses the key symbol */
     const char *lnm = NULL;
     int sub = -1;
-    if (vpat < 0 || (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "ImplicitNode"))) {
+    if (vpat < 0 || (nt_kind(nt, vpat) == NK_ImplicitNode)) {
       if (nt_kind(nt, key) == NK_SymbolNode) lnm = nt_str(nt, key, "value");
     }
     else if (nt_kind(nt, vpat) == NK_LocalVariableTargetNode)
@@ -8985,14 +8982,15 @@ static int pm_diag_lit_bound(const NodeTable *nt, int n) {
 static int pm_diag_ok(Compiler *c, int pat) {
   const NodeTable *nt = c->nt;
   if (pat < 0) return 1;
-  const char *ty = nt_type(nt, pat);
   NodeKind ty_k = nt_kind(nt, pat);
-  if (!ty) return 0;
-  static const char *const leaves[] = {
-    "LocalVariableTargetNode", "ImplicitNode", "SplatNode", "ImplicitRestNode",
-    "IntegerNode", "FloatNode", "StringNode", "SymbolNode", "NilNode", "TrueNode",
-    "FalseNode", "ConstantReadNode", "PinnedVariableNode", NULL };
-  for (int i = 0; leaves[i]; i++) if (sp_streq(ty, leaves[i])) return 1;
+  switch (ty_k) {
+  case NK_LocalVariableTargetNode: case NK_ImplicitNode: case NK_SplatNode: case NK_ImplicitRestNode:
+  case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode: case NK_NilNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_ConstantReadNode: case NK_PinnedVariableNode:
+    return 1;
+  default:
+    break;
+  }
   if (re_lit_index(c, pat) >= 0) return 1;
   /* `^(expr)` is evaluated again: only a variable read can be */
   if (ty_k == NK_PinnedExpressionNode) {
@@ -9006,7 +9004,7 @@ static int pm_diag_ok(Compiler *c, int pat) {
   if (ty_k == NK_AlternationPatternNode)
     return pm_diag_ok(c, nt_ref(nt, pat, "left")) && pm_diag_ok(c, nt_ref(nt, pat, "right"));
   if (ty_k == NK_CapturePatternNode) return pm_diag_ok(c, nt_ref(nt, pat, "value"));
-  int is_arr = ty_k == NK_ArrayPatternNode, is_find = sp_streq(ty, "FindPatternNode");
+  int is_arr = ty_k == NK_ArrayPatternNode, is_find = ty_k == NK_FindPatternNode;
   int is_hash = ty_k == NK_HashPatternNode;
   if (!is_arr && !is_find && !is_hash) return 0;
   int k = nt_ref(nt, pat, "constant");
@@ -9021,7 +9019,7 @@ static int pm_diag_ok(Compiler *c, int pat) {
       if (!pm_diag_ok(c, nt_ref(nt, elms[i], "value"))) return 0;
     }
     int rest = nt_ref(nt, pat, "rest");
-    return rest < 0 || (nt_type(nt, rest) && (sp_streq(nt_type(nt, rest), "NoKeywordsParameterNode") ||
+    return rest < 0 || (nt_type(nt, rest) && (nt_kind(nt, rest) == NK_NoKeywordsParameterNode ||
                                               nt_kind(nt, rest) == NK_AssocSplatNode));
   }
   int n = 0;
@@ -9042,7 +9040,7 @@ static int pm_diag_deconstructs(Compiler *c, int pat) {
   if (k == NK_AlternationPatternNode)
     return pm_diag_deconstructs(c, nt_ref(nt, pat, "left")) || pm_diag_deconstructs(c, nt_ref(nt, pat, "right"));
   if (k == NK_CapturePatternNode) return pm_diag_deconstructs(c, nt_ref(nt, pat, "value"));
-  return k == NK_ArrayPatternNode || sp_streq(ty, "FindPatternNode") || k == NK_HashPatternNode;
+  return k == NK_ArrayPatternNode || k == NK_FindPatternNode || k == NK_HashPatternNode;
 }
 
 /* The inspect of a value pattern, as a C string expression. */
@@ -9092,7 +9090,6 @@ static void emit_pm_diag_fail(PmDiag *d, const char *cond, const char *msg, int 
 static void emit_pm_diag(Compiler *c, int pat, const char *v, PmDiag *d, int ind, Buf *b) {
   const NodeTable *nt = c->nt;
   if (pat < 0) return;
-  const char *ty = nt_type(nt, pat);
   NodeKind ty_k = nt_kind(nt, pat);
   if (ty_k == NK_CapturePatternNode) { emit_pm_diag(c, nt_ref(nt, pat, "value"), v, d, ind, b); return; }
   if (ty_k == NK_AlternationPatternNode) {
@@ -9106,7 +9103,7 @@ static void emit_pm_diag(Compiler *c, int pat, const char *v, PmDiag *d, int ind
     free(cb.p);
     return;
   }
-  int is_arr = ty_k == NK_ArrayPatternNode, is_find = sp_streq(ty, "FindPatternNode");
+  int is_arr = ty_k == NK_ArrayPatternNode, is_find = ty_k == NK_FindPatternNode;
   int is_hash = ty_k == NK_HashPatternNode;
   if (!is_arr && !is_find && !is_hash) {
     Buf cb; memset(&cb, 0, sizeof cb);
@@ -9737,7 +9734,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
             vchk = nt_ref(nt, vchk, "value");
           if (vchk >= 0 && nt_type(nt, vchk) &&
               nt_kind(nt, vchk) != NK_LocalVariableTargetNode &&
-              !sp_streq(nt_type(nt, vchk), "ImplicitNode")) {
+              nt_kind(nt, vchk) != NK_ImplicitNode) {
             int vtmp = ++g_tmp;
             emit_indent(b, indent + 1);
             emit_ctype(c, hvt, b);
@@ -9881,7 +9878,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
           /* resolve the bound local name: shorthand uses the key symbol */
           const char *lnm = NULL;
           int vsub = -1;   /* nested container value pattern to descend into */
-          if (vpat < 0 || (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "ImplicitNode"))) {
+          if (vpat < 0 || (nt_kind(nt, vpat) == NK_ImplicitNode)) {
             if (nt_kind(nt, key) == NK_SymbolNode) lnm = nt_str(nt, key, "value");
           }
           else if (nt_kind(nt, vpat) == NK_LocalVariableTargetNode) {
@@ -9899,7 +9896,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
           if (vsub >= 0 && hvt == TY_POLY && nt_type(nt, vsub) &&
               (nt_kind(nt, vsub) == NK_HashPatternNode ||
                nt_kind(nt, vsub) == NK_ArrayPatternNode ||
-               sp_streq(nt_type(nt, vsub), "FindPatternNode"))) {
+               nt_kind(nt, vsub) == NK_FindPatternNode)) {
             Buf vg; memset(&vg, 0, sizeof vg);
             buf_printf(&vg, "sp_%sHash_get(_t%d, ", hn, arm_t);
             emit_hash_key(c, key, ty_hash_key(arm_pt), &vg); buf_puts(&vg, ")");
@@ -12023,7 +12020,7 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
       }
       if (k == NK_IfNode || k == NK_UnlessNode || k == NK_ElseNode ||
           k == NK_AndNode || k == NK_OrNode || k == NK_BreakNode ||
-          k == NK_NextNode || k == NK_ReturnNode || sp_streq(ty, "ArgumentsNode"))
+          k == NK_NextNode || k == NK_ReturnNode || k == NK_ArgumentsNode)
         break;
       /* a nested while / until: it runs inside this loop's region (it opens
          none of its own while g_hc is set), so its reads take this header
@@ -21258,8 +21255,8 @@ static int case_arms_all_diverge(Compiler *c, int id) {
   if (!whens || nw == 0) return 0;
   for (int w = 0; w < nw; w++) {
     /* an `in` pattern arm is a CaseMatchNode's business, not this one */
-    const char *wt = nt_type(nt, whens[w]);
-    if (!wt || !sp_streq(wt, "WhenNode")) return 0;
+    NodeKind wk = nt_kind(nt, whens[w]);
+    if (wk != NK_WhenNode) return 0;
     if (!stmts_diverge(c, nt_ref(nt, whens[w], "statements"))) return 0;
   }
   return 1;
@@ -22370,17 +22367,13 @@ static int subtree_only_computes(Compiler *c, int id) {
       TyKind t = comp_ntype(c, id);
       return t == TY_INT || t == TY_FLOAT;
     }
-    case NK_ParenthesesNode: case NK_StatementsNode:
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArgumentsNode:
       break;
     case NK_CallNode:
       if (!call_is_scalar_op(c, id) && !call_is_math_or_clock(nt, id)) return 0;
       break;
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, id);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return 0;
-      break;
-    }
+    default:
+      return 0;
   }
   for (int i = 0; i < nt_num_refs(nt, id); i++)
     if (!subtree_only_computes(c, nt_ref_at(nt, id, i))) return 0;

@@ -120,6 +120,12 @@ int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
 }
 
+/* A name every builtin class that has it (Module, Symbol, Method, Thread,
+   Encoding, NameError) answers by reading a value, running no Ruby code */
+int is_plain_builtin_reader(const char *n) {
+  return sp_streq(n, "name");
+}
+
 /* `tap` alone: it answers its receiver, where then/yield_self answer the
    block's value (is_tap_alias takes all three) */
 int is_tap_name(const char *n) {
