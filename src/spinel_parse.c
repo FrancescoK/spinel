@@ -281,9 +281,18 @@ static const uint8_t *g_owner;
 static int sp_line_map_n = 0;
 static char **sp_file_table;   /* id -> path; defined with the map builder below */
 
+/* --load-model=graph: a require is a LoadNode (sp_flatten_call_as, below) */
+int g_load_model_graph = 0;
+/* --load-model=graph: the file being flattened, as the table's file list
+   has it (0 is the entry); set with g_parser for each file */
+static int g_flat_file = 0;
+
 /* The file a node was written in when that is a required file, or NULL for
-   the entry script (file id 0) and when the map could not be built. */
+   the entry script (file id 0) and when the map could not be built. Under
+   --load-model=graph each file is flattened from its own parse, which says
+   which file it is. */
 static const char *sp_node_required_file(const pm_node_t *node) {
+  if (g_load_model_graph) return g_flat_file > 0 ? sp_file_table[g_flat_file] : NULL;
   if (sp_line_map_n <= 0) return NULL;
   pm_line_column_t lc = pm_newline_list_line_column(&g_parser->newline_list,
                                                     node->location.start,
@@ -344,8 +353,6 @@ static size_t prism_kind_to_pascal(const char *raw, char *out, size_t out_size) 
 
 /* ---- Forward ---- */
 static int flatten(pm_node_t *node);
-/* --load-model=graph: a require is a LoadNode (sp_flatten_call_as, below) */
-int g_load_model_graph = 0;
 static int sp_load_call(const pm_call_node_t *n);
 static int sp_flatten_call_as(int id, pm_call_node_t *n);
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
@@ -1152,7 +1159,7 @@ static int flatten_node(pm_node_t *node) {
                                                       g_parser->start_line);
     int32_t bl = lc.line;
     int orig = bl;
-    int fid = 0;
+    int fid = g_load_model_graph ? g_flat_file : 0;
     if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) {
       orig = sp_line_orig[bl];
       fid = sp_line_file[bl];
@@ -6407,21 +6414,10 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
       free(text);
       break;
     }
-    /* the file's own lines, frozen-literal pragma and path, read by
-       flatten as the spliced buffer's map gives them */
-    size_t nl = 1;
-    for (const char *p = text; *p; p++) nl += *p == '\n';
-    int fid = sp_intern_file(path);
-    sp_line_map_n = (int)nl;
-    sp_line_file = realloc(sp_line_file, sizeof(int) * (nl + 2));
-    sp_line_orig = realloc(sp_line_orig, sizeof(int) * (nl + 2));
-    sp_line_pop = calloc(nl + 2, sizeof(int)); sp_disp_file = calloc(nl + 2, sizeof(int)); sp_disp_line = calloc(nl + 2, sizeof(int));
-    if (!sp_line_file || !sp_line_orig || !sp_line_pop || !sp_disp_file || !sp_disp_line) {
-      fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
-    }
-    for (size_t l = 0; l < nl + 2; l++) { sp_line_file[l] = fid; sp_line_orig[l] = (int)l; }
-    free(g_fsl_lines);
-    g_fsl_lines = sp_fsl_make(text, sp_src_file_fsl(&file), &g_fsl_nlines);
+    /* the file in the table's file list, in graph order: flatten stamps a
+       node's position from this parse */
+    g_flat_file = sp_intern_file(path);
+    sp_src_file_fsl(&file);   /* (its pragma's warning; every literal is frozen) */
     g_parser = &file.parser;
     g_source_file = source_file;
     g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
@@ -6430,14 +6426,10 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     emit_int(root, "load_file", f);
     for (int id = start; id < node_counter; id++)
       if (nt_kind(out_nt, id) == NK_LoadNode) sp_load_resolve(&g, f, id);
-    free(sp_line_pop); free(sp_disp_file); free(sp_disp_line);
-    sp_line_pop = sp_disp_file = sp_disp_line = NULL;
     sp_src_file_free(&file);
     free(text);
     done = f + 1;
   }
-  sp_line_map_n = 0;
-  free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (done < g.nfile) {   /* a file that could not be read or parsed, reported above */
