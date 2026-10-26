@@ -8568,10 +8568,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       /* a block that breaks: the walk's helper answers the String, or the
          break's value through the call's own break wrapper -- the
          (walk; s) form below lets its tail take the break's place */
-      const char *swh = sp_streq(rn, "each_char") ? "__enumw_str_chars_with_index" :
-                        sp_streq(rn, "each_line") ? "__enumw_str_lines_with_index" :
-                        sp_streq(rn, "each_byte") ? "__enumw_str_bytes_with_index" :
-                                                    "__enumw_str_codepoints_with_index";
+      const LowerRow *swr = lower_row_nt(nt, id, LR_STR_WALK);
       int wblk = nt_ref(nt, id, "block");
       int wsrc = nt_ref(nt, recv, "receiver");
       int wa = nt_ref(nt, id, "arguments"), wan = 0;
@@ -8579,15 +8576,14 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       NodeKind wsk = wsrc >= 0 ? nt_kind(nt, wsrc) : NK_NilNode;
       int wvar = wsk == NK_LocalVariableReadNode || wsk == NK_InstanceVariableReadNode;
       /* and a String that is no variable: the (walk; s) form below cannot
-         read it again, and the walk alone answered the pieces */
-      if (wblk >= 0 && nt_kind(nt, wblk) == NK_BlockNode && wsrc >= 0 && wan <= 1 &&
-          (wan == 0 || nt_kind(nt, wav[0]) != NK_SplatNode) &&
-          (block_body_breaks(nt, nt_ref(nt, wblk, "body")) || !wvar) && ecw_helper_spliced(nt, swh)) {
+         read it again, and the walk alone answered the pieces (the shape is
+         LR_STR_WALK's row) */
+      if (swr && (block_body_breaks(nt, nt_ref(nt, wblk, "body")) || !wvar) && ecw_helper_spliced(nt, swr->target)) {
         int nargs = nt_new_node(nt, "ArgumentsNode");
         if (nargs < 0) continue;
         int na[2] = { wsrc, wan ? wav[0] : -1 };
         nt_node_set_arr(nt, nargs, "arguments", na, wan + 1);
-        nt_node_set_str(nt, id, "name", swh);
+        nt_node_set_str(nt, id, "name", swr->target);
         nt_node_set_ref(nt, id, "receiver", -1);
         nt_node_set_ref(nt, id, "arguments", nargs);
         comp_grow_node_arrays(c);
@@ -10821,12 +10817,9 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
      an ArgumentsNode, even for its no-argument shapes, so gating on "no
      ArgumentsNode at all" never matched a probe and respond_to?(:to_set)
      answered false on a concrete receiver for a method that otherwise
-     works (K-026). */
-  int tsargs = nt_ref(nt, id, "arguments");
-  int tsargc = 0;
-  if (tsargs >= 0) nt_arr(nt, tsargs, "arguments", &tsargc);
-  if (nm && sp_streq(nm, "to_set") &&
-      tsargc == 0 && comp_class_index(c, "Set") >= 0) {
+     works (K-026). The shape is LR_TO_SET's row. */
+  const LowerRow *tsr = lower_row_nt(nt, id, LR_TO_SET);
+  if (tsr && comp_class_index(c, tsr->target) >= 0) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv >= 0) {
       TyKind rt = infer_type(c, recv);
@@ -10834,7 +10827,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       if (rt == TY_UNKNOWN && g_infer_optimistic) decline = 1;   /* not yet known */
       /* Set#to_set is the receiver itself, which is also what keeps a
          `to_set.to_set` chain from nesting one Set.new inside another (#3623) */
-      else if (ty_is_object(rt) && ty_object_class(rt) == comp_class_index(c, "Set") &&
+      else if (ty_is_object(rt) && ty_object_class(rt) == comp_class_index(c, tsr->target) &&
                nt_ref(nt, id, "block") < 0) {
         nt_node_set_int(nt, id, "enum_self_result", recv);
         nt_node_set_str(nt, id, "name", "itself");
@@ -10859,7 +10852,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
           nt_node_set_int(nt, toa, "made_to_a", 1);
           nt_node_set_ref(nt, toa, "receiver", recv);
           nt_node_set_int(nt, toa, "to_set", 1);
-          nt_node_set_str(nt, cst, "name", "Set");
+          nt_node_set_str(nt, cst, "name", tsr->target);
           nt_node_set_arr(nt, one, "arguments", &toa, 1);
           nt_node_set_str(nt, id, "name", "new");
           nt_node_set_ref(nt, id, "receiver", cst);
@@ -11066,22 +11059,19 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       }
     }
   }
-  /* <stored enumerator>.with_object(memo) { }: drain to an array and ride
-     the array each_with_object machinery (covers both statement and value
-     forms, with the memo's own typing). Type-aware, hence fixpoint. */
-  if (nm && sp_streq(nm, "with_object")) {
+  /* <stored enumerator>.with_object(memo) { } (LR_WITH_OBJECT's row): drain
+     to an array and ride the array each_with_object machinery (covers both
+     statement and value forms, with the memo's own typing). Type-aware,
+     hence fixpoint. */
+  const LowerRow *wor = lower_row_nt(nt, id, LR_WITH_OBJECT);
+  if (wor) {
     int erecv = nt_ref(nt, id, "receiver");
-    int eblk = nt_ref(nt, id, "block");
-    int ea = nt_ref(nt, id, "arguments");
-    int eac = 0;
-    if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
-    if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR &&
-        !enumerator_own_with_object(c, id)) {
+    if (infer_type(c, erecv) == TY_ENUMERATOR && !enumerator_own_with_object(c, id)) {
       int toa = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, toa, "name", "to_a");
       nt_node_set_int(nt, toa, "made_to_a", 1);
       nt_node_set_ref(nt, toa, "receiver", erecv);
-      nt_node_set_str(nt, id, "name", "each_with_object");
+      nt_node_set_str(nt, id, "name", wor->target);
       nt_node_set_ref(nt, id, "receiver", toa);
       comp_grow_node_arrays(c);
       c->nscope[toa] = c->nscope[id];
@@ -12310,30 +12300,25 @@ static int desugar_socket_open(Compiler *c) {
 /* system(cmd, ..., out: File::NULL) -> __sp_system_spawn(cmd, ..., out: ...):
    CRuby's system is a spawn and a wait, and Process.spawn already takes the
    options, so a call with keyword arguments goes to builtins/system_spawn.rb,
-   which the parser spliced for it. Only when that method is there and the
-   program defines no `system` of its own; any other system call keeps its
-   direct path (and its refusals). */
+   which the parser spliced for it (the shape is LR_SYSTEM_OPTIONS's row).
+   Only when that method is there and the program defines no `system` of
+   its own; any other system call keeps its direct path (and its refusals). */
 static int desugar_system_options(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
+  const LowerRow *row = lower_row_of(LR_SYSTEM_OPTIONS);
   int n0 = nt->count, helper = 0, changed = 0;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefNode || nt_ref(nt, id, "receiver") >= 0) continue;
     const char *dn = nt_str(nt, id, "name");
     if (!dn) continue;
-    if (sp_streq(dn, "system")) return 0;
-    if (sp_streq(dn, "__sp_system_spawn")) helper = 1;
+    if (sp_streq(dn, row->name)) return 0;
+    if (sp_streq(dn, row->target)) helper = 1;
   }
   if (!helper) return 0;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "system") || nt_ref(nt, id, "receiver") >= 0) continue;
-    if (nt_ref(nt, id, "block") >= 0) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0;
-    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 2 || nt_argv_kwh(nt, av, an) < 0) continue;
-    nt_node_set_str(nt, id, "name", "__sp_system_spawn");
+    const LowerRow *r = lower_row_nt(nt, id, LR_SYSTEM_OPTIONS);
+    if (!r) continue;
+    nt_node_set_str(nt, id, "name", r->target);
     changed = 1;
   }
   return changed;
@@ -12403,23 +12388,19 @@ static int desugar_user_backtick(Compiler *c) {
 /* IO.popen(cmd, mode) { |io| ... } / IO.popen(cmd, &:read) ->
    IO.__sp_popen(...): the block form reads the command's output through a
    pipe and reaps the child (builtins/io_popen.rb, spliced by the parser).
-   Only when that method is there and the call has a block; the blockless
-   form keeps its refusal. */
+   Only when that method is there and the call has a block (LR_POPEN_BLOCK's
+   row); the blockless form keeps its refusal. */
 static int desugar_io_popen_block(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
+  const LowerRow *row = lower_row_of(LR_POPEN_BLOCK);
   int n0 = nt->count, helper = 0, changed = 0;
   for (int id = 0; id < n0 && !helper; id++)
     if (nt_kind(nt, id) == NK_DefNode && nt_ref(nt, id, "receiver") >= 0 &&
-        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "__sp_popen")) helper = 1;
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), row->target)) helper = 1;
   if (!helper) return 0;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "popen") || nt_ref(nt, id, "block") < 0) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn || !sp_streq(rn, "IO")) continue;
+    const LowerRow *r = lower_row_nt(nt, id, LR_POPEN_BLOCK);
+    if (!r) continue;
     /* only a read: the mode, when given, is a literal "r", "rb", "rt", ...
        A write mode or one known only at run time keeps the compile-time
        refusal (#7199) rather than a NotImplementedError when it runs. */
@@ -12429,7 +12410,7 @@ static int desugar_io_popen_block(Compiler *c) {
       const char *mode = nt_kind(nt, av[1]) == NK_StringNode ? nt_str(nt, av[1], "content") : NULL;
       if (!mode || mode[0] != 'r' || strchr(mode, '+')) continue;
     }
-    nt_node_set_str(nt, id, "name", "__sp_popen");
+    nt_node_set_str(nt, id, "name", r->target);
     changed = 1;
   }
   return changed;

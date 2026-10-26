@@ -4400,9 +4400,9 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
-  const char *fn = sp_streq(name, "httpdate") ? "sp_time_s_httpdate"
-                 : (sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) ? "sp_time_s_rfc2822"
-                 : (sp_streq(name, "xmlschema") || sp_streq(name, "iso8601")) ? "sp_time_s_xmlschema"
+  const char *fn = is_time_native_format(name)
+                   ? (is_iso8601_alias(name) ? "sp_time_s_xmlschema" : is_rfc2822_alias(name) ? "sp_time_s_rfc2822"
+                                                                                       : "sp_time_s_httpdate")
                  : sp_streq(name, "parse") ? "sp_time_s_parse"
                  : NULL;
   if (!fn || !sp_feature_required("time")) return NULL;
@@ -4605,4 +4605,63 @@ int an_super_backtick_shape(Compiler *c, int id, const Scope *s, int *arg) {
     if (rn != 1 || kn != 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0) return 0;
   }
   return 2;
+}
+
+/* ---- The lowerings onto a library's method (builtin_names.h, LowerRow) ----
+   Whether call `call` passes lo..hi arguments (hi -1: no bound; no
+   ArgumentsNode counts as none) of the kinds `flags` allows, and has the
+   block and the receiver they ask for. */
+static int lower_args_fit(const NodeTable *nt, int call, int lo, int hi, unsigned flags) {
+  int a = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (an < lo || (hi >= 0 && an > hi)) return 0;
+  int blk = nt_ref(nt, call, "block");
+  if ((flags & LR_NO_BLOCK) && blk >= 0) return 0;
+  if ((flags & LR_BLOCK) && blk < 0) return 0;
+  if ((flags & (LR_BLOCK_LITERAL | LR_BREAKS)) && (blk < 0 || nt_kind(nt, blk) != NK_BlockNode)) return 0;
+  if ((flags & LR_HAS_RECV) && nt_ref(nt, call, "receiver") < 0) return 0;
+  if ((flags & LR_NO_ARGS) && a >= 0) return 0;
+  if ((flags & LR_KWHASH) && nt_argv_kwh(nt, av, an) < 0) return 0;
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if ((flags & (LR_NO_SPLAT | LR_PLAIN_ARGS)) && k == NK_SplatNode) return 0;
+    if ((flags & LR_PLAIN_ARGS) && (k == NK_KeywordHashNode || k == NK_BlockArgumentNode)) return 0;
+  }
+  if ((flags & LR_BREAKS) && !block_body_breaks(nt, nt_ref(nt, blk, "body"))) return 0;
+  return 1;
+}
+/* Is `n` the constant read `name`? */
+static int lower_const_is(const NodeTable *nt, int n, const char *name) {
+  return n >= 0 && nt_kind(nt, n) == NK_ConstantReadNode && nt_str(nt, n, "name") &&
+         sp_streq(nt_str(nt, n, "name"), name);
+}
+/* The row of `family` whose shape call `id` has, or NULL: the desugar that
+   lowers the family asks it before its own value, type and program tests. */
+const LowerRow *lower_row_nt(const NodeTable *nt, int id, int family) {
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return NULL;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  const LowerRow *r;
+  for (int i = 0; (r = lower_row_at(i)) != NULL; i++) {
+    if (r->family != family || !sp_streq(r->name, nm)) continue;
+    if (r->recv == LR_RECV_NONE && recv >= 0) continue;
+    if (r->recv == LR_RECV_SOME && recv < 0) continue;
+    if (r->recv == LR_RECV_CONST && !lower_const_is(nt, recv, r->recv_name)) continue;
+    if (r->recv == LR_RECV_CALL) {
+      const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+      if (!rn || !sp_streq(rn, r->recv_name)) continue;
+      if (r->recv_const && !lower_const_is(nt, nt_ref(nt, recv, "receiver"), r->recv_const)) continue;
+      if (!lower_args_fit(nt, recv, r->rargc_min, r->rargc_max, r->rflags)) continue;
+    }
+    if (r->recv_calls && recv >= 0 && nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
+      const char *rn = nt_str(nt, recv, "name");
+      int k = 0;
+      while (rn && r->recv_calls[k] && !sp_streq(rn, r->recv_calls[k])) k++;
+      if (!rn || !r->recv_calls[k]) continue;
+    }
+    if (!lower_args_fit(nt, id, r->argc_min, r->argc_max, r->flags)) continue;
+    return r;
+  }
+  return NULL;
 }
