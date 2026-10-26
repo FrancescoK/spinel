@@ -4014,7 +4014,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          ivar array filled only from outside kept its empty literal's default
          and every element read back as an Integer (#3781). */
       int gcid = -1, cside = 0;
-      int all_owners = 0;
+      int all_owners = 0, tl_getter = -1;
       int grecv = nt_ref(nt, recv, "receiver");
       if (grecv >= 0 && nt_kind(nt, grecv) == NK_ConstantReadNode) {
         /* `Tbl.cache[k] = v`: the class-side getter */
@@ -4090,11 +4090,28 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else {
         Scope *caller = comp_scope_of(c, recv);
-        /* (a top-level method's value: the Arrays it answers widen where
-           they are built) */
-        if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
-        gcid = caller->class_id;
-        cside = caller->is_cmethod;
+        /* `def fs = @fs` at the top level, called there (`fs << 2`): main is
+           the self, and the getter hands out main's ivar, a slot of the
+           Toplevel pseudo-class. Only in the top-level statements, where the
+           self is main: a top-level method runs on whatever object calls it
+           (`obj.send(:add, x)`), an instance_eval block on its receiver, and
+           a module main extends answers the name first. */
+        int at_main = (!caller || (caller->class_id < 0 && !caller->is_cmethod && caller->def_node < 0)) &&
+                      self_is_main(c, recv);
+        if (at_main && !comp_toplevel_mod_defines(c, mname, 1))
+          tl_getter = comp_method_index(c, mname);
+        const char *tl_ivs[8];
+        if (tl_getter >= 0 && (c->scopes[tl_getter].class_id >= 0 || c->scopes[tl_getter].is_cmethod ||
+                               getter_exit_ivars(c, tl_getter, tl_ivs, 8) <= 0))
+          tl_getter = -1;
+        if (tl_getter >= 0) gcid = comp_class_index(c, "Toplevel");
+        /* (another top-level method's value: the Arrays it answers widen
+           where they are built) */
+        else if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
+        else {
+          gcid = caller->class_id;
+          cside = caller->is_cmethod;
+        }
       }
       if (!all_owners && (gcid < 0 || gcid >= c->nclasses)) continue;
       /* The write lands in whichever ivar the getter returns, and a subclass
@@ -4110,7 +4127,15 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int *gcls = tcls + cap;
       const char **giv = tiv + cap;
       int ntg = 0;
-      for (int k = all_owners ? 0 : gcid; k < (all_owners ? c->nclasses : gcid + 1); k++) {
+      if (tl_getter >= 0) {
+        const char *ivs[8];
+        int niv = getter_exit_ivars(c, tl_getter, ivs, 8);
+        for (int j = 0; j < niv && ntg < cap; j++) {
+          int ivx = comp_ivar_index(&c->classes[gcid], ivs[j]);
+          if (ivx >= 0) { tcls[ntg] = gcid; tiv[ntg] = c->classes[gcid].ivars[ivx]; ntg++; }
+        }
+      }
+      for (int k = all_owners ? 0 : gcid; tl_getter < 0 && k < (all_owners ? c->nclasses : gcid + 1); k++) {
         if (all_owners && !class_owns_getter(c, k, mname)) continue;
         int ng = getter_ivar_targets(c, k, cside, mname, gcls, giv, cap);
         for (int j = 0; j < ng; j++) {
