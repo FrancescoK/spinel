@@ -3280,6 +3280,13 @@ static void emit_bsearch_param(Compiler *c, int block, const char *bp, const cha
   else
   buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid);
 }
+/* An Array#fill offset with its nil: a nil start is 0, a nil length runs
+   to the end */
+static void emit_fill_offset(Compiler *c, int node, Buf *b) {
+  if (node_has_oint_form(c, node)) { emit_oint_expr(c, node, TY_INT, b); return; }
+  buf_puts(b, "sp_oint_of("); emit_int_expr(c, node, b); buf_puts(b, ")");
+}
+
 static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind res, int *out) {
   if (!(recv >= 0 && ty_is_array(rt))) return 0;
   if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) { *out = 1; return 1; }
@@ -3599,13 +3606,14 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = 0;", ts);
-        if (argc >= 1) { buf_printf(g_pre, " _t%d = ", ts); emit_int_expr(c, argv[0], g_pre);
-                         buf_printf(g_pre, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts); }
+        /* a nil start is 0 and a nil length runs to the end */
+        if (argc >= 1) { buf_printf(g_pre, " { sp_oint _ts = "); emit_fill_offset(c, argv[0], g_pre);
+                         buf_printf(g_pre, "; if (!_ts.nil) _t%d = _ts.v; } if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, ts, tn, ts, ts); }
         buf_puts(g_pre, "\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = _t%d;", te, tn);
-        if (argc == 2) { buf_printf(g_pre, " { sp_int _tl = "); emit_int_expr(c, argv[1], g_pre);
-                         buf_printf(g_pre, "; if (_tl < 0) _tl = 0; _t%d = _t%d + _tl; }", te, ts); }
+        if (argc == 2) { buf_printf(g_pre, " { sp_oint _tl = "); emit_fill_offset(c, argv[1], g_pre);
+                         buf_printf(g_pre, "; if (!_tl.nil) { if (_tl.v < 0) _tl.v = 0; _t%d = _t%d + _tl.v; } }", te, ts); }
         buf_puts(g_pre, "\n");
       }
       emit_indent(g_pre, g_indent);
@@ -14693,8 +14701,8 @@ static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
   return n;
 }
 
-/* `a.fill(v[, start[, len]])` on a boxed Array with Integer offsets and no
-   block: sp_poly_fill fills the Array itself where the value fits it,
+/* `a.fill(v[, start[, len]])` on a boxed Array with Integer offsets (each
+   may be nil) and no block: sp_poly_fill fills the Array itself where the value fits it,
    rather than a boxed copy of the whole Array written back. */
 static int face_fill_in_place(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -14745,10 +14753,10 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     int tv = ++g_tmp;
     buf_printf(val, "({ sp_RbVal _t%d = ", tv);
     emit_boxed(c, argv[0], val);
-    buf_printf(val, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _s = ", tv);
-    if (argc >= 2) emit_expr(c, argv[1], val); else buf_puts(val, "0");
-    buf_puts(val, "; sp_int _l = ");
-    if (argc == 3) emit_expr(c, argv[2], val); else buf_puts(val, "0");
+    buf_printf(val, "; SP_GC_ROOT_RBVAL(_t%d); sp_oint _s = ", tv);
+    if (argc >= 2) emit_fill_offset(c, argv[1], val); else buf_puts(val, "sp_oint_nil()");
+    buf_puts(val, "; sp_oint _l = ");
+    if (argc == 3) emit_fill_offset(c, argv[2], val); else buf_puts(val, "sp_oint_nil()");
     buf_printf(val, "; sp_poly_fill(_t%d, _t%d, %d, _s, _l); })", t, tv, argc);
     free(rb.p);
     return TY_POLY;
