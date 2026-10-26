@@ -4823,7 +4823,7 @@ typedef struct {
                                                parser is not moved once it has parsed */
   int *boot; int nboot, bootcap;            /* the edges of the libraries loaded at the
                                                program's start (sp_graph_boot) */
-  int *entered;                             /* [file] where it runs in load order (sp_load_order) */
+  int *entered;                             /* [file] where it runs in load order (--dump-load-graph) */
 } SpLoadGraph;
 
 /* The file `path`'s id, added the first time it is named. */
@@ -7337,27 +7337,6 @@ static int sp_load_path(const SpLoadGraph *g, int f, int s, int *fs, int *ss, in
     t = ss[i]; ss[i] = ss[n - 1 - i]; ss[n - 1 - i] = t;
   }
   return n;
-}
-
-/* Whether top-level statement `sa` of file `fa` runs before statement `sb`
-   of file `fb` (indices into each file's own statements; a boot library's
-   load is below 0 in the entry's): SP_ORDER_BEFORE or SP_ORDER_AFTER, and
-   SP_ORDER_UNKNOWN when either file is not placed, or when one statement
-   runs the other's file (it starts first and ends last). The one answer to
-   "which top-level code runs first" across files: the expansions ask it of
-   the trees, and analysis of the node table through it. */
-enum { SP_ORDER_BEFORE = -1, SP_ORDER_UNKNOWN = 0, SP_ORDER_AFTER = 1 };
-static int sp_load_order(const SpLoadGraph *g, int fa, int sa, int fb, int sb) {
-  int n = g->nfile + 1;
-  int *buf = malloc(sizeof(int) * (size_t)n * 4);
-  if (!buf) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  int *fa_ = buf, *sa_ = buf + n, *fb_ = buf + 2 * n, *sb_ = buf + 3 * n;
-  int na = sp_load_path(g, fa, sa, fa_, sa_, n), nb = sp_load_path(g, fb, sb, fb_, sb_, n), r = SP_ORDER_UNKNOWN;
-  for (int i = 0; na && nb && i < na && i < nb; i++) {
-    if (sa_[i] != sb_[i]) { r = sa_[i] < sb_[i] ? SP_ORDER_BEFORE : SP_ORDER_AFTER; break; }
-  }
-  free(buf);
-  return r;
 }
 
 /* --dump-load-graph: where each file's top level runs, as the statements
