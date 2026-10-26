@@ -10724,6 +10724,10 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out, int *s
   else if (comp_ty_value_obj(c, vt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, vt, tv, g_pre); buf_puts(g_pre, "\n"); }
   else if (needs_root(vt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tv); }
   if (so) view_bind_o(argv[0], "_t%d", tv);
+  /* a nil operand reads as nil's C value, as a hoisted one does: bound to
+     the boxed temp, an `Origin?` parameter was initialized from an sp_RbVal
+     (the operand already ran into the temp) */
+  else if (vt == TY_NIL || vt == TY_VOID) view_bind(argv[0], "0");
   else view_bind(argv[0], "_t%d", tv);
   buf_puts(b, "({ (void)(");
   *vt_out = boxed ? TY_POLY : vt;
