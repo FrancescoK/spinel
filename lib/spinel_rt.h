@@ -251,7 +251,7 @@ void sp_warning_warn(const char *msg);
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
 
 /* The unresolved-call gate (codegen_call.c) raises NoMethodError through this
-   single recognizable token under SPINEL_GATE_RAISE, so coercion sites can
+   single recognizable token, so coercion sites can
    detect and coerce it (sp_poly_to_i(sp_raise_nomethod(...)) etc.) rather than
    parse a comma-expression. Returns sp_RbVal so it composes in a poly slot;
    NORETURN, so the value is never produced. Unused when the gate stays silent. */
@@ -776,10 +776,7 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
 /* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at
    file scope, near the class _new function. SP_POOL_NEW(CLS, scan)
    replaces the body of an `sp_gc_alloc(sizeof(sp_CLS), NULL, scan)`
-   call, popping from the per-class free-list if non-empty.
-   Default cap can be overridden at runtime via SP_POOL_MAX envvar
-   (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
-   at exit. */
+   call, popping from the per-class free-list if non-empty. */
 #define SP_POOL_DEFAULT_MAX 1048576L
 /* Pool concurrency (threaded build). The free lists stay SHARED across
    workers. Pushes (recycle) happen only during the stop-the-world sweep,
@@ -855,10 +852,6 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   static long sp_##CLS##_pool_pops = 0; \
   static long sp_##CLS##_pool_freed = 0; \
   static long sp_##CLS##_pool_hwm = 0; \
-  SP_CONSTRUCTOR static void sp_##CLS##_pool_init(void) { \
-    const char *m = getenv("SP_POOL_MAX"); \
-    if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
-  } \
   /* Runs only from the sweep, so no pop can run concurrently -- but the sweep
      is PARALLEL in the threaded build (sp_sched_par_sweep: every parked worker
      sweeps its own slot), so several workers push onto this one list at once.
@@ -867,13 +860,6 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
      atomically. Single-threaded: the exact plain code this always had. */ \
   static void sp_##CLS##_pool_recycle(sp_gc_hdr *h) { \
     SP_POOL_RECYCLE_BODY(CLS, h) \
-  } \
-  SP_DESTRUCTOR static void sp_##CLS##_pool_report(void) { \
-    const char *e = getenv("SP_POOL_REPORT"); \
-    if (!e || !e[0] || e[0] == '0') return; \
-    fprintf(stderr, #CLS " pool: pops=%ld pushes=%ld over_cap_freed=%ld hwm=%ld retained=%ld cap=%ld\n", \
-      sp_##CLS##_pool_pops, sp_##CLS##_pool_pushes, sp_##CLS##_pool_freed, \
-      sp_##CLS##_pool_hwm, sp_##CLS##_pool_count, sp_##CLS##_pool_max); \
   }
 
 /* With the slab on the pool is bypassed: the slab's own allocation is as

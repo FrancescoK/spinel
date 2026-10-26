@@ -1715,7 +1715,6 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
     if (iv < 0 || class_ivar_pinned(ci, nm) || ci->ivar_int_table[iv]) return 0;
     if (ty_is_array(ci->ivar_types[iv]) && ci->ivar_types[iv] != TY_POLY_ARRAY) {
-      sp_ivwatch(nm, "aliased_local_push", ci->ivar_types[iv], TY_POLY_ARRAY);
       ivar_set_type(ci, iv, TY_POLY_ARRAY);
       changed = 1;
     }
@@ -3702,7 +3701,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     LocalVar *slot_lv = NULL;   /* the local whose type slot is, if one */
     int slot_reset = 0;  /* slot is a plain local, reset+recomputed per iteration:
                             net change is the stash compare's job, not this site's */
-    const char *watch_nm = NULL;  /* ivar name for SP_IVWATCH, NULL for locals */
+    const char *watch_nm = NULL;  /* the ivar's name, NULL for a local */
     int watch_cls = -1;           /* the ivar's class, with watch_nm */
     if (rty && sp_streq(rty, "LocalVariableReadNode")) {
       const char *rnm = nt_str(nt, recv, "name");
@@ -4172,7 +4171,6 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           ty_ref_set(c, tslot, TY_POLY_POLY_HASH);
           widen_ivar_hash_literals(c, &ivw_ix, tcls[ti], tiv[ti]);
         }
-        sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
         if (*tslot != tbefore) changed = 1;
         if (tbefore != TY_POLY_ARRAY && *tslot == TY_POLY_ARRAY)
           changed |= widen_ivar_array_params(c, &ivw_ix, tcls[ti], tiv[ti]);
@@ -4217,12 +4215,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          (*slot != before && ivar_has_param_write(c, &ivw_ix, watch_cls, watch_nm)))) {
       ty_ref_set(c, slot, TY_POLY_POLY_HASH);
       widen_ivar_hash_literals(c, &ivw_ix, watch_cls, watch_nm);
-      sp_ivwatch(watch_nm, "usage_idxwrite_misfit", before, *slot);
       changed = 1;
       continue;
     }
     if (!fits) continue;
-    sp_ivwatch(watch_nm, is_push ? "usage_push" : (is_idx_write ? "usage_idxwrite" : "usage_read"), before, *slot);
     if (*slot != before && !slot_reset) changed = 1;
     if (watch_nm && before != TY_POLY_ARRAY && *slot == TY_POLY_ARRAY)
       changed |= widen_ivar_array_params(c, &ivw_ix, watch_cls, watch_nm);
@@ -7286,15 +7282,11 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
    bind_args_params, and it closes with the pass. The write pass's stores
    (infer_write_container_usage) share the same way: a boxed receiver's
    arrays are the same from each of its stores, and a change it reports
-   ends the generation at the next store or walk.
-
-   With SPINEL_WBAS_SHADOW set, a visit skipped on the strength of a record
-   another walk from outside left is made all the same, in a fresh
-   generation, and must answer 0 and write nothing (wbas_shadow_end). */
-typedef struct { unsigned gen, walk; TyKind elem; signed char depth; } WbasRec;
+   ends the generation at the next store or walk. */
+typedef struct { unsigned gen; TyKind elem; signed char depth; } WbasRec;
 static struct { int cap; WbasRec *rec[2]; } wbas_memo;
 static struct { int cap, used; const LocalVar **key; WbasRec *rec; } wbas_lmemo;
-static unsigned wbas_gen = 1, wbas_gen_next = 1, wbas_walk = 0;
+static unsigned wbas_gen = 1, wbas_gen_next = 1;
 static int wbas_shared = 0;
 static void wbas_touch(void) {
   if (++wbas_gen_next == 0) {
@@ -7305,24 +7297,16 @@ static void wbas_touch(void) {
   }
   wbas_gen = wbas_gen_next;
 }
-static int wbas_shadow_on(void) {
-  static int on = -1;
-  if (on < 0) on = getenv("SPINEL_WBAS_SHADOW") != NULL;
-  return on;
-}
-/* 1 when `r` lets a visit at `depth` carrying `elem` be skipped; *shadow
-   says it was left by another walk from outside */
-static int wbas_rec_holds(const WbasRec *r, TyKind elem, int depth, int *shadow) {
-  if (r->gen != wbas_gen || r->elem != elem || r->depth > depth) return 0;
-  *shadow = wbas_shadow_on() && r->walk != wbas_walk;
-  return 1;
+/* 1 when `r` lets a visit at `depth` carrying `elem` be skipped */
+static int wbas_rec_holds(const WbasRec *r, TyKind elem, int depth) {
+  return r->gen == wbas_gen && r->elem == elem && r->depth <= depth;
 }
 static void wbas_rec_put(WbasRec *r, TyKind elem, int depth) {
   if (r->gen == wbas_gen && r->elem == elem && r->depth <= depth) return;
-  r->gen = wbas_gen; r->walk = wbas_walk; r->elem = elem; r->depth = (signed char)depth;
+  r->gen = wbas_gen; r->elem = elem; r->depth = (signed char)depth;
 }
-static int wbas_seen(int f, int v, TyKind elem, int depth, int *shadow) {
-  return v >= 0 && v < wbas_memo.cap && wbas_rec_holds(&wbas_memo.rec[f][v], elem, depth, shadow);
+static int wbas_seen(int f, int v, TyKind elem, int depth) {
+  return v >= 0 && v < wbas_memo.cap && wbas_rec_holds(&wbas_memo.rec[f][v], elem, depth);
 }
 static void wbas_note(Compiler *c, int f, int v, TyKind elem, int depth, unsigned gen) {
   if (v < 0 || gen != wbas_gen) return;
@@ -7346,10 +7330,10 @@ static int wbas_local_slot(const LocalVar *lv) {
   while (wbas_lmemo.rec[h].gen == wbas_gen && wbas_lmemo.key[h] != lv) h = (h + 1) & mask;
   return (int)h;
 }
-static int wbas_local_seen(const LocalVar *lv, TyKind elem, int depth, int *shadow) {
+static int wbas_local_seen(const LocalVar *lv, TyKind elem, int depth) {
   if (!wbas_lmemo.cap) return 0;
   int h = wbas_local_slot(lv);
-  return wbas_lmemo.key[h] == lv && wbas_rec_holds(&wbas_lmemo.rec[h], elem, depth, shadow);
+  return wbas_lmemo.key[h] == lv && wbas_rec_holds(&wbas_lmemo.rec[h], elem, depth);
 }
 static void wbas_local_note(const LocalVar *lv, TyKind elem, int depth, unsigned gen) {
   if (gen != wbas_gen) return;
@@ -7378,21 +7362,6 @@ static void wbas_local_note(const LocalVar *lv, TyKind elem, int depth, unsigned
   }
   wbas_rec_put(&wbas_lmemo.rec[h], elem, depth);
 }
-/* A shadowed visit runs in a generation of its own, which a record of
-   another walk cannot be in; the one it interrupted resumes after it. */
-static unsigned wbas_shadow_begin(void) {
-  unsigned outer = wbas_gen;
-  wbas_touch();
-  return outer;
-}
-static void wbas_shadow_end(unsigned outer, unsigned gen, int got, const char *what, int node) {
-  if (got || wbas_gen != gen) {
-    fprintf(stderr, "spinel: internal error: widen_boxed_array_sources skipped the %s at node %d, which %s\n",
-            what, node, got ? "widens" : "writes the analysis state");
-    exit(70);
-  }
-  wbas_gen = outer;
-}
 /* infer_param_types' per-node step: a change it reported ends the
    generation, and is kept in *any */
 static void wbas_share_step(int *changed, int *any) {
@@ -7413,22 +7382,17 @@ static void wbas_share_end(void) {
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
   if (depth == 0) {
-    wbas_walk++;
     if (!wbas_shared) wbas_touch();
     /* a change the sharing pass reported since its last step ends the
        generation before this walk reads what the earlier ones left */
     else if (wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
   }
   v = nt_paren_single(c->nt, v);
-  int ch = 0, shadow = 0;
-  if (!wbas_seen(0, v, elem, depth, &shadow)) {
+  int ch = 0;
+  if (!wbas_seen(0, v, elem, depth)) {
     unsigned gen = wbas_gen;
     ch = widen_boxed_array_sources_1(c, v, elem, depth);
     if (!ch) wbas_note(c, 0, v, elem, depth, gen);
-  }
-  else if (shadow) {
-    unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-    wbas_shadow_end(outer, gen, widen_boxed_array_sources_1(c, v, elem, depth), "value", v);
   }
   if (depth == 0 && !wbas_shared) wbas_touch();
   return ch;
@@ -7549,14 +7513,7 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
     /* every read of the local walks the same: keyed by the local, not by
        the read, which a function of W writes copying one local into
        another reads W times */
-    int shadow = 0;
-    if (wbas_local_seen(lv, elem, depth, &shadow)) {
-      if (shadow) {
-        unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-        wbas_shadow_end(outer, gen, widen_boxed_local_sources(c, sc, nm, lv, elem, depth), "local read", v);
-      }
-      return 0;
-    }
+    if (wbas_local_seen(lv, elem, depth)) return 0;
     unsigned gen = wbas_gen;
     int ch = widen_boxed_local_sources(c, sc, nm, lv, elem, depth);
     if (!ch) wbas_local_note(lv, elem, depth, gen);
@@ -7634,15 +7591,8 @@ static int widen_method_value_sources(Compiler *c, int v, int mi, TyKind elem, i
    values of a Hash), as far as its literals show them (container_literals). */
 static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth);
 static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) {
-  int shadow = 0;
   if (depth > 6) return 0;
-  if (wbas_seen(1, r, elem, depth, &shadow)) {
-    if (shadow) {
-      unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-      wbas_shadow_end(outer, gen, widen_boxed_elem_sources_1(c, r, elem, depth), "container", r);
-    }
-    return 0;
-  }
+  if (wbas_seen(1, r, elem, depth)) return 0;
   unsigned gen = wbas_gen;
   int ch = widen_boxed_elem_sources_1(c, r, elem, depth);
   if (!ch) wbas_note(c, 1, r, elem, depth, gen);

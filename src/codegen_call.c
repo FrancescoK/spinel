@@ -22254,8 +22254,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       /* An unresolved call raises NoMethodError by default, matching CRuby
          (a dead poly-dispatch arm still emits nothing; a live one raising here
          is exactly what CRuby would do). SPINEL_WARN_UNRESOLVED lists every
-         such site at compile time for auditing a port; SPINEL_GATE_RAISE=0 is
-         the transition escape hatch back to the old silent typed default. The
+         such site at compile time for auditing a port. The
          coercion paths the raise value flows through (return slots, string/int
          receiver+arg slots, ...) recognize the sp_raise_nomethod token and
          keep the side-effect -- see the staged groundwork notes below. */

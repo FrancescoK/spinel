@@ -971,8 +971,8 @@ extern int g_line_map;
 void emit_current_line_directive(Compiler *c, Buf *b);
 extern int g_debug;
 extern int g_check_stores;
-extern int g_gate_raise;  /* SPINEL_GATE_RAISE: raise NoMethodError at the
-                             unresolved-call gate instead of a silent default. */
+extern int g_gate_raise;  /* codegen has started: the unresolved-call gate
+                             raises NoMethodError (codegen_program) */
 /* Emit a `#line` directive for node `id` into `b`, deduped against the last
    one emitted. No-op when g_line_map is off or the node has no line stamp. */
 void emit_line_directive(Compiler *c, int id, Buf *b);
@@ -2409,8 +2409,7 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
 
 /* #7483: a block's body typed again under one arm's type for its parameter
    (the caller set the parameter's slot to `kind`): each statement's
-   inference rerun, as the sites below did inline. SP_ARM_TRACE=1 names
-   each (site, block, kind) on stderr. */
+   inference rerun, as the sites below did inline. */
 enum { ARM_SITE_TAP = 1, ARM_SITE_EACH_SLICE, ARM_SITE_SPLIT, ARM_SITE_SCAN, ARM_SITE_STR_UPTO,
        ARM_SITE_COMB_CONS, ARM_SITE_FOLD_POLY, ARM_SITE_FOLD_POLY2, ARM_SITE_THEN, ARM_SITE_FOLD_PAIR };
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n);

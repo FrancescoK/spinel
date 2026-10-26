@@ -4286,10 +4286,6 @@ static int method_inline_hint(Compiler *c, Scope *s) {
   int si = (int)(s - c->scopes);
   if (si < 0 || si >= g_mih_nscopes) return 0;
   int limit = 90;
-  /* read once: this runs per method, and getenv walks the environment (#4966) */
-  static int env_rd; static const char *env_nodes;
-  if (!env_rd) { env_nodes = getenv("SPINEL_INLINE_NODES"); env_rd = 1; }
-  { const char *e = env_nodes; if (e && *e) limit = atoi(e); }
   if (g_mih_limit_override > 0) limit = g_mih_limit_override;
   if (limit <= 0) return 0;
   if (g_mih_nodes[si] > limit) return 0;
@@ -4793,12 +4789,8 @@ static void fi_build(Compiler *c) {
        (larger) body budget: render_pixel is past the hint's, and it is
        exactly the method worth forcing. */
     int sv = g_mih_limit_override, sv2 = g_mih_callers_override;
-    { static int env_rd; static const char *env_fn, *env_fc;
-      if (!env_rd) { env_fn = getenv("SPINEL_INLINE_FORCE_NODES"); env_fc = getenv("SPINEL_INLINE_FORCE_CALLERS"); env_rd = 1; }
-      const char *e = env_fn;
-      g_mih_limit_override = (e && *e) ? atoi(e) : 250;
-      const char *e2 = env_fc;
-      g_mih_callers_override = (e2 && *e2) ? atoi(e2) : 12; }
+    g_mih_limit_override = 250;
+    g_mih_callers_override = 12;
     int ok = (method_inline_hint(c, m) == 1);
     g_mih_limit_override = sv; g_mih_callers_override = sv2;
     if (!ok) continue;
@@ -4840,9 +4832,7 @@ static void fi_build(Compiler *c) {
      TOP of a too-long chain shortens every path through it while leaving the
      small leaves -- the ones worth forcing -- alone. */
   {
-    static int de_rd; static const char *de;
-    if (!de_rd) { de = getenv("SPINEL_INLINE_FORCE_DEPTH"); de_rd = 1; }
-    int dlimit = (de && *de) ? atoi(de) : 6;
+    int dlimit = 6;
     if (dlimit > 0 && ncand > 0 && ncand <= 2048) {
       int *dep = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
       if (dep) {
@@ -4881,12 +4871,10 @@ static void fi_build(Compiler *c) {
      frame it contributes, accumulate that at every call site, and stop forcing
      once a caller's absorbed total passes the budget. */
   {
-    static int fe_rd, report; static const char *fe;
-    if (!fe_rd) { fe = getenv("SPINEL_INLINE_FORCE_FRAME"); report = getenv("SPINEL_INLINE_FORCE_REPORT") != NULL; fe_rd = 1; }
     /* 64 KB, the fiber stack's size when this budget was set; the stack is
        256 KB now (#4496) and the budget stays, since what it bounds is how
        much the forcing may add to a frame, not the frame itself */
-    long fbudget = (fe && *fe) ? atol(fe) : 64 * 1024;
+    long fbudget = 64 * 1024;
     /* The budget exists for SP_FIBER_STACK_SIZE. A program that runs no user
        code on a fiber stack has the process stack (megabytes) to spend, and
        bounding it there costs real throughput -- optcarrot's hot path absorbs
@@ -4940,9 +4928,6 @@ static void fi_build(Compiler *c) {
               over = 1; cand[cal[j]] = 0; trimmed = 1;
             }
           }
-          if (over && report)
-            fprintf(stderr, "inline-force: %s absorbed past %ld bytes, trimmed\n",
-                    c->scopes[si].name ? c->scopes[si].name : "(top)", fbudget);
         }
         if (!trimmed) break;
       }
@@ -4959,9 +4944,7 @@ static void fi_build(Compiler *c) {
      the budget -- the frame pass above, in nodes, and on every program. A
      body whose calls or callees cannot all be listed counts as over. */
   {
-    static int se_rd; static const char *se;
-    if (!se_rd) { se = getenv("SPINEL_INLINE_FORCE_SIZE"); se_rd = 1; }
-    long sbudget = (se && *se) ? atol(se) : 100000;
+    long sbudget = 100000;
     if (sbudget > 0 && sbudget < LONG_MAX / 4 && ncand > 0 && ncand <= 2048) {
       long *size = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
       long *own = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
@@ -5045,11 +5028,7 @@ static const char *decide_method_site(Compiler *c, Scope *s) {
 }
 
 static int method_inline_force(Compiler *c, Scope *s) {
-  static int env_rd; static const char *env_force;
-  if (!env_rd) { env_force = getenv("SPINEL_INLINE_FORCE"); env_rd = 1; }
-  { const char *e = env_force;
-    if (e && *e) { if (*e == '0') return 0; }
-    else if (!g_inline_hot) return 0; }
+  if (!g_inline_hot) return 0;
   if (g_debug) return 0;
   const NodeTable *nt = c->nt;
   if (g_fi_nt != nt || g_fi_ntcount != nt->count || g_fi_nscopes != c->nscopes || !g_fi_state)
@@ -21055,12 +21034,8 @@ char *codegen_program(const NodeTable *nt) {
   g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
   g_check_stores = getenv("SPINEL_CHECK_STORES") ? 1 : 0;
   /* The unresolved-call gate raises NoMethodError, matching CRuby (a silent
-     wrong answer is the worst failure mode). SPINEL_GATE_RAISE=0 restores the
-     old silent typed default as a transition escape hatch. */
-  {
-    const char *e = getenv("SPINEL_GATE_RAISE");
-    g_gate_raise = (e && *e == '0') ? 0 : 1;
-  }
+     wrong answer is the worst failure mode); set here, as codegen starts */
+  g_gate_raise = 1;
   /* Feature flags must be computed BEFORE the preamble emit below: the
      symbol runtime, class-name table, inspect dispatch, and Marshal stub
      emissions are gated on them (a `puts "hello"` program gets none). */

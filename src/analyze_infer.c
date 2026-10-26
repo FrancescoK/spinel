@@ -158,27 +158,22 @@ static void imemo_rec_add(ImemoRec *r, int key) {
   if (r->n == IMEMO_DEPS) { r->n = -1; return; }
   r->dep[r->n++] = key;
 }
-/* SPINEL_IMEMO_TRACE=<node>: while that node's inference runs, every owner
-   noted and every nested inference is printed */
-static int g_imemo_trace_id = -2, g_imemo_trace;
-void imemo_dep_scope(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep scope %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : idx); }
-void imemo_dep_class(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep class %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : -(idx + 2)); }
-void imemo_dep_global(void) { if (g_imemo_trace) fprintf(stderr, "  dep program\n"); if (g_imemo_rec_n > 0) g_imemo_rec[g_imemo_rec_n - 1].n = -1; }
+void imemo_dep_scope(int idx) { if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : idx); }
+void imemo_dep_class(int idx) { if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : -(idx + 2)); }
+void imemo_dep_global(void) { if (g_imemo_rec_n > 0) g_imemo_rec[g_imemo_rec_n - 1].n = -1; }
 static unsigned long imemo_owner_ver(int key) {
   if (key == -1) return comp_global_ver;
   if (key >= 0) return key < comp_scope_ver_cap ? comp_scope_ver[key] : comp_global_ver;
   int k = -(key + 2);
   return k < comp_class_ver_cap ? comp_class_ver[k] : comp_global_ver;
 }
-/* does node id's kept answer still stand? (g_imemo_fail: why not, for the
-   statistics -- the program moved, a scope, a class, or it read the program) */
-static unsigned long g_imemo_fail[4], g_imemo_fail_why[8];
+/* does node id's kept answer still stand? */
 static int imemo_deps_hold(int id) {
   const ImemoDeps *d = &g_imemo_deps[id];
-  if (d->n < 0) { if (comp_ty_edits <= d->at) return 1; g_imemo_fail[3]++; return 0; }
-  if (comp_global_ver > d->at) { g_imemo_fail[0]++; g_imemo_fail_why[comp_touch_last_why & 7]++; return 0; }
+  if (d->n < 0) return comp_ty_edits <= d->at;
+  if (comp_global_ver > d->at) return 0;
   for (int i = 0; i < d->n; i++)
-    if (imemo_owner_ver(d->dep[i]) > d->at) { g_imemo_fail[d->dep[i] >= 0 ? 1 : 2]++; return 0; }
+    if (imemo_owner_ver(d->dep[i]) > d->at) return 0;
   return 1;
 }
 /* node id's owners join the inference open now */
@@ -195,56 +190,19 @@ static unsigned long g_imemo_shadow_hits, g_imemo_shadow_bad;
 static void imemo_shadow_report(void) {
   fprintf(stderr, "imemo-shadow: %lu kept answers, %lu differ\n", g_imemo_shadow_hits, g_imemo_shadow_bad);
 }
-/* SPINEL_IMEMO_STATS=1: per named pass (g_an_pass_cur), what the lookups
-   met -- an answer of this tree, one kept from an earlier tree, a node never
-   inferred, or a stale answer (a table changed since) -- and of the stale
-   ones, how many the fresh inference answered the same: the ceiling for a
-   memo that outlives the edits it does not depend on. */
-const char *g_an_pass_cur;
-typedef struct { const char *pass; unsigned long tree, kept, fresh, stale, stale_same, nested; } ImemoStat;
-static ImemoStat g_imemo_stats[256];
-static int g_imemo_nstats, g_imemo_stats_on = -1;
-static ImemoStat *imemo_stat(void) {
-  const char *p = g_an_pass_cur ? g_an_pass_cur : "(none)";
-  for (int i = 0; i < g_imemo_nstats; i++) if (g_imemo_stats[i].pass == p) return &g_imemo_stats[i];
-  if (g_imemo_nstats == 256) return &g_imemo_stats[255];
-  g_imemo_stats[g_imemo_nstats].pass = p;
-  return &g_imemo_stats[g_imemo_nstats++];
-}
-static void imemo_stats_report(void) {
-  fprintf(stderr, "imemo-stats: writes: program %lu, scopes %lu, classes %lu; stale because: program moved %lu, a scope %lu, a class %lu, read the program %lu\n",
-          comp_touch_count[0], comp_touch_count[1], comp_touch_count[2], g_imemo_fail[0], g_imemo_fail[1], g_imemo_fail[2], g_imemo_fail[3]);
-  fprintf(stderr, "imemo-stats: the program's writes by cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
-          comp_touch_why[0], comp_touch_why[1], comp_touch_why[2], comp_touch_why[3], comp_touch_why[4], comp_touch_why[5]);
-  fprintf(stderr, "imemo-stats: stale after a program write by its latest cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
-          g_imemo_fail_why[0], g_imemo_fail_why[1], g_imemo_fail_why[2], g_imemo_fail_why[3], g_imemo_fail_why[4], g_imemo_fail_why[5]);
-  fprintf(stderr, "imemo-stats: %-36s %12s %12s %12s %12s %12s %12s\n", "pass", "tree", "kept", "fresh", "stale", "stale-same", "nested");
-  for (int i = 0; i < g_imemo_nstats; i++) {
-    ImemoStat *s = &g_imemo_stats[i];
-    fprintf(stderr, "imemo-stats: %-36s %12lu %12lu %12lu %12lu %12lu %12lu\n", s->pass, s->tree, s->kept, s->fresh, s->stale, s->stale_same, s->nested);
-  }
-}
 /* A pass boundary: once the memo was emptied here, so that what came before
    a pass was never in doubt. The owners carry that now -- every write a pass
    makes, to a slot or to a fact inference reads, moves one -- so an answer
    crosses the boundary while its owners stand; the count still moves for the
-   memos keyed on it. SPINEL_IMEMO_BOUNDARY=1 empties the memo here as before. */
-static int g_imemo_bound = -1;
+   memos keyed on it. */
 void infer_memo_boundary(void) {
-  if (g_imemo_bound < 0) { const char *e = getenv("SPINEL_IMEMO_BOUNDARY"); g_imemo_bound = e && *e && *e != '0'; }
-  if (g_imemo_bound) comp_touch_global_r(1);
-  else comp_ty_edits++;
+  comp_ty_edits++;
 }
 static void imemo_mode_init(void) {
   const char *m = getenv("SPINEL_IMEMO");
   g_imemo_mode = !m ? IMEMO_ROUND : sp_streq(m, "tree") ? IMEMO_TREE :
                  sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_ROUND;
   if (g_imemo_mode == IMEMO_SHADOW) atexit(imemo_shadow_report);
-  const char *st = getenv("SPINEL_IMEMO_STATS");
-  g_imemo_stats_on = st && *st && *st != '0';
-  if (g_imemo_stats_on) atexit(imemo_stats_report);
-  const char *tr = getenv("SPINEL_IMEMO_TRACE");
-  if (tr && *tr) g_imemo_trace_id = atoi(tr);
   if (getenv("SPINEL_IMEMO_WHY")) comp_touch_log = calloc(COMP_TOUCH_LOG_CAP, sizeof(int));
 }
 static int g_infer_depth = 0;
@@ -12006,27 +11964,20 @@ TyKind infer_type(Compiler *c, int id) {
      per asker, exponential in the chain's length (#4467) */
   int memo_ok = infer_memo_usable();
   if (g_imemo_rec_n >= IMEMO_REC_MAX) g_imemo_rec[IMEMO_REC_MAX - 1].n = -1;
-  int kept = 0, stale = 0;
-  TyKind kept_t = TY_UNKNOWN, stale_t = TY_UNKNOWN;
+  int kept = 0;
+  TyKind kept_t = TY_UNKNOWN;
   ImemoDeps kept_d = { 0, 0, {0} };
-  ImemoStat *stat = g_imemo_stats_on > 0 && memo_ok ? imemo_stat() : NULL;
   if (memo_ok && id < g_imemo_cap) {
     unsigned st = g_imemo_stamp[id];
     if (st == g_imemo_gen) {
-      if (stat) stat->tree++;
-      if (g_imemo_trace) fprintf(stderr, "  %*stree-hit %d %s -> %s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]));
       imemo_rec_merge(id); return g_imemo_val[id];
     }
     /* an answer of an earlier tree, kept while the owners it read stand */
     if (st && g_imemo_mode != IMEMO_TREE && imemo_deps_hold(id)) {
-      if (stat) stat->kept++;
-      if (g_imemo_trace) fprintf(stderr, "  %*skept-hit %d %s -> %s (at %lu, owners %d)\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]), g_imemo_deps[id].at, g_imemo_deps[id].n);
       if (g_imemo_mode == IMEMO_ROUND) { imemo_rec_merge(id); return g_imemo_val[id]; }
       kept = 1; kept_t = g_imemo_val[id]; kept_d = g_imemo_deps[id];
     }
-    else if (st) { stale = 1; stale_t = g_imemo_val[id]; }
   }
-  if (stat && !kept) { if (g_infer_depth) stat->nested++; else if (stale) stat->stale++; else stat->fresh++; }
   /* the record of this inference: what it reads, noted by the lookups */
   unsigned long at0 = comp_ty_edits;
   int rec_i = -1;
@@ -12036,17 +11987,9 @@ TyKind infer_type(Compiler *c, int id) {
        neighbours' are read without a lookup */
     imemo_rec_add(&g_imemo_rec[rec_i], id < c->node_cap && c->nscope ? c->nscope[id] : -1);
   }
-  int tr_here = id == g_imemo_trace_id;
-  if (tr_here) { g_imemo_trace = 1; fprintf(stderr, "imemo-trace: node %d begins at edit %lu\n", id, comp_ty_edits); }
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
-  if (g_imemo_trace) {
-    const char *nm = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
-    fprintf(stderr, "  %*sinfer %d %s%s%s -> %s%s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?",
-            nm ? " " : "", nm ? nm : "", ty_name(t), kept ? " (kept differs?)" : "");
-  }
-  if (tr_here) g_imemo_trace = 0;
   ImemoRec rec = { -1, {0} };
   if (rec_i >= 0) {
     rec = g_imemo_rec[rec_i];
@@ -12141,7 +12084,6 @@ TyKind infer_type(Compiler *c, int id) {
     d->at = at0; d->n = rec.n;
     for (int i = 0; i < (rec.n > 0 ? rec.n : 0); i++) d->dep[i] = rec.dep[i];
   }
-  if (stat && stale && g_infer_depth == 0 && stale_t == t) stat->stale_same++;
   if (kept) {
     g_imemo_shadow_hits++;
     if (kept_t != t) {

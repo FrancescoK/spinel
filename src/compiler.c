@@ -82,9 +82,6 @@ unsigned long comp_ty_edits;
 unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
 int comp_scope_ver_cap, comp_class_ver_cap;
 int *comp_touch_log;
-unsigned long comp_touch_count[3];
-unsigned long comp_touch_why[8];
-int comp_touch_last_why;
 int comp_ref_owner(Compiler *c, TyRef r) {
   uintptr_t p = (uintptr_t)r;
   for (int k = 0; k < c->nclasses; k++) {
@@ -149,8 +146,8 @@ Compiler *comp_new(const NodeTable *nt) {
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
-     reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
-     are. An environment that exports the variable as "0" or "" means off. */
+     reads it, and so is "0". An environment that exports the variable as
+     "0" or "" means off. */
   c->share_strings = 1;
   comp_node_pbases(c);
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */

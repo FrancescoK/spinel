@@ -9950,7 +9950,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      is compiled but never called -- emits sp_box_nil(); coerce it to a
      const char* (yields "" at runtime) so the string ops below type-check. */
   if (rt == TY_STRING && sp_streq(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
-  /* Same shape, but the unresolved-call gate raised (SPINEL_GATE_RAISE): its
+  /* Same shape, but the unresolved-call gate raised: its
      sp_raise_nomethod(...) is a side-effecting poly value, so coerce it (the
      raise diverges before the result is read) rather than feed the raw
      sp_RbVal into a const char* string op. */

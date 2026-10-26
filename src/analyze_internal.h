@@ -441,7 +441,6 @@ void class_unpin_ivar(ClassInfo *ci, const char *name);
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt);
 int param_seed_holds(LocalVar *lv, TyKind at);
 int ret_seed_holds(Scope *s, TyKind r);
-void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw);
 void sp_narrow_memo_bump(void);
 int infer_write_types(Compiler *c);
 void seed_unsupplied_nil_defaults(Compiler *c);
@@ -450,7 +449,6 @@ void an_cls_facts(Compiler *c);   /* analyze_cls.c (#8530) */
 int an_builtin_only_p(void);
 unsigned long infer_memo_edits(const Compiler *c); /* what infer_type's memo is keyed by */
 int infer_memo_usable(void);                       /* ... and whether it is in use */
-extern const char *g_an_pass_cur;                  /* the named pass running (AN_NAMED), for its statistics */
 TyKind an_builtin_answer(Compiler *c, int id);
 /* the kind of a value of class self_cls: a reopened builtin's own (Time -> TY_TIME),
    else the object */

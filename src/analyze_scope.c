@@ -8,22 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Debug: trace a single ivar's type transitions. Gated by SP_IVWATCH=<name>
-   (bare name, no @). Zero-cost when the env var is unset. */
-void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw) {
-  if (old == nw || !name) return;
-  static const char *want = NULL;
-  static int inited = 0;
-  if (!inited) { want = getenv("SP_IVWATCH"); inited = 1; }
-  if (!want) return;
-  if (name[0] == '@') name++;        /* match with or without leading @ */
-  if (!sp_streq(want, name)) return;
-  fprintf(stderr, "[ivwatch %s] %-28s %d(%s) -> %d(%s)\n",
-          name, where, (int)old, ty_name(old < 1000 ? old : TY_POLY),
-          (int)nw, ty_name(nw < 1000 ? nw : TY_POLY));
-}
-
-
 /* `...` forwards the caller's args verbatim, so rather than a rest array we
    synthesize concrete positional params whose count is the widest positional
    arg count across this method's call sites (the compiler already knows the
@@ -10906,7 +10890,6 @@ static int nil_writes_apply(Compiler *c, NilWrites *w) {
       if (iv < 0 || class_ivar_pinned(ci, w->nm[k]) || ci->ivar_int_table[iv]) continue;
       TyKind t = nil_write_type(ci->ivar_types[iv]);
       if (t == ci->ivar_types[iv]) continue;
-      sp_ivwatch(w->nm[k], "ivar_nil_write", ci->ivar_types[iv], t);
       ivar_set_type(ci, iv, t);
       changed = 1;
     }
@@ -11534,7 +11517,6 @@ int infer_ivar_types(Compiler *c) {
          good (parameters only widen). */
       if (!class_ivar_pin_holds(ci, nm, vt) && !ci->ivar_int_table[iv]) {
         TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
-        sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
         if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
       }
       /* Propagate to transplanted copies (module included into a class).
@@ -11554,7 +11536,6 @@ int infer_ivar_types(Compiler *c) {
           int tiv = comp_ivar_intern(tc, nm);
           if (tc->ivar_int_table[tiv]) continue;
           TyKind tmerged = ivar_merge_with_write(tc->ivar_types[tiv], vt);
-          sp_ivwatch(nm, "transplant_merge", tc->ivar_types[tiv], tmerged);
           if (tmerged != tc->ivar_types[tiv]) { ivar_set_type(tc, tiv, tmerged); changed = 1; }
         }
       }
@@ -12185,12 +12166,6 @@ static void bc_check(Bc *b, int id, int in_defined) {
   char *hit = NULL;
   int r = bc_lookup(b, n, &hit);
   free(hit);
-  if (getenv("SPINEL_BCN_REPORT")) {
-    int ln = (int)nt_int(nt, id, "node_line", 0);
-    fprintf(stderr, "BCN %s line %d %s from [%s] -> %s\n", n, ln, in_defined ? "(defined?)" : "",
-            b->cref[b->ncref - 1], r == BC_FOUND ? "found" : r == BC_UNSURE ? "unsure" : "UNREACHABLE");
-    return;
-  }
   if (r != 0) return;
   if (in_defined) {
     /* defined?(X) answers nil, as for a name defined nowhere */

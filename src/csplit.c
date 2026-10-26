@@ -582,8 +582,6 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     nit++;
   }
   if (!ok) {
-    if (getenv("SPINEL_SPLIT_DEBUG"))
-      fprintf(stderr, "c_split: declined at item %d: %.200s\n", nit, nit < cap ? t + it[nit].st : "");
     free(t); free(it); return -1;
   }
 

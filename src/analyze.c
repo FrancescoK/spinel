@@ -6462,7 +6462,6 @@ static void seed_class_ivar(Compiler *c, int cur_ci, const char *a1, const char 
     char ivn[300];
     snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
     int idx = comp_ivar_intern(ci, ivn);
-    sp_ivwatch(a1, "rbs_seed_pin", ci->ivar_types[idx], t);
     ivar_set_type(ci, idx, t);
     class_pin_ivar(ci, ivn);
   }
@@ -15527,7 +15526,6 @@ static int narrow_object_arrays(Compiler *c) {
     }
     if (sl[i].ici >= 0) {
       ClassInfo *cl = &c->classes[sl[i].ici];
-      sp_ivwatch(cl->ivars[sl[i].iiv], "narrow_object_arrays", cl->ivar_types[sl[i].iiv], nty);
       ivar_set_type(cl, sl[i].iiv, nty); cl->ivar_oa_type[sl[i].iiv] = nty; cl->ivar_int_table[sl[i].iiv] = 1;
     }
     else if (sl[i].lv) {
@@ -20161,18 +20159,12 @@ enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK
    pass's `changed` is folded into `any` and cleared), so no walk reads a
    record left before a write it has not seen, and the records that survive
    to a later walk all answer 0 -- a walk that changed something ended the
-   generation it wrote in. SPINEL_SB_SHADOW=1 walks such a record's thing
-   again all the same and stops the compile if the walk changes anything. */
+   generation it wrote in. */
 enum { SBM_EXPR, SBM_RET, SBM_IVAR, SBM_LOCAL };
-typedef struct { unsigned long long key; int depth, res, gen, walk; unsigned char shadow; } SbMemo;
+typedef struct { unsigned long long key; int depth, res, gen, walk; } SbMemo;
 static SbMemo *sb_memo;
 static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest, sb_walk_id;
 static int sb_shared, *sb_share_changed, *sb_share_any, *sb_share_prev_changed, *sb_share_prev_any;
-static int sb_shadow = -1;
-static int sb_shadow_on(void) {
-  if (sb_shadow < 0) { const char *e = getenv("SPINEL_SB_SHADOW"); sb_shadow = e && *e && *e != '0'; }
-  return sb_shadow;
-}
 /* the pass's `changed` and `any`; the generation ends here, and again at the end */
 static void sb_share_begin(int *changed, int *any) {
   sb_share_prev_changed = sb_share_changed; sb_share_prev_any = sb_share_any;   /* (the pass around the rule: one level) */
@@ -20183,16 +20175,9 @@ static void sb_share_begin(int *changed, int *any) {
 static void sb_share_step(void) {
   if (sb_share_changed && *sb_share_changed) { sb_memo_gen++; sb_memo_n = 0; *sb_share_any = 1; *sb_share_changed = 0; }
 }
-/* ... and what was folded into `any` goes back into `changed`.
-   SPINEL_SB_STATS=1 prints, per region, the outermost walks and the records
-   of earlier walks they read. */
-static long sb_share_walks, sb_share_hits;
+/* ... and what was folded into `any` goes back into `changed` */
 static void sb_share_end(void) {
   if (sb_share_changed) *sb_share_changed |= *sb_share_any;
-  if (getenv("SPINEL_SB_STATS")) {
-    fprintf(stderr, "spinel-sb-share: walks=%ld cross-walk hits=%ld\n", sb_share_walks, sb_share_hits);
-    sb_share_walks = sb_share_hits = 0;
-  }
   sb_shared--; sb_memo_gen++; sb_memo_n = 0;
   sb_share_changed = sb_share_prev_changed; sb_share_any = sb_share_prev_any;
   sb_share_prev_changed = sb_share_prev_any = NULL;
@@ -20222,34 +20207,20 @@ static int sb_memo_enter(int kind, int a, int b, int mode, int depth, int *res) 
   if (sb_walk_nest++ == 0) {
     sb_walk_id++;
     if (!sb_shared) { sb_memo_gen++; sb_memo_n = 0; }
-    else { sb_share_step(); sb_share_walks++; }
+    else sb_share_step();
   }
   unsigned long long key = sb_memo_key(kind, a, b, mode);
   SbMemo *m = sb_memo_slot(key);
   if (m->gen == sb_memo_gen && m->depth <= depth) {
-    if (sb_shared && m->walk != sb_walk_id) sb_share_hits++;
-    /* (shadow) a record an earlier walk left: walk the thing again, and
-       sb_memo_leave checks that the walk changed nothing */
-    if (sb_shared && m->walk != sb_walk_id && sb_shadow_on()) { m->shadow = 1; m->walk = sb_walk_id; return 0; }
     *res = m->res; sb_walk_nest--; return 1;
   }
   if (m->gen != sb_memo_gen) sb_memo_n++;
-  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0; m->walk = sb_walk_id; m->shadow = 0;
+  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0; m->walk = sb_walk_id;
   return 0;
 }
 static int sb_memo_leave(int kind, int a, int b, int mode, int res) {
   SbMemo *m = sb_memo_slot(sb_memo_key(kind, a, b, mode));
-  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) {
-    if (m->shadow) {
-      if (res) {
-        fprintf(stderr, "spinel: internal error: the store walk skipped (kind %d, %d, %d, mode %d), which changes the analysis state\n",
-                kind, a, b, mode);
-        exit(70);
-      }
-      m->shadow = 0;
-    }
-    m->res |= res;
-  }
+  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) m->res |= res;
   sb_walk_nest--;
   return res;
 }
@@ -34447,7 +34418,6 @@ int make_yield_proc_forms(Compiler *c) {
     dst->blk_param = (src->blk_param && src->blk_param[0]) ? strdup(src->blk_param)
                                                            : strdup("__pf_blk");
     dst->is_proc_form = 1;
-    if (getenv("SP_DBG_PF")) fprintf(stderr, "[pf] made %s scope %d cls %d\n", pfname, di, dst->class_id);
     walk_scope(c, nb, di, dst->class_id);
     /* The defaults are the clone's own too: one reading an earlier parameter
        is typed against the clone's, which arrive boxed, where sharing the
@@ -43879,7 +43849,6 @@ static int propagate_ivars_up(Compiler *c) {
         if (ai < 0) continue;
         if (class_ivar_pinned(&c->classes[a], ivn)) continue;  /* --rbs seed pins it */
         TyKind merged = ty_unify(c->classes[a].ivar_types[ai], kt);
-        sp_ivwatch(ivn[0] == '@' ? ivn + 1 : ivn, "inherited_merge", c->classes[a].ivar_types[ai], merged);
         if (merged != c->classes[a].ivar_types[ai]) {
           ivar_set_type(&c->classes[a], ai, merged); prop_changed = 1;
         }
@@ -49363,10 +49332,9 @@ static void an_shadow_report(void) {
     fprintf(stderr, "spinel-shadow: pass=%s skippable=%d skippable_ms=%.2f violations=%d\n",
             g_an_sh[i].name, g_an_sh[i].skippable, g_an_sh[i].skip_ms, g_an_sh[i].violations);
 }
+/* the shadow schedule (SP_SHADOW_GEN) runs every pass */
 static int an_tree_skip_off(void) {
-  static int off = -1;
-  if (off < 0) off = getenv("SP_NO_TREE_SKIP") != NULL || an_shadow_on();
-  return off;
+  return an_shadow_on();
 }
 #define AN_TREE_MAX 64
 static struct { const char *name; unsigned after; int ran; } g_an_tree[AN_TREE_MAX];
@@ -49397,23 +49365,21 @@ static void an_tree_ran(Compiler *c, int slot) {
 }
 /* a named pass begins and ends with infer_type's memo emptied (#8852) */
 #define AN_MEMO_REGION(call) ({ infer_memo_boundary(); int _mr = (call); infer_memo_boundary(); _mr; })
-/* the pass's name while it runs (g_an_pass_cur: the memo's statistics) */
-#define AN_NAMED(nm, call) ({ const char *_pp = g_an_pass_cur; g_an_pass_cur = (nm); int _nr = (call); g_an_pass_cur = _pp; _nr; })
 #define AN_SHADOWED(nm, call) (!an_shadow_on() ? AN_TREE_SKIPPED(nm, call) : \
-  ({ int _si = an_shadow_begin(c, (nm)); int _sr = AN_MEMO_REGION(AN_NAMED(nm, call)); an_shadow_end(c, _si, _sr); _sr; }))
+  ({ int _si = an_shadow_begin(c, (nm)); int _sr = AN_MEMO_REGION(call); an_shadow_end(c, _si, _sr); _sr; }))
 #define AN_TREE_SKIPPED(nm, call) \
-  ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : AN_MEMO_REGION(AN_NAMED(nm, call)); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
+  ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : AN_MEMO_REGION(call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
 #define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
   ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
-#define AN_PASS_V(nm, call) do { infer_memo_boundary(); const char *_pp = g_an_pass_cur; g_an_pass_cur = (nm); \
+#define AN_PASS_V(nm, call) do { infer_memo_boundary(); \
   if (!sp_timing_on()) { call; } \
   else { \
-  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } g_an_pass_cur = _pp; infer_memo_boundary(); } while (0)
+  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
 /* A pass timed but not framed: the re-narrow runs its inner passes without
    the memo boundary and the tree skip a round's passes get (they read the
    slots the loop re-clears), and the pass table missed them. */
-#define AN_PASS_T(nm, call) (!sp_timing_on() ? AN_NAMED(nm, call) : \
-  ({ double _pt0 = sp_timing_now(); int _pr = AN_NAMED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
+#define AN_PASS_T(nm, call) (!sp_timing_on() ? (call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
   return x < y ? 1 : x > y ? -1 : 0;
@@ -49712,7 +49678,6 @@ static void an_phase_infer_fixpoint(Compiler *c) {
               !nsbad[nsoff[ci] + iv])) &&
             (!c->classes[ci].ivars[iv] ||
              !class_ivar_pinned(&c->classes[ci], c->classes[ci].ivars[iv]))) {
-          const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", c->classes[ci].ivar_types[iv], TY_UNKNOWN);
           ivar_set_type(&c->classes[ci], iv, TY_UNKNOWN); any = 1;
           if (nrec >= rcap) { rcap *= 2; recCi = realloc(recCi, sizeof(int) * rcap); recIv = realloc(recIv, sizeof(int) * rcap); }
           recCi[nrec] = ci; recIv[nrec] = iv; nrec++;
@@ -50265,7 +50230,6 @@ static void an_phase_post_fixpoint(Compiler *c) {
         }
       }
       if (saw && ok) {
-        sp_ivwatch(ivn && ivn[0] == '@' ? ivn + 1 : ivn, "renarrow_int_array", TY_POLY_ARRAY, TY_INT_ARRAY);
         ivar_set_type(cl, iv, TY_INT_ARRAY);
       }
     }
@@ -50299,9 +50263,6 @@ static void an_phase_post_fixpoint(Compiler *c) {
         if (cidx >= 0 && c->classes[cj].ivar_types[cidx] != TY_UNKNOWN)
           fill = ty_unify(fill, c->classes[cj].ivar_types[cidx]);
       }
-      const char *_n = cl->ivars[iv];
-      sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "unknown_backstop", TY_UNKNOWN,
-                 fill != TY_UNKNOWN ? fill : TY_POLY);
       ivar_set_type(cl, iv, fill != TY_UNKNOWN ? fill : TY_POLY);
       ivar_backstop_changed = 1;
     }
@@ -50315,8 +50276,6 @@ static void an_phase_post_fixpoint(Compiler *c) {
     for (int iv = 0; iv < cl->nivars; iv++) {
       TyKind ivt = cl->ivar_types[iv];
       if (ivt != TY_VOID && ivt != TY_NIL) continue;
-      const char *_n = cl->ivars[iv];
-      sp_ivwatch(_n && _n[0] == '@' ? _n + 1 : _n, "void_backstop", ivt, TY_POLY);
       ivar_set_type(cl, iv, TY_POLY);
       ivar_backstop_changed = 1;
     }
@@ -53641,8 +53600,6 @@ void analyze_program(Compiler *c) {
   /* the classes a value can hold, decided once from the program's shape
      (#8530): the fixpoint's binding of a boxed receiver's call reads it */
   AN_PHASE("cls_facts", an_cls_facts(c));
-  /* (measurement) SPINEL_CLS_ONLY: stop after the class facts */
-  if (getenv("SPINEL_CLS_ONLY")) { fflush(stderr); exit(0); }
   double tm_fp = sp_timing_now();
   an_phase_infer_fixpoint(c);
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
@@ -53688,7 +53645,6 @@ void analyze_program(Compiler *c) {
   { c->share_args = NULL; handle_arg_tab_free(&hat); }
   /* the block bodies codegen types per arm, typed here once (#7483) */
   AN_PHASE("arm_facts", an_arm_facts(c));
-  cls_fact_use_report(c);   /* (measurement, SPINEL_CLS_USE) */
   sp_timing_end(tm_an, "analysis", "");
 }
 
