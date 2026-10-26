@@ -18,6 +18,7 @@
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 void unsupported_feature_collect(Compiler *c, int id, const char *msg);
 int defer_refusals(void); /* codegen_util.c: explicit opt-in to runtime refusals */
+int defer_refusals_at(const Compiler *c, int node); /* ...or the node's file's `# spinel: defer-refusals` */
 /* (codegen_util.c) a refusal kept as a check where its value arrives,
    reported and counted as a deferred one; and whether the identity Set's
    proof marked any node for that check or a refusal where it is emitted

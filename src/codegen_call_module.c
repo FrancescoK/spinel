@@ -1709,7 +1709,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
        refused here under --defer-refusals (the pass ahead of emission
        refuses them otherwise; see reject_time_parse) */
     { char tpm[320];
-      if (defer_refusals() && time_parse_refusal(c, id, tpm, sizeof tpm)) {
+      if (defer_refusals_at(c, id) && time_parse_refusal(c, id, tpm, sizeof tpm)) {
         unsupported_feature(c, id, tpm);
         buf_puts(b, "sp_box_nil()");
         return 1;

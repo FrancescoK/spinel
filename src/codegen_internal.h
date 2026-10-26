@@ -1679,6 +1679,9 @@ extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driv
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
 extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
+/* ...for one node: the switch, or its file's `# spinel: defer-refusals` */
+int defer_refusals_at(const Compiler *c, int node);
+extern int g_deferred_diags;   /* the refusals a deferral took (codegen_util.c) */
 /* --defer-refusals: an identity Set's value checked where it arrives
    (refuse_set_identity_members marks it, codegen_util.c renders it) */
 extern int g_idset_marks;

@@ -55,6 +55,10 @@ typedef struct {
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
   int nfiles;          /* length of `files` */
+  unsigned char *file_defers; /* FILE id -> 1 when the file's `# spinel: defer-refusals`
+                          magic comment turns its refusals into raises where they
+                          run (nt_put_file_defers); nfile_defers its length */
+  int nfile_defers;
   /* Bumped whenever a node is added or a string field is rewritten, i.e. by
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
@@ -229,6 +233,9 @@ int  nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames);
 /* Resolve a `node_file` id to its source path, or NULL if out of range.
    Used by codegen to emit `#line N "path"` directives in multi-file builds. */
 const char *nt_file_path(const NodeTable *nt, int fid);
+/* The file's `# spinel: defer-refusals` magic comment: set, and asked */
+void nt_put_file_defers(NodeTable *nt, int fid);
+int nt_file_defers(const NodeTable *nt, int fid);
 
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 static inline const char *nt_str(const NodeTable *nt, int id, const char *key) {

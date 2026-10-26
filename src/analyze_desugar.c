@@ -17567,7 +17567,7 @@ int desugar_class_new_blocks(Compiler *c) {
        the surrounding locals stays a block */
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
-    int capture_refusal = reads_outer && !defer_refusals();
+    int capture_refusal = reads_outer && !defer_refusals_at(c, id);
     if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */

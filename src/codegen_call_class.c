@@ -2483,7 +2483,7 @@ void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf 
    text is rolled back and 0 answered, with the refusal's message in msg, for
    the arm to raise it (emit_stmt_or_defer's rule, one arm wide). */
 static int ctor_defaults_or_defer(Compiler *c, int initm, Buf *out, char *msg, size_t msz) {
-  if (!defer_refusals() || !g_unsup_armed || g_unsup_probe || g_unsup_quiet) {
+  if (!defer_refusals_at(c, c->scopes[initm].def_node) || !g_unsup_armed || g_unsup_probe || g_unsup_quiet) {
     emit_args_filled(c, initm, -1, "", out);
     return 1;
   }
@@ -2500,6 +2500,7 @@ static int ctor_defaults_or_defer(Compiler *c, int initm, Buf *out, char *msg, s
   }
   else {
     g_stmt_deferrals++;
+    if (g_ndiags > ndiag0) g_deferred_diags++;
     g_conv_hold = saved_hold;
     emit_state_release(saved, 1); saved = NULL;
     g_pre = saved_pre;

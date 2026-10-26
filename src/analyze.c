@@ -45950,7 +45950,7 @@ const char *const g_sid_refusal_msg =
 static int sid_value_or_check(Compiler *c, int call, int v) {
   if (sid_value_ok(c, v, 0)) return 1;
   int one;
-  if (!defer_refusals() || vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &one) != VP1_NODE) return 0;
+  if (!defer_refusals_at(c, call) || vp_one(c->nt, v, VPS_NONE | VP_PARENS_ONLY, &one) != VP1_NODE) return 0;
   TyKind t = infer_type(c, one);
   if (t != TY_POLY && t != TY_INT && t != TY_FLOAT && t != TY_STRING && t != TY_STRBUF) return 0;
   nt_node_set_int((NodeTable *)c->nt, v, "idset_check", call + 1);
@@ -46078,7 +46078,7 @@ static void refuse_set_identity_members(Compiler *c) {
        written); any other refusal stands at the call, which raises it when
        it runs (refuse_prepass_at_emit) */
     if (ok && checked) refusal_note_deferred(c, id, msg);
-    else if (!ok && defer_refusals()) {
+    else if (!ok && defer_refusals_at(c, id)) {
       nt_node_set_int((NodeTable *)nt, id, "idset_refuse", 1);
       g_idset_marks = 1;
     }

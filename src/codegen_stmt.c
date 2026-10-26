@@ -22060,7 +22060,7 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
    whether the statement was emitted as written. */
 int g_stmt_deferrals = 0;
 static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int tail) {
-  if (!defer_refusals() || !g_unsup_armed) {
+  if (!defer_refusals_at(c, st) || !g_unsup_armed) {
     if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
     return 1;
   }
@@ -22077,6 +22077,7 @@ static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int ta
   }
   else {
     g_stmt_deferrals++;
+    if (g_ndiags > ndiag0) g_deferred_diags++;
     g_conv_hold = saved_hold;
     emit_state_release(saved, 1); saved = NULL;
     g_pre = saved_pre;
@@ -22118,7 +22119,7 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
    statement was emitted as written: the statements after a raise in its
    place cannot run, and are left out. */
 static int emit_body_stmt(Compiler *c, int st, Buf *b, int indent, int tail) {
-  if (defer_refusals() && g_unsup_armed && !g_unsup_probe && !g_unsup_quiet)
+  if (defer_refusals_at(c, st) && g_unsup_armed && !g_unsup_probe && !g_unsup_quiet)
     return emit_stmt_or_defer_as(c, st, b, indent, tail);
   if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
   return 1;

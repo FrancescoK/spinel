@@ -135,6 +135,43 @@ static bool sp_magic_comment_fsl_false(const pm_magic_comment_t *mc) {
   return true;
 }
 
+/* The file's `# spinel: defer-refusals` magic comment: the file's refusals
+   compile to raises of NotImplementedError where they stand, as
+   --defer-refusals makes every file's (defer_refusals_at). A vendored
+   library carries it where a feature Spinel does not compile (sqlite3's
+   create_aggregate builds a class per call) must not keep a program that
+   never calls it from building. The paths are kept until the node table
+   takes its file table (sp_defer_paths_mark). */
+static char **sp_defer_paths; static int sp_defer_npaths;
+static char **sp_file_table; static int sp_file_count;   /* (defined with the map builder below) */
+static bool sp_magic_comment_is(const pm_magic_comment_t *mc, const char *key, const char *value) {
+  if (mc->key_length != strlen(key) || mc->value_length != strlen(value)) return false;
+  for (uint32_t i = 0; i < mc->key_length; i++) {
+    char ch = (char)tolower(mc->key_start[i]);
+    if ((ch == '-' ? '_' : ch) != key[i]) return false;
+  }
+  for (uint32_t i = 0; i < mc->value_length; i++) {
+    char ch = (char)tolower(mc->value_start[i]);
+    if ((ch == '_' ? '-' : ch) != value[i]) return false;
+  }
+  return true;
+}
+static void sp_src_file_note_defers(const SpSrcFile *f) {
+  for (const pm_list_node_t *n = f->parser.magic_comment_list.head; n; n = n->next) {
+    if (!sp_magic_comment_is((const pm_magic_comment_t *)n, "spinel", "defer-refusals")) continue;
+    char **grown = realloc(sp_defer_paths, sizeof(char *) * (size_t)(sp_defer_npaths + 1));
+    if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    sp_defer_paths = grown;
+    sp_defer_paths[sp_defer_npaths++] = strdup(f->path);
+    return;
+  }
+}
+static void sp_defer_paths_mark(NodeTable *nt) {
+  for (int i = 0; i < sp_file_count; i++)
+    for (int k = 0; k < sp_defer_npaths; k++)
+      if (sp_file_table[i] && strcmp(sp_file_table[i], sp_defer_paths[k]) == 0) nt_put_file_defers(nt, i);
+}
+
 /* The frozen_string_literal flag of the file's literals: 1, in every file.
    Prism reads the pragma wherever CRuby does (any comment ahead of the
    first token) and starts from Spinel's frozen default, so it answers
@@ -4929,6 +4966,7 @@ static char *resolve_requires(SpLoadGraph *g, const char *source, const char *so
      encoding and its dead requires are read from this parse. */
   SpSrcFile file;
   sp_src_file_parse(&file, source, source_path);
+  sp_src_file_note_defers(&file);
   int file_fsl = sp_src_file_fsl(&file);
   sp_src_file_warn_encoding(&file);
   size_t code_len = sp_src_file_code_len(&file);
@@ -6360,6 +6398,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     if (!text) { fprintf(stderr, "spinel_parse: cannot open '%s'\n", path); break; }
     SpSrcFile file;
     sp_src_file_parse(&file, text, path);
+    sp_src_file_note_defers(&file);
     sp_src_file_warn_encoding(&file);
     if (file.parser.error_list.size) {
       const pm_diagnostic_t *d = (const pm_diagnostic_t *)file.parser.error_list.head;
@@ -6409,6 +6448,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   else {
     nt_put_source_file(nt, source_file);
     for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
+    sp_defer_paths_mark(nt);
     if (g_dump_load_graph) sp_load_graph_dump(&g);
   }
   sp_load_graph_free(&g);
@@ -6621,6 +6661,7 @@ else {
      node's `node_file` id for its `#line` directive. */
   nt_put_source_file(out_nt, g_source_file);
   for (int i = 0; i < sp_file_count; i++) nt_put_file(out_nt, i, sp_file_table[i]);
+  sp_defer_paths_mark(out_nt);
   NodeTable *nt = out_nt;
   out_nt = NULL;
 

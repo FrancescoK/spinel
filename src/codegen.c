@@ -18354,8 +18354,8 @@ static int scope_is_orphan_method(Compiler *c, int s) {
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
+  /* (a deferred one is refused where it is emitted, refuse_prepass_at_emit) */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
 /* `const_get(name)` with a runtime name that the lowering could not reach:
@@ -18365,8 +18365,7 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
 }
 
 /* A define_method in a method's body that would answer calls before that
@@ -18468,8 +18467,7 @@ static void reject_io_gets_last_line(Compiler *c) {
 }
 
 static void reject_runtime_send(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 
 /* Time.parse / Time.strptime (docs/limitations.md, K-001): the `require
@@ -18534,8 +18532,8 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
    it: refused here, ahead of emission, it stopped the build of a program
    that only names it -- one that never runs that line. */
 static void reject_time_parse(Compiler *c) {
-  if (defer_refusals()) return;
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    if (defer_refusals_at(c, id)) continue;
     char msg[320];
     if (time_parse_refusal(c, id, msg, sizeof msg)) unsupported_feature(c, id, msg);
   }
@@ -21513,7 +21511,8 @@ char *codegen_program(const NodeTable *nt) {
        raises NotImplementedError naming the refusal, when it is called. A
        refusal its statements raise in place (emit_stmt_or_defer) leaves the
        method as emitted. */
-    if (defer_refusals() && g_ndiags - (g_stmt_deferrals - ndefer0) > ndiag0 && c->scopes[s].body >= 0) {
+    if (defer_refusals_at(c, c->scopes[s].def_node) && g_ndiags - (g_stmt_deferrals - ndefer0) > ndiag0 && c->scopes[s].body >= 0) {
+      g_deferred_diags += g_ndiags - ndiag0 - (g_stmt_deferrals - ndefer0);
       char dmsg[2600];
       const SpDiag *d = &g_diags[g_ndiags - 1];
       if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
@@ -21837,9 +21836,10 @@ char *codegen_program(const NodeTable *nt) {
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
   }
-  if (g_ndiags > 0 && defer_refusals())
-    fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", g_ndiags, g_ndiags == 1 ? "" : "s");
-  if (g_ndiags > 0 && !collect_emit_anyway() && !defer_refusals()) {
+  { int deferred = defer_refusals() ? g_ndiags : g_deferred_diags;
+    if (deferred > 0)
+      fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", deferred, deferred == 1 ? "" : "s"); }
+  if (g_ndiags > (defer_refusals() ? g_ndiags : g_deferred_diags) && !collect_emit_anyway()) {
     /* not "unsupported": spinel-doctor and spinel-reduce count the lines
        that say so, and this one is the count */
     fprintf(stderr, "spinel: %d refusal%s%s\n", g_ndiags, g_ndiags == 1 ? "" : "s",

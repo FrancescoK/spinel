@@ -40,6 +40,18 @@ int defer_refusals(void) {
   if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
   return v;
 }
+/* ...and for one node: under the switch, or in a file whose
+   `# spinel: defer-refusals` magic comment defers its own refusals
+   (spinel_parse.c, sp_src_file_note_defers): a vendored library's line
+   Spinel does not compile raises where it runs, and the program that never
+   runs it builds. g_deferred_diags counts the refusals a deferral took
+   (one per deferred statement, method or check); the rest stop the build
+   (codegen_program). */
+int defer_refusals_at(const Compiler *c, int node) {
+  if (defer_refusals()) return 1;
+  return c && c->nt && node >= 0 && nt_file_defers(c->nt, (int)nt_int(c->nt, node, "node_file", -1));
+}
+int g_deferred_diags = 0;
 int collect_emit_anyway(void) {
   static int v = -1;
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
@@ -4228,6 +4240,7 @@ void refusal_note_deferred(Compiler *c, int id, const char *msg) {
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   diag_record(file, ln, msg);
+  g_deferred_diags++;
   refuse_observe(msg);
   if (ln > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
   else fprintf(stderr, "spinel: %s\n", msg);
@@ -4450,7 +4463,7 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
      (desugar_attr_const_splat): refused where it is emitted, so a deferred
      refusal stands at its own statement */
   if (nt_int(c->nt, id, "attr_splat", 0)) diagnose_unsupported_call(c, id);
-  if (!defer_refusals()) return;
+  if (!defer_refusals_at(c, id)) return;
   /* an identity Set's call the proof refuses (refuse_set_identity_members),
      whose values are no single one a check could read where it arrives */
   if (g_idset_marks && nt_int(c->nt, id, "idset_refuse", 0)) unsupported_feature(c, id, g_sid_refusal_msg);
