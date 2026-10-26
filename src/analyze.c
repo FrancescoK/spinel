@@ -1128,6 +1128,9 @@ void compute_instantiated(Compiler *c, int early) {
   for (int k = 0; k < c->nclasses; k++) {
     c->classes[k].ctor_site = c->classes[k].instantiated;
     if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+    /* a C extension makes any exception class of the program's by name
+       (rb_exc_new2 through sp_cext_exception_new_fn), with no `.new` here */
+    if (c->n_cext_extensions && class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
   }
   for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }

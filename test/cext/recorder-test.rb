@@ -20,13 +20,17 @@ ids, arities, bridge = CextRecord.scan(<<~C)
 C
 check(ids == %w[@other Error split strip], "bridge literal IDs")
 check(arities == [1, 2], "vector/block-call arities")
-check(bridge == {"ivars" => %w[@flags @other @paths], "evals" => ["ENV['FLAG']"], "constant_reads" => true, "computed_ids" => false}, "bridge scan operations")
+check(bridge == {"ivars" => %w[@flags @other @paths], "evals" => ["ENV['FLAG']"], "constant_reads" => true, "computed_ids" => false, "spread_sends" => false}, "bridge scan operations")
 check(CextRecord.scan("rb_funcall(obj, sp_cext_scanned_sym2id(name), 0);")[2]["computed_ids"], "SYM2ID marks computed IDs")
+check(CextRecord.scan("rb_funcallv(obj, id, argc, argv);")[2]["spread_sends"], "a computed rb_funcallv count marks spread sends")
+check(CextRecord.scan("rb_apply(obj, rb_intern(\"call\"), params);")[2]["spread_sends"], "rb_apply marks spread sends")
+check(!CextRecord.scan("rb_funcallv(obj, id, 2, argv);")[2]["spread_sends"], "a literal rb_funcallv count is no spread send")
 {
   'rb_intern2(name, 2)' => "rb_intern",
   'rb_intern2("abc", size)' => "length",
   'rb_intern2("abc", 4)' => "exceeds",
-  'rb_funcallv(obj, id, argc, argv)' => "arity",
+  'rb_funcall(obj, id, argc)' => "arity",
+  'rb_apply(obj, id)' => "argument count",
   'rb_block_call(obj, id, 1, argv)' => "argument count",
   'rb_iv_get(obj, name)' => "literal",
   'rb_iv_set(obj, "@@bad", value)' => "instance variable",

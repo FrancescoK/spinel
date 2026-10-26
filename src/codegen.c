@@ -21022,9 +21022,11 @@ char *codegen_program(const NodeTable *nt) {
       CextExtension *ext = &c->cext_extensions[x];
       buf_printf(&b, "extern void %s(void);\nstatic VALUE (*_sp_cext_fns_%d[%d])(ANYARGS);\n"
                  "static VALUE _sp_cext_consts_%d[%d];\n"
-                 "static sp_cext_extension _sp_cext_%d = {%s, _sp_cext_fns_%d, %d, 0, _sp_cext_consts_%d, %d};\n",
+                 "static sp_cext_extension _sp_cext_%d = {%s, _sp_cext_fns_%d, %d, 0, _sp_cext_consts_%d, %d, ",
                  ext->init, x, ext->slots ? ext->slots : 1, x, ext->constants ? ext->constants : 1,
                  x, ext->init, x, ext->slots, x, ext->constants);
+      emit_str_literal(&b, ext->name);
+      buf_puts(&b, "};\n");
     }
   }
   /* the frozen literals' file-scope objects go here, once the unit is done */

@@ -118,6 +118,7 @@ module CextBuild
                 plain[field] = (plain.fetch(field) + manifest.fetch(field)).uniq.sort
               end
               plain['constant_reads'] ||= manifest['constant_reads']
+              plain['spread_sends'] = true if manifest['spread_sends']
             else
               plain = manifest
             end

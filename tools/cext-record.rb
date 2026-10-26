@@ -87,7 +87,7 @@ module CextRecord
     raise Refusal, "scanner: unterminated API call"
   end
 
-  SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_block_call
+  SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_apply rb_block_call
                rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_ivar_defined rb_const_get rb_const_get_at rb_eval_string].freeze
   # A name without the @ is a hidden ivar (sqlite3's "-instances"): kept where
   # no Ruby code reads it, so it needs no stub.
@@ -99,7 +99,7 @@ module CextRecord
 
   def scan(text)
     tokens = source_only(text).scan(TOKEN)
-    names = []; arities = []; ivars = []; evals = []; constants = false; computed = false
+    names = []; arities = []; ivars = []; evals = []; constants = false; computed = false; spread = false
     tokens.each_with_index do |t, i|
       raise Refusal, "scanner: inline assembly is outside the recorder subset" if %w[asm __asm __asm__].include?(t)
       raise Refusal, "#{t}: runtime-computed method IDs are unsupported" if DYNAMIC_IDS.include?(t)
@@ -121,11 +121,21 @@ module CextRecord
         names << value
       when "rb_funcall", "rb_funcallv", "rb_block_call"
         a = args[2]
+        # rb_funcallv with a count it computes (sqlite3's aggregator hands on
+        # what SQLite gave it) is a spread send: the stub takes the arguments
+        # as one Array, as rb_apply's does
+        if t == "rb_funcallv" && args.length == 4 && !(a && a.length == 1 && a[0] =~ /\A[0-9]+\z/)
+          spread = true
+          next
+        end
         raise Refusal, "#{t}: arity must be a nonnegative integer literal" unless a && a.length == 1 && a[0] =~ /\A[0-9]+\z/
         arity = Integer(a[0], 10)
         expected = t == "rb_funcall" ? 3 + arity : t == "rb_funcallv" ? 4 : 6
         raise Refusal, "#{t}: argument count does not match literal arity" unless args.length == expected
         arities << arity
+      when "rb_apply"
+        raise Refusal, "rb_apply: invalid argument count" unless args.length == 3
+        spread = true
       when "rb_iv_get", "rb_iv_set"
         raise Refusal, "#{t}: invalid argument count" unless args.length == (t == "rb_iv_get" ? 2 : 3)
         name = c_string(args[1], t)
@@ -150,7 +160,8 @@ module CextRecord
       raise Refusal, "invalid literal instance variable #{name.inspect}" unless name =~ /\A@[A-Za-z_][A-Za-z_0-9]*\z/
     end
     [names.uniq.sort, arities.uniq.sort,
-     {"ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constants, "computed_ids" => computed}]
+     {"ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constants, "computed_ids" => computed,
+      "spread_sends" => spread}]
   end
 
   def write_atomic(path, bytes)
@@ -272,7 +283,7 @@ module CextRecord
     Dir.mktmpdir("spinel-cext-record-") do |dir|
       flags = ["-std=c11", "-O0", "-DSP_CEXT_RECORDER", "-I#{ROOT}/include", *cflags]
       flags += ["-DSP_THREADS", "-ftls-model=initial-exec"] if threaded
-      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false; computed_ids = false; callable = []
+      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false; computed_ids = false; spread_sends = false; callable = []
       sources.each_with_index do |source, i|
         source = File.expand_path(source)
         raise Refusal, "missing C source #{source}" unless File.file?(source)
@@ -284,6 +295,7 @@ module CextRecord
         ivars.concat(bridge["ivars"]); evals.concat(bridge["evals"])
         constant_reads ||= bridge["constant_reads"]
         computed_ids ||= bridge["computed_ids"]
+        spread_sends ||= bridge["spread_sends"]
         obj = File.join(dir, "extension#{i}.o")
         command(*compiler, *flags, "-c", source, "-o", obj)
         objects << obj
@@ -307,7 +319,8 @@ module CextRecord
           end
         end
       end
-      unknown = (undefined.uniq - defined - LIBC).grep_v(OUTLINE_ATOMICS)
+      # (the GOT is the linker's: PIE code names it for a global another unit defines)
+      unknown = (undefined.uniq - defined - LIBC - %w[_GLOBAL_OFFSET_TABLE_]).grep_v(OUTLINE_ATOMICS)
       imports=[]; links=[]; record_objects=objects
       unless unknown.empty?
         raise Refusal, "#{unknown.sort.join(', ')}: external API is outside the deterministic recorder subset" if libs.nil?
@@ -363,6 +376,7 @@ module CextRecord
                   "funcall_arities" => arities.uniq.sort,
                   "ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constant_reads}
       manifest["computed_ids"] = true if computed_ids
+      manifest["spread_sends"] = true if spread_sends
       ruby = render(manifest)
       if object_archive
         extension_archive = File.join(dir, "extension.a")
@@ -417,8 +431,15 @@ module CextRecord
       lines << "__cext_stub(2, #{name.dump}, 1)"
     end
     manifest.fetch("evals", []).each { |code| lines << "__cext_stub(4, #{code.dump}, 0)" }
+    if manifest["spread_sends"]
+      manifest["literal_ids"].each do |name|
+        next if name.start_with?("@") || name.match?(HIDDEN_IVAR)
+        lines << "__cext_stub(6, #{name.dump}, 1)"
+      end
+    end
     if manifest["computed_ids"]
       manifest["funcall_arities"].each { |arity| lines << "__cext_stub(5, \"\", #{arity})" }
+      lines << "__cext_stub(7, \"\", 1)" if manifest["spread_sends"]
     end
     lines.join("\n") + "\n"
   end

@@ -5156,7 +5156,7 @@ static char *ffi_fold_str(Compiler *c, int nid) {
 
 /* Append `add` to a semicolon-joined per-module list, allocating the string or
    growing it in place. The ffi_lib and ffi_cflags merges share this. */
-static void ffi_semi_append(char **slot, const char *add) {
+void ffi_semi_append(char **slot, const char *add) {
   if (!*slot) { *slot = strdup(add); if (!*slot) { perror("strdup"); exit(1); } return; }
   size_t n = strlen(*slot) + 1 + strlen(add) + 1;
   char *merged = malloc(n);
@@ -5166,7 +5166,7 @@ static void ffi_semi_append(char **slot, const char *add) {
   *slot = merged;
 }
 
-static void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
+void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
   if (n < *cap) return p;
   *cap = *cap ? *cap * 2 : init;
   p = realloc(p, sz * (size_t)*cap);
