@@ -379,10 +379,21 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         else buf_printf(b, result.kind == RK_BOXED ? "sp_poly_flo_domain_ck(%s.v); sp_box_f_to_int(%s.v); })"
                                           : "sp_poly_flo_domain_ck(%s.v); sp_float_fit_i(%s.v); })", ref, ref);
       }
-      else if (at == TY_STRING && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
-        buf_puts(b, "sp_str_to_i_promote("); emit_expr(c, av[0], b); buf_puts(b, ", 0, 1)");
+      /* (a String the share rule holds as a handle reads as its bytes: it
+         fell to the TypeError below, `Integer($&)` held in a local under
+         --int-overflow=promote) */
+      else if ((at == TY_STRING || at == TY_STRBUF) && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
+        buf_puts(b, "sp_str_to_i_promote(");
+        if (at == TY_STRBUF) { buf_puts(b, "SP_STR_B("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, av[0], b);
+        buf_puts(b, ", 0, 1)");
       }
-      else if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (at == TY_STRING || at == TY_STRBUF) {
+        buf_puts(b, "sp_str_to_i_strict(");
+        if (at == TY_STRBUF) { buf_puts(b, "SP_STR_B("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, av[0], b);
+        buf_puts(b, ")");
+      }
       /* a Float truncates, and NaN or an infinity is CRuby's FloatDomainError
          rather than the C cast's undefined value */
       else if (at == TY_FLOAT) {
