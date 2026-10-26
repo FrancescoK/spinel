@@ -2176,8 +2176,13 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
       for (int j = 0; j < en; j++) {
         Buf el; memset(&el, 0, sizeof el);
-        emit_boxed(c, els[j], &el);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", t, el.p ? el.p : "sp_box_nil()");
+        /* a splat element (`[*a]`) spreads its items, as the literal would */
+        int sx = nt_kind(nt, els[j]) == NK_SplatNode ? nt_ref(nt, els[j], "expression") : -1;
+        emit_boxed(c, sx >= 0 ? sx : els[j], &el);
+        if (sx >= 0)
+          buf_printf(b, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(%s)); ", t, el.p ? el.p : "sp_box_nil()");
+        else
+          buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", t, el.p ? el.p : "sp_box_nil()");
         free(el.p);
       }
       for (int a = 0; a < argc; a++) {
