@@ -5629,9 +5629,10 @@ bisect-test: $(SPINEL) bin/spinel-bisect
 	rm -rf "$$TMPDIR"; \
 	[ $$ok -eq 1 ] && echo "bisect-test: pass" || exit 1
 
-# `spinel diff`, end to end, on the three answers the tool has to give: a
+# `spinel diff`, end to end, on the answers the tool has to give: a
 # program both runtimes agree on (exit 0), a documented divergence (exit 1,
-# exception-diff) and a refusal (exit 2, compile-error). The normalization
+# exception-diff), a refusal (exit 2, compile-error), and a confirmation run
+# that crashes (exit 3) or times out (exit 1). The normalization
 # and the classifier have their own corpus tests (test/tools_diff_*.rb);
 # this leg is the plumbing: the dispatch from `spinel diff`, the two runs,
 # the report, and the scratch cleanup.
@@ -5645,6 +5646,10 @@ diff-test: $(SPINEL) bin/spinel-diff
 	[ $$rc -eq 1 ] && echo "$$out" | grep -q '^spinel diff: exception-diff$$' && echo "$$out" | grep -q 'FrozenError' || { echo "diff-test: FAIL (frozen_literal.rb: rc=$$rc)"; echo "$$out"; ok=0; }; \
 	out=$$($(SPINEL) diff test/fixtures/diff/refused.rb); rc=$$?; \
 	[ $$rc -eq 2 ] && echo "$$out" | grep -q '^spinel diff: compile-error$$' || { echo "diff-test: FAIL (refused.rb: rc=$$rc)"; echo "$$out"; ok=0; }; \
+	out=$$($(SPINEL) diff test/fixtures/diff/confirmation.rb -- crash); rc=$$?; \
+	[ $$rc -eq 3 ] && echo "$$out" | grep -q '^spinel diff: crash$$' && echo "$$out" | grep -q 'second run).*SIGKILL' || { echo "diff-test: FAIL (confirmation crash: rc=$$rc)"; echo "$$out"; ok=0; }; \
+	out=$$($(SPINEL) diff test/fixtures/diff/confirmation.rb --timeout 1 -- timeout); rc=$$?; \
+	[ $$rc -eq 1 ] && echo "$$out" | grep -q '^spinel diff: timeout$$' && echo "$$out" | grep -q 'second run).*timed out' || { echo "diff-test: FAIL (confirmation timeout: rc=$$rc)"; echo "$$out"; ok=0; }; \
 	$(SPINEL) diff --emit-issue "$${TMPDIR:-/tmp}/spinel-diff-test.md" test/fixtures/diff/frozen_literal.rb >/dev/null; \
 	grep -q '^spinel diff: exception-diff$$' "$${TMPDIR:-/tmp}/spinel-diff-test.md" || { echo "diff-test: FAIL (--emit-issue wrote no report)"; ok=0; }; \
 	rm -f "$${TMPDIR:-/tmp}/spinel-diff-test.md"; \

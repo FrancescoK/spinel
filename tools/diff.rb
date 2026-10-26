@@ -202,6 +202,7 @@ def main
     rep = rep + "\n" + build
   else
     rep = rep + "  spinel:  " + describe_run(got) + "\n"
+    rep = rep + "  spinel (second run): " + describe_run(got2) + "\n" if got2
     if label == "nondeterministic"
       rep = rep + "  the spinel binary disagreed with its own second run; a value that changes per run (rand, a pid, a time, thread order) is in the output\n"
     end

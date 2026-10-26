@@ -6,8 +6,8 @@
 # Labels, in the order they are decided:
 #   compile-error    spinel refused the program (no C came out)
 #   link-error       the C came out but cc did not build it
-#   crash            the spinel binary ended on a signal
-#   timeout          a run passed the time limit (never counted as a pass)
+#   crash            either spinel run ended on a signal
+#   timeout          any run passed the time limit (never counted as a pass)
 #   nondeterministic the spinel binary disagreed with its own second run
 #   exception-diff   the uncaught exception differs (presence, class, message)
 #   output-diff      both ran to an end and stdout or the exit status differs
@@ -38,8 +38,8 @@ end
 def dc_classify(compile_ok, link_ok, ref, got, got2)
   return "compile-error" if !compile_ok
   return "link-error" if !link_ok
-  return "crash" if got.signal.length > 0
-  return "timeout" if got.timed_out == 1 || ref.timed_out == 1
+  return "crash" if got.signal.length > 0 || (got2 && got2.signal.length > 0)
+  return "timeout" if got.timed_out == 1 || ref.timed_out == 1 || (got2 && got2.timed_out == 1)
   if got2 && (got2.stdout != got.stdout || got2.stderr != got.stderr || got2.status != got.status)
     return "nondeterministic"
   end
