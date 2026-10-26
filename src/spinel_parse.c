@@ -360,6 +360,7 @@ static int flatten(pm_node_t *node);
 static void sp_lower_rows_note(const pm_node_t *node, int id);   /* SPINEL_LOWER_ROWS_CHECK */
 static int sp_load_call(const pm_call_node_t *n);
 static int sp_flatten_call_as(int id, pm_call_node_t *n);
+static void sp_graph_site_take(int id, const pm_node_t *call);
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
 static void sp_inline_rbs_emit(const pm_node_t *node, int id);
 /* --no-inline-rbs: the driver clears it, and comments are only comments */
@@ -2464,9 +2465,9 @@ else {
 /* A call flattened as node `id` of another kind: `__FILE__ == $0` and its
    spellings as the constant they answer, stamped program_guard; and under
    --load-model=graph a require as its LoadNode, which carries its path when
-   it is one literal, else the expression that computes it when it runs
-   (what it loads is resolved after the file is flattened, sp_parse_graph).
-   0 for a call flattened as a CallNode. */
+   it is one literal, else the expression that computes it when it runs,
+   and what its site resolved to before the file was flattened
+   (sp_graph_site_take). 0 for a call flattened as a CallNode. */
 static int sp_flatten_call_as(int id, pm_call_node_t *n) {
   pm_node_t *node = (pm_node_t *)n;
   int pg = sp_program_guard(node);
@@ -2484,6 +2485,7 @@ static int sp_flatten_call_as(int id, pm_call_node_t *n) {
   emit_int(id, "line", pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line));
   if (PM_NODE_TYPE(arg) == PM_STRING_NODE) emit_pm_string(id, "path", &((pm_string_node_t *)arg)->unescaped);
   else emit_ref(id, "argument", arg);
+  sp_graph_site_take(id, node);
   return 1;
 }
 
@@ -4796,14 +4798,17 @@ typedef struct {
                              entry's first), and 1 when the call is that statement */
 } SpLoadEdge;
 
+/* --load-model=graph: a require of a file's tree: its edge, the call node it
+   was found at, and how many LoadNodes flatten made of that call (one). */
+typedef struct { int edge; const pm_node_t *call; int taken; } SpGraphSite;
+
 /* --load-model=graph: one file of the graph, read and parsed before any file
-   is flattened, and its sites (indices into the graph's edges, in the order
-   flatten meets their calls). */
+   is flattened, and its sites, in the order its tree has them. */
 typedef struct {
   char *text;
   SpSrcFile src;
   int read;               /* text and src are set */
-  int *site; int nsite, sitecap;
+  SpGraphSite *site; int nsite, sitecap;
 } SpGraphFile;
 
 typedef struct {
@@ -6967,9 +6972,10 @@ static SpGraphFile *sp_graph_rec(SpLoadGraph *g, int f) {
   return g->gf[f];
 }
 
-/* The requires of a file's tree, in the order flatten meets them, each
-   resolved (sp_load_resolve) and noted with the top-level statement it
-   stands in. */
+/* The requires of a file's tree, in the tree's order, each resolved
+   (sp_load_resolve), noted with the top-level statement it stands in, and
+   kept with its call node, which flatten's LoadNode looks it up by
+   (sp_graph_site_take). */
 typedef struct { SpLoadGraph *g; int f, stmt; const pm_node_t *top; } SpSiteWalk;
 static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
   SpSiteWalk *w = data;
@@ -6992,7 +6998,7 @@ static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
     r->site = realloc(r->site, sizeof *r->site * (size_t)r->sitecap);
     if (!r->site) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   }
-  r->site[r->nsite++] = e;
+  r->site[r->nsite++] = (SpGraphSite){ e, node, 0 };
   free(method);
   free(path);
   return true;
@@ -7029,6 +7035,34 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
   return 1;
 }
 
+/* --load-model=graph: the file sp_graph_flatten is flattening, whose sites
+   its LoadNodes look themselves up in, and the site after the last one
+   taken. */
+typedef struct { SpLoadGraph *g; SpGraphFile *r; int next; } SpGraphFlat;
+static SpGraphFlat g_flat_sites;
+
+/* --load-model=graph: LoadNode `id`, flattened from require `call` of the
+   file being flattened, carries what the call's site resolved to. The site
+   is found by its call node, not by its place: flatten meets a file's
+   requires in its own order, which is not the tree's everywhere (a begin's
+   ensure comes before its else), and two requires on one line differ only
+   by their node. The search starts at the site after the last one taken,
+   where the next one nearly always is. */
+static void sp_graph_site_take(int id, const pm_node_t *call) {
+  static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
+  SpGraphFile *r = g_flat_sites.r;
+  for (int i = 0; r && i < r->nsite; i++) {
+    int k = (g_flat_sites.next + i) % r->nsite;
+    if (r->site[k].call != call) continue;
+    r->site[k].taken++;
+    g_flat_sites.next = k + 1;
+    const SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
+    emit_str(id, "how", how_name[e->how]);
+    if (e->to >= 0) emit_int(id, "target_file", e->to);
+    return;
+  }
+}
+
 /* --load-model=graph: file `f` of graph `g`, read before (sp_graph_read),
    flattened into the table as a root of its own (its ProgramNode carries
    its graph id, `load_file`; the entry's is the table's root), each of its
@@ -7036,7 +7070,6 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
    its own comments. 0 on an error in an annotation or an internal error
    (reported). */
 static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
-  static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
   SpGraphFile *r = sp_graph_rec(g, f);
   /* the file in the table's file list, in graph order: flatten stamps a
      node's position from this parse, and a builtins/ root's nodes as
@@ -7054,22 +7087,19 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
     sp_inline_rbs_free();
     return 0;
   }
+  g_flat_sites = (SpGraphFlat){ g, r, 0 };
   int start = node_counter, root = flatten(r->src.root);
+  g_flat_sites = (SpGraphFlat){ NULL, NULL, 0 };
   sp_inline_rbs_done();
   sp_inline_rbs_free();
   if (!f) out_nt->root_id = root;
   emit_int(root, "load_file", f);
-  int k = 0;
-  for (int id = start; id < node_counter; id++) {
-    if (nt_kind(out_nt, id) != NK_LoadNode) continue;
-    const SpLoadEdge *e = k < r->nsite ? &g->edge[r->site[k]] : NULL;
-    if (!e || e->line != (int)nt_int(out_nt, id, "line", 0)) break;
-    k++;
-    emit_str(id, "how", how_name[e->how]);
-    if (e->to >= 0) emit_int(id, "target_file", e->to);
-  }
-  if (k != r->nsite) {
-    fprintf(stderr, "spinel_parse: internal error: the requires of '%s' flatten in another order than its tree has them\n",
+  /* each site made one LoadNode, and each LoadNode took a site */
+  int loads = 0, once = 1;
+  for (int id = start; id < node_counter; id++) loads += nt_kind(out_nt, id) == NK_LoadNode;
+  for (int i = 0; i < r->nsite; i++) once &= r->site[i].taken == 1;
+  if (!once || loads != r->nsite) {
+    fprintf(stderr, "spinel_parse: internal error: the requires of '%s' and its LoadNodes do not pair one to one\n",
             f ? g->file[f] : source_file);
     return 0;
   }
@@ -7090,9 +7120,10 @@ static int sp_graph_boot_load(SpLoadGraph *g, const SpBootLib *b) {
   return g->nedge - 1;
 }
 
-/* Boot library edge `e`'s LoadNode, ahead of the entry's statements, ahead
-   of those an earlier one put there. */
-static void sp_graph_boot_node(SpLoadGraph *g, int e) {
+/* Boot library edge `e`'s LoadNode, statement `at` of the entry's body: the
+   boot libraries ahead of the entry's statements in the order they load,
+   as their statement indices (`b - nboot`, sp_graph_boot) say. */
+static void sp_graph_boot_node(SpLoadGraph *g, int e, int at) {
   int id = node_counter++;
   nt_put_type(out_nt, id, "LoadNode");
   emit_str(id, "method", "require");
@@ -7104,8 +7135,9 @@ static void sp_graph_boot_node(SpLoadGraph *g, int e) {
   const int *v = nt_arr(out_nt, st, "body", &n);
   int *nv = malloc(sizeof(int) * (size_t)(n + 1));
   if (!nv) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  nv[0] = id;
-  if (n) memcpy(nv + 1, v, sizeof(int) * (size_t)n);
+  if (at) memcpy(nv, v, sizeof(int) * (size_t)at);
+  nv[at] = id;
+  if (n > at) memcpy(nv + at + 1, v + at, sizeof(int) * (size_t)(n - at));
   nt_node_set_arr(out_nt, st, "body", nv, n + 1);
   free(nv);
 }
@@ -7258,7 +7290,7 @@ static void sp_load_enter(SpLoadGraph *g, int e) {
   g->entered[x->to] = e;
   /* its own top-level requires, statement by statement (as its sites are) */
   const SpGraphFile *r = g->gf[x->to];
-  for (int i = 0; i < r->nsite; i++) sp_load_enter(g, r->site[i]);
+  for (int i = 0; i < r->nsite; i++) sp_load_enter(g, r->site[i].edge);
 }
 static void sp_load_order_build(SpLoadGraph *g) {
   g->entered = malloc(sizeof(int) * (size_t)(g->nfile + 1));
@@ -7269,7 +7301,7 @@ static void sp_load_order_build(SpLoadGraph *g) {
   for (int e = 0; e < g->nedge; e++) computed |= g->edge[e].how == SP_LOAD_RUNTIME;
   if (!computed) {
     for (int b = 0; b < g->nboot; b++) sp_load_enter(g, g->boot[b]);
-    for (int i = 0; i < g->gf[0]->nsite; i++) sp_load_enter(g, g->gf[0]->site[i]);
+    for (int i = 0; i < g->gf[0]->nsite; i++) sp_load_enter(g, g->gf[0]->site[i].edge);
   }
   /* a file another require may run first is not placed, nor is any file
      only such a file places */
@@ -7378,7 +7410,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   for (int f = 0; f < g.nfile && ok && rbs; f++)
     sp_inline_rbs_declare(&g.gf[f]->src.parser, g.gf[f]->src.root, g.gf[f]->text, strlen(g.gf[f]->text));
   for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
-  for (int b = 0; b < g.nboot && ok; b++) sp_graph_boot_node(&g, g.boot[b]);
+  for (int b = 0; b < g.nboot && ok; b++) sp_graph_boot_node(&g, g.boot[b], b);
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (!ok) {   /* a file that could not be read or parsed, reported above */
