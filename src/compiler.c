@@ -11,13 +11,13 @@
 #include <string.h>
 
 int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_node) {
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "IfNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_IfNode) return 0;
   int then_b = nt_ref(nt, id, "statements");
   int sub = nt_ref(nt, id, "subsequent");
   if (then_b < 0 || sub < 0) return 0;
-  const char *subty = nt_type(nt, sub);
-  if (!subty || !sp_streq(subty, "ElseNode")) return 0;
+  NodeKind subk = nt_kind(nt, sub);
+  if (subk != NK_ElseNode) return 0;
   int else_stmts = nt_ref(nt, sub, "statements");
   if (else_stmts < 0) return 0;
   int tn = 0, en = 0;
@@ -39,10 +39,11 @@ int comp_nil_chain_bottom(const NodeTable *nt, int v) {
   int depth = 0;
   while (v >= 0 && depth < 64) {
     const char *t = nt_type(nt, v);
+    NodeKind k = nt_kind(nt, v);
     if (!t) return -1;
-    if (sp_streq(t, "NilNode")) return depth > 0 ? v : -1;
-    if (!sp_streq(t, "LocalVariableWriteNode") &&
-        !sp_streq(t, "InstanceVariableWriteNode")) return -1;
+    if (k == NK_NilNode) return depth > 0 ? v : -1;
+    if (k != NK_LocalVariableWriteNode &&
+        k != NK_InstanceVariableWriteNode) return -1;
     v = nt_ref(nt, v, "value");
     depth++;
   }
@@ -61,13 +62,14 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v) {
   int depth = 0;
   while (v >= 0 && depth < 64) {
     const char *t = nt_type(nt, v);
+    NodeKind k = nt_kind(nt, v);
     if (!t) return -1;
-    if (sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
-        sp_streq(t, "SymbolNode") || sp_streq(t, "NilNode") ||
-        sp_streq(t, "TrueNode") || sp_streq(t, "FalseNode"))
+    if (k == NK_IntegerNode || k == NK_FloatNode ||
+        k == NK_SymbolNode || k == NK_NilNode ||
+        k == NK_TrueNode || k == NK_FalseNode)
       return depth > 0 ? v : -1;
-    if (!sp_streq(t, "LocalVariableWriteNode") &&
-        !sp_streq(t, "InstanceVariableWriteNode")) return -1;
+    if (k != NK_LocalVariableWriteNode &&
+        k != NK_InstanceVariableWriteNode) return -1;
     v = nt_ref(nt, v, "value");
     depth++;
   }
@@ -76,6 +78,43 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v) {
 
 /* see compiler.h: every change of a table infer_type reads */
 unsigned long comp_ty_edits;
+/* the owners' versions (compiler.h): per scope, per class, and the program's */
+unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
+int comp_scope_ver_cap, comp_class_ver_cap;
+int *comp_touch_log;
+unsigned long comp_touch_count[3];
+unsigned long comp_touch_why[8];
+int comp_touch_last_why;
+int comp_ref_owner(Compiler *c, TyRef r) {
+  uintptr_t p = (uintptr_t)r;
+  for (int k = 0; k < c->nclasses; k++) {
+    const ClassInfo *ci = &c->classes[k];
+    if (ci->ivar_types && p >= (uintptr_t)ci->ivar_types && p < (uintptr_t)(ci->ivar_types + ci->nivars)) return -(k + 2);
+    if (ci->cvar_types && p >= (uintptr_t)ci->cvar_types && p < (uintptr_t)(ci->cvar_types + ci->ncvars)) return -(k + 2);
+  }
+  /* a LocalVar's type: the record around it names its scope, checked
+     against that scope's table before it is believed */
+  const LocalVar *lv = (const LocalVar *)((const char *)r - offsetof(LocalVar, type));
+  int o = lv->owner;
+  if (o >= 0 && o < c->nscopes) {
+    const Scope *s = &c->scopes[o];
+    if (s->locals && lv >= s->locals && lv < s->locals + s->nlocals) return o;
+  }
+  if (o == -1 && ((c->gvars && lv >= c->gvars && lv < c->gvars + c->ngvars) ||
+                  (c->consts && lv >= c->consts && lv < c->consts + c->nconsts))) return -1;
+  /* in no table: a value of the caller's own (`TyKind now; fold(&now)`),
+     which no inference reads */
+  return COMP_REF_NONE;
+}
+static void comp_ver_grow(unsigned long **ver, int *cap, int need) {
+  if (need <= *cap) return;
+  int ncap = *cap ? *cap : 256;
+  while (ncap < need) ncap *= 2;
+  unsigned long *nv = realloc(*ver, sizeof(unsigned long) * (size_t)ncap);
+  if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(nv + *cap, 0, sizeof(unsigned long) * (size_t)(ncap - *cap));
+  *ver = nv; *cap = ncap;
+}
 
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
@@ -558,11 +597,12 @@ static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
   lv = &(*arr)[(*n)++];
   memset(lv, 0, sizeof(*lv));
   lv->name = strdup(name);
+  lv->owner = -1;     /* the program's, until a scope claims it (scope_local_intern) */
   *(TyKind *)&lv->type = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new slot is a change of the table */
+  comp_touch_global_r(4);    /* a new slot is a change of the table */
   return lv;
 }
-LocalVar *comp_gvar(Compiler *c, const char *name) { return lv_find(c->gvars, c->ngvars, name); }
+LocalVar *comp_gvar(Compiler *c, const char *name) { IMEMO_DEP_GLOBAL(); return lv_find(c->gvars, c->ngvars, name); }
 LocalVar *comp_gvar_intern(Compiler *c, const char *name) { return lv_intern(&c->gvars, &c->ngvars, &c->cgvars, name); }
 const char *comp_resolve_gvar(Compiler *c, const char *name) {
   for (int i = 0; i < c->ngvar_aliases; i++)
@@ -642,6 +682,7 @@ int comp_class_owned_const(Compiler *c, int k, const char *nm, const int *cands,
 static int *cst_idx; static int cst_cap, cst_n = -1; static const LocalVar *cst_base;
 LocalVar *comp_const(Compiler *c, const char *name) {
   if (!name) return NULL;
+  IMEMO_DEP_GLOBAL();
   if (c->nconsts < 16) return lv_find(c->consts, c->nconsts, name);
   if (cst_n != c->nconsts || cst_base != c->consts) {
     int cap = 64;
@@ -697,13 +738,15 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   memset(s, 0, sizeof(*s));
   s->ret_param = -1;
   s->name = name ? strdup(name) : NULL;
-  s->def_node = def_node;
-  s->body = -1;
-  s->class_id = -1;
+  { s->def_node = def_node; comp_touch_scope(s->idx); }
+  { s->body = -1; comp_touch_scope(s->idx); }
+  { s->class_id = -1; comp_touch_scope(s->idx); }
   s->rest_idx = -1;
   s->kwrest_idx = -1;
   *(TyKind *)&s->ret = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new scope is a change of the tables */
+  s->idx = c->nscopes - 1;
+  comp_ver_grow(&comp_scope_ver, &comp_scope_ver_cap, c->nscopes);
+  comp_touch_global_r(5);    /* a new scope is a change of the tables */
   scope_set_ret_noblock(s, TY_UNKNOWN);
   scope_set_ret_pin_guard(s, -1);
   why_reset(&s->ret_why);
@@ -859,15 +902,17 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
     c->classes = realloc(c->classes, sizeof(ClassInfo) * (size_t)c->cclasses);
   }
   ClassInfo *ci = &c->classes[c->nclasses++];
-  comp_ty_edits++;    /* a new class is a change of the tables */
   c->anon_struct_ids_valid = 0;
   memset(ci, 0, sizeof(*ci));
-  ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
+  ci->idx = c->nclasses - 1;
+  comp_ver_grow(&comp_class_ver, &comp_class_ver_cap, c->nclasses);
+  comp_touch_global_r(5);    /* a new class is a change of the tables */
+  { ci->ctor_reachable = 1; comp_touch_class(ci->idx); }   /* conservatively, until compute_instantiated's early pass has looked */
   ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
-  ci->def_node = def_node;
+  { ci->def_node = def_node; comp_touch_class(ci->idx); }
   if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -920,6 +965,7 @@ int comp_class_index(Compiler *c, const char *name) {
 }
 
 int comp_ivar_index(ClassInfo *ci, const char *name) {
+  IMEMO_DEP_CLASS(ci->idx);
   for (int i = 0; i < ci->nivars; i++)
     if (sp_streq(ci->ivars[i], name)) return i;
   return -1;
@@ -932,27 +978,27 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->civars = ci->civars ? ci->civars * 2 : 8;
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
     ci->ivar_types = realloc((TyKind *)ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
-    ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars);
-    ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars);
-    ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars);
+    { ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars); comp_touch_class(ci->idx); }
+    { ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars); comp_touch_class(ci->idx); }
+    { ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars); comp_touch_class(ci->idx); }
     ci->ivar_oa_type = realloc(ci->ivar_oa_type, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_oa_seed = realloc(ci->ivar_oa_seed, sizeof(int) * (size_t)ci->civars);
     ci->ivar_oa_conflict = realloc(ci->ivar_oa_conflict, (size_t)ci->civars);
-    ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars);
+    { ci->ivar_nullable_int = realloc(ci->ivar_nullable_int, (size_t)ci->civars); comp_touch_class(ci->idx); }
     ci->ivar_nullable_int_elem = realloc(ci->ivar_nullable_int_elem, (size_t)ci->civars);
     ci->ivar_arr_elem_arr_or_nil = realloc(ci->ivar_arr_elem_arr_or_nil, (size_t)ci->civars);
     ci->ivar_alias_wide = realloc(ci->ivar_alias_wide, (size_t)ci->civars);
   }
   ci->ivars[ci->nivars] = strdup(name);
   ((TyKind *)ci->ivar_types)[ci->nivars] = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new ivar is a change of the table */
-  ci->ivar_str_shared[ci->nivars] = 0;
-  ci->ivar_elems_shared[ci->nivars] = 0;
-  ci->ivar_int_table[ci->nivars] = 0;
+  comp_touch_class(ci->idx);    /* a new ivar is a change of the table */
+  { ci->ivar_str_shared[ci->nivars] = 0; comp_touch_class(ci->idx); }
+  { ci->ivar_elems_shared[ci->nivars] = 0; comp_touch_class(ci->idx); }
+  { ci->ivar_int_table[ci->nivars] = 0; comp_touch_class(ci->idx); }
   ci->ivar_oa_type[ci->nivars] = TY_UNKNOWN;
   ci->ivar_oa_seed[ci->nivars] = 0;
   ci->ivar_oa_conflict[ci->nivars] = 0;
-  ci->ivar_nullable_int[ci->nivars] = 0;
+  { ci->ivar_nullable_int[ci->nivars] = 0; comp_touch_class(ci->idx); }
   ci->ivar_nullable_int_elem[ci->nivars] = 0;
   ci->ivar_arr_elem_arr_or_nil[ci->nivars] = 0;
   ci->ivar_alias_wide[ci->nivars] = 0;
@@ -967,7 +1013,7 @@ int comp_member_intern(ClassInfo *ci, const char *name) {
   if (idx < ci->nmembers) return idx;
   int m = ci->nmembers;
   if (idx != m) {
-    comp_ty_edits++;  /* the ivars are renumbered */
+    comp_touch_class(ci->idx);  /* the ivars are renumbered */
 #define IV_SWAP(arr, T) do { T _t = ci->arr[idx]; ((T *)ci->arr)[idx] = ci->arr[m]; ((T *)ci->arr)[m] = _t; } while (0)
     IV_SWAP(ivars, char *);
     IV_SWAP(ivar_types, TyKind);
@@ -994,6 +1040,7 @@ int comp_member_index(ClassInfo *ci, const char *name) {
 }
 
 int comp_cvar_index(ClassInfo *ci, const char *name) {
+  IMEMO_DEP_CLASS(ci->idx);
   for (int i = 0; i < ci->ncvars; i++)
     if (sp_streq(ci->cvars[i], name)) return i;
   return -1;
@@ -1044,14 +1091,14 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
     ci->cvar_types = realloc((TyKind *)ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
     ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
-    ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars);
+    { ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars); comp_touch_class(ci->idx); }
   }
   ci->cvars[ci->ncvars] = strdup(name);
   ((TyKind *)ci->cvar_types)[ci->ncvars] = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new cvar is a change of the table */
+  comp_touch_class(ci->idx);    /* a new cvar is a change of the table */
   ci->cvar_nullable_int[ci->ncvars] = 0;
   ci->cvar_str_shared[ci->ncvars] = 0;
-  ci->cvar_elems_shared[ci->ncvars] = 0;
+  { ci->cvar_elems_shared[ci->ncvars] = 0; comp_touch_class(ci->idx); }
   return ci->ncvars++;
 }
 
@@ -1146,7 +1193,7 @@ static int *tm_next = NULL, *tm_head = NULL;
    which is only stable while scope shape is fixed (e.g. hash_new_default_arg's
    per-node memo) can stamp their cache and discard it when the epoch changes. */
 static unsigned sm_gen = 0;
-void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) sm_gen++; sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
+void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) { sm_gen++; comp_touch_global(); } sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
 int comp_scope_index_is_frozen(void) { return sm_frozen; }
 unsigned comp_scope_index_gen(void) { return sm_gen; }
 /* Scopes from `from` on into the chains, ascending so the highest scope
@@ -1218,11 +1265,15 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
 }
 
 int comp_method_in_class(Compiler *c, int class_id, const char *name) {
-  return sm_lookup(c, class_id, name, 0);
+  int mi = sm_lookup(c, class_id, name, 0);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
-  return sm_lookup(c, class_id, name, 1);
+  int mi = sm_lookup(c, class_id, name, 1);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 /* (name, instance or class side) -> per class, the method a chain lookup
    answers and the class that defines it. A poly dispatch, an arity plan and
@@ -1234,7 +1285,7 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
    dropped when the index's epoch, the scope or class count, or the class
    shape (comp_class_shape_changed) moves. */
 static unsigned cmc_shape = 0;
-void comp_class_shape_changed(void) { cmc_shape++; }
+void comp_class_shape_changed(void) { cmc_shape++; comp_touch_global(); }   /* (a parent link or an alias: every answer may read a chain) */
 unsigned comp_class_shape_gen(void) { return cmc_shape; }
 static char **cmc_name; static unsigned char *cmc_cm; static int **cmc_ans;
 static int **cmc_resp; static int *cmc_nresp;   /* per slot: the responders (comp_name_responders), -1 unbuilt */
@@ -1342,12 +1393,17 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
   if (mi >= 0 && def_class) *def_class = dc;
   return mi;
 }
+/* (the method found is what the asker reads next: its value, its parameters) */
 int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  return chain_lookup(c, class_id, name, def_class, 1);
+  int mi = chain_lookup(c, class_id, name, def_class, 1);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  return chain_lookup(c, class_id, name, def_class, 0);
+  int mi = chain_lookup(c, class_id, name, def_class, 0);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);
+  return mi;
 }
 
 /* See compiler.h. Built on the first ask from the memo's slot, which the
@@ -1373,6 +1429,12 @@ const int *comp_name_responders(Compiler *c, const char *name, int is_cm, int *n
     else free(r);
   }
   *n = cmc_nresp[j];
+  /* (the responders are read over every class, and each method found is
+     what the asker reads next) */
+  if (imemo_dep_on) {
+    imemo_dep_global();
+    for (int i = 0; i < cmc_nresp[j]; i++) imemo_dep_scope(cmc_resp[j][2 * i + 1]);
+  }
   return cmc_resp[j];
 }
 
@@ -1423,6 +1485,7 @@ static const Compiler *rdo_c; static unsigned rdo_tgen, rdo_shape; static int rd
 const int *comp_name_reader_owners(Compiler *c, const char *name, int *n) {
   *n = 0;
   if (!name) return NULL;
+  IMEMO_DEP_GLOBAL();   /* (the owners are read over every class) */
   if (rdo_c != c || rdo_tgen != comp_table_gen || rdo_shape != cmc_shape || rdo_ncls != c->nclasses) {
     for (int i = 0; i < rdo_cap; i++) { free(rdo_name[i]); rdo_name[i] = NULL; free(rdo_list[i]); rdo_list[i] = NULL; }
     rdo_cnt = 0; rdo_c = c; rdo_tgen = comp_table_gen; rdo_shape = cmc_shape; rdo_ncls = c->nclasses;
@@ -1474,6 +1537,7 @@ int comp_ty_ary_root(Compiler *c, TyKind t) {
 TyKind comp_ary_kind(Compiler *c, int cid) {
   int r = comp_ary_root(c, cid);
   if (r < 0) return TY_UNKNOWN;
+  IMEMO_DEP_CLASS(r);   /* (the root's kind is what the asker reads) */
   TyKind k = c->classes[r].ary_kind;
   if (k != TY_UNKNOWN || g_infer_optimistic) return k;
   return c->classes[r].ary_hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
@@ -1793,8 +1857,8 @@ int comp_trampoline_kind(Compiler *c, int class_id, const char *name, int *def_c
   int bn = 0; const int *bb = nt_arr(nt, s->body, "body", &bn);
   if (bn != 1 || !bb) return 0;
   int call = bb[0];
-  const char *ct = nt_type(nt, call);
-  if (!ct || !sp_streq(ct, "CallNode")) return 0;
+  NodeKind ck = nt_kind(nt, call);
+  if (ck != NK_CallNode) return 0;
   if (nt_ref(nt, call, "receiver") >= 0) return 0;  /* must be receiverless */
   const char *cn = nt_str(nt, call, "name");
   if (!cn) return 0;
@@ -1838,15 +1902,15 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
     sgc_n = 0;
     if (sgc_ids) {
       for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "CallNode")) continue;
+        NodeKind k = nt_kind(nt, id);
+        if (k != NK_CallNode) continue;
         const char *nm = nt_str(nt, id, "name");
         if (!nm) continue;
         if (!name_is_plain_setter(nm)) continue;
         int recv = nt_ref(nt, id, "receiver");
         if (recv < 0) continue;
-        const char *rty = nt_type(nt, recv);
-        if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+        NodeKind rk = nt_kind(nt, recv);
+        if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
           sgc_ids[sgc_n++] = id;
       }
     }
@@ -1866,8 +1930,8 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an != 1) return -1;
-    const char *vty = nt_type(nt, av[0]);
-    if (!vty || (!sp_streq(vty, "ConstantReadNode") && !sp_streq(vty, "ConstantPathNode"))) return -1;
+    NodeKind vk = nt_kind(nt, av[0]);
+    if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return -1;
     int rci = comp_class_index(c, nt_str(nt, av[0], "name"));
     if (rci < 0) return -1;
     int seen = 0;
@@ -1889,8 +1953,8 @@ int comp_sg_const_binding(Compiler *c, int class_id, const char *base) {
    class index; otherwise -1. */
 int comp_sg_reader_const(Compiler *c, int call_id) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, call_id);
-  if (!ty || !sp_streq(ty, "CallNode")) return -1;
+  NodeKind k = nt_kind(nt, call_id);
+  if (k != NK_CallNode) return -1;
   if (nt_ref(nt, call_id, "block") >= 0) return -1;
   if (nt_ref(nt, call_id, "arguments") >= 0) return -1;
   const char *nm = nt_str(nt, call_id, "name");
@@ -1898,8 +1962,8 @@ int comp_sg_reader_const(Compiler *c, int call_id) {
   if (name_is_plain_setter(nm)) return -1;
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return -1;
-  const char *rty = nt_type(nt, recv);
-  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return -1;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
   const char *rn = nt_str(nt, recv, "name");
   int ci = rn ? comp_class_index(c, rn) : -1;
   if (ci < 0 || !comp_is_sg_reader(&c->classes[ci], nm)) return -1;
@@ -1911,8 +1975,8 @@ int comp_sg_reader_const(Compiler *c, int call_id) {
    count; otherwise 0 (or -1 if a non-constant RHS makes it un-resolvable). */
 int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, call_id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, call_id);
+  if (k != NK_CallNode) return 0;
   if (nt_ref(nt, call_id, "block") >= 0) return 0;
   if (nt_ref(nt, call_id, "arguments") >= 0) return 0;
   const char *nm = nt_str(nt, call_id, "name");
@@ -1920,8 +1984,8 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   if (name_is_plain_setter(nm)) return 0;
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return 0;
-  const char *rty = nt_type(nt, recv);
-  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   int ci = rn ? comp_class_index(c, rn) : -1;
   if (ci < 0 || !comp_is_sg_reader(&c->classes[ci], nm)) return 0;
@@ -1941,15 +2005,15 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
 static int const_top_level_walk(Compiler *c, int node, const char *cn, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node)) return 0;
-  const char *ty = nt_type(nt, node);
-  int is_mod = sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode");
-  if (is_mod || sp_streq(ty, "ConstantWriteNode")) {
+  NodeKind ty_k = nt_kind(nt, node);
+  int is_mod = ty_k == NK_ClassNode || ty_k == NK_ModuleNode;
+  if (is_mod || ty_k == NK_ConstantWriteNode) {
     const char *nm = NULL;
     if (is_mod) {
       int cp = nt_ref(nt, node, "constant_path");
       /* a qualified definition (`module A::B`) defines B under A, so only
          an unqualified path can define the TOP-LEVEL name */
-      if (cp >= 0 && nt_type(nt, cp) && sp_streq(nt_type(nt, cp), "ConstantReadNode"))
+      if (cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode)
         nm = nt_str(nt, cp, "name");
     }
     else nm = nt_str(nt, node, "name");
@@ -2013,18 +2077,19 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
   if (pred < 0) return 0;
   const char *pt = nt_type(nt, pred);
+  NodeKind pk = nt_kind(nt, pred);
   if (!pt) return 0;
   /* `defined?(X) && rest`: falseness of the left arm decides the whole
      predicate (recurses to cover chained `&&`s, which nest leftward). */
-  if (sp_streq(pt, "AndNode"))
+  if (pk == NK_AndNode)
     return comp_defined_guard_false(c, nt_ref(nt, pred, "left"));
-  if (!sp_streq(pt, "DefinedNode")) return 0;
+  if (pk != NK_DefinedNode) return 0;
   int v = nt_ref(nt, pred, "value");
   if (v < 0) return 0;
-  const char *vt = nt_type(nt, v);
-  if (vt && sp_streq(vt, "ConstantReadNode"))
+  NodeKind vk = nt_kind(nt, v);
+  if (vk == NK_ConstantReadNode)
     return !const_seg_resolves(c, v);
-  if (vt && sp_streq(vt, "ConstantPathNode")) {
+  if (vk == NK_ConstantPathNode) {
     /* a leaf no member of the program class its parent names is missing,
        though a constant of that name lives elsewhere (JSON::Coder) */
     if (const_path_misses_member(c, v)) return 1;
@@ -2033,9 +2098,9 @@ int comp_defined_guard_false(Compiler *c, int pred) {
       if (!const_seg_resolves(c, seg)) return 1;
       int par = nt_ref(nt, seg, "parent");
       if (par < 0) return !const_name_resolves_top_level(c, nt_str(nt, seg, "name")) && !const_seg_builtin(c, seg);
-      const char *pty = nt_type(nt, par);
-      if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
-      if (pty && sp_streq(pty, "ConstantReadNode"))
+      NodeKind pty_k = nt_kind(nt, par);
+      if (pty_k == NK_ConstantPathNode) { seg = par; continue; }
+      if (pty_k == NK_ConstantReadNode)
         return !const_seg_resolves(c, par);
       return 0;                                  /* dynamic parent: no fold */
     }
@@ -2113,13 +2178,13 @@ int comp_defined_early(Compiler *c, int pred, const char **early, int cap) {
    the poly array's storage as its elements. */
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty || !sp_streq(ty, "ArrayNode")) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_ArrayNode) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   if (en == 0) return 0;
   for (int i = 0; i < en; i++) {
-    const char *et = nt_type(nt, els[i]);
-    if (!et || !sp_streq(et, "IntegerNode") || nt_str(nt, els[i], "bigval")) return 0;
+    NodeKind ek = nt_kind(nt, els[i]);
+    if (ek != NK_IntegerNode || nt_str(nt, els[i], "bigval")) return 0;
   }
   return 1;
 }
@@ -2129,8 +2194,8 @@ static int is_int_array_literal(Compiler *c, int node) {
    operations (e.g. inject(&:&) set intersection over arrays of int arrays). */
 int comp_is_nested_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty || !sp_streq(ty, "ArrayNode")) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_ArrayNode) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   if (en == 0) return 0;
   for (int i = 0; i < en; i++)
@@ -2155,9 +2220,11 @@ unsigned comp_table_gen = 0;   /* bumped when a reader or alias table grows (pol
 void comp_add_reader(ClassInfo *ci, const char *name) {
   comp_table_gen++;
   name_add(&ci->readers, &ci->nreaders, &ci->creaders, name);
+  comp_touch_class(ci->idx);
 }
 void comp_add_writer(ClassInfo *ci, const char *name) {
   name_add(&ci->writers, &ci->nwriters, &ci->cwriters, name);
+  comp_touch_class(ci->idx);
 }
 int comp_is_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->readers, ci->nreaders, name); }
 void comp_add_own_reader(ClassInfo *ci, const char *name) {
@@ -2206,7 +2273,7 @@ int call_is_setter_assign(const NodeTable *nt, int id) {
    true (1), false (0) or nil (-1, the receiver's own): -2 for any other
    argument list. */
 int proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv) {
-  if (argc != 1 || !nt_type(nt, argv[0]) || !sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+  if (argc != 1 || nt_kind(nt, argv[0]) != NK_KeywordHashNode)
     return -2;
   int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
   if (en != 1) return -2;
@@ -2215,10 +2282,11 @@ int proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv) 
   if (!kn && key >= 0) kn = nt_str(nt, key, "value");
   int val = nt_ref(nt, elems[0], "value");
   const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+  NodeKind vk = nt_kind(nt, val);
   if (!kn || !sp_streq(kn, "lambda") || !vty) return -2;
-  if (sp_streq(vty, "TrueNode")) return 1;
-  if (sp_streq(vty, "FalseNode")) return 0;
-  if (sp_streq(vty, "NilNode")) return -1;
+  if (vk == NK_TrueNode) return 1;
+  if (vk == NK_FalseNode) return 0;
+  if (vk == NK_NilNode) return -1;
   return -2;
 }
 /* The attribute a setter name writes: "x=" -> "x". 0 when the name is not a
@@ -2523,12 +2591,12 @@ TyKind native_spec_to_ty(const char *spec) {
 int comp_ffi_const_at(Compiler *c, int node, int *out) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
-  const char *ty = nt_type(nt, node);
-  if (!ty || !sp_streq(ty, "ConstantPathNode")) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_ConstantPathNode) return 0;
   const char *leaf = nt_str(nt, node, "name");
   int par = nt_ref(nt, node, "parent");
-  const char *pty = par >= 0 ? nt_type(nt, par) : NULL;
-  const char *mod = (pty && (sp_streq(pty, "ConstantReadNode") || sp_streq(pty, "ConstantPathNode")))
+  NodeKind pk = nt_kind(nt, par);
+  const char *mod = (pk == NK_ConstantReadNode || pk == NK_ConstantPathNode)
                     ? nt_str(nt, par, "name") : NULL;
   if (!leaf || !mod) return 0;
   for (int i = 0; i < c->n_ffi_consts; i++) {
@@ -2672,8 +2740,12 @@ int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, i
 
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   name = comp_resolve_alias(c, class_id, name);
-  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)
+  /* (every class asked, a miss included: a reader added to one of them
+     later changes the answer) */
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    IMEMO_DEP_CLASS(cid);
     if (comp_is_reader(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
+  }
   return 0;
 }
 /* Whether a strict subclass of class_id answers `name` with a method or a
@@ -2893,6 +2965,7 @@ static struct pc_entry *pc_memo(Compiler *c, const char *name) {
 }
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
   if (!name) { *n = 0; return NULL; }
+  IMEMO_DEP_GLOBAL();   /* (the candidates are read over every class) */
   struct pc_entry *e = pc_memo(c, name);
   if (!e || mv_n) {
     /* scope shape may still change: answer fresh, and keep nothing */
@@ -3211,6 +3284,7 @@ static void cc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) 
 }
 const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n) {
   if (!name) { *n = 0; return NULL; }
+  IMEMO_DEP_GLOBAL();   /* (the candidates are read over every class) */
   if (!sm_frozen) {
     struct pc_entry *e = calloc(1, sizeof *e);
     cc_build(c, name, &e->cands, &e->n);
@@ -3312,9 +3386,10 @@ void comp_descendants_reset(void) {
    the end of nscope (desugar_value_callable_forwards asks of the receivers
    of calls appended since). */
 Scope *comp_scope_of(Compiler *c, int node_id) {
-  if (node_id < 0 || node_id >= c->node_cap) return &c->scopes[0];
+  if (node_id < 0 || node_id >= c->node_cap) { IMEMO_DEP_SCOPE(0); return &c->scopes[0]; }
   int idx = c->nscope[node_id];
   if (idx < 0 || idx >= c->nscopes) idx = 0;
+  IMEMO_DEP_SCOPE(idx);
   return &c->scopes[idx];
 }
 
@@ -3569,16 +3644,22 @@ int comp_ret_next(const Compiler *c, int u) {
    name: one entry per (CallNode, argument) pair. Asking whether an ivar is
    lent to a callee walked every CallNode of the program once per question,
    and a machine-generated program asks it for nearly every method. Chains
-   carry hash collisions: callers keep their name/owner filters. An argument
-   array rewritten in place (nt_node_set_arr) leaves the table's version
-   alone, so a caller that may run after such a rewrite drops the index with
-   comp_ivarg_invalidate first. */
+   carry hash collisions: callers keep their name/owner filters. Rebuilt when
+   the table has changed since: its version, or its edits (an argument array
+   rewritten in place, nt_node_set_arr, leaves the version alone). Only the
+   calls are walked, through their kind chain. */
 static void ivarg_build(Compiler *c) {
   free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
   c->ivarg_call = c->ivarg_arg = NULL;
   const NodeTable *nt = c->nt;
-  int n = nt->count, np = 0;
-  for (int u = 0; u < n; u++) {
+  int np = 0, ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) ncalls++;
+  int *calls = malloc(sizeof(int) * (size_t)(ncalls > 0 ? ncalls : 1));
+  if (!calls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) calls[ncalls++] = u;
+  for (int q = 0; q < ncalls; q++) {
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3587,20 +3668,22 @@ static void ivarg_build(Compiler *c) {
   }
   int nb = 16;
   while (nb < np && nb < (1 << 22)) nb <<= 1;
-  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) return;
+  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) { free(calls); return; }
   c->ivarg_call = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   c->ivarg_arg = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   if (!c->ivarg_call || !c->ivarg_arg) {
     free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
     c->ivarg_head = c->ivarg_next = c->ivarg_call = c->ivarg_arg = NULL;
     c->ivarg_built = 0;
+    free(calls);
     return;
   }
   c->ivarg_nbuckets = nb;
   c->ivarg_count = np;
   for (int b = 0; b < nb; b++) c->ivarg_head[b] = -1;
   int e = np;
-  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+  for (int q = ncalls - 1; q >= 0; q--) {   /* reverse: chains run in node order */
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3616,11 +3699,12 @@ static void ivarg_build(Compiler *c) {
       c->ivarg_head[b] = e;
     }
   }
-  c->ivarg_version = nt->version;
+  free(calls);
+  c->ivarg_stamp = nt->edits + nt->version;
   c->ivarg_built = 1;
 }
 int comp_ivarg_first(Compiler *c, const char *name) {
-  if (!c->ivarg_built || c->ivarg_version != c->nt->version) ivarg_build(c);
+  if (!c->ivarg_built || c->ivarg_stamp != c->nt->edits + c->nt->version) ivarg_build(c);
   if (!c->ivarg_built || !name) return -1;
   return c->ivarg_head[sp_strhash(name) & (unsigned)(c->ivarg_nbuckets - 1)];
 }
@@ -3925,27 +4009,28 @@ int comp_sret_next(const Compiler *c, int r) {
 static int bare_gets_scan(const NodeTable *nt) {
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
+    NodeKind ty_k = nt_kind(nt, i);
     if (!ty) continue;
     const char *v = NULL;
-    if (sp_streq(ty, "DefNode")) v = nt_str(nt, i, "name");
-    else if (sp_streq(ty, "SymbolNode")) {
+    if (ty_k == NK_DefNode) v = nt_str(nt, i, "name");
+    else if (ty_k == NK_SymbolNode) {
       v = nt_str(nt, i, "value");
       if (!v) v = nt_str(nt, i, "unescaped");
     }
-    else if (sp_streq(ty, "StringNode")) {
+    else if (ty_k == NK_StringNode) {
       v = nt_str(nt, i, "content");
       if (!v) v = nt_str(nt, i, "unescaped");
     }
-    else if (sp_streq(ty, "InterpolatedSymbolNode")) return 0;
-    else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
+    else if (ty_k == NK_InterpolatedSymbolNode) return 0;
+    else if (ty_k == NK_ConstantReadNode || ty_k == NK_ConstantPathNode) {
       const char *cn = nt_str(nt, i, "name");
       if (cn && sp_streq(cn, "BasicObject")) return 0;
     }
-    else if (sp_streq(ty, "GlobalVariableReadNode")) {
+    else if (ty_k == NK_GlobalVariableReadNode) {
       const char *gn = nt_str(nt, i, "name");
       if (gn && (sp_streq(gn, "$_") || sp_streq(gn, "$LAST_READ_LINE"))) return 0;
     }
-    else if (sp_streq(ty, "CallNode")) {
+    else if (ty_k == NK_CallNode) {
       const char *cn = nt_str(nt, i, "name");
       int ac = 0, args = nt_ref(nt, i, "arguments");
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
@@ -3980,7 +4065,13 @@ int comp_bare_gets_is_argf(Compiler *c) {
 }
 
 static int comp_method_index_direct(Compiler *c, const char *name);
+static int comp_method_index_1(Compiler *c, const char *name);
 int comp_method_index(Compiler *c, const char *name) {
+  int mi = comp_method_index_1(c, name);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);   /* (the method found is what the asker reads next) */
+  return mi;
+}
+static int comp_method_index_1(Compiler *c, const char *name) {
   int mi = comp_method_index_direct(c, name);
   if (mi >= 0) return mi;
   /* Only when nothing owns the name: a top-level `alias b a` registers on the
@@ -4068,7 +4159,13 @@ static int toplevel_mod_method(Compiler *c, int k, const char *name, int mf_only
   mi = comp_cmethod_in_chain(c, ci, name, NULL);
   return mi >= 0 && (!mf_only || c->scopes[mi].is_module_function) ? mi : -1;
 }
+static int comp_included_method_index_1(Compiler *c, const char *name, int call_id);
 int comp_included_method_index(Compiler *c, const char *name, int call_id) {
+  int mi = comp_included_method_index_1(c, name, call_id);
+  if (mi >= 0) IMEMO_DEP_SCOPE(mi);   /* (the method found is what the asker reads next) */
+  return mi;
+}
+static int comp_included_method_index_1(Compiler *c, const char *name, int call_id) {
   if (!name) return -1;
   int main_self = 1;
   if (call_id >= 0) {
@@ -4130,6 +4227,7 @@ static void scope_lidx_build(Scope *s) {
   for (int i = 0; i < s->nlocals; i++) scope_lidx_add(s, i);
 }
 LocalVar *scope_local(Scope *s, const char *name) {
+  IMEMO_DEP_SCOPE(s->idx);
   if (s->nlocals >= SCOPE_LIDX_MIN) {
     if (!s->lidx || s->nlocals * 2 > s->lidx_cap) scope_lidx_build(s);
     if (s->lidx) {
@@ -4165,17 +4263,18 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   memset(lv, 0, sizeof *lv);
   lv->name = strdup(name);
   *(TyKind *)&lv->type = TY_UNKNOWN;
-  comp_ty_edits++;    /* a new local is a change of the scope's table */
+  lv->owner = s->idx;
+  comp_touch_scope(s->idx);    /* a new local is a change of the scope's table */
   why_reset(&lv->why);
   lv->last_src = -1;
   lv->gc_root = 0;
   lv->is_param = 0;
   lv->is_block_param = 0;
   lv_set_proc_ret(lv, TY_UNKNOWN);
-  lv->is_cell = 0;
+  { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   lv->cell_shadow = 0;
   lv->cell_outlives = 0;
-  lv->byref_out = 0;
+  { lv->byref_out = 0; comp_touch_scope(lv->owner); }
   lv->inline_alias = 0;
   lv->init_guarded = 0;
   lv->rbs_seeded = 0;
@@ -4184,7 +4283,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->poly_dispatch_widened = 0;
   lv->or_written = 0;
   lv->maybe_unset = 0;
-  lv->str_shared = 0;
+  { lv->str_shared = 0; comp_touch_scope(lv->owner); }
   lv->str_append = 0;
   lv->poly_hash_pin = 0;
   lv->poly_array_pin = 0;
@@ -4525,17 +4624,18 @@ int allocate_on_own_class(Compiler *c, int id) {
 int class_recv_is_dynamic(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  NodeKind rk = nt_kind(nt, recv);
   if (!rty) return 0;
-  if (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode"))
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode)
     return 1;
   /* A global or class variable, or a conditional picking the class
      (`(bare ? A : B).new(x)`), carries it only at run time as well; with
      arguments they had no emitter and the call was refused. */
-  if (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
-      sp_streq(rty, "IfNode") || sp_streq(rty, "UnlessNode") || sp_streq(rty, "CaseNode") ||
-      sp_streq(rty, "AndNode") || sp_streq(rty, "OrNode"))
+  if (rk == NK_GlobalVariableReadNode || rk == NK_ClassVariableReadNode ||
+      rk == NK_IfNode || rk == NK_UnlessNode || rk == NK_CaseNode ||
+      rk == NK_AndNode || rk == NK_OrNode)
     return 1;
-  if (!sp_streq(rty, "CallNode")) return 0;
+  if (rk != NK_CallNode) return 0;
   /* `self.class` in a class with no subclass resolves to that class
      statically and has its own arms on both sides; treating it as dynamic
      would steal them. */

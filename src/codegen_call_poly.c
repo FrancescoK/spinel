@@ -106,7 +106,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         /* a splatted index list contributes each of its elements, not itself:
            pushed whole it became one index and the call answered from that
            one alone (#4164) */
-        if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) {
+        if (nt_kind(nt, argv[k]) == NK_SplatNode) {
           int sx9 = nt_ref(nt, argv[k], "expression");
           int ts9 = ++g_tmp, tj9 = ++g_tmp;
           /* the list first: what it hoists belongs ahead of the line that

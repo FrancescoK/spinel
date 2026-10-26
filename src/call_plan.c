@@ -317,7 +317,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       cplan_descendant_call(c, self->class_id, name, self->is_cmethod, p);
     return;
   }
-  const char *rty = nt_type(nt, recv);
+  NodeKind rk = nt_kind(nt, recv);
   TyKind rt = comp_ntype(c, recv);
   /* a Class reopen's own method answers a class value first, as the
      inference arm for Range / Time / IO / Class receivers does */
@@ -327,7 +327,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     if (kmi >= 0) { cplan_set(p, kmi, kci, UC_REOPEN, CP_DIRECT); return; }
   }
   int sci = self_class_static_ci(c, recv);   /* `self.class` naming one class */
-  if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
+  if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
     int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
     int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
     /* a package's native_func, which the constant calls in C directly; its
@@ -681,6 +681,14 @@ CallPlan cplan_exception_render(Compiler *c, int id, int xcm) {
   return p;
 }
 
+/* a plan answered is what the asker reads next: the method's value and
+   parameters, the owning class's slots (infer_type's memo, imemo_dep_*) */
+static const CallPlan *cplan_dep(const CallPlan *p) {
+  if (p->mi >= 0) IMEMO_DEP_SCOPE(p->mi);
+  if (p->send_fallback >= 0) IMEMO_DEP_SCOPE(p->send_fallback);
+  if (p->owner_ci >= 0) IMEMO_DEP_CLASS(p->owner_ci);
+  return p;
+}
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   static CallPlan ctx;
   if (self_ci < 0) return cplan_user(c, id);
@@ -694,7 +702,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
     int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, self_ci, name, 1);
     cplan_set(&ctx, mi, self_ci, UC_INST, form);
     ctx.chain = 1;
-    return &ctx;
+    return cplan_dep(&ctx);
   }
   if (flags & CPX_TARGET) return &ctx;
   /* a miss is no method, but a dispatch on the class still has a form: a
@@ -713,7 +721,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
     assert(g_tmp == tmp0);
 #endif
   }
-  return &ctx;
+  return cplan_dep(&ctx);
 }
 
 const CallPlan *cplan_user(Compiler *c, int id) {
@@ -723,7 +731,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   if (plain && id < g_cp_cap && g_cp_have[id]) {
     const char *mn = g_cp_name[id];
-    if (mn ? nm && sp_streq(mn, nm) : !nm) return &g_cp_memo[id];
+    if (mn ? nm && sp_streq(mn, nm) : !nm) return cplan_dep(&g_cp_memo[id]);
     plain = 0;
   }
 #ifndef NDEBUG
@@ -733,7 +741,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
 #ifndef NDEBUG
   assert(g_tmp == tmp0);   /* resolving emits nothing */
 #endif
-  if (!plain) return &fresh;
+  if (!plain) return cplan_dep(&fresh);
   if (id >= g_cp_cap) {
     int ncap = g_cp_cap ? g_cp_cap : 1024;
     while (ncap <= id) ncap *= 2;
@@ -748,7 +756,7 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   free(g_cp_name[id]);
   g_cp_name[id] = nm ? strdup(nm) : NULL;
   g_cp_have[id] = 1;
-  return &g_cp_memo[id];
+  return cplan_dep(&g_cp_memo[id]);
 }
 
 const CallPlan *cplan_user_fresh(Compiler *c, int id) {
@@ -756,7 +764,7 @@ const CallPlan *cplan_user_fresh(Compiler *c, int id) {
   cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE);
   if (id < 0 || id >= c->node_cap) return &fresh;
   cplan_resolve(c, id, &fresh);
-  return &fresh;
+  return cplan_dep(&fresh);
 }
 
 /* The class a constructor call builds: a constant receiver's, or the class
@@ -1063,6 +1071,8 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
   int n = g_ct_n[id];
   if (n > cap) return CPT_UNKNOWN;
   if (n > 0) memcpy(out, g_ct_pool + g_ct_off[id], (size_t)n * sizeof *out);
+  /* (the targets are what the asker reads next: their values, their parameters) */
+  for (int i = 0; i < n; i++) IMEMO_DEP_SCOPE(out[i]);
   return n;
 }
 
@@ -1283,8 +1293,8 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   *stop = 1;
   *lx = LX_NONE;
   const NodeTable *nt = c->nt;
-  const char *nty = nt_type(nt, id);
-  if (!nty || !sp_streq(nty, "CallNode")) return NULL;
+  NodeKind nk = nt_kind(nt, id);
+  if (nk != NK_CallNode) return NULL;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
@@ -1428,8 +1438,8 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (hit >= 0 && sp_streq(name, "singleton_class") && sclass_value_call(c, id)) hit = -1;
 
   /* The receiver's constant name, for the limits that are keyed on it. */
-  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-  const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+  NodeKind rty_k = nt_kind(nt, recv);
+  const char *rcn = (rty_k == NK_ConstantReadNode || rty_k == NK_ConstantPathNode)
                     ? nt_str(nt, recv, "name") : NULL;
   const char *why = hit >= 0 ? tbl[hit].why : NULL;
   if (why) *lx = LX_NAME;
@@ -1558,10 +1568,10 @@ static const char *cplan_runtime_send_what(Compiler *c, int id) {
   if (args < 0) return NULL;
   int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
   if (ac < 1 || !av) return NULL;
-  const char *a0 = nt_type(nt, av[0]);
+  NodeKind a0_k = nt_kind(nt, av[0]);
   /* a literal name should have been rewritten already; only a runtime name
      (a variable, a method result, an interpolated string, ...) reaches here */
-  if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) return NULL;
+  if (a0_k == NK_SymbolNode || a0_k == NK_StringNode) return NULL;
   /* lowered to a static name-dispatch (desugar_dynamic_send) over the
      program's literals AND the methods it defines: a computed name (an
      interpolated `"#{name}="`, a concatenation) resolves there too, and a
@@ -1661,8 +1671,8 @@ static const char *cplan_eval_what(Compiler *c, int id) {
   if (argc < 1) return NULL;
   int recv = nt_ref(nt, id, "receiver");
   if (recv >= 0) {
-    const char *rty = nt_type(nt, recv);
-    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return NULL;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return NULL;
     const char *rnm = nt_str(nt, recv, "name");
     if (!rnm || !sp_streq(rnm, "Kernel")) return NULL;
   }

@@ -219,7 +219,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   /* File class methods -> runtime helpers (the runtime has long carried
      these; only the dispatch was missing). FileTest shares File's predicate
      surface (#2819). */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") &&
       (sp_streq(nt_str(nt, recv, "name"), "File") ||
        sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
@@ -348,7 +348,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_chown("); emit_path_expr(c, argv[2], b); buf_puts(b, ", ");
       for (int ci = 0; ci < 2; ci++) {
         if (ci) buf_puts(b, ", ");
-        if (nt_type(nt, argv[ci]) && sp_streq(nt_type(nt, argv[ci]), "NilNode")) buf_puts(b, "-1LL");
+        if (nt_kind(nt, argv[ci]) == NK_NilNode) buf_puts(b, "-1LL");
         else emit_int_expr(c, argv[ci], b);
       }
       buf_puts(b, ")"); return 1;
@@ -379,8 +379,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     /* File.write(path, str, offset) / File.write(path, str, mode: "a", perm: 0o600) (#2782) */
     if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 3) {
-      const char *k3 = nt_type(nt, argv[2]);
-      if (k3 && sp_streq(k3, "KeywordHashNode")) {
+      NodeKind k3_k = nt_kind(nt, argv[2]);
+      if (k3_k == NK_KeywordHashNode) {
         int mv = struct_kwarg_value(c, argv[2], "mode");
         int pv = struct_kwarg_value(c, argv[2], "perm");
         if (pv >= 0) {
@@ -573,8 +573,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int csep = -1;
       Buf chomp; memset(&chomp, 0, sizeof chomp);
       for (int ki = 1; ki < argc; ki++) {
-        const char *kty = nt_type(nt, argv[ki]);
-        if (kty && sp_streq(kty, "KeywordHashNode")) {
+        NodeKind kk = nt_kind(nt, argv[ki]);
+        if (kk == NK_KeywordHashNode) {
           int cv = struct_kwarg_value(c, argv[ki], "chomp");
           emit_kw_flag(c, cv, &chomp);
         }
@@ -613,7 +613,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (nt_argv_kwh(nt, argv, argc) >= 0)
         perm = struct_kwarg_value(c, argv[argc - 1], "perm");
       if (perm < 0 && kw_mode < 0 && argc >= 3 &&
-          !(nt_type(nt, argv[2]) && sp_streq(nt_type(nt, argv[2]), "KeywordHashNode")))
+          nt_kind(nt, argv[2]) != NK_KeywordHashNode)
         perm = argv[2];
       /* a nil perm is CRuby's default; the runtime reads a nil sp_oint as 0666 */
       if (perm >= 0 && comp_ntype(c, perm) == TY_NIL) perm = -1;
@@ -650,7 +650,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           buf_puts(b, perm >= 0 ? "sp_File_open_perm(" : "sp_File_open("); \
           emit_path_expr(c, argv[0], b); buf_puts(b, ", "); \
           if (kw_mode >= 0) emit_str_expr(c, kw_mode, b); \
-          else if (argc >= 2 && !(nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))) emit_str_expr(c, argv[1], b); \
+          else if (argc >= 2 && nt_kind(nt, argv[1]) != NK_KeywordHashNode) emit_str_expr(c, argv[1], b); \
           else buf_puts(b, "\"r\""); \
           if (perm >= 0) { buf_puts(b, ", "); emit_perm_expr(c, perm, b); } \
           buf_puts(b, ")"); \
@@ -715,7 +715,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
            handles g_pre correctly; then synthesize a return value. */
         int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN &&
                         (lty != TY_NIL ||
-                         (nt_type(nt, bb[bn-1]) && sp_streq(nt_type(nt, bb[bn-1]), "NilNode"))));
+                         (nt_kind(nt, bb[bn-1]) == NK_NilNode)));
         if (scalar && can_expr) {
           /* Catch the tail expression's statement-shaped setup in a local
              buffer: g_pre here is the buffer for the whole `File.open(...) {
@@ -773,7 +773,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      and a user object is asked for its #to_path. The emitter is the identity
      for a value already typed String, so it costs nothing where inference
      succeeded. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
     if (sp_streq(name, "for_fd") && argc == 1) {
       buf_puts(b, "sp_Dir_for_fd("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
@@ -824,8 +824,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "home") && argc == 1) {
       buf_puts(b, "sp_dir_home_user("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
-    if (sp_streq(name, "glob") && argc == 2 && nt_type(nt, argv[1]) &&
-        sp_streq(nt_type(nt, argv[1]), "ConstantPathNode") &&
+    if (sp_streq(name, "glob") && argc == 2 &&
+        nt_kind(nt, argv[1]) == NK_ConstantPathNode &&
         nt_str(nt, argv[1], "name") && sp_streq(nt_str(nt, argv[1], "name"), "FNM_DOTMATCH")) {
       emit_dir_glob_dot(c, argv[0], b); return 1;
     }
@@ -940,14 +940,14 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   }
 
   /* Time class constructors */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time")) {
     if ((sp_streq(name, "now") || sp_streq(name, "new")) && argc == 0) { buf_puts(b, "sp_time_now()"); return 1; }
     /* Time.now(in: zone): the current instant in the zone the keyword names,
        read as Time.at's `in:` is. With no arm here the call fell through to
        the run-time NoMethodError. */
     if (sp_streq(name, "now") && argc == 1 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+        nt_kind(nt, argv[0]) == NK_KeywordHashNode &&
         struct_kwarg_value(c, argv[0], "in") >= 0) {
       int ts = ++g_tmp;
       buf_printf(b, "({ SP_TIME_TMP(_t%d) = sp_time_now();", ts);
@@ -1059,7 +1059,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        plurals/aliases), scaled to tv_nsec. Only a literal symbol resolves the
        scale at compile time; anything else falls through. (#2714) */
     if (sp_streq(name, "at") && argc == 3 &&
-        nt_type(nt, argv[2]) && sp_streq(nt_type(nt, argv[2]), "SymbolNode")) {
+        nt_kind(nt, argv[2]) == NK_SymbolNode) {
       const char *un = nt_str(nt, argv[2], "value");
       long mult = 0;
       /* CRuby's exact unit set -- no plurals; an unknown symbol is its
@@ -1090,8 +1090,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* Time.at(sec, usec): the second positional argument is microseconds
        (no unit keyword). tv_nsec = usec * 1000. (#2646) */
     if (sp_streq(name, "at") && argc == 2 &&
-        !(nt_type(nt, argv[1]) && (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
-                                   sp_streq(nt_type(nt, argv[1]), "HashNode")))) {
+        !(nt_kind(nt, argv[1]) == NK_KeywordHashNode ||
+          nt_kind(nt, argv[1]) == NK_HashNode)) {
       Repr st_repr = repr_of(c, argv[0]);
       TyKind st = st_repr.as_ty;
       int ts = ++g_tmp;
@@ -1244,7 +1244,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   }
 
   /* GC module methods */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {
     if (sp_streq(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
     /* GC.start(full_mark:, immediate_mark:, immediate_sweep:): one collector,
@@ -1311,7 +1311,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   }
 
   /* Process module methods */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
     if (sp_streq(name, "pid") && argc == 0) { buf_puts(b, "((sp_int)getpid())"); return 1; }
     if (sp_streq(name, "times") && argc == 0) { buf_puts(b, "sp_process_times()"); return 1; }
@@ -1332,7 +1332,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
          unit yields an Integer; the float units and the default yield a Float.
          clock_getres (#3045) differs only in the runtime call. */
       const char *unit = NULL;
-      if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode"))
+      if (argc >= 2 && nt_kind(nt, argv[1]) == NK_SymbolNode)
         unit = nt_str(nt, argv[1], "value");
       /* an unknown literal unit is CRuby's ArgumentError, not a silent
          float_second (#2727) */
@@ -1388,7 +1388,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
       sp_streq(name, "sqrt") && argc == 1) {
     if (repr_of(c, argv[0]).big) {
@@ -1408,7 +1408,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   }
 
   /* Marshal (Phase 1): dump a value to a binary String, load one back as poly */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
     if (sp_streq(name, "dump") && argc == 1) {
       buf_puts(b, "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
@@ -1446,16 +1446,16 @@ else {
      category flags live in the runtime (sp_warning_*, lib/sp_cold.c), so a
      program can silence or re-enable a category at run time and Kernel#warn's
      `category:` gate reads the same flags. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {
     /* the category argument as a C string: a literal symbol becomes a string
        literal; a symbol-typed expression resolves through the symbol table */
     int cat_ok = argc >= 1 && nt_type(nt, argv[0]) &&
-                 (sp_streq(nt_type(nt, argv[0]), "SymbolNode") ||
+                 (nt_kind(nt, argv[0]) == NK_SymbolNode ||
                   comp_ntype(c, argv[0]) == TY_SYMBOL);
     if (sp_streq(name, "[]") && argc == 1 && cat_ok) {
       buf_puts(b, "sp_warning_aref(");
-      if (sp_streq(nt_type(nt, argv[0]), "SymbolNode"))
+      if (nt_kind(nt, argv[0]) == NK_SymbolNode)
         emit_str_literal(b, nt_str(nt, argv[0], "value"));   /* escapes " and \ */
       else { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_puts(b, ")");
@@ -1466,7 +1466,7 @@ else {
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
       emit_boxed(c, argv[1], b);
       buf_puts(b, "; sp_warning_aset(");
-      if (sp_streq(nt_type(nt, argv[0]), "SymbolNode"))
+      if (nt_kind(nt, argv[0]) == NK_SymbolNode)
         emit_str_literal(b, nt_str(nt, argv[0], "value"));
       else { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ", sp_poly_truthy(_t%d)); _t%d; })", tv, tv);
@@ -1481,7 +1481,7 @@ else {
   }
 
   /* Math module functions -> C math.h equivalents */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math")) {
     /* 1-arg functions */
     /* Domain-restricted functions route through sp_math_* wrappers that
@@ -1624,7 +1624,7 @@ else {
   }
 
   /* Dir.exist? -> directory test; Dir.exists? was removed in Ruby 4.0 (#2780) */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
       (is_exist_alias(name)) && argc == 1) {
     if (sp_streq(name, "exists?")) {
@@ -1669,7 +1669,7 @@ void emit_sock_family_arg(Compiler *c, int arg, int is_family, Buf *b) {
 int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
      constant). Handled before the Class.new dispatch since they are not `new`. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode) {
     const char *tcn = nt_str(nt, recv, "name");
     /* IO.popen is not implemented: refused at compile time, as an
        unsupported API is, rather than a NoMethodError the first time the
@@ -1879,7 +1879,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       }
       if (sp_streq(name, "tcp_server_sockets") && (argc == 1 || argc == 2)) {
         buf_puts(b, "sp_sock_tcp_server_sockets(");
-        if (argc == 2 && !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode")))
+        if (argc == 2 && nt_kind(nt, argv[0]) != NK_NilNode)
           emit_str_expr(c, argv[0], b);
         else buf_puts(b, "NULL");
         buf_puts(b, ", ");
@@ -1891,7 +1891,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(b, "sp_sock_getaddrinfo(");
         emit_str_expr(c, argv[0], b);
         buf_puts(b, ", ");
-        if (nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "NilNode")) buf_puts(b, "0");
+        if (nt_kind(nt, argv[1]) == NK_NilNode) buf_puts(b, "0");
         else emit_int_expr(c, argv[1], b);
         /* the family and socktype restrict the answer, as in CRuby */
         buf_puts(b, ", ");
@@ -2341,7 +2341,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
      share a lazily-seeded default instance. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Random")) {
     if (sp_streq(name, "rand")) {
       if (argc >= 1 && repr_of(c, argv[0]).as_ty == TY_FLOAT) {
@@ -2404,7 +2404,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
      keywords: the keyword hash, the last argument, is checked at run time
      (sp_enum_product_kw_check), so a `**h` and a String key are named as
      CRuby names them. */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Enumerator") &&
       sp_streq(name, "product")) {
     int tf = ++g_tmp;
@@ -2450,8 +2450,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       else if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
-        const char *atype = nt_type(nt, argv[0]);
-        int islit = atype && sp_streq(atype, "RangeNode");
+        NodeKind atype_k = nt_kind(nt, argv[0]);
+        int islit = atype_k == NK_RangeNode;
         int lo = islit ? nt_ref(nt, argv[0], "left") : -1;
         int hi = islit ? nt_ref(nt, argv[0], "right") : -1;
         /* an endless/beginless range has no finite span -> Errno::EDOM (#2550) */

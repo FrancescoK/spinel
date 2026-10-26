@@ -10,6 +10,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include <ctype.h>
 
 /* ---- nil out of band: an emitter whose C result is an sp_oint / sp_ofloat
    leaves it bare when the node is one (node_is_oint: the dispatcher's
@@ -319,10 +320,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       char ref[24];
       buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
       emit_slot_truthy(rt, ref, b);
-      if (rt == TY_INT) buf_printf(b, " ? 2*%s.v+1 : SP_NIL_OBJECT_ID; })", ref);
+      if (rt == TY_INT) buf_printf(b, " ? (sp_int)(2*(uintptr_t)%s.v+1) : SP_NIL_OBJECT_ID; })", ref);
       else buf_printf(b, " ? sp_rbval_hash_key(sp_box_float(%s.v)) : SP_NIL_OBJECT_ID; })", ref);
     }
-    else if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
+    /* (2n+1 in unsigned arithmetic: an Integer past half the range would
+       overflow the signed product) */
+    else if (rt == TY_INT) { buf_puts(b, "((sp_int)(2*(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ")+1))"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_NIL_OBJECT_ID)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID)"); }
@@ -333,11 +336,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_expr(c, recv, b);
       buf_puts(b, ")))");
     }
-    /* a boxed value: its identity is the boxed payload (heap pointer / int) */
+    /* a boxed value: an immediate's id is the one the typed arms above
+       answer for it, any other value's its identity (sp_poly_object_id) */
     else if (rt == TY_POLY) {
-      buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
+      buf_puts(b, "sp_poly_object_id(");
       emit_expr(c, recv, b);
-      buf_puts(b, "))");
+      buf_puts(b, ")");
     }
     /* a String: a mutable one held as its shared sp_String has that
        handle's identity, the one a box of it carries (its text is a fresh
@@ -450,7 +454,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      any) never runs, so empty all?/none? are true, any?/one? false */
   if (recv >= 0 && (argc == 0 || argc == 1) &&
       is_quantifier_or_count(name) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
+      nt_kind(nt, recv) == NK_ArrayNode &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (sp_streq(name, "count")) { buf_puts(b, "0"); return 1; }
     buf_puts(b, (sp_streq(name, "all?") || sp_streq(name, "none?")) ? "1" : "0");
@@ -459,7 +463,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* nil?/empty? on an empty array literal fold to constants (an Array is never
      nil; an empty one is empty). The `[]` literal has no side effects. */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "empty?")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
+      nt_kind(nt, recv) == NK_ArrayNode &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     buf_puts(b, sp_streq(name, "empty?") ? "1" : "0");
     return 1;
@@ -467,7 +471,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* nil?/frozen?/empty?/is_a?(Hash) on an empty hash literal fold to constants
      (a Hash is never nil; a bare {} is unfrozen and empty). */
   if (recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")) &&
+      (nt_kind(nt, recv) == NK_HashNode || nt_kind(nt, recv) == NK_KeywordHashNode) &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "frozen?") || sp_streq(name, "any?"))) { buf_puts(b, "0"); return 1; }
     if (argc == 0 && sp_streq(name, "empty?")) { buf_puts(b, "1"); return 1; }
@@ -508,15 +512,15 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       /* a constant holding a value (`M = Object.new; def M.===`, `R = 1..3`)
          is that value's #===, not a class test */
       (comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_UNKNOWN) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-       (sp_streq(nt_type(nt, recv), "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0) ||
+      (nt_kind(nt, recv) == NK_ConstantReadNode ||
+       (nt_kind(nt, recv) == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0) ||
        /* a parented path is this same static dispatch only when its FULL
           qualified name is a known builtin (exception) class -- Errno::ENOENT
           === e. Typing alone is not enough: the leaf fallback types
           Math::String as a class by its leaf, and claiming it here would
           answer String === instead of the NameError the qualified constant
           deserves. */
-       (sp_streq(nt_type(nt, recv), "ConstantPathNode") && ({
+       (nt_kind(nt, recv) == NK_ConstantPathNode && ({
           char _prq[192];
           const char *_prn = isa_const_qualname(nt, recv, _prq, sizeof _prq);
           _prn && (builtin_class_id(_prn) != 0 || is_builtin_exception_name(_prn)); })))) {
@@ -532,17 +536,17 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       if (emit_scalar_class_test(c, argv[0], at2, cn, 0, b)) return 1;
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
-      const char *aty = nt_type(nt, argv[0]);
+      NodeKind ak = nt_kind(nt, argv[0]);
       if (is_immediate_class_name(cn)) {
         int yn = -1;
         /* an object slot holds nil as NULL: asked at run time below */
         if (sp_streq(cn, "NilClass"))
-          yn = (at2 == TY_NIL || (aty && sp_streq(aty, "NilNode"))) ? 1 :
+          yn = (at2 == TY_NIL || (ak == NK_NilNode)) ? 1 :
                (at2 != TY_POLY && at2 != TY_EXCEPTION && !ty_is_object(at2) ? 0 : -1);
         else if (sp_streq(cn, "TrueClass"))
-          yn = (aty && sp_streq(aty, "TrueNode")) ? 1 : (aty && sp_streq(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+          yn = (ak == NK_TrueNode) ? 1 : (ak == NK_FalseNode) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         else
-          yn = (aty && sp_streq(aty, "FalseNode")) ? 1 : (aty && sp_streq(aty, "TrueNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+          yn = (ak == NK_FalseNode) ? 1 : (ak == NK_TrueNode) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         if (yn >= 0) { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yn); return 1; }
       }
       /* an exception instance matches by name up its class chain (#2759) */
@@ -630,8 +634,8 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     Repr nrr = repr_of(c, recv);
     TyKind nrt = nrr.as_ty;
     if (nrr.kind == RK_BOXED) nblk = resolve_forwarded_block(c, nblk);
-    if (!ty_is_object(nrt) && nblk >= 0 && nt_type(nt, nblk) &&
-        sp_streq(nt_type(nt, nblk), "BlockNode")) {
+    if (!ty_is_object(nrt) && nblk >= 0 &&
+        nt_kind(nt, nblk) == NK_BlockNode) {
       int nexec = sp_streq(name, "instance_exec");
       int nbp = nt_ref(nt, nblk, "parameters");
       int ninner = nbp >= 0 ? nt_ref(nt, nbp, "parameters") : -1;
@@ -932,7 +936,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       Scope *ie_sc = comp_scope_of(c, id);
       int ie_flip = ie_sc && ie_sc->is_cmethod;
       int ie_sv_cm = ie_flip ? ie_sc->is_cmethod : 0, ie_sv_cls = ie_flip ? ie_sc->class_id : -1;
-      if (ie_flip) { comp_scope_move_begin(c, (int)(ie_sc - c->scopes)); ie_sc->is_cmethod = 0; ie_sc->class_id = cls_id; }
+      if (ie_flip) { comp_scope_move_begin(c, (int)(ie_sc - c->scopes)); { ie_sc->is_cmethod = 0; comp_touch_scope(ie_sc->idx); } { ie_sc->class_id = cls_id; comp_touch_scope(ie_sc->idx); } }
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
@@ -940,13 +944,13 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       {
         int is_exec = ie_tramp ? (ie_tramp == 2) : sp_streq(name, "instance_exec");
         int bp_node = nt_ref(nt, blk, "parameters");
-        const char *bpty = bp_node >= 0 ? nt_type(nt, bp_node) : NULL;
+        NodeKind bpk = nt_kind(nt, bp_node);
         int iargs = nt_ref(nt, id, "arguments");
         int iac = 0; const int *iav = iargs >= 0 ? nt_arr(nt, iargs, "arguments", &iac) : NULL;
         /* a trailing `k: v` call-site hash binds keyword params, not positionals */
         int ie_kwhash = ie_call_kwhash(c, id);
         if (ie_kwhash >= 0) iac -= 1;
-        if (is_exec && !(bpty && sp_streq(bpty, "NumberedParametersNode")) && (ie_tramp ? ie_tramp_effective_argc(c, id) : -1) < 0) {
+        if (is_exec && !(bpk == NK_NumberedParametersNode) && (ie_tramp ? ie_tramp_effective_argc(c, id) : -1) < 0) {
           /* instance_exec binds its arguments as a yield binds them
              (emit_block_binds): the proc distribution, a splat gathered, a
              lone Array auto-splatted, the keywords last. Its own copy bound
@@ -961,7 +965,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           free(bb.p);
           view_unbind(sv_nargov);
         }
-        else if (bpty && sp_streq(bpty, "NumberedParametersNode")) {
+        else if (bpk == NK_NumberedParametersNode) {
           /* `{ _1.method }`: _1.._N bind like positional block params. */
           int maxn = (int)nt_int(nt, bp_node, "maximum", 0);
           for (int p = 0; p < maxn; p++) {
@@ -1104,7 +1108,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       block_aliases_release(&ie_al);
       if (ie_al.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
       g_ie_class_id = saved_ie;
-      if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }
+      if (ie_flip) { { ie_sc->is_cmethod = ie_sv_cm; comp_touch_scope(ie_sc->idx); } { ie_sc->class_id = ie_sv_cls; comp_touch_scope(ie_sc->idx); } comp_scope_move_end(); }
       g_self = saved_self2;
       g_self_deref = saved_deref2;
       /* The call boxed for a forwarded block whose sites answer different
@@ -1237,9 +1241,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        through every arm the same way (#3828). Its frozen bit lives in the GC
        header, so the emitted pointer keeps its own type. */
     if (ak == TY_UNKNOWN && argc == 0 && sp_streq(name, "freeze")) {
-      const char *hvt = nt_type(nt, recv);
+      NodeKind hvk = nt_kind(nt, recv);
       int hen = 0;
-      if (hvt && (sp_streq(hvt, "HashNode") || sp_streq(hvt, "KeywordHashNode")) &&
+      if ((hvk == NK_HashNode || hvk == NK_KeywordHashNode) &&
           (nt_arr(nt, recv, "elements", &hen), hen == 0)) {
         int ht = ++g_tmp;
         buf_printf(b, "({ __typeof__(");
@@ -1333,8 +1337,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     const char *rtyf = nt_type(nt, recv);
+    NodeKind rtyf_k = nt_kind(nt, recv);
     /* (a global holding the handle, --share-strings) */
-    int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode") ||
+    int assignable_f = rtyf && (rtyf_k == NK_LocalVariableReadNode || rtyf_k == NK_InstanceVariableReadNode ||
                                 (repr_static_read_kind(nt_kind(nt, recv)) &&
                                  strbuf_slot_has(c, recv)));
     /* a shared String handle reads back as an expression (a copy), which
@@ -1418,15 +1423,15 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        0 = false, 1 = true. Only a single `freeze:` keyword arg is accepted. */
     int freeze_mode = -1, dkw_ok = (dargc == 0);
     if (dargc == 1 && dargv && sp_streq(name, "clone") &&
-        nt_type(nt, dargv[0]) && sp_streq(nt_type(nt, dargv[0]), "KeywordHashNode")) {
+        nt_kind(nt, dargv[0]) == NK_KeywordHashNode) {
       int kn = 0; const int *kel = nt_arr(nt, dargv[0], "elements", &kn);
-      if (kn == 1 && nt_type(nt, kel[0]) && sp_streq(nt_type(nt, kel[0]), "AssocNode")) {
+      if (kn == 1 && nt_kind(nt, kel[0]) == NK_AssocNode) {
         int kk = nt_ref(nt, kel[0], "key"), kv = nt_ref(nt, kel[0], "value");
-        if (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode") &&
+        if (kk >= 0 && nt_kind(nt, kk) == NK_SymbolNode &&
             nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "freeze") && kv >= 0) {
-          const char *kvt = nt_type(nt, kv);
-          if (kvt && sp_streq(kvt, "TrueNode"))  { freeze_mode = 1; dkw_ok = 1; }
-          else if (kvt && sp_streq(kvt, "FalseNode")) { freeze_mode = 0; dkw_ok = 1; }
+          NodeKind kvk = nt_kind(nt, kv);
+          if (kvk == NK_TrueNode)  { freeze_mode = 1; dkw_ok = 1; }
+          else if (kvk == NK_FalseNode) { freeze_mode = 0; dkw_ok = 1; }
         }
       }
     }
@@ -1649,7 +1654,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          recv_t == TY_RATIONAL || recv_t == TY_COMPLEX || recv_t == TY_BIGINT)) {
       int dargs2 = nt_ref(nt, id, "arguments");
       int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;
-      if (dn2 == 1 && nt_type(nt, dv2[0]) && sp_streq(nt_type(nt, dv2[0]), "KeywordHashNode")) {
+      if (dn2 == 1 && nt_kind(nt, dv2[0]) == NK_KeywordHashNode) {
         /* clone(freeze: false) on an always-frozen immediate can't produce an
            unfrozen copy: CRuby raises ArgumentError. freeze: true / nil (and a
            non-immediate like Range) return the value. (#2597) */
@@ -1682,7 +1687,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (argc0 == 1 && is_dup_clone && is_clone_name(name) && recv_tr.kind == RK_BOXED) {
       int cargs = nt_ref(nt, id, "arguments");
       int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
-      if (cn == 1 && cv && nt_type(nt, cv[0]) && sp_streq(nt_type(nt, cv[0]), "KeywordHashNode")) {
+      if (cn == 1 && cv && nt_kind(nt, cv[0]) == NK_KeywordHashNode) {
         int fval = kwh_lookup(nt, cv[0], "freeze");
         const char *fvt = fval >= 0 ? nt_type(nt, fval) : NULL;
         if (fvt && (sp_streq(fvt, "FalseNode") || sp_streq(fvt, "TrueNode") || sp_streq(fvt, "NilNode"))) {
@@ -2927,9 +2932,9 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* clone(freeze: false) on an immediate: CRuby's ArgumentError */
     if (nm0 && sp_streq(nm0, "clone") && ac0 == 1 &&
         (rt0 == TY_BOOL || rt0 == TY_NIL || rt0 == TY_INT || rt0 == TY_SYMBOL || rt0 == TY_FLOAT) &&
-        nt_type(nt, av0[0]) && sp_streq(nt_type(nt, av0[0]), "KeywordHashNode")) {
+        nt_kind(nt, av0[0]) == NK_KeywordHashNode) {
       int fv = struct_kwarg_value(c, av0[0], "freeze");
-      if (fv >= 0 && nt_type(nt, fv) && sp_streq(nt_type(nt, fv), "FalseNode")) {
+      if (fv >= 0 && nt_kind(nt, fv) == NK_FalseNode) {
         const char *icn = rt0 == TY_NIL ? "NilClass" : rt0 == TY_INT ? "Integer"
                         : rt0 == TY_SYMBOL ? "Symbol" : rt0 == TY_FLOAT ? "Float" : NULL;
         if (icn) {
@@ -2955,8 +2960,8 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
 /* printing a value: $stderr.puts / print, and to_s / inspect / nil? on an object no arm above answered */
 int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* $stderr.puts / $stderr.print: emit to stderr */
-  if (recv >= 0 && argc >= 0 && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
+  if (recv >= 0 && argc >= 0 &&
+      nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
     const char *gvnm = nt_str(nt, recv, "name");
     /* a stream slot that can hold a non-IO reads boxed: its call goes
        through the receiver's own class (StringIO#puts), not to the fd */
@@ -3187,8 +3192,8 @@ int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      the layout answers at compile time */
   if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
       ty_is_object(rt) && !comp_call_reaches_own(c, id, ty_object_class(rt), name) && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+      (nt_kind(nt, argv[0]) == NK_SymbolNode || nt_kind(nt, argv[0]) == NK_StringNode)) {
+    const char *ivn = nt_kind(nt, argv[0]) == NK_SymbolNode
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
     int dcid = ty_object_class(rt);
     int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
@@ -3514,9 +3519,9 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
   const NodeTable *nt = c->nt;
   if (is_ivar_access(name) &&
       argc >= 1 && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    const char *sym = sp_streq(a0ty, "SymbolNode")
+      (nt_kind(nt, argv[0]) == NK_SymbolNode || nt_kind(nt, argv[0]) == NK_StringNode)) {
+    NodeKind a0k = nt_kind(nt, argv[0]);
+    const char *sym = a0k == NK_SymbolNode
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
     int is_set = sp_streq(name, "instance_variable_set");
     /* Arity is statically known: get takes just the name, set the name and a
@@ -3525,9 +3530,9 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
     if (is_set && argc != 2) { unsupported(c, id, "instance_variable_set takes exactly 2 arguments"); return 1; }
     if (!is_set && argc != 1) { unsupported(c, id, "instance_variable_get takes exactly 1 argument"); return 1; }
     int is_val = repr_of(c, recv).kind == RK_VOBJ;
-    const char *rty = nt_type(nt, recv);
-    int recv_lvalue = rty && (sp_streq(rty, "LocalVariableReadNode") ||
-                              sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"));
+    NodeKind rk = nt_kind(nt, recv);
+    int recv_lvalue = (rk == NK_LocalVariableReadNode ||
+                              rk == NK_InstanceVariableReadNode || rk == NK_SelfNode);
     /* A name without a leading `@` is never a valid ivar name: raise NameError
        at runtime (evaluating the receiver first for its side effects). */
     if (!sym || sym[0] != '@') {

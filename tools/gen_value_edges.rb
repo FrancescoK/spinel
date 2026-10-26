@@ -187,8 +187,8 @@ end
 # The same value fields read the other way: is `child` one of them? A wrapper
 # answers VPE_WRAP, a branch VPE_BRANCH (a conditional crossed). A field
 # `f.*.g` (the statements of each `when` clause of a case) tests the element,
-# the clause, as the child: the clause has no kind of its own, so its `g` is
-# a hand-written test in vp_up_hand, which --check demands.
+# the clause, as the child: its `g` is a hand-written test in vp_up_hand,
+# which --check demands.
 def gen_up_arm(name, e)
   verdict = e[:role] == "wrapper" ? "VPE_WRAP" : "VPE_BRANCH"
   out = +"  case NK_#{name}: {\n"
@@ -289,9 +289,9 @@ def check_field(kind, f, shape, prism, errors)
       errors << "#{kind}.#{f.name}.*.#{f.sub}: #{ek} has no child field #{f.sub}" unless prism[ek]&.key?(f.sub)
       # the generated upward arm of the parent tests the element itself (the
       # clause); the element's own field is read by a hand-written test there
-      next if hand.include?("vp_is_kind_named(nt, p, \"#{ek}\") && child == nt_ref(nt, p, \"#{f.sub}\")")
+      next if hand.include?("nt_kind(nt, p) == NK_#{ek} && child == nt_ref(nt, p, \"#{f.sub}\")")
       errors << "#{kind}.#{f.name}.*.#{f.sub}: the upward arm needs a hand-written test in vp_up_hand " \
-                "(`vp_is_kind_named(nt, p, \"#{ek}\") && child == nt_ref(nt, p, \"#{f.sub}\")`)"
+                "(`nt_kind(nt, p) == NK_#{ek} && child == nt_ref(nt, p, \"#{f.sub}\")`)"
     end
   end
 end

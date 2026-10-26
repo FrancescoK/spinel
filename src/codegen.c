@@ -1,6 +1,8 @@
 #include <limits.h>
+#include <ctype.h>
 #include "codegen_internal.h"
 #include "call_plan.h"
+#include "codegen_call_arms.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -293,10 +295,10 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
     }
     return 0;
   }
-  default: {
-    const char *ty = nt_type(nt, n);
-    return ty && sp_streq(ty, "ArgumentsNode") && poll_pure_kids(c, n, ret_ok);
-  }
+  case NK_ArgumentsNode:
+    return poll_pure_kids(c, n, ret_ok);
+  default:
+    return 0;
   }
 }
 static int poll_pure_shape(Compiler *c, int si) {
@@ -1265,7 +1267,7 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
 }
 
 static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
-  const char *nty = nt_type(c->nt, node);
+  NodeKind nk = nt_kind(c->nt, node);
   /* `*a` forwarded into a scalar int slot (a builtin arg): the one slot takes
      the splat's one element. A splat of any other length is a different call
      -- `a.slice(*[0, 2])` is slice(0, 2) -- which splat_dispatch_on_length
@@ -1273,7 +1275,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      another length raises CRuby's arity error rather than reading element 0
      and dropping the rest. The arity is the one the dispatch recorded on the
      splat (`splat_lo`/`splat_hi`), else this slot's own 1. */
-  if (nty && sp_streq(nty, "SplatNode")) {
+  if (nk == NK_SplatNode) {
     int inner = nt_ref(c->nt, node, "expression");
     long long lo = nt_int(c->nt, node, "splat_lo", 1), hi = nt_int(c->nt, node, "splat_hi", 1);
     int ta = ++g_tmp;
@@ -2151,24 +2153,6 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
-  /* a block parameter every yield hands a new String (yb_param_fresh):
-     the element is a new handle over its bytes, which nothing else holds */
-  Scope *fys = nt_int(c->nt, node, "fresh_yield_box", 0) ? comp_scope_of(c, node) : NULL;
-  LocalVar *fyv = fys ? scope_local(fys, nt_str(c->nt, node, "name")) : NULL;
-  if (c->strbuf_box[node] && (t == TY_STRING || t == TY_STRBUF) && fyv && fyv->type == TY_STRING) {
-    char ref[1024];
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_local_ref(c, node, nt_str(c->nt, node, "name"), &rb);
-    snprintf(ref, sizeof ref, "%s", rb.p ? rb.p : "NULL");
-    free(rb.p);
-    buf_printf(b, "(%s ? ", ref);
-    str_box_open(b, 1);
-    buf_printf(b, "sp_String_new(%s)", ref);
-    str_box_close(b);
-    buf_puts(b, " : sp_box_nil())");
-    RC(RF_STRBUF_HANDLE, RW_NONE);
-    return;
-  }
   /* a demanded `s.to_s` over a local holding the handle: the conversion
      answers s's String, so the box is s's handle (an_str_conversion_local) */
   if (c->strbuf_box[node]) {
@@ -2513,8 +2497,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      `m(**(lg(h)))` beside keywords that run ahead running lg twice, and
      `m(x, (x = lg(2)))` into a boxed parameter printing twice. */
   {
-    const char *pty = nt_type(c->nt, node);
-    if (pty && sp_streq(pty, "ParenthesesNode") && !arg_ran_first(node, 0)) {
+    NodeKind pk = nt_kind(c->nt, node);
+    if (pk == NK_ParenthesesNode && !arg_ran_first(node, 0)) {
       int pbody = nt_ref(c->nt, node, "body"); int pbn = 0;
       const int *pbd = pbody >= 0 ? nt_arr(c->nt, pbody, "body", &pbn) : NULL;
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
@@ -2524,10 +2508,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && tr.as_ty == TY_STRING && tr.poly_lift)
     unsupported_feature(c, node, "a String is not yet shared by reference through a narrowed boxed iterator element into an appending parameter");
   {
-    const char *bty0 = nt_type(c->nt, node);
+    NodeKind bty0_k = nt_kind(c->nt, node);
     /* `*x` in a boxed value position (break *x / next *x): Ruby's
        splat-to-array (nil -> [], array -> itself, scalar -> [v]). */
-    if (bty0 && sp_streq(bty0, "SplatNode")) {
+    if (bty0_k == NK_SplatNode) {
       int inner0 = nt_ref(c->nt, node, "expression");
       buf_puts(b, "sp_splat_to_array(");
       if (inner0 >= 0) emit_boxed(c, inner0, b); else buf_puts(b, "sp_box_nil()");
@@ -2545,7 +2529,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      == -1 but is not a missing-block case). Checked before the raise because
      emit_boxed, unlike the expr-position YieldNode emitter, is now reached for
      a lowered yield tail once every proc returns through the boxed channel. */
-  if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_current_scope_is_lowered) {
+  if (nt_kind(c->nt, node) == NK_YieldNode && g_current_scope_is_lowered) {
     int yargs = nt_ref(c->nt, node, "arguments");
     int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(c->nt, yargs, "arguments", &yargc) : NULL;
     buf_puts(b, "((void)");
@@ -2563,13 +2547,13 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* A proc-form body has no inline block by construction -- the block arrives
      as an sp_Proc * parameter -- so the yield lowers to a call on it, not to
      the no-block raise (#3399). */
-  if (g_yield_proc_ref && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
+  if (g_yield_proc_ref && nt_kind(c->nt, node) == NK_YieldNode) {
     /* This helper's callers want a BOXED value, so ask for the poly form. */
     emit_yield_proc_call(c, nt_ref(c->nt, node, "arguments"), TY_POLY, b, 0, 1);
     RC(RF_YIELD, RW_YIELD);
     return;
   }
-  if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_block_id < 0) {
+  if (nt_kind(c->nt, node) == NK_YieldNode && g_block_id < 0) {
     /* An unguarded yield with no block raises LocalJumpError. A guarded yield
        folds its guard to a compile-time false and sits inside an `if (0)`, so
        the raise never executes there; the boxed nil keeps the comma expression
@@ -2580,7 +2564,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     RC(RF_SPECIAL, RW_YIELD);
     return;
   }
-  if (g_block_id >= 0 && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
+  if (g_block_id >= 0 && nt_kind(c->nt, node) == NK_YieldNode) {
     /* A forwarding block (`wrap { yield }` handing its own block on) has a
        yield for its tail, and that node's cached type is one site's too:
        the value at THIS site is what the block one level out answers, the
@@ -2593,7 +2577,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
       if (bn <= 0) { bt = TY_NIL; break; }
       int tail = bb[bn - 1];
-      if (nt_type(c->nt, tail) && sp_streq(nt_type(c->nt, tail), "YieldNode") &&
+      if (nt_kind(c->nt, tail) == NK_YieldNode &&
           yield_block_out(depth + 1) >= 0) { tblk = yield_block_out(depth + 1); continue; }
       bt = comp_ntype(c, tail);
       /* The tail is not the only value the block can produce: `next v` leaves
@@ -2691,7 +2675,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
-  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
+  if (tr.untyped && nt_kind(c->nt, node) == NK_ArrayNode) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
@@ -2704,22 +2688,22 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
-  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
+  if (tr.untyped && nt_kind(c->nt, node) == NK_HashNode) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
   /* Hash.new / Hash.new(default) whose variant no key usage ever narrowed:
      box an empty PolyPolyHash carrying the default (it used to fall to the
      constant path and raise "uninitialized constant Hash"). */
-  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode") &&
+  if (tr.untyped && nt_kind(c->nt, node) == NK_CallNode &&
       nt_str(c->nt, node, "name") && sp_streq(nt_str(c->nt, node, "name"), "new") &&
       nt_ref(c->nt, node, "block") < 0) {
     int hrecv = nt_ref(c->nt, node, "receiver");
-    const char *hty = hrecv >= 0 ? nt_type(c->nt, hrecv) : NULL;
+    NodeKind hk = nt_kind(c->nt, hrecv);
     const char *hcn = hrecv >= 0 ? nt_str(c->nt, hrecv, "name") : NULL;
     int han = 0; int haN = nt_ref(c->nt, node, "arguments");
     const int *hav = haN >= 0 ? nt_arr(c->nt, haN, "arguments", &han) : NULL;
-    if (hty && (sp_streq(hty, "ConstantReadNode") || sp_streq(hty, "ConstantPathNode")) &&
+    if ((hk == NK_ConstantReadNode || hk == NK_ConstantPathNode) &&
         hcn && sp_streq(hcn, "Hash") && han <= 1) {
       /* an unknown keyword is CRuby's ArgumentError, not the default */
       if (emit_hash_new_capacity_wrap(c, node, b, 1)) { RC(RF_SPECIAL, RW_LITERAL); return; }
@@ -2764,8 +2748,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   case RK_SCALAR: {
     if (t == TY_NIL) {
-      const char *nty = nt_type(c->nt, node);
-      if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); RC(RF_NIL_EFFECT, RW_NONE); return; }
+      NodeKind nk = nt_kind(c->nt, node);
+      if (nk == NK_NilNode) { buf_puts(b, "sp_box_nil()"); RC(RF_NIL_EFFECT, RW_NONE); return; }
       /* a nil-typed expression can still have side effects (e.g. a void-valued
          block call): evaluate it for effect, then yield nil */
       buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())");
@@ -3378,8 +3362,8 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
    and read after must survive the longjmp. */
 static int is_stopiter_loop(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, id, "name");
   return nm && sp_streq(nm, "loop") && nt_ref(nt, id, "block") >= 0;
@@ -3875,8 +3859,8 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
       /* and any other super runs the method it reaches on that class, which
          may read it even where this body does not */
       if (nt_kind(c->nt, nid) == NK_SuperNode || nt_kind(c->nt, nid) == NK_ForwardingSuperNode) { ans = 1; break; }
-      const char *ty = nt_type(c->nt, nid);
-      if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, nid, "receiver") < 0) {
+      NodeKind ty_k = nt_kind(c->nt, nid);
+      if (ty_k == NK_CallNode && nt_ref(c->nt, nid, "receiver") < 0) {
         const char *nm = nt_str(c->nt, nid, "name");
         if (nm && sp_streq(nm, "name")) ans = 1;
         /* a bare call to a class method that reads its receiving class
@@ -4616,8 +4600,8 @@ static int fi_body_has_loop(Compiler *c, int id, int depth) {
   /* an iteration block (`xs.each { }`) is a loop once the emitter fuses it */
   if (k == NK_CallNode) {
     int blk = nt_ref(nt, id, "block");
-    const char *bt = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (bt && sp_streq(bt, "BlockNode")) return 1;
+    NodeKind bk = nt_kind(nt, blk);
+    if (bk == NK_BlockNode) return 1;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -4638,15 +4622,16 @@ int fi_fiber_stack_risk(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
+    NodeKind k = nt_kind(nt, i);
     if (!ty) continue;
-    if (sp_streq(ty, "ConstantReadNode")) {
+    if (k == NK_ConstantReadNode) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && (sp_streq(nm, "Fiber") || sp_streq(nm, "Thread") || sp_streq(nm, "Enumerator") ||
                  sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") || sp_streq(nm, "Mutex") ||
                  sp_streq(nm, "Monitor") || sp_streq(nm, "ConditionVariable")))
         return 1;
     }
-    else if (sp_streq(ty, "CallNode")) {
+    else if (k == NK_CallNode) {
       const char *nm = nt_str(nt, i, "name");
       /* an external enumerator's body runs on a generator fiber too */
       if (nm && (sp_streq(nm, "to_enum") || sp_streq(nm, "enum_for"))) return 1;
@@ -5497,8 +5482,8 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       dl->is_param = sl.is_param;
       dl->is_block_param = sl.is_block_param;
       lv_set_proc_ret(dl, sl.proc_ret);
-      dl->is_cell = sl.is_cell;
-      dl->byref_out = sl.byref_out;
+      { dl->is_cell = sl.is_cell; comp_touch_scope(dl->owner); }
+      { dl->byref_out = sl.byref_out; comp_touch_scope(dl->owner); }
       dl->borrowed_volatile = sl.borrowed_volatile;
     }
     break;
@@ -7475,10 +7460,11 @@ int is_nested_block(const char *ty) {
 void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
-      sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-      sp_streq(ty, "LocalVariableAndWriteNode"))
+  if (ty_k == NK_LocalVariableWriteNode || ty_k == NK_LocalVariableTargetNode ||
+      ty_k == NK_LocalVariableOperatorWriteNode || ty_k == NK_LocalVariableOrWriteNode ||
+      ty_k == NK_LocalVariableAndWriteNode)
     nameset_add(locals, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
@@ -7503,7 +7489,7 @@ static void collect_numbered_reads(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   NodeKind k = nt_kind(c->nt, id);
   if (k == NK_BlockNode || k == NK_LambdaNode) return;
-  if (k == NK_LocalVariableReadNode || (nt_type(c->nt, id) && sp_streq(nt_type(c->nt, id), "ItLocalVariableReadNode"))) {
+  if (k == NK_LocalVariableReadNode || k == NK_ItLocalVariableReadNode) {
     const char *nm = nt_str(c->nt, id, "name");
     if (nm && ((nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && (!nm[2] || nm[2] == '_')) ||
                (nm[0] == 'i' && nm[1] == 't' && (!nm[2] || nm[2] == '_'))))
@@ -7523,7 +7509,7 @@ static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
      a `-> { _1 }` has no node at all: they are the ones its body reads (an
      enclosing block's cannot be read there, as Ruby refuses it) */
   if (bp_node < 0 || nt_kind(nt, bp_node) == NK_NumberedParametersNode ||
-      (nt_type(nt, bp_node) && sp_streq(nt_type(nt, bp_node), "ItParametersNode"))) {
+      nt_kind(nt, bp_node) == NK_ItParametersNode) {
     collect_numbered_reads(c, nt_ref(nt, blk, "body"), out);
     return;
   }
@@ -7549,10 +7535,11 @@ static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
 static void collect_locals_deep(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
-      sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-      sp_streq(ty, "LocalVariableAndWriteNode"))
+  if (ty_k == NK_LocalVariableWriteNode || ty_k == NK_LocalVariableTargetNode ||
+      ty_k == NK_LocalVariableOperatorWriteNode || ty_k == NK_LocalVariableOrWriteNode ||
+      ty_k == NK_LocalVariableAndWriteNode)
     nameset_add(out, nt_str(c->nt, id, "name"));
   if (is_nested_block(ty)) collect_block_param_names(c, id, out);
   int nr = nt_num_refs(c->nt, id);
@@ -7603,10 +7590,11 @@ static void proc_collect_body_locals(Compiler *c, int body, NameSet *used, NameS
 static int name_used_outside(Compiler *c, int id, int skip, const char *name) {
   if (id < 0 || id == skip || !name) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "LocalVariableReadNode") || sp_streq(ty, "LocalVariableWriteNode") ||
-      sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-      sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
+  if (ty_k == NK_LocalVariableReadNode || ty_k == NK_LocalVariableWriteNode ||
+      ty_k == NK_LocalVariableTargetNode || ty_k == NK_LocalVariableOperatorWriteNode ||
+      ty_k == NK_LocalVariableOrWriteNode || ty_k == NK_LocalVariableAndWriteNode) {
     const char *n = nt_str(c->nt, id, "name");
     if (n && sp_streq(n, name)) return 1;
   }
@@ -7686,17 +7674,18 @@ static int scope_body_is_ivar_read(Compiler *c, int s) {
   if (sc->body < 0) return 0;
   int n = 0; const int *st = nt_arr(c->nt, sc->body, "body", &n);
   if (n != 1 || !st) return 0;
-  const char *bt = nt_type(c->nt, st[0]);
-  return bt && sp_streq(bt, "InstanceVariableReadNode");
+  NodeKind bk = nt_kind(c->nt, st[0]);
+  return bk == NK_InstanceVariableReadNode;
 }
 
 int conv_reads_shared_storage(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   const char *ty = nt_type(nt, node);
+  NodeKind k = nt_kind(nt, node);
   if (!ty) return 0;
-  if (sp_streq(ty, "InstanceVariableReadNode")) return 1;
-  if (!sp_streq(ty, "CallNode")) return 0;
+  if (k == NK_InstanceVariableReadNode) return 1;
+  if (k != NK_CallNode) return 0;
   { int ca = nt_ref(nt, node, "arguments");
     int an = 0; if (ca >= 0) nt_arr(nt, ca, "arguments", &an);
     if (an > 0 || nt_ref(nt, node, "block") >= 0) return 0; }
@@ -7744,13 +7733,14 @@ int emit_array_into_poly_slot(Compiler *c, TyKind slot, int v, Buf *b) {
 void proc_collect_used(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "LocalVariableReadNode") || sp_streq(ty, "LocalVariableWriteNode") ||
-      sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-      sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode"))
+  if (ty_k == NK_LocalVariableReadNode || ty_k == NK_LocalVariableWriteNode ||
+      ty_k == NK_LocalVariableTargetNode || ty_k == NK_LocalVariableOperatorWriteNode ||
+      ty_k == NK_LocalVariableOrWriteNode || ty_k == NK_LocalVariableAndWriteNode)
     nameset_add(out, nt_str(c->nt, id, "name"));
   /* yield and block_given? need the forwarded block even without a local read */
-  if (sp_streq(ty, "YieldNode") ||
+  if (ty_k == NK_YieldNode ||
       (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
        sp_streq(nt_str(c->nt, id, "name"), "block_given?") &&
        (nt_ref(c->nt, id, "receiver") < 0 || nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode))) {
@@ -7760,12 +7750,12 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
   }
   /* a `def` opens a scope of its own: its parameters and locals are not the
      proc's, so only the receiver of `def obj.m` is read here */
-  if (sp_streq(ty, "DefNode")) {
+  if (ty_k == NK_DefNode) {
     proc_collect_used(c, nt_ref(c->nt, id, "receiver"), out);
     return;
   }
-  int zs = sp_streq(ty, "ForwardingSuperNode");
-  Scope *fs = zs || sp_streq(ty, "SuperNode") ? comp_scope_of(c, id) : NULL;
+  int zs = ty_k == NK_ForwardingSuperNode;
+  Scope *fs = zs || ty_k == NK_SuperNode ? comp_scope_of(c, id) : NULL;
   for (int i = 0; zs && fs && i < fs->nparams; i++) nameset_add(out, fs->pnames[i]);
   if (fs && fs->blk_param && fs->blk_param[0]) nameset_add(out, fs->blk_param);
   int nr = nt_num_refs(c->nt, id);
@@ -7781,24 +7771,24 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
    answers the inner ParametersNode, which a numbered-param block does not
    have. */
 int proc_numbered_params_node(Compiler *c, int create) {
-  const char *ty = nt_type(c->nt, create);
+  NodeKind k = nt_kind(c->nt, create);
   int bp;
-  if (ty && sp_streq(ty, "LambdaNode")) bp = nt_ref(c->nt, create, "parameters");
-  else if (ty && sp_streq(ty, "BlockNode")) bp = nt_ref(c->nt, create, "parameters");
+  if (k == NK_LambdaNode) bp = nt_ref(c->nt, create, "parameters");
+  else if (k == NK_BlockNode) bp = nt_ref(c->nt, create, "parameters");
   else {
     int block = nt_ref(c->nt, create, "block");
     bp = block >= 0 ? nt_ref(c->nt, block, "parameters") : -1;
   }
   if (bp < 0) return -1;
-  const char *bt = nt_type(c->nt, bp);
-  return (bt && sp_streq(bt, "NumberedParametersNode")) ? bp : -1;
+  NodeKind bk = nt_kind(c->nt, bp);
+  return (bk == NK_NumberedParametersNode) ? bp : -1;
 }
 
 int proc_params_node(Compiler *c, int create) {
-  const char *ty = nt_type(c->nt, create);
-  if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
+  NodeKind k = nt_kind(c->nt, create);
+  if (k == NK_LambdaNode) return nt_ref(c->nt, create, "parameters");
   /* BlockNode used directly as a proc (escaped &block) */
-  if (ty && sp_streq(ty, "BlockNode")) {
+  if (k == NK_BlockNode) {
     int bp = nt_ref(c->nt, create, "parameters");
     if (bp < 0) return -1;
     return nt_ref(c->nt, bp, "parameters");
@@ -7836,8 +7826,8 @@ const char *proc_rest_name(Compiler *c, int create) {
   if (pn < 0) return NULL;
   int r = nt_ref(c->nt, pn, "rest");
   if (r < 0) return NULL;
-  const char *rt = nt_type(c->nt, r);
-  if (!rt || !sp_streq(rt, "RestParameterNode")) return NULL;
+  NodeKind rk = nt_kind(c->nt, r);
+  if (rk != NK_RestParameterNode) return NULL;
   return nt_str(c->nt, r, "name");
 }
 int proc_has_rest(Compiler *c, int create) {
@@ -7845,8 +7835,8 @@ int proc_has_rest(Compiler *c, int create) {
   if (pn < 0) return 0;
   int r = nt_ref(c->nt, pn, "rest");
   if (r < 0) return 0;
-  const char *rt = nt_type(c->nt, r);
-  return rt && sp_streq(rt, "RestParameterNode");
+  NodeKind rk = nt_kind(c->nt, r);
+  return rk == NK_RestParameterNode;
 }
 int proc_post_count(Compiler *c, int create) {
   int pn = proc_params_node(c, create);
@@ -7911,9 +7901,9 @@ int proc_opt_value(Compiler *c, int create, int idx) {
 
 /* The StatementsNode body of a proc-creating node. */
 int proc_body_node(Compiler *c, int create) {
-  const char *ty = nt_type(c->nt, create);
-  if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
-  if (ty && sp_streq(ty, "BlockNode")) return nt_ref(c->nt, create, "body");
+  NodeKind k = nt_kind(c->nt, create);
+  if (k == NK_LambdaNode) return nt_ref(c->nt, create, "body");
+  if (k == NK_BlockNode) return nt_ref(c->nt, create, "body");
   int block = nt_ref(c->nt, create, "block");
   return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
 }
@@ -8049,9 +8039,10 @@ const char *borrowed_string_type(const LocalVar *lv) {
 int proc_body_has_yield(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "YieldNode")) return 1;
-  if (sp_streq(ty, "DefNode")) return 0;
+  if (ty_k == NK_YieldNode) return 1;
+  if (ty_k == NK_DefNode) return 0;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (proc_body_has_yield(c, ch)) return 1; }
   int na = nt_num_arrs(c->nt, id);
@@ -8068,8 +8059,9 @@ int proc_body_has_yield(Compiler *c, int id) {
    children are stopped by proc_body_has_return's own type checks. */
 static int proc_return_descend(Compiler *c, int id, int ch) {
   const char *t = nt_type(c->nt, ch);
+  NodeKind k = nt_kind(c->nt, ch);
   if (!t) return 0;
-  if (sp_streq(t, "BlockNode")) return !is_proc_literal(c, id);
+  if (k == NK_BlockNode) return !is_proc_literal(c, id);
   return 1;
 }
 
@@ -8080,9 +8072,10 @@ static int proc_return_descend(Compiler *c, int id, int ch) {
 int proc_body_has_return(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "ReturnNode")) return 1;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return 0;
+  if (ty_k == NK_ReturnNode) return 1;
+  if (ty_k == NK_DefNode || ty_k == NK_LambdaNode) return 0;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && proc_return_descend(c, id, ch) && proc_body_has_return(c, ch)) return 1; }
   int na = nt_num_arrs(c->nt, id);
@@ -8095,14 +8088,14 @@ int proc_body_has_return(Compiler *c, int id) {
    longjmps to the home method's proc-return frame instead of returning locally.
    Lambdas and bare blocks are excluded (their `return` is local / inlined). */
 int proc_does_nonlocal_return(Compiler *c, int create) {
-  const char *cty = nt_type(c->nt, create);
+  NodeKind ck = nt_kind(c->nt, create);
   /* The dispatch lift hands us the BlockNode itself; the lifted-ness is a
      property of the call that owns it. */
-  if (cty && sp_streq(cty, "BlockNode")) {
+  if (ck == NK_BlockNode) {
     int o = cg_block_owner(c, create);
     return o >= 0 ? proc_does_nonlocal_return(c, o) : 0;
   }
-  if (!cty || !sp_streq(cty, "CallNode")) return 0;          /* proc/Proc.new are calls */
+  if (ck != NK_CallNode) return 0;          /* proc/Proc.new are calls */
   const char *cn = nt_str(c->nt, create, "name");
   if (!cn) return 0;
   /* A plain block that is LIFTED to a proc (its call keeps a real &block, or a
@@ -8110,8 +8103,8 @@ int proc_does_nonlocal_return(Compiler *c, int create) {
      an explicit proc literal, so a `return` in it is non-local too. An inlined
      block's `return` is the method's own and never reaches here. */
   { int lblk = nt_ref(c->nt, create, "block");
-    const char *lbt = lblk >= 0 ? nt_type(c->nt, lblk) : NULL;
-    if (lbt && sp_streq(lbt, "BlockNode") && a_block_is_lifted(c, create))
+    NodeKind lbk = nt_kind(c->nt, lblk);
+    if (lbk == NK_BlockNode && a_block_is_lifted(c, create))
       return proc_body_has_return(c, nt_ref(c->nt, lblk, "body")); }
   /* A Hash.new default block lowered to a proc runs when a key is missing,
      under whatever reads the hash: its `return` leaves the home frame too. */
@@ -8120,7 +8113,7 @@ int proc_does_nonlocal_return(Compiler *c, int create) {
   int recv = nt_ref(c->nt, create, "receiver");
   int is_proc = (recv < 0 && sp_streq(cn, "proc"));
   int is_proc_new = (sp_streq(cn, "new") && recv >= 0 &&
-                     nt_type(c->nt, recv) && sp_streq(nt_type(c->nt, recv), "ConstantReadNode") &&
+                     nt_kind(c->nt, recv) == NK_ConstantReadNode &&
                      nt_str(c->nt, recv, "name") && sp_streq(nt_str(c->nt, recv, "name"), "Proc"));
   if (!is_proc && !is_proc_new) return 0;
   if (nt_ref(c->nt, create, "block") < 0) return 0;
@@ -8170,12 +8163,13 @@ int fiber_cap_needs_root(TyKind t) {
 int fiber_body_uses_self(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "InstanceVariableReadNode") || sp_streq(ty, "InstanceVariableWriteNode") ||
-      sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
-      sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "InstanceVariableAndWriteNode") ||
-      sp_streq(ty, "SelfNode")) return 1;
-  if (sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) return 1;
+  if (ty_k == NK_InstanceVariableReadNode || ty_k == NK_InstanceVariableWriteNode ||
+      ty_k == NK_InstanceVariableOperatorWriteNode ||
+      ty_k == NK_InstanceVariableOrWriteNode || ty_k == NK_InstanceVariableAndWriteNode ||
+      ty_k == NK_SelfNode) return 1;
+  if (ty_k == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0) return 1;
   /* A nested block is not skipped: its locals are its own, but its self is
      this body's. Spliced in place it reads self here; lifted to a fiber of
      its own (a Thread inside a Thread) its capture is filled from self
@@ -8213,27 +8207,27 @@ static void emit_enum_size_arg(Compiler *c, int size_node, Buf *b) {
    result, so it compiles through the normal terminal path. */
 static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
   const NodeTable *nt = c->nt;
-  if (id < 0 || !yname || !nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) return 0;
+  if (id < 0 || !yname || nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "<<")) return 0;
   int rcv = nt_ref(nt, id, "receiver");
   /* `y << a << b` chains through the yielder each push answers, and a
      parenthesised inner push is transparent (#3581) */
   while (rcv >= 0 && nt_type(nt, rcv)) {
-    if (sp_streq(nt_type(nt, rcv), "ParenthesesNode")) {
+    if (nt_kind(nt, rcv) == NK_ParenthesesNode) {
       int pb = nt_ref(nt, rcv, "body"); int pn = 0;
       const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
       rcv = (pn == 1 && pd) ? pd[0] : -1;
       continue;
     }
-    if (sp_streq(nt_type(nt, rcv), "CallNode") && nt_str(nt, rcv, "name") &&
+    if (nt_kind(nt, rcv) == NK_CallNode && nt_str(nt, rcv, "name") &&
         sp_streq(nt_str(nt, rcv, "name"), "<<")) {
       rcv = nt_ref(nt, rcv, "receiver");
       continue;
     }
     break;
   }
-  if (rcv < 0 || !nt_type(nt, rcv) || !sp_streq(nt_type(nt, rcv), "LocalVariableReadNode")) return 0;
+  if (rcv < 0 || nt_kind(nt, rcv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, rcv, "name");
   return rn && sp_streq(rn, yname);
 }
@@ -8246,25 +8240,26 @@ static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
 static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
   if (id < 0 || !yname) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "SingletonClassNode"))
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode ||
+      ty_k == NK_SingletonClassNode)
     return 0;
   /* a nested block or lambda whose own parameter is named like the yielder
      yields to that parameter, not to this generator */
-  if ((sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) &&
+  if ((ty_k == NK_BlockNode || ty_k == NK_LambdaNode) &&
       subtree_has_param_named_pub(nt, nt_ref(nt, id, "parameters"), yname))
     return 0;
-  if (sp_streq(ty, "CallNode")) {
+  if (ty_k == NK_CallNode) {
     const char *nm = nt_str(nt, id, "name");
     int rcv = nt_ref(nt, id, "receiver");
     if (nm && sp_streq(nm, "yield") && rcv >= 0 &&
-        nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode") &&
+        nt_kind(nt, rcv) == NK_LocalVariableReadNode &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), yname)) {
       int ar = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       if (ac != 1) return 1;
-      if (ac == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) return 1;
+      if (ac == 1 && nt_kind(nt, av[0]) == NK_SplatNode) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);
@@ -8926,11 +8921,12 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
 static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "SelfNode")) return 1;
+  if (ty_k == NK_SelfNode) return 1;
   if (!strncmp(ty, "InstanceVariable", 16)) return 1;
-  if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) return 1;
-  if (sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
+  if (ty_k == NK_SuperNode || ty_k == NK_ForwardingSuperNode) return 1;
+  if (ty_k == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0) {
     const char *nm = nt_str(c->nt, id, "name");
     if (nm && comp_method_in_chain(c, class_id, nm, NULL) >= 0) return 1;
     /* an attr_reader is not a method in the chain -- it reads the ivar
@@ -8963,12 +8959,13 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
 static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
+  if (ty_k == NK_InstanceVariableWriteNode || ty_k == NK_InstanceVariableOrWriteNode) {
     int v = nt_ref(c->nt, id, "value");
     if (v >= 0) {
-      const char *vt = nt_type(c->nt, v);
-      if (vt && sp_streq(vt, "LocalVariableReadNode")) {
+      NodeKind vk = nt_kind(c->nt, v);
+      if (vk == NK_LocalVariableReadNode) {
         const char *vn = nt_str(c->nt, v, "name");
         if (vn && sp_streq(vn, bp)) return 1;
       }
@@ -8990,13 +8987,14 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
    disagree with a scalar-typed fall-through tail (#3241). */
 static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
   const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "ReturnNode")) {
+  if (ty_k == NK_ReturnNode) {
     int a = nt_ref(c->nt, id, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
     return (an == 1) ? repr_of(c, av[0]).as_ty : TY_NIL;
   }
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return TY_UNKNOWN;
+  if (ty_k == NK_DefNode || ty_k == NK_LambdaNode) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
@@ -9066,7 +9064,8 @@ static int proc_owns_local(Compiler *c, int create, const char *nm) {
 static int param_spelled(const NodeTable *nt, int id, const char *nm) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
-  if (ty && (strstr(ty, "ParameterNode") || sp_streq(ty, "LocalVariableTargetNode"))) {
+  NodeKind ty_k = nt_kind(nt, id);
+  if (ty && (strstr(ty, "ParameterNode") || ty_k == NK_LocalVariableTargetNode)) {
     const char *pn = nt_str(nt, id, "name");
     if (pn && sp_streq(pn, nm)) return 1;
   }
@@ -9095,8 +9094,9 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
   const NodeTable *nt = c->nt;
   if (id < 0 || !nm) return 0;
   const char *ty = nt_type(nt, id);
-  if (!ty || sp_streq(ty, "LambdaNode")) return 0;
-  if (sp_streq(ty, "BlockNode")) {
+  NodeKind ty_k = nt_kind(nt, id);
+  if (!ty || ty_k == NK_LambdaNode) return 0;
+  if (ty_k == NK_BlockNode) {
     int pn = nt_ref(nt, id, "parameters");
     if (param_spelled(nt, pn, nm)) return 1;
     const char *locs = nt_str(nt, id, "locals");
@@ -9109,8 +9109,8 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
            parameter, not the enclosing scope's `nm`. Numbered and `it`
            parameters have no node of their own, and the list carries their
            renamed spelling. */
-        const char *pt = pn >= 0 ? nt_type(nt, pn) : NULL;
-        if (pt && (sp_streq(pt, "NumberedParametersNode") || sp_streq(pt, "ItParametersNode"))) return 1;
+        NodeKind pk = nt_kind(nt, pn);
+        if (pk == NK_NumberedParametersNode || pk == NK_ItParametersNode) return 1;
         if (!subtree_has_param_named_pub(nt, pn, nm)) return 1;
         break;
       }
@@ -9480,9 +9480,9 @@ static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf 
 
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *cty = nt_type(nt, create);
-  int is_lambda_node = cty && sp_streq(cty, "LambdaNode");
-  int is_block_node = cty && sp_streq(cty, "BlockNode");
+  NodeKind ck = nt_kind(nt, create);
+  int is_lambda_node = ck == NK_LambdaNode;
+  int is_block_node = ck == NK_BlockNode;
   if (!is_lambda_node && !is_block_node && nt_ref(nt, create, "block") < 0) { unsupported(c, create, "proc literal without a block"); return; }
   nd_stamp((is_lambda_node || is_block_node) ? create : nt_ref(nt, create, "block"), ND_BLOCK_PROC);
 
@@ -9523,8 +9523,8 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
     /* `&b` binds from the block side-channel in the prologue below */
     {
       int bpar0 = pn0 >= 0 ? nt_ref(nt, pn0, "block") : -1;
-      const char *bpty0 = bpar0 >= 0 ? nt_type(nt, bpar0) : NULL;
-      if (bpty0 && sp_streq(bpty0, "BlockParameterNode")) {
+      NodeKind bpty0_k = nt_kind(nt, bpar0);
+      if (bpty0_k == NK_BlockParameterNode) {
         const char *bpn0 = nt_str(nt, bpar0, "name");
         if (bpn0) nameset_add(&params, bpn0);
       }
@@ -9532,8 +9532,8 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
     /* `**kw` binds the trailing kwargs hash in the prologue below, less the
        named keywords when there are any */
     int kwrest0 = pn0 >= 0 ? nt_ref(nt, pn0, "keyword_rest") : -1;
-    const char *kwrty0 = kwrest0 >= 0 ? nt_type(nt, kwrest0) : NULL;
-    if (kwrty0 && sp_streq(kwrty0, "KeywordRestParameterNode")) {
+    NodeKind kwrty0_k = nt_kind(nt, kwrest0);
+    if (kwrty0_k == NK_KeywordRestParameterNode) {
       const char *krn = nt_str(nt, kwrest0, "name");
       if (krn) nameset_add(&params, krn);
     }
@@ -9672,18 +9672,18 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       int kwrest = nt_ref(nt, pn, "keyword_rest");
       int has_req_kw = 0, has_opt_kw = 0;
       for (int i = 0; i < nkw; i++) {
-        const char *kt = nt_type(nt, kw[i]);
-        if (kt && sp_streq(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
-        else if (kt && sp_streq(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
+        NodeKind kt_k = nt_kind(nt, kw[i]);
+        if (kt_k == NK_RequiredKeywordParameterNode) has_req_kw = 1;
+        else if (kt_k == NK_OptionalKeywordParameterNode) has_opt_kw = 1;
       }
-      const char *kwt = kwrest >= 0 ? nt_type(nt, kwrest) : NULL;
-      int has_kwrest = kwt && sp_streq(kwt, "KeywordRestParameterNode");
+      NodeKind kwk = nt_kind(nt, kwrest);
+      int has_kwrest = kwk == NK_KeywordRestParameterNode;
       int mandatory = arity + npost + (has_req_kw ? 1 : 0);
       /* `|a,|`'s rest is an ImplicitRestNode: it names nothing and collects
          nothing, and CRuby reports the signature as exactly its required
          count (`lambda { |a,| }.arity == 1`). */
-      const char *rest_ty = rest >= 0 ? nt_type(nt, rest) : NULL;
-      if (rest_ty && sp_streq(rest_ty, "ImplicitRestNode")) rest = -1;
+      NodeKind rest_k = nt_kind(nt, rest);
+      if (rest_k == NK_ImplicitRestNode) rest = -1;
       /* Only a rest parameter makes a PROC's arity negative: optional
          keywords and a keyword rest leave it at the required count, where a
          LAMBDA reports them as negative -- unless a required keyword is there
@@ -9719,8 +9719,8 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
        rather than the array they read (#3679) */
     while (bn > 0 && nt_int(nt, bb[bn - 1], "destr_splice", 0)) bn--;
     if (bn > 0) {
-      const char *tty = nt_type(nt, bb[bn - 1]);
-      if (tty && sp_streq(tty, "ReturnNode")) {
+      NodeKind tk = nt_kind(nt, bb[bn - 1]);
+      if (tk == NK_ReturnNode) {
         tail_is_return = 1;
         int rargs = nt_ref(nt, bb[bn - 1], "arguments");
         int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
@@ -9777,7 +9777,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   if (ret != TY_POLY && !ret_proc) {
     int owner = -1;
     for (int oid = 0; oid < nt->count; oid++) if (nt_ref(nt, oid, "block") == create) { owner = oid; break; }
-    if (owner >= 0 && nt_type(nt, owner) && sp_streq(nt_type(nt, owner), "CallNode")) {
+    if (owner >= 0 && nt_kind(nt, owner) == NK_CallNode) {
       const char *onm = nt_str(nt, owner, "name");
       int orecv = nt_ref(nt, owner, "receiver");
       int mi = -1;
@@ -9910,8 +9910,8 @@ else if (orecv >= 0 && onm) {
                                   ? -1 : comp_sym_intern(c, param_public_name(onm)); }
       }
       int rest = nt_ref(nt, pn, "rest");
-      const char *rty = rest >= 0 ? nt_type(nt, rest) : NULL;
-      if (rty && sp_streq(rty, "RestParameterNode") && meta_count < PMETA_MAX) {
+      NodeKind rk = nt_kind(nt, rest);
+      if (rk == NK_RestParameterNode && meta_count < PMETA_MAX) {
         const char *nm = param_public_name(nt_str(nt, rest, "name"));
         pkind[meta_count] = "rest";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "*");
@@ -9923,20 +9923,20 @@ else if (orecv >= 0 && onm) {
       }
       ids = nt_arr(nt, pn, "keywords", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
-        const char *kt = nt_type(nt, ids[i]);
-        pkind[meta_count] = (kt && sp_streq(kt, "OptionalKeywordParameterNode")) ? "key" : "keyreq";
+        NodeKind kk = nt_kind(nt, ids[i]);
+        pkind[meta_count] = (kk == NK_OptionalKeywordParameterNode) ? "key" : "keyreq";
         pname[meta_count++] = comp_sym_intern(c, param_public_name(nt_str(nt, ids[i], "name")));
       }
       int kwrest = nt_ref(nt, pn, "keyword_rest");
-      const char *kwty = kwrest >= 0 ? nt_type(nt, kwrest) : NULL;
-      if (kwty && sp_streq(kwty, "KeywordRestParameterNode") && meta_count < PMETA_MAX) {
+      NodeKind kwty_k = nt_kind(nt, kwrest);
+      if (kwty_k == NK_KeywordRestParameterNode && meta_count < PMETA_MAX) {
         const char *nm = param_public_name(nt_str(nt, kwrest, "name"));
         pkind[meta_count] = "keyrest";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "**");
       }
       int bpar = nt_ref(nt, pn, "block");
-      const char *bty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
-      if (bty && sp_streq(bty, "BlockParameterNode") && meta_count < PMETA_MAX) {
+      NodeKind bk = nt_kind(nt, bpar);
+      if (bk == NK_BlockParameterNode && meta_count < PMETA_MAX) {
         const char *nm = param_public_name(nt_str(nt, bpar, "name"));
         pkind[meta_count] = "block";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "&");
@@ -10063,7 +10063,7 @@ else if (orecv >= 0 && onm) {
     g_self = proc_cmethod_self(c, bs, cm_self_p, sizeof cm_self_p);
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
   int bs_moved = ie_cls >= 0 && sv_bcls >= 0;
-  if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); bs->class_id = ie_cls; bs->is_cmethod = 0; }
+  if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); { bs->class_id = ie_cls; comp_touch_scope(bs->idx); } { bs->is_cmethod = 0; comp_touch_scope(bs->idx); } }
   /* The proc body reads its captured self by value for a value-type class
      (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
      body must match. g_self_deref is global, so override it for the body and
@@ -10112,8 +10112,8 @@ else if (orecv >= 0 && onm) {
   {
     int pnb = proc_params_node(c, create);
     int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
-    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
-    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
+    NodeKind bpk = nt_kind(nt, bpar);
+    const char *bpn = (bpk == NK_BlockParameterNode) ? nt_str(nt, bpar, "name") : NULL;
     if (bpn) {
       g_needs_proc_poly_argslot = 1;
       buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
@@ -10145,7 +10145,7 @@ else if (orecv >= 0 && onm) {
   { int pnk = proc_params_node(c, create);
     int kwr = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     if (kwr >= 0) has_kwrest = 1;
-    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "NoKeywordsParameterNode")) no_kw = 1; }
+    if (kwr >= 0 && nt_kind(nt, kwr) == NK_NoKeywordsParameterNode) no_kw = 1; }
   /* The trailing argument is keywords when it is a Hash the call site passed
      as keywords (_sp_proc_kwpos, read before anything below can call another
      proc, and cleared whatever this proc's shape is). A caller that does not
@@ -10164,7 +10164,7 @@ else if (orecv >= 0 && onm) {
     int rn = pnr >= 0 ? nt_ref(nt, pnr, "rest") : -1;
     has_rest_marker = rn >= 0;
     as_lead_only = !nopts && !nposts && !has_kwp &&
-                   (rn < 0 ? arity > 1 : arity >= 1 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ImplicitRestNode")); }
+                   (rn < 0 ? arity > 1 : arity >= 1 && nt_kind(nt, rn) == NK_ImplicitRestNode); }
   int as_gate = !is_lambda && !as_lead_only && block_auto_splats(arity, nopts, nposts, has_rest_marker);
   if (!has_kwp && as_gate)
     buf_puts(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n");
@@ -10438,7 +10438,7 @@ else if (orecv >= 0 && onm) {
     int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     { int nreqkw = 0;
       for (int j = 0; j < nkw2; j++)
-        if (nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) nreqkw++;
+        if (nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode) nreqkw++;
       if (kwr0 < 0 || nreqkw) {
         buf_puts(pb, "    { static const char *const _pkw[] = {");
         for (int j = 0; j < nkw2; j++) {
@@ -10448,7 +10448,7 @@ else if (orecv >= 0 && onm) {
         buf_puts(pb, "0}, *const _pkr[] = {");
         for (int j = 0; j < nkw2; j++) {
           const char *kn = nt_str(nt, kwn[j], "name");
-          if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+          if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
             buf_printf(pb, "\"%s\", ", param_public_name(kn));
         }
         buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
@@ -10460,7 +10460,7 @@ else if (orecv >= 0 && onm) {
           buf_puts(pb, " && (0");
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+            if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
               buf_printf(pb, " || !sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))",
                          comp_sym_intern(c, param_public_name(kn)));
           }
@@ -10471,7 +10471,7 @@ else if (orecv >= 0 && onm) {
           char miss[512] = "", km[600]; int nm = 0;
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (!kn || !nt_type(nt, kwn[j]) || !sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) continue;
+            if (!kn || nt_kind(nt, kwn[j]) != NK_RequiredKeywordParameterNode) continue;
             char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(kn));
             kw_names_add(miss, sizeof miss, &nm, iv);
           }
@@ -10483,8 +10483,8 @@ else if (orecv >= 0 && onm) {
     for (int j = 0; j < nkw2; j++) {
       const char *kn = nt_str(nt, kwn[j], "name");
       if (!kn) continue;
-      const char *kpty = nt_type(nt, kwn[j]);
-      int dv = (kpty && sp_streq(kpty, "OptionalKeywordParameterNode"))
+      NodeKind kpk = nt_kind(nt, kwn[j]);
+      int dv = (kpk == NK_OptionalKeywordParameterNode)
                  ? nt_ref(nt, kwn[j], "value") : -1;
       char key[128];
       snprintf(key, sizeof key, "%s", param_public_name(kn));
@@ -10506,8 +10506,8 @@ else if (orecv >= 0 && onm) {
   {
     int pnr = proc_params_node(c, create);
     int kwr = pnr >= 0 ? nt_ref(nt, pnr, "keyword_rest") : -1;
-    const char *kwrty = kwr >= 0 ? nt_type(nt, kwr) : NULL;
-    const char *krn = kwrty && sp_streq(kwrty, "KeywordRestParameterNode") ? nt_str(nt, kwr, "name") : NULL;
+    NodeKind kwrk = nt_kind(nt, kwr);
+    const char *krn = kwrk == NK_KeywordRestParameterNode ? nt_str(nt, kwr, "name") : NULL;
     if (krn) {
       g_needs_proc_poly_argslot = 1;
       if (nkw > 0) {
@@ -10648,7 +10648,7 @@ else if (orecv >= 0 && onm) {
   g_conv_hold = sv_conv_hold;
   g_self_deref = sv_deref;
   g_ie_class_id = sv_iec; g_ie_rself_on = sv_rself_on;
-  if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
+  if (bs) { { bs->class_id = sv_bcls; comp_touch_scope(bs->idx); } { bs->is_cmethod = sv_bcm; comp_touch_scope(bs->idx); } }
   if (bs_moved) comp_scope_move_end();
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   memcpy(g_ensure_stack, sv_estk, sizeof sv_estk);
@@ -12879,8 +12879,8 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
   if (is_builtin_reopen(ci2->name) || ci2->is_native_class) return -1;
   if (!any_shape && comp_ty_value_obj(c, ty_object(i))) return -1;
   int dn = ci2->def_node;
-  const char *dt = dn >= 0 ? nt_type(c->nt, dn) : NULL;
-  if (dt && sp_streq(dt, "ModuleNode")) return -1;   /* no instances */
+  NodeKind dk = nt_kind(c->nt, dn);
+  if (dk == NK_ModuleNode) return -1;   /* no instances */
   int tdef = -1;
   int tmi = comp_method_in_chain(c, i, mname, &tdef);
   /* a no-parameter method only (a `&block` parameter is not in nparams; the
@@ -12898,11 +12898,11 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
      conversion the protocol can use. */
   if (!any_shape && c->scopes[tmi].ret != want && c->scopes[tmi].ret != TY_POLY) return -1;
   int ddn = c->classes[tdef].def_node;
-  const char *ddt = ddn >= 0 ? nt_type(c->nt, ddn) : NULL;
+  NodeKind ddk = nt_kind(c->nt, ddn);
   *out_mi = tmi;
   /* a module def is copied into the includer; an ancestor CLASS def is one
      real function the child casts into */
-  return (ddt && sp_streq(ddt, "ModuleNode")) ? i : tdef;
+  return (ddk == NK_ModuleNode) ? i : tdef;
 }
 /* A conversion method declared with a named `&block` parameter takes it as a
    second C parameter (emit_method_signature's rule: a named block on a method
@@ -12957,7 +12957,10 @@ static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want
         buf_printf(b, "      if (_cv.tag == SP_TAG_INT) { %sreturn _cv.v.i; }\n",
                    with_ok ? "*ok = 1; " : "");
       else
-        buf_printf(b, "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
+        /* a String held in a shared handle (SP_BUILTIN_STRBUF, as an Array
+           element or a lifted local is) is still a String answer */
+        buf_printf(b, "      _cv = sp_rbval_str(_cv);\n"
+                      "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
                    with_ok ? "*ok = 1; " : "");
       buf_printf(b, "      %s }\n", dflt);
       continue;
@@ -14019,8 +14022,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
     if (i != s->kwrest_idx && callee_param_is_declared_kwarg(c, s, s->pnames[i]) &&
         !callee_param_is_declared_kwarg(c, pm, s->pnames[i])) extra++;
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kty && sp_streq(kty, "RequiredKeywordParameterNode") && kpn &&
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kk == NK_RequiredKeywordParameterNode && kpn &&
         !callee_param_is_declared_kwarg(c, s, kpn)) missing++;
   }
   if (!own && !missing && !(extra && pm->kwrest_idx < 0)) return;
@@ -14044,8 +14048,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   }
   buf_printf(g_pre, "0}, *const _kr%d[] = {", chk);
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kpn && kty && sp_streq(kty, "RequiredKeywordParameterNode")) buf_printf(g_pre, "\"%s\", ", kpn);
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kpn && kk == NK_RequiredKeywordParameterNode) buf_printf(g_pre, "\"%s\", ", kpn);
   }
   buf_printf(g_pre, "0}, *const _kl%d[] = {", chk);
   for (int i = 0; i < s->nparams; i++)
@@ -14334,13 +14339,13 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
   int blk0 = nt_ref(c->nt, id, "block");
   int blk = resolve_forwarded_block(c, blk0);
   if (blk < 0) blk = blk0;
-  const char *bty = blk >= 0 ? nt_type(c->nt, blk) : NULL;
-  if (bty && sp_streq(bty, "BlockNode")) { emit_proc_literal(c, blk, b); return; }
-  if (bty && sp_streq(bty, "BlockArgumentNode")) {
+  NodeKind bk = nt_kind(c->nt, blk);
+  if (bk == NK_BlockNode) { emit_proc_literal(c, blk, b); return; }
+  if (bk == NK_BlockArgumentNode) {
     int fe = nt_ref(c->nt, blk, "expression");
     if (fe >= 0) {
       if (emit_block_arg_proc(c, fe, b)) return;
-      if (sp_streq(nt_type(c->nt, fe), "NilNode")) buf_puts(b, "NULL");
+      if (nt_kind(c->nt, fe) == NK_NilNode) buf_puts(b, "NULL");
       else unsupported(c, blk, "super with a block argument that is not a proc");
       return;
     }
@@ -14517,8 +14522,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   emit_inlined_locals(c, m, tag, b, din);
 
-  const char *ty = nt_type(c->nt, id);
-  int is_forwarding = ty && sp_streq(ty, "ForwardingSuperNode");
+  NodeKind k = nt_kind(c->nt, id);
+  int is_forwarding = k == NK_ForwardingSuperNode;
   int args = nt_ref(c->nt, id, "arguments");
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
@@ -14918,7 +14923,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
                  cls, vt ? "&" : "", g_self);
     return;
   }
-  const char *ty = nt_type(c->nt, id);
+  NodeKind ty_k = nt_kind(c->nt, id);
   /* Prepend chain: super goes to the next shadow in the same class (a class
      method's chain is taken below, in the class-method form). */
   const char *shadow = s->is_cmethod ? NULL : comp_super_shadow(c, s);
@@ -14939,12 +14944,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
     else buf_printf(b, "sp_%s_%s((sp_%s *)%s",
                     c->classes[s->class_id].c_name, mc(shadow),
                     c->classes[s->class_id].c_name, g_self);
-    if (ty && sp_streq(ty, "ForwardingSuperNode") && smi >= 0) {
+    if (ty_k == NK_ForwardingSuperNode && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
       emit_zsuper_args(c, s, &c->scopes[smi], ", ", b);
     }
-    else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+    else if (ty_k == NK_ForwardingSuperNode) {
       for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_scope_local_ref(c, s, s->pnames[i], b); }
     }
     else emit_args_filled(c, smi, nt_ref(c->nt, id, "arguments"), ", ", b);
@@ -15038,7 +15043,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       buf_printf(b, "%s%s", cmethod_takes_self_cls(c, (int)(s - c->scopes)) ? "_sp_cls" : own,
                  c->scopes[cmi].nparams > 0 ? ", " : "");
     }
-    if (ty && sp_streq(ty, "ForwardingSuperNode")) emit_zsuper_args(c, s, &c->scopes[cmi], "", b);
+    if (ty_k == NK_ForwardingSuperNode) emit_zsuper_args(c, s, &c->scopes[cmi], "", b);
     else emit_args_filled(c, cmi, nt_ref(c->nt, id, "arguments"), "", b);
     emit_super_block_arg(c, id, s, &c->scopes[cmi],
                          c->scopes[cmi].nparams > 0 || cmethod_takes_self_cls(c, cmi), b);
@@ -15056,7 +15061,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   if (g_plan_check && mi >= 0) ucall_observe(c, id, mi, defcls, 0);
   /* a subclass of a native class (#9269): super reaches the native class's
      constructor, as its in-place twin on self, or its binding on self */
-  if (mi < 0 && uname && c->classes[s->class_id].nsub_root > 0 && ty && sp_streq(ty, "SuperNode")) {
+  if (mi < 0 && uname && c->classes[s->class_id].nsub_root > 0 && ty_k == NK_SuperNode) {
     int root = c->classes[s->class_id].nsub_root - 1;
     int sa = nt_ref(c->nt, id, "arguments"), sac = 0;
     const int *sav = sa >= 0 ? nt_arr(c->nt, sa, "arguments", &sac) : NULL;
@@ -15094,7 +15099,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
          stores #errno; a bare `super` forwards this initialize's parameters */
       if (class_is_syserr(c, s->class_id)) {
         char lead[64]; snprintf(lead, sizeof lead, "(sp_Exception *)%s, ", g_self);
-        if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+        if (ty_k == NK_ForwardingSuperNode) {
           /* a declared keyword (`def initialize(msg:)`) goes over as a Hash
              of keywords, which the loop below would pass by position */
           int pnd = s->def_node >= 0 ? nt_ref(c->nt, s->def_node, "parameters") : -1;
@@ -15149,7 +15154,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_printf(b, ", %s->msg)", g_self);
         if (hm) exc_msg_release(b, mk);
       }
-      else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
+      else if (ty_k == NK_ForwardingSuperNode && s->nparams > 0) {
         LocalVar *p0 = scope_local(s, s->pnames[0]);
         Buf rn; memset(&rn, 0, sizeof rn); emit_scope_local_ref(c, s, s->pnames[0], &rn);
         /* Effective type mirrors emit_method_signature: a NULL/TY_UNKNOWN
@@ -15204,15 +15209,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
          initialize does with them. An explicit `super(...)` (SuperNode) uses its
          argument list instead. Without the forwarding arm a bare super assigned
          nothing and every member stayed nil. */
-      int is_fwd = ty && sp_streq(ty, "ForwardingSuperNode");
-      int args_id = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
+      int is_fwd = ty_k == NK_ForwardingSuperNode;
+      int args_id = ty_k == NK_SuperNode ? nt_ref(c->nt, id, "arguments") : -1;
       int an = 0;
       const int *sargv = args_id >= 0 ? nt_arr(c->nt, args_id, "arguments", &an) : NULL;
       /* Data's `super(x: e, y: e2)` passes a single KeywordHashNode: map each
          member to the like-named keyword's value. Assigning positionally would
          drop the whole hash into the first (scalar) member slot. */
-      int kwh = (!is_fwd && an == 1 && sargv && nt_type(c->nt, sargv[0]) &&
-                 sp_streq(nt_type(c->nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
+      int kwh = (!is_fwd && an == 1 && sargv &&
+                 nt_kind(c->nt, sargv[0]) == NK_KeywordHashNode) ? sargv[0] : -1;
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);
         emit_struct_super_spread(c, cls, sargv, an, &sb);
@@ -15326,8 +15331,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
        form forwards this method's params, so it is only that no-op when there
        are none. */
     if (sp_streq(uname, "initialize")) {
-      int fwd_super = ty && sp_streq(ty, "ForwardingSuperNode");
-      int sup_args = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
+      int fwd_super = ty_k == NK_ForwardingSuperNode;
+      int sup_args = ty_k == NK_SuperNode ? nt_ref(c->nt, id, "arguments") : -1;
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
       if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
@@ -15376,7 +15381,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
           int xm = comp_method_in_chain(c, xr[q], uname, NULL);
           if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
           buf_printf(b, "sp_%s_%s((sp_Exception *)%s", mc_reopen_cls(c, xr[q], uname), mc(uname), g_self);
-          if (ty && sp_streq(ty, "ForwardingSuperNode")) emit_zsuper_args(c, s, &c->scopes[xm], ", ", b);
+          if (ty_k == NK_ForwardingSuperNode) emit_zsuper_args(c, s, &c->scopes[xm], ", ", b);
           else emit_args_filled(c, xm, nt_ref(c->nt, id, "arguments"), ", ", b);
           buf_puts(b, ")");
           if (q != xn - 1) buf_puts(b, " : ");
@@ -15435,8 +15440,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
        super). Not a class or module is CRuby's TypeError. */
     if (uname && !s->is_cmethod && s->class_id >= 0 &&
         (sp_streq(uname, "is_a?") || sp_streq(uname, "kind_of?") || sp_streq(uname, "instance_of?"))) {
-      const char *sty = nt_type(c->nt, id);
-      int fwd = sty && sp_streq(sty, "ForwardingSuperNode");
+      NodeKind sk = nt_kind(c->nt, id);
+      int fwd = sk == NK_ForwardingSuperNode;
       int sargs = fwd ? -1 : nt_ref(c->nt, id, "arguments");
       int sargc = 0; const int *sargv = sargs >= 0 ? nt_arr(c->nt, sargs, "arguments", &sargc) : NULL;
       if ((fwd && s->nparams == 1) || (!fwd && sargc == 1)) {
@@ -15513,7 +15518,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   }
   else
     buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
-  if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+  if (ty_k == NK_ForwardingSuperNode) {
     /* The parent may declare more than this method does -- an optional,
        `*rest`, a keyword, `**` -- which a bare super leaves to their defaults
        and empties, as CRuby does (#4852). */
@@ -17513,8 +17518,8 @@ static char *build_types_json(Compiler *c) {
        type it declares is the `signature`, the same text --emit-rbs writes
        for it, so a consumer needs no second pass for the inferred
        signatures (rubys/spinel-ide) */
-    { const char *kind = nt_type(nt, id);
-      if (kind && sp_streq(kind, "DefNode")) {
+    { NodeKind kind_k = nt_kind(nt, id);
+      if (kind_k == NK_DefNode) {
         for (int si = 1; si < c->nscopes; si++) {
           Scope *s = &c->scopes[si];
           if (s->def_node != id) continue;
@@ -17564,8 +17569,9 @@ static char *build_types_json(Compiler *c) {
   int cn = 0;
   for (int id = 0; id < nt->count && id < c->node_cap; id++) {
     const char *kind = nt_type(nt, id);
+    NodeKind kind_k = nt_kind(nt, id);
     if (!kind) continue;
-    int is_call = sp_streq(kind, "CallNode"), is_blk = sp_streq(kind, "BlockNode");
+    int is_call = kind_k == NK_CallNode, is_blk = kind_k == NK_BlockNode;
     if (!is_call && !is_blk) continue;
     int d = (g_ndecide && id < g_ndecide_cap) ? g_ndecide[id] : ND_NONE;
     if (is_call && d == ND_NONE) continue;   /* never emitted: dead, or folded away */
@@ -17639,8 +17645,8 @@ int class_builtin_superclass(Compiler *c, int i) {
                                             : -116;  /* Object */
   int sc_node = nt_ref(c->nt, c->classes[i].def_node, "superclass");
   if (sc_node >= 0) {
-    const char *sc_ty = nt_type(c->nt, sc_node);
-    const char *sc_nm = (sc_ty && (sp_streq(sc_ty, "ConstantReadNode") || sp_streq(sc_ty, "ConstantPathNode"))) ? nt_str(c->nt, sc_node, "name") : NULL;
+    NodeKind sc_k = nt_kind(c->nt, sc_node);
+    const char *sc_nm = (sc_k == NK_ConstantReadNode || sc_k == NK_ConstantPathNode) ? nt_str(c->nt, sc_node, "name") : NULL;
     /* an exception path is read whole: the leaf of Math::DomainError,
        "DomainError", has no id, and the class sat under Object */
     const char *exc_nm = superclass_builtin_exc_name(c->nt, sc_node);
@@ -17725,8 +17731,9 @@ static int program_needs_class_machinery(Compiler *c) {
   int need = 0;
   for (int i = 0; i < nt->count && !need; i++) {
     const char *ty = nt_type(nt, i);
+    NodeKind ty_k = nt_kind(nt, i);
     if (!ty) continue;
-    if (sp_streq(ty, "CallNode")) {
+    if (ty_k == NK_CallNode) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && (sp_streq(nm, "class") || sp_streq(nm, "is_a?") ||
                  sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?") ||
@@ -17734,7 +17741,7 @@ static int program_needs_class_machinery(Compiler *c) {
                  sp_streq(nm, "===")))
         need = 1;
     }
-    else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
+    else if (ty_k == NK_ConstantReadNode || ty_k == NK_ConstantPathNode) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && is_builtin_class_name(nm) && !(raised && raised[i])) need = 1;
     }
@@ -17834,23 +17841,24 @@ static void scan_prologue_features(Compiler *c) {
   int *cpar = NULL;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
+    NodeKind ty_k = nt_kind(nt, i);
     if (!ty) continue;
-    if (sp_streq(ty, "BackReferenceReadNode") || sp_streq(ty, "NumberedReferenceReadNode"))
+    if (ty_k == NK_BackReferenceReadNode || ty_k == NK_NumberedReferenceReadNode)
       g_reads_match_regs = 1;
     /* An exception is in flight (sp_inflight_cause) only while the body of
        an ensure clause runs. The landings that give it back (a catch, a
        wrapped break, a proc's home) are emitted only in a program that
        holds one with a body: elsewhere there is nothing to give back. */
-    if (sp_streq(ty, "EnsureNode") && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
+    if (ty_k == NK_EnsureNode && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
     /* trap / Signal.trap: the handler only records a delivery, and the proc
        runs at the safe points below (sp_sig_run_pending, lib/sp_cold.c) */
-    if (sp_streq(ty, "CallNode") && nt_str(nt, i, "name") && sp_streq(nt_str(nt, i, "name"), "trap"))
+    if (ty_k == NK_CallNode && nt_str(nt, i, "name") && sp_streq(nt_str(nt, i, "name"), "trap"))
       g_uses_traps = 1;
-    if (sp_streq(ty, "RegularExpressionNode") || sp_streq(ty, "InterpolatedRegularExpressionNode"))
+    if (ty_k == NK_RegularExpressionNode || ty_k == NK_InterpolatedRegularExpressionNode)
       g_uses_regex = 1;
-    else if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "InterpolatedSymbolNode"))
+    else if (ty_k == NK_SymbolNode || ty_k == NK_InterpolatedSymbolNode)
       g_uses_symbols = 1;
-    else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
+    else if (ty_k == NK_ConstantReadNode || ty_k == NK_ConstantPathNode) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
       /* A class a bundled library defines, named without requiring it. CRuby
@@ -17861,7 +17869,7 @@ static void scan_prologue_features(Compiler *c) {
          parent (`ActiveSupport::JSON::Encoding`) names that module's own
          constant, and telling it to `require "json"` refused every
          activesupport file that reaches its JSON encoder. */
-      if (sp_streq(ty, "ConstantPathNode") && nt_ref(nt, i, "parent") >= 0) { /* nested */ }
+      if (ty_k == NK_ConstantPathNode && nt_ref(nt, i, "parent") >= 0) { /* nested */ }
       else {
         static const struct { const char *cls, *feat; } PKG[] = {
           {"StringIO","stringio"}, {"CSV","csv"}, {"JSON","json"}, {"Set","set"},
@@ -17915,14 +17923,14 @@ static void scan_prologue_features(Compiler *c) {
          symbol literals; it also drives the sp_marshal_v vtable install. */
       else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
     }
-    else if (sp_streq(ty, "GlobalVariableReadNode") || sp_streq(ty, "GlobalVariableWriteNode")) {
+    else if (ty_k == NK_GlobalVariableReadNode || ty_k == NK_GlobalVariableWriteNode) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && sp_streq(nm, "$*")) g_uses_argv = 1;
       else if (nm && (is_program_name_global(nm))) g_uses_program_name = 1;
       else if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
                       sp_streq(nm, "$'") || sp_streq(nm, "$+"))) g_reads_match_regs = 1;
     }
-    else if (sp_streq(ty, "CallNode")) {
+    else if (ty_k == NK_CallNode) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
       /* Reflection that YIELDS symbols the source never spells: without this
@@ -17982,8 +17990,8 @@ static void scan_prologue_features(Compiler *c) {
   if (g_gen_obj_struct_values) {
     int reached = 0;
     for (int id = 0; id < c->nt->count && !reached; id++) {
-      const char *nty = nt_type(c->nt, id);
-      if (!nty || !sp_streq(nty, "CallNode")) continue;
+      NodeKind nk = nt_kind(c->nt, id);
+      if (nk != NK_CallNode) continue;
       const char *nm = nt_str(c->nt, id, "name");
       int rv = nt_ref(c->nt, id, "receiver");
       if (nm && rv >= 0 && repr_of(c, rv).kind == RK_BOXED &&
@@ -18007,8 +18015,8 @@ static void scan_prologue_features(Compiler *c) {
      generated for that program only, so every other program's C is as it was. */
   g_gen_cls_answers = 0;
   for (int nid = 0; nid < c->nt->count && !g_gen_cls_answers; nid++) {
-    const char *nty = nt_type(c->nt, nid);
-    if (!nty || !sp_streq(nty, "CallNode")) continue;
+    NodeKind nk = nt_kind(c->nt, nid);
+    if (nk != NK_CallNode) continue;
     int nrv = nt_ref(c->nt, nid, "receiver");
     const char *nnm = nt_str(c->nt, nid, "name");
     /* and #subclasses on a Class value no constant names */
@@ -18527,8 +18535,8 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   if (time_strict_parser_call(c, id)) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
   if (recv < 0) return 0;
-  const char *rty = nt_type(c->nt, recv);
-  if (!rty || !sp_streq(rty, "ConstantReadNode")) return 0;
+  NodeKind rk = nt_kind(c->nt, recv);
+  if (rk != NK_ConstantReadNode) return 0;
   const char *rn = nt_str(c->nt, recv, "name");
   if (!rn || !sp_streq(rn, "Time")) return 0;
   int time_ci = comp_class_index(c, "Time");
@@ -19041,8 +19049,8 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_printf(b, "static const int sp_cls_is_module[%d] = {", c->nclasses);
     for (int i = 0; i < c->nclasses; i++) {
       if (i) buf_puts(b, ",");
-      const char *dt = nt_type(c->nt, c->classes[i].def_node);
-      buf_printf(b, "%d", (dt && sp_streq(dt, "ModuleNode")) ? 1 : 0);
+      NodeKind dk = nt_kind(c->nt, c->classes[i].def_node);
+      buf_printf(b, "%d", (dk == NK_ModuleNode) ? 1 : 0);
     }
     buf_puts(b, "};\n");
   }
@@ -19292,8 +19300,8 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
         int bn2 = 0;
         const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
         for (int k2 = 0; k2 < bn2; k2++) {
-          const char *sty2 = nt_type(c->nt, stmts2[k2]);
-          if (!sty2 || !sp_streq(sty2, "CallNode")) continue;
+          NodeKind sty2_k = nt_kind(c->nt, stmts2[k2]);
+          if (sty2_k != NK_CallNode) continue;
           const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
           if (!nm2 || (!sp_streq(nm2, "include") && !sp_streq(nm2, "prepend"))) continue;
           int is_prep2 = sp_streq(nm2, "prepend");
@@ -19306,9 +19314,9 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
           for (int jj = 0; jj < an2; jj++) {
             /* `include A, B` includes B first, so A is listed in front */
             int j2 = is_prep2 ? jj : an2 - 1 - jj;
-            const char *aty2 = nt_type(c->nt, aargs[j2]);
-            const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
-            if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
+            NodeKind aty2_k = nt_kind(c->nt, aargs[j2]);
+            const char *mname2 = (aty2_k == NK_ConstantReadNode) ? nt_str(c->nt, aargs[j2], "name") : NULL;
+            if (!mname2 && aty2_k == NK_ConstantPathNode) mname2 = nt_str(c->nt, aargs[j2], "name");
             int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
             /* a constant aliasing a module (`Loud = Shout`, `E = Enumerable`)
                names it */
@@ -19657,8 +19665,8 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
         const char *par = NULL;
         int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
         if (sc >= 0) {
-          const char *sty = nt_type(c->nt, sc);
-          if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")))
+          NodeKind sk = nt_kind(c->nt, sc);
+          if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode)
             par = nt_str(c->nt, sc, "name");
           /* a builtin exception by its whole path (Errno::ENOENT) */
           const char *bpar = superclass_builtin_exc_name(c->nt, sc);
@@ -21185,7 +21193,7 @@ char *codegen_program(const NodeTable *nt) {
       static const char *const fns[2] = { "message", "to_s" };
       for (int k = 0; k < 2; k++) {
         int mi = comp_method_in_chain(c, i, fns[k], NULL);
-        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) c->scopes[mi].reachable = 1;
+        if (mi >= 0 && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) { c->scopes[mi].reachable = 1; comp_touch_scope(c->scopes[mi].idx); }
       }
     }
   }
@@ -21537,9 +21545,9 @@ char *codegen_program(const NodeTable *nt) {
       int ob = c->scopes[s].body;
       int nb = deferred_raise_body(c, ob, s, dmsg);
       if (nb >= 0) {
-        c->scopes[s].body = nb;
+        { c->scopes[s].body = nb; comp_touch_scope(c->scopes[s].idx); }
         EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
-        c->scopes[s].body = ob;
+        { c->scopes[s].body = ob; comp_touch_scope(c->scopes[s].idx); }
       }
       continue;
     }
@@ -21555,9 +21563,9 @@ char *codegen_program(const NodeTable *nt) {
       int ob = c->scopes[s].body;
       int nb = deferred_raise_body(c, ob, s, dmsg);
       if (nb >= 0) {
-        c->scopes[s].body = nb;
+        { c->scopes[s].body = nb; comp_touch_scope(c->scopes[s].idx); }
         EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
-        c->scopes[s].body = ob;
+        { c->scopes[s].body = ob; comp_touch_scope(c->scopes[s].idx); }
       }
     }
   }
@@ -21583,13 +21591,13 @@ char *codegen_program(const NodeTable *nt) {
   {
     int top_body = c->scopes[0].body;
     if (top_body >= 0) {
-      const char *tty = nt_type(c->nt, top_body);
+      NodeKind tk = nt_kind(c->nt, top_body);
       int tn = 0;
-      const int *tbody = (tty && sp_streq(tty, "StatementsNode"))
+      const int *tbody = (tk == NK_StatementsNode)
                          ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
       for (int k = 0; k < tn; k++) {
-        const char *sty = nt_type(c->nt, tbody[k]);
-        if (!sty || !sp_streq(sty, "PostExecutionNode")) continue;
+        NodeKind sk = nt_kind(c->nt, tbody[k]);
+        if (sk != NK_PostExecutionNode) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         end_count++;
         { char et[32]; snprintf(et, sizeof et, "end_%d", end_count); unit_begin_in(body, et, "main"); }
@@ -21717,13 +21725,13 @@ char *codegen_program(const NodeTable *nt) {
   {
     int top_body = c->scopes[0].body;
     if (top_body >= 0) {
-      const char *tty = nt_type(c->nt, top_body);
+      NodeKind tk = nt_kind(c->nt, top_body);
       int tn = 0;
-      const int *tbody = (tty && sp_streq(tty, "StatementsNode"))
+      const int *tbody = (tk == NK_StatementsNode)
                          ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
       for (int k = 0; k < tn; k++) {
-        const char *sty = nt_type(c->nt, tbody[k]);
-        if (!sty || !sp_streq(sty, "PreExecutionNode")) continue;
+        NodeKind sk = nt_kind(c->nt, tbody[k]);
+        if (sk != NK_PreExecutionNode) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         size_t begin_at = body->len;
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
@@ -21737,9 +21745,9 @@ char *codegen_program(const NodeTable *nt) {
        the emitted init drops it. Everything else in the toplevel runs. The
        parser folded the predicate to a boolean marked program_guard. */
     int tb9 = c->scopes[0].body;
-    const char *tt9 = tb9 >= 0 ? nt_type(c->nt, tb9) : NULL;
+    NodeKind tt9_k = nt_kind(c->nt, tb9);
     int tn9 = 0;
-    const int *tv9 = (tt9 && sp_streq(tt9, "StatementsNode"))
+    const int *tv9 = (tt9_k == NK_StatementsNode)
                      ? nt_arr(c->nt, tb9, "body", &tn9) : NULL;
     for (int k9 = 0; k9 < tn9; k9++) {
       int st9 = tv9[k9];

@@ -91,8 +91,8 @@ void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
         if (!pnm4) continue;
         const char *kind4 = PKINDS[pk].kind;
         if (PKINDS[pk].optkind) {
-          const char *ety4 = nt_type(nt, av4[e4]);
-          if (ety4 && sp_streq(ety4, "OptionalKeywordParameterNode")) kind4 = PKINDS[pk].optkind;
+          NodeKind ety4_k = nt_kind(nt, av4[e4]);
+          if (ety4_k == NK_OptionalKeywordParameterNode) kind4 = PKINDS[pk].optkind;
         }
         int tp4 = ++g_tmp;
         buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
@@ -190,7 +190,7 @@ int emit_op_proc_parameters(Compiler *c, const BopCtx *x, Buf *b) {
      false -> proc (req remapped to opt at print), nil -> the receiver's own.
      Kinds are stored canonically, see the meta emitter. #2693 */
   int pmode = -1, pmode_ok = argc == 0;
-  if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+  if (argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode) {
     int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
     if (en == 1) {
       int key = nt_ref(nt, elems[0], "key");
@@ -198,10 +198,11 @@ int emit_op_proc_parameters(Compiler *c, const BopCtx *x, Buf *b) {
       if (!kn && key >= 0) kn = nt_str(nt, key, "value");
       int val = nt_ref(nt, elems[0], "value");
       const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+      NodeKind vk = nt_kind(nt, val);
       if (kn && sp_streq(kn, "lambda") && vty) {
-        if (sp_streq(vty, "TrueNode"))  { pmode = 1;  pmode_ok = 1; }
-        if (sp_streq(vty, "FalseNode")) { pmode = 0;  pmode_ok = 1; }
-        if (sp_streq(vty, "NilNode"))   { pmode = -1; pmode_ok = 1; }
+        if (vk == NK_TrueNode)  { pmode = 1;  pmode_ok = 1; }
+        if (vk == NK_FalseNode) { pmode = 0;  pmode_ok = 1; }
+        if (vk == NK_NilNode)   { pmode = -1; pmode_ok = 1; }
       }
     }
   }
@@ -221,9 +222,9 @@ int emit_op_proc_source_location(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
   int lit = -1;
-  if (nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LambdaNode") || is_proc_create(c, recv)))
+  if (nt_type(nt, recv) && (nt_kind(nt, recv) == NK_LambdaNode || is_proc_create(c, recv)))
     lit = recv;
-  else if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
+  else if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, recv, "name");
     Scope *sc = vn ? comp_scope_of(c, recv) : NULL;
     for (int w = 0; vn && w < nt->count; w++) {
@@ -232,7 +233,7 @@ int emit_op_proc_source_location(Compiler *c, const BopCtx *x, Buf *b) {
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       int is_lit = val >= 0 && nt_type(nt, val) &&
-                   (sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val));
+                   (nt_kind(nt, val) == NK_LambdaNode || is_proc_create(c, val));
       if (!is_lit || lit >= 0) { lit = -1; break; }   /* non-literal or second write */
       lit = val;
     }
@@ -607,12 +608,12 @@ int emit_op_method_receiver(Compiler *c, const BopCtx *x, Buf *b) {
   int mn = method_recv_node(c, recv);
   int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
   if (mrecv < 0) return 0;
-  const char *mrty = nt_type(nt, mrecv);
-  int pure = mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
-                      sp_streq(mrty, "IntegerNode") || sp_streq(mrty, "FloatNode") ||
-                      sp_streq(mrty, "StringNode") || sp_streq(mrty, "SymbolNode") ||
-                      sp_streq(mrty, "ArrayNode") || sp_streq(mrty, "SelfNode") ||
-                      sp_streq(mrty, "InstanceVariableReadNode"));
+  NodeKind mrk = nt_kind(nt, mrecv);
+  int pure = (mrk == NK_LocalVariableReadNode ||
+                      mrk == NK_IntegerNode || mrk == NK_FloatNode ||
+                      mrk == NK_StringNode || mrk == NK_SymbolNode ||
+                      mrk == NK_ArrayNode || mrk == NK_SelfNode ||
+                      mrk == NK_InstanceVariableReadNode);
   if (pure) {
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ");
     emit_expr(c, mrecv, b); buf_puts(b, ")");
@@ -713,22 +714,22 @@ int emit_op_method_arity(Compiler *c, const BopCtx *x, Buf *b) {
         n_req--;
       int rp = nt_ref(c->nt, pn, "rest");
       if (rp >= 0) {
-        const char *rty = nt_type(c->nt, rp);
-        if (rty && sp_streq(rty, "RestParameterNode")) has_rest = 1;
+        NodeKind rk = nt_kind(c->nt, rp);
+        if (rk == NK_RestParameterNode) has_rest = 1;
         else ok = 0;  /* e.g. ImplicitRestNode: leave unsupported */
       }
       int kn = 0;
       const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
       if (kn > 0) kw_block = 1;
       for (int i = 0; i < kn; i++) {
-        const char *kty = nt_type(c->nt, kws[i]);
-        if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+        NodeKind kk = nt_kind(c->nt, kws[i]);
+        if (kk == NK_RequiredKeywordParameterNode) has_req_kw = 1;
       }
       int kwrp = nt_ref(c->nt, pn, "keyword_rest");
       if (kwrp >= 0) {
-        const char *kty = nt_type(c->nt, kwrp);
-        if (kty && sp_streq(kty, "KeywordRestParameterNode")) kw_block = 1;
-        else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
+        NodeKind kk = nt_kind(c->nt, kwrp);
+        if (kk == NK_KeywordRestParameterNode) kw_block = 1;
+        else if (kk == NK_ForwardingParameterNode) has_forward = 1;
       }
     }
     if (ok) {
@@ -911,8 +912,8 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     int splat_at2 = -1;
     int any_splat_arg = 0;
     for (int k = 0; k < argc; k++) {
-      const char *aty3 = nt_type(nt, argv[k]);
-      if (aty3 && sp_streq(aty3, "SplatNode")) { splat_at2 = k; any_splat_arg = 1; break; }
+      NodeKind aty3_k = nt_kind(nt, argv[k]);
+      if (aty3_k == NK_SplatNode) { splat_at2 = k; any_splat_arg = 1; break; }
     }
     int bam_rest = tm && tm->rest_idx >= 0;
     int eargc = argc, tsplat = 0;
@@ -1373,7 +1374,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         snprintf(blk_tmp, sizeof blk_tmp, "_t%d", tb);
       }
       free(bpv.p);
-      if (cblk >= 0 && nt_type(nt, cblk) && sp_streq(nt_type(nt, cblk), "BlockNode")) {
+      if (cblk >= 0 && nt_kind(nt, cblk) == NK_BlockNode) {
         int tb = ++g_tmp;
         /* render the proc value first: a capturing block's emission writes its
            own prelude (capture struct fill) to g_pre, which must land as whole
@@ -1916,8 +1917,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      receiver alone, but the comparison's answer is static (#3245). */
   if (recv >= 0 && argc == 1 &&
       is_equality_name(name) &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SelfNode") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, argv[0]) == NK_SelfNode &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "receiver")) {
     int mrecv2 = nt_ref(nt, recv, "receiver");
     if (mrecv2 >= 0 && comp_ntype(c, mrecv2) == TY_METHOD) {
@@ -2328,8 +2329,8 @@ int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (_pr_recv < 0 && _pr_nm && (is_proc_constructor(_pr_nm)))
       is_literal = 1;
     if (!is_literal && _pr_recv >= 0 && _pr_nm && sp_streq(_pr_nm, "new")) {
-      const char *_rty = nt_type(nt, _pr_recv);
-      const char *_rnm = (_rty && (sp_streq(_rty, "ConstantReadNode") || sp_streq(_rty, "ConstantPathNode")))
+      NodeKind _rk = nt_kind(nt, _pr_recv);
+      const char *_rnm = (_rk == NK_ConstantReadNode || _rk == NK_ConstantPathNode)
                          ? nt_str(nt, _pr_recv, "name") : NULL;
       if (_rnm && sp_streq(_rnm, "Proc")) is_literal = 1;
     }
@@ -2345,8 +2346,8 @@ int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            (`Proc.new(&b)` inside `def make(&b)`): the real block is the
            literal active at the inline splice, so materialize THAT --
            the param's own name does not exist in the spliced context. */
-        const char *_fnm = (_fwd >= 0 && nt_type(nt, _fwd) &&
-                            sp_streq(nt_type(nt, _fwd), "LocalVariableReadNode"))
+        const char *_fnm = (_fwd >= 0 &&
+                            nt_kind(nt, _fwd) == NK_LocalVariableReadNode)
                            ? nt_str(nt, _fwd, "name") : NULL;
         if (_fnm && g_block_id >= 0 && g_block_param_name &&
             sp_streq(_fnm, g_block_param_name)) {

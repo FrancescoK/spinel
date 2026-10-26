@@ -62,12 +62,12 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   Scope *m = &c->scopes[mi];
   if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
   int body = m->body;
-  if (body < 0 || !nt_type(c->nt, body) || !sp_streq(nt_type(c->nt, body), "StatementsNode")) return -1;
+  if (body < 0 || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
   int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
   if (n != 1) return -1;
   int call = st[0];
-  const char *cty = nt_type(c->nt, call);
-  if (!cty || !sp_streq(cty, "CallNode") || nt_ref(c->nt, call, "receiver") >= 0) return -1;
+  NodeKind ck = nt_kind(c->nt, call);
+  if (ck != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
   if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
@@ -643,7 +643,7 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     if (gslot) refuse_lent_global_rebound(c, an, gref.p, m->name, m->pnames[i]);
     alias_mask |= 1u << i;
     lv->inline_alias++;
-    lv->is_cell = 1;
+    { lv->is_cell = 1; comp_touch_scope(lv->owner); }
     if (!gslot && splice_alias_detachable(c, blk, an, argv, pargc)) {
       int tok = view_push_splice(an, tag, m->pnames[i]);
       if (*splice_tok < 0) *splice_tok = tok;
@@ -733,7 +733,7 @@ void inline_alias_release(Compiler *c, Scope *m, unsigned alias_mask, int splice
   for (int i = 0; i < m->nparams && i < 32; i++) {
     if (!(alias_mask & (1u << i))) continue;
     LocalVar *lv = scope_local(m, m->pnames[i]);
-    if (lv && --lv->inline_alias == 0) lv->is_cell = 0;
+    if (lv && --lv->inline_alias == 0) { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   }
 }
 /* Declare inlined method `mi`'s locals under renamed names, all but the
@@ -995,11 +995,11 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
   }
   else {
     TyKind rt = comp_ntype(c, recv);
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     /* a scoped receiver (NS::Base.transaction { }) resolves by its leaf name,
        the key classes are indexed under */
-    const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
-                                 sp_streq(rty, "ConstantPathNode")))
+    const char *cname = ((rk == NK_ConstantReadNode ||
+                                 rk == NK_ConstantPathNode))
                         ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
     if ((t->mi = class_reopen_cmethod(c, recv, name)) >= 0) {
@@ -1094,9 +1094,9 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     }
     return 0;
   }
-  const char *rty = nt_type(nt, recv);
-  const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
-                               sp_streq(rty, "ConstantPathNode")))
+  NodeKind rk = nt_kind(nt, recv);
+  const char *cname = ((rk == NK_ConstantReadNode ||
+                               rk == NK_ConstantPathNode))
                       ? nt_str(nt, recv, "name") : NULL;
   if (narrow && !cname) {
     TyKind rt = comp_ntype(c, recv);
@@ -1165,7 +1165,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      with this call's args + block (target then splices the block normally). */
   {
     int blk0 = nt_ref(nt, id, "block");
-    if (blk0 >= 0 && nt_type(nt, blk0) && sp_streq(nt_type(nt, blk0), "BlockNode")) {
+    if (blk0 >= 0 && nt_kind(nt, blk0) == NK_BlockNode) {
       int t = pure_forwarding_target(c, mi, 0);
       if (t >= 0) mi = t;
     }
@@ -1209,14 +1209,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int fwd_value = -1;   /* the block argument's value, for g_yield_proc_expr */
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
-  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+  if (block >= 0 && nt_kind(nt, block) == NK_BlockArgumentNode) {
     /* A forwarded `&blk` whose blk is a real (materialized) proc local -- e.g.
        the enclosing method nil-checks its &block, so it can't be an inlined
        literal block -- has no block body to splice; the inlined callee's
        `yield` must call the proc instead. */
     int fexpr = nt_ref(nt, block, "expression");
-    const char *pn = (fexpr >= 0 && nt_type(nt, fexpr) &&
-                      sp_streq(nt_type(nt, fexpr), "LocalVariableReadNode"))
+    const char *pn = (fexpr >= 0 &&
+                      nt_kind(nt, fexpr) == NK_LocalVariableReadNode)
                      ? nt_str(nt, fexpr, "name") : NULL;
     Scope *encl = pn ? comp_scope_of(c, id) : NULL;
     LocalVar *plv = encl ? scope_local(encl, pn) : NULL;
@@ -1666,12 +1666,12 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
 int is_block_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id < 0) return 0;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_or_yield(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   /* Inside an Enumerator.new generator the block's first param is the YIELDER
      (g_block_param_name == g_yielder_name); `y.yield(v)` lowers to Fiber.yield
@@ -1689,12 +1689,12 @@ int is_block_call(Compiler *c, int id) {
 int is_blockless_block_param_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id >= 0) return 0;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
   return rn && sp_streq(rn, g_block_param_name);
 }
@@ -2064,13 +2064,13 @@ void block_alias_hold(BlockAliases *al, Scope *s, LocalVar *lv) {
   al->s[al->n] = s;
   al->nm[al->n++] = lv->name;
   lv->inline_alias++;
-  lv->is_cell = 1;
+  { lv->is_cell = 1; comp_touch_scope(lv->owner); }
 }
 
 void block_aliases_release(BlockAliases *al) {
   for (int i = 0; i < al->n; i++) {
     LocalVar *lv = scope_local(al->s[i], al->nm[i]);
-    if (--lv->inline_alias == 0) lv->is_cell = 0;
+    if (--lv->inline_alias == 0) { lv->is_cell = 0; comp_touch_scope(lv->owner); }
   }
 }
 
@@ -2270,7 +2270,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       if (ykw >= 0 && kwh_tmp < 0) {
         int en2 = 0; const int *els2 = nt_arr(nt, ykw, "elements", &en2);
         for (int e2 = 0; e2 < en2; e2++) {
-          if (!nt_type(nt, els2[e2]) || !sp_streq(nt_type(nt, els2[e2]), "AssocNode")) continue;
+          if (nt_kind(nt, els2[e2]) != NK_AssocNode) continue;
           int kn2 = nt_ref(nt, els2[e2], "key");
           int vn2 = nt_ref(nt, els2[e2], "value");
           if (kn2 < 0 || vn2 < 0) continue;
@@ -2281,7 +2281,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
             continue;
           }
           /* a pair consumed by a named keyword param stays out of the rest */
-          const char *ksym = nt_type(nt, kn2) && sp_streq(nt_type(nt, kn2), "SymbolNode")
+          const char *ksym = nt_kind(nt, kn2) == NK_SymbolNode
                                ? nt_str(nt, kn2, "value") : NULL;
           int consumed = 0;
           for (int ki2 = 0; ksym; ki2++) {
@@ -2784,7 +2784,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
   }
   if (splat_tmp < 0 && yc == 1 && yargs) {
     int inner = -1;
-    if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
+    if (nt_kind(nt, yargs[0]) == NK_SplatNode)
       inner = nt_ref(nt, yargs[0], "expression");
     /* CRuby auto-splat: a single (non-splat) Array yielded to a block taking
        more than one binding slot destructures across the params
@@ -3297,11 +3297,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
          is the handle, which each `next` and the tail hand on */
       if (want_ty == TY_STRBUF) nx_bt = TY_STRBUF;
       if (bn3 > 0) {
-        const char *tty3 = nt_type(nt, bd3[bn3 - 1]);
-        nx_tail_stmt = tty3 && (sp_streq(tty3, "IfNode") || sp_streq(tty3, "CaseNode") ||
-                                sp_streq(tty3, "WhileNode") || sp_streq(tty3, "UntilNode") ||
-                                sp_streq(tty3, "BeginNode") || sp_streq(tty3, "NextNode") ||
-                                sp_streq(tty3, "ReturnNode"));
+        NodeKind tty3_k = nt_kind(nt, bd3[bn3 - 1]);
+        nx_tail_stmt = (tty3_k == NK_IfNode || tty3_k == NK_CaseNode ||
+                                tty3_k == NK_WhileNode || tty3_k == NK_UntilNode ||
+                                tty3_k == NK_BeginNode || tty3_k == NK_NextNode ||
+                                tty3_k == NK_ReturnNode);
       }
       nx_tmp = ++g_tmp;
       snprintf(nxbuf, sizeof nxbuf, "_t%d", nx_tmp);
@@ -3439,20 +3439,20 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
            nt_type(nt, bd3[bn3 - 1]) &&
-           (sp_streq(nt_type(nt, bd3[bn3 - 1]), "IfNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "UnlessNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "CaseNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "CaseMatchNode") ||
+           (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseMatchNode ||
             /* `wrap { risky rescue fallback }`: the statement form of a
                rescue modifier is an if/else over setjmp, whose two arms
                compute the value and drop it. Same void tail as the rest. */
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "RescueModifierNode") ||
-            sp_streq(nt_type(nt, bd3[bn3 - 1]), "BeginNode") ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_RescueModifierNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_BeginNode ||
             /* a loop's value is nil: into a boxed slot, the boxed nil its
                expression form ends in (as statements the splice's value was
                the loop's trailing counter decrement, an int, #9488) */
-            (want_poly && (sp_streq(nt_type(nt, bd3[bn3 - 1]), "WhileNode") ||
-                           sp_streq(nt_type(nt, bd3[bn3 - 1]), "UntilNode"))) ||
+            (want_poly && (nt_kind(nt, bd3[bn3 - 1]) == NK_WhileNode ||
+                           nt_kind(nt, bd3[bn3 - 1]) == NK_UntilNode)) ||
             block_tail_needs_value_form(c, bd3[bn3 - 1]))) {
     /* A GNU statement-expression's value is its last statement only when that
        statement is an EXPRESSION; a trailing if/case/begin STATEMENT yields
@@ -3498,7 +3498,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                putchar's int rather than the call's own. Emitting the tail as an
                expression is what makes the splice's value the block's value
                (#3781). */
-            (nt_type(nt, bd3[bn3 - 1]) && sp_streq(nt_type(nt, bd3[bn3 - 1]), "CallNode") &&
+            (nt_kind(nt, bd3[bn3 - 1]) == NK_CallNode &&
              repr_of(c, bd3[bn3 - 1]).kind == RK_BOXED) ||
             /* a scalar tail into the poly slot the yield was typed for (a
                block answering an Integer where another site's answers a
@@ -3508,7 +3508,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
             comp_ntype(c, bd3[bn3 - 1]) == TY_STRING || comp_ntype(c, bd3[bn3 - 1]) == TY_BOOL ||
             comp_ntype(c, bd3[bn3 - 1]) == TY_SYMBOL) &&
            nt_type(nt, bd3[bn3 - 1]) &&
-           !sp_streq(nt_type(nt, bd3[bn3 - 1]), "ReturnNode")) {
+           nt_kind(nt, bd3[bn3 - 1]) != NK_ReturnNode) {
     /* concrete-typed bare tail into a poly slot: box it (#3278) */
     if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
@@ -3682,8 +3682,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        build -- `@v = yield`, `t += yield i`, and a bare `yield` in a method
        carrying a rescue all stopped a program that CRuby runs. */
     int bn2 = 0; const int *bd2 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn2) : NULL;
-    int tail_ret = bn2 > 0 && nt_type(nt, bd2[bn2 - 1]) &&
-                   sp_streq(nt_type(nt, bd2[bn2 - 1]), "ReturnNode");
+    int tail_ret = bn2 > 0 &&
+                   nt_kind(nt, bd2[bn2 - 1]) == NK_ReturnNode;
     if (tail_ret || stmts_diverge(c, bbody)) {
       /* The filler is read as the value of the statement expression, so the
          type it has to have is the CONSUMER's -- want_ty -- not the type of
@@ -3736,7 +3736,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
   if (!name || recv < 0 || block < 0) return 0;
-  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (nt_kind(nt, block) != NK_BlockNode) return 0;
   if (repr_of(c, recv).kind != RK_BOXED) return 0;
   /* Only receivers whose poly value comes out of a BUILTIN container -- an
      index read (`arr[i]`) or an element accessor (first/last/fetch/...) -- or
@@ -3746,11 +3746,12 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
      cls_id switch (#2448). */
   {
     const char *rvty = nt_type(nt, recv);
+    NodeKind rvk = nt_kind(nt, recv);
     if (!rvty) return 0;
-    if (sp_streq(rvty, "LocalVariableReadNode") || sp_streq(rvty, "InstanceVariableReadNode")) {
+    if (rvk == NK_LocalVariableReadNode || rvk == NK_InstanceVariableReadNode) {
       /* ok: a plain variable holding a poly value */
     }
-    else if (sp_streq(rvty, "CallNode")) {
+    else if (rvk == NK_CallNode) {
       const char *rmn = nt_str(nt, recv, "name");
       static const char *const CONT[] = {"[]", "first", "last", "fetch", "sample",
         "dig", "shift", "pop", "min", "max", "at", NULL};
@@ -4184,8 +4185,8 @@ static int call_targets_yielding_method(Compiler *c, int id) {
   }
   else {
     TyKind rt = comp_ntype(c, recv);
-    const char *rty = nt_type(nt, recv);
-    const char *cn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+    NodeKind rk = nt_kind(nt, recv);
+    const char *cn = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
                      ? nt_str(nt, recv, "name") : NULL;
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
@@ -4322,16 +4323,17 @@ int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
 static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "RedoNode")) return redo < 0 || id == redo;
+  if (ty_k == NK_RedoNode) return redo < 0 || id == redo;
   /* a `redo` in a block a yield here splices belongs to that splice, which
      carries its own label (emit_block_invoke), not to this loop */
   /* nested scope/loop boundaries: a redo inside binds to that inner loop */
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "LambdaNode"))
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode ||
+      ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_LambdaNode)
     return 0;
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
+  if (ty_k == NK_CallNode && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), redo)) return 1;
   int na = nt_num_arrs(nt, id);
@@ -4358,20 +4360,21 @@ int subtree_owns_redo(const NodeTable *nt, int body, int redo) {
 static int subtree_has_own_next_ex(const NodeTable *nt, int id, int next) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "NextNode")) return next < 0 || id == next;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "LambdaNode"))
+  if (ty_k == NK_NextNode) return next < 0 || id == next;
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode ||
+      ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_LambdaNode)
     return 0;
-  if (sp_streq(ty, "ForNode"))
+  if (ty_k == NK_ForNode)
     return next >= 0 && subtree_has_own_next_ex(nt, nt_ref(nt, id, "collection"), next);
-  int blk = sp_streq(ty, "CallNode") ? nt_ref(nt, id, "block") : -1;
+  int blk = ty_k == NK_CallNode ? nt_ref(nt, id, "block") : -1;
   if (blk >= 0) {
     if (next < 0) return 0;
-    const char *bty = nt_type(nt, blk);
+    NodeKind bk = nt_kind(nt, blk);
     return subtree_has_own_next_ex(nt, nt_ref(nt, id, "receiver"), next) ||
            subtree_has_own_next_ex(nt, nt_ref(nt, id, "arguments"), next) ||
-           (bty && sp_streq(bty, "BlockArgumentNode") && subtree_has_own_next_ex(nt, blk, next));
+           (bk == NK_BlockArgumentNode && subtree_has_own_next_ex(nt, blk, next));
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) if (subtree_has_own_next_ex(nt, nt_ref_at(nt, id, i), next)) return 1;
@@ -4509,7 +4512,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int is_then = is_then_alias(name);
   if (!is_tap && !is_then) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind et = repr_of(c, recv).as_ty;
@@ -4522,10 +4525,10 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      a downstream `.join` / `p` dispatches correctly (#3200, #3208). */
   int empty_arr_adopt = 0;
   if (is_tap) {
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     int rel = 0;
-    if (rty && sp_streq(rty, "ArrayNode")) nt_arr(nt, recv, "elements", &rel);
-    if (rty && sp_streq(rty, "ArrayNode") && rel == 0) {
+    if (rk == NK_ArrayNode) nt_arr(nt, recv, "elements", &rel);
+    if (rk == NK_ArrayNode && rel == 0) {
       const char *bp = block_param_name(c, block, 0);
       Scope *bsc2 = bp ? comp_scope_of(c, block) : NULL;
       LocalVar *blv = bsc2 ? scope_local(bsc2, rename_local(bp)) : NULL;
@@ -4788,9 +4791,9 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name || !sp_streq(name, "with_index")) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return 0;
   const char *rnm = nt_str(nt, recv, "name");
   int is_take = rnm && sp_streq(rnm, "take_while");
   int is_drop = rnm && sp_streq(rnm, "drop_while");
@@ -4947,7 +4950,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, id, "block");
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
-  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (nt_kind(nt, block) != NK_BlockNode) return 0;
   /* `e.each { }` over an Enumerator answers what its underlying each does:
      a generator's body value, a materialized one's collection. The walk
      runs once; the `to_a` hop in front of it is never evaluated. */
@@ -4997,7 +5000,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      array: Enumerable#reverse_each / #each_with_index return the enumerable.
      Bind obj once, materialize the array from that binding, iterate, yield obj. */
   int objn = -1;
-  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+  if (nt_kind(nt, recv) == NK_CallNode) {
     const char *rnm = nt_str(nt, recv, "name");
     if (rnm && sp_streq(rnm, "__enum_to_a")) objn = nt_ref(nt, recv, "receiver");
     else if (nt_str(nt, recv, "enum_recv")) objn = nt_ref(nt, recv, "receiver");
@@ -5070,7 +5073,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   /* the step's setup: locals fresh, and a redo's label after them */
   if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
   int rd_lbl = emit_iter_step_stmts(c, body, b, indent + 1, NULL);
-  if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, indent + 1);
+  if (nt_kind(nt, bb[bn - 1]) == NK_NextNode) emit_stmt(c, bb[bn - 1], b, indent + 1);
   else {
     /* the predicate in its own buffer: a multi-statement terminal (a block
        ending in an if/else expression) lowers its statements through g_pre,
@@ -5951,9 +5954,9 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     buf_printf(b, "sp_StrArray *_t%d = ", tm);
     if (sp_argc == 0) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
     else if (sp_argc == 1) {
-      const char *aty = nt_type(nt, sp_argv[0]);
-      int ws = (aty && sp_streq(aty, "NilNode")) ||
-               (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
+      NodeKind ak = nt_kind(nt, sp_argv[0]);
+      int ws = (ak == NK_NilNode) ||
+               (ak == NK_StringNode && nt_str(nt, sp_argv[0], "content") &&
                 sp_streq(nt_str(nt, sp_argv[0], "content"), " ") && nt_str_len(nt, sp_argv[0], "content") == 1);
       int reli = re_lit_index(c, sp_argv[0]);
       if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
@@ -5992,7 +5995,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       /* (one representation: the element is the handle, and so is the
          parameter that holds it, its body inferred over that slot) */
       TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;
-      if (bt == TY_STRBUF) clv0->str_shared = 1;
+      if (bt == TY_STRBUF) { clv0->str_shared = 1; comp_touch_scope(clv0->owner); }
       lv_set_type(clv0, bt);
       arm_body_infer(c, ARM_SITE_SPLIT, block, bt, sb_bb, sb_bn);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
@@ -6000,7 +6003,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       emit_loop_body(c, body, b, spIndent);
       spIndent--;
       emit_indent(b, spIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0); clv0->str_shared = ss0;
+      lv_set_type(clv0, csaved0); { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); }
     }
     else {
       if (p0) {
@@ -6080,7 +6083,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
       TyKind bt = one_elem_bind_type(et); int ss0 = clv0->str_shared;   /* (one representation: see the split form) */
-      if (bt == TY_STRBUF) clv0->str_shared = 1;
+      if (bt == TY_STRBUF) { clv0->str_shared = 1; comp_touch_scope(clv0->owner); }
       lv_set_type(clv0, bt);
       arm_body_infer(c, ARM_SITE_SCAN, block, bt, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
@@ -6088,7 +6091,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      lv_set_type(clv0, csaved0); clv0->str_shared = ss0;
+      lv_set_type(clv0, csaved0); { clv0->str_shared = ss0; comp_touch_scope(clv0->owner); }
     }
     else {
       if (p0) {
@@ -6115,7 +6118,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
      emitter required one, so a paramless block fell through to NoMethodError
      (the `throw` idiom under catch is written that way) (#3858). */
   if (sp_streq(name, "each") && rt == TY_RANGE && !p0 && block >= 0 &&
-      nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode") &&
+      nt_kind(nt, block) == NK_BlockNode &&
       !range_float_begin(c, recv)) {
     int t0 = ++g_tmp, ts0 = ++g_tmp, te0 = ++g_tmp, ti0 = ++g_tmp;
     Buf rb0; memset(&rb0, 0, sizeof rb0); emit_expr(c, recv, &rb0);
@@ -6143,7 +6146,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     {
       /* a beginless range cannot be enumerated from nil (#3066) */
       int rn0 = nt_paren_single(c->nt, recv);
-      if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
+      if (rn0 >= 0 && nt_kind(nt, rn0) == NK_RangeNode &&
           nt_ref(nt, rn0, "left") < 0) {
         emit_indent(b, indent);
         buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n");
@@ -6151,7 +6154,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
       }
     }
     int rnode = nt_paren_single(c->nt, recv);
-    if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
+    if (rnode >= 0 && nt_kind(nt, rnode) == NK_RangeNode) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
         int excl = nt_range_excl(nt, rnode);
@@ -6171,13 +6174,13 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         if (use_shadow) {
           int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
           TyKind bt = one_elem_bind_type(TY_STRING); int ss0 = slv->str_shared;   /* (one representation: see the split form) */
-          if (bt == TY_STRBUF) slv->str_shared = 1;
+          if (bt == TY_STRBUF) { slv->str_shared = 1; comp_touch_scope(slv->owner); }
           lv_set_type(slv, bt);
           arm_body_infer(c, ARM_SITE_STR_UPTO, block, bt, sbb, sbn);
           emit_indent(b, indent + 1);
           buf_printf(b, bt == TY_STRBUF ? "sp_String *lv_%s = sp_StrArray_get_e(_t%d, _t%d);\n" : "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
-          lv_set_type(slv, saved); slv->str_shared = ss0;
+          lv_set_type(slv, saved); { slv->str_shared = ss0; comp_touch_scope(slv->owner); }
         }
         else {
           emit_indent(b, indent + 1);
@@ -7643,8 +7646,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      cursor is not touched), so a `break` in the block ends it. */
   int ewi_walk = sp_streq(name, "each_with_index");
   if ((sp_streq(name, "each") || ewi_walk) && recv >= 0 && nt_kind(nt, recv) == NK_CallNode &&
-      nt_str(nt, recv, "enum_each_wrap") && nt_type(nt, block) &&
-      sp_streq(nt_type(nt, block), "BlockNode")) {
+      nt_str(nt, recv, "enum_each_wrap") &&
+      nt_kind(nt, block) == NK_BlockNode) {
     int er = nt_ref(nt, recv, "receiver");
     if (er >= 0 && comp_ntype(c, er) == TY_ENUMERATOR) {
       int tres = g_enum_walk_res; g_enum_walk_res = 0;
@@ -7758,7 +7761,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      dispatch above takes precedence: a user class owning the name has to see
      the call, and its own `each` is not a container walk.) */
   { int rfb = resolve_forwarded_block(c, block);
-    if (rfb < 0 || (nt_type(nt, rfb) && sp_streq(nt_type(nt, rfb), "BlockArgumentNode"))) {
+    if (rfb < 0 || (nt_kind(nt, rfb) == NK_BlockArgumentNode)) {
       const char *inm = nt_str(nt, id, "name");
       int irecv = nt_ref(nt, id, "receiver");
       const char *pen = inm ? poly_enum_op_for(inm) : NULL;
@@ -8078,7 +8081,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     /* no limit (or an explicit nil limit): Integer#step iterates unboundedly
        until the block breaks (#2582). Integer receiver + integer step only. */
     int no_limit = sargc == 0 ||
-                   (nt_type(nt, sargv[0]) && sp_streq(nt_type(nt, sargv[0]), "NilNode"));
+                   (nt_kind(nt, sargv[0]) == NK_NilNode);
     if (no_limit && rt == TY_INT &&
         (sargc < 2 || comp_ntype(c, sargv[1]) != TY_FLOAT)) {
       int tr = step_recv_hoists(c, id, sargc, sargv) ? step_bind_recv(c, id, recv, "sp_int", emit_int_expr, sargc, sargv, b, indent) : 0;

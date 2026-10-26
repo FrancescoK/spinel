@@ -33,7 +33,7 @@ static const char *fold_seed_op_sym(Compiler *c, int id, int argc, const int *ar
   { int blk = nt_call_block_arg(nt, id);
     if (blk < 0) return NULL;
     { int ex = nt_ref(nt, blk, "expression");
-      if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode"))
+      if (ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode)
         return nt_str(nt, ex, "value"); } }
   return NULL;
 }
@@ -172,16 +172,16 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (rt == TY_RANGE && recv >= 0) {
     int rnA = nt_paren_single(nt, recv);
     /* a local holding only such a literal counts too (sole-assignment) */
-    if (rnA >= 0 && nt_type(nt, rnA) && !sp_streq(nt_type(nt, rnA), "RangeNode")) {
+    if (rnA >= 0 && nt_type(nt, rnA) && nt_kind(nt, rnA) != NK_RangeNode) {
       int slA = local_sole_range_node(c, rnA);
       if (slA >= 0) rnA = slA;
     }
     /* a beginless one's #count is Infinity too (#size raises, served below) */
-    if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
+    if (rnA >= 0 && nt_kind(nt, rnA) == NK_RangeNode &&
         (nt_ref(nt, rnA, "left") < 0 || nt_kind(nt, nt_ref(nt, rnA, "left")) == NK_NilNode) &&
         sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") < 0)
       { *out = TY_FLOAT; return 1; }
-    if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
+    if (rnA >= 0 && nt_kind(nt, rnA) == NK_RangeNode &&
         (nt_ref(nt, rnA, "right") < 0 ||
          infer_end_is_float_inf(c, nt_ref(nt, rnA, "right"))) &&
         nt_ref(nt, rnA, "left") >= 0) {
@@ -219,8 +219,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      them as the int array it walks, and an assigned result then printed the
      elements instead of the Range (#3920). */
   if (rt == TY_RANGE && nt_ref(nt, id, "block") >= 0 &&
-      nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
+      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
       ((argc == 1 && (is_each_window(name))) ||
        (argc == 0 && (sp_streq(name, "reverse_each") || sp_streq(name, "each_with_index")))))
     { *out = TY_RANGE; return 1; }
@@ -308,7 +307,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL))
     { *out = TY_POLY; return 1; }
   if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+      nt_kind(nt, argv[0]) == NK_RangeNode &&
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
        (nt_ref(nt, argv[0], "right") >= 0 && infer_type(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT)))
     { *out = TY_POLY; return 1; }
@@ -394,7 +393,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       int rr_argc = argc;
       if (nt_argv_kwh(nt, argv, rr_argc) >= 0) rr_argc--;
       if (rr_argc == 1) {
-        if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
+        if (nt_kind(nt, argv[0]) == NK_IntegerNode)
           { *out = nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT; return 1; }
         { *out = TY_POLY; return 1; }
       }
@@ -504,8 +503,8 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         /* A hash literal default `{}` infers TY_UNKNOWN but is still a hash value
            -- incompatible with a non-hash hash-val type like TY_INT. */
         if (dt == TY_UNKNOWN) {
-          const char *atn = nt_type(nt, argv[1]);
-          if (atn && (sp_streq(atn, "HashNode") || sp_streq(atn, "KeywordHashNode")))
+          NodeKind atn_k = nt_kind(nt, argv[1]);
+          if (atn_k == NK_HashNode || atn_k == NK_KeywordHashNode)
             dt = TY_POLY_POLY_HASH;
         }
         if (ty_unify(vt, dt) == TY_POLY) { *out = TY_POLY; return 1; }
@@ -535,7 +534,7 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        The result is the init's type -- int by default. */
     if (nt_ref(nt, id, "block") < 0 && sp_streq(name, "sum") && argc == 1 &&
         (ty_is_array(infer_type(c, argv[0])) ||
-         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))))
+         (nt_kind(nt, argv[0]) == NK_ArrayNode)))
       { *out = TY_POLY_ARRAY; return 1; }   /* an Array init concatenates the pairs (#3571) */
     /* Every other blockless seed keeps its own class: Enumerable#sum adds the
        first [k, v] pair to it with Ruby's `+`, so an Integer seed raises and
@@ -581,7 +580,7 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     }
     /* merge(*hashes) folds through the universal boxed merge (#3561) */
     if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode"))
+        nt_kind(nt, argv[0]) == NK_SplatNode)
       { *out = TY_POLY_POLY_HASH; return 1; }
     if (sp_streq(name, "merge") && argc == 1) {
       TyKind at = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
@@ -731,8 +730,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         int bn = 0;
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         int tail = bn > 0 ? bb[bn - 1] : -1;
-        const char *tty = tail >= 0 ? nt_type(nt, tail) : NULL;
-        if (tty && sp_streq(tty, "ArrayNode")) {
+        NodeKind tk = nt_kind(nt, tail);
+        if (tk == NK_ArrayNode) {
           int en = 0; const int *el = nt_arr(nt, tail, "elements", &en);
           if (en == 2) {
             TyKind kt = infer_type(c, el[0]);
@@ -763,7 +762,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       /* arr[start, len] and arr[i] / arr[range] by an Integer or Range index
          are the rows'; a literal RangeNode of another kind of range (a
          Float or String one) is a subarray too. */
-      if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))
+      if (argc == 1 && nt_kind(nt, argv[0]) == NK_RangeNode)
         { *out = rt; return 1; }
       /* a boxed index that may be a Range: an element or a subarray, boxed */
       if (argc == 1 && a0 == TY_POLY && value_may_be_range(c, argv[0])) { *out = TY_POLY; return 1; }
@@ -856,7 +855,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         TyKind sit = infer_type(c, argv[0]);
         if (sit == TY_STRING) { *out = TY_STRING; return 1; }
         if (ty_is_array(sit) ||
-            (sit == TY_UNKNOWN && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode")))
+            (sit == TY_UNKNOWN && nt_kind(nt, argv[0]) == NK_ArrayNode))
           { *out = TY_POLY_ARRAY; return 1; }
       }
       { *out = fold_sum_type(TY_INT, ty_array_elem(rt), g_promote_mode); return 1; }
@@ -869,7 +868,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         const char *sop = NULL;
         if (blk >= 0) {
           int ex = nt_ref(nt, blk, "expression");
-          if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
+          if (ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode) sop = nt_str(nt, ex, "value");
         }
         if (sop && (is_bit_set_operator(sop))) { *out = TY_INT_ARRAY; return 1; }
       }
@@ -896,7 +895,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           if (sv2 && (is_shift_op(sv2)) &&
               infer_type(c, argv[0]) == TY_PROC) { *out = TY_POLY; return 1; }
         }
-        const char *a0ty = nt_type(nt, argv[0]);
+        NodeKind a0k = nt_kind(nt, argv[0]);
         /* a symbol literal, or a local statically holding one (s = :+) -- and
            only when there is no block: `inject(:s, &:+)` gives the operator in
            the block, which makes the lone Symbol the SEED, not the operator
@@ -904,7 +903,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            call from the elements while the emitter folded from the seed. */
         int is_sym_op = argc == 1 && nt_ref(nt, id, "block") < 0 &&
                         sym_static_value(c, argv[0]) != NULL;
-        (void)a0ty;
         /* `reduce(nil) { |acc, t| acc.nil? ? t : acc + t }` -- the idiom for a
            fold with no natural identity. The seed says nothing about the
            accumulator except that it starts empty, so the fold is boxed: a
@@ -916,13 +914,13 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           TyKind it = infer_type(c, argv[0]);
           /* An empty array-literal seed accumulates an array: poly, since the
              block decides the element mix (`reduce([]) { |a, x| a << x }`). */
-          if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "ArrayNode")) {
+          if (it == TY_UNKNOWN && a0k == NK_ArrayNode) {
             int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
             if (sen == 0) it = TY_POLY_ARRAY;
           }
           /* An empty `{}` seed accumulates a general boxed-key/value hash, like
              each_with_object({}); the block decides the key/value mix (#2958). */
-          else if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "HashNode")) {
+          else if (it == TY_UNKNOWN && a0k == NK_HashNode) {
             int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
             if (sen == 0) it = TY_POLY_POLY_HASH;
           }
@@ -988,7 +986,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                  element and the result is a boxed poly (#3220). A plain poly
                  array's element type is unknown, so gate on the literal. */
               else if (boxes && rt == TY_POLY_ARRAY && recv >= 0 &&
-                       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+                       nt_kind(nt, recv) == NK_ArrayNode) {
                 int ren = 0; const int *rev = nt_arr(nt, recv, "elements", &ren);
                 int boxed_num = 0;
                 for (int e = 0; rev && e < ren; e++) {
@@ -1035,7 +1033,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         }
       }
       /* empty array literal `[]` with sym op: codegen treats as int_array → returns int */
-      if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+      if (recv >= 0 && nt_kind(nt, recv) == NK_ArrayNode) {
         int en = 0; nt_arr(nt, recv, "elements", &en);
         if (en == 0) { *out = TY_INT; return 1; }
       }
@@ -1068,7 +1066,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        A positional Hash has the kind of a keyword one and is a TypeError, so
        the syntax decides, not the kind. */
     int sample_kw = sp_streq(name, "sample") && argc == 1 && argv &&
-                    nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode");
+                    nt_kind(nt, argv[0]) == NK_KeywordHashNode;
     if (sp_streq(name, "sample") && argc == 1 && !sample_kw)
       { *out = rt; return 1; }  /* n-arg form -> subarray */
     if (sp_streq(name, "sample") && argc == 2)
@@ -1090,8 +1088,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
       /* Heterogeneous push/unshift on a typed-array literal: lift to poly. */
       TyKind elem_t = ty_array_elem(rt);
-      const char *rty = nt_type(nt, recv);
-      if (rty && sp_streq(rty, "ArrayNode")) {
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk == NK_ArrayNode) {
         for (int ai = 0; ai < argc; ai++) {
           TyKind at = infer_type(c, argv[ai]);
           /* (one-String mode: a String Array holds a handle as it holds
@@ -1151,7 +1149,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          which desugars to it) typed the values from "b" and stored the 1
          raw in a String slot (#8187). A key or value that differs between
          pairs is boxed. */
-      if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+      if (recv >= 0 && nt_kind(nt, recv) == NK_ArrayNode) {
         int en = 0; const int *els = nt_arr(nt, recv, "elements", &en);
         TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
         int ok = en > 0;
@@ -1217,8 +1215,8 @@ int infer_arysub_call(Compiler *c, int id, TyKind *out) {
      included */
   int an = comp_arysub_kernel_array(c, id);
   if (an >= 0 && comp_ty_ary_root(c, infer_type(c, an)) >= 0) { *out = infer_type(c, an); return 1; }
-  /* already re-inferring this receiver as its builtin: under a codegen view
-     face face_of reads only the view's, so ask the inference's own pins */
+  /* already re-inferring this receiver as its builtin: face_of reads the
+     newest pin and the codegen face, so ask every pin of the inference */
   if (recv < 0 || face_of(recv) != TY_UNKNOWN || an_face_pinned(recv)) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
   if (!comp_arysub_call(c, id, rt, &k)) return infer_arysub_arg_call(c, id, rt, out);
@@ -1321,7 +1319,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          generic binding. */
       if (cls->c_struct && sp_streq(cls->c_struct, "sp_IOBuffer") &&
           sp_streq(name, "get_value") && argc == 2 &&
-          nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "SymbolNode")) {
+          nt_kind(c->nt, argv[0]) == NK_SymbolNode) {
         TyKind ot = infer_type(c, argv[1]);
         int it = comp_iob_sym_type(nt_str(c->nt, argv[0], "value"));
         if (it >= 0 && ot == TY_UNKNOWN && g_infer_optimistic) { *out = TY_UNKNOWN; return 1; }
@@ -1355,13 +1353,13 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       /* a literal range with same-class endpoints unfolds to the object
          clamp, whose result is one of the three same-class values */
       int rn2 = nt_paren_single(nt, argv[0]);
-      if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
+      if (rn2 >= 0 && nt_kind(nt, rn2) == NK_RangeNode) {
         int rlo2 = nt_ref(nt, rn2, "left"), rhi2 = nt_ref(nt, rn2, "right");
         /* two-sided, beginless (`..hi`), and endless (`lo..`) object ranges all
            unfold to sp_obj_clamp, whose result is one of the same-class values;
            the missing side becomes a nil bound. Mirror the codegen guard. */
-        int has_lo2 = rlo2 >= 0 && !(nt_type(nt, rlo2) && sp_streq(nt_type(nt, rlo2), "NilNode"));
-        int has_hi2 = rhi2 >= 0 && !(nt_type(nt, rhi2) && sp_streq(nt_type(nt, rhi2), "NilNode"));
+        int has_lo2 = rlo2 >= 0 && nt_kind(nt, rlo2) != NK_NilNode;
+        int has_hi2 = rhi2 >= 0 && nt_kind(nt, rhi2) != NK_NilNode;
         int lo_obj2 = has_lo2 && infer_type(c, rlo2) == rt;
         int hi_obj2 = has_hi2 && infer_type(c, rhi2) == rt;
         if ((lo_obj2 || hi_obj2) && (!has_lo2 || lo_obj2) && (!has_hi2 || hi_obj2)) { *out = rt; return 1; }
@@ -1381,9 +1379,9 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set") ||
          sp_streq(name, "remove_instance_variable")) && argc >= 1 &&
         !comp_call_reaches_own(c, id, cid, name)) {
-      const char *a0ty = nt_type(nt, argv[0]);
-      if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
-        const char *sym = sp_streq(a0ty, "SymbolNode")
+      NodeKind a0k = nt_kind(nt, argv[0]);
+      if (a0k == NK_SymbolNode || a0k == NK_StringNode) {
+        const char *sym = a0k == NK_SymbolNode
                             ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
         /* A name in the layout yields its declared type; an undefined-but-valid
            `@`-name reads as nil and a bad name (no `@`) raises NameError -- both poly. */
@@ -2169,7 +2167,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* Data#with on a poly value (a Data read out of a container) returns a new
      Data instance, boxed poly (#2890). */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "with") &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+      nt_kind(nt, argv[0]) == NK_KeywordHashNode &&
       !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* poly.new(args): instantiating a Class value read out of a container yields

@@ -681,6 +681,8 @@ int subtree_may_reassign_state(Compiler *c, int id);
    Strings, Symbols, their ranges and typed Arrays can; a builtin over those
    alone, with no block, cannot: `total + i.to_s` (codegen_call.c). */
 int subtree_may_run_proc(Compiler *c, int id);
+/* a builtin reading a value of kind t runs no program code */
+int ty_runs_no_code(TyKind t);
 /* --share-strings: a watched scan's handle and length before its loop, and
    the loop step that raises "string modified" (codegen_iter.c) */
 void emit_scan_rtcheck_open(Compiler *c, int id, int recv, Buf *pre, int indent, char *step, size_t n);
@@ -1617,6 +1619,7 @@ void cg_memo_put(CgMemo *m, const char *key, int tag, int val);
    capture detection). Returns NULL when nid is not a resolvable regex. */
 const char *re_lit_src(Compiler *c, int nid);
 void emit_interp(Compiler *c, int id, Buf *b);
+int emit_interp_append(Compiler *c, int id, const char *open, const char *open_n, Buf *b, int indent);
 int interp_is_literal_fold(const NodeTable *nt, int id);
 int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
@@ -2070,6 +2073,7 @@ int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc);
    with that parameter bound (see emit_args_filled). */
 int default_refs_earlier_param(Compiler *c, Scope *m);
 int opt_before_required(Compiler *c, Scope *m);
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread);
 void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, char *name, size_t cap);
 /* `(sp_Parent *)` when an object value flows into an ancestor-typed slot; the
    layouts match by construction, but C needs the cast spelled (#3418). */
@@ -2244,6 +2248,19 @@ int poly_splat_keyed(const char *name);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int an_bop_facts(Compiler *c, const struct BuiltinOp *op, int id);
 const struct BuiltinOp *an_bop_row_for_kind(Compiler *c, int id, TyKind rt);
+int a_super_target(Compiler *c, Scope *m);
+int an_arg_is_shared_handle(Compiler *c, int node);
+int an_super_object_text(Compiler *c, int n, int mi);
+int an_user_defines_method(Compiler *c, const char *name);
+int block_given_tail_then_last(Compiler *c, int last);
+int call_forwards_own_block(Compiler *c, int cid);
+int is_blk_param_call(Compiler *c, int node, int mi);
+int ie_block_body(Compiler *c, int blk);
+int is_struct_call(Compiler *c, int val);
+int sclass_value_call(Compiler *c, int id);
+int scope_body_last(Compiler *c, int mi);
+int str_in(const char *s, const char *const *set);
+TyKind an_self_node_type(Compiler *c, int id);
 /* arg1's kind and whether a one-argument Range literal's own bound is
    Float-typed -- see the canonical declaration in analyze_internal.h,
    where it is defined (analyze_infer.c). const-safe, so this file's own

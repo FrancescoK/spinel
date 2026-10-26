@@ -698,6 +698,16 @@ as on CRuby. In a few cases CRuby's behavior depends on a feature Spinel does
 not implement, and silently returning a wrong value would be worse than a
 visible error. Those deliberate divergences are listed here.
 
+#### A required file's classes and methods exist from the start of the program
+
+Spinel compiles every file the program requires, and the classes, modules and
+methods a file defines are defined from the start of the program, whether the
+`require` that loads the file has run yet or not, and whether it ever runs.
+CRuby defines them when the file loads. So `defined?(Foo)` before the require
+that defines `Foo` answers `"constant"` where CRuby answers `nil`, and a
+method a later-required file defines can be called before that require runs.
+A file's other top-level statements run when it is loaded.
+
 #### Two DISTINCT self-containing Sets compare equal
 
 A container walk that meets an object it is already inside stops there and

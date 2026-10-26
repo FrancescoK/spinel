@@ -1,0 +1,18 @@
+dyn_sym: element true key true call true return true map true
+lit_sym: element true key true call true return true map true
+int: element true key true call true return true map true
+neg_int: element true key true call true return true map true
+float: element true key true call true return true map true
+neg_zero: element true key true call true return true map true
+true: element true key true call true return true map true
+false: element true key true call true return true map true
+nil: element true key true call true return true map true
+true
+true
+4
+true
+[false, false]
+true
+true
+true
+true

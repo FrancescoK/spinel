@@ -16,21 +16,48 @@ static const struct {
 #include "builtin_name_traits.inc"
 };
 
+/* The rows of a name, in table order: the first through a table hashed on
+   the first ask, the rest down a chain. The two lookups below compared the
+   name with every row, and are asked about a call's name per call, in each
+   round of the share pass and for every receiver the site index classifies. */
+#define BOP_TRAIT_N ((int)(sizeof bop_name_traits / sizeof bop_name_traits[0]))
+#define BOP_TRAIT_CAP 1024   /* a power of two above 4 * BOP_TRAIT_N */
+static short bop_trait_head[BOP_TRAIT_CAP], bop_trait_next[BOP_TRAIT_N];
+static int bop_trait_built;
+static int bop_trait_first(const char *name) {
+  if (!bop_trait_built) {
+    for (int i = 0; i < BOP_TRAIT_CAP; i++) bop_trait_head[i] = -1;
+    for (int i = BOP_TRAIT_N - 1; i >= 0; i--) {   /* reverse: chains run in table order */
+      unsigned h = sp_strhash(bop_name_traits[i].name) & (BOP_TRAIT_CAP - 1);
+      bop_trait_next[i] = -1;
+      /* the bucket's chain holds one name: a row of another name probes on */
+      while (bop_trait_head[h] >= 0 && !sp_streq(bop_name_traits[bop_trait_head[h]].name, bop_name_traits[i].name))
+        h = (h + 1) & (BOP_TRAIT_CAP - 1);
+      bop_trait_next[i] = bop_trait_head[h];
+      bop_trait_head[h] = (short)i;
+    }
+    bop_trait_built = 1;
+  }
+  unsigned h = sp_strhash(name) & (BOP_TRAIT_CAP - 1);
+  while (bop_trait_head[h] >= 0 && !sp_streq(bop_name_traits[bop_trait_head[h]].name, name))
+    h = (h + 1) & (BOP_TRAIT_CAP - 1);
+  return bop_trait_head[h];
+}
+
 int bop_name_has_reader(const char *name, unsigned surface) {
   if (!name) return 0;
-  for (unsigned i = 0; i < sizeof bop_name_traits / sizeof bop_name_traits[0]; i++) {
+  for (int i = bop_trait_first(name); i >= 0; i = bop_trait_next[i]) {
     if (!(bop_name_traits[i].readers & surface)) continue;
-    if (sp_streq(name, bop_name_traits[i].name)) return 1;
+    return 1;
   }
   return 0;
 }
 
 int bop_name_mutates(const char *name, unsigned sites) {
   if (!name) return 0;
-  for (unsigned i = 0; i < sizeof bop_name_traits / sizeof bop_name_traits[0]; i++) {
+  for (int i = bop_trait_first(name); i >= 0; i = bop_trait_next[i]) {
     if (!bop_name_traits[i].mutators) continue;
-    if (sp_streq(name, bop_name_traits[i].name))
-      return (bop_name_traits[i].mutators & sites) == sites;
+    return (bop_name_traits[i].mutators & sites) == sites;
   }
   return 0;
 }

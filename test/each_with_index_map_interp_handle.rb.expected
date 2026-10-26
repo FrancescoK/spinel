@@ -1,0 +1,6 @@
+a0,b1,c2
+["a0", "b1", "c2", "d"]
+3
+3
+events 10.0 emulate 10.0 audio 10.0
+["events 10.0!", "emulate 10.0", "audio 10.0"]

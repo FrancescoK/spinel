@@ -52,8 +52,12 @@ int an_face_pinned(int node) {
 }
 TyKind face_of(int node) {
   int fn; TyKind fk;
+  /* An inference pin is newer than any codegen face: the emitter opens its
+     faces before it asks the inference. Inside the block of an iterator on
+     an Array subclass instance, an inference of another read of that
+     instance pins its own receiver, and the pin answers for it. */
+  if (an_npin > 0 && an_pin[an_npin - 1].node == node) return an_pin[an_npin - 1].kind;
   if (view_face_top(&fn, &fk)) return fn == node ? fk : TY_UNKNOWN;
-  if (an_npin > 0) return an_pin[an_npin - 1].node == node ? an_pin[an_npin - 1].kind : TY_UNKNOWN;
   return TY_UNKNOWN;
 }
 int face_active(void) {
@@ -111,34 +115,137 @@ int an_poly_raw_argc(const char *name) {
    An answer can also outlive its tree (#8852): a pass that asks each node of
    a chain re-inferred the chain below it every time, n^2/2 inferences a
    pass. An earlier tree's answer is the one a fresh tree would give while no
-   table it was derived from has changed since that tree began: the setters
-   of those tables count every change (comp_ty_edits, NodeTable.edits),
-   and g_imemo_clean is the first generation begun after the last count
-   moved. Each pass and phase the analysis runs by name (AN_PASS, AN_PHASE)
-   begins and ends with the memo emptied (infer_memo_boundary), so what came
-   before it is never in doubt, only its own writes between two of its
-   queries, and those go through the setters. Those answers are kept;
-   SPINEL_IMEMO=tree keeps an answer for its own tree only, as before, and
-   SPINEL_IMEMO=shadow computes each kept one afresh and reports where it
-   would have differed (`make imemo-shadow-test`). */
+   table it was derived from has changed since that tree began. The setters
+   of those tables count every change (comp_ty_edits, NodeTable.edits), and
+   each marks the owner of the slot it wrote (compiler.h, comp_touch_*); an
+   inference records the owners it reads (ImemoDeps, below), and its answer
+   is kept while none of them has moved since it began -- a fixpoint's round
+   writes thousands of slots, nearly all of them far from any one answer, and
+   under the one count every write ended every answer. Each pass and phase
+   the analysis runs by name (AN_PASS, AN_PHASE) begins and ends with the
+   program's version moved (infer_memo_boundary), so what came before it is
+   never in doubt, only its own writes between two of its queries, and those
+   go through the setters. SPINEL_IMEMO=tree keeps an answer for its own
+   tree only, as before, and SPINEL_IMEMO=shadow computes each kept one
+   afresh and reports where it would have differed (`make imemo-shadow-test`). */
 static unsigned g_imemo_gen = 0;
 static unsigned g_imemo_clean = 1;
 static unsigned long g_imemo_edits = 0;
 static unsigned *g_imemo_stamp = NULL;
 static TyKind *g_imemo_val = NULL;
 static int g_imemo_cap = 0;
+/* The owners each answer read (compiler.h, comp_touch_*): per node, the edit
+   count its inference began at and up to IMEMO_DEPS owners -- a scope by
+   its index, a class as -(index + 2), the program as -1; more than fit, or
+   a reader that reaches every owner, is the program (n = -1). An answer
+   stands while no owner it read has a version past its edit count; one that
+   read the program stands while nothing was written at all. The owners are
+   noted by the lookups that reach a slot (imemo_dep_*), into the record of
+   the inference open now (a stack by depth); a nested answer's owners join
+   its asker's, kept or computed. */
+#define IMEMO_DEPS 8
+#define IMEMO_REC_MAX 4096   /* (an inference this deep is a chain of that many links) */
+typedef struct { unsigned long at; int n; int dep[IMEMO_DEPS]; } ImemoDeps;
+static ImemoDeps *g_imemo_deps = NULL;
+typedef struct { int n; int dep[IMEMO_DEPS]; } ImemoRec;
+static ImemoRec g_imemo_rec[IMEMO_REC_MAX];
+static int g_imemo_rec_n;
+int imemo_dep_on;
+static void imemo_rec_add(ImemoRec *r, int key) {
+  if (r->n < 0) return;
+  if (key == -1) { r->n = -1; return; }
+  for (int i = 0; i < r->n; i++) if (r->dep[i] == key) return;
+  if (r->n == IMEMO_DEPS) { r->n = -1; return; }
+  r->dep[r->n++] = key;
+}
+/* SPINEL_IMEMO_TRACE=<node>: while that node's inference runs, every owner
+   noted and every nested inference is printed */
+static int g_imemo_trace_id = -2, g_imemo_trace;
+void imemo_dep_scope(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep scope %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : idx); }
+void imemo_dep_class(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep class %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : -(idx + 2)); }
+void imemo_dep_global(void) { if (g_imemo_trace) fprintf(stderr, "  dep program\n"); if (g_imemo_rec_n > 0) g_imemo_rec[g_imemo_rec_n - 1].n = -1; }
+static unsigned long imemo_owner_ver(int key) {
+  if (key == -1) return comp_global_ver;
+  if (key >= 0) return key < comp_scope_ver_cap ? comp_scope_ver[key] : comp_global_ver;
+  int k = -(key + 2);
+  return k < comp_class_ver_cap ? comp_class_ver[k] : comp_global_ver;
+}
+/* does node id's kept answer still stand? (g_imemo_fail: why not, for the
+   statistics -- the program moved, a scope, a class, or it read the program) */
+static unsigned long g_imemo_fail[4], g_imemo_fail_why[8];
+static int imemo_deps_hold(int id) {
+  const ImemoDeps *d = &g_imemo_deps[id];
+  if (d->n < 0) { if (comp_ty_edits <= d->at) return 1; g_imemo_fail[3]++; return 0; }
+  if (comp_global_ver > d->at) { g_imemo_fail[0]++; g_imemo_fail_why[comp_touch_last_why & 7]++; return 0; }
+  for (int i = 0; i < d->n; i++)
+    if (imemo_owner_ver(d->dep[i]) > d->at) { g_imemo_fail[d->dep[i] >= 0 ? 1 : 2]++; return 0; }
+  return 1;
+}
+/* node id's owners join the inference open now */
+static void imemo_rec_merge(int id) {
+  if (g_imemo_rec_n <= 0) return;
+  ImemoRec *r = &g_imemo_rec[g_imemo_rec_n - 1];
+  const ImemoDeps *d = &g_imemo_deps[id];
+  if (d->n < 0) { r->n = -1; return; }
+  for (int i = 0; i < d->n; i++) imemo_rec_add(r, d->dep[i]);
+}
 enum { IMEMO_TREE, IMEMO_ROUND, IMEMO_SHADOW };
 static int g_imemo_mode = -1;
 static unsigned long g_imemo_shadow_hits, g_imemo_shadow_bad;
 static void imemo_shadow_report(void) {
   fprintf(stderr, "imemo-shadow: %lu kept answers, %lu differ\n", g_imemo_shadow_hits, g_imemo_shadow_bad);
 }
-void infer_memo_boundary(void) { comp_ty_edits++; }
+/* SPINEL_IMEMO_STATS=1: per named pass (g_an_pass_cur), what the lookups
+   met -- an answer of this tree, one kept from an earlier tree, a node never
+   inferred, or a stale answer (a table changed since) -- and of the stale
+   ones, how many the fresh inference answered the same: the ceiling for a
+   memo that outlives the edits it does not depend on. */
+const char *g_an_pass_cur;
+typedef struct { const char *pass; unsigned long tree, kept, fresh, stale, stale_same, nested; } ImemoStat;
+static ImemoStat g_imemo_stats[256];
+static int g_imemo_nstats, g_imemo_stats_on = -1;
+static ImemoStat *imemo_stat(void) {
+  const char *p = g_an_pass_cur ? g_an_pass_cur : "(none)";
+  for (int i = 0; i < g_imemo_nstats; i++) if (g_imemo_stats[i].pass == p) return &g_imemo_stats[i];
+  if (g_imemo_nstats == 256) return &g_imemo_stats[255];
+  g_imemo_stats[g_imemo_nstats].pass = p;
+  return &g_imemo_stats[g_imemo_nstats++];
+}
+static void imemo_stats_report(void) {
+  fprintf(stderr, "imemo-stats: writes: program %lu, scopes %lu, classes %lu; stale because: program moved %lu, a scope %lu, a class %lu, read the program %lu\n",
+          comp_touch_count[0], comp_touch_count[1], comp_touch_count[2], g_imemo_fail[0], g_imemo_fail[1], g_imemo_fail[2], g_imemo_fail[3]);
+  fprintf(stderr, "imemo-stats: the program's writes by cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
+          comp_touch_why[0], comp_touch_why[1], comp_touch_why[2], comp_touch_why[3], comp_touch_why[4], comp_touch_why[5]);
+  fprintf(stderr, "imemo-stats: stale after a program write by its latest cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
+          g_imemo_fail_why[0], g_imemo_fail_why[1], g_imemo_fail_why[2], g_imemo_fail_why[3], g_imemo_fail_why[4], g_imemo_fail_why[5]);
+  fprintf(stderr, "imemo-stats: %-36s %12s %12s %12s %12s %12s %12s\n", "pass", "tree", "kept", "fresh", "stale", "stale-same", "nested");
+  for (int i = 0; i < g_imemo_nstats; i++) {
+    ImemoStat *s = &g_imemo_stats[i];
+    fprintf(stderr, "imemo-stats: %-36s %12lu %12lu %12lu %12lu %12lu %12lu\n", s->pass, s->tree, s->kept, s->fresh, s->stale, s->stale_same, s->nested);
+  }
+}
+/* A pass boundary: once the memo was emptied here, so that what came before
+   a pass was never in doubt. The owners carry that now -- every write a pass
+   makes, to a slot or to a fact inference reads, moves one -- so an answer
+   crosses the boundary while its owners stand; the count still moves for the
+   memos keyed on it. SPINEL_IMEMO_BOUNDARY=1 empties the memo here as before. */
+static int g_imemo_bound = -1;
+void infer_memo_boundary(void) {
+  if (g_imemo_bound < 0) { const char *e = getenv("SPINEL_IMEMO_BOUNDARY"); g_imemo_bound = e && *e && *e != '0'; }
+  if (g_imemo_bound) comp_touch_global_r(1);
+  else comp_ty_edits++;
+}
 static void imemo_mode_init(void) {
   const char *m = getenv("SPINEL_IMEMO");
   g_imemo_mode = !m ? IMEMO_ROUND : sp_streq(m, "tree") ? IMEMO_TREE :
                  sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_ROUND;
   if (g_imemo_mode == IMEMO_SHADOW) atexit(imemo_shadow_report);
+  const char *st = getenv("SPINEL_IMEMO_STATS");
+  g_imemo_stats_on = st && *st && *st != '0';
+  if (g_imemo_stats_on) atexit(imemo_stats_report);
+  const char *tr = getenv("SPINEL_IMEMO_TRACE");
+  if (tr && *tr) g_imemo_trace_id = atoi(tr);
+  if (getenv("SPINEL_IMEMO_WHY")) comp_touch_log = calloc(COMP_TOUCH_LOG_CAP, sizeof(int));
 }
 static int g_infer_depth = 0;
 static int g_infer_blv_pin = 0;
@@ -160,8 +267,8 @@ static int an_nonblock_no_exception(Compiler *c, int id) {
   int args = nt_ref(nt, id, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (!av || an == 0) return 0;
-  const char *lty = nt_type(nt, av[an - 1]);
-  if (!lty || !sp_streq(lty, "KeywordHashNode")) return 0;
+  NodeKind lk = nt_kind(nt, av[an - 1]);
+  if (lk != NK_KeywordHashNode) return 0;
   int e = kwh_lookup(nt, av[an - 1], "exception");
   return e >= 0 && nt_kind(nt, e) != NK_TrueNode;
 }
@@ -764,24 +871,25 @@ TyKind ie_block_break_next_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) {
+  if (ty_k == NK_BreakNode || ty_k == NK_NextNode) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an > 0) {
       /* `next *x` delivers the splat-built ARRAY, not the element type that
          infer_type reports for a SplatNode in an array literal. */
-      const char *aty = nt_type(nt, av[0]);
-      if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
+      NodeKind ak = nt_kind(nt, av[0]);
+      if (ak == NK_SplatNode) return TY_POLY_ARRAY;
       return infer_type(c, av[0]);
     }
     /* a bare `next` yields nil: `[1,2].map { |v| next if v == 1; v }` is [nil, 2];
        so does a bare `break`, which leaves a lambda with nil (#8277) */
     return TY_NIL;
   }
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return TY_UNKNOWN;
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_BlockNode || ty_k == NK_LambdaNode || ty_k == NK_DefNode ||
+      ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -812,23 +920,24 @@ static TyKind then_next_array_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "NextNode")) {
+  if (ty_k == NK_NextNode) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an != 1) return TY_UNKNOWN;
-    const char *aty = nt_type(nt, av[0]);
-    if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
-    if (aty && sp_streq(aty, "ArrayNode")) {
+    NodeKind ak = nt_kind(nt, av[0]);
+    if (ak == NK_SplatNode) return TY_POLY_ARRAY;
+    if (ak == NK_ArrayNode) {
       int en = 0; nt_arr(nt, av[0], "elements", &en);
       if (en == 0) return TY_UNKNOWN;
     }
     TyKind t = infer_type(c, av[0]);
     return then_array_kind_joins(t) ? t : TY_UNKNOWN;
   }
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return TY_UNKNOWN;
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_BlockNode || ty_k == NK_LambdaNode || ty_k == NK_DefNode ||
+      ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -861,17 +970,18 @@ static int then_next_other_scalar(Compiler *c, int node, TyKind tail) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   const char *ty = nt_type(nt, node);
+  NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return 0;
-  if (sp_streq(ty, "NextNode")) {
+  if (ty_k == NK_NextNode) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     TyKind t = an == 1 ? infer_type(c, av[0]) : TY_NIL;
     if (then_array_kind_joins(t) || t == TY_UNKNOWN) return 0;
     return ty_unify(t, tail) != tail || (t == TY_NIL && tail != TY_NIL && tail != TY_POLY);
   }
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
+  if (ty_k == NK_WhileNode || ty_k == NK_UntilNode || ty_k == NK_ForNode ||
+      ty_k == NK_BlockNode || ty_k == NK_LambdaNode || ty_k == NK_DefNode ||
+      ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return 0;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) if (then_next_other_scalar(c, nt_ref_at(nt, node, i), tail)) return 1;
   int na = nt_num_arrs(nt, node);
@@ -902,12 +1012,13 @@ int block_has_top_break(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   const char *ty = nt_type(nt, node);
+  NodeKind k = nt_kind(nt, node);
   if (!ty) return 0;
-  if (sp_streq(ty, "BreakNode")) return 1;
-  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
-      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, node, "block") >= 0) return 0;
+  if (k == NK_BreakNode) return 1;
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode ||
+      k == NK_LambdaNode || k == NK_DefNode ||
+      k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_CallNode && nt_ref(nt, node, "block") >= 0) return 0;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) if (block_has_top_break(c, nt_ref_at(nt, node, i))) return 1;
   int na = nt_num_arrs(nt, node);
@@ -1111,12 +1222,12 @@ int an_poly_str_upto(Compiler *c, int id) {
 
 int call_breaks(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_CallNode) return 0;
   int block = nt_ref(nt, id, "block");
   if (block < 0) return 0;
-  const char *bty = nt_type(nt, block);
-  if (!bty || !sp_streq(bty, "BlockNode")) return 0;   /* not &proc / &:sym */
+  NodeKind bk = nt_kind(nt, block);
+  if (bk != NK_BlockNode) return 0;   /* not &proc / &:sym */
   const char *name = nt_str(nt, id, "name");
   if (name && (is_instance_eval_family(name))) return 0;
   if (nt_ref(nt, id, "receiver") < 0 && comp_self_call_mi(c, id, name) < 0) return 0;
@@ -1134,8 +1245,8 @@ int call_breaks(Compiler *c, int id) {
    integers to TY_INT, the float/double directives to TY_FLOAT;
    multi-directive, interpolated, and other formats stay TY_POLY. */
 static TyKind an_unpack1_lit_type(const NodeTable *nt, int arg) {
-  const char *aty = nt_type(nt, arg);
-  if (!aty || !sp_streq(aty, "StringNode")) return TY_POLY;
+  NodeKind ak = nt_kind(nt, arg);
+  if (ak != NK_StringNode) return TY_POLY;
   const char *f = nt_str(nt, arg, "content");
   if (!f || !f[0]) return TY_POLY;
   char d = f[0];
@@ -1174,15 +1285,16 @@ static int ivar_array_elems_int_returning_impl(Compiler *c, int cid, const char 
   int saw = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty) continue;
     /* element write `@ivar[i] = v` */
-    if (sp_streq(ty, "CallNode")) {
+    if (ty_k == NK_CallNode) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0) continue;
-      const char *rty = nt_type(nt, recv);
-      if (!rty || !sp_streq(rty, "InstanceVariableReadNode")) continue;
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk != NK_InstanceVariableReadNode) continue;
       const char *rn = nt_str(nt, recv, "name");
       if (!rn || !sp_streq(rn, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
@@ -1197,20 +1309,20 @@ static int ivar_array_elems_int_returning_impl(Compiler *c, int cid, const char 
       continue;
     }
     /* whole-ivar write `@ivar = [..]` / `@ivar = [x] * n` */
-    if (sp_streq(ty, "InstanceVariableWriteNode")) {
+    if (ty_k == NK_InstanceVariableWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm || !sp_streq(nm, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int v = nt_ref(nt, id, "value");
       if (v < 0) continue;
-      const char *vty = nt_type(nt, v);
+      NodeKind vk = nt_kind(nt, v);
       int arr = -1;   /* the ArrayNode whose elements to inspect */
-      if (vty && sp_streq(vty, "ArrayNode")) arr = v;
-      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+      if (vk == NK_ArrayNode) arr = v;
+      else if (vk == NK_CallNode && nt_str(nt, v, "name") &&
                sp_streq(nt_str(nt, v, "name"), "*")) {
         int ar = nt_ref(nt, v, "receiver");   /* `[..] * n` */
-        if (ar >= 0 && nt_type(nt, ar) && sp_streq(nt_type(nt, ar), "ArrayNode")) arr = ar;
+        if (ar >= 0 && nt_kind(nt, ar) == NK_ArrayNode) arr = ar;
       }
       if (arr < 0) return 0;   /* non-literal whole write: can't verify */
       int en = 0;
@@ -1247,12 +1359,12 @@ static int poly_double_index_int(Compiler *c, int id) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return 0;
-  const char *aty = nt_type(nt, av[0]);
-  if (aty && sp_streq(aty, "RangeNode")) return 0;   /* slice, not an element */
+  NodeKind ak = nt_kind(nt, av[0]);
+  if (ak == NK_RangeNode) return 0;   /* slice, not an element */
   int inner = nt_ref(nt, id, "receiver");
   if (inner < 0) return 0;
-  const char *ity = nt_type(nt, inner);
-  if (!ity || !sp_streq(ity, "CallNode")) return 0;
+  NodeKind ik = nt_kind(nt, inner);
+  if (ik != NK_CallNode) return 0;
   const char *inm = nt_str(nt, inner, "name");
   if (!inm || !sp_streq(inm, "[]")) return 0;
   int iargs = nt_ref(nt, inner, "arguments");
@@ -1262,8 +1374,8 @@ static int poly_double_index_int(Compiler *c, int id) {
   (void)iav;
   int ivnode = nt_ref(nt, inner, "receiver");
   if (ivnode < 0) return 0;
-  const char *vty = nt_type(nt, ivnode);
-  if (!vty || !sp_streq(vty, "InstanceVariableReadNode")) return 0;
+  NodeKind vk = nt_kind(nt, ivnode);
+  if (vk != NK_InstanceVariableReadNode) return 0;
   const char *ivname = nt_str(nt, ivnode, "name");
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
@@ -1434,8 +1546,9 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
   if (comp_is_reader(cl, bare) || comp_is_writer(cl, bare)) return 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty) continue;
-    if (sp_streq(ty, "CallNode")) {
+    if (ty_k == NK_CallNode) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm) continue;
       int is_store = is_store_alias(nm);
@@ -1444,7 +1557,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       int is_append = is_array_push_family(nm);
       if (!is_store && !is_insert && !is_concat && !is_append) continue;
       int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
+      if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) continue;
       const char *rn = nt_str(nt, recv, "name");
       if (!rn || !sp_streq(rn, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
@@ -1454,10 +1567,10 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (is_store && an < 2) continue;
       for (int a = is_store || is_insert ? 1 : 0; a < an; a++) {
-        const char *aty = nt_type(nt, av[a]);
-        if (aty && sp_streq(aty, "SplatNode")) return 0;
+        NodeKind ak = nt_kind(nt, av[a]);
+        if (ak == NK_SplatNode) return 0;
         if (is_concat) {
-          if (!aty || !sp_streq(aty, "ArrayNode") || !an_elems_int_rows(c, av[a], &saw)) return 0;
+          if (ak != NK_ArrayNode || !an_elems_int_rows(c, av[a], &saw)) return 0;
           continue;
         }
         TyKind vt = comp_ntype(c, av[a]);
@@ -1468,22 +1581,22 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       }
       continue;
     }
-    if (sp_streq(ty, "InstanceVariableWriteNode")) {
+    if (ty_k == NK_InstanceVariableWriteNode) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm || !sp_streq(nm, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int v = nt_ref(nt, id, "value");
       if (v < 0) continue;
-      const char *vty = nt_type(nt, v);
+      NodeKind vk = nt_kind(nt, v);
       int arr = -1;
-      if (vty && sp_streq(vty, "ArrayNode")) arr = v;
-      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+      if (vk == NK_ArrayNode) arr = v;
+      else if (vk == NK_CallNode && nt_str(nt, v, "name") &&
                sp_streq(nt_str(nt, v, "name"), "*")) {
         int ar = nt_ref(nt, v, "receiver");
-        if (ar >= 0 && nt_type(nt, ar) && sp_streq(nt_type(nt, ar), "ArrayNode")) arr = ar;
+        if (ar >= 0 && nt_kind(nt, ar) == NK_ArrayNode) arr = ar;
       }
-      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+      else if (vk == NK_CallNode && nt_str(nt, v, "name") &&
                (sp_streq(nt_str(nt, v, "name"), "map") || sp_streq(nt_str(nt, v, "name"), "collect"))) {
         /* `@x = src.map { ... }`: elements are the block's result type. */
         int blk = nt_ref(nt, v, "block");
@@ -1571,12 +1684,13 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
   int saw = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind k = nt_kind(nt, id);
     if (!ty) continue;
-    if (sp_streq(ty, "CallNode")) {
+    if (k == NK_CallNode) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
       int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) continue;
+      if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
       const char *rn = nt_str(nt, recv, "name");
       if (!rn || !sp_streq(rn, cname)) continue;
       int args = nt_ref(nt, id, "arguments");
@@ -1589,20 +1703,20 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
       if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
       return 0;
     }
-    if (!sp_streq(ty, "ConstantWriteNode")) continue;
+    if (k != NK_ConstantWriteNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, cname)) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0) return 0;
     /* `CNAME = [...].freeze` binds the same literal */
-    if (nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
+    if (nt_kind(nt, v) == NK_CallNode &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze") &&
         nt_ref(nt, v, "receiver") >= 0)
       v = nt_ref(nt, v, "receiver");
-    const char *vty = nt_type(nt, v);
+    NodeKind vk = nt_kind(nt, v);
     int arr = -1;
-    if (vty && sp_streq(vty, "ArrayNode")) arr = v;
-    else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+    if (vk == NK_ArrayNode) arr = v;
+    else if (vk == NK_CallNode && nt_str(nt, v, "name") &&
              (sp_streq(nt_str(nt, v, "name"), "map") || sp_streq(nt_str(nt, v, "name"), "collect"))) {
       int blk = nt_ref(nt, v, "block");
       int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
@@ -1636,10 +1750,10 @@ static int const_poly_index_int_array(Compiler *c, int id) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return 0;
-  const char *aty = nt_type(nt, av[0]);
-  if (aty && sp_streq(aty, "RangeNode")) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  if (ak == NK_RangeNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return 0;
   const char *cname = nt_str(nt, recv, "name");
   LocalVar *cv = cname ? comp_const(c, cname) : NULL;
   if (!cv || cv->type != TY_POLY_ARRAY) return 0;
@@ -1654,10 +1768,10 @@ static int poly_index_int_array(Compiler *c, int id) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return 0;
-  const char *aty = nt_type(nt, av[0]);
-  if (aty && sp_streq(aty, "RangeNode")) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  if (ak == NK_RangeNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) return 0;
+  if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) return 0;
   const char *ivname = nt_str(nt, recv, "name");
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
@@ -1669,8 +1783,8 @@ static int poly_index_int_array(Compiler *c, int id) {
 
 /* A plain int literal value (not an out-of-int64 bigint literal). */
 static int infer_const_int_node(const NodeTable *nt, int id, long long *out) {
-  const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "IntegerNode")) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_IntegerNode) return 0;
   if (nt_str(nt, id, "bigval")) return 0;
   *out = (long long)nt_int(nt, id, "value", 0);
   return 1;
@@ -1730,13 +1844,13 @@ static int infer_int_shl_overflows(long long base, long long amount) {
 int infer_end_is_float_inf(Compiler *c, int right) {
   const NodeTable *nt = c->nt;
   if (right < 0) return 0;
-  const char *rty = nt_type(nt, right);
-  if (!rty || !sp_streq(rty, "ConstantPathNode")) return 0;
+  NodeKind rk = nt_kind(nt, right);
+  if (rk != NK_ConstantPathNode) return 0;
   const char *cpnm = nt_str(nt, right, "name");
   if (!cpnm || !sp_streq(cpnm, "INFINITY")) return 0;
   int par = nt_ref(nt, right, "parent");
-  const char *parnm = (par >= 0 && nt_type(nt, par) &&
-                       sp_streq(nt_type(nt, par), "ConstantReadNode"))
+  const char *parnm = (par >= 0 &&
+                       nt_kind(nt, par) == NK_ConstantReadNode)
                       ? nt_str(nt, par, "name") : NULL;
   return parnm && sp_streq(parnm, "Float");
 }
@@ -1844,7 +1958,7 @@ int range_enum_redispatch(Compiler *c, int id) {
      r.find`, is the pre-existing int-only-sp_Range limitation, not detectable
      here.) */
   int rn = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
-  if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+  if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
     int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
     if (lo < 0 || hi < 0) return 0;
     /* A BOXED bound is fine: the range literal's own emission coerces it to the
@@ -1937,7 +2051,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (sp_streq(name, "find_index") || sp_streq(name, "uniq") ||
       sp_streq(name, "zip") || sp_streq(name, "tally") ||
       sp_streq(name, "reverse_each")) return 1;
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   /* comparator-block min/max/minmax compare the [k, v] pairs like the
      blockless forms */
   if (is_extrema_family(name)) return 1;
@@ -1959,16 +2073,17 @@ int reduce_tail_from_acc(Compiler *c, int tail, const char *accp) {
   const NodeTable *nt = c->nt;
   if (tail < 0 || !accp) return 0;
   const char *ty = nt_type(nt, tail);
+  NodeKind ty_k = nt_kind(nt, tail);
   if (!ty) return 0;
-  if (sp_streq(ty, "LocalVariableReadNode"))
+  if (ty_k == NK_LocalVariableReadNode)
     return nt_str(nt, tail, "name") && sp_streq(nt_str(nt, tail, "name"), accp);
-  if (sp_streq(ty, "CallNode")) {
+  if (ty_k == NK_CallNode) {
     /* an element read out of it answers the element, not the accumulator
        (`h[k]` walking a nested hash by a key path) */
     const char *cn = nt_str(nt, tail, "name");
     if (cn && (sp_streq(cn, "[]") || sp_streq(cn, "dig") || sp_streq(cn, "fetch"))) return 0;
     int rcv = nt_ref(nt, tail, "receiver");
-    if (rcv >= 0 && nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode"))
+    if (rcv >= 0 && nt_kind(nt, rcv) == NK_LocalVariableReadNode)
       return nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), accp);
   }
   return 0;
@@ -2577,7 +2692,7 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
   *arg1 = argc >= 2 && av ? comp_ntype(c, av[1]) : TY_UNKNOWN;
   *range_has_float_bound = 0;
   if (argc == 1 && av && comp_ntype(c, av[0]) == TY_RANGE &&
-      nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "RangeNode")) {
+      nt_kind(nt, av[0]) == NK_RangeNode) {
     int l = nt_ref(nt, av[0], "left"), r = nt_ref(nt, av[0], "right");
     if ((l >= 0 && comp_ntype(c, l) == TY_FLOAT) ||
         (r >= 0 && comp_ntype(c, r) == TY_FLOAT))
@@ -2705,15 +2820,15 @@ TyKind infer_call(Compiler *c, int id) {
 static int kconv_noraise_kw(Compiler *c, int argc, const int *argv) {
   if (argc < 1) return 0;
   int kw = argv[argc - 1];
-  const char *kt = nt_type(c->nt, kw);
-  if (!kt || !sp_streq(kt, "KeywordHashNode")) return 0;
+  NodeKind kk = nt_kind(c->nt, kw);
+  if (kk != NK_KeywordHashNode) return 0;
   int en = 0; const int *el = nt_arr(c->nt, kw, "elements", &en);
   for (int e = 0; e < en; e++) {
     int k = nt_ref(c->nt, el[e], "key"), v = nt_ref(c->nt, el[e], "value");
-    const char *kn = (k >= 0 && nt_type(c->nt, k) && sp_streq(nt_type(c->nt, k), "SymbolNode"))
+    const char *kn = (k >= 0 && nt_kind(c->nt, k) == NK_SymbolNode)
                      ? nt_str(c->nt, k, "value") : NULL;
-    const char *vt = v >= 0 ? nt_type(c->nt, v) : NULL;
-    if (kn && sp_streq(kn, "exception") && vt && sp_streq(vt, "FalseNode")) return 1;
+    NodeKind vk = nt_kind(c->nt, v);
+    if (kn && sp_streq(kn, "exception") && vk == NK_FalseNode) return 1;
   }
   return 0;
 }
@@ -3304,8 +3419,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, TY_CURRY); return 1; }
       if (argc == 0 && sp_streq(name, "to_proc")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       /* Integer#chr(Encoding::X) on a boxed Integer (emit_poly_call) */
-      if (argc == 1 && sp_streq(name, "chr") && nt_type(nt, argv[0]) &&
-          sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"))
+      if (argc == 1 && sp_streq(name, "chr") &&
+          nt_kind(nt, argv[0]) == NK_ConstantPathNode)
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       {
         const BuiltinOp *op = an_bop_find(c, id, TY_POLY, name, argc, nt_ref(nt, id, "block") >= 0);
@@ -3997,9 +4112,9 @@ static TyKind infer_array_new_fill(Compiler *c, int fill) {
 static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && (is_hash_constructor(name))) {
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
-    if (rty && sp_streq(rty, "ConstantPathNode")) {
+    if (rk == NK_ConstantPathNode) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
       if (ci >= 0) {
@@ -4054,9 +4169,9 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
     }
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode") ||
-                (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {  /* inline Data.define(...).new (#2682) */
-      const char *cn = sp_streq(rty, "ConstantReadNode") ? nt_str(nt, recv, "name") : NULL;
+    if (rk == NK_ConstantReadNode || rk == NK_LocalVariableReadNode ||
+        (rk == NK_CallNode && is_struct_call(c, recv))) {  /* inline Data.define(...).new (#2682) */
+      const char *cn = rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
       int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {
         /* an exception-subclass instance keeps its concrete class (its custom
@@ -4213,8 +4328,8 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
    ((1..2.5) included, which the Integer representation iterates) */
 static int rand_lit_range_float(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
-  const char *at = nt_type(nt, arg);
-  if (!at || !sp_streq(at, "RangeNode")) return 0;
+  NodeKind ak = nt_kind(nt, arg);
+  if (ak != NK_RangeNode) return 0;
   int lo = nt_ref(nt, arg, "left"), hi = nt_ref(nt, arg, "right");
   return (lo >= 0 && infer_type(c, lo) == TY_FLOAT) || (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
 }
@@ -4227,7 +4342,8 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
   /* Time.now / at / local / mktime / utc / gm -> a Time value */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time") &&
         (sp_streq(name, "now") || sp_streq(name, "at") || sp_streq(name, "local") ||
          sp_streq(name, "mktime") || sp_streq(name, "utc") || sp_streq(name, "gm") ||
@@ -4236,38 +4352,38 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     /* Time.httpdate / rfc2822 / xmlschema (require "time"), unless the
        program's Time has its own class method of that name */
     if (time_strict_parser_call(c, id)) { *out = TY_TIME; return 1; }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         (sp_streq(name, "start") || sp_streq(name, "compact")))
       { *out = TY_NIL; return 1; }
     /* GC.total_time: the collector's accumulated time, in nanoseconds */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         sp_streq(name, "total_time") && argc == 0)
       { *out = TY_INT; return 1; }
     /* Encoding.find(name): a boxed Encoding (nil for "internal") */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
         sp_streq(name, "find") && argc == 1)
       { *out = TY_POLY; return 1; }
     /* Encoding.list: an Array of them */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
         sp_streq(name, "list") && argc == 0)
       { *out = TY_POLY_ARRAY; return 1; }
     /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {
       if (sp_streq(name, "[]")) { *out = TY_BOOL; return 1; }
       if (sp_streq(name, "[]=")) { *out = TY_POLY; return 1; }   /* the assignment's value: the RHS, boxed */
       if (sp_streq(name, "warn")) { *out = TY_NIL; return 1; }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         sp_streq(name, "stat"))
       /* GC.stat(key) is the one statistic */
       { *out = argc == 1 && nt_kind(nt, argv[0]) != NK_KeywordHashNode ? TY_INT : TY_STR_INT_HASH; return 1; }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
       if (sp_streq(name, "times") && argc == 0) { *out = TY_TMS; return 1; }
       if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
@@ -4280,7 +4396,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {
         /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
            the result an Integer; the default and float units keep it Float. */
-        if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")) {
+        if (argc >= 2 && nt_kind(nt, argv[1]) == NK_SymbolNode) {
           const char *u = nt_str(nt, argv[1], "value");
           if (u && (sp_streq(u, "nanosecond") || sp_streq(u, "microsecond") ||
                     sp_streq(u, "millisecond") || sp_streq(u, "second"))) { *out = TY_INT; return 1; }
@@ -4288,11 +4404,11 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         { *out = TY_FLOAT; return 1; }
       }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
         sp_streq(name, "sqrt"))
       { *out = TY_INT; return 1; }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
       if (sp_streq(name, "dump") && argc == 1) { *out = TY_STRING; return 1; }
       /* Marshal.dump(obj, io) writes the bytes to io and answers io (#4112) */
@@ -4301,13 +4417,13 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     }
     /* the same load through the module as a value (`m = Marshal`), which
        emit_marshal_value_call answers by the class at run time */
-    if (rty && !sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode") &&
+    if (rty && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode &&
         (sp_streq(name, "load") || sp_streq(name, "restore")) && argc == 1 &&
         !an_user_defines_method(c, name)) {
       TyKind vrt = infer_type(c, recv);
       if (vrt == TY_POLY || vrt == TY_CLASS) { *out = TY_POLY; return 1; }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         (sp_streq(name, "sin") || sp_streq(name, "cos") || sp_streq(name, "tan") ||
          sp_streq(name, "asin") || sp_streq(name, "acos") || sp_streq(name, "atan") ||
@@ -4320,18 +4436,18 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
          sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
          sp_streq(name, "gamma")))
       { *out = TY_FLOAT; return 1; }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         (sp_streq(name, "lgamma") || sp_streq(name, "frexp")) && argc == 1)
       { *out = TY_POLY_ARRAY; return 1; }  /* [log(|gamma|), sign] / [fraction, exponent] */
     /* JSON.generate/dump return type comes from the native binding
        (packages/json, inferred in the FFI/native block above), not a hardcoded
        arm. */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
         (is_exist_alias(name)))
       { *out = TY_BOOL; return 1; }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
       if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0 &&
           (an_builtin_only || !cplan_const_user(c, id, "Dir", 1)))
@@ -4341,7 +4457,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
         { *out = TY_INT; return 1; }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") &&
         (sp_streq(nt_str(nt, recv, "name"), "File") ||
          sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
@@ -4390,7 +4506,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         { *out = TY_POLY; return 1; }
       }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+    if (rk == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Addrinfo") && sp_feature_required("socket")) {
       if (((sp_streq(name, "tcp") || sp_streq(name, "udp")) && argc == 2) ||
           ((sp_streq(name, "ip") || sp_streq(name, "unix")) && argc == 1))
@@ -4398,7 +4514,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     }
     /* BasicSocket.do_not_reverse_lookup, on any socket class; the writer
        answers its argument */
-    if (rty && sp_streq(rty, "ConstantReadNode") && sp_feature_required("socket") &&
+    if (rk == NK_ConstantReadNode && sp_feature_required("socket") &&
         io_family_name(nt_str(nt, recv, "name")) && !is_io_class_name(nt_str(nt, recv, "name"))) {
       int skc = comp_class_index(c, nt_str(nt, recv, "name"));
       if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
@@ -4411,7 +4527,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
           { *out = TY_STRING; return 1; }
       }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+    if (rk == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Socket") && sp_feature_required("socket")) {
       if (sp_streq(name, "gethostname") && argc == 0) { *out = TY_STRING; return 1; }
       /* Socket.unix / Socket.tcp: a connected Socket handle (#9934) */
@@ -4427,7 +4543,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "unpack_sockaddr_in") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
       if (sp_streq(name, "unpack_sockaddr_un") && argc == 1) { *out = TY_STRING; return 1; }
     }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
+    if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
       /* IO.pipe -> [reader, writer], boxed IO handles (#2815) */
       if (sp_streq(name, "pipe")) { *out = TY_POLY_ARRAY; return 1; }
@@ -4444,11 +4560,11 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
        keyword are untouched; without this the return is typed nil and
        `x = y.yield` drops the fed value. Zero-arg `y.yield` is valid too. */
     if (recv >= 0 && sp_streq(name, "yield") &&
-        rty && sp_streq(rty, "LocalVariableReadNode"))
+        rk == NK_LocalVariableReadNode)
       { *out = TY_POLY; return 1; }
     /* Fiber.new {} / Thread.new {} / Fiber.current etc.
        Handles both bare Const and ::Const path forms. */
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
       const char *cn2 = nt_str(nt, recv, "name");
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Enumerator") &&
           nt_ref(nt, id, "block") >= 0) { *out = TY_ENUMERATOR; return 1; }
@@ -4547,7 +4663,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
   }
 
   /* Dir.new / Dir.open and the Dir handle instance surface (#2821) */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
       (is_open_constructor(name)) && argc >= 1) {
     int dblk = nt_ref(nt, id, "block");
@@ -4708,7 +4824,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     /* a literal string range ("a".."z") yields strings, not ints */
     if (sp_streq(name, "to_a")) {
       int rn = nt_paren_single(nt, recv);
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+      if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
           { *out = TY_STR_ARRAY; return 1; }
@@ -4717,11 +4833,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     /* String-endpoint range accessors read/return strings, not ints (#2467) */
     {
       int rn = nt_paren_single(nt, recv);
-      if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
+      if (rn >= 0 && nt_type(nt, rn) && nt_kind(nt, rn) != NK_RangeNode) {
         int sl = local_sole_range_node(c, rn);
         if (sl >= 0) rn = sl;
       }
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+      if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         if (lo >= 0 && hi >= 0 &&
             infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING) {
@@ -4747,7 +4863,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     }
     /* an ENDLESS literal range: #end is nil (#2413) */
     if (sp_streq(name, "end") && ({ int _rn = nt_paren_single(nt, recv);
-        _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
+        _rn >= 0 && nt_kind(nt, _rn) == NK_RangeNode &&
         nt_ref(nt, _rn, "right") < 0; })) { *out = TY_POLY; return 1; }
     /* step { } in value position returns the receiver range (#2415) */
     if (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) { *out = TY_RANGE; return 1; }
@@ -4764,7 +4880,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
       int rn = nt_paren_single(nt, recv);
       int bfloat = 0;
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+      if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         bfloat = (lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
                  (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
@@ -4786,7 +4902,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       /* a float-bounded range yields a float member (or nil); an int range an
          int member. The bound types are on the receiver's RangeNode. */
       int brn = nt_paren_single(nt, recv);
-      if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
+      if (brn >= 0 && nt_kind(nt, brn) == NK_RangeNode) {
         int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
         /* both bounds must be real NUMERIC nodes (the float-bisection branch
            needs a finite interval; a beginless/endless bound is nil) and at
@@ -4824,7 +4940,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
      the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
   if (is_endpoint_query(name)) {
     int lrecv = lazy_resolve_chain(c, recv);
-  if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
+  if (lrecv >= 0 && nt_kind(nt, lrecv) == NK_CallNode) {
     int lazy_src = -1;
     int grouped = 0;   /* a terminal-adjacent each_cons/each_slice groups the stream */
     {
@@ -4838,7 +4954,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
         grouped = 1;
         cur9 = nt_ref(nt, cur9, "receiver");
       }
-      while (cur9 >= 0 && nt_type(nt, cur9) && sp_streq(nt_type(nt, cur9), "CallNode")) {
+      while (cur9 >= 0 && nt_kind(nt, cur9) == NK_CallNode) {
         const char *nm9 = nt_str(nt, cur9, "name");
         if (!nm9) break;
         if (sp_streq(nm9, "lazy") && nt_ref(nt, cur9, "block") < 0) {
@@ -4865,8 +4981,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
        was discarded (#3357). */
     if (lazy_src >= 0 &&
         (ty_is_array(lst) ||
-         (lst == TY_UNKNOWN && nt_type(nt, lazy_src) &&
-          sp_streq(nt_type(nt, lazy_src), "ArrayNode"))))
+         (lst == TY_UNKNOWN &&
+          nt_kind(nt, lazy_src) == NK_ArrayNode)))
       { *out = (argc == 1) ? TY_POLY_ARRAY : (argc == 0 ? TY_POLY : TY_UNKNOWN); return 1; }
   }
   }
@@ -4875,9 +4991,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
      changes the element count, Float::INFINITY for an unbounded endless source,
      else Integer. (#2485) */
   if (sp_streq(name, "size") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      recv >= 0 && nt_kind(nt, recv) == NK_CallNode) {
     int cur = recv, lazy_src = -1, ok = 1, kill = 0, has_take = 0;
-    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+    while (cur >= 0 && nt_kind(nt, cur) == NK_CallNode) {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
       if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
@@ -4902,11 +5018,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     }
     if (ok && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
-      int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
+      int is_arr_lit = nt_kind(nt, lazy_src) == NK_ArrayNode;
       if (st == TY_RANGE || ty_is_array(st) || is_arr_lit) {
         if (kill) { *out = TY_POLY; return 1; }   /* nil */
         int endless = 0;
-        if (st == TY_RANGE && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode"))
+        if (st == TY_RANGE && nt_kind(nt, lazy_src) == NK_RangeNode)
           endless = lazy_endpoint_is_infinite(c, nt_ref(nt, lazy_src, "right"));
         if (endless && !has_take) { *out = TY_FLOAT; return 1; }   /* Float::INFINITY */
         { *out = TY_INT; return 1; }
@@ -4919,8 +5035,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
   if ((sp_streq(name, "first") ||
        sp_streq(name, "to_a") || sp_streq(name, "force")) &&
       recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "CallNode") ||
-       (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+      (nt_kind(nt, recv) == NK_CallNode ||
+       (nt_kind(nt, recv) == NK_LocalVariableReadNode &&
         lazy_alias_chain(c, recv) >= 0)) &&
       nt_ref(nt, id, "block") < 0 &&
       !(sp_streq(name, "first") && argc > 1) &&
@@ -4928,11 +5044,11 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
     /* the chain may be held in a variable (#3012); resolve it like the
        first/last arm above does */
-    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+    if (cur >= 0 && nt_kind(nt, cur) == NK_LocalVariableReadNode) {
       int a = lazy_alias_chain(c, cur);
       if (a >= 0) cur = a;
     }
-    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+    while (cur >= 0 && nt_kind(nt, cur) == NK_CallNode) {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
       if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
@@ -4949,7 +5065,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
            sp_streq(nm, "each_cons")) &&
           nt_ref(nt, cur, "block") < 0) {
         saw_op = 1; cur = nt_ref(nt, cur, "receiver");
-        if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+        if (cur >= 0 && nt_kind(nt, cur) == NK_LocalVariableReadNode) {
           int a9 = lazy_alias_chain(c, cur);
           if (a9 >= 0) cur = a9;
         }
@@ -4963,7 +5079,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
           !sp_streq(nm, "collect_concat")) { ok = 0; break; }
       saw_op = 1;
       cur = nt_ref(nt, cur, "receiver");
-      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+      if (cur >= 0 && nt_kind(nt, cur) == NK_LocalVariableReadNode) {
         int a = lazy_alias_chain(c, cur);
         if (a >= 0) cur = a;
       }
@@ -4973,7 +5089,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
        (#3840). */
     if (ok && lazy_src < 0 && saw_op) {
       int rr = nt_paren_single(nt, cur);
-      if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
+      if (rr >= 0 && nt_kind(nt, rr) == NK_RangeNode &&
           nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
         lazy_src = rr;
     }
@@ -4991,8 +5107,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       if (st == TY_POLY && !an_user_recv_defines_method(c, "lazy")) { *out = res; return 1; }
       /* an empty array literal has no element type and so types UNKNOWN, but
          the pipeline over it is still well defined -- it yields [] (#2996) */
-      if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
-          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) { *out = res; return 1; }
+      if (st == TY_UNKNOWN &&
+          nt_kind(nt, lazy_src) == NK_ArrayNode) { *out = res; return 1; }
     }
   }
   return 0;
@@ -5039,13 +5155,13 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
     if (sp_streq(name, "each_line") && argc == 0 && nt_ref(nt, id, "block") < 0)
       { *out = TY_ENUMERATOR; return 1; }
     if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+        nt_kind(nt, argv[0]) == NK_KeywordHashNode)
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(chomp: ...) blockless */
     if (sp_streq(name, "each_line") && nt_ref(nt, id, "block") < 0 && lines_sep_ty(c, argv[0]) &&
-        (argc == 1 || (argc == 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))))
+        (argc == 1 || (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode)))
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(sep) blockless */
     if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
-        nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
+        nt_kind(nt, argv[1]) == NK_KeywordHashNode)
       { *out = nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY; return 1; }   /* lines(sep, chomp: true) (#3546) */
     if (sp_streq(name, "each_line")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "lines")) { *out = nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY; return 1; }
@@ -5078,7 +5194,7 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
        for a literal or a pattern held in a value (a Regexp, a String, or
        either one boxed) */
     if ((sp_streq(name, "gsub") || sp_streq(name, "gsub!")) && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        ((nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode")) ||
+        ((nt_kind(nt, argv[0]) == NK_RegularExpressionNode) ||
          infer_type(c, argv[0]) == TY_REGEX || infer_type(c, argv[0]) == TY_STRING ||
          infer_type(c, argv[0]) == TY_POLY))
       { *out = TY_ENUMERATOR; return 1; }
@@ -5156,8 +5272,8 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
     }
     /* pow with a literal negative exponent yields the exact Rational, but
        an Integer for a base of 1 or -1 */
-    if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
-        sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+    if (sp_streq(name, "pow") && argc == 1 &&
+        nt_kind(nt, argv[0]) == NK_IntegerNode &&
         nt_int(nt, argv[0], "value", 0) < 0) { *out = an_unit_int_literal(nt, recv) ? TY_INT : TY_RATIONAL; return 1; }
     if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
     /* --int-overflow=promote: pow(n) is `**`: a pair that is not both known
@@ -5224,8 +5340,8 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
         if (is_round_family(name)) {
           if (pv_argc == 0) { *out = TY_POLY; return 1; }
           if (pv_argc == 1) {
-            const char *pv_aty = nt_type(nt, argv[0]);
-            if (pv_aty && sp_streq(pv_aty, "IntegerNode") &&
+            NodeKind pv_ak = nt_kind(nt, argv[0]);
+            if (pv_ak == NK_IntegerNode &&
                 nt_int(nt, argv[0], "value", 0) == 0) { *out = TY_POLY; return 1; }
           }
         }
@@ -5258,10 +5374,10 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
       if (nt_argv_kwh(nt, argv, fr_argc) >= 0)
         fr_argc--;
       if (fr_argc == 1) {
-        const char *aty = nt_type(nt, argv[0]);
+        NodeKind ak = nt_kind(nt, argv[0]);
         /* Non-literal ndigits: the class (Integer when <= 0, Float when > 0) is
            only known at runtime, so the result is a boxed poly chosen there. */
-        if (!aty || !sp_streq(aty, "IntegerNode")) { *out = TY_POLY; return 1; }
+        if (ak != NK_IntegerNode) { *out = TY_POLY; return 1; }
         { *out = nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT; return 1; }
       }
       { *out = TY_INT; return 1; }  /* no arg -> self truncated to Integer */
@@ -5579,8 +5695,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
-      nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+      nt_type(nt, recv) && nt_kind(nt, recv) != NK_ConstantReadNode &&
+      nt_kind(nt, recv) != NK_ConstantPathNode) {
     int _is_self_class = self_class_static_ci(c, recv) >= 0;
     /* a local statically holding one STRUCT class (k = Struct.new(..) /
        k = StructKlass) falls through to the static-class .new arms below --
@@ -5612,7 +5728,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
        (activesupport's IsolatedExecutionState keeps its scope as the class
        itself); a user class method of that name keeps its dispatch below */
     if (argc == 0 && sp_streq(name, "current") && nt_type(nt, recv) &&
-        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+        nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) {
       int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
       if (ncc == 0) { *out = TY_POLY; return 1; }
     }
@@ -5624,10 +5740,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     /* Class.const_set(:K, v) stores into the existing constant and yields the
        value; only a literal name whose type matches is emittable (#2675). */
     if (sp_streq(name, "const_set") && argc == 2) {
-      const char *cs_aty = nt_type(nt, argv[0]);
+      NodeKind cs_ak = nt_kind(nt, argv[0]);
       const char *cs_qm = NULL;
-      if (cs_aty && sp_streq(cs_aty, "SymbolNode")) cs_qm = nt_str(nt, argv[0], "value");
-      else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
+      if (cs_ak == NK_SymbolNode) cs_qm = nt_str(nt, argv[0], "value");
+      else if (cs_ak == NK_StringNode) cs_qm = nt_str(nt, argv[0], "content");
       LocalVar *cv = cs_qm ? comp_const(c, cs_qm) : NULL;
       if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; }
     }
@@ -5761,8 +5877,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   int self_tmi, self_fmi;
   if (recv >= 0 &&
       (argc == 0 ||
-       (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
-        sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
+       (argc == 1 && sp_streq(name, "clone") && argv &&
+        nt_kind(nt, argv[0]) == NK_KeywordHashNode)) &&
       is_self_copy(name) &&
       /* a generated READER of the name owns it on a concrete object, as any
          reader does in CRuby: fall through to the member-read rule (#4190);
@@ -5813,23 +5929,23 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     if (p->mi >= 0) an_user_call_record(c, id, p->mi, p->via, p->owner_ci);
     /* empty container literal receivers coerce like everywhere else */
     if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
-      const char *rty0 = nt_type(nt, recv);
+      NodeKind rty0_k = nt_kind(nt, recv);
       int en0 = 0;
-      if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
-      if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
+      if (rty0_k == NK_ArrayNode) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
+      if (rty0_k == NK_HashNode || rty0_k == NK_KeywordHashNode) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
       /* an argument-less `Array.new` is that same empty array (#3613) */
-      if (sp_streq(rty0, "CallNode") && nt_str(nt, recv, "name") &&
+      if (rty0_k == NK_CallNode && nt_str(nt, recv, "name") &&
           sp_streq(nt_str(nt, recv, "name"), "new") && nt_ref(nt, recv, "block") < 0) {
         int arn0 = nt_ref(nt, recv, "receiver");
         int aa0 = nt_ref(nt, recv, "arguments"); int aac0 = 0;
         if (aa0 >= 0) nt_arr(nt, aa0, "arguments", &aac0);
-        if (aac0 == 0 && arn0 >= 0 && nt_type(nt, arn0) &&
-            sp_streq(nt_type(nt, arn0), "ConstantReadNode") &&
+        if (aac0 == 0 && arn0 >= 0 &&
+            nt_kind(nt, arn0) == NK_ConstantReadNode &&
             nt_str(nt, arn0, "name") && sp_streq(nt_str(nt, arn0, "name"), "Array"))
           { *out = TY_CLASS; return 1; }
       }
       /* top-level `self.class`: self is main (an Object) -> Object (#3035) */
-      if (sp_streq(rty0, "SelfNode")) {
+      if (rty0_k == NK_SelfNode) {
         Scope *ss = comp_scope_of(c, id);
         if (!ss || ss->class_id < 0) { *out = TY_CLASS; return 1; }
       }
@@ -5851,13 +5967,13 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* X.class.name / .to_s -> the class-name string (X.class is already that) */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class"))
     { *out = TY_STRING; return 1; }
 
   /* <enc>.encoding.name -> the encoding name string */
   if (recv >= 0 && argc == 0 && sp_streq(name, "name") && rt == TY_POLY &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     { *out = TY_STRING; return 1; }
 
@@ -5870,8 +5986,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* Module.singleton_writer= / Module.singleton_reader */
   if (recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-       sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+      (nt_kind(nt, recv) == NK_ConstantReadNode ||
+       nt_kind(nt, recv) == NK_ConstantPathNode)) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
     TyKind sgt;
@@ -5879,7 +5995,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   }
   /* self.singleton_writer= / self.singleton_reader: inside a class method
      or directly in a class/module body (g_cbody_class_id). */
-  if ((recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) ||
+  if ((recv >= 0 && nt_kind(nt, recv) == NK_SelfNode) ||
       (recv < 0 && argc == 0)) {
     Scope *_self = comp_scope_of(c, id);
     int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
@@ -5891,11 +6007,11 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
   if (recv >= 0 && nt_type(nt, recv)) {
-    const char *rty_ffi = nt_type(nt, recv);
+    NodeKind rty_ffi_k = nt_kind(nt, recv);
     const char *rcmod = NULL;
-    if (sp_streq(rty_ffi, "ConstantReadNode"))
+    if (rty_ffi_k == NK_ConstantReadNode)
       rcmod = nt_str(nt, recv, "name");
-    else if (sp_streq(rty_ffi, "ConstantPathNode"))
+    else if (rty_ffi_k == NK_ConstantPathNode)
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
       /* native binding (Path B): a native_func returns its declared type,
@@ -5936,13 +6052,13 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* SomeClass.superclass -> sp_Class value for the parent class */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
     { *out = TY_CLASS; return 1; }
 
   /* SomeClass.ancestors -> PolyArray of class objects */
   if (recv >= 0 && argc == 0 && sp_streq(name, "ancestors") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
@@ -5950,7 +6066,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   if (recv >= 0 && argc <= 1 &&
       (sp_streq(name, "instance_methods") || sp_streq(name, "public_instance_methods") ||
        sp_streq(name, "private_instance_methods") || sp_streq(name, "protected_instance_methods")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
+      nt_kind(nt, recv) == NK_ConstantReadNode)
     { *out = TY_POLY_ARRAY; return 1; }
 
   /* self.class.new(...) in a class no class inherits from -> an instance of it */
@@ -5965,8 +6081,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   }
   /* Class#allocate -> a bare instance of that class (no initialize run). */
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       /* Exception subclasses have a dedicated storage layout in the common
          allocator. A user class method of their own still takes precedence. */
@@ -6119,8 +6235,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
      of the value arguments, so it must not shift the arity (#3718) */
   int kw_argc = argc;
   if (argc > 0) {
-    const char *lkt = nt_type(c->nt, argv[argc - 1]);
-    if (lkt && sp_streq(lkt, "KeywordHashNode")) kw_argc--;
+    NodeKind lkk = nt_kind(c->nt, argv[argc - 1]);
+    if (lkk == NK_KeywordHashNode) kw_argc--;
   }
   if (recv >= 0 && (kw_argc == 1 || kw_argc == 2) && name[0] >= 'A' && name[0] <= 'Z' &&
       (sp_streq(name, "Integer") || sp_streq(name, "Float") ||
@@ -6215,15 +6331,15 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (sp_streq(name, "rand")) {
       if (argc == 0) { *out = TY_FLOAT; return 1; }
       if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) { *out = TY_FLOAT; return 1; }   /* rand(float range) */
-      const char *atype = nt_type(nt, argv[0]);
-      if (atype && sp_streq(atype, "RangeNode")) {
+      NodeKind atype_k = nt_kind(nt, argv[0]);
+      if (atype_k == NK_RangeNode) {
         int lo = nt_ref(nt, argv[0], "left");
         int hi = nt_ref(nt, argv[0], "right");
         if (rand_lit_range_float(c, argv[0])) { *out = TY_FLOAT; return 1; }   /* rand(float_range), either bound */
         /* a statically empty/reversed int range yields nil (#2519) */
         if (lo >= 0 && hi >= 0 &&
-            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
-            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
+            nt_kind(nt, lo) == NK_IntegerNode &&
+            nt_kind(nt, hi) == NK_IntegerNode) {
           long long lov = nt_int(nt, lo, "value", 0);
           long long hiv = nt_int(nt, hi, "value", 0);
           int excl = nt_range_excl(nt, argv[0]);
@@ -6236,7 +6352,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
          TY_FLOAT_RANGE, handled above.) */
       if (infer_type(c, argv[0]) == TY_RANGE) { *out = TY_POLY; return 1; }
       /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
-      if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
+      if (atype_k == NK_IntegerNode && nt_int(nt, argv[0], "value", 0) == 0)
         { *out = TY_FLOAT; return 1; }
       if (infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }   /* rand(Bignum bound) (#3058) */
       /* rand(Float max): CRuby truncates a positive max to an Integer range and
@@ -6245,7 +6361,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
       /* a literal nonzero Integer is an Integer; a dynamic Integer could be 0
          (Float) or nonzero (Integer), so its result is a runtime-chosen poly. */
-      if (atype && sp_streq(atype, "IntegerNode")) { *out = TY_INT; return 1; }
+      if (atype_k == NK_IntegerNode) { *out = TY_INT; return 1; }
       /* Any dynamic (non-literal) argument -- an Integer var, a poly value, a
          destructured tuple element -- may be 0 (a Float [0,1)) or nonzero (an
          Integer), so codegen boxes the result; type it poly to match rather
@@ -6283,9 +6399,9 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      route through it; the raw ret is the first site's type and a diverging
      second site miscompiled through it). */
   if (recv >= 0) {
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     int sci = self_class_static_ci(c, recv);
-    if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
+    if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
       int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
         int mi = comp_cmethod_in_chain(c, ci, name, NULL);
@@ -6295,7 +6411,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       if (rmi >= 0) { *out = an_user_call(c, id, rmi, UC_CMETH, c->scopes[rmi].class_id); return 1; }
     }
     /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
-    if (rty && sp_streq(rty, "CallNode") &&
+    if (rk == NK_CallNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
       int robj = nt_ref(nt, recv, "receiver");
       TyKind rrt = robj >= 0 ? infer_type(c, robj) : TY_UNKNOWN;
@@ -6339,7 +6455,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
         int bbody = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
         int last = bn > 0 ? bb[bn - 1] : -1;
-        if (last >= 0 && nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
+        if (last >= 0 && nt_kind(nt, last) == NK_ArrayNode) {
           int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
           if (en == 2) {
             TyKind kt = infer_type(c, els[0]), vt = infer_type(c, els[1]);
@@ -6400,8 +6516,8 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       int mi = struct_member_idx(c, sc, argv[0]);
       if (mi >= 0) { *out = sc->ivar_types[mi]; return 1; }
       /* integer index: try to resolve literal */
-      const char *kty = nt_type(nt, argv[0]);
-      if (kty && sp_streq(kty, "IntegerNode")) {
+      NodeKind kk = nt_kind(nt, argv[0]);
+      if (kk == NK_IntegerNode) {
         long long idx = (long long)nt_int(nt, argv[0], "value", 0);
         if (idx < 0) idx += (long long)sc->nmembers;
         if (idx >= 0 && idx < sc->nmembers) { *out = sc->ivar_types[(int)idx]; return 1; }
@@ -6489,14 +6605,14 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     *out = TY_POLY; return 1;   /* a literal name, or a computed one (#8219) */
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
+    NodeKind a0k = nt_kind(nt, argv[0]);
     /* a class of the program's that defines the method answers it: anything,
        beside the layout's read, so the call is boxed */
     if (poly_recv_defines(c, id, name)) { *out = TY_POLY; return 1; }
     /* a computed name: whichever field it names when it runs, boxed (#8219) */
-    if (argc == 1 && !(a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode")))) { *out = TY_POLY; return 1; }
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
-      const char *sym = sp_streq(a0ty, "SymbolNode")
+    if (argc == 1 && !(a0k == NK_SymbolNode || a0k == NK_StringNode)) { *out = TY_POLY; return 1; }
+    if (a0k == NK_SymbolNode || a0k == NK_StringNode) {
+      const char *sym = a0k == NK_SymbolNode
                           ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
       if (sym && sym[0] == '@') {
         TyKind uni = TY_UNKNOWN;
@@ -6714,11 +6830,11 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     { *out = TY_POLY; return 1; }
   /* /re/ === str -> match boolean */
   if (sp_streq(name, "===") && argc == 1 && recv >= 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "RegularExpressionNode"))
+      nt_kind(nt, recv) == NK_RegularExpressionNode)
     { *out = TY_BOOL; return 1; }
   /* Class.===(obj) is always bool */
   if (sp_streq(name, "===") && argc == 1 && recv >= 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
+      nt_kind(nt, recv) == NK_ConstantReadNode)
     { *out = TY_BOOL; return 1; }
 
   if ((is_unary_sign(name)) && recv >= 0 && argc == 0) {
@@ -6737,14 +6853,14 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
      emits cst_<K>); a literal name that does not resolve raises NameError at
      runtime, so its value type is poly. A dynamic name is left unresolved. */
   if (sp_streq(name, "const_get") && recv >= 0 && argc >= 1) {
-    const char *cgt = nt_type(nt, argv[0]);
+    NodeKind cgt_k = nt_kind(nt, argv[0]);
     const char *cgn = NULL;
-    if (cgt && sp_streq(cgt, "SymbolNode")) cgn = nt_str(nt, argv[0], "value");
-    else if (cgt && sp_streq(cgt, "StringNode")) cgn = nt_str(nt, argv[0], "content");
+    if (cgt_k == NK_SymbolNode) cgn = nt_str(nt, argv[0], "value");
+    else if (cgt_k == NK_StringNode) cgn = nt_str(nt, argv[0], "content");
     /* const_get(name, false) searches only the receiver's own constants, so an
        inherited one is a NameError, not that constant's type (#3762) */
     const char *cg_rnm = cgn ? const_get_recv_name(c, id, recv) : NULL;
-    if (cgn && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
+    if (cgn && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
       if (cg_rnm && !const_owned_by_class(c, cg_rnm, cgn)) { *out = TY_POLY; return 1; }
     }
     /* a CLASS or module name answers the class object itself (#3969) --
@@ -6782,17 +6898,17 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
       infer_type(c, recv) == TY_INT && infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }
   if ((sp_streq(name, "match?") || sp_streq(name, "!~")) && recv >= 0) { *out = TY_BOOL; return 1; }
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
-    const char *rrt = nt_type(nt, recv), *art = argc > 0 ? nt_type(nt, argv[0]) : NULL;
-    if ((rrt && sp_streq(rrt, "RegularExpressionNode")) ||
-        (art && sp_streq(art, "RegularExpressionNode")))
+    NodeKind rrk = nt_kind(nt, recv), ark = argc > 0 ? nt_kind(nt, argv[0]) : NK_NONE;
+    if ((rrk == NK_RegularExpressionNode) ||
+        (ark == NK_RegularExpressionNode))
       /* the block form evaluates to the block's value (nil on a miss) */
       { *out = nt_ref(nt, id, "block") >= 0 ? TY_POLY : TY_MATCHDATA; return 1; }
   }
   if (sp_streq(name, "=~") && recv >= 0 && argc == 1) {
-    const char *rrt = nt_type(nt, recv), *art = nt_type(nt, argv[0]);
+    NodeKind rrk = nt_kind(nt, recv), ark = nt_kind(nt, argv[0]);
     TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
-    if ((rrt && sp_streq(rrt, "RegularExpressionNode")) ||
-        (art && sp_streq(art, "RegularExpressionNode")) ||
+    if ((rrk == NK_RegularExpressionNode) ||
+        (ark == NK_RegularExpressionNode) ||
         rt == TY_REGEX || a0t == TY_REGEX) { *out = TY_POLY; return 1; }
   }
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
@@ -6804,7 +6920,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
       { *out = nt_ref(nt, id, "block") >= 0 ? TY_POLY : TY_MATCHDATA; return 1; }
   }
   /* /re/.source -> String, /re/.options -> Integer (compile-time constants) */
-  if (recv >= 0 && argc == 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "RegularExpressionNode")) {
+  if (recv >= 0 && argc == 0 && nt_kind(nt, recv) == NK_RegularExpressionNode) {
     if (sp_streq(name, "source")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "options")) { *out = TY_INT; return 1; }
   }
@@ -6846,7 +6962,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
      an if/else arm or assignment -- unifies and boxes as nil). */
   if (recv >= 0 && (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "write") ||
                     sp_streq(name, "syswrite")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
+      nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
     const char *gv = nt_str(nt, recv, "name");
     if (gv && (is_standard_output_global(gv)))
       { *out = (is_io_write(name)) ? TY_INT : TY_NIL; return 1; }
@@ -6859,11 +6975,11 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
        its pushes -- carries the real container type. Return it so the tap result
        and any chained `.join` (or the `p` that inspects it) agree with the
        container codegen materializes for the receiver (#3200, #3208). */
-    const char *rty = nt_type(nt, recv);
+    NodeKind rk = nt_kind(nt, recv);
     int rel = 0;
-    if (rty && sp_streq(rty, "ArrayNode")) nt_arr(nt, recv, "elements", &rel);
+    if (rk == NK_ArrayNode) nt_arr(nt, recv, "elements", &rel);
     int tblk = nt_ref(nt, id, "block");
-    if (rty && sp_streq(rty, "ArrayNode") && rel == 0 && tblk >= 0) {
+    if (rk == NK_ArrayNode && rel == 0 && tblk >= 0) {
       const char *bp = block_param_name(c, tblk, 0);
       Scope *bs = bp ? comp_scope_of(c, tblk) : NULL;
       LocalVar *blv = (bs && bp) ? scope_local(bs, bp) : NULL;
@@ -6930,7 +7046,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
      enumerator value); the codegen fold still unrolls this chain syntactically,
      so accept that receiver type here too and keep the array result. */
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
                                    sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
       nt_ref(nt, recv, "block") < 0) {
@@ -6948,11 +7064,11 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
      keep winning over the generic enumerator surface. */
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
       (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
       nt_ref(nt, recv, "block") < 0) {
     int wi_recv = nt_ref(nt, recv, "receiver");
-    if (wi_recv >= 0 && nt_type(nt, wi_recv) && sp_streq(nt_type(nt, wi_recv), "CallNode") &&
+    if (wi_recv >= 0 && nt_kind(nt, wi_recv) == NK_CallNode &&
         nt_str(nt, wi_recv, "name") && sp_streq(nt_str(nt, wi_recv, "name"), "each_cons") &&
         nt_ref(nt, wi_recv, "block") < 0) {
       int blk_wi = nt_ref(nt, id, "block");
@@ -6968,7 +7084,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
      the block value (array of body type); each yields the receiver; select/reject
      filter, preserving the receiver's array type. */
   if (recv >= 0 && sp_streq(name, "with_index") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_ref(nt, recv, "block") < 0) {
     const char *inner = nt_str(nt, recv, "name");
     int arr_recv = nt_ref(nt, recv, "receiver");
@@ -6999,7 +7115,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
      a blockless [elem, index]-pair enumerator consumed by the terminal.
      (matz/spinel#1481 inject/reduce result; #1483 others.) */
   if (recv >= 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_ref(nt, recv, "block") < 0) {
     int chain_arr = an_indexed_each_source(nt, recv);
     TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
@@ -7011,8 +7127,8 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
         TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
         /* an empty `{}` seed is a general boxed-key/value hash builder, like
            each_with_object({}) -- not the element type (#2958) */
-        if (acc == TY_UNKNOWN && argc > 0 && argv && nt_type(nt, argv[0]) &&
-            sp_streq(nt_type(nt, argv[0]), "HashNode")) {
+        if (acc == TY_UNKNOWN && argc > 0 && argv &&
+            nt_kind(nt, argv[0]) == NK_HashNode) {
           int hn = 0; nt_arr(nt, argv[0], "elements", &hn);
           if (hn == 0) acc = TY_POLY_POLY_HASH;
         }
@@ -7096,9 +7212,9 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
   /* Exception class-level methods: Cls.exception(msg) is Cls.new (#2740);
      Exception.to_tty? answers whether stderr is a terminal (#2757). */
-  if (recv >= 0 && nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-                                          (sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
-                                           comp_class_index(c, nt_str(nt, recv, "name")) < 0))) {
+  if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode ||
+                     (nt_kind(nt, recv) == NK_ConstantPathNode &&
+                      comp_class_index(c, nt_str(nt, recv, "name")) < 0))) {
     /* by its whole path: Errno::ENOENT.exception */
     const char *ecn = superclass_builtin_exc_name(nt, recv);
     if (ecn && is_builtin_exception_name(ecn)) {
@@ -7351,7 +7467,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
        iter-shaped CallNode receiver over an array. */
     if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") >= 0) {
       int wchain = 0;
-      if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      if (nt_kind(nt, recv) == NK_CallNode &&
           nt_ref(nt, recv, "block") < 0) {
         const char *wnm = nt_str(nt, recv, "name");
         int wrcv = nt_ref(nt, recv, "receiver");
@@ -7371,7 +7487,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
    states the answer and records it. */
 static int infer_literal_hash_default(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind *out) {
   if (recv < 0 || !sp_streq(name, "default") || argc > 1 || !nt_type(nt, recv) ||
-      !(sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))
+      !(nt_kind(nt, recv) == NK_HashNode || nt_kind(nt, recv) == NK_KeywordHashNode))
     return 0;
   const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
   *out = op ? bop_result(op, TY_UNKNOWN) : TY_POLY;
@@ -7414,7 +7530,7 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
   /* <array>.cycle.first(n) / .take(n) -> same array kind (bounded consumer of the
      infinite cycle; the unbounded forms stay a loud reject). */
   if (recv >= 0 && (is_first_or_take(name)) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "cycle") &&
       nt_ref(nt, recv, "block") < 0) {
     int cargs = nt_ref(nt, recv, "arguments");
@@ -7425,7 +7541,7 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
 
   /* int_array.chunk_while/slice_when/chunk { |...| } .to_a -> a poly array (runs / pairs) */
   if (recv >= 0 && sp_streq(name, "to_a") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") &&
       (sp_streq(nt_str(nt, recv, "name"), "chunk_while") ||
        sp_streq(nt_str(nt, recv, "name"), "slice_when") ||
@@ -7444,7 +7560,7 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
           /* a boxed receiver walks whatever sp_poly_arr_recv renders -- a
              hash's [key, value] pairs, an array's elements (#3451) */
           prt == TY_POLY ||
-          (prt == TY_UNKNOWN && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "ArrayNode")) ||
+          (prt == TY_UNKNOWN && nt_kind(nt, pr) == NK_ArrayNode) ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         { *out = TY_POLY_ARRAY; return 1; }
       /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
@@ -7534,8 +7650,8 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
       int targ = nt_ref(nt, id, "arguments");
       int tac = 0; const int *tav = targ >= 0 ? nt_arr(nt, targ, "arguments", &tac) : NULL;
       if (tac >= 1 && nt_type(nt, tav[0])) {
-        if (sp_streq(nt_type(nt, tav[0]), "SymbolNode")) tag = nt_str(nt, tav[0], "value");
-        else if (sp_streq(nt_type(nt, tav[0]), "StringNode")) tag = nt_str(nt, tav[0], "unescaped");
+        if (nt_kind(nt, tav[0]) == NK_SymbolNode) tag = nt_str(nt, tav[0], "value");
+        else if (nt_kind(nt, tav[0]) == NK_StringNode) tag = nt_str(nt, tav[0], "unescaped");
       }
       TyKind tt = scan_throw_type(c, tag);
       if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
@@ -7555,7 +7671,7 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
   if (!ie_kind && recv >= 0 && !ty_is_object(rt) &&
       (is_instance_eval_family(name))) {
     int nblk = nt_ref(nt, id, "block");
-    if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
+    if (nblk >= 0 && nt_kind(nt, nblk) == NK_BlockNode) ie_kind = 1;
     else if (nt_int(nt, id, "ie_usite", 0)) { *out = TY_POLY; return 1; }
   }
   if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
@@ -7722,8 +7838,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      receiver is the marked `to_a` hop above, that is the original Hash or
      Range, not the pair array the loop walked (#3842). */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
+      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
       ((argc == 1 && (is_each_window(name))) ||
        /* each_entry answers the receiver too, and the value emitter yields it:
           left on the pair array's type the two disagreed and the C compiler
@@ -7750,15 +7865,14 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      `recv.m { }`, and an unconditional arm would make every type "respond"
      to each. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
-      nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
+      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode) {
     /* `obj.__enum_to_a.<m> { }` (m in each / each_with_index / reverse_each) is
        the desugared each-family call on a user Enumerable / Struct receiver:
        Ruby returns the enumerable itself, so type it as the original receiver
        obj, not the intermediate member array (#2546/#2547). The codegen value
        form (emit_iter_value_expr) yields obj to match. */
     if (is_each_walk_or_with_index(name) &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+        nt_kind(nt, recv) == NK_CallNode) {
       const char *rnm = nt_str(nt, recv, "name");
       int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;
       if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }
@@ -7911,8 +8025,8 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* Regexp.compile is an alias for Regexp.new */
   if (recv >= 0 && sp_streq(name, "compile")) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode) {
       const char *cn = nt_str(nt, recv, "name");
       if (cn && sp_streq(cn, "Regexp")) { *out = TY_REGEX; return 1; }
     }
@@ -7922,7 +8036,7 @@ static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const cha
   /* StringScanner: a native-bound class (packages/strscan); no arms here. */
 
   /* Regexp class methods */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "union")) { *out = TY_REGEX; return 1; }  /* argc 0 = the never-matching /(?!)/ */
@@ -7949,15 +8063,15 @@ static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const cha
     }
     if (sp_streq(name, "[]") && argc == 1 &&
         (comp_ntype(c, argv[0]) == TY_RANGE ||
-         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))))
+         (nt_kind(nt, argv[0]) == NK_RangeNode)))
       { *out = TY_POLY_ARRAY; return 1; }   /* md[range] (#2532) */
     if (sp_streq(name, "[]") && argc == 1) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "[]") && argc == 2) { *out = TY_POLY_ARRAY; return 1; }   /* md[start, length] (#2507) */
     if (sp_streq(name, "named_captures") && argc == 1) {
       /* symbolize_names: false asks for the string keys (#3640) */
       int kv = kwh_lookup(nt, argv[0], "symbolize_names");
-      const char *kvt = kv >= 0 ? nt_type(nt, kv) : NULL;
-      if (kvt && sp_streq(kvt, "FalseNode")) { *out = TY_STR_POLY_HASH; return 1; }
+      NodeKind kvk = nt_kind(nt, kv);
+      if (kvk == NK_FalseNode) { *out = TY_STR_POLY_HASH; return 1; }
       { *out = TY_SYM_POLY_HASH; return 1; }   /* symbolize (#2530) */
     }
   }
@@ -8779,8 +8893,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* $~'s MatchData face over the match registers (codegen reads the same
      backing the back-references use): nullable strings. */
   if (recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "GlobalVariableReadNode") ||
-       sp_streq(nt_type(nt, recv), "BackReferenceReadNode")) &&
+      (nt_kind(nt, recv) == NK_GlobalVariableReadNode ||
+       nt_kind(nt, recv) == NK_BackReferenceReadNode) &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~") &&
       (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")))
     return TY_STRING;
@@ -9016,7 +9130,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   { TyKind ed; if (recv < 0 && infer_enum_desugar_call(name, argc, &ed)) return ed; }
   /* Dir surface (#2823, #2828, #2830) */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") && (an_builtin_only || !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1))) {
     if (sp_streq(name, "empty?") && argc == 1) return TY_BOOL;
     if (sp_streq(name, "home") && argc == 1) return TY_STRING;
@@ -9031,14 +9145,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0 && (sp_streq(name, "Complex") || sp_streq(name, "Rational")) &&
       argc == 2 && conv_arg_can_answer_nil(c, nt, name, argv) &&
       nt_type(nt, argv[1]) &&
-      (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
-       sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
+      (nt_kind(nt, argv[1]) == NK_KeywordHashNode ||
+       nt_kind(nt, argv[1]) == NK_HashNode)) {
     int kn9 = 0; const int *els9 = nt_arr(nt, argv[1], "elements", &kn9);
     int only_exc9 = kn9 > 0;
     for (int e = 0; e < kn9 && only_exc9; e++) {
       int key9 = els9 ? nt_ref(nt, els9[e], "key") : -1;
-      const char *kt9 = key9 >= 0 ? nt_type(nt, key9) : NULL;
-      const char *kn9s = (kt9 && sp_streq(kt9, "SymbolNode")) ? nt_str(nt, key9, "value") : NULL;
+      NodeKind kt9_k = nt_kind(nt, key9);
+      const char *kn9s = (kt9_k == NK_SymbolNode) ? nt_str(nt, key9, "value") : NULL;
       if (!kn9s || !sp_streq(kn9s, "exception")) only_exc9 = 0;
     }
     if (only_exc9) return TY_POLY;
@@ -9051,8 +9165,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     return TY_RATIONAL;
   }
   if (recv >= 0) {
-    const char *rrty = nt_type(nt, recv);
-    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+    NodeKind rrk = nt_kind(nt, recv);
+    if (rrk == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") &&
         (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular")))
       return TY_COMPLEX;
@@ -9090,8 +9204,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      usage to fold an element type from; treat it as an empty poly array so
      array methods dispatch instead of falling through to unresolved. */
   if (rt == TY_UNKNOWN && recv >= 0) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ArrayNode")) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ArrayNode) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
         /* first/last of an empty array is nil, boxed to poly (codegen emits
@@ -9121,7 +9235,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        TY_STR_POLY_HASH, the same C type codegen emits for a bare {}, so the
        declaration, initializer, and readers agree (POLY_POLY would disagree
        with sp_StrPolyHash_new and produce garbage). */
-    else if (rty && (sp_streq(rty, "HashNode") || sp_streq(rty, "KeywordHashNode"))) {
+    else if (rk == NK_HashNode || rk == NK_KeywordHashNode) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
         /* object query methods on a bare {} fold to a bool (see codegen) */
@@ -9201,7 +9315,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* `self.name` / `self.to_s` inside a class method -> the class name string */
   if (recv >= 0 && argc == 0 &&
       is_name_reader(name) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
+      nt_kind(nt, recv) == NK_SelfNode) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
   }
@@ -9280,15 +9394,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   { TyKind r; if (infer_receiverless_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
   /* Kernel.sleep(seconds) / ::Kernel.sleep -> Integer seconds slept */
   if (recv >= 0 && sp_streq(name, "sleep") && argc <= 1) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
       const char *rname = nt_str(nt, recv, "name");
       if (rname && sp_streq(rname, "Kernel")) return TY_INT;
     }
   }
   /* Signal.trap / Signal.list / Signal.signame; Process.kill (#2735, #2750) */
   if (recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+      (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
     const char *rname = nt_str(nt, recv, "name");
     if (rname && sp_streq(rname, "ENV")) {
       if (sp_streq(name, "class")) return TY_CLASS;
@@ -9335,8 +9449,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      the const char * slot as it stood. (The block form is the ENV snapshot's
      Hash#fetch, #2742, and types there.) */
   if (recv >= 0 && argc >= 1 && (sp_streq(name, "[]") || sp_streq(name, "fetch"))) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         if (sp_streq(name, "fetch") && argc >= 2) {
@@ -9351,14 +9465,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* ENV.key?/has_key?/include?/member?(key) -> bool */
   if (recv >= 0 && argc == 1 &&
       is_key_query(name)) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) return TY_BOOL;
     }
   }
   /* ENV direct arms (#2743, #2746): typed results so p/interp accept them */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode) {
     const char *rn = nt_str(nt, recv, "name");
     if (rn && sp_streq(rn, "ENV")) {
       if (sp_streq(name, "to_s")) return TY_STRING;
@@ -9426,7 +9540,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      cover, so it answers here. */
   if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && rt == TY_UNKNOWN &&
       nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))
+      (nt_kind(nt, recv) == NK_HashNode || nt_kind(nt, recv) == NK_KeywordHashNode))
     return infer_type(c, argv[0]);
   /* fetch(key, default) on an unknown/empty hash: return the default type */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 2 && !ty_is_hash(rt)) {
@@ -9438,7 +9552,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* <str>.encoding.name -> the encoding name string */
   if (sp_streq(name, "name") && argc == 0 && recv >= 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_kind(nt, recv) == NK_CallNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     return TY_STRING;
 
@@ -9446,10 +9560,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* <int_array>.product(<int_array>)[.to_a].inspect -> a string */
   if (sp_streq(name, "inspect") && argc == 0 && recv >= 0) {
     int pr = recv;
-    if (nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "CallNode") &&
+    if (nt_kind(nt, pr) == NK_CallNode &&
         nt_str(nt, pr, "name") && sp_streq(nt_str(nt, pr, "name"), "to_a"))
       pr = nt_ref(nt, pr, "receiver");
-    if (pr >= 0 && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "CallNode") && nt_str(nt, pr, "name") &&
+    if (pr >= 0 && nt_kind(nt, pr) == NK_CallNode && nt_str(nt, pr, "name") &&
         (sp_streq(nt_str(nt, pr, "name"), "product") || sp_streq(nt_str(nt, pr, "name"), "slice_before") ||
          sp_streq(nt_str(nt, pr, "name"), "slice_after") || sp_streq(nt_str(nt, pr, "name"), "slice_when") ||
          sp_streq(nt_str(nt, pr, "name"), "chunk")))
@@ -9813,12 +9927,12 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
      silently claims the reference (and its type). */
   {
     int fpar = nt_ref(nt, id, "parent");
-    const char *fpty = fpar >= 0 ? nt_type(nt, fpar) : NULL;
+    NodeKind fpk = nt_kind(nt, fpar);
     /* the qualifying module is the parent's LEAF name, so a nested path
        (Outer::CSql::TEXT) qualifies by CSql -- the same unqualified name
        the ffi decl registered under */
-    const char *fpnm = (fpty && (sp_streq(fpty, "ConstantReadNode") ||
-                                 sp_streq(fpty, "ConstantPathNode")))
+    const char *fpnm = ((fpk == NK_ConstantReadNode ||
+                                 fpk == NK_ConstantPathNode))
                        ? nt_str(nt, fpar, "name") : NULL;
     if (fpnm && nm)
       for (int fci = 0; fci < c->n_ffi_consts; fci++)
@@ -9832,12 +9946,12 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
      candidate search the emitter makes. */
   {
     int dpar = nt_ref(nt, id, "parent");
-    const char *dpty = dpar >= 0 ? nt_type(nt, dpar) : NULL;
-    int dyn = dpar >= 0 && !(dpty && (sp_streq(dpty, "ConstantReadNode") ||
-                                      sp_streq(dpty, "ConstantPathNode")));
+    NodeKind dpk = nt_kind(nt, dpar);
+    int dyn = dpar >= 0 && !((dpk == NK_ConstantReadNode ||
+                                      dpk == NK_ConstantPathNode));
     /* ...and a constant that HOLDS a class rather than naming one is a
        dynamic receiver too (#4259) */
-    if (!dyn && dpar >= 0 && dpty && sp_streq(dpty, "ConstantReadNode")) {
+    if (!dyn && dpar >= 0 && dpk == NK_ConstantReadNode) {
       const char *pn = nt_str(nt, dpar, "name");
       if (pn && comp_class_index(c, pn) < 0 && !is_builtin_class_name(pn) &&
           comp_const(c, pn)) dyn = 1;
@@ -9886,9 +10000,9 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
      first-class Class value like its bare siblings (#2840) */
   {
     int qpar = par_id;
-    const char *qpty = qpar >= 0 ? nt_type(nt, qpar) : NULL;
-    const char *qpnm = (qpty && (sp_streq(qpty, "ConstantReadNode") ||
-                                 sp_streq(qpty, "ConstantPathNode")))
+    NodeKind qpk = nt_kind(nt, qpar);
+    const char *qpnm = ((qpk == NK_ConstantReadNode ||
+                                 qpk == NK_ConstantPathNode))
                        ? nt_str(nt, qpar, "name") : NULL;
     if (qpnm && nm) {
       char qbuf[160];
@@ -9899,21 +10013,21 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
     }
     /* Errno::ENOENT::Errno: the number of the class, read at run time
        since the numbers differ by platform (#4560) */
-    if (nm && sp_streq(nm, "Errno") && qpnm && qpty && sp_streq(qpty, "ConstantPathNode")) {
+    if (nm && sp_streq(nm, "Errno") && qpnm && qpk == NK_ConstantPathNode) {
       int gp = nt_ref(nt, qpar, "parent");
-      const char *gpty = gp >= 0 ? nt_type(nt, gp) : NULL;
-      const char *gpnm = gpty && sp_streq(gpty, "ConstantReadNode") ? nt_str(nt, gp, "name") : NULL;
+      NodeKind gpk = nt_kind(nt, gp);
+      const char *gpnm = gpk == NK_ConstantReadNode ? nt_str(nt, gp, "name") : NULL;
       char eq[160];
       snprintf(eq, sizeof eq, "Errno::%s", qpnm);
       if (gpnm && sp_streq(gpnm, "Errno") && is_builtin_exception_name(eq)) { *out = TY_INT; return 1; }
     }
   }
-  const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
+  NodeKind par_k = nt_kind(nt, par_id);
   /* the qualifying module is the parent's leaf name, so a nested / root
      path (`::Float::MAX`) qualifies by `Float` too -- match codegen's
      par_nmc, which already accepts a ConstantPathNode parent here */
-  const char *par_nm = (par_ty && (sp_streq(par_ty, "ConstantReadNode") ||
-                                   sp_streq(par_ty, "ConstantPathNode")))
+  const char *par_nm = ((par_k == NK_ConstantReadNode ||
+                                   par_k == NK_ConstantPathNode))
                        ? nt_str(nt, par_id, "name") : NULL;
   if (par_nm && sp_streq(par_nm, "Float")) {
     if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
@@ -10542,9 +10656,9 @@ static TyKind infer_array_literal(Compiler *c, int id) {
          garbage). A bare `Array.new` / `Hash.new` is that same empty
          container (node_is_empty_container). */
       if (et == TY_UNKNOWN) {
-        const char *ety = nt_type(nt, els[k]);
-        if ((ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
-                     sp_streq(ety, "KeywordHashNode"))) ||
+        NodeKind ek = nt_kind(nt, els[k]);
+        if (((ek == NK_ArrayNode || ek == NK_HashNode ||
+                     ek == NK_KeywordHashNode)) ||
             node_is_empty_container(c, els[k]))
           et = TY_POLY;
       }
@@ -10618,7 +10732,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_RegularExpressionNode ||
       nk == NK_InterpolatedRegularExpressionNode) return TY_REGEX;
   /* `/(?<n>..)/ =~ str` -- the value is the `=~` result (match index or nil). */
-  if (sp_streq(ty, "MatchWriteNode")) return TY_POLY;
+  if (nk == NK_MatchWriteNode) return TY_POLY;
   if (nk == NK_InterpolatedStringNode)  return TY_STRING;
   if (nk == NK_XStringNode || nk == NK_InterpolatedXStringNode) return TY_STRING;
   if (nk == NK_InterpolatedSymbolNode)  return TY_SYMBOL;
@@ -10635,8 +10749,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     {
       int slo = nt_ref(nt, id, "left"), shi = nt_ref(nt, id, "right");
       const char *slt = slo >= 0 ? nt_type(nt, slo) : NULL;
+      NodeKind slk = nt_kind(nt, slo);
       const char *sht = shi >= 0 ? nt_type(nt, shi) : NULL;
-      if (slt && sht && sp_streq(slt, "SymbolNode") && sp_streq(sht, "SymbolNode"))
+      NodeKind shk = nt_kind(nt, shi);
+      if (slt && sht && slk == NK_SymbolNode && shk == NK_SymbolNode)
         return TY_POLY_ARRAY;
     }
     /* infer the bounds so codegen can tell an int range from a string range */
@@ -10743,8 +10859,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SplatNode) {
     int inner = nt_ref(nt, id, "expression");
     if (inner < 0) return TY_UNKNOWN;
-    const char *ity = nt_type(nt, inner);
-    if (ity && sp_streq(ity, "RangeNode")) {
+    NodeKind ik = nt_kind(nt, inner);
+    if (ik == NK_RangeNode) {
       int lo = nt_ref(nt, inner, "left");
       return (lo >= 0 && infer_type(c, lo) == TY_STRING) ? TY_STRING : TY_INT;
     }
@@ -11184,8 +11300,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     TyKind spread_ty = TY_UNKNOWN;   /* a typed hash spread in, when there is one */
     int spread_mixed = 0;            /* spreads of two typed variants */
     for (int k = 0; k < n; k++) {
-      const char *aty = nt_type(nt, els[k]);
-      if (aty && sp_streq(aty, "AssocSplatNode")) {
+      NodeKind ak = nt_kind(nt, els[k]);
+      if (ak == NK_AssocSplatNode) {
         /* `{ **h, ... }`: merge the spread source's key/value types so the
            rebuilt literal keeps a concrete typed-hash variant instead of
            erasing to UNKNOWN. */
@@ -11232,7 +11348,7 @@ TyKind infer_uncached(Compiler *c, int id) {
         }
         continue;
       }
-      if (!aty || !sp_streq(aty, "AssocNode")) return TY_UNKNOWN;
+      if (ak != NK_AssocNode) return TY_UNKNOWN;
       {
         int knode = nt_ref(nt, els[k], "key");
         TyKind kt_elem = infer_type(c, knode);
@@ -11251,9 +11367,9 @@ TyKind infer_uncached(Compiler *c, int id) {
          outer hash promotes to a poly-valued variant rather than erasing the
          whole hash to UNKNOWN (which would reject `{ "k" => [] }`). */
       if (vt_elem == TY_UNKNOWN) {
-        const char *vnode_ty = nt_type(nt, vnode);
-        if (vnode_ty && (sp_streq(vnode_ty, "HashNode") || sp_streq(vnode_ty, "KeywordHashNode") ||
-                         sp_streq(vnode_ty, "ArrayNode")))
+        NodeKind vnode_k = nt_kind(nt, vnode);
+        if ((vnode_k == NK_HashNode || vnode_k == NK_KeywordHashNode ||
+                         vnode_k == NK_ArrayNode))
           vt_elem = TY_POLY;
       }
       if (vt_elem == TY_NIL) vt_elem = TY_POLY;   /* a nil value keeps the hash poly-valued (see the array literal) */
@@ -11294,10 +11410,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     int nargs = nt_ref(nt, id, "arguments");
     int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
     if (nvc > 0) {
-      const char *aty = nt_type(nt, nv[0]);
+      NodeKind ak = nt_kind(nt, nv[0]);
       /* `next *x` delivers the splat-built ARRAY (the SplatNode arm above
          answers with the ELEMENT type, for array-literal splices). */
-      if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
+      if (ak == NK_SplatNode) return TY_POLY_ARRAY;
       return infer_type(c, nv[0]);
     }
     return TY_NIL;
@@ -11392,13 +11508,13 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (ty_is_hash(rt) && (lt == TY_NIL || lt == TY_UNKNOWN) && an_empty_container_kind(c, rnd) == 2)
       return rt;
     if (rt == TY_UNKNOWN && rnd >= 0) {
-      const char *rty = nt_type(nt, rnd);
+      NodeKind rk = nt_kind(nt, rnd);
       int rn = 0;
-      if (rty && sp_streq(rty, "ArrayNode")) {
+      if (rk == NK_ArrayNode) {
         nt_arr(nt, rnd, "elements", &rn);
         if (rn == 0) rt = TY_POLY_ARRAY;
       }
-      else if (rty && sp_streq(rty, "HashNode")) {
+      else if (rk == NK_HashNode) {
         nt_arr(nt, rnd, "elements", &rn);
         if (rn == 0) rt = TY_STR_POLY_HASH;
       }
@@ -11543,8 +11659,8 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (node_is_empty_container(c, e)) return TY_POLY;
       /* a KNOWN diverging form never produces a try value however the
          fixpoint settles: keep the rescue arm's type for it */
-      const char *ety = e >= 0 ? nt_type(nt, e) : NULL;
-      if (ety && sp_streq(ety, "CallNode") && nt_ref(nt, e, "receiver") < 0) {
+      NodeKind ety_k = nt_kind(nt, e);
+      if (ety_k == NK_CallNode && nt_ref(nt, e, "receiver") < 0) {
         const char *en = nt_str(nt, e, "name");
         if (en && (sp_streq(en, "throw") || sp_streq(en, "raise") ||
                    sp_streq(en, "exit") || sp_streq(en, "abort") ||
@@ -11814,6 +11930,10 @@ TyKind infer_type(Compiler *c, int id) {
   /* the node table's version too: an edit that bumps only it (a rename
      added without its `edits`, #9179's temporary one) still ends what the
      memo holds */
+  /* a change of the node table is a change of every owner */
+  static unsigned long nt_seen;
+  unsigned long nt_now = c->nt->edits + c->nt->version;
+  if (nt_now != nt_seen) { nt_seen = nt_now; comp_touch_global_r(2); }
   unsigned long edits = infer_memo_edits(c);
   if (edits != g_imemo_edits) {
     g_imemo_edits = edits;
@@ -11826,20 +11946,65 @@ TyKind infer_type(Compiler *c, int id) {
     g_imemo_gen = 1;
     g_imemo_clean = 1;
   }
+  /* an inference deeper than the record stack holds records nothing: its
+     answer, and its asker's, depend on the program (kept only while no
+     table changes at all, the rule before owners). It still asks the memo:
+     a long chain past the stack's depth re-inferred each link below once
+     per asker, exponential in the chain's length (#4467) */
   int memo_ok = infer_memo_usable();
-  int kept = 0;
-  TyKind kept_t = TY_UNKNOWN;
+  if (g_imemo_rec_n >= IMEMO_REC_MAX) g_imemo_rec[IMEMO_REC_MAX - 1].n = -1;
+  int kept = 0, stale = 0;
+  TyKind kept_t = TY_UNKNOWN, stale_t = TY_UNKNOWN;
+  ImemoDeps kept_d = { 0, 0, {0} };
+  ImemoStat *stat = g_imemo_stats_on > 0 && memo_ok ? imemo_stat() : NULL;
   if (memo_ok && id < g_imemo_cap) {
     unsigned st = g_imemo_stamp[id];
-    if (st == g_imemo_gen) return g_imemo_val[id];
-    if (st >= g_imemo_clean && g_imemo_mode != IMEMO_TREE) {
-      if (g_imemo_mode == IMEMO_ROUND) return g_imemo_val[id];
-      kept = 1; kept_t = g_imemo_val[id];
+    if (st == g_imemo_gen) {
+      if (stat) stat->tree++;
+      if (g_imemo_trace) fprintf(stderr, "  %*stree-hit %d %s -> %s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]));
+      imemo_rec_merge(id); return g_imemo_val[id];
     }
+    /* an answer of an earlier tree, kept while the owners it read stand */
+    if (st && g_imemo_mode != IMEMO_TREE && imemo_deps_hold(id)) {
+      if (stat) stat->kept++;
+      if (g_imemo_trace) fprintf(stderr, "  %*skept-hit %d %s -> %s (at %lu, owners %d)\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]), g_imemo_deps[id].at, g_imemo_deps[id].n);
+      if (g_imemo_mode == IMEMO_ROUND) { imemo_rec_merge(id); return g_imemo_val[id]; }
+      kept = 1; kept_t = g_imemo_val[id]; kept_d = g_imemo_deps[id];
+    }
+    else if (st) { stale = 1; stale_t = g_imemo_val[id]; }
   }
+  if (stat && !kept) { if (g_infer_depth) stat->nested++; else if (stale) stat->stale++; else stat->fresh++; }
+  /* the record of this inference: what it reads, noted by the lookups */
+  unsigned long at0 = comp_ty_edits;
+  int rec_i = -1;
+  if (g_imemo_rec_n < IMEMO_REC_MAX) {
+    rec_i = g_imemo_rec_n++; g_imemo_rec[rec_i].n = 0; imemo_dep_on = 1;
+    /* the node's own scope first: its slots (its type, its marks) and its
+       neighbours' are read without a lookup */
+    imemo_rec_add(&g_imemo_rec[rec_i], id < c->node_cap && c->nscope ? c->nscope[id] : -1);
+  }
+  int tr_here = id == g_imemo_trace_id;
+  if (tr_here) { g_imemo_trace = 1; fprintf(stderr, "imemo-trace: node %d begins at edit %lu\n", id, comp_ty_edits); }
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
+  if (g_imemo_trace) {
+    const char *nm = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
+    fprintf(stderr, "  %*sinfer %d %s%s%s -> %s%s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?",
+            nm ? " " : "", nm ? nm : "", ty_name(t), kept ? " (kept differs?)" : "");
+  }
+  if (tr_here) g_imemo_trace = 0;
+  ImemoRec rec = { -1, {0} };
+  if (rec_i >= 0) {
+    rec = g_imemo_rec[rec_i];
+    g_imemo_rec_n = rec_i;
+    imemo_dep_on = g_imemo_rec_n > 0;
+    /* the owners join the asker's */
+    if (g_imemo_rec_n > 0) {
+      ImemoRec *up = &g_imemo_rec[g_imemo_rec_n - 1];
+      if (rec.n < 0) up->n = -1; else for (int i = 0; i < rec.n; i++) imemo_rec_add(up, rec.dep[i]);
+    }
+  }
   /* --int-overflow=promote: a Rational is held boxed, where one whose terms
      leave sp_int goes on as a big Rational (sp_poly_rat_op), as an Integer
      goes on as a Bignum */
@@ -11902,19 +12067,28 @@ TyKind infer_type(Compiler *c, int id) {
       int ncap = c->nt->count > id + 1 ? c->nt->count : id + 1;
       unsigned *nstamp = realloc(g_imemo_stamp, sizeof(unsigned) * (size_t)ncap);
       TyKind *nval = realloc(g_imemo_val, sizeof(TyKind) * (size_t)ncap);
+      ImemoDeps *ndeps = realloc(g_imemo_deps, sizeof(ImemoDeps) * (size_t)ncap);
       /* a grown side is kept either way (the old pointer is gone); the cap
-         only moves when both grew, and on failure the memo -- an optimization
+         only moves when all grew, and on failure the memo -- an optimization
          -- just does not record this node */
       if (nstamp) g_imemo_stamp = nstamp;
       if (nval) g_imemo_val = nval;
-      if (!nstamp || !nval) return t;
+      if (ndeps) g_imemo_deps = ndeps;
+      if (!nstamp || !nval || !ndeps) return t;
       memset(g_imemo_stamp + g_imemo_cap, 0,
              sizeof(unsigned) * (size_t)(ncap - g_imemo_cap));
       g_imemo_cap = ncap;
     }
     g_imemo_stamp[id] = g_imemo_gen;
     g_imemo_val[id] = t;
+    /* what the answer read, as of the edit count it began at: a write it
+       made itself to one of those owners (its own node's type) is one it has
+       to be derived again after, which is what makes the fixpoint's rounds */
+    ImemoDeps *d = &g_imemo_deps[id];
+    d->at = at0; d->n = rec.n;
+    for (int i = 0; i < (rec.n > 0 ? rec.n : 0); i++) d->dep[i] = rec.dep[i];
   }
+  if (stat && stale && g_infer_depth == 0 && stale_t == t) stat->stale_same++;
   if (kept) {
     g_imemo_shadow_hits++;
     if (kept_t != t) {
@@ -11922,6 +12096,36 @@ TyKind infer_type(Compiler *c, int id) {
       fprintf(stderr, "imemo-shadow: node %d (%s, line %lld) kept %s, fresh %s\n", id,
               nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", nt_int(c->nt, id, "node_line", 0),
               ty_name(kept_t), ty_name(t));
+      /* (the record the kept answer stood on: its owners, their versions,
+         the edit count it began at, and the node's own scope) */
+      if (getenv("SPINEL_IMEMO_WHY")) {
+        const ImemoDeps *d = &kept_d;
+        int sci = id < c->node_cap ? c->nscope[id] : -1;
+        const char *scn = sci >= 0 && sci < c->nscopes && c->scopes[sci].name ? c->scopes[sci].name : "?";
+        const char *cn = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
+        fprintf(stderr, "  in %s%s%s: kept at edit %lu (now %lu, program %lu), scope %d, owners(%d):", scn,
+                cn ? ", call " : "", cn ? cn : "", d->at, comp_ty_edits, comp_global_ver, sci, d->n);
+        for (int i = 0; i < (d->n > 0 ? d->n : 0); i++) fprintf(stderr, " %d@%lu", d->dep[i], imemo_owner_ver(d->dep[i]));
+        fprintf(stderr, " | fresh owners(%d):", rec.n);
+        for (int i = 0; i < (rec.n > 0 ? rec.n : 0); i++) fprintf(stderr, " %d@%lu", rec.dep[i], imemo_owner_ver(rec.dep[i]));
+        fprintf(stderr, "\n");
+        /* the owners written while the kept answer stood, each once */
+        if (comp_touch_log && at0 > d->at && at0 - d->at < COMP_TOUCH_LOG_CAP) {
+          int seen[64], nseen = 0, more = 0;
+          fprintf(stderr, "  written since:");
+          for (unsigned long e = d->at + 1; e <= at0; e++) {
+            int key = comp_touch_log[e & (COMP_TOUCH_LOG_CAP - 1)], dup = 0;
+            for (int i = 0; i < nseen && !dup; i++) dup = seen[i] == key;
+            if (dup) continue;
+            if (nseen == 64) { more++; continue; }
+            seen[nseen++] = key;
+            if (key == -1) fprintf(stderr, " program");
+            else if (key >= 0) fprintf(stderr, " scope %d(%s)", key, key < c->nscopes && c->scopes[key].name ? c->scopes[key].name : "?");
+            else fprintf(stderr, " class %d(%s)", -(key + 2), -(key + 2) < c->nclasses && c->classes[-(key + 2)].name ? c->classes[-(key + 2)].name : "?");
+          }
+          fprintf(stderr, "%s\n", more ? " ..." : "");
+        }
+      }
     }
   }
   return t;
@@ -11933,8 +12137,9 @@ void infer_subtree(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
+  NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
+  if (ty_k == NK_DefNode || ty_k == NK_ClassNode || ty_k == NK_ModuleNode) return;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) infer_subtree(c, nt_ref_at(nt, id, i));
   int na = nt_num_arrs(nt, id);

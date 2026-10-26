@@ -38,8 +38,8 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
     RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
     /* the class the call answers, chosen exactly as infer_type's Rational
        rule chooses it once the keyword hash is peeled off */
-    int nd_lit = (argc == 2 && nt_type(nt, argv[0]) &&
-                  sp_streq(nt_type(nt, argv[0]), "IntegerNode"));
+    int nd_lit = (argc == 2 &&
+                  nt_kind(nt, argv[0]) == NK_IntegerNode);
     int nd_val = nd_lit ? (int)nt_int(nt, argv[0], "value", 0) : 0;
     const char *fn = argc == 1  ? "sp_rational_round_half_i"
                    : !nd_lit    ? "sp_rational_round_half_v"
@@ -86,7 +86,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
   /* round/truncate/floor/ceil with a literal precision: nd > 0 keeps a
      Rational, nd <= 0 realizes the Integer value (.num of the den-1 result). */
   if (is_round_family(name) && argc == 1 &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode")) {
+      nt_kind(nt, argv[0]) == NK_IntegerNode) {
     long long nd = nt_int(nt, argv[0], "value", 0);
     const char *fn = name[0] == 'r' ? "round"
                    : name[0] == 't' ? "truncate"
@@ -558,8 +558,8 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
   /* A string-range LITERAL is the distinct sp_StrRange value type now, served
      by emit_range_call; this arm is left for the shapes that still type as the
      int TY_RANGE (a mixed or beginless/endless string range). (#3064) */
-  if (recv >= 0 && rt == TY_RANGE && nt_type(nt, nt_paren_single(c->nt, recv)) &&
-      sp_streq(nt_type(nt, nt_paren_single(c->nt, recv)), "RangeNode")) {
+  if (recv >= 0 && rt == TY_RANGE &&
+      nt_kind(nt, nt_paren_single(c->nt, recv)) == NK_RangeNode) {
     int rnode = nt_paren_single(c->nt, recv);
     int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
     if (lo >= 0 && hi >= 0 && repr_of(c, lo).as_ty == TY_STRING && repr_of(c, hi).as_ty == TY_STRING) {

@@ -58,9 +58,8 @@ nodes:
   ParenthesesNode:   {role: wrapper, value: [body]}
   StatementsNode:    {role: wrapper, value: [body.last]}
   ElseNode:          {role: wrapper, value: [statements]}
-  # (WhenNode has no kind of its own in the node table, so it cannot be a
-  # wrapper: CaseNode reads each arm's `statements` itself, and vp_up_edge
-  # tests the type of a clause by name)
+  # (WhenNode is not a wrapper: CaseNode reads each arm's `statements`
+  # itself, and vp_up_edge tests the clause by its kind)
   WhenNode:          {skip: [conditions.*, statements], why: "the match values are tested, never the node's value; statements is read through CaseNode.conditions"}
   InNode:            {role: wrapper, value: [statements], skip: [pattern]}
 

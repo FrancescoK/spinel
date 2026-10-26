@@ -8,6 +8,7 @@
 #include "repr.h"
 #include "call_plan.h"
 #include "share.h"
+#include "codegen_call_arms.h"
 
 /* ---- --plan-check: the arms one emitted switch wrote ----
    A frame per switch being written; a nested dispatch (an argument's
@@ -2910,8 +2911,8 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      CRuby names the unknown keyword. Such a hash is built whole, of any
      key, in source order, like one a `**` brings (kw_ds, kwall_any). */
   int kwh = -1, pos_argc = argc, kw_ds = 0, kw_strkey = 0;
-  { const char *l_ty = nt_type(nt, argv[argc - 1]);
-    if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
+  { NodeKind l_k = nt_kind(nt, argv[argc - 1]);
+    if (l_k == NK_KeywordHashNode) {
       int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
       int plain = en > 0, nds = 0;
       for (int e = 0; e < en; e++) {
@@ -3702,7 +3703,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     int no_exc7 = 0;
     if (kwh >= 0) {
       int e7 = kwh_lookup(nt, kwh, "exception");
-      no_exc7 = e7 >= 0 && nt_type(nt, e7) && sp_streq(nt_type(nt, e7), "FalseNode");
+      no_exc7 = e7 >= 0 && nt_kind(nt, e7) == NK_FalseNode;
     }
     int trd7 = ++g_tmp, te7 = ++g_tmp;
     buf_printf(b, " case SP_BUILTIN_IO: { sp_bool _e%d; const char *_t%d = sp_sock_read_nb("
@@ -4789,7 +4790,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
       buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tkl, tkl);
       for (int a = 0; a < argc; a++) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
-        if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) {
+        if (nt_kind(nt, argv[a]) == NK_SplatNode) {
           int tsp = ++g_tmp, tsj = ++g_tmp;
           buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tsp);
           if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);

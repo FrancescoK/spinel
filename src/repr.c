@@ -246,6 +246,13 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int bn = 0; const int *bs = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
       return (bn > 0 && node_is_oint(c, bs[bn - 1])) || (bb >= 0 && block_next_may_be_nil(c, bb, 0));
     }
+    /* Array's, Hash's or String's own method on an instance of a subclass
+       of one (comp_arysub_call, a `super` into it too): the rows below for
+       the container the instance holds, as the call's emitter reads it
+       (emit_arysub_call) */
+    { TyKind ak = TY_UNKNOWN;
+      if (r >= 0 && comp_arysub_call(c, node, rt, &ak) && (ty_is_array(ak) || ty_is_hash(ak) || ak == TY_STRING))
+        rt = ak; }
     /* a method the program defines, resolved as the call emitter resolves
        it: its C function answers an oint iff method_ret_is_oint */
     int mi = -1;
@@ -1385,17 +1392,18 @@ static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
   const NodeTable *nt = c->nt;
   v = nt_paren_single(c->nt, v);
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+  NodeKind vk = nt_kind(nt, v);
   if (!vty) return 0;
   int n = 0;
-  if (sp_streq(vty, "ArrayNode")) {
+  if (vk == NK_ArrayNode) {
     nt_arr(nt, v, "elements", &n);
     return !n && (ty_is_ptr_array(slot) || slot == TY_POLY_ARRAY || array_kind(slot));
   }
-  if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode")) {
+  if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
     nt_arr(nt, v, "elements", &n);
     return !n && ty_is_hash(slot) && ty_hash_cname(slot);
   }
-  if (sp_streq(vty, "CallNode") && node_is_empty_container(c, v)) {
+  if (vk == NK_CallNode && node_is_empty_container(c, v)) {
     const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
     if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) return 1;
     if (rn && sp_streq(rn, "Array"))

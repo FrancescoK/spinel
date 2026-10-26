@@ -491,8 +491,8 @@ no_gsub_enum:
   {
     /* Pattern from argument (str.match?(/dyn/), str =~ /dyn/, etc.) */
     if (recv >= 0 && argc >= 1) {
-      const char *a0ty = nt_type(nt, argv[0]);
-      int is_interp_arg = a0ty && sp_streq(a0ty, "InterpolatedRegularExpressionNode");
+      NodeKind a0k = nt_kind(nt, argv[0]);
+      int is_interp_arg = a0k == NK_InterpolatedRegularExpressionNode;
       /* Any regex-typed argument EXPRESSION, not just a local or constant read:
          an inline `Regexp.new(s)` / `Regexp.union(..)` / a method returning a
          regex is the same mrb_regexp_pattern* in argument position, so
@@ -506,8 +506,9 @@ no_gsub_enum:
          it `matcher.match?(re_local)` fed the object into sp_re_match_p's
          const char* slot and the generated C did not compile. */
       const char *a0nt = nt_type(nt, argv[0]);
+      NodeKind a0nk = nt_kind(nt, argv[0]);
       int is_regex_val_arg = !is_interp_arg && argc >= 1 && comp_ntype(c, argv[0]) == TY_REGEX
-                             && a0nt && !sp_streq(a0nt, "RegularExpressionNode")
+                             && a0nt && a0nk != NK_RegularExpressionNode
                              && !ty_is_object(rt);
       /* a boxed receiver's match? or match that a class answers too
          (StringScanner's match?, OptionParser::Completion's match) is the
@@ -650,8 +651,8 @@ no_gsub_enum:
     }
     /* Pattern from receiver (rx.match?(str), rx =~ str, etc.) */
     {
-      const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-      int is_interp_recv = rty && sp_streq(rty, "InterpolatedRegularExpressionNode");
+      NodeKind rk = nt_kind(nt, recv);
+      int is_interp_recv = rk == NK_InterpolatedRegularExpressionNode;
       int is_regex_lv_recv = !is_interp_recv && recv >= 0 && comp_ntype(c, recv) == TY_REGEX;
       if (is_interp_recv || is_regex_lv_recv) {
         Buf rp; memset(&rp, 0, sizeof rp);
@@ -762,8 +763,8 @@ no_gsub_enum:
        call site rather than inside sp_str_format_polyarr, whose body is
        optcarrot-layout-sensitive (a guard there cost ~9% fps); a literal
        format can't be nil and is emitted bare. */
-    const char *frty = nt_type(nt, recv);
-    int fck = (frty && (sp_streq(frty, "StringNode") || sp_streq(frty, "InterpolatedStringNode")))
+    NodeKind frk = nt_kind(nt, recv);
+    int fck = (frk == NK_StringNode || frk == NK_InterpolatedStringNode)
               ? -1 : ++g_tmp;
     if (at == TY_POLY_ARRAY) {
       const char *fend = (operand_may_allocate(c, argv[0]) && !subtree_is_pure_read(c, argv[0])) ? emit_str_format_held(c, recv, argv[0], fck, b) : NULL;
@@ -798,8 +799,8 @@ no_gsub_enum:
        hash. Handled when the format is a string literal, so each name resolves
        to a compile-time symbol id; the looked-up values are pushed in order and
        the rewritten positional format reuses sp_str_format_polyarr. */
-    const char *recv_ntype = nt_type(nt, recv);
-    if (ty_is_hash(at) && recv_ntype && sp_streq(recv_ntype, "StringNode")) {
+    NodeKind recv_ntype_k = nt_kind(nt, recv);
+    if (ty_is_hash(at) && recv_ntype_k == NK_StringNode) {
       const char *fmt = nt_str(nt, recv, "content");
       const char *names[64]; int name_len[64];
       Buf rew; memset(&rew, 0, sizeof rew);
@@ -887,14 +888,14 @@ no_gsub_enum:
 int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Regexp.last_match -> the last MatchData ($~), or nil */
   if (recv >= 0 && argc == 0 && sp_streq(name, "last_match") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     buf_puts(b, "sp_re_last_matchdata()");
     return 1;
   }
   /* Regexp.try_convert(x) -> x if it is a Regexp, else nil */
   if (recv >= 0 && argc == 1 && sp_streq(name, "try_convert") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if (comp_ntype(c, argv[0]) == TY_REGEX) {
       buf_puts(b, "sp_box_regexp((void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
@@ -908,17 +909,17 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.timeout / Regexp.timeout= -> spinel enforces no global match timeout;
      the getter is nil and the setter is a no-op returning its argument. */
   if (recv >= 0 && (sp_streq(name, "timeout") || sp_streq(name, "timeout=")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if (argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
     if (argc == 1) { buf_puts(b, "("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1; }
   }
   /* Regexp.last_match(n) -> nth capture group string, or whole match for n=0 */
   if (recv >= 0 && argc == 1 && sp_streq(name, "last_match") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    const char *aty = nt_type(nt, argv[0]);
-    if (aty && sp_streq(aty, "IntegerNode")) {
+    NodeKind ak = nt_kind(nt, argv[0]);
+    if (ak == NK_IntegerNode) {
       long long idx = nt_int(nt, argv[0], "value", 0);
       if (idx == 0) { buf_puts(b, "sp_re_match_str"); return 1; }
       if (idx >= 1 && idx <= 9) { buf_printf(b, "sp_re_captures[%d]", (int)idx); return 1; }
@@ -929,9 +930,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        read through the integer slot, where the pointer became a wild index
        (#3653) */
     TyKind lmat = comp_ntype(c, argv[0]);
-    if (aty && (sp_streq(aty, "StringNode") || sp_streq(aty, "SymbolNode"))) {
+    if (ak == NK_StringNode || ak == NK_SymbolNode) {
       buf_puts(b, "sp_re_named_capture(sp_re_last_pat, ");
-      if (sp_streq(aty, "SymbolNode")) emit_str_literal(b, nt_str(nt, argv[0], "value"));
+      if (ak == NK_SymbolNode) emit_str_literal(b, nt_str(nt, argv[0], "value"));
       else emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return 1;
@@ -953,7 +954,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.escape / Regexp.quote -> escape special regex characters */
   if (recv >= 0 && argc == 1 &&
       (sp_streq(name, "escape") || sp_streq(name, "quote")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     Repr rar = repr_of(c, argv[0]);
     TyKind _re_at = rar.as_ty;
@@ -974,11 +975,11 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      elements. A Regexp built at run time (`Regexp.compile(s)`, a value held
      in a variable) keeps its source too, and joins by the same #to_s form. */
   if (recv >= 0 && argc >= 0 && sp_streq(name, "union") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     /* `Regexp.union([a, b])`: a lone Array argument supplies the operands. */
     const int *ops = argv; int nops = argc;
-    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))
+    if (argc == 1 && nt_kind(nt, argv[0]) == NK_ArrayNode)
       ops = nt_arr(nt, argv[0], "elements", &nops);
     /* `Regexp.union(*[a, b])`: so does a splatted literal */
     else if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode &&
@@ -1084,9 +1085,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      non-literal regexp value defaults to true (the answer for backref-free
      patterns, which is the supported domain). */
   if (recv >= 0 && argc == 1 && sp_streq(name, "linear_time?") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
+    if (nt_kind(nt, argv[0]) == NK_RegularExpressionNode)
       buf_puts(b, re_src_has_backref(nt_str(nt, argv[0], "unescaped")) ? "FALSE" : "TRUE");
     /* a pattern reached through a variable, or given as a String source, is
        inspected at run time rather than assumed linear (#3684) */
@@ -1103,7 +1104,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Regexp.compile is an alias for Regexp.new, and compiles as it does: a
      String source held boxed is read as a String, a Regexp is copied */
   if (recv >= 0 && argc >= 1 && sp_streq(name, "compile") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     emit_regexp_new(c, argc, argv, b);
     return 1;
@@ -1121,7 +1122,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
     if ((is_slice_alias(name)) && argc == 1 &&
-        nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+        nt_kind(c->nt, argv[0]) == NK_RangeNode) {
       /* :s[a..b] / :s[a...b] over the name; a beginless/endless bound is 0 /
          the name length. The name is materialized once to avoid re-evaluating
          the receiver for an endless range. */

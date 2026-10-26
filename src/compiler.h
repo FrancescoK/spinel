@@ -53,12 +53,49 @@ enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
 #define SP_TY_FIELD
 #endif
 extern unsigned long comp_ty_edits;
+/* Each slot has an owner: the scope of a local, of a node or of a method's
+   value, the class of an ivar or a class variable, or the program itself
+   for a global, a constant, a slot picked through a pointer and a new
+   class. An owner's version is the edit count of the last write to one of
+   its slots (comp_touch_*). infer_type's memo keeps, per answer, the owners
+   the inference read (imemo_dep_*, noted by the lookups that reach a slot:
+   a scope by its node, a local by name, a method by its chain, an ivar by
+   its index, and the program for the rest), and an answer stands while
+   none of them has moved since it was derived (analyze_infer.c). */
+extern unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
+extern int comp_scope_ver_cap, comp_class_ver_cap;
+/* (diagnostics, SPINEL_IMEMO_WHY) the owner each edit moved, by edit count */
+#define COMP_TOUCH_LOG_CAP (1 << 22)
+extern int *comp_touch_log;
+static inline void comp_touch_note(int key) { if (comp_touch_log) comp_touch_log[comp_ty_edits & (COMP_TOUCH_LOG_CAP - 1)] = key; }
+extern unsigned long comp_touch_count[3];   /* (statistics) the program's, scopes', classes' writes */
+extern unsigned long comp_touch_why[8];     /* ... and the program's by cause: 0 other, 1 a pass boundary, 2 the node table, 3 a slot by pointer, 4 a new slot, 5 a new scope or class */
+extern int comp_touch_last_why;
+static inline void comp_touch_global_r(int why) { comp_global_ver = ++comp_ty_edits; comp_touch_count[0]++; comp_touch_why[why & 7]++; comp_touch_last_why = why & 7; comp_touch_note(-1); }
+static inline void comp_touch_global(void) { comp_touch_global_r(0); }
+static inline void comp_touch_scope(int idx) {
+  if (idx >= 0 && idx < comp_scope_ver_cap) { comp_scope_ver[idx] = ++comp_ty_edits; comp_touch_count[1]++; comp_touch_note(idx); }
+  else comp_touch_global();
+}
+static inline void comp_touch_class(int idx) {
+  if (idx >= 0 && idx < comp_class_ver_cap) { comp_class_ver[idx] = ++comp_ty_edits; comp_touch_count[2]++; comp_touch_note(-(idx + 2)); }
+  else comp_touch_global();
+}
+extern int imemo_dep_on;   /* an inference that records what it reads is open */
+void imemo_dep_scope(int idx);
+void imemo_dep_class(int idx);
+void imemo_dep_global(void);
+#define IMEMO_DEP_SCOPE(i) do { if (imemo_dep_on) imemo_dep_scope(i); } while (0)
+#define IMEMO_DEP_CLASS(i) do { if (imemo_dep_on) imemo_dep_class(i); } while (0)
+#define IMEMO_DEP_GLOBAL() do { if (imemo_dep_on) imemo_dep_global(); } while (0)
 /* One of those fields, for code that picks the slot first and writes it
-   after: written through ty_ref_set. */
+   after: written through ty_ref_set (below, after Compiler). */
 typedef SP_TY_FIELD TyKind *TyRef;
-static inline TyKind ty_ref_set(TyRef r, TyKind t) {
-  if (*r != t) { *(TyKind *)r = t; comp_ty_edits++; }
-  return t;
+/* an owner by key: a scope's index, a class as -(index + 2), the program as -1 */
+static inline void comp_touch_key(int key) {
+  if (key >= 0) comp_touch_scope(key);
+  else if (key == -1) comp_touch_global_r(3);
+  else comp_touch_class(-(key + 2));
 }
 
 /* The user classes a value can hold (analyze_cls.c, #8530): `all` for every
@@ -376,14 +413,16 @@ typedef struct {
   TyKind body_write; /* (parameter) the join of what its own body assigns it, as
                         infer_write_types last folded the writes; TY_UNKNOWN when
                         nothing does */
+  int owner;        /* the scope that holds the slot (Scope.idx), -1 for a global
+                       or a constant: the owner its writes move (comp_touch_scope) */
 } LocalVar;
 
 static inline TyKind lv_set_type(LocalVar *lv, TyKind t) {
-  if (lv->type != t) { *(TyKind *)&lv->type = t; comp_ty_edits++; }
+  if (lv->type != t) { *(TyKind *)&lv->type = t; comp_touch_scope(lv->owner); }
   return t;
 }
 static inline int lv_set_proc_ret(LocalVar *lv, int t) {
-  if (lv->proc_ret != t) { *(int *)&lv->proc_ret = t; comp_ty_edits++; }
+  if (lv->proc_ret != t) { *(int *)&lv->proc_ret = t; comp_touch_scope(lv->owner); }
   return t;
 }
 #define POLY_LIFT_APPENDED 1
@@ -395,6 +434,7 @@ static inline int lv_set_proc_ret(LocalVar *lv, int t) {
 enum { RBS_CONT_HASH = 1, RBS_CONT_ARRAY = 2 };   /* Scope.ret_rbs_cont: the class a container return seed checks */
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
+  int idx;          /* its index in Compiler.scopes: the owner its slots' writes move */
   char *c_name;     /* optional unique C symbol for a method without changing its Ruby name */
   int def_node;     /* DefNode id; -1 for top-level */
   int body;         /* StatementsNode id (-1 if empty) */
@@ -606,29 +646,30 @@ typedef struct {
 } Scope;
 
 static inline TyKind scope_set_ret(Scope *s, TyKind t) {
-  if (s->ret != t) { *(TyKind *)&s->ret = t; comp_ty_edits++; }
+  if (s->ret != t) { *(TyKind *)&s->ret = t; comp_touch_scope(s->idx); }
   return t;
 }
 static inline TyKind scope_set_ret_noblock(Scope *s, TyKind t) {
-  if (s->ret_noblock != t) { *(TyKind *)&s->ret_noblock = t; comp_ty_edits++; }
+  if (s->ret_noblock != t) { *(TyKind *)&s->ret_noblock = t; comp_touch_scope(s->idx); }
   return t;
 }
 static inline int scope_set_ret_pin_guard(Scope *s, int t) {
-  if (s->ret_pin_guard != t) { *(int *)&s->ret_pin_guard = t; comp_ty_edits++; }
+  if (s->ret_pin_guard != t) { *(int *)&s->ret_pin_guard = t; comp_touch_scope(s->idx); }
   return t;
 }
 static inline int scope_set_ret_proc_ret(Scope *s, int t) {
-  if (s->ret_proc_ret != t) { *(int *)&s->ret_proc_ret = t; comp_ty_edits++; }
+  if (s->ret_proc_ret != t) { *(int *)&s->ret_proc_ret = t; comp_touch_scope(s->idx); }
   return t;
 }
 static inline int scope_set_blk_ret(Scope *s, int t) {
-  if (s->blk_ret != t) { *(int *)&s->blk_ret = t; comp_ty_edits++; }
+  if (s->blk_ret != t) { *(int *)&s->blk_ret = t; comp_touch_scope(s->idx); }
   return t;
 }
 
 typedef struct {
   char *name;          /* class name ("Point"); also drives semantic checks
                           (builtin reopen, name matching) and Ruby-visible output */
+  int idx;             /* its index in Compiler.classes: the owner its slots' writes move */
   char *c_name;        /* C-identifier stem for `sp_<c_name>` emission: == name,
                           unless name collides with a runtime typedef (sp_RbVal,
                           sp_IntArray, ...) in which case it is disambiguated so a
@@ -941,11 +982,11 @@ enum {
   ELEMS_POLY = 1      /* the TY_POLY_ARRAY slot holds its Strings as handles */
 };
 static inline TyKind ivar_set_type(ClassInfo *ci, int k, TyKind t) {
-  if (ci->ivar_types[k] != t) { ((TyKind *)ci->ivar_types)[k] = t; comp_ty_edits++; }
+  if (ci->ivar_types[k] != t) { ((TyKind *)ci->ivar_types)[k] = t; comp_touch_class(ci->idx); }
   return t;
 }
 static inline TyKind cvar_set_type(ClassInfo *ci, int k, TyKind t) {
-  if (ci->cvar_types[k] != t) { ((TyKind *)ci->cvar_types)[k] = t; comp_ty_edits++; }
+  if (ci->cvar_types[k] != t) { ((TyKind *)ci->cvar_types)[k] = t; comp_touch_class(ci->idx); }
   return t;
 }
 
@@ -1252,7 +1293,7 @@ typedef struct {
   int *ivarg_call;      /* [ivarg_count] an entry's CallNode */
   int *ivarg_arg;       /* [ivarg_count] its InstanceVariableReadNode argument */
   int ivarg_nbuckets, ivarg_count;
-  unsigned ivarg_version;
+  unsigned long ivarg_stamp;   /* the table's edits + version it was built at */
   int ivarg_built;
 
   /* variable-site chains by (kind, variable); see comp_vsite_first */
@@ -2113,41 +2154,54 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
    not a yield in a spliced context. */
 extern int (*sp_yield_site_type_hook)(const Compiler *c, int id, TyKind *out);
 
-/* A node's type: see comp_ty_edits. */
+/* A node's type: see comp_ty_edits. The node's slots belong to its scope. */
+static inline void comp_touch_node(Compiler *c, int id) {
+  comp_touch_scope(id >= 0 && id < c->node_cap && c->nscope ? c->nscope[id] : -1);
+}
+/* The owner of a slot picked through a pointer (compiler.c): an ivar's or a
+   class variable's class, a local's scope, the program (-1) for a global or
+   a constant, and COMP_REF_NONE for a pointer in no table: a value of the
+   caller's own, which no inference reads, so its write moves no owner. */
+#define COMP_REF_NONE (-0x7fffffff)   /* (below every class key) */
+int comp_ref_owner(Compiler *c, TyRef r);
+static inline TyKind ty_ref_set(Compiler *c, TyRef r, TyKind t) {
+  if (*r != t) { *(TyKind *)r = t; int o = comp_ref_owner(c, r); if (o != COMP_REF_NONE) comp_touch_key(o); }
+  return t;
+}
 static inline TyKind comp_set_ntype(Compiler *c, int id, TyKind t) {
-  if (c->ntype[id] != t) { ((TyKind *)c->ntype)[id] = t; comp_ty_edits++; }
+  if (c->ntype[id] != t) { ((TyKind *)c->ntype)[id] = t; comp_touch_node(c, id); }
   return t;
 }
 static inline char comp_set_empty_arr_recv(Compiler *c, int id, char v) {
-  if (c->empty_arr_recv[id] != v) { ((char *)c->empty_arr_recv)[id] = v; comp_ty_edits++; }
+  if (c->empty_arr_recv[id] != v) { ((char *)c->empty_arr_recv)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline char comp_set_empty_hash_recv(Compiler *c, int id, char v) {
-  if (c->empty_hash_recv[id] != v) { ((char *)c->empty_hash_recv)[id] = v; comp_ty_edits++; }
+  if (c->empty_hash_recv[id] != v) { ((char *)c->empty_hash_recv)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline char comp_set_empty_hash_arg(Compiler *c, int id, char v) {
-  if (c->empty_hash_arg[id] != v) { ((char *)c->empty_hash_arg)[id] = v; comp_ty_edits++; }
+  if (c->empty_hash_arg[id] != v) { ((char *)c->empty_hash_arg)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline TyKind comp_set_hash_want(Compiler *c, int id, TyKind v) {
-  if (c->hash_want[id] != v) { ((TyKind *)c->hash_want)[id] = v; comp_ty_edits++; }
+  if (c->hash_want[id] != v) { ((TyKind *)c->hash_want)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline TyKind comp_set_arr_want(Compiler *c, int id, TyKind v) {
-  if (c->arr_want[id] != v) { ((TyKind *)c->arr_want)[id] = v; comp_ty_edits++; }
+  if (c->arr_want[id] != v) { ((TyKind *)c->arr_want)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline TyKind comp_set_poly_builtin_ty(Compiler *c, int id, TyKind v) {
-  if (c->poly_builtin_ty[id] != v) { ((TyKind *)c->poly_builtin_ty)[id] = v; comp_ty_edits++; }
+  if (c->poly_builtin_ty[id] != v) { ((TyKind *)c->poly_builtin_ty)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline unsigned char comp_set_strbuf_box(Compiler *c, int id, unsigned char v) {
-  if (c->strbuf_box[id] != v) { ((unsigned char *)c->strbuf_box)[id] = v; comp_ty_edits++; }
+  if (c->strbuf_box[id] != v) { ((unsigned char *)c->strbuf_box)[id] = v; comp_touch_node(c, id); }
   return v;
 }
 static inline TyKind comp_set_nilnarrow(Compiler *c, int id, TyKind t) {
-  if (c->nilnarrow[id] != t) { ((TyKind *)c->nilnarrow)[id] = t; comp_ty_edits++; }
+  if (c->nilnarrow[id] != t) { ((TyKind *)c->nilnarrow)[id] = t; comp_touch_node(c, id); }
   return t;
 }
 
@@ -2171,6 +2225,8 @@ int repr_value_obj(const Compiler *c, TyKind t);
 /* Node type cache. */
 static inline TyKind comp_ntype(const Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
+  /* (the node's type is its scope's slot: noted for infer_type's memo) */
+  if (imemo_dep_on) imemo_dep_scope(id < c->node_cap && c->nscope ? c->nscope[id] : -1);
   if (sp_yield_site_type_hook) {
     TyKind yt;
     if (sp_yield_site_type_hook(c, id, &yt)) return yt;
