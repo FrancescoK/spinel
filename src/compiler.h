@@ -1673,6 +1673,18 @@ int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
    as the fallback. See analyze_util.c. */
 int    comp_self_call_mi(Compiler *c, int call_node, const char *name);
 int    comp_class_self_inst_mi(Compiler *c, int class_id, const char *name);
+/* A definition the compiler keeps for its own lowering, which CRuby has no
+   method for: a builtins/ file's own helper (is_builtin_helper_name, the
+   enumerator's `__enumw_map`) or a desugar's per-call-site copy (marked
+   `private_helper` where it is made, enumerable.rb's `__enum_count__0`).
+   Only the lowering that names it calls it. comp_name_is_private_helper:
+   every scope of the name is one. */
+int    comp_scope_is_private_helper(Compiler *c, int si);
+int    comp_name_is_private_helper(Compiler *c, const char *m);
+/* Does no Ruby method answer to `m`, though a scope has the name: a
+   private helper or another synthesized method? Reflection and a computed
+   send's dispatch leave it out. See analyze_util.c. */
+int    name_is_synth_method(Compiler *c, const char *m);
 int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
 /* Does the receiver of a retargeted `recv.send(:name)` (send_blind) answer
    name itself -- an instance's method or reader, a class constant's class
@@ -2034,6 +2046,9 @@ int cls_fact_may_ostruct(Compiler *c, int node);
 /* the fact's own index for recv's set, which names the set uniquely: 0 or -1
    for every class (nothing to filter by) */
 int cls_fact_idx(Compiler *c, int node);
+/* Does node's fact say nothing of its classes: every class, or the closed
+   world's value from anywhere (every class, Class object and builtin)? */
+int cls_fact_unbounded(Compiler *c, int node);
 /* What else than an object of a class of the program's node's value can be,
    as the same walk follows it (analyze_cls.c), in a program that calls
    compare_by_identity: CK_UNSAFE a value whose identity is not CRuby's here

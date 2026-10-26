@@ -3,6 +3,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "timing.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -217,7 +218,12 @@ int poll_scope_on_cycle(Compiler *c, int si) {
    stores it after the loop, so a raise in the middle left a rescue reading
    the value from before it. A loop that only adds those stores is a chunked
    one (poll_chunk_loop): it polls once per SP_SIG_CHUNK passes, which is a
-   call the stores are made ahead of. */
+   call the stores are made ahead of.
+
+   Only the default SIGINT / SIGTERM is raised where it lands, though. A
+   trap's proc is Ruby code, which runs at a poll (sp_sig_run_pending), so a
+   program that sets one has no pure region: its pure loops are chunked ones
+   too, and its pure methods and counting iterators poll as any other. */
 static int poll_scalar_ty(TyKind t) { return t == TY_INT || t == TY_FLOAT || t == TY_BOOL; }
 static int poll_pure_op(const char *nm) {
   static const char *const ops[] = { "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "<=>", "&", "|",
@@ -390,7 +396,7 @@ int poll_pure_method(Compiler *c, int si) {
         if (g_chunk_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 1)) { g_chunk_cand[t] = 0; changed = 1; }
     }
   }
-  return si >= 0 && si < g_pure_n && g_pure_cand[si];
+  return !g_uses_traps && si >= 0 && si < g_pure_n && g_pure_cand[si];
 }
 /* Does node n hold a while / until loop? */
 static int poll_has_loop(const NodeTable *nt, int n) {
@@ -449,7 +455,7 @@ int poll_pure_wrapped(Compiler *c, int si) {
 }
 /* Is a while / until loop pure: its condition and body (no return) */
 int poll_pure_loop(Compiler *c, int id) {
-  if (g_promote_mode || !sig_polls()) return 0;
+  if (g_promote_mode || !sig_polls() || g_uses_traps) return 0;
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
   return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0, 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0, 0);
@@ -492,7 +498,7 @@ int poll_chunk_loop(Compiler *c, int id) {
    scalars, with no allocation, so the whole statement is a pure loop, marked
    around as a pure while is. reverse_each is not one (it builds an Array). */
 int poll_pure_iter(Compiler *c, int id) {
-  if (g_promote_mode || !sig_polls()) return 0;
+  if (g_promote_mode || !sig_polls() || g_uses_traps) return 0;
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) return 0;
   const char *nm = nt_str(nt, id, "name");
@@ -3329,6 +3335,17 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      (a new handle over a copy was another String) */
   if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) return 1;
   if (emit_boxed_lift_ran_first(c, node, b)) return 1;
+  /* a boxed receiver's reader whose arms each box the field's handle
+     (repr_boxed_reader_handle): the box the dispatch answers, where the
+     route took the handle out of it and the box here put it in a new one
+     (`env[node.name]` with boxed keys, #10302) */
+  { int u = node >= 0 ? nt_paren_single(c->nt, node) : -1;
+    if (!lift && u == node && !arg_ran_first(node, 0) && repr_boxed_reader_handle(c, u)) {
+      int sv = view_push(c, u, TY_POLY);
+      emit_expr(c, u, b);
+      view_pop(c, sv);
+      return 1;
+    } }
   if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) ||
                                                 (strbuf_route_ivar_get(c, node) &&
                                                  share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) ||
@@ -18673,20 +18690,13 @@ static void reject_runtime_send(Compiler *c) {
 /* The class-method parsers iso8601, xmlschema, httpdate, rfc2822 and
    rfc822 are the same limit without `require "time"`, as CRuby has them
    only once it is required. With it, they are read for one String argument
-   (time_strict_parser_call). */
-static int is_time_string_parser(const char *name) {
-  static const char *const names[] = { "parse", "strptime", "iso8601", "xmlschema",
-                                       "httpdate", "rfc2822", "rfc822" };
-  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
-    if (sp_streq(name, names[i])) return 1;
-  return 0;
-}
+   (time_strict_parser_call). The names: is_time_parser_name. */
 
 /* Is call `id` a builtin Time string parser (not a program's own)?
    Answers the refusal's words in msg when it is. */
 int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   const char *name = nt_str(c->nt, id, "name");
-  if (!name || !is_time_string_parser(name)) return 0;
+  if (!name || !is_time_parser_name(name)) return 0;
   /* the strict ones are there once `require "time"` is */
   if (time_strict_parser_call(c, id)) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
@@ -19062,12 +19072,12 @@ static int cmp_int_pair(const void *a, const void *b) {
   return x[1] < y[1] ? -1 : x[1] > y[1];
 }
 
-static int exc_text_method(Compiler *c, int i, int want_message, int *dcls, const char **fn) {
+static int exc_text_method(Compiler *c, int i, int want_message, int *dcls) {
   int dmsg = -1, dtos = -1;
   int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
   int mi_tos = comp_method_in_chain(c, i, "to_s", &dtos);
-  if (want_message && mi_msg >= 0) { *dcls = dmsg; *fn = "message"; return mi_msg; }
-  if (mi_tos >= 0) { *dcls = dtos; *fn = "to_s"; return mi_tos; }
+  if (want_message && mi_msg >= 0) { *dcls = dmsg; return mi_msg; }
+  if (mi_tos >= 0) { *dcls = dtos; return mi_tos; }
   return -1;
 }
 
@@ -20620,8 +20630,8 @@ static void emit_exc_text_dispatch_at(Compiler *c, Buf *b, int mode, int *late) 
       else buf_puts(b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
-        int dcls = -1; const char *fn = NULL;
-        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
+        int dcls = -1;
+        int mi = exc_text_method(c, i, want_message, &dcls);
         if (mi < 0) continue;
         if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
         /* a reopening's method is picked by the runtime class below */
@@ -20638,7 +20648,10 @@ static void emit_exc_text_dispatch_at(Compiler *c, Buf *b, int mode, int *late) 
         snprintf(selfp, sizeof selfp, "((sp_%s*)e)", dcn);
         int builds = 0;
         if (emit_arm_args_text(c, mi, selfp, NULL, 0, &pre, &args, &builds, raise, sizeof raise)) {
-          buf_printf(&call, "(const char*)sp_%s_%s((sp_%s*)e%s)", dcn, fn, dcn, args.p ? args.p : "");
+          /* (the method found, which an alias names by its original) */
+          buf_puts(&call, "(const char*)");
+          emit_method_cname(c, &c->scopes[mi], &call);
+          buf_printf(&call, "((sp_%s*)e%s)", dcn, args.p ? args.p : "");
           /* (a default can read a global or a constant, declared after this
              point: such a dispatcher is defined late, emit_exc_text_dispatch) */
           if (args.p || pre.p) *late = 1;
@@ -20816,8 +20829,8 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, "  if(!e)return sp_box_str((&(\"\\xff\")[1]));\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
-        int dcls = -1; const char *fn = NULL;
-        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
+        int dcls = -1;
+        int mi = exc_text_method(c, i, want_message, &dcls);
         if (mi < 0) continue;
         TyKind mret = (TyKind)c->scopes[mi].ret;
         if (mret == TY_UNKNOWN || mret == TY_VOID) continue;
@@ -20832,7 +20845,8 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
         int builds = 0;
         snprintf(selfp, sizeof selfp, "((sp_%s*)e)", dcn);
         if (emit_arm_args_text(c, mi, selfp, NULL, 0, &pre, &args, &builds, raise, sizeof raise)) {
-          buf_printf(&callx, "sp_%s_%s((sp_%s*)e%s)", dcn, fn, dcn, args.p ? args.p : "");
+          emit_method_cname(c, &c->scopes[mi], &callx);
+          buf_printf(&callx, "((sp_%s*)e%s)", dcn, args.p ? args.p : "");
           if (args.p || pre.p) vlate = 1;
           Buf bx; memset(&bx, 0, sizeof bx);
           if (mret == TY_POLY) buf_puts(&bx, callx.p);
@@ -21073,6 +21087,35 @@ static void emit_global_mark_line(Compiler *c, TyKind t, const char *name, Buf *
   else if (t == TY_STR_RANGE) emit_srange_marks(c, name, mk);
   else if (needs_root(t)) buf_printf(mk, "  if (%s) sp_gc_mark((void *)%s);\n", name, name);
 }
+/* --timing: the emission's own phases, each from the end of the one
+   before (cg_prepare starts where the analysis ends), and the methods whose
+   emission took longest, slowest first */
+#define CG_SLOW_N 10
+static int cg_slow_s[CG_SLOW_N];
+static double cg_slow_ms[CG_SLOW_N];
+static void cg_slow_note(int s, double ms) {
+  int i = CG_SLOW_N;
+  while (i > 0 && (cg_slow_s[i - 1] < 0 || cg_slow_ms[i - 1] < ms)) i--;
+  if (i >= CG_SLOW_N) return;
+  memmove(&cg_slow_s[i + 1], &cg_slow_s[i], sizeof cg_slow_s[0] * (size_t)(CG_SLOW_N - 1 - i));
+  memmove(&cg_slow_ms[i + 1], &cg_slow_ms[i], sizeof cg_slow_ms[0] * (size_t)(CG_SLOW_N - 1 - i));
+  cg_slow_s[i] = s; cg_slow_ms[i] = ms;
+}
+static void cg_slow_report(Compiler *c) {
+  if (!sp_timing_on()) return;
+  for (int i = 0; i < CG_SLOW_N && cg_slow_s[i] >= 0; i++) {
+    Scope *sc = &c->scopes[cg_slow_s[i]];
+    const char *cn = sc->class_id >= 0 && sc->class_id < c->nclasses ? c->classes[sc->class_id].name : NULL;
+    fprintf(stderr, "spinel-timing: cg_method=%s%s%s ms=%.1f\n", cn ? cn : "", cn ? (sc->is_cmethod ? "." : "#") : "",
+            sc->name ? sc->name : "?", cg_slow_ms[i]);
+  }
+}
+/* (the end of one phase is the start of the next) */
+static double cg_phase(double t0, const char *phase) {
+  sp_timing_end(t0, phase, "");
+  return sp_timing_now();
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -21080,6 +21123,7 @@ char *codegen_program(const NodeTable *nt) {
   plain_note_parsed(c);   /* ahead of the analysis's desugars */
   g_tmc_c = c;
   analyze_program(c);
+  double tcg = sp_timing_now();
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
   /* --dump-repr: the analysis's answer, printed once the compile passes */
   char *repr_text = g_dump_repr ? repr_dump(c) : NULL;
@@ -21211,6 +21255,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_needs_class_machinery && program_reopens_builtin_class(c))
     buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
   if (c->n_cext_extensions) buf_puts(&b, "#define SP_CEXT 1\n/* SPINEL_USES_CEXT */\n");
+  tcg = cg_phase(tcg, "cg_prepare");
   emit_runtime_include(c, &b, 0);
   if (g_gc_none) buf_puts(&b, "void (*sp_gc_collect_fn)(void) = NULL;   /* --gc=none */\n");
   if (c->n_cext_extensions) {
@@ -21666,6 +21711,7 @@ char *codegen_program(const NodeTable *nt) {
      proc literals they contain accumulate static functions into g_procs /
      g_proc_protos; we splice those in ahead of these bodies, since a proc
      function must be declared before the body that references it. */
+  tcg = cg_phase(tcg, "cg_preamble");
   Buf *body = (Buf *)calloc(1, sizeof *body);  /* heap: must survive a collect-mode longjmp (see EMIT_COLLECT_UNIT) */
   emit_synth_line_marker(body);
   for (int i = 0; i < c->nclasses; i++)
@@ -21674,7 +21720,18 @@ char *codegen_program(const NodeTable *nt) {
   unit_pragma_reset(body);   /* nothing comes here today; nothing may join the last constructor's unit */
   /* user-object Marshal dispatchers (after every class struct + pool define) */
   emit_obj_dispatchers(c, body);
+  tcg = cg_phase(tcg, "cg_classes");
+  int cg_prev_s = -1, cg_methods = 0;
+  double cg_prev_t = 0;
+  for (int i = 0; i < CG_SLOW_N; i++) cg_slow_s[i] = -1;
   for (int s = 1; s < c->nscopes; s++) {
+    /* (each scope's span ends where the next one's begins, a skipped
+       scope's being next to nothing) */
+    if (sp_timing_on()) {
+      double now = sp_timing_now();
+      if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, now - cg_prev_t);
+      cg_prev_s = s; cg_prev_t = now;
+    }
     if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
@@ -21726,6 +21783,14 @@ char *codegen_program(const NodeTable *nt) {
       }
     }
   }
+  if (sp_timing_on()) {
+    if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, sp_timing_now() - cg_prev_t);
+    for (int s = 1; s < c->nscopes; s++)
+      cg_methods += c->scopes[s].reachable && !c->scopes[s].yields;
+    char ex[32]; snprintf(ex, sizeof ex, " methods=%d", cg_methods);
+    sp_timing_end(tcg, "cg_methods", ex);
+    tcg = sp_timing_now();
+  }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
   unit_begin_in(body, "dispatch2", "dispatch");
@@ -21767,6 +21832,7 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
 
+  tcg = cg_phase(tcg, "cg_dispatch");
   unit_begin_in(body, "main", "main");
   size_t main_frame_ins = 0, main_open = 0;
   int sv_main_cv = g_c_ret_void;
@@ -21959,6 +22025,7 @@ char *codegen_program(const NodeTable *nt) {
                    "  return _sp_main_rc;\n}\n");
   }
   if (!g_no_root_frame) gc_frame_build(c, body, main_frame_ins, "main");
+  tcg = cg_phase(tcg, "cg_main");
 
   emit_regex_section(c, &b);
   { const char *pdt[3] = { g_procs.p, body->p, b.p };
@@ -21979,7 +22046,9 @@ char *codegen_program(const NodeTable *nt) {
   /* Over the whole program, not per function: methods, procs, block bodies,
      constructors and main are emitted by different paths, and hooking them one
      at a time left a quarter of the stores bare. */
+  tcg = cg_phase(tcg, "cg_assemble");
   gc_wb_insert(c, &b, 0);
+  tcg = cg_phase(tcg, "cg_write_barriers");
   { Buf fz; memset(&fz, 0, sizeof fz);
     fzl_emit_defs(b.p ? b.p : "", &fz, 1);
     if (fz.len) buf_splice(&b, fzl_at, fz.p);
@@ -22044,6 +22113,8 @@ char *codegen_program(const NodeTable *nt) {
   if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
+  sp_timing_end(tcg, "cg_finish", "");
+  cg_slow_report(c);
   comp_free(c);
   if (types_out && !g_opt_emit_types_keep_c) return strdup("");
   return b.p;

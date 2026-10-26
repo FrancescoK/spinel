@@ -1,0 +1,16 @@
+true
+true
+true
+true
+false
+FrozenError: can't modify frozen String: "abc"
+FrozenError: can't modify frozen String: "abc"
+FrozenError: can't modify frozen String: "12"
+["abc", "12"]
+false
+"abcy"
+"12!"
+"lit"
+13
+"abc!"
+["ABC", "12"]

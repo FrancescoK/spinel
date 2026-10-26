@@ -21,3 +21,8 @@ show dc_classify(true, true, ok, run("a\n", "", 0), nil)
 show dc_classify(true, true, run("a\n", "E: m", 1), run("a\n", "E: m", 1), nil)
 # a crash outranks a timeout of the reference, and the signal is what says crash
 show dc_classify(true, true, run("", "", -1, "", 1), run("", "", -1, "SIGABRT"), nil)
+# The confirmation run's crash or timeout outranks an output difference too.
+show dc_classify(true, true, ok, run("b\n", "", 0), run("", "", -1, "SIGABRT"))
+show dc_classify(true, true, ok, run("b\n", "", 0), run("", "", -1, "", 1))
+# A second-run crash still outranks a reference timeout.
+show dc_classify(true, true, run("", "", -1, "", 1), ok, run("", "", -1, "SIGABRT"))

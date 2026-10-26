@@ -5885,6 +5885,18 @@ static int dsend_name_source(Compiler *c, int arg) {
   return nw == 1 && src >= 0 ? src : arg;
 }
 
+/* The local whose writes a send's name is narrowed by: the name's own, or
+   for a local written once from another (`t = s`, as `&s` binds the Symbol
+   it is passed), that one's, so the copy holds no more names than s does. */
+static int dsend_name_local(Compiler *c, int arg) {
+  for (int hop = 0; hop < 8; hop++) {
+    int src = dsend_name_source(c, arg);
+    if (src == arg || nt_kind(c->nt, src) != NK_LocalVariableReadNode) break;
+    arg = src;
+  }
+  return arg;
+}
+
 /* The names a value can be when it is a Symbol or String literal, nil, or a
    conditional choosing among them (`re ? :assert_match : :assert_equal`),
    added to `names`. 0 for anything else. */
@@ -6476,7 +6488,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
         if (anh_has(&g_dsend_lits, cand[k])) lits[nlit++] = cand[k];
       use = lits; nuse = nlit;
       /* a local that only ever holds literal names holds one of those */
-      if (dsend_local_names(c, argv[0], &own, &nown)) {
+      if (dsend_local_names(c, dsend_name_local(c, argv[0]), &own, &nown)) {
         /* none of them takes this many arguments: no arm would be left, so
            keep the literals' arms (and their NoMethodError) as before */
         int fits = splat_src >= 0;
@@ -6491,7 +6503,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       int npick = 0;
       TyKind rt = infer_type(c, recv);
       ANameHash answers; memset(&answers, 0, sizeof answers);
-      dsend_param_literals(c, argv[0], &answers);
+      dsend_param_literals(c, dsend_name_local(c, argv[0]), &answers);
       for (int d = 0; d < c->nclasses && (ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN); d++) {
         if (ty_is_object(rt) ? d != ty_object_class(rt) : comp_class_is_module(c, &c->classes[d])) continue;
         char **rn = NULL; int nrn = dsend_receiver_names(c, d, ty_is_object(rt), &rn);
@@ -6714,6 +6726,12 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       /* (a boxed socket write's literal keeps them: its arm is the
          retargeted call, which reaches them as send does) */
       if (!sock_name && (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy"))) continue;
+      /* nor, for a computed name, a method the compiler made for itself
+         (the enumerator's `__enumw_map`, a builtin's per-site copy): no
+         Ruby name reaches it, and the dispatch raises NoMethodError for its
+         name. (A literal the program spells keeps its arm, as a direct
+         call of that name does.) */
+      if (computed && name_is_synth_method(c, use[k])) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
          that count gets no arm (a reader takes none, a writer one). The
@@ -11648,8 +11666,10 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
 }
 
 /* cond: under a condition anywhere above; here: under one inside the def's
-   own class body (a class body under a condition resets it) */
-typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here; } CondDef;
+   own class body (a class body under a condition resets it); br: the branch
+   of the innermost condition above, -1 under none; al: an alias statement,
+   lf: any other statement the walk does not enter (def -1 for both) */
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here, br, al, lf; } CondDef;
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
@@ -11662,6 +11682,69 @@ static void cdef_path(const NodeTable *nt, int cp, char *p, size_t cap) {
   size_t l = strlen(p);
   snprintf(p + l, cap - l, "/%s", nt_str(nt, cp, "name") ? nt_str(nt, cp, "name") : "");
 }
+static int cdef_call_names(const NodeTable *nt, int id, const char *nm);
+/* The old-name literal of `alias new old` or of a receiverless
+   `alias_method :new, :old` (a visibility call around it included), or -1;
+   *nw gets the new-name literal. */
+static int cdef_alias(const NodeTable *nt, int id, int *nw) {
+  NodeKind k = nt_kind(nt, id);
+  int od = -1;
+  *nw = -1;
+  if (k == NK_AliasMethodNode) { od = nt_ref(nt, id, "old_name"); *nw = nt_ref(nt, id, "new_name"); }
+  else if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && nt_str(nt, id, "name")) {
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (sp_streq(nt_str(nt, id, "name"), "alias_method") && an == 2) { od = av[1]; *nw = av[0]; }
+    else if (is_visibility_name(nt_str(nt, id, "name")) && an == 1) return cdef_alias(nt, av[0], nw);
+  }
+  NodeKind ok = od >= 0 ? nt_kind(nt, od) : NK_NilNode, nk = *nw >= 0 ? nt_kind(nt, *nw) : NK_NilNode;
+  return (ok == NK_SymbolNode || ok == NK_StringNode) && (nk == NK_SymbolNode || nk == NK_StringNode) ? od : -1;
+}
+static const char *cdef_lit(const NodeTable *nt, int id) {
+  return nt_str(nt, id, nt_kind(nt, id) == NK_SymbolNode ? "value" : "content");
+}
+/* Might something under `id` define or rebind method `nm`: a def of it, or
+   an alias to it, undef or a defining call naming it (define_method,
+   attr_reader and kin). own: `id` stands in the def's own class body, where
+   such a call without a receiver, or an undef, is the class's; elsewhere
+   only one with a receiver may reach it, until a class body or block below
+   that might be the class's own again. cm: `nm` is a class method. */
+static int cdef_may_bind(const NodeTable *nt, int id, const char *nm, int own, int cm) {
+  static const char *const definers[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
+    "define_method", "remove_method", "undef_method", "send", "__send__", "public_send", NULL };
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  int nw;
+  if (k == NK_DefNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), nm)) return 1;
+  if (own && cdef_alias(nt, id, &nw) >= 0 && sp_streq(cdef_lit(nt, nw), nm)) return 1;
+  if (own && k == NK_UndefNode) {
+    int un = 0; const int *uv = nt_arr(nt, id, "names", &un);
+    for (int i = 0; i < un; i++) if (nt_kind(nt, uv[i]) == NK_SymbolNode && sp_streq(cdef_lit(nt, uv[i]), nm)) return 1;
+  }
+  const char *cn = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  int definer = 0;
+  for (int i = 0; cn && definers[i] && !definer; i++) definer = sp_streq(cn, definers[i]);
+  if (definer && (own || nt_ref(nt, id, "receiver") >= 0) && cdef_call_names(nt, id, nm)) return 1;
+  /* a bare one in a class body rebinds a class method, which `own` does
+     not cover */
+  if (cm && cn && sp_streq(cn, "define_singleton_method") && cdef_call_names(nt, id, nm)) return 1;
+  own |= k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (cdef_may_bind(nt, nt_ref_at(nt, id, i), nm, own, cm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) if (cdef_may_bind(nt, ids[j], nm, own, cm)) return 1;
+  }
+  return 0;
+}
+static void cdef_add(CondDef x, CondDef **v, int *n) {
+  CondDef *g = realloc(*v, sizeof(CondDef) * (size_t)(*n + 1));
+  if (!g) return;
+  *v = g;
+  x.path = strdup(x.path);
+  g[(*n)++] = x;
+}
 static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   NodeKind k = nt_kind(nt, id);
   switch (k) {
@@ -11673,6 +11756,14 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     for (int i = 0; i < bn; i++) {
       if (x.top < 0) y.top = b[i];
       cdef_walk(nt, b[i], y, v, n);
+      NodeKind bk = nt_kind(nt, b[i]);
+      int nw;
+      if (bk != NK_IfNode && bk != NK_UnlessNode && bk != NK_ClassNode && bk != NK_ModuleNode &&
+          bk != NK_DefNode && bk != NK_SingletonClassNode && cdef_vis_def(nt, b[i]) < 0 && cdef_alias(nt, b[i], &nw) < 0) {
+        CondDef z = y;
+        z.lf = b[i];
+        cdef_add(z, v, n);
+      }
     }
     break;
   }
@@ -11682,7 +11773,9 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     NodeKind pk = k == NK_ElseNode ? NK_ElseNode : nt_kind(nt, nt_ref(nt, id, "predicate"));
     x.cond = 1;
     if (pk != NK_ElseNode && pk != NK_TrueNode && pk != NK_FalseNode && pk != NK_NilNode) x.here = 1;
-    cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
+    CondDef y = x;
+    y.br = nt_ref(nt, id, "statements");
+    cdef_walk(nt, y.br, y, v, n);
     cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
     break;
@@ -11725,13 +11818,13 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   }
   else if (k == NK_DefNode && x.st >= 0 && nt_str(nt, id, "name") &&
            (nt_ref(nt, id, "receiver") < 0 || nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_SelfNode)) {
-    CondDef *g = realloc(*v, sizeof(CondDef) * (size_t)(*n + 1));
-    if (!g) return;
-    *v = g;
     x.def = id;
     x.cm |= nt_ref(nt, id, "receiver") >= 0;
-    x.path = strdup(x.path);
-    g[(*n)++] = x;
+    cdef_add(x, v, n);
+  }
+  else if (x.st >= 0 && cdef_alias(nt, id, &(int){ 0 }) >= 0) {
+    x.al = id;
+    cdef_add(x, v, n);
   }
 }
 static int cdef_arity(const NodeTable *nt, int def) {
@@ -11914,11 +12007,13 @@ int desugar_conditional_defs(Compiler *c) {
   int n = 0, serial = 0, groups = 0;
   char **lone = NULL;   /* the names a single def under a run-time condition defines */
   int nlone = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0 }, &v, &n);
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0, -1, -1, -1 }, &v, &n);
+  CondDef *g = malloc(sizeof(CondDef) * (size_t)(n > 0 ? n : 1));
+  int *gi = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!g || !gi) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
     char *base = strdup(nt_str(nt, v[i].def, "name"));
-    CondDef g[n];
     int ng = 0, bad = 0, blk = 0, same = 1, d0 = v[i].def, ar = cdef_arity(nt, d0);
     for (int j = 0; j < n; j++) {
       if (v[j].def < 0 || v[j].cm != v[i].cm || strcmp(v[j].path, v[i].path) ||
@@ -11930,6 +12025,7 @@ int desugar_conditional_defs(Compiler *c) {
       bad |= !sp_streq(v[j].vis, v[i].vis);
       if (cdef_arity(nt, v[j].def) != ar) ar = -1;
       same &= cdef_same(nt, v[j].def, d0);
+      gi[ng] = j;
       g[ng++] = v[j];
       v[j].def = -1;
     }
@@ -11990,6 +12086,20 @@ int desugar_conditional_defs(Compiler *c) {
       nt_node_set_str(nt, wk, "name", sel);
       nt_node_set_ref(nt, wk, "value", nt_new_int(nt, k + 1));
       cdef_insert_after(nt, g[k].st, g[k].def, wk);
+      /* an alias of the name binds the arm it follows, where that arm is
+         sure to have run and still answers the name: in its branch, after
+         it, with nothing between that might rebind the name. The
+         dispatcher the name becomes would reach the arm that aliases it
+         and call itself. */
+      for (int a = gi[k] + 1; a < n && (k == ng - 1 || a < gi[k + 1]); a++) {
+        int nw, od = v[a].al >= 0 ? cdef_alias(nt, v[a].al, &nw) : -1;
+        int own = v[a].cm == g[k].cm && !strcmp(v[a].path, g[k].path), same = od >= 0 && own;
+        if (v[a].lf >= 0 && cdef_may_bind(nt, v[a].lf, base, own, g[k].cm)) break;
+        if (same && sp_streq(cdef_lit(nt, nw), base)) break;
+        if (!same || !sp_streq(cdef_lit(nt, od), base) || (g[k].br >= 0 && !subtree_has(nt, g[k].br, v[a].al)))
+          continue;
+        nt_node_set_str(nt, od, nt_kind(nt, od) == NK_SymbolNode ? "value" : "content", nm);
+      }
       int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
       for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
       if (ar < 0) {
@@ -12036,6 +12146,8 @@ int desugar_conditional_defs(Compiler *c) {
   }
   for (int i = 0; i < n; i++) free((char *)v[i].path);
   free(v);
+  free(g);
+  free(gi);
   if (nlone) cdef_refuse_reflection(nt, (const char *const *)lone, nlone);
   for (int i = 0; i < nlone; i++) free(lone[i]);
   free(lone);
@@ -12087,20 +12199,6 @@ static int bi_kernel_call_name(const char *nm) {
     "object_id", "dup", "clone", "itself", "then", "tap", "inspect", "to_s", "class",
     "__enum_pairs", "__enum_count_int", NULL };
   return str_in(nm, ks);
-}
-
-/* Retype every node of the subtree at `id` to a NilNode. The generic
-   definition is cloned per call site and then left out of the program, but
-   the passes that walk the node table by id rather than by tree still saw
-   its DefNode, its block parameters and its locals, and declared each of
-   them (rooted) in main. A NilNode is what those passes skip. */
-static void bi_subtree_blank(NodeTable *nt, int id) {
-  if (id < 0 || id >= nt->count) return;
-  SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) bi_subtree_blank(nt, nd->r[j].ref);
-  for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) bi_subtree_blank(nt, nd->a[j].ids[k]);
-  nt_node_set_type(nt, id, "NilNode");
 }
 
 /* does any DefNode among the program's own nodes carry this name? (the
@@ -12237,7 +12335,7 @@ int desugar_builtins(Compiler *c) {
        orphaned but still a ConstantReadNode, the constant made every
        program that mentioned a builtin carry the class machinery (the
        prologue scan walks the table by id) */
-    bi_subtree_blank(nt, cp);
+    nt_subtree_blank(nt, cp);
     nt_node_set_type(nt, st, "NilNode");
     changed = 1;
   }
@@ -12260,7 +12358,7 @@ int desugar_builtins(Compiler *c) {
     if (bi < nbuiltin) continue;
     int g = own_enum_generic(nt, own[k]);
     if (g < 0) break;
-    if (gdef[bi] >= 0) bi_subtree_blank(nt, gdef[bi]);
+    if (gdef[bi] >= 0) nt_subtree_blank(nt, gdef[bi]);
     gdef[bi] = g;
     changed = 1;
   }
@@ -12331,20 +12429,13 @@ int desugar_builtins(Compiler *c) {
       if (sac >= 1 && nt_kind(nt, sav[0]) == NK_SymbolNode && nt_str(nt, sav[0], "value"))
         cn0 = nt_str(nt, sav[0], "value");
     }
-    /* collect_concat is flat_map under another name: the call takes the
-       name the definition has (a program that defines collect_concat
-       itself keeps its call) */
-    if (cn0 && sp_streq(cn0, "collect_concat") && builtin_enum_name_index("flat_map") >= 0 &&
-        !program_defines_name(nt, n0, "collect_concat")) {
+    /* collect_concat is flat_map under another name, and detect find: the
+       call takes the name the definition has (LR_ENUM_NAME's rows; a
+       program that defines collect_concat or detect itself keeps its call) */
+    const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
+    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name(nt, n0, alias->name)) {
       nt_node_set_str(nt, id, "orig_name", cn0);
-      cn0 = "flat_map";
-      nt_node_set_str(nt, id, "name", cn0);
-    }
-    /* detect is find under another name, the same way */
-    if (cn0 && sp_streq(cn0, "detect") && builtin_enum_name_index("find") >= 0 &&
-        !program_defines_name(nt, n0, "detect")) {
-      nt_node_set_str(nt, id, "orig_name", cn0);
-      cn0 = "find";
+      cn0 = alias->target;
       nt_node_set_str(nt, id, "name", cn0);
     }
     int bi = builtin_enum_name_index(cn0);
@@ -12358,6 +12449,7 @@ int desugar_builtins(Compiler *c) {
     if (copy < 0) break;
     char cn[256]; snprintf(cn, sizeof cn, "__enum_%s__%d", sp_builtin_enum_names[bi], site_seq[bi]++);
     nt_node_set_str(nt, copy, "name", cn);
+    nt_node_set_int(nt, copy, "private_helper", 1);   /* no Ruby method (comp_scope_is_private_helper) */
     nt_node_set_int(nt, copy, "enum_site", id);   /* the call it serves (enum_copy_site) */
     nt_node_set_int(nt, id, "enum_copy", copy);
     /* the calls in the copy are its sites, the walk reaches them below */
@@ -12369,7 +12461,7 @@ int desugar_builtins(Compiler *c) {
     nb[nbn++] = copy;
   }
   nt_node_set_arr(nt, top, "body", nb, nbn);
-  for (int i = 0; i < sp_builtin_enum_names_n; i++) if (gdef[i] >= 0) bi_subtree_blank(nt, gdef[i]);
+  for (int i = 0; i < sp_builtin_enum_names_n; i++) if (gdef[i] >= 0) nt_subtree_blank(nt, gdef[i]);
   comp_grow_node_arrays(c);
   free(gdef); free(nb);
   return 1;
@@ -12490,8 +12582,8 @@ static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const u
     nt_node_set_arr(nt, st, "body", &keep, 1);
     keep = st;
   }
-  bi_subtree_blank(nt, pred);
-  if (drop >= 0) bi_subtree_blank(nt, drop);
+  nt_subtree_blank(nt, pred);
+  if (drop >= 0) nt_subtree_blank(nt, drop);
   nt_node_set_ref(nt, id, "predicate", -1);
   nt_node_set_ref(nt, id, "statements", -1);
   nt_node_set_ref(nt, id, k == NK_IfNode ? "subsequent" : "else_clause", -1);
@@ -12704,42 +12796,19 @@ int block_body_breaks(const NodeTable *nt, int node) {
    end either way, and the typed emitters are the faster path. */
 int desugar_enum_walk_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  if (comp_method_index(c, "__enumw_map") < 0) return 0;   /* not spliced */
+  if (comp_method_index(c, lower_row_of(LR_ENUM_WALK)->target) < 0) return 0;   /* not spliced */
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *name = nt_str(nt, id, "name");
-    if (!name) continue;
+    /* the shape, a block that can break included (LR_ENUM_WALK's rows) */
+    const LowerRow *r = lower_row_nt(nt, id, LR_ENUM_WALK);
+    if (!r) continue;
+    const char *hn = r->target;
     int recv = nt_ref(nt, id, "receiver");
-    int blk = nt_ref(nt, id, "block");
-    if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    const char *hn = NULL;
-    if ((is_map_alias(name)) && an == 0) hn = "__enumw_map";
-    else if ((is_select_alias(name)) && an == 0) hn = "__enumw_select";
-    else if (sp_streq(name, "reject") && an == 0) hn = "__enumw_reject";
-    else if (sp_streq(name, "filter_map") && an == 0) hn = "__enumw_filter_map";
-    else if ((is_with_object_alias(name)) && an == 1) hn = "__enumw_each_with_object";
-    else if ((is_reduce_alias(name)) && an <= 1) hn = an ? "__enumw_inject1" : "__enumw_inject0";
-    else if ((is_each_window(name)) && an == 1)
-      hn = name[5] == 's' ? "__enumw_each_slice" : "__enumw_each_cons";
-    else if (sp_streq(name, "each_entry") && an == 0) hn = "__enumw_each_entry";
-    else if (sp_streq(name, "with_index") && an <= 1) {
-      /* `arr.map.with_index { }` is map's, answering the mapped array; only
-         an Enumerator that just walks its source (each, cycle, a generator)
-         is a plain walk with a counter */
-      if (nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
-        const char *rn = nt_str(nt, recv, "name");
-        if (!rn || (!sp_streq(rn, "each") && !sp_streq(rn, "cycle") && !sp_streq(rn, "new"))) continue;
-      }
-      hn = "__enumw_with_index";
-    }
-    if (!hn) continue;
     if (nt_safe_nav(nt, id)) continue;
     if (infer_type(c, recv) != TY_ENUMERATOR) continue;
-    if (!block_body_breaks(nt, nt_ref(nt, blk, "body"))) continue;
     int *na = (int *)malloc(sizeof(int) * (size_t)(an + 1));
     if (!na) return changed;
     na[0] = recv; for (int j = 0; j < an; j++) na[j + 1] = av[j];
@@ -13100,15 +13169,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
        both as rb_ary_index): `@choices.index(&block)`, Forwardable's
        delegator shape in tty-prompt's Choices, had no emitter of its own */
     const char *bname = NULL;
-    if (name && sp_streq(name, "index") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "arguments") < 0 &&
-        nt_ref(nt, id, "receiver") >= 0 && builtin_enum_name_index("find_index") >= 0) {
+    const LowerRow *ixr = lower_row_nt(nt, id, LR_INDEX_BLOCK);
+    if (ixr && builtin_enum_name_index(ixr->target) >= 0) {
       TyKind irt = infer_type(c, nt_ref(nt, id, "receiver"));
-      if (ty_is_array(irt) || ty_is_obj_array(irt)) { nt_node_set_str(nt, id, "name", "find_index"); name = nt_str(nt, id, "name"); changed = 1; }
+      if (ty_is_array(irt) || ty_is_obj_array(irt)) { nt_node_set_str(nt, id, "name", ixr->target); name = nt_str(nt, id, "name"); changed = 1; }
       /* a value known only at run time takes find_index's definition for an
          Array and keeps `index` for a class of the program that defines it
          (tty-prompt's Choices beside the Array a filtered list is): the
          dispatch below, under the builtin's name */
-      else if (irt == TY_POLY) bname = "find_index";
+      else if (irt == TY_POLY) bname = ixr->target;
     }
     /* Enumerator#with_object(memo) { } on a value known only at run time
        (a method's blockless `to_enum` beside its `self`) is
@@ -13117,14 +13186,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
        or the NoMethodError CRuby raises): the dispatch below, under
        each_with_object's copy */
     int wo_arm = 0;
-    if (name && sp_streq(name, "with_object") && !nt_int(nt, id, "enum_wo_own", 0) &&
-        nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0 && !nt_safe_nav(nt, id) &&
-        builtin_enum_name_index("each_with_object") >= 0) {
-      int wa = nt_ref(nt, id, "arguments"), wn = 0;
-      if (wa >= 0) nt_arr(nt, wa, "arguments", &wn);
-      if (wn == 1 && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY && !enumerator_own_with_object(c, id)) {
-        bname = "each_with_object"; wo_arm = 1;
-      }
+    const LowerRow *wor = lower_row_nt(nt, id, LR_WITH_OBJECT);
+    if (wor && !nt_int(nt, id, "enum_wo_own", 0) && !nt_safe_nav(nt, id) &&
+        builtin_enum_name_index(wor->target) >= 0 &&
+        infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY && !enumerator_own_with_object(c, id)) {
+      bname = wor->target; wo_arm = 1;
     }
     if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -13573,7 +13639,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, def, "name", gn); }
         if (bi >= 0) gdef[bx][bi] = def;
       }
-      bi_subtree_blank(nt, cp);
+      nt_subtree_blank(nt, cp);
       nt_node_set_type(nt, st, "NilNode");
       changed = 1;
       continue;
@@ -13610,7 +13676,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
            answer SPINEL_NO_BUILTINS=1 gives). */
         int bi0 = sp_builtin_extra_name_index(bx, name);
         if (bi0 >= 0 && gdef[bx] && gdef[bx][bi0] >= 0) {
-          bi_subtree_blank(nt, gdef[bx][bi0]);
+          nt_subtree_blank(nt, gdef[bx][bi0]);
           gdef[bx][bi0] = -1;
         }
         continue;
@@ -13632,14 +13698,14 @@ int desugar_builtin_scalar_defs(Compiler *c) {
       { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, clone, "name", gn); }
       int bi = sp_builtin_extra_name_index(bx, name);
       if (bi >= 0) {
-        if (gdef[bx][bi] >= 0) bi_subtree_blank(nt, gdef[bx][bi]);
+        if (gdef[bx][bi] >= 0) nt_subtree_blank(nt, gdef[bx][bi]);
         gdef[bx][bi] = clone;
       }
       else {
         int j = -1;
         for (int m = 0; m < odef_n[bx]; m++) if (sp_streq(odef_name[bx][m], name)) { j = m; break; }
         if (j >= 0) {
-          if (odef_def[bx][j] >= 0) bi_subtree_blank(nt, odef_def[bx][j]);
+          if (odef_def[bx][j] >= 0) nt_subtree_blank(nt, odef_def[bx][j]);
           odef_def[bx][j] = clone;
         }
         else {
@@ -13699,6 +13765,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     if (seq >= 0) snprintf(cn, sizeof cn, "%s__%d", base, seq);
     else snprintf(cn, sizeof cn, "%s__n%s", base, comp_node_tag(c, id));   /* past the table: the node id, still unique */
     nt_node_set_str(nt, copy, "name", cn);
+    nt_node_set_int(nt, copy, "private_helper", 1);   /* no Ruby method (comp_scope_is_private_helper) */
     nt_node_set_int(nt, id, "bx_copy", copy);
     nt_node_set_int(nt, id, "bx_container", bx);
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
@@ -13707,10 +13774,10 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   nt_node_set_arr(nt, top, "body", nb, nbn);
   for (int bx = 0; bx < SP_BX_N; bx++) {
     int n = sp_builtin_extra_names_n(bx);
-    for (int i = 0; i < n; i++) if (gdef[bx] && gdef[bx][i] >= 0) bi_subtree_blank(nt, gdef[bx][i]);
+    for (int i = 0; i < n; i++) if (gdef[bx] && gdef[bx][i] >= 0) nt_subtree_blank(nt, gdef[bx][i]);
     free(gdef[bx]);
     for (int i = 0; i < odef_n[bx]; i++) {
-      if (odef_def[bx][i] >= 0) bi_subtree_blank(nt, odef_def[bx][i]);
+      if (odef_def[bx][i] >= 0) nt_subtree_blank(nt, odef_def[bx][i]);
       free(odef_name[bx][i]);
     }
     free(odef_name[bx]); free(odef_def[bx]);
@@ -14226,7 +14293,7 @@ int desugar_recursive_param_defaults(Compiler *c) {
     int v = ds[i].val;
     long long vl = nt_int(nt, v, "node_line", 0), vf = nt_int(nt, v, "node_file", 0),
               vc = nt_int(nt, v, "node_col", 0);
-    bi_subtree_blank(nt, v);
+    nt_subtree_blank(nt, v);
     nt_node_reset(nt, v, "CallNode");
     nt_node_set_int(nt, v, "node_line", vl);
     nt_node_set_int(nt, v, "node_file", vf);

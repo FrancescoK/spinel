@@ -15,3 +15,4 @@
 [["x", "-x", "y"], {kept: "before", xxx: true}, ["x", "y"], true]
 ["b"]
 {yyy: "AAA", xxx: true}
+{xxx: true, yyy: "A", zzz: nil, mode: :slow}

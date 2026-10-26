@@ -4759,7 +4759,12 @@ sp_RbVal sp_main_self(void) {
 sp_StrArray *sp_get_ARGV(void) {
   if (!sp_argv_array_cache) {
     sp_argv_array_cache = sp_StrArray_new();
-    for (sp_int i = 0; i < sp_argv.len; i++) sp_StrArray_push_e(sp_argv_array_cache, SP_SEF(sp_argv.data[i]));
+    for (sp_int i = 0; i < sp_argv.len; i++) {
+      /* frozen, as CRuby's are, and collectible like ENV's copies (sp_env_str) */
+      unsigned char *m = (unsigned char *)sp_argv.data[i] - 1;
+      if (*m == 0xfe) *m = 0xfa;
+      sp_StrArray_push_e(sp_argv_array_cache, SP_SEF(sp_argv.data[i]));
+    }
   }
   return sp_argv_array_cache;
 }

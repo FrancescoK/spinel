@@ -194,7 +194,8 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
   buf_printf(b, " || sp_str_in_list(_n%d, (const char *const[]){", tv);
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *ts = &c->scopes[s];
-    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form) {
+    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form &&
+        !name_is_synth_method(c, ts->name)) {
       buf_puts(b, "\"");
       emit_c_escaped(b, ts->name);
       buf_puts(b, "\", ");

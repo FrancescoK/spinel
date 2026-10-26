@@ -1,0 +1,3 @@
+self.class, raise: false
+constant, raise: false
+self.class, no raise: false

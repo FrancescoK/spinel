@@ -8483,16 +8483,17 @@ static sp_RbVal sp_poly_arr_live_recv(sp_RbVal v, const char *m) {
 }
 static inline void sp_PolyArray_set(sp_PolyArray *a, sp_int i, sp_RbVal v);   /* fwd: defined below */
 /* `a.fill(v[, start[, len]])` on a boxed receiver with Integer offsets
-   (argc counts v): a PolyArray, and an Integer or Float Array whose span
-   is in bounds and whose kind v is, fill in place; anything else fills a
-   boxed copy and writes it back. Answers the receiver. */
-static sp_RbVal sp_poly_fill(sp_RbVal recv, sp_RbVal v, int argc, sp_int start, sp_int len) {
+   (argc counts v; a nil start is 0, a nil length runs to the end): a
+   PolyArray, and an Integer or Float Array whose span is in bounds and
+   whose kind v is, fill in place; anything else fills a boxed copy and
+   writes it back. Answers the receiver. */
+static sp_RbVal sp_poly_fill(sp_RbVal recv, sp_RbVal v, int argc, sp_oint start, sp_oint len) {
   if (!(recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))) sp_raise_nomethod(sp_nomethod_msg("fill", recv));
   if (sp_poly_array_frozen(recv)) sp_raise_frozen_array_at(recv.v.p, recv.cls_id);
   sp_PolyArray *p = recv.cls_id == SP_BUILTIN_POLY_ARRAY ? (sp_PolyArray *)recv.v.p : NULL;
   sp_int alen = sp_poly_arr_len(recv), s = 0, e = alen;
-  if (argc >= 2) { s = start < 0 ? start + alen : start; if (s < 0) s = 0; }
-  if (argc == 3) e = len < 0 ? s : s + len;
+  if (argc >= 2 && !start.nil) { s = start.v < 0 ? start.v + alen : start.v; if (s < 0) s = 0; }
+  if (argc == 3 && !len.nil) e = len.v < 0 ? s : s + len.v;
   else if (s > alen) e = s;
   if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
     for (sp_int i = s; i < e; i++) sp_PolyArray_set(p, i, v);
@@ -12352,11 +12353,21 @@ static SP_UNUSED sp_int sp_array_fill_range(sp_Range r0, sp_int *n) {
   *n = e;
   return s;
 }
+/* ...and over a Float Range ((1.5..2), (0.5...)): each written end through
+   to_int, the begin's RangeError naming the Range as written */
+static SP_UNUSED sp_int sp_array_fill_frange(sp_FloatRange f, sp_int *n) {
+  sp_oint b = (f.omitted & SP_FRANGE_NO_BEGIN) ? sp_oint_nil() : sp_oint_of(sp_float_arg_i(f.first));
+  sp_oint e = (f.omitted & SP_FRANGE_NO_END) ? sp_oint_nil() : sp_oint_of(sp_float_arg_i(f.last));
+  if (!b.nil && b.v < -*n) sp_raise_cls("RangeError", sp_sprintf("%s out of range", sp_frange_inspect(f)));
+  return sp_array_fill_range(sp_range_new_o(b, e, f.excl), n);
+}
 /* fill(value, x) with x boxed: a Range is the span (sp_array_fill_range);
    anything else is a start filled through to *n. */
 static SP_UNUSED sp_int sp_array_fill_span(sp_RbVal v, sp_int *n) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_array_fill_range(*(sp_Range *)v.v.p, n);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p)
+    return sp_array_fill_frange(*(sp_FloatRange *)v.v.p, n);
   sp_oint o = sp_array_fill_offset_arg(v, 0);
   return o.nil ? 0 : o.v;
 }
@@ -12714,6 +12725,14 @@ static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
      across each step. */
   return sp_poly_dig_n(recv, keys->len, keys->data);
 }
+/* A boxed index of an Array or a String that is a Float Range is the
+   Integer Range of its to_int ends (sp_frange_ix); any other is itself. */
+static SP_INLINE sp_bool sp_poly_is_frange(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p;
+}
+static SP_UNUSED sp_RbVal sp_poly_frange_ix(sp_RbVal v) {
+  return sp_poly_is_frange(v) ? sp_box_range(sp_frange_ix(*(sp_FloatRange *)v.v.p)) : v;
+}
 /* poly[poly_key]: dispatch on key tag at runtime. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_THREAD) {
@@ -12735,6 +12754,12 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      its live value: the String arms below all test SP_TAG_STR, and a handle
      fell past every one of them to the trailing nil (#4279). */
   if (sp_poly_is_strbuf(recv)) return sp_poly_index_poly(sp_poly_strbuf_deref(recv), idx);
+  /* a Float Range indexes an Array, a String or a Symbol as the Integer
+     Range of its to_int ends */
+  if (SP_UNLIKELY(sp_poly_is_frange(idx)) &&
+      (recv.tag == SP_TAG_STR || recv.tag == SP_TAG_SYM ||
+       (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))))
+    return sp_poly_index_poly(recv, sp_poly_frange_ix(idx));
   /* an Integer index into an array is the common read, and it matches nothing
      below until the very last line (array kinds are builtin, so the Struct arm
      with its cls_id >= 0 test cannot claim it) */

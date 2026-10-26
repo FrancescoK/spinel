@@ -1,6 +1,7 @@
 # parse! and parse with into: store each switch's value under its first long
 # name, or else its short one, as CRuby does: what the block returns when
-# there is one, true for a flag, false for its --no- form.
+# there is one, true for a flag, false for its --no- form; into an empty
+# Hash as into one that already has keys.
 require "optparse"
 
 parser = OptionParser.new
@@ -19,8 +20,6 @@ parser.on_tail("--tail")
 [%w[-x], %w[--yyy A], %w[-z], %w[-zQ], %w[-n 3], %w[--verbose], %w[--no-verbose],
  %w[--dry-run], %w[-s], %w[--blk=ab], %w[--blknil], %w[--mode=f], %w[--tail],
  %w[-x -x], %w[x -x y]].each do |words|
-  # a Hash that starts with a Symbol key: an empty {} given as into:
-  # raises TypeError for now
   options = { kept: "before" }
   argv = words.dup
   result = parser.parse!(argv, into: options)
@@ -30,3 +29,7 @@ end
 options = { yyy: "AAA" }
 p parser.parse(%w[-x b], into: options)
 p options
+
+empty = {}
+parser.parse!(%w[-x --yyy A -z --mode=s], into: empty)
+p empty

@@ -1315,6 +1315,21 @@ static int const_ref_is_rescued(Compiler *c, int id) {
   return 0;
 }
 
+/* Is this constant reference on the right of a `&&` whose left arm is a
+   statically false defined? guard (comp_defined_guard_false)? That arm never
+   runs, so the reference never raises: `defined?(::X) && ::X` is how a
+   program reads a constant it may not have, as the `? :` form does, which
+   folds its dead arm away before it is emitted. */
+static int const_ref_is_guarded(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  for (int b = 0; b < nt->count; b++) {
+    if (nt_kind(nt, b) != NK_AndNode) continue;
+    if (!comp_defined_guard_false(c, nt_ref(nt, b, "left"))) continue;
+    if (node_in_subtree(nt, nt_ref(nt, b, "right"), id)) return 1;
+  }
+  return 0;
+}
+
 /* The constant path AS WRITTEN, for a message someone has to find in their
    source. The `par_nmc` the arms below key on is deliberately the parent's
    LEAF name (the ffi and platform-constant tables are keyed that way), and
@@ -3439,7 +3454,8 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
              build succeeds and the first request crashes (#3976). It stays a
              warning, not an error: referencing a missing constant to test the
              NameError is legal Ruby, and ruby/spec does exactly that. */
-          if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, nm);
+          if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
+            warn_undefined_constant(c, id, nm);
           buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
         }
       }
@@ -3747,7 +3763,8 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", fullname);
         return 1;
       }
-      if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, fullname);
+      if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
+        warn_undefined_constant(c, id, fullname);
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
     }
     return 1;
@@ -3815,6 +3832,15 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     else if (vk == NK_InstanceVariableReadNode) {
       /* Return "instance-variable" only when the ivar is known to be assigned. */
       const char *inm = nt_str(nt, v, "name");
+      /* an attr_writer or attr_accessor of self's class or a superclass
+         writes it too (a Struct member is no ivar) */
+      Scope *ws = comp_scope_of(c, v);
+      for (int k = ws && !ws->is_cmethod ? ws->class_id : -1; k >= 0 && inm && !res; k = c->classes[k].parent) {
+        ClassInfo *wi = &c->classes[k];
+        int mi = comp_ivar_index(wi, inm);
+        if (comp_is_writer(wi, inm + 1) && !((wi->is_struct || wi->is_data) && mi >= 0 && mi < wi->nmembers))
+          res = "instance-variable";
+      }
       for (int kk = 0; kk < nt->count && !res; kk++) {
         NodeKind kt_k = nt_kind(nt, kk);
         if (kt_k == NK_InstanceVariableWriteNode &&

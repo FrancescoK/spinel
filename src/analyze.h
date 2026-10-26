@@ -169,6 +169,7 @@ TyKind local_aset_key_type(Compiler *c, Scope *sc, const char *name, int *nwrite
 /* Run inference over the whole program: register locals, reach a fixpoint
    on their types, and fill the node type cache. */
 void analyze_program(Compiler *c);
+int lower_rows_check(const NodeTable *nt);   /* SPINEL_LOWER_ROWS_CHECK: the parse's lowering rows against the node's */
 /* The program as written gives no class a method named `nm`, beyond `defs`
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);

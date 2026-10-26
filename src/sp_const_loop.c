@@ -42,6 +42,7 @@
  * leave the core classes whose methods the loop runs alone, give the table
  * no methods of its own, and have no inherited hook (CRuby calls it before
  * the class has a name). Anything else leaves the loop as written. */
+#include "ct_value.h"
 
 typedef enum { CL_MV = 0, CL_CONST, CL_KLASS } ClKind;
 /* lit: a String the table spells as a literal, key or value; frozen: the
@@ -55,7 +56,7 @@ typedef struct { char *name; ClVal v; } ClVar;
 typedef struct {
   ClVar loc[64]; int nloc;
   ClKlass *kl; int nkl, ckl;
-  MxBuf *out;
+  MvBuf *out;
   MxCtx mx;          /* the plain values, for mx_eval */
   const char *src;   /* the whole program */
   const pm_node_t *root;          /* its tree, to look for other definitions of a name */
@@ -247,11 +248,11 @@ static char *cl_text(const pm_node_t *n) {
 static int cl_eval(ClCtx *c, pm_node_t *n, ClVal *out);
 
 /* the value as Ruby source, where it reads back as itself */
-static int cl_spell(ClCtx *c, ClVal v, MxBuf *b) {
-  if (v.k == CL_CONST) { mxb_puts(b, v.cref); return 1; }
+static int cl_spell(ClCtx *c, ClVal v, MvBuf *b) {
+  if (v.k == CL_CONST) { mvb_puts(b, v.cref); return 1; }
   if (v.k == CL_KLASS) {
     if (!c->kl[v.klass].name) return 0;     /* an anonymous class has no spelling */
-    mxb_puts(b, c->kl[v.klass].name);
+    mvb_puts(b, c->kl[v.klass].name);
     return 1;
   }
   if (v.mv.k == MV_UNDEF) return 0;
@@ -342,7 +343,7 @@ static int cl_when_matches(ClCtx *c, pm_node_t *w, Mv v, int *hit) {
 static int cl_exec_stmts(ClCtx *c, pm_statements_node_t *s);
 
 static int cl_exec(ClCtx *c, pm_node_t *n) {
-  MxBuf *o = c->out;
+  MvBuf *o = c->out;
   switch (PM_NODE_TYPE(n)) {
   case PM_LOCAL_VARIABLE_WRITE_NODE: {
     pm_local_variable_write_node_t *w = (pm_local_variable_write_node_t *)n;
@@ -395,7 +396,7 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
     if (self_recv && argc == 2 && strcmp(name, "const_set") == 0) {
       Mv cnm; ClVal v;
       if (mx_eval(&c->mx, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
-          isupper((unsigned char)cnm.s[0]) && mx_sym_plain(cnm.s) && cnm.s[strlen(cnm.s) - 1] != '?' &&
+          isupper((unsigned char)cnm.s[0]) && mv_sym_plain(cnm.s) && cnm.s[strlen(cnm.s) - 1] != '?' &&
           cnm.s[strlen(cnm.s) - 1] != '!' && cnm.s[strlen(cnm.s) - 1] != '=' &&
           !cl_name_taken(c, cnm.s) && cl_eval(c, args->nodes[1], &v)) {
         cl_take_name(c, cnm.s);
@@ -403,14 +404,14 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
           /* the class takes its name: its definition, with what was set on it */
           ClKlass *k = &c->kl[v.klass];
           k->name = strdup(cnm.s);
-          mxb_puts(o, "class "); mxb_puts(o, k->name); mxb_puts(o, " < "); mxb_puts(o, k->parent);
-          mxb_puts(o, "; "); mxb_puts(o, k->ivars); mxb_puts(o, "end; ");
+          mvb_puts(o, "class "); mvb_puts(o, k->name); mvb_puts(o, " < "); mvb_puts(o, k->parent);
+          mvb_puts(o, "; "); mvb_puts(o, k->ivars); mvb_puts(o, "end; ");
           ok = 1;
         }
         else {
-          MxBuf vb = {0};
+          MvBuf vb = {0};
           if (cl_spell(c, v, &vb)) {
-            mxb_puts(o, cnm.s); mxb_puts(o, " = "); mxb_puts(o, vb.p ? vb.p : "nil"); mxb_puts(o, "; ");
+            mvb_puts(o, cnm.s); mvb_puts(o, " = "); mvb_puts(o, vb.p ? vb.p : "nil"); mvb_puts(o, "; ");
             ok = 1;
           }
           free(vb.p);
@@ -421,8 +422,8 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
       ClVal r, v; Mv ivn;
       if (cl_eval(c, cn->receiver, &r) && r.k == CL_KLASS && !c->kl[r.klass].name &&
           mx_eval(&c->mx, args->nodes[0], &ivn) && (ivn.k == MV_SYM || ivn.k == MV_STR) &&
-          ivn.s[0] == '@' && ivn.s[1] != '@' && mx_sym_plain(ivn.s + 1) && cl_eval(c, args->nodes[1], &v)) {
-        MxBuf vb = {0};
+          ivn.s[0] == '@' && ivn.s[1] != '@' && mv_sym_plain(ivn.s + 1) && cl_eval(c, args->nodes[1], &v)) {
+        MvBuf vb = {0};
         if (cl_spell(c, v, &vb)) {
           ClKlass *k = &c->kl[r.klass];
           size_t need = strlen(k->ivars) + strlen(ivn.s) + (vb.p ? strlen(vb.p) : 3) + 8;
@@ -437,11 +438,11 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
     else if (!self_recv && argc == 2 && strcmp(name, "[]=") == 0 &&
              (PM_NODE_TYPE(cn->receiver) == PM_CONSTANT_READ_NODE || PM_NODE_TYPE(cn->receiver) == PM_CONSTANT_PATH_NODE)) {
       ClVal kv, v;
-      MxBuf kb = {0}, vb = {0};
+      MvBuf kb = {0}, vb = {0};
       if (cl_eval(c, args->nodes[0], &kv) && cl_eval(c, args->nodes[1], &v) &&
           cl_spell(c, kv, &kb) && cl_spell(c, v, &vb)) {
         char *rt = cl_text(cn->receiver);
-        mxb_puts(o, rt); mxb_puts(o, "["); mxb_puts(o, kb.p); mxb_puts(o, "] = "); mxb_puts(o, vb.p); mxb_puts(o, "; ");
+        mvb_puts(o, rt); mvb_puts(o, "["); mvb_puts(o, kb.p); mvb_puts(o, "] = "); mvb_puts(o, vb.p); mvb_puts(o, "; ");
         free(rt);
         ok = 1;
       }
@@ -600,7 +601,7 @@ static void cl_try_body(ClWalk *w, pm_statements_node_t *st) {
     if (!cl_table(&c, ((pm_constant_write_node_t *)def)->value, &keys, &vals, &n)) { free(keys); free(vals); continue; }
     char *kname = mx_name(((pm_required_parameter_node_t *)ps->requireds.nodes[0])->name);
     char *vname = mx_name(((pm_required_parameter_node_t *)ps->requireds.nodes[1])->name);
-    MxBuf out = {0};
+    MvBuf out = {0};
     c.out = &out;
     int ok = 1;
     for (int e = 0; e < n && ok; e++) {
@@ -618,11 +619,11 @@ static void cl_try_body(ClWalk *w, pm_statements_node_t *st) {
     if (ok) {
       int lines = 0;
       for (const uint8_t *p = s->location.start; p < s->location.end; p++) if (*p == '\n') lines++;
-      MxBuf rep = {0};
-      mxb_puts(&rep, out.p ? out.p : "");
+      MvBuf rep = {0};
+      mvb_puts(&rep, out.p ? out.p : "");
       { char *rv = cl_text(cn->receiver);   /* Hash#each answers its receiver */
-        mxb_puts(&rep, rv); free(rv); }
-      for (int q = 0; q < lines; q++) mxb_puts(&rep, "\n");
+        mvb_puts(&rep, rv); free(rv); }
+      for (int q = 0; q < lines; q++) mvb_puts(&rep, "\n");
       MxEdits *ed = w->ed;
       if (ed->n == ed->cap) { ed->cap = ed->cap ? ed->cap * 2 : 8; ed->e = realloc(ed->e, sizeof(MxEdit) * (size_t)ed->cap); }
       ed->e[ed->n].start = s->location.start;
@@ -685,15 +686,15 @@ static char *sp_expand_table_loops(const char *source) {
     pm_visit_node(root, cl_visit, &w);
     if (ed.n > 0) {
       qsort(ed.e, (size_t)ed.n, sizeof(MxEdit), mx_edit_cmp);
-      MxBuf nb = {0};
+      MvBuf nb = {0};
       const uint8_t *from = (const uint8_t *)source;
       for (int i = 0; i < ed.n; i++) {
         if (ed.e[i].start < from) continue;
-        mxb_putn(&nb, (const char *)from, (size_t)(ed.e[i].start - from));
-        mxb_puts(&nb, ed.e[i].text);
+        mvb_putn(&nb, (const char *)from, (size_t)(ed.e[i].start - from));
+        mvb_puts(&nb, ed.e[i].text);
         from = ed.e[i].end;
       }
-      mxb_putn(&nb, (const char *)from, (size_t)((const uint8_t *)source + len - from));
+      mvb_putn(&nb, (const char *)from, (size_t)((const uint8_t *)source + len - from));
       result = nb.p;
     }
     for (int i = 0; i < ed.n; i++) free(ed.e[i].text);

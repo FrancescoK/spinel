@@ -221,7 +221,16 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | `analysis_renarrow` | the loop that re-narrows poly slots once the fixpoint has settled (`rounds=N`); inside `analysis_fixpoint` |
 | `an_post_fixpoint`, `an_procs`, `an_method_backstops`, `an_late_widen`, `an_nullable_returns`, `an_proc_returns`, `an_storage`, `an_value_types`, `an_reconcile_check` | the analysis phases after it |
 | `analysis` | all of `analyze_program`; includes the phases above |
-| `codegen_program` | analysis and C generation; includes `analysis` |
+| `cg_prepare` | after the analysis, ahead of the C: name clashes, the program's feature scan, the refusals made before any emission |
+| `cg_preamble` | the runtime include and the tables and dispatchers emitted ahead of the program's code |
+| `cg_classes` | the constructors and the Marshal dispatchers |
+| `cg_methods` | the methods, procs and blocks of the program (`methods=N`, the reachable ones) |
+| `cg_dispatch` | the dispatchers that call the program's methods (`<=>`, `==`, `hash`, ...) and the `END` blocks |
+| `cg_main` | the top-level statements |
+| `cg_assemble` | the regexps, the poly dispatch helpers the C uses, and joining the parts |
+| `cg_write_barriers` | the GC write barriers, inserted over the whole program |
+| `cg_finish` | the rest: frozen literals, line map, the refusal count |
+| `codegen_program` | analysis and C generation; includes `analysis` and the `cg_*` phases |
 | `write_c` | writing the C file |
 | `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit) or an `--incremental` build: the preprocess and the split into parts or units |
 | `cache_lookup` | an `--incremental` build: the cache keys and the lookup of every unit's object |
@@ -237,6 +246,14 @@ the rounds, longest first, right after `analysis_fixpoint`:
 
 ```
 spinel-timing: pass=infer_write_types ms=47.2 calls=15 changed=12
+```
+
+The ten methods whose emission took longest follow `cg_finish`, slowest
+first, one line each, named as Ruby names them (`Class#name`, `Class.name`,
+a top-level method by its name):
+
+```
+spinel-timing: cg_method=Parser#parse_expr ms=812.4
 ```
 
 `calls` is how often it ran, `changed` how many of those calls reported a

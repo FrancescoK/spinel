@@ -209,6 +209,22 @@ static void nt_clone_collect(NodeTable *nt, int id, char *seen, int *list, int *
     for (int k = 0; k < nd->a[j].n; k++) nt_clone_collect(nt, nd->a[j].ids[k], seen, list, n);
 }
 
+/* Retype every node of the subtree at `id` to a NilNode: a desugar that
+   replaced the subtree leaves it out of the program, and the passes that
+   walk the node table by id rather than by tree would still see its
+   definitions, block parameters and locals, and declare each of them
+   (rooted) in main. A NilNode is what those passes skip. A replaced subtree
+   stays visible to such by-id walks; making its detachment real belongs to
+   the load-phase elaborator's work (#9898). */
+void nt_subtree_blank(NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return;
+  SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) nt_subtree_blank(nt, nd->r[j].ref);
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++) nt_subtree_blank(nt, nd->a[j].ids[k]);
+  nt_node_set_type(nt, id, "NilNode");
+}
+
 /* Deep-clone the subtree rooted at `root`, appending fresh nodes to the
    table and remapping internal child references. Refs/array elements that
    point outside the subtree are kept verbatim. Returns the new root id, or
