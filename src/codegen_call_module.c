@@ -836,7 +836,9 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int bv = kwh_lookup(nt, argv[1], "base");
       if (en == 1 && bv >= 0) {
         buf_puts(b, "sp_dir_glob_base("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (comp_ntype(c, bv) == TY_NIL) buf_puts(b, "NULL"); else emit_path_expr(c, bv, b);
+        if (comp_ntype(c, bv) != TY_NIL) emit_path_expr(c, bv, b);
+        else if (subtree_is_pure_read(c, bv)) buf_puts(b, "NULL");
+        else { buf_puts(b, "({ (void)("); emit_expr(c, bv, b); buf_puts(b, "); NULL; })"); }
         buf_puts(b, ")"); return 1;
       }
     }

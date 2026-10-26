@@ -7531,7 +7531,17 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   if (repr_of_slot(c, p).kind == RK_STRBUF && emit_strbuf_local_write_handle(c, provided, out)) return;
   if (repr_of_slot(c, p).handle) {
     int dvP = m->pdefault[idx];
-    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) {
+      /* (in the callee's context, as below: a call answering nil runs) */
+      if (subtree_is_pure_read(c, dvP)) { buf_puts(out, "NULL"); return; }
+      const char *svs = g_self, *svd = g_self_deref;
+      int sve = g_emitting_class_id;
+      char dself[32];
+      dflt_self_enter(m, dvP, dself, sizeof dself);
+      buf_puts(out, "({ (void)("); emit_expr(c, dvP, out); buf_puts(out, "); NULL; })");
+      g_self = svs; g_self_deref = svd; g_emitting_class_id = sve;
+      return;
+    }
     if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
