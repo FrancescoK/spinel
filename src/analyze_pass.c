@@ -5494,7 +5494,8 @@ int class_value_escapes(Compiler *c, int cid) {
     int *stack = (int *)malloc(sizeof(int) * nn);
     int sp = 0;
     if (!stack) { free(parent); free(body_self); free(esc); esc = NULL; return 1; }
-    if (nt->root_id >= 0 && nt->root_id < nt->count) stack[sp++] = nt->root_id;
+    for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+      if (nt_root(nt, r) >= 0 && nt_root(nt, r) < nt->count) stack[sp++] = nt_root(nt, r);
     while (sp > 0) {
       int u = stack[--sp];
       int nr = nt_num_refs(nt, u);
@@ -5531,7 +5532,10 @@ int class_value_escapes(Compiler *c, int cid) {
   char *seen = (char *)calloc(nn, 1);
   if (stack && seen && nt->root_id >= 0 && nt->root_id < nt->count) {
     int sp = 0;
-    stack[sp++] = nt->root_id; seen[nt->root_id] = 1;
+    for (int r = 0; r < nt_nroots(nt); r++) {   /* each file's tree */
+      int rt = nt_root(nt, r);
+      if (rt >= 0 && rt < nt->count && !seen[rt]) { stack[sp++] = rt; seen[rt] = 1; }
+    }
     while (sp > 0) {
       int u = stack[--sp];
       int nr = nt_num_refs(nt, u);
@@ -11559,7 +11563,8 @@ static void bsi_kept_mark(Compiler *c) {
   int *stack = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
   if (!stack) { free(parent); free(def_first); free(def_next); return; }
   int sp = 0;
-  if (nt->root_id >= 0 && nt->root_id < n) stack[sp++] = nt->root_id;
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+    if (nt_root(nt, r) >= 0 && nt_root(nt, r) < n) stack[sp++] = nt_root(nt, r);
   while (sp > 0) {
     int id = stack[--sp];
     int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);

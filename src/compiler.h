@@ -1228,6 +1228,9 @@ typedef struct {
 
   Scope *scopes;    /* scope[0] = top level */
   int nscopes, cscopes;
+  /* the top-level scope of each file root (nt_root), by graph id: 0 for the
+     entry (analyze_program.c) */
+  int *file_scope;
 
   /* the subset of `classes` synthesized for an anonymous Struct/Data, so
      resolving one does not walk every user class; invalidated wherever

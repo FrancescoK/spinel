@@ -461,6 +461,7 @@ void nt_free(NodeTable *nt) {
   for (int k = 0; k < nt->nfiles; k++) free(nt->files[k]);
   free(nt->files);
   free(nt->file_defers);
+  free(nt->file_roots);
   free(nt);
 }
 

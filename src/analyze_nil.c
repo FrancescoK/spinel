@@ -188,7 +188,7 @@ static int nf_is_program_list(NF *f, int n) {
    block runs after it; anything else cannot be shown to. */
 static int nf_written_before(NF *f, int rd, NodeKind wk, const char *name) {
   const NodeTable *nt = f->nt;
-  if (comp_scope_of(f->c, rd) != &f->c->scopes[0]) return 0;
+  if (!prog_is_top_scope(f->c, comp_scope_of(f->c, rd))) return 0;
   int top = rd;
   for (; top >= 0 && f->par[top] >= 0 && !nf_is_program_list(f, f->par[top]); top = f->par[top]) {
     NodeKind k = nt_kind(nt, f->par[top]);
@@ -1296,7 +1296,7 @@ static int nf_expr_uncached(NF *f, int v) {
     Scope *s = comp_scope_of(c, v);
     const char *ivn = nt_str(nt, v, "name");
     /* the main object's ivar: nil until a top-level statement above writes it */
-    if (s == &c->scopes[0] && ivn) {
+    if (prog_is_top_scope(c, s) && ivn) {
       int w = nf_ivar_slot(f, NF_TOP_IVAR, ivn)->wr;
       return w ? w : nf_written_before(f, v, NK_InstanceVariableWriteNode, ivn) ? NFW_NONE : NFW_GLOBAL;
     }
@@ -1397,7 +1397,7 @@ static int nf_target_nil(NF *f, int t) {
 /* the class an ivar write in node's scope fills, or -1 (class level) */
 static int nf_ivar_owner(NF *f, int node) {
   Scope *s = comp_scope_of(f->c, node);
-  if (s == &f->c->scopes[0]) return NF_TOP_IVAR;
+  if (prog_is_top_scope(f->c, s)) return NF_TOP_IVAR;
   return s && !s->is_cmethod ? s->class_id : -1;
 }
 

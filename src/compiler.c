@@ -519,6 +519,7 @@ void comp_free(Compiler *c) {
     free(sc->pdefault);
   }
   free(c->scopes);
+  free(c->file_scope);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
   free(c->symbols);
   for (int i = 0; i < c->nclasses; i++) {
@@ -2043,7 +2044,9 @@ int comp_is_wellknown_const(const char *cn) {
 int const_name_resolves_top_level(Compiler *c, const char *cn) {
   if (!cn) return 0;
   if (comp_is_wellknown_const(cn)) return 1;
-  return const_top_level_walk(c, c->nt->root_id, cn, 0);
+  for (int r = 0; r < nt_nroots(c->nt); r++)   /* each file's tree */
+    if (const_top_level_walk(c, nt_root(c->nt, r), cn, 0)) return 1;
+  return 0;
 }
 static int const_name_resolves(Compiler *c, const char *cn) {
   if (!cn) return 0;
@@ -3240,7 +3243,8 @@ static void cv_build(Compiler *c) {
     if (e >= 0 && nt_kind(nt, e) != NK_SelfNode && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1))
       cv_mark_name(c, v, nt_str(nt, e, "name"));
   }
-  cv_self_answers(c, v, nt_ref(nt, nt->root_id, "statements"), -1, 1, 0);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
+    cv_self_answers(c, v, nt_ref(nt, nt_root(nt, r), "statements"), -1, 1, 0);
   if (owner && methods) all = 1;
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;

@@ -115,6 +115,20 @@ void an_nil_facts(Compiler *c);
    (analyze_const.c). Runs once the constants are registered, ahead of the
    folds that decide `defined?(K)`. */
 void an_const_presence(Compiler *c);
+/* The program's files under --load-model=graph (analyze_program.c, #9898):
+   their top-level scopes and roots, and what the model refuses for now. */
+void prog_file_scopes(Compiler *c);
+void prog_walk_files(Compiler *c);
+void prog_refuse_loads(Compiler *c);
+void prog_refuse_order(Compiler *c);
+int prog_is_top_scope(const Compiler *c, const Scope *s);
+int prog_is_root(const Compiler *c, int id);
+int prog_is_root_stmts(const Compiler *c, int st);
+int prog_root_stmts(const Compiler *c, int i);
+int prog_defines_only(const Compiler *c, int i);
+int prog_ordered_load(const Compiler *c, int id);
+void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
+int *prog_top_seq(const Compiler *c, int *n, int **file);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

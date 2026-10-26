@@ -312,6 +312,8 @@ int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
 int is_include_name(const char *n);
 int is_prepend_name(const char *n);
+int is_autoload_name(const char *n);
+int is_load_how_unresolved(const char *how);
 int is_comparable_module_name(const char *n);
 int is_enumerable_module_name(const char *n);
 int is_comparable_builtin_name(const char *n);
