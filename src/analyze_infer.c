@@ -10162,7 +10162,6 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
      poly, uniformly, whatever any individual call site's block answers. That
      is the whole point of the clone -- everything the yield feeds widens with
      it, so one body serves every site (#3399). */
-  if (getenv("SP_DBG_PF2")) fprintf(stderr, "[y] node=%d scope=%d pf=%d name=%s\n", id, ymi, (ymi>=0&&ymi<c->nscopes)?c->scopes[ymi].is_proc_form:-1, (ymi>=0&&ymi<c->nscopes&&c->scopes[ymi].name)?c->scopes[ymi].name:"?");
   if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_proc_form) { *out = TY_POLY; return 1; }
   /* A lowered method's block is a proc as well, and its yield is a call
      on it: poly. Without this a lowered method no site ever gave a block
