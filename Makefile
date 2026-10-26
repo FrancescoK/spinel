@@ -5404,13 +5404,14 @@ package-facts-regen:
 # table exists, so it matches the lowering rows (builtin_names.c) on Prism's
 # calls where the desugars match them on the node table (lower_row_nt).
 # SPINEL_LOWER_ROWS_CHECK asks both of every call as it is flattened; this
-# runs it over the corpus and fails on a disagreement. Outside the gate.
+# runs it over the corpus and fails on a disagreement, or when a program
+# printed no summary (it stopped before the check ran). Outside the gate.
 LOWER_ROWS_PROGS ?= $(wildcard test/*.rb test/share/*.rb test/share/*/*.rb benchmark/*.rb packages/*/test/*.rb)
 lower-rows-check: $(SPINEL)
 	@printf '%s\n' $(LOWER_ROWS_PROGS) | xargs -P $(NPROC) -n 1 sh -c \
 	  'SPINEL_LOWER_ROWS_CHECK=1 $(SPINEL) --load-model=graph --dump-ast "$$0" 2>&1 >/dev/null | grep "^lower-rows-check"' | \
-	  awk '/ calls, / { n++; c += $$2; d += $$4; next } { print } \
-	       END { printf "lower-rows-check: %d programs, %d calls, %d disagreements\n", n, c, d; exit d > 0 }'
+	  awk -v want=$(words $(LOWER_ROWS_PROGS)) '/ calls, / { n++; c += $$2; d += $$4; next } { print } \
+	       END { printf "lower-rows-check: %d of %d programs, %d calls, %d disagreements\n", n, want, c, d; exit (d > 0 || n != want) }'
 
 # lib/sp_poly_cold.c holds functions spinel_rt.h used to define static in every
 # generated unit. Compiled once, its object must not depend on the integer
