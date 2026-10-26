@@ -245,6 +245,8 @@ static int ct_call_names(const NodeTable *nt, int call, const char *meth) {
   if (!namer || !is_method_naming_call(namer)) return 0;
   if (an <= from) return 1;
   for (int i = from; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_TrueNode || k == NK_FalseNode) continue;   /* attr's writer flag names no method */
     const char *lit = ct_lit_name(nt, av[i]);
     if (!lit || ct_eq(lit, meth)) return 1;
     if (!is_method_list_call(namer)) break;   /* define_method / alias_method: the first names the method */
