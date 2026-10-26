@@ -1507,7 +1507,8 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
     if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "singleton_class"))
       why = "singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement "
-            "of a class or module body, or at the top level on a class or module the program declares: "
+            "of a class or module body, or at the top level on a class or module the program declares, "
+            "or on Process, Kernel, Math, GC, Signal or Warning: "
             "move it into `class X ... end` (see docs/limitations.md)";
     else if (!rcn && recv >= 0 && (comp_ntype(c, recv) == TY_CLASS ||
                                    (comp_ntype(c, recv) == TY_POLY && cplan_module_args(c, id))))
