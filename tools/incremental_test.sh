@@ -247,10 +247,12 @@ cp "$T/base.rb" "$P"
 # --- 7 SPINEL_NO_CACHE ------------------------------------------------------
 # through a C compiler that writes each command line down, and with the
 # units kept, for case 13: the wrapper changes nothing the compiler sees,
-# so the binary is still b0
+# so the binary is still b0. Each compile writes a file of its own: the
+# units compile in parallel, and their arguments appended to one file
+# interleaved, so case 13 replayed a line made of two.
 cat > "$T/cc-log" << EOF
 #!/bin/sh
-for a in "\$@"; do printf "'%s' " "\$a"; done >> "$T/cc.log"; echo >> "$T/cc.log"
+for a in "\$@"; do printf "'%s' " "\$a"; done > "$T/cc.log.\$\$"; echo >> "$T/cc.log.\$\$"
 exec cc "\$@"
 EOF
 chmod +x "$T/cc-log"
@@ -371,7 +373,7 @@ w13=$w7
 pf=$(awk 'NR>2 && $4 == "program" {print $2; exit}' "$w13/units.txt" 2>/dev/null)
 o=0; detail="no program unit kept"
 if [ -n "$pf" ]; then
-  cl=$(grep -F "'$w13/$pf'" "$T/cc.log" | grep -- '-frandom-seed=' | head -1)
+  cl=$(cat "$T"/cc.log.* | grep -F "'$w13/$pf'" | grep -- '-frandom-seed=' | head -1)
   mkdir -p "$T/r1" "$T/r2/deeper"
   cp -R "$w13" "$T/r1/w"; cp -R "$w13" "$T/r2/deeper/w"
   for d in "$T/r1/w" "$T/r2/deeper/w"; do
