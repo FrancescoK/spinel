@@ -968,7 +968,7 @@ static TyKind splice_incoming_elem(Compiler *c, int rhs) {
   if (t == TY_POLY_ARRAY) return TY_POLY_ARRAY;  /* heterogeneous source */
   if (ty_is_array(t)) return ty_array_elem(t);
   if (ty_is_object(t)) {
-    int mi = comp_method_in_chain(c, ty_object_class(t), "to_ary", NULL);
+    int mi = comp_implicit_to_ary_mi(c, ty_object_class(t));
     if (mi >= 0) {
       TyKind r = (TyKind)c->scopes[mi].ret;
       if (r == TY_POLY_ARRAY) return TY_POLY_ARRAY;

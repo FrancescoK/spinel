@@ -1561,6 +1561,14 @@ int comp_arysub_emb(Compiler *c, int cid) {
 const char *comp_arysub_builtin(Compiler *c, int cid) {
   return comp_ary_is_str(c, cid) ? "String" : comp_ary_is_hash(c, cid) ? "Hash" : "Array";
 }
+/* The scope of the #to_ary an implicit Array conversion of a class cid
+   instance calls, or -1. An Array subclass instance is an Array already:
+   CRuby (rb_check_array_type) takes it as it is and never calls its own
+   #to_ary. */
+int comp_implicit_to_ary_mi(Compiler *c, int cid) {
+  if (comp_ary_root(c, cid) >= 0 && comp_arysub_emb(c, cid) == 0) return -1;
+  return comp_method_in_chain(c, cid, "to_ary", NULL);
+}
 
 int builtin_instance_method_known(const char *cls, const char *m);
 /* A name an Array answers: its own methods and Enumerable's, and the

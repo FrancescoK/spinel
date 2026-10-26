@@ -16498,7 +16498,7 @@ int splice_to_ary_mi(Compiler *c, TyKind rhs_ty) {
   if (!ty_is_object(rhs_ty)) return -1;
   int cid = ty_object_class(rhs_ty);
   if (c->classes[cid].is_value_type) return -1;
-  int mi = comp_method_in_chain(c, cid, "to_ary", NULL);
+  int mi = comp_implicit_to_ary_mi(c, cid);
   if (mi < 0) return -1;
   return ty_is_array((TyKind)c->scopes[mi].ret) ? mi : -1;
 }
