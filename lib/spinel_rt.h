@@ -12719,6 +12719,14 @@ static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
      across each step. */
   return sp_poly_dig_n(recv, keys->len, keys->data);
 }
+/* A boxed index of an Array or a String that is a Float Range is the
+   Integer Range of its to_int ends (sp_frange_ix); any other is itself. */
+static SP_INLINE sp_bool sp_poly_is_frange(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p;
+}
+static SP_UNUSED sp_RbVal sp_poly_frange_ix(sp_RbVal v) {
+  return sp_poly_is_frange(v) ? sp_box_range(sp_frange_ix(*(sp_FloatRange *)v.v.p)) : v;
+}
 /* poly[poly_key]: dispatch on key tag at runtime. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_THREAD) {
@@ -12740,6 +12748,12 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      its live value: the String arms below all test SP_TAG_STR, and a handle
      fell past every one of them to the trailing nil (#4279). */
   if (sp_poly_is_strbuf(recv)) return sp_poly_index_poly(sp_poly_strbuf_deref(recv), idx);
+  /* a Float Range indexes an Array, a String or a Symbol as the Integer
+     Range of its to_int ends */
+  if (SP_UNLIKELY(sp_poly_is_frange(idx)) &&
+      (recv.tag == SP_TAG_STR || recv.tag == SP_TAG_SYM ||
+       (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))))
+    return sp_poly_index_poly(recv, sp_poly_frange_ix(idx));
   /* an Integer index into an array is the common read, and it matches nothing
      below until the very last line (array kinds are builtin, so the Struct arm
      with its cls_id >= 0 test cannot claim it) */

@@ -460,7 +460,7 @@ static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_s
 /* (vg: the element read, "oget" where the receiver's element carries its nil) */
 static void emit_values_at_boxed(const char *an, const char *vs, const char *vg, int to, int tr, const char *val, Buf *b) {
   int k = ++g_tmp;
-  buf_printf(b, "{ sp_RbVal _e%d = %s; if (_e%d.tag == SP_TAG_OBJ && _e%d.cls_id == SP_BUILTIN_RANGE) {"
+  buf_printf(b, "{ sp_RbVal _e%d = sp_poly_frange_ix(%s); if (_e%d.tag == SP_TAG_OBJ && _e%d.cls_id == SP_BUILTIN_RANGE) {"
                 " sp_Range _r%d = *(sp_Range *)_e%d.v.p; sp_int _n%d = sp_%sArray_length(_t%d);"
                 " sp_int _f%d = _r%d.first == INTPTR_MIN ? 0 : (_r%d.first < 0 ? _r%d.first + _n%d : _r%d.first);",
              k, val, k, k, k, k, k, an, tr, k, k, k, k, k, k);
@@ -9792,7 +9792,7 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   /* a Range (value_may_be_range) takes the substring arm:
      s[range] read it as an Integer index */
   if (is_slice_alias(name) && argc == 1 && value_may_be_range(c, argv[0])) {
-    buf_printf(&eb, ") : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp);
+    buf_printf(&eb, ") : ((_t%d = sp_poly_frange_ix(_t%d)).tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp, tp);
     bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", tp);
     v = view_push(c, argv[0], TY_RANGE);
     ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
