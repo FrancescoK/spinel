@@ -5463,6 +5463,25 @@ int desugar_engine_branches(Compiler *c) {
     nt_node_set_int(nt, id, "engine_check", 1);
     changed = 1;
   }
+  /* `Object.const_defined?(:RUBY_ENGINE)` is true in every program (racc
+     asks it before comparing the engine) */
+  for (int id = 0; eng && id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *op = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (!op || !sp_streq(op, "const_defined?") || recv < 0 || ac != 1 || nt_ref(nt, id, "block") >= 0) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(nt_str(nt, recv, "name"), "Object")) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *cn = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!cn || !sp_streq(cn, "RUBY_ENGINE")) continue;
+    engine_blank(nt, recv);
+    engine_blank(nt, args);
+    nt_node_reset(nt, id, "TrueNode");
+    nt_node_set_int(nt, id, "engine_check", 1);
+    changed = 1;
+  }
   for (int id = n0 - 1; id >= 0; id--) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_AndNode && k != NK_OrNode) continue;

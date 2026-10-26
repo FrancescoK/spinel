@@ -3354,6 +3354,23 @@ static int sp_require_truth(const pm_parser_t *parser, const pm_node_t *node, in
     case PM_FALSE_NODE: case PM_NIL_NODE: return 0;
     case PM_PARENTHESES_NODE:
       return sp_require_truth(parser, ((const pm_parentheses_node_t *)node)->body, engine);
+    /* `a and b` is settled by a false side or two true ones, `a or b` by a
+       true side or two false ones (racc: `Object.const_defined?(:RUBY_ENGINE)
+       and RUBY_ENGINE == 'jruby'`) */
+    case PM_AND_NODE: case PM_OR_NODE: {
+      int is_and = PM_NODE_TYPE(node) == PM_AND_NODE;
+      const pm_node_t *l = is_and ? ((const pm_and_node_t *)node)->left : ((const pm_or_node_t *)node)->left;
+      const pm_node_t *r = is_and ? ((const pm_and_node_t *)node)->right : ((const pm_or_node_t *)node)->right;
+      int lt = sp_require_truth(parser, l, engine), rt = sp_require_truth(parser, r, engine);
+      if (lt == !is_and || rt == !is_and) return !is_and;
+      return lt == is_and && rt == is_and ? is_and : -1;
+    }
+    /* `defined?(RUBY_ENGINE)`: the constant every program has */
+    case PM_DEFINED_NODE: {
+      const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
+      return engine && v && PM_NODE_TYPE(v) == PM_CONSTANT_READ_NODE &&
+             sp_pm_name_is(parser, ((const pm_constant_read_node_t *)v)->name, "RUBY_ENGINE") ? 1 : -1;
+    }
     case PM_STATEMENTS_NODE: {
       const pm_node_list_t *body = &((const pm_statements_node_t *)node)->body;
       return body->size == 1 ? sp_require_truth(parser, body->nodes[0], engine) : -1;
@@ -3365,9 +3382,18 @@ static int sp_require_truth(const pm_parser_t *parser, const pm_node_t *node, in
         int truth = sp_require_truth(parser, call->receiver, engine);
         return truth < 0 ? -1 : !truth;
       }
+      if (!call->arguments || call->arguments->arguments.size != 1) return -1;
+      /* `Object.const_defined?(:RUBY_ENGINE)` */
+      if (engine && sp_pm_name_is(parser, call->name, "const_defined?") &&
+          PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE &&
+          sp_pm_name_is(parser, ((const pm_constant_read_node_t *)call->receiver)->name, "Object")) {
+        const pm_node_t *arg = call->arguments->arguments.nodes[0];
+        const pm_string_t *s = PM_NODE_TYPE(arg) == PM_SYMBOL_NODE ? &((const pm_symbol_node_t *)arg)->unescaped :
+                               PM_NODE_TYPE(arg) == PM_STRING_NODE ? &((const pm_string_node_t *)arg)->unescaped : NULL;
+        return s && pm_string_length(s) == 11 && memcmp(pm_string_source(s), "RUBY_ENGINE", 11) == 0 ? 1 : -1;
+      }
       int eq = sp_pm_name_is(parser, call->name, "==");
       if (!engine || (!eq && !sp_pm_name_is(parser, call->name, "!="))) return -1;
-      if (!call->arguments || call->arguments->arguments.size != 1) return -1;
       const pm_node_t *a = call->receiver, *b = call->arguments->arguments.nodes[0];
       const pm_node_t *cst, *lit;
       if (PM_NODE_TYPE(a) == PM_CONSTANT_READ_NODE && PM_NODE_TYPE(b) == PM_STRING_NODE) { cst = a; lit = b; }
