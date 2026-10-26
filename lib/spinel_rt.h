@@ -12353,11 +12353,21 @@ static SP_UNUSED sp_int sp_array_fill_range(sp_Range r0, sp_int *n) {
   *n = e;
   return s;
 }
+/* ...and over a Float Range ((1.5..2), (0.5...)): each written end through
+   to_int, the begin's RangeError naming the Range as written */
+static SP_UNUSED sp_int sp_array_fill_frange(sp_FloatRange f, sp_int *n) {
+  sp_oint b = (f.omitted & SP_FRANGE_NO_BEGIN) ? sp_oint_nil() : sp_oint_of(sp_float_arg_i(f.first));
+  sp_oint e = (f.omitted & SP_FRANGE_NO_END) ? sp_oint_nil() : sp_oint_of(sp_float_arg_i(f.last));
+  if (!b.nil && b.v < -*n) sp_raise_cls("RangeError", sp_sprintf("%s out of range", sp_frange_inspect(f)));
+  return sp_array_fill_range(sp_range_new_o(b, e, f.excl), n);
+}
 /* fill(value, x) with x boxed: a Range is the span (sp_array_fill_range);
    anything else is a start filled through to *n. */
 static SP_UNUSED sp_int sp_array_fill_span(sp_RbVal v, sp_int *n) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_array_fill_range(*(sp_Range *)v.v.p, n);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p)
+    return sp_array_fill_frange(*(sp_FloatRange *)v.v.p, n);
   sp_oint o = sp_array_fill_offset_arg(v, 0);
   return o.nil ? 0 : o.v;
 }

@@ -3287,6 +3287,12 @@ static void emit_fill_offset(Compiler *c, int node, Buf *b) {
   buf_puts(b, "sp_oint_of("); emit_int_expr(c, node, b); buf_puts(b, ")");
 }
 
+/* The runtime reading of an Array#fill Range span, by the Range's type:
+   an Integer or a Float Range (each end through to_int) */
+static const char *fill_range_fn(TyKind t) {
+  return t == TY_RANGE ? "sp_array_fill_range" : t == TY_FLOAT_RANGE ? "sp_array_fill_frange" : NULL;
+}
+
 static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind res, int *out) {
   if (!(recv >= 0 && ty_is_array(rt))) return 0;
   if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) { *out = 1; return 1; }
@@ -3588,20 +3594,15 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, fk, trecv);
       /* resolve the [start, end) span from the arguments */
-      int is_range = (argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE);
-      if (is_range) {
-        int tr = ++g_tmp;
+      const char *fill_rng = argc == 1 ? fill_range_fn(comp_ntype(c, argv[0])) : NULL;
+      if (fill_rng) {
+        /* the span as the value form reads it (sp_array_fill_range); rendered
+           first: emit_expr may want g_pre lines of its own (#4065) */
+        Buf rgb2; memset(&rgb2, 0, sizeof rgb2); emit_expr(c, argv[0], &rgb2);
         emit_indent(g_pre, g_indent);
-        /* rendered first: emit_expr may want g_pre lines of its own (#4065) */
-        { Buf rgb2; memset(&rgb2, 0, sizeof rgb2); emit_expr(c, argv[0], &rgb2);
-          buf_printf(g_pre, "sp_Range _t%d = sp_range_ix(%s);\n", tr, rgb2.p ? rgb2.p : "(sp_Range){0}");
-          free(rgb2.p); }
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;\n",
-                   ts, tr, ts, ts, tn, ts, ts);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) + (_t%d.excl ? 0 : 1);\n",
-                   te, tr, tr, tn, tr, tr);
+        buf_printf(g_pre, "sp_int _t%d = _t%d; sp_int _t%d = %s(%s, &_t%d);\n",
+                   te, tn, ts, fill_rng, rgb2.p ? rgb2.p : "(sp_Range){0}", te);
+        free(rgb2.p);
       }
       else {
         emit_indent(g_pre, g_indent);
@@ -3720,12 +3721,12 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (fsfx[0]) emit_elem_store_value(c, fk, argv[0], b);
       else emit_typed_elem_value(c, argv[0], ty_array_elem(fill_rt), b);
       buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
-      if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
+      if (argc >= 2 && fill_range_fn(comp_ntype(c, argv[1]))) {
         /* fill(val, range): the range is the index span, its end in place
            of the length (sp_array_fill_range) -- a negative end counts from
            the end and an endless one runs to the last element (#3605,
            #3606), a begin before the start is CRuby's RangeError */
-        buf_printf(b, " sp_int _t%d = sp_array_fill_range(", ts); emit_expr(c, argv[1], b);
+        buf_printf(b, " sp_int _t%d = %s(", ts, fill_range_fn(comp_ntype(c, argv[1]))); emit_expr(c, argv[1], b);
         buf_printf(b, ", &_t%d);", tn);
         buf_printf(b, " for (sp_int _t%d = _t%d; _t%d < _t%d; _t%d++)"
                       " sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })",
