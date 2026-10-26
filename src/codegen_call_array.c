@@ -2673,9 +2673,12 @@ int frange_index_view(Compiler *c, int id) {
             (!subtree_is_pure_read(c, argv[done]) || read_rebound_by(c, argv[done], argv[i])))
           view_bind(argv[done], "_t%d", hold_operand_pre(c, argv[done], repr_of(c, argv[done]).as_ty, 0, ++g_tmp, 1));
       done = i + 1;
-      if (nt_kind(nt, argv[i]) == NK_RangeNode)
+      /* (a literal in parentheses too: `(f(1.5)..f(2.5))` left its ends
+         to the C argument order, which runs the last first under gcc) */
+      int rn = nt_paren_single(nt, argv[i]);
+      if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode)
         for (int e = 0; e < 2; e++) {
-          int x = nt_ref(nt, argv[i], e ? "right" : "left");
+          int x = nt_ref(nt, rn, e ? "right" : "left");
           if (x >= 0 && !subtree_is_pure_read(c, x))
             view_bind(x, "_t%d", hold_operand_pre(c, x, repr_of(c, x).as_ty, 0, ++g_tmp, 1));
         }
