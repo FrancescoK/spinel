@@ -217,7 +217,12 @@ int poll_scope_on_cycle(Compiler *c, int si) {
    stores it after the loop, so a raise in the middle left a rescue reading
    the value from before it. A loop that only adds those stores is a chunked
    one (poll_chunk_loop): it polls once per SP_SIG_CHUNK passes, which is a
-   call the stores are made ahead of. */
+   call the stores are made ahead of.
+
+   Only the default SIGINT / SIGTERM is raised where it lands, though. A
+   trap's proc is Ruby code, which runs at a poll (sp_sig_run_pending), so a
+   program that sets one has no pure region: its pure loops are chunked ones
+   too, and its pure methods and counting iterators poll as any other. */
 static int poll_scalar_ty(TyKind t) { return t == TY_INT || t == TY_FLOAT || t == TY_BOOL; }
 static int poll_pure_op(const char *nm) {
   static const char *const ops[] = { "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "<=>", "&", "|",
@@ -385,7 +390,7 @@ int poll_pure_method(Compiler *c, int si) {
         if (g_chunk_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 1)) { g_chunk_cand[t] = 0; changed = 1; }
     }
   }
-  return si >= 0 && si < g_pure_n && g_pure_cand[si];
+  return !g_uses_traps && si >= 0 && si < g_pure_n && g_pure_cand[si];
 }
 /* Does node n hold a while / until loop? */
 static int poll_has_loop(const NodeTable *nt, int n) {
@@ -410,7 +415,7 @@ int poll_pure_wrapped(Compiler *c, int si) {
 }
 /* Is a while / until loop pure: its condition and body (no return) */
 int poll_pure_loop(Compiler *c, int id) {
-  if (g_promote_mode || !sig_polls()) return 0;
+  if (g_promote_mode || !sig_polls() || g_uses_traps) return 0;
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
   return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0, 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0, 0);
@@ -453,7 +458,7 @@ int poll_chunk_loop(Compiler *c, int id) {
    scalars, with no allocation, so the whole statement is a pure loop, marked
    around as a pure while is. reverse_each is not one (it builds an Array). */
 int poll_pure_iter(Compiler *c, int id) {
-  if (g_promote_mode || !sig_polls()) return 0;
+  if (g_promote_mode || !sig_polls() || g_uses_traps) return 0;
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) return 0;
   const char *nm = nt_str(nt, id, "name");
