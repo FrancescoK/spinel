@@ -284,7 +284,30 @@ works, and what it gives up against a release build:
 
 The C of `gen.sh 100` is over 4 MB, so the plain build is already the
 `--jobs` split and the first two rows coincide. About 14 s of every warm
-build is the frontend. The K=400 rows have not been measured yet.
+build is the frontend.
+
+`gen.sh 400` (26,000 lines of Ruby, 9.3 MB of C) on the same machine, with
+nothing else running:
+
+| build | wall (s), 256K | units / miss, 256K | wall (s), 512K | units / miss, 512K |
+|---|---|---|---|---|
+| plain (default) | 208.5 | - | | |
+| --jobs=4 | 202.1 | - | | |
+| --incremental, cold | 176.9 | 79 / 79 | 176.9 | 41 / 41 |
+| warm, a literal in a body | 120.3 | 79 / 1 | 127.3 | 41 / 1 |
+| warm, a constant a method returns | 118.2 | 79 / 1 | 130.0 | 41 / 1 |
+| warm, a return type Integer -> Float | 131.0 | 79 / 2 | 128.9 | 41 / 2 |
+| warm, a method added (and called) | 127.7 | 79 / 2 | 128.4 | 41 / 2 |
+| warm, a literal added | 127.1 | 79 / 2 | 127.9 | 41 / 2 |
+| warm, an instance variable added | 188.6 | 79 / 75 | 172.1 | 41 / 39 |
+| no-op rebuild | 127.7 | 79 / 0 | 118.6 | 41 / 0 |
+
+Here the frontend is about 115 s of every build (this VM runs the s400
+frontend three times slower than the machine the design was measured on),
+so a warm build after a one- or two-unit edit is 118 to 131 s against 208 s
+for the plain build, and the two unit sizes are within the run-to-run noise
+of each other except on the instance-variable edit, which recompiles every
+program and tagged unit and favours the larger units.
 
 ## Source positions of a generated .rb
 

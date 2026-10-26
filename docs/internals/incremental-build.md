@@ -54,7 +54,7 @@ faster than the input; that is a separate problem with its own design.
 A cache keyed by a unit's text hits only if an edit leaves the text of the
 other units alone, and the generated C used to be full of program-wide
 counters: one temp more in one method renumbered every temp after it. Stage 1
-(207bf789e and before) made each name depend on the function it is in:
+(#10073) made each name depend on the function it is in:
 
 | name | now |
 |---|---|
@@ -475,11 +475,13 @@ no-op, at 256K and 512K; `INCREMENTAL_BENCH_K` picks the programs (default
 the plain build of `gen.sh 100` took 40.3 s, a cold incremental build 34.9 s
 and a warm one after a one-unit edit 15.9 to 17.3 s, about 14 s of which is
 the frontend. 256K was faster than 512K on every warm edit there, so it is
-the default. The bench has not been run at K=400; separate runs of s400 on
-the same machine took 205 s cold and about 137 s warm after a one- or
-two-unit edit, of which the frontend was about 125 s and `cc_total` about
-4.5 s. That machine is slower than the one the design measured on, which
-ran the s400 frontend in 35 s.
+the default. At K=400 (the second table there: 79 units at 256K, 41 at
+512K) the plain build took 208.5 s, a cold incremental build 176.9 s and a
+warm one after a one- or two-unit edit 118 to 131 s, of which the frontend
+was about 115 s; the two unit sizes are within the run-to-run noise of each
+other except on the instance-variable edit (188.6 s against 172.1 s), which
+recompiles every program and tagged unit. That machine is slower than the
+one the design measured on, which ran the s400 frontend in 35 s.
 
 **`--cache-stats`** prints, after the build, `units=N hit=H miss=M` (the
 stable prefix tests read), the hits per kind (`rt=4/4`: four of four rt
