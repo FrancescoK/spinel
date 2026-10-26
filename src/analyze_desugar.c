@@ -6714,6 +6714,12 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       /* (a boxed socket write's literal keeps them: its arm is the
          retargeted call, which reaches them as send does) */
       if (!sock_name && (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy"))) continue;
+      /* nor, for a computed name, a method the compiler made for itself
+         (the enumerator's `__enumw_map`, a builtin's per-site copy): no
+         Ruby name reaches it, and the dispatch raises NoMethodError for its
+         name. (A literal the program spells keeps its arm, as a direct
+         call of that name does.) */
+      if (computed && name_is_synth_method(c, use[k])) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
          that count gets no arm (a reader takes none, a writer one). The
@@ -12358,6 +12364,7 @@ int desugar_builtins(Compiler *c) {
     if (copy < 0) break;
     char cn[256]; snprintf(cn, sizeof cn, "__enum_%s__%d", sp_builtin_enum_names[bi], site_seq[bi]++);
     nt_node_set_str(nt, copy, "name", cn);
+    nt_node_set_int(nt, copy, "private_helper", 1);   /* no Ruby method (comp_scope_is_private_helper) */
     nt_node_set_int(nt, copy, "enum_site", id);   /* the call it serves (enum_copy_site) */
     nt_node_set_int(nt, id, "enum_copy", copy);
     /* the calls in the copy are its sites, the walk reaches them below */
@@ -13699,6 +13706,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     if (seq >= 0) snprintf(cn, sizeof cn, "%s__%d", base, seq);
     else snprintf(cn, sizeof cn, "%s__n%s", base, comp_node_tag(c, id));   /* past the table: the node id, still unique */
     nt_node_set_str(nt, copy, "name", cn);
+    nt_node_set_int(nt, copy, "private_helper", 1);   /* no Ruby method (comp_scope_is_private_helper) */
     nt_node_set_int(nt, id, "bx_copy", copy);
     nt_node_set_int(nt, id, "bx_container", bx);
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }

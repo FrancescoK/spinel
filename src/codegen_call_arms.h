@@ -125,7 +125,6 @@ int emit_respond_to_by_cls(Compiler *c, int recv, const char *qm, int argc, cons
 extern int g_rto_exc;
 int emit_respond_to_exc_cls(Compiler *c, int recv, const char *qm, int argc, const int *argv, Buf *b);
 int method_hidden_from_reflection(Compiler *c, int cid, const char *m);
-int name_is_synth_method(Compiler *c, const char *m);
 int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);
 int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm, int argc, const int *argv);
 int respond_to_user_defined(Compiler *c, int id, int recv);
