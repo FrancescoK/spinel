@@ -592,6 +592,10 @@ typedef struct IterRow {
 /* The first row of family fam for `name` that takes argc arguments (any
    count when argc < 0) and carries none of the flags in `skip`, or NULL. */
 const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip);
+/* Has some receiver family a row for `name`: is it a builtin iterator,
+   one that yields to its block before it answers? (The load-phase record
+   asks it of a block whose receiver is not typed yet.) */
+int iter_row_named(const char *name);
 /* The iterator row a call with a block reads on a receiver of kind rt:
    any receiver's (tap, then, each_with_object), else its family's (an
    Array's, a Hash's, a Range's, ...), or NULL. */

@@ -17,13 +17,20 @@
        its statements;
      - enters the bodies that run where they stand: class, module and
        `class << x` bodies, BEGIN blocks, and the blocks the load phase runs
-       at once (class_eval and the other eval and exec forms, tap,
-       Class.new, Module.new, Struct.new, Data.define);
+       at once (class_eval and the other eval and exec forms, the class
+       builders, and the builtin iterators: each, times, loop, tap, ...);
      - enters the branches of a condition, a loop or a rescue, whose
-       statements may not run: their points are `may`;
-     - does not enter method bodies, lambdas and other blocks, which run
-       when they are called: elab_point_of answers no point there.
-   Any other node takes the point of its nearest walked statement.
+       statements may not run: their points are `may`; so are those of a
+       block given to any other call (a program method's), which may run
+       before the call answers;
+     - does not enter method bodies, lambdas and the blocks kept to run
+       later (proc, define_method, Thread.new, at_exit, ...): elab_point_of
+       answers no point there.
+   Any other node takes the point of its nearest walked statement. The walk
+   follows the load phase's control flow over statements, which is not a
+   value-position question, so it is its own recursion over the few node
+   kinds that hold statements (value_pos.h walks the nodes a value comes
+   from, and never enters a block).
 
    The map is a function of the tree as it stands, rebuilt when the node
    table changes, as the parent map is: the readers ask the order ahead of
@@ -40,6 +47,7 @@
 
 #include "analyze_internal.h"
 #include "builtin_names.h"
+#include "builtin_ops.h"
 #include "timing.h"
 #include <limits.h>
 
@@ -56,8 +64,7 @@ typedef struct { int node, file, region, top, rank, depth; unsigned char may; } 
 typedef struct { const char *reader; long asked, differ; } LrCheck;
 enum { LR_CHECK_MAX = 16, LR_CHECK_SHOW = 100 };
 
-enum { LR_LATE = 1,   /* runs later: in a method body, a lambda or a block that is not run at once */
-       LR_NOW = 2 };  /* a block the load phase runs where it stands */
+enum { LR_LATE = 1 };   /* runs later: in a method body, a lambda or a block kept to run later */
 
 struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
@@ -113,19 +120,31 @@ static void elab_body(ElabWalk *w, int body, int file, int top, int may, int dep
   }
 }
 
-/* A block the load phase runs where it stands: class_eval and kin, tap,
-   and a class builder's (`Class.new(B) do`, `Struct.new(:a) do`). Its
-   receiver does not matter: each runs its block before it answers. */
-static int elab_runs_block_now(const NodeTable *nt, int call) {
-  const char *nm = nt_str(nt, call, "name");
-  int rv = nt_ref(nt, call, "receiver");
+/* When the block of `call` runs: 1 before the call answers (class_eval
+   and kin, a class builder's `Class.new(B) do`, a builtin iterator's: the
+   iterator rows), -1 later (is_deferred_block_call: a Proc, a method body,
+   a thread, ...), 0 not known (any other call's: a program method may
+   yield to it, or keep it). The receiver is not typed yet, so a builtin
+   iterator's name stands for the iterator. */
+static int elab_block_runs(const NodeTable *nt, int call) {
+  const char *nm = nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  int rv = nm ? nt_ref(nt, call, "receiver") : -1;
   const char *rn = rv >= 0 && nt_kind(nt, rv) == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
-  return nm && (is_eval_exec_family(nm) || is_tap_name(nm) || is_class_builder(rn, nm));
+  if (!nm) return 0;
+  if (is_deferred_block_call(rn, nm)) return -1;
+  return is_eval_exec_family(nm) || is_class_builder(rn, nm) || iter_row_named(nm) ? 1 : 0;
+}
+
+/* A written value's blocks: a call's, or the parts of `x rescue y` */
+static void elab_value(ElabWalk *w, int v, int file, int top, int may, int depth) {
+  NodeKind k = v >= 0 ? nt_kind(w->c->nt, v) : NK_NilNode;
+  if (k == NK_CallNode || k == NK_RescueModifierNode) elab_inner(w, v, file, top, may, depth);
 }
 
 /* The bodies inside statement s that run while s does. */
 static void elab_inner(ElabWalk *w, int s, int file, int top, int may, int depth) {
   const NodeTable *nt = w->c->nt;
+  if (s < 0) return;
   switch (nt_kind(nt, s)) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
       elab_body(w, nt_ref(nt, s, "body"), file, top, may, depth + 1);
@@ -165,17 +184,25 @@ static void elab_inner(ElabWalk *w, int s, int file, int top, int may, int depth
       if (en >= 0) elab_body(w, nt_ref(nt, en, "statements"), file, top, may, depth + 1);
       break;
     }
+    /* `X = Class.new(B) do ... end`; under `||=` / `&&=` the value may not run */
     case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
-    case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode: {
-      int v = nt_ref(nt, s, "value");   /* `X = Class.new(B) do ... end` */
-      if (v >= 0 && nt_kind(nt, v) == NK_CallNode) elab_inner(w, v, file, top, may, depth);
+    case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode:
+      elab_value(w, nt_ref(nt, s, "value"), file, top, may, depth);
       break;
-    }
+    case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
+    case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
+    case NK_ConstantAndWriteNode: case NK_ConstantPathAndWriteNode: case NK_LocalVariableAndWriteNode:
+    case NK_InstanceVariableAndWriteNode: case NK_GlobalVariableAndWriteNode: case NK_ClassVariableAndWriteNode:
+      elab_value(w, nt_ref(nt, s, "value"), file, top, 1, depth);
+      break;
+    case NK_RescueModifierNode:   /* `x rescue y`: y may not run */
+      elab_value(w, nt_ref(nt, s, "expression"), file, top, may, depth);
+      elab_value(w, nt_ref(nt, s, "rescue_expression"), file, top, 1, depth);
+      break;
     case NK_CallNode: {
-      int b = nt_ref(nt, s, "block");
-      if (b < 0 || nt_kind(nt, b) != NK_BlockNode || !elab_runs_block_now(nt, s)) break;
-      w->r->bits[b] |= LR_NOW;
-      elab_body(w, nt_ref(nt, b, "body"), file, top, may, depth + 1);
+      int b = nt_ref(nt, s, "block"), runs = elab_block_runs(nt, s);
+      if (b < 0 || nt_kind(nt, b) != NK_BlockNode || runs < 0) break;
+      elab_body(w, nt_ref(nt, b, "body"), file, top, may || runs == 0, depth + 1);
       break;
     }
     default: break;
@@ -215,10 +242,10 @@ static void elab_file(ElabWalk *w, int f) {
 }
 
 /* Is a node under parent p one that runs later than p's statement: under
-   a method, a lambda, or a block that is not run where it stands? */
-static int lr_defers(const NodeTable *nt, int p, unsigned char bits) {
+   a method, a lambda, or a block kept to run later? */
+static int lr_defers(const NodeTable *nt, const int *par, int p) {
   NodeKind k = nt_kind(nt, p);
-  return k == NK_DefNode || k == NK_LambdaNode || (k == NK_BlockNode && !(bits & LR_NOW));
+  return k == NK_DefNode || k == NK_LambdaNode || (k == NK_BlockNode && par[p] >= 0 && elab_block_runs(nt, par[p]) < 0);
 }
 
 static void elab_points_build(Compiler *c) {
@@ -245,7 +272,7 @@ static void elab_points_build(Compiler *c) {
     while (s > 0) {
       int b = stack[--s], p = par[b];
       r->at[b] = r->at[p];
-      if ((r->bits[p] & LR_LATE) || lr_defers(nt, p, r->bits[p])) r->bits[b] |= LR_LATE;
+      if ((r->bits[p] & LR_LATE) || lr_defers(nt, par, p)) r->bits[b] |= LR_LATE;
     }
   }
   free(stack); free(w.entered);
@@ -328,9 +355,10 @@ static const char *lr_order_name(int o) {
 
 static void lr_node_desc(Compiler *c, int id, char *buf, size_t sz) {
   const NodeTable *nt = c->nt;
-  if (id < 0 || id >= nt->count) { snprintf(buf, sz, "%d", id); return; }
-  snprintf(buf, sz, "%d(%s line %d file %d)", id, nt_type(nt, id), (int)nt_int(nt, id, "node_line", 0),
-           (int)nt_int(nt, id, "node_file", 0));
+  LoadRecord *r = elab_fresh(c);
+  if (id < 0 || id >= r->n) { snprintf(buf, sz, "%d", id); return; }
+  snprintf(buf, sz, "%d(%s line %d file %d at #%d)", id, nt_type(nt, id), (int)nt_int(nt, id, "node_line", 0),
+           (int)nt_int(nt, id, "node_file", 0), r->at[id]);
 }
 
 /* prog_order answered `now` for (a, b), asked by `reader` */
