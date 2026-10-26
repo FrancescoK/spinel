@@ -623,7 +623,13 @@ void compute_reachable(Compiler *c, int typed) {
     Scope *sc = &c->scopes[s];
     { sc->reachable = 0; comp_touch_scope(sc->idx); }
     int is_root = (s == 0 || !sc->name || sp_streq(sc->name, "initialize") ||
-                   method_name_implicitly_invoked(sc->name) || sc->is_ext_entry);
+                   method_name_implicitly_invoked(sc->name) || sc->is_ext_entry ||
+                   /* an exception's message: the runtime asks it where the
+                      exception is printed or inspected (sp_user_exc_message),
+                      so a private helper only the override calls (sqlite3's
+                      sql_error) is reached through it */
+                   (sp_streq(sc->name, "message") && !sc->is_cmethod && sc->class_id >= 0 &&
+                    class_is_exc_subclass(c, sc->class_id)));
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
