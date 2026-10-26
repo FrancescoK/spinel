@@ -4092,11 +4092,13 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         Scope *caller = comp_scope_of(c, recv);
         /* `def fs = @fs` at the top level, called there (`fs << 2`): main is
            the self, and the getter hands out main's ivar, a slot of the
-           Toplevel pseudo-class. Not in an instance_eval block (its self is
-           the receiver), nor when a module main extends has the name (its
-           method comes first). */
-        int at_main = !caller || (caller->class_id < 0 && !caller->is_cmethod);
-        if (at_main && ie_class_of(c, recv) == -1 && !comp_toplevel_mod_defines(c, mname, 1))
+           Toplevel pseudo-class. Only in the top-level statements, where the
+           self is main: a top-level method runs on whatever object calls it
+           (`obj.send(:add, x)`), an instance_eval block on its receiver, and
+           a module main extends answers the name first. */
+        int at_main = (!caller || (caller->class_id < 0 && !caller->is_cmethod && caller->def_node < 0)) &&
+                      self_is_main(c, recv);
+        if (at_main && !comp_toplevel_mod_defines(c, mname, 1))
           tl_getter = comp_method_index(c, mname);
         const char *tl_ivs[8];
         if (tl_getter >= 0 && (c->scopes[tl_getter].class_id >= 0 || c->scopes[tl_getter].is_cmethod ||
