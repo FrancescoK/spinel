@@ -4121,6 +4121,10 @@ static int send_name_is_computed(Compiler *c, int arg, int depth) {
        that element */
     int wv = nt_ref(nt, id, "value");
     if (value_is_computed_name(c, wv)) return 1;
+    /* and one bound to another local (`t = s`, as `&s` binds the Symbol it
+       is passed) is that local */
+    if (nt_kind(nt, wv) == NK_LocalVariableReadNode && depth < 4 &&
+        send_name_is_computed(c, wv, depth + 1)) return 1;
   }
   /* a parameter no statement of the method rebinds: the names its callers hand it */
   if (!written) return param_handed_computed_name(c, arg, vn, depth);

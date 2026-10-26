@@ -9839,8 +9839,31 @@ static int sym_to_proc_bind_recv(Compiler *c, int id, int ex) {
   return 1;
 }
 
+static int bo_shallow_copy(NodeTable *nt, int id);
+
+/* Make `vn` a local of the innermost block or lambda node `id` is in, as the
+   parser lists a block's own locals: a block-local is fresh in each run of
+   its block, so a proc made in one iteration keeps that iteration's value,
+   where a slot of the method's frame would have handed every one the last. */
+static void sv_block_local(NodeTable *nt, const int *parent, int id, const char *vn) {
+  for (int p = parent[id]; p >= 0; p = parent[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+    if (k != NK_BlockNode && k != NK_LambdaNode) continue;
+    const char *locs = nt_str(nt, p, "locals");
+    size_t ln = locs ? strlen(locs) : 0;
+    char *nl = malloc(ln + strlen(vn) + 2);
+    if (!nl) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    snprintf(nl, ln + strlen(vn) + 2, "%s%s%s", ln ? locs : "", ln ? "," : "", vn);
+    nt_node_set_str(nt, p, "locals", nl);
+    free(nl);
+    return;
+  }
+}
+
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
+  int *parent = NULL;
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
@@ -9911,8 +9934,30 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     nt_node_set_ref(nt, bparams, "parameters", params);
     int ra = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ra, "name", pn[0]);
+    /* `&s` and `s.to_proc` take the Symbol s holds where they are evaluated:
+       the block sends the local __svs_N bound there, not s, which a later
+       write -- after the call, or between two of its yields -- would have
+       renamed the method of a block the callee kept or was still running */
+    /* (A lambda called where it is made, `s.to_proc.call(x)`, runs before
+       anything could write s, and stays a call the call desugars read; nor
+       is one defined? asks about, which it never runs.) */
+    if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int pc = parent[id];
+    int bound = !(is_toproc && pc >= 0 &&
+                  ((nt_kind(nt, pc) == NK_CallNode && nt_ref(nt, pc, "receiver") == id) ||
+                   nt_kind(nt, pc) == NK_DefinedNode));
+    char vn[64];
+    snprintf(vn, sizeof vn, "__svs_%s", comp_node_tag(c, id));
+    int bind = -1;
+    if (bound) {
+      bind = nt_new_node(nt, "LocalVariableWriteNode");
+      nt_node_set_str(nt, bind, "name", vn);
+      nt_node_set_ref(nt, bind, "value", ex);
+      sa[0] = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, sa[0], "name", vn);
+    }
+    else sa[0] = ex;
     int sargs = nt_new_node(nt, "ArgumentsNode");
-    sa[0] = ex;
     for (int k = 1; k < npar; k++) {
       sa[k] = nt_new_node(nt, "LocalVariableReadNode");
       nt_node_set_str(nt, sa[k], "name", pn[k]);
@@ -9954,8 +9999,27 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     else
       nt_node_set_ref(nt, id, "block", blk2);
+    if (!bound) { changed = 1; continue; }
+    /* (__svs_N = s; m { |x| x.send(__svs_N) }): the node keeps its id, line
+       and file as the parentheses, as desugar_poly_symbol_block_arg's */
+    int nc = bo_shallow_copy(nt, id);
+    int stmts = nt_new_node(nt, "StatementsNode");
+    int stm[2] = { bind, nc };
+    nt_node_set_arr(nt, stmts, "body", stm, 2);
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    nt_node_set_ref(nt, id, "body", stmts);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+    if (sc2) lv_set_type(scope_local_intern(sc2, vn), TY_SYMBOL);
+    sv_block_local(nt, parent, id, vn);
     changed = 1;
   }
+  free(parent);
   return changed;
 }
 
