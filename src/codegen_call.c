@@ -9050,6 +9050,16 @@ static int poly_other_arg_runs(Compiler *c, const int *argv, int pos_argc, int k
   return 0;
 }
 
+/* Does an operand after `k` of ops[0..n), or the keyword hash `kwh` (-1
+   for none), run anything once `k`'s value is taken? One that does can grow
+   the String `k` holds, moving its bytes, before the call binds it. */
+static int later_operand_runs(Compiler *c, const int *ops, int n, int kwh, int k) {
+  if (kwh >= 0 && subtree_has_side_effect(c, kwh)) return 1;
+  for (int j = k + 1; j < n; j++)
+    if (subtree_has_side_effect(c, ops[j])) return 1;
+  return 0;
+}
+
 static int poly_inert(Compiler *c, int node);
 
 /* Is `key` a hash key whose #hash and #eql? are the builtin ones: a
@@ -10161,10 +10171,17 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           /* --share-strings: a value that hands on a shared String's handle
              (a route, `s << x`) runs as that handle, which a handle arm
-             takes; the temp is its read, for an arm that takes the value */
+             takes; the temp is its read, for an arm that takes the value.
+             So does any other String beside a later argument that runs,
+             unless a hoist ran it into a temp already: its bytes taken here
+             were a view of the payload that argument can move by growing
+             the String, and are read again once every argument has run. A
+             literal's are frozen and never move. */
           else if (at == TY_STRING && (setter_late || (ak != NK_LocalVariableReadNode &&
                    ak != NK_InstanceVariableReadNode && strbuf_arg_carries(c, argv[a]) &&
-                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))))) {
+                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))) ||
+                   (ak != NK_StringNode && !arg_ran_first(argv[a], 0) &&
+                    later_operand_runs(c, argv, pos_argc, kwh, a)))) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
@@ -25249,6 +25266,14 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   int la_a = nt_ref(nt, id, "arguments"), la_an = 0;
   const int *la_av = la_a >= 0 ? nt_arr(nt, la_a, "arguments", &la_an) : NULL;
   for (int i = 0; i < la_an && !later_alloc; i++) later_alloc = operand_may_allocate(c, la_av[i]);
+  /* an argument that runs code and is not one of the operands held here
+     (one past where they stop, or one held in parts) runs after all of them */
+  int rest_runs = 0;
+  for (int i = 0; i < la_an && !rest_runs; i++) {
+    int held_whole = 0;
+    for (int j = 0; j < n; j++) if (node[j] == la_av[i]) held_whole = 1;
+    rest_runs = !held_whole && subtree_has_side_effect(c, la_av[i]);
+  }
   *held = -1;
   int harg = strbuf_hash_default_arg(c, id);
   for (int i = 0; i < n; i++) {
@@ -25323,7 +25348,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     }
     /* an operand its own prelude ran into a rooted temp already (an
        Array.new's fill) is that temp: no copy into a second rooted slot */
-    int t = -1, n2 = 0;
+    int t = -1, n2 = 0, hstr = 0;
     char rk[48];
     if (!ko && ob.p && sscanf(ob.p, "_t%d%n", &t, &n2) == 1 && !ob.p[n2] && op.p &&
         snprintf(rk, sizeof rk, ty[i] == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d)" : "SP_GC_ROOT(_t%d)", t) > 0 &&
@@ -25331,10 +25356,18 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       buf_puts(b, *lead ? "" : " ");
     else {
       t = ++g_tmp;
-      if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
+      /* (one representation: a String argument of either face beside a
+         later argument that runs is held as its handle, as a slot's is
+         above, and read from it where the arms use it: its bytes held as
+         they came were a view of the payload that argument can move by
+         growing the String. One nothing runs after keeps its bytes.) */
+      hstr = !ko && ob.p && node[i] != r && ty[i] == TY_STRING &&
+             (rest_runs || later_operand_runs(c, node, n, -1, i));
+      if (hstr) buf_puts(b, "sp_String *");
+      else if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
       /* (one representation: the handle temp takes a value of either face,
          a boxed value's to_s answering bytes included) */
-      if (!ko && ob.p && ty[i] == TY_STRBUF)
+      if (hstr || (!ko && ob.p && ty[i] == TY_STRBUF))
         buf_printf(b, " _t%d = SP_STR_HDL(%s);", t, ob.p);
       else
       buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : ko ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
@@ -25344,7 +25377,8 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       buf_puts(b, *lead ? "\n" : " ");
     }
     free(ob.p); free(op.p);
-    if (ko) view_bind_o(node[i], "_t%d", t); else view_bind(node[i], "_t%d", t);
+    if (hstr) ran_first_bind_read(node[i], t);
+    else if (ko) view_bind_o(node[i], "_t%d", t); else view_bind(node[i], "_t%d", t);
     int tok = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
     if (*held < 0) *held = tok;
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
