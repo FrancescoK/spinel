@@ -11473,8 +11473,10 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
 }
 
 /* cond: under a condition anywhere above; here: under one inside the def's
-   own class body (a class body under a condition resets it) */
-typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here; } CondDef;
+   own class body (a class body under a condition resets it); br: the branch
+   of the innermost condition above, -1 under none; al: an alias statement,
+   lf: any other statement the walk does not enter (def -1 for both) */
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here, br, al, lf; } CondDef;
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
@@ -11487,6 +11489,69 @@ static void cdef_path(const NodeTable *nt, int cp, char *p, size_t cap) {
   size_t l = strlen(p);
   snprintf(p + l, cap - l, "/%s", nt_str(nt, cp, "name") ? nt_str(nt, cp, "name") : "");
 }
+static int cdef_call_names(const NodeTable *nt, int id, const char *nm);
+/* The old-name literal of `alias new old` or of a receiverless
+   `alias_method :new, :old` (a visibility call around it included), or -1;
+   *nw gets the new-name literal. */
+static int cdef_alias(const NodeTable *nt, int id, int *nw) {
+  NodeKind k = nt_kind(nt, id);
+  int od = -1;
+  *nw = -1;
+  if (k == NK_AliasMethodNode) { od = nt_ref(nt, id, "old_name"); *nw = nt_ref(nt, id, "new_name"); }
+  else if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && nt_str(nt, id, "name")) {
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (sp_streq(nt_str(nt, id, "name"), "alias_method") && an == 2) { od = av[1]; *nw = av[0]; }
+    else if (is_visibility_name(nt_str(nt, id, "name")) && an == 1) return cdef_alias(nt, av[0], nw);
+  }
+  NodeKind ok = od >= 0 ? nt_kind(nt, od) : NK_NilNode, nk = *nw >= 0 ? nt_kind(nt, *nw) : NK_NilNode;
+  return (ok == NK_SymbolNode || ok == NK_StringNode) && (nk == NK_SymbolNode || nk == NK_StringNode) ? od : -1;
+}
+static const char *cdef_lit(const NodeTable *nt, int id) {
+  return nt_str(nt, id, nt_kind(nt, id) == NK_SymbolNode ? "value" : "content");
+}
+/* Might something under `id` define or rebind method `nm`: a def of it, or
+   an alias to it, undef or a defining call naming it (define_method,
+   attr_reader and kin). own: `id` stands in the def's own class body, where
+   such a call without a receiver, or an undef, is the class's; elsewhere
+   only one with a receiver may reach it, until a class body or block below
+   that might be the class's own again. cm: `nm` is a class method. */
+static int cdef_may_bind(const NodeTable *nt, int id, const char *nm, int own, int cm) {
+  static const char *const definers[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
+    "define_method", "remove_method", "undef_method", "send", "__send__", "public_send", NULL };
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  int nw;
+  if (k == NK_DefNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), nm)) return 1;
+  if (own && cdef_alias(nt, id, &nw) >= 0 && sp_streq(cdef_lit(nt, nw), nm)) return 1;
+  if (own && k == NK_UndefNode) {
+    int un = 0; const int *uv = nt_arr(nt, id, "names", &un);
+    for (int i = 0; i < un; i++) if (nt_kind(nt, uv[i]) == NK_SymbolNode && sp_streq(cdef_lit(nt, uv[i]), nm)) return 1;
+  }
+  const char *cn = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  int definer = 0;
+  for (int i = 0; cn && definers[i] && !definer; i++) definer = sp_streq(cn, definers[i]);
+  if (definer && (own || nt_ref(nt, id, "receiver") >= 0) && cdef_call_names(nt, id, nm)) return 1;
+  /* a bare one in a class body rebinds a class method, which `own` does
+     not cover */
+  if (cm && cn && sp_streq(cn, "define_singleton_method") && cdef_call_names(nt, id, nm)) return 1;
+  own |= k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (cdef_may_bind(nt, nt_ref_at(nt, id, i), nm, own, cm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) if (cdef_may_bind(nt, ids[j], nm, own, cm)) return 1;
+  }
+  return 0;
+}
+static void cdef_add(CondDef x, CondDef **v, int *n) {
+  CondDef *g = realloc(*v, sizeof(CondDef) * (size_t)(*n + 1));
+  if (!g) return;
+  *v = g;
+  x.path = strdup(x.path);
+  g[(*n)++] = x;
+}
 static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   NodeKind k = nt_kind(nt, id);
   switch (k) {
@@ -11498,6 +11563,14 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     for (int i = 0; i < bn; i++) {
       if (x.top < 0) y.top = b[i];
       cdef_walk(nt, b[i], y, v, n);
+      NodeKind bk = nt_kind(nt, b[i]);
+      int nw;
+      if (bk != NK_IfNode && bk != NK_UnlessNode && bk != NK_ClassNode && bk != NK_ModuleNode &&
+          bk != NK_DefNode && bk != NK_SingletonClassNode && cdef_vis_def(nt, b[i]) < 0 && cdef_alias(nt, b[i], &nw) < 0) {
+        CondDef z = y;
+        z.lf = b[i];
+        cdef_add(z, v, n);
+      }
     }
     break;
   }
@@ -11507,7 +11580,9 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     NodeKind pk = k == NK_ElseNode ? NK_ElseNode : nt_kind(nt, nt_ref(nt, id, "predicate"));
     x.cond = 1;
     if (pk != NK_ElseNode && pk != NK_TrueNode && pk != NK_FalseNode && pk != NK_NilNode) x.here = 1;
-    cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
+    CondDef y = x;
+    y.br = nt_ref(nt, id, "statements");
+    cdef_walk(nt, y.br, y, v, n);
     cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
     break;
@@ -11550,13 +11625,13 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   }
   else if (k == NK_DefNode && x.st >= 0 && nt_str(nt, id, "name") &&
            (nt_ref(nt, id, "receiver") < 0 || nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_SelfNode)) {
-    CondDef *g = realloc(*v, sizeof(CondDef) * (size_t)(*n + 1));
-    if (!g) return;
-    *v = g;
     x.def = id;
     x.cm |= nt_ref(nt, id, "receiver") >= 0;
-    x.path = strdup(x.path);
-    g[(*n)++] = x;
+    cdef_add(x, v, n);
+  }
+  else if (x.st >= 0 && cdef_alias(nt, id, &(int){ 0 }) >= 0) {
+    x.al = id;
+    cdef_add(x, v, n);
   }
 }
 static int cdef_arity(const NodeTable *nt, int def) {
@@ -11739,11 +11814,13 @@ int desugar_conditional_defs(Compiler *c) {
   int n = 0, serial = 0, groups = 0;
   char **lone = NULL;   /* the names a single def under a run-time condition defines */
   int nlone = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0 }, &v, &n);
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0, -1, -1, -1 }, &v, &n);
+  CondDef *g = malloc(sizeof(CondDef) * (size_t)(n > 0 ? n : 1));
+  int *gi = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!g || !gi) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
     char *base = strdup(nt_str(nt, v[i].def, "name"));
-    CondDef g[n];
     int ng = 0, bad = 0, blk = 0, same = 1, d0 = v[i].def, ar = cdef_arity(nt, d0);
     for (int j = 0; j < n; j++) {
       if (v[j].def < 0 || v[j].cm != v[i].cm || strcmp(v[j].path, v[i].path) ||
@@ -11755,6 +11832,7 @@ int desugar_conditional_defs(Compiler *c) {
       bad |= !sp_streq(v[j].vis, v[i].vis);
       if (cdef_arity(nt, v[j].def) != ar) ar = -1;
       same &= cdef_same(nt, v[j].def, d0);
+      gi[ng] = j;
       g[ng++] = v[j];
       v[j].def = -1;
     }
@@ -11815,6 +11893,20 @@ int desugar_conditional_defs(Compiler *c) {
       nt_node_set_str(nt, wk, "name", sel);
       nt_node_set_ref(nt, wk, "value", nt_new_int(nt, k + 1));
       cdef_insert_after(nt, g[k].st, g[k].def, wk);
+      /* an alias of the name binds the arm it follows, where that arm is
+         sure to have run and still answers the name: in its branch, after
+         it, with nothing between that might rebind the name. The
+         dispatcher the name becomes would reach the arm that aliases it
+         and call itself. */
+      for (int a = gi[k] + 1; a < n && (k == ng - 1 || a < gi[k + 1]); a++) {
+        int nw, od = v[a].al >= 0 ? cdef_alias(nt, v[a].al, &nw) : -1;
+        int own = v[a].cm == g[k].cm && !strcmp(v[a].path, g[k].path), same = od >= 0 && own;
+        if (v[a].lf >= 0 && cdef_may_bind(nt, v[a].lf, base, own, g[k].cm)) break;
+        if (same && sp_streq(cdef_lit(nt, nw), base)) break;
+        if (!same || !sp_streq(cdef_lit(nt, od), base) || (g[k].br >= 0 && !subtree_has(nt, g[k].br, v[a].al)))
+          continue;
+        nt_node_set_str(nt, od, nt_kind(nt, od) == NK_SymbolNode ? "value" : "content", nm);
+      }
       int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
       for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
       if (ar < 0) {
@@ -11861,6 +11953,8 @@ int desugar_conditional_defs(Compiler *c) {
   }
   for (int i = 0; i < n; i++) free((char *)v[i].path);
   free(v);
+  free(g);
+  free(gi);
   if (nlone) cdef_refuse_reflection(nt, (const char *const *)lone, nlone);
   for (int i = 0; i < nlone; i++) free(lone[i]);
   free(lone);
