@@ -5703,3 +5703,16 @@ int cls_fact_idx(Compiler *c, int node) {
   int p = c->cls_fact[node];
   return p <= 0 || p >= c->ncls_pool ? -1 : p;
 }
+
+/* See compiler.h. The closed world's value from anywhere (f->every): each
+   class of the program's, each Class object and a builtin */
+int cls_fact_unbounded(Compiler *c, int node) {
+  const ClsSet *s = cls_fact_node(c, node);
+  if (!s || s->all) return 1;
+  if (!s->bv || s->n < c->nclasses) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!cls_set_has(s, k + c->nclasses)) return 0;
+    if (!cls_set_has(s, k) && !comp_class_is_module(c, &c->classes[k])) return 0;
+  }
+  return 1;
+}
