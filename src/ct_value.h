@@ -1,0 +1,57 @@
+/* Compile-time values: what Ruby code the compiler runs ahead of time
+ * computes -- a class body's macro call (the parse layer's sp_macro.c), a
+ * loop over a constant table (sp_const_loop.c) -- and the operations on them
+ * the evaluators share. nil, true, false, an Integer within 64 bits, a
+ * String, a Symbol, and an Array of these.
+ *
+ * Nothing here reads a tree: each evaluator walks its own (Prism's nodes, or
+ * the node table's) and computes with these. An operation answers 0 where it
+ * does not know CRuby's answer for certain (a Bignum, a non-ASCII case
+ * mapping, a pattern past the few it follows), and the caller then leaves
+ * the code to run when the program does. */
+#ifndef SPINEL_CT_VALUE_H
+#define SPINEL_CT_VALUE_H
+
+#include <stddef.h>
+
+typedef enum { MV_UNDEF = 0, MV_NIL, MV_TRUE, MV_FALSE, MV_INT, MV_STR, MV_SYM, MV_ARR } MvKind;
+
+typedef struct Mv { MvKind k; long long i; char *s; struct Mv *a; int n; } Mv;
+
+/* a growing NUL-terminated text */
+typedef struct MvBuf { char *p; size_t len, cap; } MvBuf;
+
+void mvb_putn(MvBuf *b, const char *s, size_t n);
+void mvb_puts(MvBuf *b, const char *s);
+
+Mv mv_nil(void);
+Mv mv_undef(void);
+Mv mv_str(const char *s, size_t n, MvKind k);   /* a String or Symbol of those bytes */
+int mv_truthy(Mv v);
+int mv_eq(Mv a, Mv b);
+
+/* `s` spells a Symbol that needs no quotes (`:name`, `:name?`) */
+int mv_sym_plain(const char *s);
+/* every byte of `s` is ASCII */
+int mv_ascii(const char *s);
+
+void mv_to_s(Mv v, MvBuf *b);
+/* `s` as a double-quoted Ruby literal that reads back as the same bytes */
+void mv_quote(const char *s, MvBuf *b);
+/* v as Ruby source that reads back as v */
+void mv_inspect(Mv v, MvBuf *b);
+/* does mv_inspect spell v exactly as CRuby's inspect does? */
+int mv_inspect_exact(Mv v);
+
+/* ---- the patterns gsub / sub follow: plain text, one character class or
+   escaped character with an optional `+`, or a run of literal characters --
+   matched over ASCII bytes, as CRuby's engine matches them there */
+typedef struct { int lit; char set[256]; int plus; const char *text; size_t tn; } MvPat;
+
+/* the pattern a regexp literal's source [p, e) spells, 1 when it is one of
+   those (`pt` points into the source) */
+int mv_pat_regexp(const char *p, const char *e, MvPat *pt);
+/* the length of a match of pt at s (0: none) */
+size_t mv_pat_at(const MvPat *pt, const char *s);
+
+#endif
