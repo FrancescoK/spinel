@@ -262,9 +262,8 @@ its types misses the one unit that holds its class; a changed type misses
 the callers' units too; an added instance variable or class misses every
 unit of the program but none of the runtime's, which are shared by every
 program built with the same flags. The frontend runs in full every time, so
-a warm build costs the frontend, a few unit compiles and the link. How it
-works, and what it gives up against a release build:
-[internals/incremental-build.md](internals/incremental-build.md).
+a warm build costs the frontend, a few unit compiles and the link. What it
+gives up against a release build is in [limitations.md](limitations.md).
 
 `make incremental-bench` measures it on the scale program. On a 4-core VM,
 `gen.sh 100` (`INCREMENTAL_BENCH_K=100`):

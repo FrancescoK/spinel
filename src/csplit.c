@@ -30,8 +30,8 @@
    system-header ones (3 and 4): the items leave the unit's order, and a
    stack that does not match is worth a warning of its own.
 
-   c_split_units is the other reader of the same items, for --incremental
-   (docs/internals/incremental-build.md). There the parts are not for
+   c_split_units is the other reader of the same items, for --incremental.
+   There the parts are not for
    parallelism but for a cache of objects, so a part's text has to stay the
    same when the program changes elsewhere. It cuts at the `#pragma spinel
    unit <tag> <group>` lines codegen writes under that flag only, where each

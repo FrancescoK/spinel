@@ -1,4 +1,4 @@
-/* --incremental's native step (docs/internals/incremental-build.md).
+/* --incremental's native step.
 
    The generated C of an --incremental build carries `#pragma spinel unit`
    lines where each method, constructor, dispatcher and main begins. This

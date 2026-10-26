@@ -688,8 +688,7 @@ still works.
   development-build mode: the program is compiled as many units, so methods
   are not inlined across units, and short methods lose the inline hint they
   get in a single-unit build. The answers are the same; release builds
-  (without `--incremental`) are unchanged. See
-  [internals/incremental-build.md](internals/incremental-build.md).
+  (without `--incremental`) are unchanged.
 
 ### Intentional incompatibilities with CRuby
 

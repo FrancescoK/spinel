@@ -124,9 +124,8 @@ RUBY
 ```
 
 `--incremental` is a development-build mode: it gives up inlining across
-units for rebuilds that compile only the units an edit changed (see
-[docs/internals/incremental-build.md](docs/internals/incremental-build.md));
-release builds stay a single unit.
+units for rebuilds that compile only the units an edit changed; release
+builds stay a single unit.
 
 `./spinel` is a single native binary (`build/spinel`; the repo-root
 `spinel` is a convenience symlink `make` creates) that parses, infers

@@ -494,9 +494,8 @@ mtimes across the project, its dependencies, and the compiler binary).
 There is no file-granular incremental mode -- whole-program type
 specialization spans every source -- but compiles are fast and package C
 objects are reused from the cache. `spinel --incremental` (a unit-level
-object cache, [internals/incremental-build.md](internals/incremental-build.md))
-is available directly; `spin` does not use it yet. `spin clean` removes
-`build/`.
+object cache) is available directly; `spin` does not use it. `spin clean`
+removes `build/`.
 
 ## Command summary
 
