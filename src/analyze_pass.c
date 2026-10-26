@@ -1679,7 +1679,7 @@ int infer_container_flow(Compiler *c) {
 /* Does the subtree assign a local anywhere? Gates the recompute pass below:
    only a block whose body introduces locals can have left an enclosing write's
    RHS type derived from still-reset slots. */
-static int subtree_writes_local(const NodeTable *nt, int id) {
+static int subtree_writes_any_local(const NodeTable *nt, int id) {
   if (id < 0) return 0;
   NodeKind ty_k = nt_kind(nt, id);
   if ((ty_k == NK_LocalVariableWriteNode ||
@@ -1688,13 +1688,13 @@ static int subtree_writes_local(const NodeTable *nt, int id) {
              ty_k == NK_LocalVariableAndWriteNode)) return 1;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
-    if (subtree_writes_local(nt, nt_ref_at(nt, id, i))) return 1;
+    if (subtree_writes_any_local(nt, nt_ref_at(nt, id, i))) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(nt, id, i, &n);
     for (int k = 0; k < n; k++)
-      if (subtree_writes_local(nt, ids[k])) return 1;
+      if (subtree_writes_any_local(nt, ids[k])) return 1;
   }
   return 0;
 }
@@ -5064,7 +5064,7 @@ int infer_write_types(Compiler *c) {
          came out narrower than the value the block actually yields
          (`r = [0].map { |i| w = ...; w ? w[0] : 9 }` -> an Integer array
          holding boxed values) (#3463). */
-      if (!tramp && !subtree_writes_local(nt, nt_ref(nt, val_id, "block"))) continue;
+      if (!tramp && !subtree_writes_any_local(nt, nt_ref(nt, val_id, "block"))) continue;
     }
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;

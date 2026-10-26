@@ -10,6 +10,7 @@ int g_ivg_box_node = -1;
 #include "holder.h"
 #include "builtin_ops.h"
 #include "share.h"
+#include "codegen_call_arms.h"
 static const char *cbi_identity_refusal(Compiler *c, int id, int recv, TyKind rt);
 
 /* ---- nil out of band: an emitter whose C result is an sp_oint / sp_ofloat

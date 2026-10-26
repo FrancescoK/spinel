@@ -6,6 +6,7 @@
 #include "value_pos.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
+#include <ctype.h>
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);

@@ -1,6 +1,7 @@
 #include "cext_bridge.h"
 #include <stdint.h>
 #include <limits.h>
+#include <ctype.h>
 #include "analyze_internal.h"
 #include "builtin_ops.h"
 #include "repr.h"

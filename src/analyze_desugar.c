@@ -9,6 +9,7 @@
 #include "builtin_ops.h"
 #include "analyze_internal.h"
 #include "value_pos.h"
+#include "call_plan.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
