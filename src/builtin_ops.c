@@ -1846,7 +1846,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "[]",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "slice",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "byteslice",       2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_byteslice($r, $i0, $i1)", 0 },
-  { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ sp_Range _t$t = sp_range_ix($e0); sp_str_byteslice_range($r, _t$t.first, _t$t.last, _t$t.excl, _t$t.nobeg, _t$t.noend); })", BOP_K(TY_RANGE) },
+  { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ sp_Range _t$t = sp_range_ix($e0); sp_str_byteslice_range($r, _t$t.first, _t$t.last, _t$t.excl, _t$t.nobeg, _t$t.noend); })", BOP_K(TY_RANGE) | BOP_K(TY_FLOAT_RANGE) },
   { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_byteslice1($r, $i0)", 0 },
   { TY_STRING, "byteslice",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "bytesplice",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2454,7 +2454,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "join",                  0,   1, BF_ANY,      TY_STRING,     BOPE_ARRAY_JOIN },
   { BOP_ANY_ARRAY, "[]",                    2,   2, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $gsp_int _t$u = $i0; sp_int _t$v = $i1; sp_int _t$w = sp_$AArray_length(_t$t); (_t$v < 0 || _t$u > _t$w || _t$u < -_t$w) ? (sp_$AArray *)0 : sp_$AArray_slice(_t$t, _t$u, _t$v); })" },
   { BOP_ANY_ARRAY, "dig",                   1,   1, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "$<sp_$AArray_get$O($h, $i0)$>" },  /* one step: arr[i]; an Integer or Float element with its nil (sp_IntArray_get_o) */
-  { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) },
+  { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) | BOP_K(TY_FLOAT_RANGE) },
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "$<sp_$AArray_delete_at$O($h, $i0)$>", BOP_K(TY_INT) },  /* an Integer index: the element, or nil */
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_delete_at$O($h, $i0)$>" },  /* another index: a boxed one may be a Range, the rule after the lookup answers */
   { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_POLY,       BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
@@ -2518,13 +2518,13 @@ static const BuiltinOp bop_rows[] = {
      An index or count whose kind says the answer (an Integer, a Range)
      states it in rows that guard it; the unguarded row of the name stays
      for every other kind of index, which the rules read. */
-  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) },  /* a subarray */
+  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) | BOP_K(TY_FLOAT_RANGE) },  /* a subarray */
   { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE, NULL, BOP_K(TY_INT) },  /* an element */
   { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* an element, or a subarray for a Range */
   /* slice: the blockless call only; a block the builtin leaves unused is
      read by the rule after the lookup, and a block that runs code is not
      this call */
-  { BOP_ANY_ARRAY, "slice",                 1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) },
+  { BOP_ANY_ARRAY, "slice",                 1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) | BOP_K(TY_FLOAT_RANGE) },
   { BOP_ANY_ARRAY, "slice",                 1,   1, BF_NONE,     BOPR_ELEM,     BOPE_NONE, NULL, BOP_K(TY_INT) },
   { BOP_ANY_ARRAY, "slice",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "[]=",                   2,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* the assigned value */

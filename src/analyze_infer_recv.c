@@ -1135,7 +1135,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        yields the RHS BOXED (its `_t` temp is an sp_RbVal), so a poly receiver
        infers TY_POLY; a typed receiver's emitter yields the raw RHS value. */
     if (sp_streq(name, "[]=") && argc == 2) {
-      if (infer_type(c, argv[0]) == TY_RANGE)
+      if (infer_type(c, argv[0]) == TY_RANGE || infer_type(c, argv[0]) == TY_FLOAT_RANGE)
         { *out = rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[1]); return 1; }
       { *out = ty_array_elem(rt); return 1; }
     }

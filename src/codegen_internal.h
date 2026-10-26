@@ -2713,6 +2713,7 @@ int brk_wrapper_surely_light(Compiler *c, int id);
 void emit_array_splice(Compiler *c, int id, int recv, TyKind rt, int start_node, int len_node, int range_node, int rhs_node, Buf *b);
 int aset_range_held(Compiler *c, TyKind rt, const int *argv);
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b);
+int frange_index_view(Compiler *c, int id);
 int splice_to_ary_mi(Compiler *c, TyKind rhs_ty);
 TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty, int mi, int ta, Buf *b, Buf *out);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
