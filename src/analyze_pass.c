@@ -16457,7 +16457,12 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
          methods first in a class method, the instance chain, and a
          top-level def last (comp_self_call_mi), as the splice resolves
          the call */
-      mi = comp_cbody_call_mi(c, id, name);
+      /* in a block run by instance_eval/exec the receiver's own method
+         answers first, as the call's typing and plan resolve it; left to
+         self, the block's parameters were never typed from its yields */
+      int iec = ie_class_of(c, id);
+      if (iec >= 0) mi = comp_method_in_chain(c, iec, name, NULL);
+      if (mi < 0) mi = comp_cbody_call_mi(c, id, name);
       if (mi < 0) mi = comp_self_call_mi(c, id, name);
     }
     else {
