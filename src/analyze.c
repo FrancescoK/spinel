@@ -10133,8 +10133,11 @@ int desugar_kernel_recv(Compiler *c) {
     if (!mn || !is_kernel_module_function(mn) || cplan_const_user(c, id, rn, 1)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
     /* still Kernel's: a reopening's pass that gives a bare call self
-       (desugar_handle_reopen_self_recv) leaves it bare */
+       (desugar_handle_reopen_self_recv) leaves it bare, and no method
+       the program defines of the name answers it (`def warn(m) =
+       Kernel.warn(m)` called itself) */
     nt_node_set_int(nt, id, "kernel_recv", 1);
+    nt_node_set_int(nt, id, "builtin_only", 1);
     changed = 1;
   }
   return changed;
