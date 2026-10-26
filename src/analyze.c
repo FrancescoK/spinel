@@ -40197,6 +40197,15 @@ static int mark_block_param_arrays(Compiler *c) {
   return changed;
 }
 
+/* a value position that reads a local holding only nil (for_each_value_position) */
+static int nn_nil_only_leaf(const VpLeaf *leaf, void *ud) {
+  Compiler *c = ud;
+  if (leaf->kind != VPK_EXPR || nt_kind(c->nt, leaf->node) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, leaf->node, "name");
+  Scope *sc = nm ? comp_scope_of(c, leaf->node) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+  return lv && lv->nil_only;
+}
 static void mark_nullable_int_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* A scalar local a read can reach before any write starts as its nil and
@@ -40229,6 +40238,20 @@ static void mark_nullable_int_locals(Compiler *c) {
     }
     free(par); free(dp.pos); free(dp.done);
     du_memo_free();
+  }
+  /* A method whose tail reads a local that only ever holds nil (nil_only,
+     the late widening's boxed nil) returns nil: known before any round, so
+     seeded here rather than found by the first round, which then ran one
+     more to see nothing else change -- a round over every node, which the
+     builtins' per-site helpers (__enum_find__N's `found`) cost every
+     program (scale-test). The rule in the rounds would set the same. */
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *s = &c->scopes[mi];
+    if (s->ret_nullable_int || (s->ret != TY_INT && s->ret != TY_FLOAT &&
+        !((s->ret == TY_POLY || s->ret == TY_UNKNOWN) && s->yields))) continue;
+    int tail = scope_body_last(c, mi);
+    if (tail >= 0 && for_each_value_position(nt, tail, VPS_ALL, nn_nil_only_leaf, c))
+      s->ret_nullable_int = 1;
   }
   /* An --rbs `Integer?` return is the seeded form of the same property the
      rounds below infer, so start the propagation from it. */
