@@ -10780,7 +10780,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_XStringNode || nk == NK_InterpolatedXStringNode) return TY_STRING;
   if (nk == NK_InterpolatedSymbolNode)  return TY_SYMBOL;
   if (nk == NK_SymbolNode)              return TY_SYMBOL;
-  if (nk == NK_TrueNode)                return TY_BOOL;
+  if (nk == NK_TrueNode || nk == NK_LoadNode) return TY_BOOL;   /* a require answers true or false */
   if (nk == NK_FalseNode)               return TY_BOOL;
   if (nk == NK_NilNode)                 return TY_NIL;
   /* A while/until loop in value position evaluates to nil (a valued `break`

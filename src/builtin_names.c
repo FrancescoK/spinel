@@ -1254,6 +1254,13 @@ static int builtin_name_in(const char *name, const char *const *names) {
 
 int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
+int is_autoload_name(const char *n) { return sp_streq(n, "autoload"); }
+/* A LoadNode's `how` (spinel_parse.c, sp_load_resolve) that names no file
+   at compile time: one not there (LoadError when it runs), or a path the
+   require computes when it runs. */
+int is_load_how_unresolved(const char *how) {
+  return how && (sp_streq(how, "none") || sp_streq(how, "run-time"));
+}
 
 int is_enumerable_module_name(const char *n) {
   return n && sp_streq(n, "Enumerable");

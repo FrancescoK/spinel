@@ -2271,14 +2271,16 @@ static int class_path_constants(Compiler *c, int ci, const char **out, const cha
       if (nm) n = add_listed_const(out, shown, n, nm, sh);
     }
   const char *rn = class_ruby_name(c, ci);
-  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
-  int sn = 0; const int *st = rn && top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
-  for (int k = 0; k < sn && n < max; k++) {
-    if (nt_kind(nt, st[k]) != NK_ConstantPathWriteNode) continue;
-    int t = nt_ref(nt, st[k], "target");
-    const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
-    const char *nm = own && sp_streq(own, rn) ? nt_str(nt, t, "name") : NULL;
-    if (nm) n = add_listed_const(out, shown, n, nm, nt_str(nt, t, "qc_orig_name"));
+  for (int r = 0; rn && r < nt_nroots(nt); r++) {   /* each file's top level */
+    int top = prog_root_stmts(c, r);
+    int sn = 0; const int *st = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+    for (int k = 0; k < sn && n < max; k++) {
+      if (nt_kind(nt, st[k]) != NK_ConstantPathWriteNode) continue;
+      int t = nt_ref(nt, st[k], "target");
+      const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
+      const char *nm = own && sp_streq(own, rn) ? nt_str(nt, t, "name") : NULL;
+      if (nm) n = add_listed_const(out, shown, n, nm, nt_str(nt, t, "qc_orig_name"));
+    }
   }
   return n;
 }

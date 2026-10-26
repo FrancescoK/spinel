@@ -1380,7 +1380,7 @@ int desugar_instance_eval_defs(Compiler *c) {
   IedPaths ip = {0};
   ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
   if (!ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  ied_walk(nt, nt->root_id, NULL, 0, n0, &ip);
+  for (int r = 0; r < nt_nroots(nt); r++) ied_walk(nt, nt_root(nt, r), NULL, 0, n0, &ip);   /* each file's tree */
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -1542,14 +1542,13 @@ static void kr_self_calls(NodeTable *nt, int node, const char *const *names, int
     for (int j = 0; j < n; j++) kr_self_calls(nt, ids[j], names, nn);
   }
 }
-int desugar_kernel_reopen(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int root = nt->root_id;
-  int top = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+enum { KR_MAX = 256 };
+/* One file's top level (statements `top`): its `module Kernel` reopenings'
+   defs hoisted, their names added to names[*nn]; the number hoisted. */
+static int kernel_reopen_top(NodeTable *nt, int top, const char **names, int *nn) {
   if (top < 0) return 0;
   int tn = 0; const int *tb0 = nt_arr(nt, top, "body", &tn);
   if (!tb0 || tn == 0) return 0;
-  int n0 = nt->count;
   int hoisted = 0;
   for (int i = 0; i < tn; i++) {
     int st = tb0[i];
@@ -1563,8 +1562,6 @@ int desugar_kernel_reopen(Compiler *c) {
       if (nt_kind(nt, bb[k]) == NK_DefNode && nt_ref(nt, bb[k], "receiver") < 0) hoisted++;
   }
   if (!hoisted) return 0;
-  enum { KR_MAX = 256 };
-  const char *names[KR_MAX]; int nn = 0;
   int *tb = (int *)malloc(sizeof(int) * (size_t)tn);
   /* room for each reopening's Object class beside its hoisted defs */
   int *nb = (int *)malloc(sizeof(int) * (size_t)(2 * tn + hoisted));
@@ -1594,7 +1591,7 @@ int desugar_kernel_reopen(Compiler *c) {
       int d = bb0[k];
       if (nt_kind(nt, d) == NK_DefNode && nt_ref(nt, d, "receiver") < 0) {
         nb[nbn++] = d;
-        if (nn < KR_MAX && nt_str(nt, d, "name")) names[nn++] = nt_str(nt, d, "name");
+        if (*nn < KR_MAX && nt_str(nt, d, "name")) names[(*nn)++] = nt_str(nt, d, "name");
         if (objd) { int cl = nt_clone_subtree(nt, d); if (cl >= 0) objd[nobj++] = cl; }
         continue;
       }
@@ -1611,7 +1608,7 @@ int desugar_kernel_reopen(Compiler *c) {
       if (!marker) rest[nrest++] = d;
     }
     for (int o = 0; o < nobj; o++)
-      if (nt_kind(nt, objd[o]) == NK_DefNode) kr_self_calls(nt, nt_ref(nt, objd[o], "body"), names, nn);
+      if (nt_kind(nt, objd[o]) == NK_DefNode) kr_self_calls(nt, nt_ref(nt, objd[o], "body"), names, *nn);
     if (nrest) { nt_node_set_arr(nt, body, "body", rest, nrest); nb[nbn++] = st; }
     if (nobj) {
       int oc = nt_new_node(nt, "ClassNode");
@@ -1632,6 +1629,15 @@ int desugar_kernel_reopen(Compiler *c) {
   }
   nt_node_set_arr(nt, top, "body", nb, nbn);
   free(tb); free(nb);
+  return hoisted;
+}
+int desugar_kernel_reopen(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, hoisted = 0;
+  const char *names[KR_MAX]; int nn = 0;
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
+    hoisted += kernel_reopen_top(nt, nt_ref(nt, nt_root(nt, r), "statements"), names, &nn);
+  if (!hoisted) return 0;
   /* Kernel.silence_warnings { } -> silence_warnings { } */
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
@@ -1927,7 +1933,7 @@ static int desugar_method_body_singleton_mixin(Compiler *c) {
       parent = an_parent_map(nt);
       ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
       if (!parent || !ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      ied_walk(nt, root, NULL, 0, n0, &ip);
+      for (int r = 0; r < nt_nroots(nt); r++) ied_walk(nt, nt_root(nt, r), NULL, 0, n0, &ip);   /* each file's tree */
     }
     for (int i = 0; i < bn; i++)
       if (bsm_candidate(nt, bb[i]) && bsm_hoist(c, parent, &ip, bb[i], &top, &ntop)) changed = 1;
@@ -5705,7 +5711,8 @@ int desugar_engine_branches(Compiler *c) {
      declaration the body scans for (native_lib, native_func, include,
      attr_*), or a `module Kernel` reopening hoisted from the top level, is
      seen where it is written for one engine (#7205, #7204). */
-  if (nt->root_id >= 0) changed |= engine_splice_list(nt, nt_ref(nt, nt->root_id, "statements"));
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
+    changed |= engine_splice_list(nt, nt_ref(nt, nt_root(nt, r), "statements"));
   for (int id = 0; id < nt->count; id++) {
     NodeKind ck = nt_kind(nt, id);
     if (ck == NK_ModuleNode || ck == NK_ClassNode || ck == NK_SingletonClassNode)
@@ -11266,7 +11273,7 @@ int desugar_define_method_captures(Compiler *c) {
   int n0 = nt->count;
   for (int cls = 0; cls < n0; cls++) {
     NodeKind ck = nt_kind(nt, cls);
-    int body = cls == nt->root_id ? nt_ref(nt, cls, "statements")
+    int body = prog_is_root(c, cls) ? nt_ref(nt, cls, "statements")
              : ck == NK_ClassNode || ck == NK_ModuleNode || ck == NK_SingletonClassNode
              ? nt_ref(nt, cls, "body") : -1;
     if (body < 0) continue;
@@ -12020,7 +12027,8 @@ int desugar_conditional_defs(Compiler *c) {
   int n = 0, serial = 0, groups = 0;
   char **lone = NULL;   /* the names a single def under a run-time condition defines */
   int nlone = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0, -1, -1, -1 }, &v, &n);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
+    cdef_walk(nt, prog_root_stmts(c, r), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0, -1, -1, -1 }, &v, &n);
   CondDef *g = malloc(sizeof(CondDef) * (size_t)(n > 0 ? n : 1));
   int *gi = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
   if (!g || !gi) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -12287,28 +12295,32 @@ int desugar_builtins(Compiler *c) {
   int top = root >= 0 ? nt_ref(nt, root, "statements") : -1;
   if (top < 0) return 0;
   int changed = 0;
-  int tn = 0; const int *tb = nt_arr(nt, top, "body", &tn);
-  if (!tb || tn == 0) return 0;
+  /* the top-level statements in load order (prog_top_seq): a builtins/
+     file's module comes ahead of the program's own reopenings, as CRuby has
+     it loaded first. Only the entry's own list is rebuilt (nb); another
+     file's statements stay in its list. */
+  int tn = 0, *tfile = NULL, *tb = prog_top_seq(c, &tn, &tfile);
+  if (tn == 0) { free(tb); free(tfile); return 0; }
   int *nb = (int *)malloc(sizeof(int) * (size_t)(tn + 64));
-  if (!nb) return 0;
+  if (!nb) { free(tb); free(tfile); return 0; }
   int nbn = 0, cap = tn + 64;
   /* the generic definitions, one per builtin name, taken out of the module */
   int *gdef = (int *)malloc(sizeof(int) * (size_t)sp_builtin_enum_names_n);
-  if (!gdef) { free(nb); return 0; }
+  if (!gdef) { free(nb); free(tb); free(tfile); return 0; }
   for (int i = 0; i < sp_builtin_enum_names_n; i++) gdef[i] = -1;
   int *own = NULL, nown = 0;   /* the own Enumerable methods a builtin receiver takes */
   for (int i = 0; i < tn; i++) {
     int st = tb[i];
     int cp = nt_kind(nt, st) == NK_ModuleNode ? nt_ref(nt, st, "constant_path") : -1;
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!mn || !sp_streq(mn, "Enumerable")) { nb[nbn++] = st; continue; }
+    if (!is_enumerable_module_name(mn)) { if (!tfile[i]) nb[nbn++] = st; continue; }
     int body = nt_ref(nt, st, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     int all_builtin = bn > 0;
     for (int k = 0; k < bn; k++)
       if (nt_kind(nt, bb[k]) != NK_DefNode || builtin_enum_name_index(nt_str(nt, bb[k], "name")) < 0) all_builtin = 0;
     if (!all_builtin) {   /* a program's own reopen: left as it was, for its includers */
-      nb[nbn++] = st;
+      if (!tfile[i]) nb[nbn++] = st;
       for (int k = 0; k < bn; k++) {
         if (nt_kind(nt, bb[k]) != NK_DefNode || nt_ref(nt, bb[k], "receiver") >= 0 ||
             !own_enum_name_routable(nt_str(nt, bb[k], "name"))) continue;
@@ -12352,6 +12364,7 @@ int desugar_builtins(Compiler *c) {
     nt_node_set_type(nt, st, "NilNode");
     changed = 1;
   }
+  free(tb); free(tfile);
   /* the own methods join the builtins' names; a later reopening's
      definition of a name replaces an earlier one's, as in Ruby */
   int nbuiltin = sp_builtin_enum_names_n, own_lo = nt->count;
@@ -13569,10 +13582,11 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   int any_names = 0;
   for (int bx = 0; bx < SP_BX_N; bx++) if (sp_builtin_extra_names_n(bx) > 0) any_names = 1;
   if (!any_names) return 0;
-  int tn = 0; const int *tb = nt_arr(nt, top, "body", &tn);
-  if (!tb || tn == 0) return 0;
+  /* the top-level statements in load order, as desugar_builtins reads them */
+  int tn = 0, *tfile = NULL, *tb = prog_top_seq(c, &tn, &tfile);
+  if (tn == 0) { free(tb); free(tfile); return 0; }
   int *nb = (int *)malloc(sizeof(int) * (size_t)(tn + 64));
-  if (!nb) return 0;
+  if (!nb) { free(tb); free(tfile); return 0; }
   int nbn = 0, cap = tn + 64;
   int *gdef[SP_BX_N];
   for (int bx = 0; bx < SP_BX_N; bx++) {
@@ -13616,12 +13630,12 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   for (int i = 0; i < tn; i++) {
     int st = tb[i];
     NodeKind sk = nt_kind(nt, st);
-    if (sk != NK_ClassNode && sk != NK_ModuleNode) { nb[nbn++] = st; continue; }
+    if (sk != NK_ClassNode && sk != NK_ModuleNode) { if (!tfile[i]) nb[nbn++] = st; continue; }
     int cp = nt_ref(nt, st, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, st, "name");
     int bx = -1;
     for (int k = 0; k < SP_BX_N; k++) if (mn && sp_streq(mn, sp_bx_class_name[k])) { bx = k; break; }
-    if (bx < 0 || sp_builtin_extra_names_n(bx) == 0) { nb[nbn++] = st; continue; }
+    if (bx < 0 || sp_builtin_extra_names_n(bx) == 0) { if (!tfile[i]) nb[nbn++] = st; continue; }
     int body = nt_ref(nt, st, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     int all_builtin = 0;
@@ -13664,7 +13678,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
        arity check already assumes) additionally gets a clone-based
        generic registered by name, built from a CLONE of the def so the
        original is never touched. */
-    nb[nbn++] = st;
+    if (!tfile[i]) nb[nbn++] = st;
     for (int k = 0; k < bn; k++) {
       int def = bb[k];
       if (nt_kind(nt, def) != NK_DefNode) continue;
@@ -13740,6 +13754,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
       changed = 1;
     }
   }
+  free(tb); free(tfile);
   if (!changed) {
     for (int bx = 0; bx < SP_BX_N; bx++) {
       free(gdef[bx]);
@@ -13751,9 +13766,24 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   static char *seq_name[256]; static int seq_n[256]; static int nseq = 0;   /* across calls, as above */
   /* one copy per call site, exactly as desugar_builtins does for
      enumerable.rb (a shared definition would carry the union of every
-     call site's argument types onto every site) */
-  for (int id = 0; id < n0; id++) {
+     call site's argument types onto every site). The program's own sites
+     come in the program's order (prog_sort: node order in one program text;
+     under --load-model=graph a builtins/ file, loaded at boot, ahead of the
+     program), so a generic's own sites take their copies before a call
+     clones the generic, and the clone carries them (bx_copy). A site in a
+     copy that has none takes a copy of its own as the walk reaches it, after
+     the program's. (An own reopen's clones, between n0 and site_lo, are no
+     sites.) */
+  int site_lo = nt->count, nfirst = 0;
+  int *first = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) if (nt_kind(nt, id) == NK_CallNode) first[nfirst++] = id;
+  if (prog_has_files(c)) prog_sort(c, first, nfirst, NULL);
+  for (int q = 0; ; q++) {
+    int id = q < nfirst ? first[q] : site_lo + (q - nfirst);
+    if (id >= nt->count) break;
     if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (id >= site_lo && (nt_int(nt, id, "bx_copy", -1) >= 0 || !nt_int(nt, id, "node_bi", 0))) continue;
     const char *cn0 = nt_str(nt, id, "name");
     int bx = -1, gd = -1;
     for (int k = 0; k < SP_BX_N && gd < 0; k++) {
@@ -13784,6 +13814,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
     nb[nbn++] = copy;
   }
+  free(first);
   nt_node_set_arr(nt, top, "body", nb, nbn);
   for (int bx = 0; bx < SP_BX_N; bx++) {
     int n = sp_builtin_extra_names_n(bx);
@@ -17488,7 +17519,7 @@ int desugar_singleton_class_meta(Compiler *c) {
     /* a statement of the program's body or of a class or module body */
     int st = parent[id], owner = st >= 0 ? parent[st] : -1;
     if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) continue;
-    int top = st == nt_ref(nt, nt->root_id, "statements");
+    int top = prog_is_root_stmts(c, st);
     int in_body = owner >= 0 && (nt_kind(nt, owner) == NK_ClassNode || nt_kind(nt, owner) == NK_ModuleNode);
     if (!top && !in_body) continue;
     int x = scm_class_receiver(nt, r, in_body);
@@ -17680,10 +17711,11 @@ int desugar_class_new_blocks(Compiler *c) {
     /* the anonymous class is defined in the nearest enclosing class or
        module body (the top level when there is none), where its superclass
        and body constants resolve as they would around the call */
-    int host_st = nt_ref(nt, nt->root_id, "statements");
+    int host_st = -1;   /* the class or module body around the call, else its file's top level */
     for (int a = par; a >= 0; a = parent[a]) {
       NodeKind ak = nt_kind(nt, a);
       if (ak == NK_ClassNode || ak == NK_ModuleNode) { host_st = nt_ref(nt, a, "body"); break; }
+      if (ak == NK_ProgramNode) { host_st = nt_ref(nt, a, "statements"); break; }
     }
     if (static_super && !reads_outer && host_st >= 0 && nt_kind(nt, host_st) == NK_StatementsNode) {
       /* an anonymous class that is the same every time: name it */
@@ -19683,12 +19715,14 @@ static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***name
     if (mk == NK_ModuleNode || mk == NK_ClassNode) cn = cg_path_leaf_under(nt, nt_ref(nt, m, "constant_path"), mn);
     if (cn) cg_add_name(cn, names, nn, cap);
   }
-  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
-  int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
-  for (int k = 0; k < sn; k++) {
-    const char *cn = nt_kind(nt, ts[k]) == NK_ConstantPathWriteNode
-                   ? cg_path_leaf_under(nt, nt_ref(nt, ts[k], "target"), mn) : NULL;
-    if (cn) cg_add_name(cn, names, nn, cap);
+  for (int r = 0; r < nt_nroots(nt); r++) {   /* each file's top level */
+    int top = nt_root(nt, r) >= 0 ? nt_ref(nt, nt_root(nt, r), "statements") : -1;
+    int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++) {
+      const char *cn = nt_kind(nt, ts[k]) == NK_ConstantPathWriteNode
+                     ? cg_path_leaf_under(nt, nt_ref(nt, ts[k], "target"), mn) : NULL;
+      if (cn) cg_add_name(cn, names, nn, cap);
+    }
   }
 }
 
@@ -19720,14 +19754,16 @@ static void cg_collect_qual(const NodeTable *nt, const int *parent, const ScgQua
     if (strncmp(x, qg, ql) || x[ql] != ':' || x[ql + 1] != ':' || strstr(x + ql + 2, "::")) continue;
     cg_add_name(x + ql + 2, names, nn, cap);
   }
-  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
-  int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
-  for (int k = 0; k < sn; k++) {
-    if (nt_kind(nt, ts[k]) != NK_ConstantPathWriteNode) continue;
-    int tg = nt_ref(nt, ts[k], "target");
-    int par = tg >= 0 && nt_kind(nt, tg) == NK_ConstantPathNode ? nt_ref(nt, tg, "parent") : -1;
-    const char *cn = tg >= 0 ? nt_str(nt, tg, "name") : NULL;
-    if (par >= 0 && cn && scg_qual_resolve(nt, parent, q, -1, par) == g) cg_add_name(cn, names, nn, cap);
+  for (int r = 0; r < nt_nroots(nt); r++) {   /* each file's top level */
+    int top = nt_root(nt, r) >= 0 ? nt_ref(nt, nt_root(nt, r), "statements") : -1;
+    int sn = 0; const int *ts = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++) {
+      if (nt_kind(nt, ts[k]) != NK_ConstantPathWriteNode) continue;
+      int tg = nt_ref(nt, ts[k], "target");
+      int par = tg >= 0 && nt_kind(nt, tg) == NK_ConstantPathNode ? nt_ref(nt, tg, "parent") : -1;
+      const char *cn = tg >= 0 ? nt_str(nt, tg, "name") : NULL;
+      if (par >= 0 && cn && scg_qual_resolve(nt, parent, q, -1, par) == g) cg_add_name(cn, names, nn, cap);
+    }
   }
 }
 
@@ -23983,7 +24019,7 @@ static int sce_program_defines_nodefs(const NodeTable *nt, int (*named)(const ch
   }
   nt_kind_iter_close(&it);
   /* a computed name could be any of them, where it can reach Module's */
-  if (!hit) hit = sce_computed_reaches_module(nt, nt->root_id, 0, 0);
+  for (int r = 0; r < nt_nroots(nt) && !hit; r++) hit = sce_computed_reaches_module(nt, nt_root(nt, r), 0, 0);   /* each file's tree */
   return hit;
 }
 /* ---- the hooks a class body's graft would bypass, by where they live ----
@@ -24385,7 +24421,7 @@ int desugar_class_body_self_calls(Compiler *c) {
   q.qual = calloc((size_t)n0 + 1, sizeof(char *));
   q.outer = calloc((size_t)n0 + 1, sizeof(char *));
   q.cls = calloc((size_t)n0 + 1, sizeof(int));
-  cbs_name_walk(nt, &q, nt->root_id, NULL, 0);
+  for (int r = 0; r < nt_nroots(nt); r++) cbs_name_walk(nt, &q, nt_root(nt, r), NULL, 0);   /* each file's tree */
   int ncls = q.ncls;
   for (int i = 0; i < ncls; i++) {
     int cl = q.cls[i];
@@ -24529,7 +24565,7 @@ int desugar_builtin_reopen_self_class(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0, n0 = nt->count;
   char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
-  bsc_mark_toplevel(nt, nt->root_id, top);
+  for (int r = 0; r < nt_nroots(nt); r++) bsc_mark_toplevel(nt, nt_root(nt, r), top);   /* each file's tree */
   for (int n = 0; n < n0; n++) {
     if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
     int cp = nt_ref(nt, n, "constant_path");
@@ -24640,7 +24676,7 @@ int desugar_time_singleton_bare_ctor(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0, n0 = nt->count;
   char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
-  bsc_mark_toplevel(nt, nt->root_id, top);
+  for (int r = 0; r < nt_nroots(nt); r++) bsc_mark_toplevel(nt, nt_root(nt, r), top);   /* each file's tree */
   TscNames t; memset(&t, 0, sizeof t);
   for (int n = 0; n < n0; n++) {
     if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
@@ -24768,7 +24804,7 @@ int desugar_builtin_reopen_self_cmethods(Compiler *c) {
   int changed = 0, n0 = nt->count;
   char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
   if (!top) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  bsc_mark_toplevel(nt, nt->root_id, top);
+  for (int r = 0; r < nt_nroots(nt); r++) bsc_mark_toplevel(nt, nt_root(nt, r), top);   /* each file's tree */
   for (int n = 0; n < n0; n++) {
     if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
     int cp = nt_ref(nt, n, "constant_path");

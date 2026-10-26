@@ -169,17 +169,20 @@ static int cplan_node_place(const NodeTable *nt, int n, int target, int inner, i
   return 0;
 }
 /* Does call `id` run, at the program's top level, ahead of the statement
-   that defines method mi? There the name is still the builtin's. */
+   that defines method mi? There the name is still the builtin's. The
+   top-level statements are read in load order, each placed file's after the
+   load that first runs it (prog_top_seq; the entry's alone under the inline
+   model). */
 static int cplan_called_before_def(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
-  int root = nt->root_id, st = root >= 0 ? nt_ref(nt, root, "statements") : -1, n = 0;
-  const int *sv = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
-  int dn = c->scopes[mi].def_node;
-  for (int i = 0; i < n && dn >= 0; i++) {
-    if (cplan_node_place(nt, sv[i], dn, 0, 0)) return 0;
-    if (cplan_node_place(nt, sv[i], id, 0, 0) == 1) return 1;
+  int dn = c->scopes[mi].def_node, n = 0, r = 0;
+  int *sv = dn >= 0 ? prog_top_seq(c, &n, NULL) : NULL;
+  for (int i = 0; i < n; i++) {
+    if (cplan_node_place(nt, sv[i], dn, 0, 0)) break;
+    if (cplan_node_place(nt, sv[i], id, 0, 0) == 1) { r = 1; break; }
   }
-  return 0;
+  free(sv);
+  return r;
 }
 /* --share-strings: does call `id`, with a literal block, still reach the
    builtin rather than String reopening mi's yielding method of its name,

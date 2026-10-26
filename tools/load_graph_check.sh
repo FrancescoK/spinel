@@ -6,6 +6,16 @@
 # CRuby has at boot are LoadNodes ahead of the entry's statements, in the
 # order they load.
 #
+# Each required file's top level runs at its require, once, with locals of
+# its own: every test/load_graph program with an .expected prints what
+# CRuby prints and exits as CRuby does, 0 unless a `# spinel: exit N` line
+# in its first lines gives N (the others are the files they require).
+# What graph mode does not compile yet it refuses by name: a require below
+# a file's top level or one naming no file, an autoload, a load of the
+# entry file, an END block or a write of main's instance variable in a
+# required file, and a prepend after a require of a file that runs code. A
+# required file that only defines things costs no C.
+#
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
 # --dump-ast must hold (`loads NAME BOOTS PATH=FILE...`): the entry's body
@@ -69,5 +79,105 @@ loads one_line 0 c=c.rb d=d.rb
 # and the enumerator a break leaves
 program boot 's = Set.new([1, 2])\np s.size\np [1, 2].map { |x| break x }\n'
 loads boot 3 set=packages/set/set.rb builtins/enumerable=builtins/enumerable.rb builtins/enumerator=builtins/enumerator.rb
+
+
+# ---- compiled: each file's top level at its load ----
+for e in test/load_graph/*.rb.expected; do
+  t=${e%.expected}
+  b=$(basename "$t" .rb)
+  want=$(sed -n '1,5s/^# spinel: exit \([0-9][0-9]*\)$/\1/p' "$t")
+  if "$SPINEL" --load-model=graph "$t" -o "$tmp/$b" >"$tmp/$b.c.out" 2>&1; then
+    "$tmp/$b" >"$tmp/$b.run" 2>/dev/null
+    got=$?
+    cmp -s "$tmp/$b.run" "$e" ||
+      { fail "$t does not print its .expected"; diff "$e" "$tmp/$b.run" | sed -n 1,10p; }
+    [ "$got" -eq "${want:-0}" ] || fail "$t exits $got, not ${want:-0}"
+  else
+    fail "$t did not compile"; sed -n 1,5p "$tmp/$b.c.out"
+  fi
+done
+
+# A raise in a required file leaves its load with the frames it was raised
+# with: a --debug build's report of it names the raising method first, not
+# the load the exception passes through.
+mkdir "$tmp/bt"
+printf 'def helper\n  raise ArgumentError, "bad"\nend\nhelper\n' > "$tmp/bt/lib.rb"
+printf 'puts "before"\nrequire_relative "lib"\n' > "$tmp/bt/main.rb"
+if "$SPINEL" --load-model=graph --debug --no-inline-hot "$tmp/bt/main.rb" -o "$tmp/bt/bin" >/dev/null 2>&1; then
+  "$tmp/bt/bin" >/dev/null 2>"$tmp/bt/err"
+  head -1 "$tmp/bt/err" | grep -q "lib.rb:\([0-9]*:\)\{0,1\}in .helper': bad (ArgumentError)" ||
+    { fail "a raise in a required file lost its frames"; cat "$tmp/bt/err"; }
+else
+  fail "bt did not compile"
+fi
+
+# refused NAME MESSAGE: $tmp/NAME/main.rb refuses with MESSAGE
+refused() {
+  if "$SPINEL" --load-model=graph "$tmp/$1/main.rb" -o "$tmp/$1/bin" >"$tmp/$1/out" 2>&1; then
+    fail "$1 compiled"
+  else
+    grep -qF -- "$2" "$tmp/$1/out" || { fail "$1 refused without naming why"; sed -n 1,3p "$tmp/$1/out"; }
+  fi
+}
+mkdir "$tmp/in_method" "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/ivar" "$tmp/end" "$tmp/mixin"
+printf 'puts "lib"\n' > "$tmp/in_method/lib.rb"
+printf 'def setup\n  require_relative "lib"\nend\nsetup\n' > "$tmp/in_method/main.rb"
+refused in_method "loads only a require that is a statement of a file's top level"
+printf 'name = ARGV.first || "lib"\nrequire name\n' > "$tmp/computed/main.rb"
+refused computed "loads only a require that names a file at compile time"
+printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"
+printf 'autoload :Lib, File.join(__dir__, "lib")\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "an autoload's file"
+printf 'require_relative "main"\n' > "$tmp/entry/lib.rb"
+printf 'require_relative "lib"\nputs "main"\n' > "$tmp/entry/main.rb"
+refused entry "the program's own entry file"
+printf '@level = 2\n' > "$tmp/ivar/lib.rb"
+printf '@level = 1\nrequire_relative "lib"\np @level\n' > "$tmp/ivar/main.rb"
+refused ivar "a write of main's instance variable in a required file"
+printf 'END { puts "lib END" }\nputs "lib"\n' > "$tmp/end/lib.rb"
+printf 'require_relative "lib"\nputs "main"\n' > "$tmp/end/main.rb"
+refused end "an END block in a required file"
+printf 'class Dog\n  def speak = "woof"\nend\nputs Dog.new.speak\n' > "$tmp/mixin/dog.rb"
+printf 'require_relative "dog"\nmodule Loud\n  def speak = super.upcase\nend\nclass Dog\n  prepend Loud\nend\nputs Dog.new.speak\n' > "$tmp/mixin/main.rb"
+refused mixin "a prepend into a class after a require of a file that runs code"
+# an include in a required file after a call its module's method would
+# answer early: refused as in one file (refuse_mixin_after_calls reads the
+# statements in load order)
+mkdir "$tmp/late_include"
+printf 'module Loud\n  def speak = "LOUD"\nend\nclass Dog\nend\nd = Dog.new\nbegin\n  puts d.speak\nrescue NoMethodError\n  puts "no speak yet"\nend\nclass Dog\n  include Loud\nend\n' > "$tmp/late_include/lib.rb"
+printf 'require_relative "lib"\n' > "$tmp/late_include/main.rb"
+refused late_include "a later statement mixes module Loud into class Dog"
+
+# --require-gate holds in graph mode as in the inline one: a feature no
+# require names is not there (CRuby's NoMethodError for winsize, refused
+# here), and one a require names is.
+mkdir "$tmp/gate" "$tmp/gate_req"
+printf 'p $stdout.winsize.class\n' > "$tmp/gate/main.rb"
+printf 'require "io/console"\np $stdout.winsize.class\n' > "$tmp/gate_req/main.rb"
+"$SPINEL" --load-model=graph --require-gate "$tmp/gate/main.rb" -o "$tmp/gate/bin" >"$tmp/gate/out" 2>&1 &&
+  fail "--require-gate: a feature no require names compiled"
+grep -qF "winsize" "$tmp/gate/out" || { fail "--require-gate: refused without naming winsize"; sed -n 1,3p "$tmp/gate/out"; }
+"$SPINEL" --load-model=graph --require-gate "$tmp/gate_req/main.rb" -o "$tmp/gate_req/bin" >"$tmp/gate_req/out" 2>&1 ||
+  { fail "--require-gate: a feature a require names did not compile"; sed -n 1,3p "$tmp/gate_req/out"; }
+
+# a class-body call in a required file of a method a later file's
+# reopening aliases: refused as in one file (CRuby runs the def, 3; the
+# static alias would answer 19)
+mkdir "$tmp/late_alias"
+printf 'class A\n  def a = 3\n  def b = 19\n  p new.a\nend\n' > "$tmp/late_alias/lib.rb"
+printf 'require_relative "lib"\nclass A\n  alias_method :a, :b\nend\np A.new.a\n' > "$tmp/late_alias/main.rb"
+refused late_alias "is called in the class body before an alias rebinds it"
+
+# A required file that only defines things costs nothing: no function, no
+# load, and no Symbol for the def that ends it (its value is read by nothing).
+mkdir "$tmp/lean"
+printf 'class Shape\n  def initialize(side) = @side = side\nend\n' > "$tmp/lean/lib.rb"
+printf 'require_relative "lib"\nputs 1\n' > "$tmp/lean/main.rb"
+if "$SPINEL" --load-model=graph -c "$tmp/lean/main.rb" -o "$tmp/lean/out.c" >/dev/null 2>&1; then
+  ! grep -qE 'sp_file_[0-9]+_top|sp_load_file\(|sp_sym_names' "$tmp/lean/out.c" ||
+    fail "a file that only defines things costs C"
+else
+  fail "lean did not compile"
+fi
 
 [ $ok -eq 1 ] && echo "load-graph-test: pass" || exit 1

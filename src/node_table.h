@@ -59,6 +59,11 @@ typedef struct {
                           magic comment turns its refusals into raises where they
                           run (nt_put_file_defers); nfile_defers its length */
   int nfile_defers;
+  /* Under --load-model=graph (#9898) each file the program loads is a root:
+     its ProgramNode, by graph id (0 is the entry, the table's root). None
+     under the inline model, whose one root is root_id (nt_root). */
+  int *file_roots;
+  int nfile_roots;
   /* Bumped whenever a node is added or a string field is rewritten, i.e. by
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
@@ -75,6 +80,10 @@ typedef struct {
      only while neither it nor version has moved (#8852). */
   unsigned long edits;
 } NodeTable;
+
+/* The roots of the program's files, entry first (see file_roots). */
+static inline int nt_nroots(const NodeTable *nt) { return nt->nfile_roots ? nt->nfile_roots : 1; }
+static inline int nt_root(const NodeTable *nt, int i) { return nt->nfile_roots ? nt->file_roots[i] : nt->root_id; }
 
 
 /* Node-type kinds. The parser emits the type as a string ("CallNode"); to
@@ -178,6 +187,8 @@ void nt_put_file(NodeTable *nt, int fid, const char *path);
 void nt_dump(const NodeTable *nt, FILE *out);
 
 void nt_free(NodeTable *nt);
+/* Renumber the nodes to an order: order[k] is the id node k had (node_table.c). */
+void nt_renumber(NodeTable *nt, const int *order);
 
 /* Deep-clone the subtree rooted at `root`; returns the new root id (or -1).
    Appends nodes and grows nt->count -- parallel per-node arrays must be

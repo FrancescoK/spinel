@@ -20874,6 +20874,36 @@ static sp_mutex *sp_poly_mutex_recv(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("synchronize", v));
   return NULL;
 }
+/* ---- A required file's load (#9898, CRuby's load model) ----
+   The first `require` of a file runs its top level; a later one answers
+   false. The file counts as loaded before its top level runs, so a require
+   of it from inside its own load answers false too, and no longer once its
+   top level raises (or a throw or break leaves it), so a later require runs
+   it again, as CRuby drops a feature whose load failed. Answers whether this
+   call ran the file. */
+static int sp_load_file(int *loaded, void (*top)(void)) {
+  if (*loaded) return 0;
+  *loaded = 1;
+  const char *ecls = NULL, *emsg = NULL; void *eobj = NULL;
+  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) {
+    top();
+    sp_exc_top--;
+    return 1;
+  }
+  sp_exc_top--;
+  sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+  *loaded = 0;
+  if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
+  emsg = sp_exc_msg[sp_exc_top]; ecls = sp_exc_cls[sp_exc_top]; eobj = sp_exc_obj[sp_exc_top];
+  /* the exception passes on: it keeps the frames of the raise in the file */
+  sp_pending_exc_obj = eobj; sp_bt_keep = 1;
+  sp_raise_cls(ecls, emsg);
+  return 1;
+}
 static sp_RbVal sp_Mutex_synchronize_proc(sp_mutex *m, sp_Proc *blk) {
   SP_GC_ROOT(m); SP_GC_ROOT(blk);
   sp_RbVal r = sp_box_nil();

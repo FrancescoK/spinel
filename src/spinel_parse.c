@@ -2669,7 +2669,6 @@ int g_require_gate = 0;
 int sp_share_strings_env(void) { return 1; }
 int g_require_gate_cli = 0;   /* --require-gate */
 int g_dump_load_graph = 0;    /* --dump-load-graph */
-int g_parse_table_mode = 0;   /* --dump-ast and the other table modes: the table is all that is asked */
 int sp_parse_reported = 0;    /* the parse failed and said why (the driver adds nothing) */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
@@ -4797,6 +4796,7 @@ typedef struct {
   int stmt, top;          /* --load-model=graph: the top-level statement of `from` the
                              call stands in (a boot library's: below 0, ahead of the
                              entry's first), and 1 when the call is that statement */
+  int node;               /* --load-model=graph: its LoadNode, once flattened (-1 before) */
 } SpLoadEdge;
 
 /* --load-model=graph: a require of a file's tree: its edge, the call node it
@@ -4809,6 +4809,7 @@ typedef struct {
   char *text;
   SpSrcFile src;
   int read;               /* text and src are set */
+  int root;               /* its ProgramNode, once flattened */
   SpGraphSite *site; int nsite, sitecap;
 } SpGraphFile;
 
@@ -4864,7 +4865,7 @@ static void sp_load_edge(SpLoadEdge **v, int *n, int *cap, int from, int line, i
     *v = realloc(*v, sizeof **v * (size_t)*cap);
     if (!*v) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   }
-  SpLoadEdge e = { from, line, plain, strdup(name), how, to, -1, 0 };
+  SpLoadEdge e = { from, line, plain, strdup(name), how, to, -1, 0, -1 };
   if (!e.name) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   (*v)[(*n)++] = e;
 }
@@ -6459,6 +6460,10 @@ static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const c
   }
   int to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1;
   if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
+  /* a require written in a file read for g_require_unread, resolved: a file
+     of the graph, read before or now, or what the runtime provides */
+  if ((how == SP_LOAD_FILE || how == SP_LOAD_NATIVE || how == SP_LOAD_CORE) &&
+      !(*sp_load_flags(g, from) & SP_FILE_BUILTIN)) sp_req_resolved++;
   sp_load_edge(&g->edge, &g->nedge, &g->edgecap, from, line, !rel, path ? path : "(computed)", how, to);
   if (how == SP_LOAD_NONE)
     fprintf(stderr, "warning: %s:%d: cannot load such file -- %s (the %s raises LoadError when it runs)\n",
@@ -7025,6 +7030,11 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
     return 0;
   }
   sp_src_file_fsl(&r->src);   /* (its pragma's warning; every literal is frozen) */
+  /* the words that say the program may load a file not read here
+     (g_require_unread), in each file as written, as resolve_requires reads
+     them; a builtins/ file is the compiler's own, as the inline model's
+     splice of it is */
+  if (!(*sp_load_flags(g, f) & SP_FILE_BUILTIN)) sp_require_note_text(text, sp_src_file_code_len(&r->src));
   g_parser = &r->src.parser;
   const pm_node_t *root = r->src.root;
   const pm_statements_node_t *st = PM_NODE_TYPE_P(root, PM_PROGRAM_NODE) ? ((const pm_program_node_t *)root)->statements : NULL;
@@ -7057,7 +7067,8 @@ static void sp_graph_site_take(int id, const pm_node_t *call) {
     if (r->site[k].call != call) continue;
     r->site[k].taken++;
     g_flat_sites.next = k + 1;
-    const SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
+    SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
+    e->node = id;
     emit_str(id, "how", how_name[e->how]);
     if (e->to >= 0) emit_int(id, "target_file", e->to);
     return;
@@ -7094,6 +7105,7 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   sp_inline_rbs_done();
   sp_inline_rbs_free();
   if (!f) out_nt->root_id = root;
+  r->root = root;
   emit_int(root, "load_file", f);
   /* each site made one LoadNode, and each LoadNode took a site */
   int loads = 0, once = 1;
@@ -7132,6 +7144,7 @@ static void sp_graph_boot_node(SpLoadGraph *g, int e, int at) {
   emit_str(id, "how", "file");
   emit_int(id, "target_file", g->edge[e].to);
   emit_int(id, "boot", 1);
+  g->edge[e].node = id;
   int st = nt_ref(out_nt, out_nt->root_id, "statements"), n = 0;
   const int *v = nt_arr(out_nt, st, "body", &n);
   int *nv = malloc(sizeof(int) * (size_t)(n + 1));
@@ -7355,20 +7368,83 @@ static void sp_load_order_dump(const SpLoadGraph *g) {
   free(fs);
 }
 
+/* --load-model=graph: the names builtins/enumerable.rb and the scalar
+   containers' files define, which the analysis rewrites calls onto
+   (desugar_builtins, desugar_builtin_scalar_defs), read as the inline model
+   reads them (sp_splice_builtins), whether the program loads the files or
+   not. */
+static void sp_graph_builtin_names(const char *lib_dir) {
+  if (getenv("SPINEL_NO_BUILTINS")) return;
+  char found[1024];
+  if (sp_builtin_enum_names_n == 0 &&
+      sp_lib_lookup(lib_dir, "builtins/enumerable", found, sizeof found) == SP_LIB_BUILTIN) {
+    char *text = read_file(found);
+    if (text) { sp_builtin_names_from(text); free(text); }
+  }
+  for (int i = 0; i < SP_BUILTIN_EXTRA_N; i++) {
+    SpBuiltinExtra *bf = &sp_builtin_extras[i];
+    if (bf->scanned) continue;
+    bf->scanned = 1;
+    if (sp_lib_lookup(lib_dir, bf->req, found, sizeof found) != SP_LIB_BUILTIN) continue;
+    char *text = read_file(found);
+    if (text) { sp_builtin_names_from_into(text, &bf->names, &bf->names_n); free(text); }
+  }
+}
+
+/* --load-model=graph: the load order handed to the analysis, as data in the
+   node table: each placed file's root carries `load_by`, the LoadNode whose
+   edge first runs its top level (entered[]); an unplaced file's root has
+   none. The analysis orders two files' nodes from it (prog_order), at the
+   LoadNodes' places in the table as they stand after any rewriting. */
+static void sp_load_order_export(const SpLoadGraph *g) {
+  for (int f = 1; f < g->nfile; f++) {
+    int e = g->entered[f];
+    if (e >= 0) emit_int(g->gf[f]->root, "load_by", g->edge[e].node);
+  }
+}
+
+/* SPINEL_GRAPH_LAYOUT=reverse (a test hook, not a mode): lay the files'
+   nodes out in the reverse of the graph's order, the entry's last, each
+   file's own nodes in their order. Node ids say nothing about the order of
+   two files (the analysis asks the program module, prog_order), so the
+   program compiles to the same types, output and refusals either way (the
+   C differs only in names and numbering a walk gives in id order); a
+   difference names a reader that read ids as the order across files. */
+static void sp_graph_layout_hook(NodeTable *nt) {
+  const char *e = getenv("SPINEL_GRAPH_LAYOUT");
+  if (!e || strcmp(e, "reverse") != 0) return;
+  int n = nt->count, k = 0;
+  int *file = malloc(sizeof(int) * (size_t)(n ? n : 1)), *order = malloc(sizeof(int) * (size_t)(n ? n : 1));
+  if (!file || !order) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  for (int id = 0; id < n; id++) file[id] = -1;
+  for (int f = 0; f < nt->nfile_roots; f++) {   /* each file's tree, from its root */
+    int sp = 0;
+    order[sp++] = nt->file_roots[f];
+    while (sp > 0) {
+      int id = order[--sp];
+      if (id < 0 || id >= n || file[id] >= 0) continue;
+      file[id] = f;
+      const SpNode *nd = &nt->nodes[id];
+      for (int j = 0; j < nd->nr; j++) if (nd->r[j].ref >= 0) order[sp++] = nd->r[j].ref;
+      for (int j = 0; j < nd->na; j++) for (int q = 0; q < nd->a[j].n; q++) order[sp++] = nd->a[j].ids[q];
+    }
+  }
+  for (int f = nt->nfile_roots - 1; f >= -1; f--)
+    for (int id = 0; id < n; id++) if (file[id] == f) order[k++] = id;
+  nt_renumber(nt, order);
+  free(file); free(order);
+}
+
 /* --load-model=graph: the program as the files it loads, the libraries
    CRuby has loaded before it starts among them (sp_graph_boot): every file
    read and parsed first (sp_graph_read), then each flattened as a root of
-   its own (sp_graph_flatten). Analysis does not read such a table yet: only
-   the table modes (--dump-ast) take it. */
+   its own (sp_graph_flatten), each file's root in the table's file_roots,
+   and the load order exported onto the roots (sp_load_order_export). */
 static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
-  if (!g_parse_table_mode) {
-    fprintf(stderr, "spinel: --load-model=graph is not supported by analysis yet (--dump-ast shows its node table)\n");
-    sp_parse_reported = 1;
-    return NULL;
-  }
   SpLoadGraph g;
   memset(&g, 0, sizeof g);
   sp_lib_dir(argv0, g.lib_dir, sizeof g.lib_dir);
+  sp_graph_builtin_names(g.lib_dir);
   out_nt = nt_new_table();
   node_counter = 0;
   sp_load_file(&g, source_file);
@@ -7391,6 +7467,8 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     sp_inline_rbs_declare(&g.gf[f]->src.parser, g.gf[f]->src.root, g.gf[f]->text, strlen(g.gf[f]->text));
   for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   for (int b = 0; b < g.nboot && ok; b++) sp_graph_boot_node(&g, g.boot[b], b);
+  if (ok) sp_load_order_export(&g);
+  if (sp_req_written != sp_req_resolved) g_require_unread = 1;
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (!ok) {   /* a file that could not be read or parsed, reported above */
@@ -7402,6 +7480,13 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     nt_put_source_file(nt, source_file);
     for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
     sp_defer_paths_mark(nt);
+    nt->file_roots = calloc((size_t)g.nfile, sizeof(int));
+    if (!nt->file_roots) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    nt->nfile_roots = g.nfile;
+    for (int id = 0; id < nt->count; id++)
+      if (nt_kind(nt, id) == NK_ProgramNode && nt_int(nt, id, "load_file", -1) >= 0)
+        nt->file_roots[nt_int(nt, id, "load_file", 0)] = id;
+    sp_graph_layout_hook(nt);
     if (g_dump_load_graph) { sp_load_graph_dump(&g); sp_load_order_dump(&g); }
   }
   sp_load_graph_free(&g);
@@ -7425,6 +7510,11 @@ static void sp_parse_positions_from_opts(void) {
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   sp_parse_positions_from_opts();
+  /* `--require-gate` is the flag spelling of SPINEL_REQUIRE_GATE. An env
+     assignment cannot ride inside a flag string, and `spin flags` has to hand
+     a caller's Makefile the same gate `spin build` compiles under. Both load
+     models compile under it. */
+  g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
   if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {
@@ -7441,10 +7531,6 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     sp_mark_path_included(entry_canon);
     free(entry_canon);
   }
-  /* `--require-gate` is the flag spelling of SPINEL_REQUIRE_GATE. An env
-     assignment cannot ride inside a flag string, and `spin flags` has to hand
-     a caller's Makefile the same gate `spin build` compiles under. */
-  g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
   SpLoadGraph graph;
