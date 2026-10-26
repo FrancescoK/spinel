@@ -15125,6 +15125,9 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     }
     nt_node_set_ref(nt, bp, "parameters", npn);
     nt_node_set_ref(nt, blk, "body", nbody);
+    /* (the prologue reads the value as boxed, so narrow_object_arrays
+       leaves the array it walks boxed) */
+    nt_node_set_int(nt, blk, "bs_lowered", 1);
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
     Scope *bs = comp_scope_of(c, blk);

@@ -13452,6 +13452,48 @@ static int oa_obj_literal(Compiler *c, int node) {
     if (nt_kind(nt, el[e]) == NK_SplatNode || !ty_is_object(infer_type(c, el[e]))) return 0;
   return en > 0;
 }
+/* The filters: 1 for reject!, select! and filter!, which answer the array
+   or nil, and 2 for select, filter and reject, which answer a new array of
+   the same elements. The block takes the element as one plain parameter, or
+   none, and is not a block whose parameters desugar_builtin_iter_block_shapes
+   lowered; 0 for any other call. */
+static int oa_filter_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int blk = nt_ref(nt, id, "block");
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (!nm || argc != 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  if (nt_int(nt, blk, "bs_lowered", 0)) return 0;
+  if (block_param_name(c, blk, 1) || block_param_is_multi(c, blk, 0) || block_opt_name(c, blk, 0) ||
+      block_post_name(c, blk, 0) || block_keyword_name(c, blk, 0) || block_rest_marker(c, blk)) return 0;
+  if (is_select_reject_bang(nm)) return 1;
+  if (is_select_alias(nm) || sp_streq(nm, "reject")) return 2;
+  return 0;
+}
+/* narrow_object_arrays' last arm for a call on slot S: a filter claims its
+   receiver recv, and any other call answers 0, which kills the slot. The
+   filters bind an sp_X * element, as the walks do (bit 1), and have
+   emitters for an object array only (the removes bit). A filter with a bang
+   answers the array or nil, which a consumer would read as the boxed array:
+   it narrows only where its value is thrown away (walk_disc). A filter
+   without a bang answers a new array of the same class, an edge to the slot
+   that takes it (call_ret), or a value thrown away: value_ok also passes
+   the last statement of a block, whose value the block's caller reads, so
+   the copy needs walk_disc too. */
+static int oa_filter_arm(Compiler *c, int id, int recv, OAS *sl, int S, char *claimed, int *call_ret,
+                         char *value_ok, const char *walk_disc, int nc) {
+  int fk = oa_filter_call(c, id);
+  if (!fk) return 0;
+  claimed[recv] = 1;
+  sl[S].removes = 1;
+  sl[S].row_iter |= 1;
+  if (oa_block_has_nested_block(c->nt, nt_ref(c->nt, id, "block"))) sl[S].row_iter |= 4;
+  int disc = id < nc && walk_disc[id];
+  if (fk == 1 && !disc) sl[S].alive = 0;
+  if (fk == 2 && id < nc) { call_ret[id] = S; value_ok[id] &= disc; }
+  return 1;
+}
 static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (!nm || has_block) return 0;
   if ((is_element_at_alias(nm)) && argc == 1) return 1;
@@ -15142,7 +15184,7 @@ static int narrow_object_arrays(Compiler *c) {
         int maps = name && (is_map_alias(name));
         if (!fold && !maps && !(id < nc && walk_disc[id])) sl[S].row_iter |= 8;
       }
-      else sl[S].alive = 0;
+      else if (!oa_filter_arm(c, id, recv, sl, S, claimed, call_ret, value_ok, walk_disc, nc)) sl[S].alive = 0;
     }
     /* Resolve the call target the way emission will: the enclosing self's
        ancestry first and a free function only as the fallback, then an
@@ -15534,7 +15576,7 @@ static int narrow_object_arrays(Compiler *c) {
       /* a nested scalar array: the codegen supports index/push/[]=/length/
          first/last but not the boxed sort/min/max comparators yet, so a
          component that used those (needs_cmp) stays on the poly path for now,
-         and so does one that used pop, shift, delete_at or clear (removes).
+         and so does one that used pop, shift, delete_at, clear or a filter (removes).
          A boxed element stored as a row stays there too: an object element
          is unboxed with a class check, but a row is taken as a bare pointer,
          and a boxed poly array read back through the table as an
