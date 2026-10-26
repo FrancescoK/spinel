@@ -1111,6 +1111,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
+     as the analysis refused rescue, retry and catch: a break out of a block
+     that is not spliced in, a return out of a proc, a Fiber's switch. The
+     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_).
+     Before the C is written: `-c` refuses as the build does. */
+  if (exc_abort) {
+    static const struct { const char *tok, *what; } nl[] = {
+      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
+      { "sp_proc_return(", "a return out of a proc" },
+      { "sp_Fiber_", "Fiber" },
+    };
+    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
+      if (strstr(csrc, nl[k].tok)) {
+        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
+        free(csrc);
+        return 1;
+      }
+  }
   /* Decide where the generated C goes. */
   char c_path[4096];
   int c_is_temp = 0;
@@ -1172,24 +1190,6 @@ int main(int argc, char **argv) {
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
   int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
-  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
-     as the analysis refused rescue, retry and catch: a break out of a block
-     that is not spliced in, a return out of a proc, a Fiber's switch. The
-     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_). */
-  if (exc_abort) {
-    static const struct { const char *tok, *what; } nl[] = {
-      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
-      { "sp_proc_return(", "a return out of a proc" },
-      { "sp_Fiber_", "Fiber" },
-    };
-    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
-      if (strstr(csrc, nl[k].tok)) {
-        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
-        free(csrc);
-        if (c_is_temp) remove(c_path);
-        return 1;
-      }
-  }
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */

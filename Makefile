@@ -1003,6 +1003,10 @@ wasm-test: $(SPINEL) wasm-rt
 	    echo "wasm-test: FAIL (--exceptions=abort built what it must refuse) $$t"; ok=0; \
 	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
 	  else echo "wasm-test: pass (--exceptions=abort refuses) $$t"; fi; \
+	  if WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --exceptions=abort -c --no-line-map $$t -o $$tmp/r.c >/dev/null 2>$$tmp/r.err; then \
+	    echo "wasm-test: FAIL (--exceptions=abort -c wrote what the build refuses) $$t"; ok=0; \
+	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort -c refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
+	  else echo "wasm-test: pass (--exceptions=abort -c refuses) $$t"; fi; \
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
