@@ -112,7 +112,11 @@ if [ ! -f "$REFDIR/.done" ]; then
   # files; copied as the link, it dangled from /tmp and the reference built
   # without the RBS extractor, so every inline-RBS program differed
   [ -d "$ROOT/vendor" ] && [ ! -d "$WT/vendor" ] && cp -rL "$ROOT/vendor" "$WT/vendor"
-  ( cd "$WT" && make -j"$JOBS" -s >/dev/null 2>&1 ) || {
+  # bundled-cext: the default target leaves the bundled C extensions
+  # (packages/sqlite3, packages/racc) unbuilt, and a reference without them
+  # refuses every program that requires one
+  ( cd "$WT" && make -j"$JOBS" -s >/dev/null 2>&1 &&
+    { ! grep -q '^bundled-cext:' Makefile || make -j"$JOBS" -s bundled-cext >/dev/null 2>&1; } ) || {
     echo "cident: reference build failed" >&2; git worktree remove --force "$WT" >/dev/null 2>&1; exit 2; }
   # The reference compiles this tree's corpus, so a test added by the change
   # under test is compared too (it is reported if the reference refuses it).
