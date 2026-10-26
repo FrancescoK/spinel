@@ -2413,9 +2413,15 @@ else {
        as a value had no arm and raised NoMethodError. An Integer or
        Float element goes through sp_poly_elem_i / _f, so a nil lands as
        the slot's nil bit rather than 0. */
-    if (!same && all_poly && k) {
+    /* ...and onto a typed Array a builtin call just built, of another kind
+       (an_push_widens_fresh): nothing else holds it, so the value is the
+       general Array of its elements and every argument's */
+    int fresh = an_push_widens_fresh(c, id);
+    if ((!same && all_poly && k) || fresh) {
       int ta = ++g_tmp;
-      Buf ra = expr_buf(c, recv);
+      Buf ra; memset(&ra, 0, sizeof ra);
+      if (fresh) { buf_puts(&ra, "sp_poly_to_poly_array("); emit_boxed(c, recv, &ra); buf_puts(&ra, ")"); k = "Poly"; }
+      else ra = expr_buf(c, recv);
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
       int vbase = g_tmp + 1; g_tmp += 2 * argc;   /* each value, then its length */
@@ -2432,7 +2438,7 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)", ti, ti, tn, ti);
         buf_printf(b, " sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, NIL_STORE_BOXED), ta);
         { char el[64]; snprintf(el, sizeof el, "sp_poly_each_elem(_t%d, _t%d)", tv, ti);
-          TyKind et = ty_array_elem(rt);
+          TyKind et = fresh ? TY_POLY : ty_array_elem(rt);
           if (et == TY_INT) buf_printf(b, "sp_poly_elem_i(%s)", el);
           else if (et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(%s)", el);
           else emit_unbox_text(c, et, el, b); }

@@ -3129,7 +3129,7 @@ static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind 
     return push_widens_arrays(c->nt, id, vt) ? widen_boxed_array_sources(c, recv, vt, 0) : 0;
   if (!ty_is_array(rt) || rt == TY_POLY_ARRAY || ty_is_ptr_array(rt)) return 0;
   TyKind el = ty_array_elem(rt);
-  if (el == vt || (el == TY_FLOAT && vt == TY_INT) || !push_widens_arrays(c->nt, id, vt)) return 0;
+  if (el == vt || !push_widens_arrays(c->nt, id, vt)) return 0;
   return widen_arg_array(c, recv);
 }
 
@@ -3161,6 +3161,22 @@ static void widen_named_hash_literals(Compiler *c, int recv, TyKind want) {
         comp_set_hash_want(c, lits[q], want);
   }
 }
+
+/* ...each value of a push of several kinds its own evidence: their join
+   is the boxed reading push_escape_widen leaves alone (`f.concat([2], ["s"])`) */
+static int push_escape_widen_each(Compiler *c, int id, int recv, int is_push, TyKind vt) {
+  if (vt != TY_POLY || !is_push) return push_escape_widen(c, id, recv, is_push, vt);
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int cat = nm && sp_streq(nm, "concat"), from = nm && sp_streq(nm, "insert") ? 1 : 0;
+  int changed = 0;
+  for (int k = from; k < an && an > 1; k++)
+    changed |= push_escape_widen(c, id, recv, is_push, cat ? splice_incoming_elem(c, av[k]) : push_elem_ty(c, av[k]));
+  return changed;
+}
+
 static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
                                     int is_idx_write, TyKind kt, TyKind vt) {
   /* a qualified constant (`Codes::T["k"] = v`, `H::L << 64`) is the
@@ -3976,6 +3992,12 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       changed |= fold_named_slot_evidence(c, recv, is_push, is_splice, is_idx_write, (TyKind)kt, (TyKind)vt);
       continue;
     }
+    else if (is_push && nt_kind(nt, recv) == NK_ArrayNode) {
+      /* a literal nothing holds (`["q"].concat([1])`): it is built as the
+         general Array when the push stores a kind it cannot hold */
+      changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt);
+      continue;
+    }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
              nt_ref(nt, recv, "block") < 0) {
       /* `getter_method << x` / `getter_method[k] = v` where the getter
@@ -3984,7 +4006,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int recv_args = nt_ref(nt, recv, "arguments");
       int recv_argc = 0;
       if (recv_args >= 0) nt_arr(nt, recv_args, "arguments", &recv_argc);
-      if (recv_argc != 0) { changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
+      if (recv_argc != 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
       const char *mname = nt_str(nt, recv, "name");
       if (!mname) continue;
       /* The class the getter belongs to: the RECEIVER's when the push names one
@@ -4061,7 +4083,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
                 changed = 1;
               }
             }
-            changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt);
+            changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt);
             continue;
           }
           gcid = owner;
@@ -4069,7 +4091,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else {
         Scope *caller = comp_scope_of(c, recv);
-        if (!caller || caller->class_id < 0) continue;
+        /* (a top-level method's value: the Arrays it answers widen where
+           they are built) */
+        if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
         gcid = caller->class_id;
         cside = caller->is_cmethod;
       }
@@ -4097,7 +4121,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           if (!seen) { tcls[ntg] = gcls[j]; tiv[ntg] = giv[j]; ntg++; }
         }
       }
-      if (ntg <= 0) { free(tcls); free(tiv); changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
+      if (ntg <= 0) { free(tcls); free(tiv); changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
       /* a shared-mutable string spends its handle at a typed array's boundary,
          so the element slot stays a plain string (#3227) */
       if (is_push && vt == TY_STRBUF) vt = TY_STRING;
