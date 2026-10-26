@@ -1609,6 +1609,18 @@ int a_is_fiber_or_gen_create(Compiler *c, int id) {
   return rn && (sp_streq(rn, "Fiber") || sp_streq(rn, "Enumerator") || sp_streq(rn, "Thread"));
 }
 
+/* every arm counts: the dispatch makes one proc for all of them, so the resolved method ignoring the block proves nothing */
+static int a_dispatch_arm_takes_block(Compiler *c, int cls, const char *name) {
+  if (dispatch_impl_count(c, cls, name) < 2) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!is_descendant(c, k, cls)) continue;
+    int mk = comp_method_in_chain(c, k, name, NULL);
+    if (mk < 0 || c->scopes[mk].is_cmethod) continue;
+    if (scope_proc_form_of(c, mk) >= 0 || (c->scopes[mk].blk_param && c->scopes[mk].blk_param[0])) return 1;
+  }
+  return 0;
+}
+
 /* Does yield-inlined scope `mi` hand its block on to a method that KEEPS it --
    one taking a real named &block that it is not spliced into? An anonymous `&`
    is always inlined (it has no name to escape through), so a literal block at
@@ -1628,14 +1640,18 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
     const char *tn = nt_str(nt, nid, "name");
     if (!tn) continue;
     int recv = nt_ref(nt, nid, "receiver");
-    int tmi = -1;
-    if (recv < 0) tmi = comp_self_call_mi(c, nid, tn);
+    int tmi = -1, cls = -1;
+    if (recv < 0) {
+      tmi = comp_self_call_mi(c, nid, tn);
+      if (!m->is_cmethod) cls = m->class_id;
+    }
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, ty_object_class(rt), tn, NULL);
+      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, cls = ty_object_class(rt), tn, NULL);
     }
     if (tmi < 0 || tmi == mi) continue;
     Scope *t = &c->scopes[tmi];
+    if (cls >= 0 && !t->is_cmethod && a_dispatch_arm_takes_block(c, cls, tn)) return 1;
     if (!t->blk_param) continue;
     if (!t->yields && t->blk_param[0]) return 1;
     if (a_scope_forwards_block_to_keeper(c, tmi, depth + 1)) return 1;
@@ -1764,6 +1780,8 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
       mi = comp_method_in_chain(c, self->class_id, name, NULL);
       if (!self->is_cmethod) cls = self->class_id;
     }
+    /* the class chain misses a top-level def, which a bare call still reaches */
+    if (mi < 0) mi = comp_method_index(c, name);
   }
   else {
     TyKind rt = infer_type(c, recv);
@@ -1772,8 +1790,7 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
   if (mi < 0) return 0;
   /* a yielding method a subclass overrides is not spliced: the cls_id switch
      calls its proc-form clone with the block as a real proc */
-  if (cls >= 0 && !c->scopes[mi].is_cmethod && scope_proc_form_of(c, mi) >= 0 &&
-      dispatch_impl_count(c, cls, name) > 1)
+  if (cls >= 0 && !c->scopes[mi].is_cmethod && a_dispatch_arm_takes_block(c, cls, name))
     return 1;
   return a_scope_forwards_block_to_poly(c, mi) || a_scope_forwards_block_to_keeper(c, mi, 0);
 }
