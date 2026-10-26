@@ -6969,11 +6969,12 @@ static void gc_wb_insert(Compiler *c, Buf *b, size_t fn_off) {
 static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
   int cur_self_cls = -1;
   for (size_t i = fn_off; i + 4 < b->len; i++) {
-    /* Under -g a method is not static, so a segment runs on over the
-       methods after it; an --incremental -g build numbers the barrier
-       temps from 1 again at each unit pragma, so one barrier more in a
-       method renames none in the methods after it. */
-    if (g_incremental && g_debug && b->p[i] == '\n' && !strncmp(b->p + i + 1, "#pragma spinel unit ", 20))
+    /* A method that is not static (any under -g, an extension's entry in
+       every build) runs a segment on over the methods after it; an
+       --incremental build numbers the barrier temps from 1 again at each
+       unit pragma, so one barrier more in a method renames none in the
+       methods after it. */
+    if (g_incremental && b->p[i] == '\n' && !strncmp(b->p + i + 1, "#pragma spinel unit ", 20))
       g_tmp = 0;
     /* track the enclosing function's receiver type */
     if (b->p[i] == '\n' && !strncmp(b->p + i + 1, "static ", 7)) {
