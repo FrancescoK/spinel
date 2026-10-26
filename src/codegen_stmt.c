@@ -754,10 +754,8 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = &apre; g_indent = indent + 2;
     if (nt_kind(c->nt, a) == NK_SplatNode) {
-      int sx = nt_ref(c->nt, a, "expression");
-      buf_printf(&abody, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
-      if (sx >= 0) emit_boxed(c, sx, &abody); else buf_puts(&abody, "sp_box_nil()");
-      buf_puts(&abody, "));\n");
+      emit_poly_concat_splat(c, t, a, &abody);
+      buf_puts(&abody, "\n");
     }
     else {
       buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed_operand(c, argv, argc, k, &abody); buf_puts(&abody, ");\n");
