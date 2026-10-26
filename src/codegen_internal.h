@@ -212,6 +212,7 @@ int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n);
 int masgn_value_changes(Compiler *c, int mw, int part);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
+void emit_poly_user_handle(Compiler *c, int v, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);
 /* ...the call run, then the handle its target published, or a new one
    over its bytes (codegen_call.c) */
