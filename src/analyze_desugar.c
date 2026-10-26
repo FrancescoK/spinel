@@ -13277,7 +13277,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
   return changed;
 }
 
-/* ---- builtins/: Integer, Float, Comparable (builtins/integer.rb etc,
+/* ---- builtins/: Integer, Float, Comparable, Monitor (builtins/integer.rb etc,
    spliced by sp_splice_builtin_extras, spinel_parse.c). Unlike
    Enumerable, these methods take no block and never answer an
    Enumerator, so the generic def is a plain method: no block_given?
@@ -13300,9 +13300,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
    checked per call site against the container's real class index
    (comp_class_index), not by skipping the splice outright the way
    enumerable.rb's `module Enumerable` guard does. */
-enum { SP_BX_INTEGER = 0, SP_BX_FLOAT = 1, SP_BX_COMPARABLE = 2, SP_BX_N = 3 };
-static const char *const sp_bx_class_name[SP_BX_N] = { "Integer", "Float", "Comparable" };
-static const char *const sp_bx_prefix[SP_BX_N]     = { "__int_", "__flt_", "__cmp_" };
+enum { SP_BX_INTEGER = 0, SP_BX_FLOAT = 1, SP_BX_COMPARABLE = 2, SP_BX_MONITOR = 3, SP_BX_N = 4 };
+static const char *const sp_bx_class_name[SP_BX_N] = { "Integer", "Float", "Comparable", "Monitor" };
+static const char *const sp_bx_prefix[SP_BX_N]     = { "__int_", "__flt_", "__cmp_", "__mon_" };
 
 extern int sp_builtin_extra_names_n(int idx);
 extern int sp_builtin_extra_name_index(int idx, const char *name);
@@ -13358,7 +13358,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
      generic and running every later one through the clone-registration
      below (rather than the in-place transform reserved for the spliced
      occurrence) keeps that distinction. */
-  int bx_done[SP_BX_N] = { 0, 0, 0 };
+  int bx_done[SP_BX_N] = { 0 };
   for (int i = 0; i < tn; i++) {
     int st = tb[i];
     NodeKind sk = nt_kind(nt, st);
@@ -13545,7 +13545,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   return 1;
 }
 
-/* `recv.m(args)` (no block, ever, for these three containers) on a receiver
+/* `recv.m(args)` (no block, ever, for these containers) on a receiver
    the container's method serves: rewritten into the per-call-site copy,
    `<prefix>m__N(recv, args)`, once the receiver's type has settled. Runs
    in the fixpoint alongside desugar_builtin_enum_calls. */
@@ -13555,6 +13555,7 @@ static int bx_recv_concrete(int bx, TyKind rt) {
   if (bx == SP_BX_INTEGER) return rt == TY_INT || rt == TY_BIGINT;
   if (bx == SP_BX_FLOAT) return rt == TY_FLOAT;
   if (bx == SP_BX_COMPARABLE) return rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT;
+  if (bx == SP_BX_MONITOR) return rt == TY_MUTEX;
   return 0;
 }
 
@@ -13581,17 +13582,18 @@ static int bx_revert_widened(Compiler *c, int id) {
 }
 
 /* After the fixpoint: the rewritten calls whose receiver has widened since.
-   Not under --int-overflow=promote: there an Integer the backstops boxed is
+   For numeric containers, not under --int-overflow=promote: an Integer the backstops boxed is
    still the Integer-or-Bignum the copy serves (its Bignum arithmetic, its
    messages, the reopened methods taken into the copies), and the dispatch
    it would go back to has the machine-Integer arms, or none. */
 int revert_widened_builtin_scalar_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
-  if (g_promote_mode) return 0;
-  for (int id = 0; id < nt->count; id++)
+  for (int id = 0; id < nt->count; id++) {
+    if (g_promote_mode && nt_int(nt, id, "bx_container", -1) != SP_BX_MONITOR) continue;
     if (nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0)
       changed |= bx_revert_widened(c, id);
+  }
   return changed;
 }
 

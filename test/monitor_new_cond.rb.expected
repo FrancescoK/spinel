@@ -1,0 +1,22 @@
+false
+"MonitorMixin::ConditionVariable"
+true
+false
+"Thread::ConditionVariable"
+true
+true
+false
+true
+false
+false
+"Thread::ConditionVariable"
+current fiber not owner
+current fiber not owner
+current fiber not owner
+Mutex has no new_cond
+Mutex has no mon_owned?
+:own
+:owned
+[false, :owned]
+false
+false

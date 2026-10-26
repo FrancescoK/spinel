@@ -22699,4 +22699,14 @@ static inline const char *sp_strface_write_through(const char *recv, const char 
 }
 #endif
 
+static SP_UNUSED sp_mutex *sp_monitor_check(sp_mutex *m, const char *name) {
+  if (m && m->reentrant) return m;
+  sp_raise_nomethod(sp_nomethod_msg(name, sp_box_nullable_obj(m, SP_BUILTIN_MUTEX)));
+  return NULL;
+}
+
+static SP_UNUSED sp_bool sp_poly_mutex_mon_owned(sp_RbVal value) {
+  return sp_Mutex_owned(sp_monitor_check(sp_poly_as_mutex(value, "mon_owned?"), "mon_owned?"));
+}
+
 #endif /* SP_RUNTIME_H */

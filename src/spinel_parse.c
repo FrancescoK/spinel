@@ -5675,7 +5675,7 @@ static char *sp_splice_builtin_enumerator(char *source, const char *exe_path,
   return sp_prepend_require(source, exe_path, "require \"builtins/enumerator\"\n", fsl, fsl_n);
 }
 
-/* ---- builtins/: the other containers (Integer, Float, Comparable) ----
+/* ---- builtins/: the other containers (Integer, Float, Comparable, Monitor) ----
    Same splice-if-mentioned idea as enumerable.rb above, generalized to a
    small table so a new container is one more row here plus its own file
    under builtins/ and its own desugar container/prefix in
@@ -5701,6 +5701,7 @@ static SpBuiltinExtra sp_builtin_extras[] = {
   { "builtins/integer.rb", "builtins/integer", NULL, 0, 0 },
   { "builtins/float.rb", "builtins/float", NULL, 0, 0 },
   { "builtins/comparable.rb", "builtins/comparable", NULL, 0, 0 },
+  { "builtins/monitor.rb", "builtins/monitor", NULL, 0, 0 },
 };
 #define SP_BUILTIN_EXTRA_N ((int)(sizeof(sp_builtin_extras) / sizeof(sp_builtin_extras[0])))
 
@@ -5740,7 +5741,7 @@ static char *sp_splice_builtin_extras(char *source, const char *exe_path,
    sp_splice_builtin_extra above), which by the time analysis runs has
    already happened for every extra a program's source could have
    mentioned. Container indices match SP_BUILTIN_EXTRA_N's table order:
-   0 = Integer, 1 = Float, 2 = Comparable. */
+   0 = Integer, 1 = Float, 2 = Comparable, 3 = Monitor. */
 int sp_builtin_extra_names_n(int idx) {
   return (idx >= 0 && idx < SP_BUILTIN_EXTRA_N) ? sp_builtin_extras[idx].names_n : 0;
 }
