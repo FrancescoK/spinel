@@ -1,6 +1,6 @@
 # String-sharing probe: a mutable String carried from one holder to a
 # second name by every route, mutated through one name and read through the
-# other, CRuby against spinel with and without --share-strings, case by case.
+# other, CRuby against spinel, case by case.
 #
 #   ruby tools/share_probe.rb [--strength T | --random N] [--seed S]
 #                             [--shard I/N] [--only F=L,..] [--batch B]
@@ -19,24 +19,21 @@
 # the copies dup, clone and String.new), the mutation (13 bang methods and
 # setters), the name it goes through, the read that observes both names
 # (`p`, equal?, object_id ==, frozen?, size), how the String is made (`+`
-# of a literal, an interpolation, a frozen literal), and the mode -- or N
-# random rows. Every row runs in both modes: compiled with --share-strings
-# and without. --shard I/N keeps every N-th row from the I-th (0-based),
+# of a literal, an interpolation, a frozen literal) -- or N random rows.
+# --shard I/N keeps every N-th row from the I-th (0-based),
 # under the case numbers of the whole run, so a case file names the same
 # case in each shard and each run of one seed.
 #
 # CRuby runs each program with its literals frozen (the corpus's oracle is
 # `ruby --enable-frozen-string-literal`; the programs say
-# `# frozen_string_literal: true`). Under --share-strings (#6765) a String
-# the share facts share is one handle in every holder, and a route that
-# hands over a copy instead loses a mutation without a word; without the
-# flag such a program has to be refused or answer as CRuby does. A
+# `# frozen_string_literal: true`). Every String is one handle in every
+# holder (#9258), and a route that hands over a copy instead loses a
+# mutation without a word. A
 # finding's kind names the last line, `p` of both names, when it differs
 # (`value: value@0` is a mutation the holder did not see, `value@1` one the
 # second name did not, or saw where CRuby copies), else the first line that
 # differs (`before: value` is an identity read, `mutation: value` a
-# mutation that raised or did not). The summary counts the labels per mode
-# (`share`, `plain`).
+# mutation that raised or did not).
 #
 # The runner is tools/probe_common.rb's: it splits a failing program to the
 # case that carries it, reduces each finding toward the simplest levels of
@@ -68,8 +65,5 @@ until args.empty?
     rest << a
   end
 end
-# The mode is the probe's: a SPINEL_SHARE_STRINGS in the environment would
-# turn the flag on for the plain cases too.
-ENV.delete("SPINEL_SHARE_STRINGS")
 exit ProbeCommon.main(ShareGen, "share_probe", rest, out: File.expand_path("../build/share-probe", __dir__),
                       strength: 2, undefined: UNDEFINED)
