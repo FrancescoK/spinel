@@ -11722,22 +11722,31 @@ static int hcp_val(Compiler *c, int n, int depth) {
   }
   return 0;
 }
+/* No method of the program's named in one of the lists ops can stand in for
+   the builtin one on a value of the classes cls: none defined on one of them
+   or a class or module it reaches, nor at the top level (Object's), where a
+   `coerce` is no operand's */
+static int ops_builtin(Compiler *c, const char *const *cls, const char *const *const *ops) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!hcp_in(cls, c->classes[k].name)) continue;
+    for (int l = 0; ops[l]; l++)
+      for (int i = 0; ops[l][i]; i++) if (comp_method_in_chain(c, k, ops[l][i], NULL) >= 0) return 0;
+  }
+  for (int s = 1; s < c->nscopes; s++) {
+    const char *nm = c->scopes[s].name;
+    if (c->scopes[s].class_id >= 0 || !nm || sp_streq(nm, "coerce")) continue;
+    for (int l = 0; ops[l]; l++) if (hcp_in(ops[l], nm)) return 0;
+  }
+  return 1;
+}
 /* No operator of the program's can stand in for the builtin one on an Integer
-   or a nil: none defined on Integer, NilClass or a class or module they reach,
-   nor at the top level (Object's) */
+   or a nil */
 static int hcp_program_ok(Compiler *c) {
   static const char *const CLS[] = { "Integer", "NilClass", "Numeric", "Comparable", "Object", "Kernel",
                                      "BasicObject", NULL };
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!hcp_in(CLS, c->classes[k].name)) continue;
-    for (int i = 0; HCP_ARITH[i]; i++) if (comp_method_in_chain(c, k, HCP_ARITH[i], NULL) >= 0) return 0;
-    for (int i = 0; HCP_CMP[i]; i++) if (comp_method_in_chain(c, k, HCP_CMP[i], NULL) >= 0) return 0;
-    if (comp_method_in_chain(c, k, "-@", NULL) >= 0 || comp_method_in_chain(c, k, "coerce", NULL) >= 0) return 0;
-  }
-  for (int s = 1; s < c->nscopes; s++)
-    if (c->scopes[s].class_id < 0 && c->scopes[s].name && (hcp_op(c->scopes[s].name) || sp_streq(c->scopes[s].name, "-@")))
-      return 0;
-  return 1;
+  static const char *const MORE[] = { "-@", "coerce", NULL };
+  static const char *const *const OPS[] = { HCP_ARITH, HCP_CMP, MORE, NULL };
+  return ops_builtin(c, CLS, OPS);
 }
 /* The named scopes by name, from scope 1 on: a name's first scope, and
    whether another scope has the name. hcp_param_method wants a name no
@@ -12739,6 +12748,304 @@ void hc_iter_end(void *hv, Buf **bp, int indent, int keep) {
   g_hc = NULL; *bp = h->out;
   if (keep) hc_close(&h->r, h->buf.p ? h->buf.p : "", *bp, indent);
   free(h->buf.p); hc_region_free(&h->r); free(h);
+}
+
+/* ---- An IO::Buffer loop element by element, a chunk at a time ----
+
+   `n.times { |i| out.set_value(:T, i * W, e) }`, W being T's width and e
+   built from `src.get_value(:T2, i * W2)` (W2 T2's width), Integer and Float
+   literals and the builtin operators, stores element i of out from element
+   i of each source. In a region that caches the buffers' views, hv_emit puts
+   ahead of the loop's `for` a loop over chunks that the C compiler can
+   vectorize, each HV_CH bytes of out and at least HV_CH_MIN elements (a
+   byte's chunk long enough to pay for its tests, a double's short enough
+   for its temporary): a chunk reads its sources and computes e into a
+   temporary, then stores the temporary when every value of it fits T; the
+   `for` runs on from where the chunks stopped. What a chunk does is what the
+   `for` would have done over the same elements:
+   - the chunks run only when every element of every view is in range, out
+     is writable, and no source overlaps out but as the same bytes at the
+     same width (an update in place), so no read or write raises and no
+     store reaches another element's read;
+   - every node of e takes its values in an interval proved within int64
+     (hv_expr), so C's int64 arithmetic is the Integer's, and a 32-bit store
+     a value may not fit is tested as sp_iob_put_i tests it (an 8/16-bit
+     store wraps and a 64-bit one holds any sp_int); a chunk with a value
+     that does not fit is left to the `for`, which stores the elements ahead
+     of it and raises there;
+   - each chunk takes the polls the `for`'s body would (emit_loop_polls),
+     and tests the views again after them, as code that ran there may have
+     moved a buffer.
+   The operators are the builtin ones while the program defines none of
+   their names where an Integer or a Float reaches it (hv_ops_ok). */
+#define HV_CH 256
+#define HV_CH_MIN 64
+static const char *const HV_OPS[] = { "+", "-", "*", "/", "&", "|", "^", "<<", ">>", "-@", "coerce", NULL };
+static int g_hv_ops = 0;   /* 0 not computed, 1 builtin, -1 the program defines one */
+static int hv_ops_ok(Compiler *c) {
+  static const char *const CLS[] = { "Integer", "Float", "Numeric", "Comparable", "Object", "Kernel",
+                                     "BasicObject", NULL };
+  static const char *const *const OPS[] = { HV_OPS, NULL };
+  if (!g_hv_ops) g_hv_ops = ops_builtin(c, CLS, OPS) ? 1 : -1;
+  return g_hv_ops > 0;
+}
+
+typedef struct { int fl; int64_t lo, hi; } HvVal;   /* a Float, or an Integer in [lo, hi] */
+typedef struct { char d[48], l[48]; int w; } HvSrc;
+/* hv: the chunks' number, which names their C locals _hv<hv>_*: their own
+   numbering, as the header cache's, so a loop that does not qualify leaves
+   every temp after it as it was */
+typedef struct { Compiler *c; const char *pn; HvSrc src[8]; int nsrc; int hv; } HvCtx;
+static int g_hv_seq = 0;
+
+/* Is n a read of the block's parameter? */
+static int hv_param(HvCtx *x, int n) {
+  const NodeTable *nt = x->c->nt;
+  return nt_kind(nt, n) == NK_LocalVariableReadNode && nt_int(nt, n, "depth", 0) == 0 &&
+         nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), x->pn);
+}
+/* Is off `i * w` (or `w * i`, or `i` for a byte), i the block's parameter? */
+static int hv_index(HvCtx *x, int off, int w) {
+  const NodeTable *nt = x->c->nt;
+  off = nt_paren_single(nt, off);
+  if (w == 1 && hv_param(x, off)) return 1;
+  if (nt_kind(nt, off) != NK_CallNode || !nt_str(nt, off, "name") || !sp_streq(nt_str(nt, off, "name"), "*") ||
+      nt_ref(nt, off, "block") >= 0 || comp_ntype(x->c, off) != TY_INT)
+    return 0;
+  int recv = nt_ref(nt, off, "receiver");
+  int a = nt_ref(nt, off, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (recv < 0 || ac != 1) return 0;
+  int l = nt_paren_single(nt, recv), r = nt_paren_single(nt, av[0]);
+  if (nt_kind(nt, l) == NK_IntegerNode) { int t = l; l = r; r = t; }
+  return hv_param(x, l) && nt_kind(nt, r) == NK_IntegerNode && !nt_str(nt, r, "bigval") &&
+         nt_int(nt, r, "value", 0) == w;
+}
+/* the least b with v in [-2^b, 2^b - 1] */
+static int hv_bits(int64_t v) {
+  int b = 0;
+  while (b < 63 && (v < -((int64_t)1 << b) || v > ((int64_t)1 << b) - 1)) b++;
+  return b;
+}
+/* e's C text into out, its values into *v; 0 for a node the chunks cannot
+   compute as the loop does */
+static int hv_expr(HvCtx *x, int id, HvVal *v, Buf *out, int depth) {
+  Compiler *c = x->c;
+  const NodeTable *nt = c->nt;
+  if (depth > 32) return 0;
+  id = nt_paren_single(nt, id);
+  NodeKind k = nt_kind(nt, id);
+  TyKind t = comp_ntype(c, id);
+  if (k == NK_IntegerNode) {
+    if (t != TY_INT || nt_str(nt, id, "bigval")) return 0;
+    int64_t n = nt_int(nt, id, "value", 0);
+    if (n == INT64_MIN) return 0;
+    v->fl = 0; v->lo = v->hi = n;
+    buf_printf(out, "((int64_t)%lldLL)", (long long)n);
+    return 1;
+  }
+  if (k == NK_FloatNode) {
+    if (t != TY_FLOAT) return 0;
+    v->fl = 1;
+    buf_puts(out, "((double)"); emit_expr(c, id, out); buf_puts(out, ")");
+    return 1;
+  }
+  if (k != NK_CallNode || nt_ref(nt, id, "block") >= 0 || (t != TY_INT && t != TY_FLOAT)) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || recv < 0) return 0;
+  /* a source's element */
+  if (sp_streq(nm, "get_value")) {
+    if (!hc_iob_read(c, id) || x->nsrc >= (int)(sizeof x->src / sizeof x->src[0])) return 0;
+    int it = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+    int w = comp_iob_ty_width(it), fl = comp_iob_ty_is_float(it);
+    HvSrc *s = &x->src[x->nsrc];
+    /* (a 64-bit integer reads boxed, hc_iob_read; its bounds are no shift's) */
+    if ((!fl && w == 8) || (fl ? TY_FLOAT : TY_INT) != t || !hv_index(x, av[1], w) || !hc_iobuf(c, recv, s->d, s->l, sizeof s->d))
+      return 0;
+    s->w = w; x->nsrc++;
+    v->fl = fl;
+    if (!fl) {
+      int sg = comp_iob_ty_signed(it), bits = 8 * w;
+      v->lo = sg ? -((int64_t)1 << (bits - 1)) : 0;
+      v->hi = sg ? ((int64_t)1 << (bits - 1)) - 1 : (int64_t)(((uint64_t)1 << bits) - 1);
+    }
+    buf_printf(out, "%s(%s + (_hv%d_v + _hv%d_j) * %d, %d)", fl ? "sp_iob_decode_f" : "((int64_t)sp_iob_decode_i",
+               s->d, x->hv, x->hv, w, it);
+    if (!fl) buf_puts(out, ")");
+    return 1;
+  }
+  if (!call_is_scalar_op(c, id) && !sp_streq(nm, "-@")) return 0;
+  Buf ra; memset(&ra, 0, sizeof ra);
+  HvVal rv;
+  if (!hv_expr(x, recv, &rv, &ra, depth + 1)) { free(ra.p); return 0; }
+  if (sp_streq(nm, "-@") && ac == 0) {
+    if (!rv.fl && rv.lo == INT64_MIN) { free(ra.p); return 0; }
+    *v = rv;
+    if (!rv.fl) { v->lo = -rv.hi; v->hi = -rv.lo; }
+    buf_printf(out, "(-%s)", ra.p);
+    free(ra.p);
+    return (rv.fl ? TY_FLOAT : TY_INT) == t;
+  }
+  if (ac != 1) { free(ra.p); return 0; }
+  /* a shift by a literal count */
+  int sh = sp_streq(nm, "<<") ? 1 : sp_streq(nm, ">>") ? 2 : 0;
+  if (sh) {
+    int an = nt_paren_single(nt, av[0]);
+    long long n = nt_kind(nt, an) == NK_IntegerNode && !nt_str(nt, an, "bigval") ? nt_int(nt, an, "value", 0) : -1;
+    int ok = !rv.fl && t == TY_INT && n >= 0 && n <= (sh == 1 ? 62 : 63);
+    if (ok && sh == 1) {
+      ok = !__builtin_mul_overflow(rv.lo, (int64_t)1 << n, &v->lo) && !__builtin_mul_overflow(rv.hi, (int64_t)1 << n, &v->hi);
+      buf_printf(out, "((int64_t)((uint64_t)%s << %lld))", ra.p, n);
+    }
+    else if (ok) {
+      v->lo = rv.lo >> n; v->hi = rv.hi >> n;
+      buf_printf(out, "(%s >> %lld)", ra.p, n);
+    }
+    v->fl = 0;
+    free(ra.p);
+    return ok;
+  }
+  Buf rb; memset(&rb, 0, sizeof rb);
+  HvVal bv;
+  if (!hv_expr(x, av[0], &bv, &rb, depth + 1)) { free(ra.p); free(rb.p); return 0; }
+  int ok = 1, fl = rv.fl || bv.fl;
+  int bitop = sp_streq(nm, "&") || sp_streq(nm, "|") || sp_streq(nm, "^");
+  if (fl) {
+    /* a Float operation, an Integer operand taken as its Float */
+    ok = !bitop && t == TY_FLOAT && strchr("+-*/", nm[0]) && !nm[1];
+    if (ok) buf_printf(out, "(%s%s %s %s%s)", rv.fl ? "" : "(double)", ra.p, nm, bv.fl ? "" : "(double)", rb.p);
+  }
+  else if (t != TY_INT) ok = 0;
+  else if (bitop) {
+    if (nm[0] == '&' && (rv.lo >= 0 || bv.lo >= 0)) {
+      v->lo = 0;
+      v->hi = rv.lo >= 0 && bv.lo >= 0 ? (rv.hi < bv.hi ? rv.hi : bv.hi) : rv.lo >= 0 ? rv.hi : bv.hi;
+    }
+    else {
+      int b = hv_bits(rv.lo), b2;
+      if ((b2 = hv_bits(rv.hi)) > b) b = b2;
+      if ((b2 = hv_bits(bv.lo)) > b) b = b2;
+      if ((b2 = hv_bits(bv.hi)) > b) b = b2;
+      int neg = rv.lo < 0 || bv.lo < 0;
+      v->lo = neg ? (b == 63 ? INT64_MIN : -((int64_t)1 << b)) : 0;
+      v->hi = b == 63 ? INT64_MAX : ((int64_t)1 << b) - 1;
+    }
+    buf_printf(out, "(%s %s %s)", ra.p, nm, rb.p);
+  }
+  else if ((nm[0] == '+' || nm[0] == '-' || nm[0] == '*') && !nm[1]) {
+    if (nm[0] == '+')
+      ok = !__builtin_add_overflow(rv.lo, bv.lo, &v->lo) && !__builtin_add_overflow(rv.hi, bv.hi, &v->hi);
+    else if (nm[0] == '-')
+      ok = !__builtin_sub_overflow(rv.lo, bv.hi, &v->lo) && !__builtin_sub_overflow(rv.hi, bv.lo, &v->hi);
+    else {
+      int64_t p[4];
+      ok = !__builtin_mul_overflow(rv.lo, bv.lo, &p[0]) && !__builtin_mul_overflow(rv.lo, bv.hi, &p[1]) &&
+           !__builtin_mul_overflow(rv.hi, bv.lo, &p[2]) && !__builtin_mul_overflow(rv.hi, bv.hi, &p[3]);
+      if (ok) {
+        v->lo = v->hi = p[0];
+        for (int i = 1; i < 4; i++) { if (p[i] < v->lo) v->lo = p[i]; if (p[i] > v->hi) v->hi = p[i]; }
+      }
+    }
+    buf_printf(out, "(%s %s %s)", ra.p, nm, rb.p);
+  }
+  else ok = 0;   /* an Integer's / and % round toward -inf, C's toward 0 */
+  v->fl = fl;
+  free(ra.p); free(rb.p);
+  return ok;
+}
+
+/* The chunks ahead of an Integer#times loop's `for` (see above), counting to
+   `count`: answers 1 with the C locals the `for` starts from and counts to in
+   start and bound, or 0 with nothing emitted. */
+int hv_emit(Compiler *c, int id, const char *count, Buf *b, int indent, char *start, char *bound, size_t cap) {
+  extern int sp_target_int_bits;
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (!g_hc || sp_target_int_bits != 64 || !count || blk < 0 || nt_kind(nt, blk) != NK_BlockNode ||
+      !hv_ops_ok(c) || block_param_is_multi(c, blk, 0) || !block_param_name(c, blk, 0) || block_param_name(c, blk, 1))
+    return 0;
+  int body = nt_ref(nt, blk, "body"), n = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  if (n != 1 || nt_kind(nt, st[0]) != NK_CallNode || !hc_iob_write(c, st[0])) return 0;
+  int s = st[0];
+  int a = nt_ref(nt, s, "arguments"), ac = 0;
+  const int *av = nt_arr(nt, a, "arguments", &ac);
+  int ot = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+  int ow = comp_iob_ty_width(ot), ofl = comp_iob_ty_is_float(ot);
+  HvCtx x; memset(&x, 0, sizeof x);
+  x.c = c; x.pn = block_param_name(c, blk, 0);
+  x.hv = g_hv_seq + 1;
+  char od[48], ow_[48];
+  Buf e; memset(&e, 0, sizeof e);
+  HvVal v;
+  if (!hv_index(&x, av[1], ow) || !hv_expr(&x, av[2], &v, &e, 0) || (v.fl && !ofl) ||
+      !hc_iobuf_w(c, nt_ref(nt, s, "receiver"), od, ow_, sizeof od)) {
+    free(e.p);
+    return 0;
+  }
+  /* the test a 32-bit store's value takes (sp_iob_holds): [-2^31, 2^31 - 1]
+     signed, [-2^31, 2^32 - 1] unsigned */
+  const char *chk = NULL;
+  if (!ofl && ow == 4) {
+    int sg = comp_iob_ty_signed(ot);
+    int64_t lo = -((int64_t)1 << 31), hi = sg ? ((int64_t)1 << 31) - 1 : ((int64_t)1 << 32) - 1;
+    if (v.lo >= lo && v.hi <= hi) ;   /* every value fits */
+    else if (sg) chk = "((uint64_t)_r + 0x80000000u) >> 32";
+    else if (v.lo >= 0) chk = "(uint64_t)_r >> 32";
+    else if (v.hi <= hi) chk = "((uint64_t)_r + 0x80000000u) >> 63";
+    else { free(e.p); return 0; }
+  }
+  const char *tmp = ofl ? (ow == 4 ? "float" : "double") :
+                    ow == 1 ? "uint8_t" : ow == 2 ? "uint16_t" : ow == 4 ? "uint32_t" : "uint64_t";
+  int hv = g_hv_seq = x.hv;
+  int ch = HV_CH / ow < HV_CH_MIN ? HV_CH_MIN : HV_CH / ow;
+  /* the count is read once, for the `for` too: Integer#times takes it once,
+     and a trap run at a chunk's poll may assign a local it reads */
+  emit_indent(b, indent); buf_printf(b, "sp_int _hv%d_v = 0, _hv%d_n = %s;\n", hv, hv, count);
+  emit_indent(b, indent); buf_puts(b, "{\n");
+  emit_indent(b, indent + 1); buf_puts(b, "while (1) {\n");
+  if (!g_loop_polls_in_cond) emit_loop_polls(c, body, b, indent + 2, g_loop_uncounted, g_poll_loop_nest + 1);
+  emit_indent(b, indent + 2);
+  buf_printf(b, "if (!(_hv%d_n > 0 && _hv%d_n <= INT64_MAX / 8 && _hv%d_v <= _hv%d_n - %d && _hv%d_n * %d <= %s",
+             hv, hv, hv, hv, ch, hv, ow, ow_);
+  for (int i = 0; i < x.nsrc; i++) {
+    HvSrc *sr = &x.src[i];
+    buf_printf(b, " &&\n");
+    emit_indent(b, indent + 4);
+    buf_printf(b, "_hv%d_n * %d <= %s && ((uintptr_t)%s + (uintptr_t)(_hv%d_n * %d) <= (uintptr_t)%s || "
+                  "(uintptr_t)%s + (uintptr_t)(_hv%d_n * %d) <= (uintptr_t)%s",
+               hv, sr->w, sr->l, od, hv, ow, sr->d, sr->d, hv, sr->w, od);
+    if (sr->w == ow) buf_printf(b, " || %s == %s", sr->d, od);
+    buf_puts(b, ")");
+  }
+  buf_puts(b, ")) break;\n");
+  emit_indent(b, indent + 2);
+  buf_printf(b, "%s _hv%d_t[%d];\n", tmp, hv, ch);
+  if (chk) { emit_indent(b, indent + 2); buf_printf(b, "uint64_t _hv%d_b = 0;\n", hv); }
+  emit_indent(b, indent + 2);
+  buf_printf(b, "for (int _hv%d_j = 0; _hv%d_j < %d; _hv%d_j++) { %s _r = %s%s; ", hv, hv, ch, hv,
+             ofl ? "double" : "int64_t", v.fl || !ofl ? "" : "(double)", e.p);
+  if (chk) buf_printf(b, "_hv%d_b |= %s; ", hv, chk);
+  buf_printf(b, "_hv%d_t[_hv%d_j] = (%s)_r; }\n", hv, hv, tmp);
+  if (chk) { emit_indent(b, indent + 2); buf_printf(b, "if (SP_UNLIKELY(_hv%d_b)) break;\n", hv); }
+  emit_indent(b, indent + 2);
+  buf_printf(b, "for (int _hv%d_j = 0; _hv%d_j < %d; _hv%d_j++) ", hv, hv, ch, hv);
+  if (ofl)
+    buf_printf(b, "{ uint%d_t _u; memcpy(&_u, &_hv%d_t[_hv%d_j], %d); sp_iob_store(%s + (_hv%d_v + _hv%d_j) * %d, %d, %d, _u); }\n",
+               8 * ow, hv, hv, ow, od, hv, hv, ow, ow, comp_iob_ty_be(ot));
+  else
+    buf_printf(b, "sp_iob_store(%s + (_hv%d_v + _hv%d_j) * %d, %d, %d, (uint64_t)_hv%d_t[_hv%d_j]);\n",
+               od, hv, hv, ow, ow, comp_iob_ty_be(ot), hv, hv);
+  emit_indent(b, indent + 2); buf_printf(b, "_hv%d_v += %d;\n", hv, ch);
+  emit_indent(b, indent + 1); buf_puts(b, "}\n");
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  free(e.p);
+  snprintf(start, cap, "_hv%d_v", hv);
+  snprintf(bound, cap, "_hv%d_n", hv);
+  return 1;
 }
 
 static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b) {

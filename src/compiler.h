@@ -1746,6 +1746,9 @@ TyKind native_spec_to_ty(const char *spec);
 /* IO::Buffer type-symbol table (index-compatible with lib/sp_iobuffer.h) */
 int comp_iob_sym_type(const char *name);
 int comp_iob_ty_is_float(int t);
+int comp_iob_ty_width(int t);
+int comp_iob_ty_be(int t);
+int comp_iob_ty_signed(int t);
 int comp_iob_ty_is_64(int t);
 
 /* Global variables and top-level constants. *_intern finds or creates. */

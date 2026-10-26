@@ -2685,6 +2685,11 @@ int comp_iob_sym_type(const char *name) {
   return -1;
 }
 int comp_iob_ty_is_float(int t) { return t >= 14 && t <= 17; }
+/* a code's width and byte order (sp_iob_width, sp_iob_big_endian), and
+   whether an integer one is signed (an odd code) */
+int comp_iob_ty_width(int t) { return t >= 14 ? (t == 14 || t == 16 ? 4 : 8) : t <= 1 ? 1 : t <= 5 ? 2 : t <= 9 ? 4 : 8; }
+int comp_iob_ty_be(int t) { return t >= 14 ? t >= 16 : t >= 2 && ((t - 2) & 2); }
+int comp_iob_ty_signed(int t) { return t < 14 && (t & 1); }
 /* the 64-bit integer types stay BOXED through the fold: u64 values above
    2^63-1 are Bignums, and the signed ones take the same path */
 int comp_iob_ty_is_64(int t) {

@@ -731,6 +731,9 @@ int hc_iob_read(Compiler *c, int id);
    hc_iob_write: the call is a literal-typed set_value the cache writes */
 int hc_iobuf_w(Compiler *c, int recv, char *d, char *w, size_t cap);
 int hc_iob_write(Compiler *c, int id);
+/* the chunks an Integer#times loop of IO::Buffer elements runs ahead of its
+   `for`, which runs from *start to *bound (src/codegen_stmt.c) */
+int hv_emit(Compiler *c, int id, const char *count, Buf *b, int indent, char *start, char *bound, size_t cap);
 /* hc_array for a Float array whose in-range elements the reader needs to
    be no nil: *n names a length that is 0 while the array may hold one, or
    while `guard` (a Float local the loop does not assign; -1 for none) is
@@ -1238,6 +1241,7 @@ int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
 TyKind emit_range_step_array(Compiler *c, int id, Buf *b);
 int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
+void emit_loop_polls(Compiler *c, int body, Buf *b, int indent, int uncounted, int nest);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
 int  subtree_has_own_next(const NodeTable *nt, int id);
 int  subtree_owns_next(const NodeTable *nt, int body, int next);

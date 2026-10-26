@@ -4440,6 +4440,21 @@ int next_is_block_value(Compiler *c, int next) {
    signal at its back-edge; a counted one only when no loop of its function
    encloses it, so an inner counted loop keeps no poll in its body (#9222) */
 int g_loop_uncounted = 0, g_poll_loop_nest = 0;
+/* The polls at the top of a loop body (emit_loop_body): `uncounted`, the
+   loop may not end; `nest`, how many loops of its function hold the body,
+   the loop's own included. */
+void emit_loop_polls(Compiler *c, int body, Buf *b, int indent, int uncounted, int nest) {
+  if (g_uses_threads) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s;\n", hc_mark()); }
+  /* and for pending finalizers (sp_gc.h), when the program defines any. A
+     finalizer is Ruby code that may resize an array this loop has cached, so
+     the cache reloads after one runs, as after a safepoint. */
+  if (g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
+  /* and for a delivered Signal.trap, Ruby code as a finalizer is */
+  if (sig_polls() && (uncounted || nest == 1) && !poll_in_pure(c, body)) {
+    emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
+  }
+}
+
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   int poll_uncounted = g_loop_uncounted; g_loop_uncounted = 0;
   int poll_nest = ++g_poll_loop_nest;
@@ -4477,15 +4492,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      there instead: see emit_while. */
   int polls_here = !g_loop_polls_in_cond;
   g_loop_polls_in_cond = 0;
-  if (polls_here && g_uses_threads) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s;\n", hc_mark()); }
-  /* and for pending finalizers (sp_gc.h), when the program defines any. A
-     finalizer is Ruby code that may resize an array this loop has cached, so
-     the cache reloads after one runs, as after a safepoint. */
-  if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
-  /* and for a delivered Signal.trap, Ruby code as a finalizer is */
-  if (polls_here && sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
-    emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
-  }
+  if (polls_here) emit_loop_polls(c, body, b, indent, poll_uncounted, poll_nest);
   /* a dispatch's builtin arm reads its RECEIVER as no object of the
      program's (g_poly_builtin_arm); the block's own calls are not that
      receiver's, and a user class owns their names as it does anywhere */
@@ -8021,9 +8028,12 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       free(rb.p); memset(&rb, 0, sizeof rb);
       buf_printf(&rb, "_t%d", tn);
     }
+    /* an IO::Buffer loop element by element runs its chunks first (hv_emit) */
+    char vs[32] = "0", vn[32];
+    int hv = !rr.big && hv_emit(c, id, rb.p, b, indent, vs, vn, sizeof vs);
     emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < ", t, t);
-    buf_puts(b, rb.p); buf_printf(b, "; _t%d++) {\n", t);
+    buf_printf(b, "for (sp_int _t%d = %s; _t%d < ", t, vs, t);
+    buf_puts(b, hv ? vn : rb.p); buf_printf(b, "; _t%d++) {\n", t);
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
