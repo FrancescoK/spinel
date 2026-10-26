@@ -6343,10 +6343,13 @@ static ir_cline ir_classify(const char *s, size_t n) {
 #else
 /* Built without the rbs C parser (no `make deps`): an annotation cannot be
    read, and is not applied -- which is said once, at the first one, rather
-   than nothing at all. */
-static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len) {
-  (void)root; (void)len;
-  if (!sp_inline_rbs_enabled) return 0;
+   than nothing at all. Graph mode runs the pass once per file, and the
+   warning is still said once for the program. */
+static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len,
+                             const char *path, int fid) {
+  static int said = 0;
+  (void)root; (void)len; (void)fid;
+  if (!sp_inline_rbs_enabled || said) return 0;
   int previous_line = 0, previous_col = -1, block_leading = 1;
   for (const pm_comment_t *c = (const pm_comment_t *)parser->comment_list.head; c; c = (const pm_comment_t *)c->node.next) {
     const uint8_t *s = c->location.start;
@@ -6368,17 +6371,22 @@ static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root, const char *s
     if (n < 2 || (continued && !block_leading)) continue;
     ir_cline kind = ir_classify((const char *)s, n);
     if (kind == CL_COLON || (block_leading && kind == CL_RBS) || (!block_leading && s[1] == '[')) {
-      const char *file = g_source_file;
+      const char *file = path;
       int line = bl;
       if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) { file = sp_file_table[sp_line_file[bl]]; line = sp_line_orig[bl]; }
       fprintf(stderr, "spinel: %s:%d: warning: inline RBS comments are not applied: this spinel was "
                       "built without the rbs parser (run `make deps` and rebuild, or pass --no-inline-rbs)\n", file, line);
+      said = 1;
       return 0;
     }
   }
   return 0;
 }
 static void sp_inline_rbs_emit(const pm_node_t *node, int id) { (void)node; (void)id; }
+static int sp_inline_rbs_any(pm_parser_t *parser) { (void)parser; return 0; }
+static void sp_inline_rbs_declare(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len) {
+  (void)parser; (void)root; (void)source; (void)len;
+}
 static void sp_inline_rbs_done(void) {}
 static void sp_inline_rbs_free(void) {}
 #endif
@@ -6722,7 +6730,8 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
 /* --load-model=graph: file `f` of graph `g`, read before (sp_graph_read),
    flattened into the table as a root of its own (its ProgramNode carries
    its graph id, `load_file`; the entry's is the table's root), each of its
-   requires a LoadNode carrying what it loads. 0 on an internal error
+   requires a LoadNode carrying what it loads, and its inline RBS read from
+   its own comments. 0 on an error in an annotation or an internal error
    (reported). */
 static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
@@ -6736,7 +6745,16 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   g_parser = &r->src.parser;
   g_source_file = source_file;
   g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
+  /* inline RBS over the file's own comment list, its facts stamped on the
+     file's own nodes as flatten makes them */
+  if (sp_inline_rbs_run(&r->src.parser, r->src.root, r->text, strlen(r->text), sp_file_table[g_flat_file], g_flat_file) > 0) {
+    sp_inline_rbs_failed = 1;
+    sp_inline_rbs_free();
+    return 0;
+  }
   int start = node_counter, root = flatten(r->src.root);
+  sp_inline_rbs_done();
+  sp_inline_rbs_free();
   if (!f) out_nt->root_id = root;
   emit_int(root, "load_file", f);
   int k = 0;
@@ -7021,6 +7039,14 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   if (ok) ok = sp_graph_boot(&g, source_file, &facts);
   sp_names_free(&facts);
   if (ok) sp_load_order_build(&g);
+  /* inline RBS resolves a type name against every declaration of the
+     program, as RBS does, whichever file declares it: each file's classes
+     and modules are known before any file's annotations are read */
+  int rbs = 0;
+  for (int f = 0; f < g.nfile && ok && !rbs; f++)
+    rbs = !(*sp_load_flags(&g, f) & SP_FILE_BUILTIN) && sp_inline_rbs_any(&g.gf[f]->src.parser);
+  for (int f = 0; f < g.nfile && ok && rbs; f++)
+    sp_inline_rbs_declare(&g.gf[f]->src.parser, g.gf[f]->src.root, g.gf[f]->text, strlen(g.gf[f]->text));
   for (int f = 0; f < g.nuser && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   for (int b = 0; b < g.nboot && ok; b++) {
     sp_graph_boot_node(&g, g.boot[b].edge);
@@ -7228,7 +7254,7 @@ else {
   g_source_file = source_file;
 
   /* Inline RBS: the comment list and the tree are alive together only here. */
-  if (sp_inline_rbs_run(&parser, root, source, source_len) > 0) {
+  if (sp_inline_rbs_run(&parser, root, source, source_len, source_file, 0) > 0) {
     sp_inline_rbs_failed = 1;
     sp_inline_rbs_free();
     pm_node_destroy(&parser, root);
