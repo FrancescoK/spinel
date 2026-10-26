@@ -11893,15 +11893,21 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     TyKind vt = oint_kind(r.as_ty) ? r.as_ty : (pl ? pl->type : TY_INT);
     const char *fn = kd == 1 ? (vt == TY_FLOAT ? "sp_ofloat_val" : "sp_oint_val")
                              : (vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in");
+    /* a boxed argument the binder still reads as a box (a local that only
+       holds nil): the checked value goes back into one, which the binder
+       unboxes again */
+    const char *bx = r.kind != RK_BOXED || oint_kind(r.as_ty) ? NULL : vt == TY_FLOAT ? "sp_box_float" : "sp_box_int";
     if (held[i] >= 0) {
       int tv = ++g_tmp;
       emit_indent(pre, g_indent);
       buf_printf(pre, "%s _t%d = %s(_t%d, \"%s\");\n", c_type_name(vt), tv, fn, held[i], what ? what : "");
-      view_bind(v, "_t%d", tv);
+      if (bx) view_bind(v, "%s(_t%d)", bx, tv);
+      else view_bind(v, "_t%d", tv);
     }
     else {
       Buf ob; memset(&ob, 0, sizeof ob); emit_oint_expr(c, v, vt, &ob);
-      view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      if (bx) view_bind(v, "%s(%s(%s, \"%s\"))", bx, fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      else view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
       free(ob.p);
     }
   }

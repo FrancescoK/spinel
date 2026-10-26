@@ -327,6 +327,9 @@ typedef struct {
                      zero value, so a kind whose zero is a real value (sp_int
                      0, 0.0) can still tell the two apart (mirrors
                      ConstantVar's const_def_write). */
+  int nil_only;     /* only ever saw nil: the late widening made it a boxed
+                       nil (TY_POLY), so an Integer or Float parameter it is
+                       handed to has to hold nil (nullable_int_value) */
   int maybe_unset;  /* (Integer / Float) some read can run before any write:
                        every write to it ahead of the read is conditional (a
                        modifier `if`, one branch, a loop body), so the read

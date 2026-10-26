@@ -38288,6 +38288,8 @@ int nullable_int_value(Compiler *c, int v) {
     const char *rn = nt_str(nt, v, "name");
     Scope *rs = rn ? comp_scope_of(c, v) : NULL;
     LocalVar *rv = rs ? scope_local(rs, rn) : NULL;
+    /* a local that only ever holds nil is nil wherever it is read */
+    if (rv && rv->nil_only) return 1;
     return rv && rv->nullable_int && !nn_read_nonnil(c, v, rn);
   }
   /* `x &&= v` answers x's nil when x is nil, and `x ||= v` answers v when
@@ -38998,53 +39000,6 @@ static int mark_nullable_params_of_zsuper(Compiler *c, int id, int mi) {
    oint) and boxes them as nil rather than as a number. Boxing every int
    through the nil check costs ~8% on optcarrot -- every pixel goes through
    it -- so the marking is static and the hot path keeps the plain box. */
-/* The locals a program only ever writes nil to (`nl = nil`), boxed, as the
-   marking below asks of a value: written to an Integer or Float local, such
-   a read is that local's nil (the write unboxes it through sp_unbox_oint),
-   but nullable_int_value answers no for it, since it
-   is no number that may be nil. A parameter is left out: its value comes
-   from the call. */
-typedef struct { LocalVar **v; int n, cap; } NilOnlyLocals;
-static int nil_only_has(const NilOnlyLocals *s, const LocalVar *lv) {
-  for (int i = 0; i < s->n; i++) if (s->v[i] == lv) return 1;
-  return 0;
-}
-static void nil_only_locals(Compiler *c, NilOnlyLocals *s) {
-  const NodeTable *nt = c->nt;
-  s->n = 0;
-  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
-    int v = nt_ref(nt, id, "value");
-    const char *ln = nt_str(nt, id, "name");
-    Scope *sc = ln ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
-    if (!lv || lv->type != TY_POLY || lv->is_param || lv->is_block_param ||
-        v < 0 || nt_kind(nt, v) != NK_NilNode || nil_only_has(s, lv)) continue;
-    if (s->n == s->cap) { s->cap = s->cap ? s->cap * 2 : 8; s->v = realloc(s->v, sizeof(LocalVar *) * (size_t)s->cap); }
-    s->v[s->n++] = lv;
-  }
-  /* any other write, or a write of anything but nil, makes it something else */
-  for (int id = 0; id < nt->count && s->n; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode &&
-        k != NK_LocalVariableOperatorWriteNode && k != NK_LocalVariableTargetNode) continue;
-    if (k == NK_LocalVariableWriteNode) {
-      int v = nt_ref(nt, id, "value");
-      if (v >= 0 && nt_kind(nt, v) == NK_NilNode) continue;
-    }
-    const char *ln = nt_str(nt, id, "name");
-    Scope *sc = ln ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
-    for (int i = 0; lv && i < s->n; ) { if (s->v[i] == lv) s->v[i] = s->v[--s->n]; else i++; }
-  }
-}
-static int nil_only_read(Compiler *c, const NilOnlyLocals *s, int v) {
-  if (v < 0 || nt_kind(c->nt, v) != NK_LocalVariableReadNode || !s->n) return 0;
-  const char *ln = nt_str(c->nt, v, "name");
-  Scope *sc = ln ? comp_scope_of(c, v) : NULL;
-  LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
-  return lv && nil_only_has(s, lv);
-}
-
 /* ---- a scalar local read before any write ----
 
    A Ruby local exists from its first assignment in the source, and reads nil
@@ -40241,8 +40196,6 @@ static void mark_nullable_int_locals(Compiler *c) {
   long rounds_max = c->nscopes + 2 + c->ngvars;
   for (int s = 0; s < c->nscopes; s++) rounds_max += c->scopes[s].nlocals;
   int converged = 0;
-  NilOnlyLocals nilonly = {0};
-  nil_only_locals(c, &nilonly);
   block_sites_index(c);   /* the block arm reads each method's yields */
   int nimeth = 0;
   NamedMethod *imeth = instance_methods_by_name(c, &nimeth);
@@ -40293,7 +40246,7 @@ static void mark_nullable_int_locals(Compiler *c) {
          only nil is written to, here or through `&&=` / `||=`; a boxed value
          (`z = f(nil)` answering poly) can be nil too, and unboxes into the
          slot with it */
-      if (nullable_int_value(c, v) || nil_only_read(c, &nilonly, v) || infer_type(c, v) == TY_POLY) {
+      if (nullable_int_value(c, v) || infer_type(c, v) == TY_POLY) {
         lv->nullable_int = 1; changed = 1;
       }
     }
@@ -41142,7 +41095,6 @@ static void mark_nullable_int_locals(Compiler *c) {
      predicate whatever the program (the bound counts the flags themselves), so
      this firing means a marking arm that is not monotone -- worth a bug
      report. */
-  free(nilonly.v);
   free(imeth);
   if (!converged) {
     fprintf(stderr, "spinel: internal: nilable-scalar marking did not converge in "
@@ -51023,7 +50975,7 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
          object). It has no object class, so represent it as a boxed-nil poly.
          Applies to params too (a purely-nil param). An --rbs-seeded slot keeps
          its pinned type. */
-      if (blv->type == TY_NIL && !blv->rbs_seeded) lv_set_type(blv, TY_POLY);
+      if (blv->type == TY_NIL && !blv->rbs_seeded) { lv_set_type(blv, TY_POLY); blv->nil_only = 1; }
     }
 
   /* A method whose body tail is one of the locals just declared poly still

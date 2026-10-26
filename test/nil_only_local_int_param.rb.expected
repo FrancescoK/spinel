@@ -1,0 +1,19 @@
+:y
+"nil"
+"nil"
+"nil"
+"nil"
+1.5
+nil
+[nil, 2.5]
+[1, 2]
+[1, nil]
+"nil"
+1
+nil
+6
+"undefined method '*' for nil"
+4.5
+"undefined method '+' for nil"
+5
+"nil can't be coerced into Integer"
