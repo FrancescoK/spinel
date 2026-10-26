@@ -5710,6 +5710,18 @@ static int dsend_name_source(Compiler *c, int arg) {
   return nw == 1 && src >= 0 ? src : arg;
 }
 
+/* The local whose writes a send's name is narrowed by: the name's own, or
+   for a local written once from another (`t = s`, as `&s` binds the Symbol
+   it is passed), that one's, so the copy holds no more names than s does. */
+static int dsend_name_local(Compiler *c, int arg) {
+  for (int hop = 0; hop < 8; hop++) {
+    int src = dsend_name_source(c, arg);
+    if (src == arg || nt_kind(c->nt, src) != NK_LocalVariableReadNode) break;
+    arg = src;
+  }
+  return arg;
+}
+
 /* The names a value can be when it is a Symbol or String literal, nil, or a
    conditional choosing among them (`re ? :assert_match : :assert_equal`),
    added to `names`. 0 for anything else. */
@@ -6301,7 +6313,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
         if (anh_has(&g_dsend_lits, cand[k])) lits[nlit++] = cand[k];
       use = lits; nuse = nlit;
       /* a local that only ever holds literal names holds one of those */
-      if (dsend_local_names(c, argv[0], &own, &nown)) {
+      if (dsend_local_names(c, dsend_name_local(c, argv[0]), &own, &nown)) {
         /* none of them takes this many arguments: no arm would be left, so
            keep the literals' arms (and their NoMethodError) as before */
         int fits = splat_src >= 0;
@@ -6316,7 +6328,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       int npick = 0;
       TyKind rt = infer_type(c, recv);
       ANameHash answers; memset(&answers, 0, sizeof answers);
-      dsend_param_literals(c, argv[0], &answers);
+      dsend_param_literals(c, dsend_name_local(c, argv[0]), &answers);
       for (int d = 0; d < c->nclasses && (ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN); d++) {
         if (ty_is_object(rt) ? d != ty_object_class(rt) : comp_class_is_module(c, &c->classes[d])) continue;
         char **rn = NULL; int nrn = dsend_receiver_names(c, d, ty_is_object(rt), &rn);
