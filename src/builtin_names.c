@@ -849,6 +849,11 @@ int is_casecmp_family(const char *n) {
   return sp_streq(n, "casecmp") || sp_streq(n, "casecmp?");
 }
 
+int str_int_promotes(const char *n, int argc) {
+  if (sp_streq(n, "to_i")) return argc <= 1;
+  return argc == 0 && (sp_streq(n, "hex") || sp_streq(n, "oct"));
+}
+
 int is_to_integer(const char *n) {
   return sp_streq(n, "to_i") || sp_streq(n, "to_int");
 }

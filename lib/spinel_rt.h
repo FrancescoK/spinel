@@ -21084,6 +21084,13 @@ static sp_RbVal sp_str_to_i_promote(const char *s, sp_int base, int mode) {
   free(d);
   return sp_box_bigint(bi);
 }
+/* promote mode's String#oct: CRuby reads it as to_i with radix -8, where a
+   prefix picks the base and the radix is 8 otherwise -- the negative radix
+   Integer() reads. #hex is #to_i(16). */
+static sp_RbVal sp_str_oct_promote(const char *s) {
+  if (SP_UNLIKELY(!s)) sp_nil_recv("oct");
+  return sp_str_to_i_promote(s, sp_int_negative_base(s, -8), 0);
+}
 /* Integer("...") on a String: strict, or nil-answering for the
    `exception: false` form. `base` 0 is the bare form. */
 static sp_RbVal sp_obj_conv_str_Integer(const char *s, sp_int base, int raise) {
