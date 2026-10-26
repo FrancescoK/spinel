@@ -3334,6 +3334,17 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      (a new handle over a copy was another String) */
   if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) return 1;
   if (emit_boxed_lift_ran_first(c, node, b)) return 1;
+  /* a boxed receiver's reader whose arms each box the field's handle
+     (repr_boxed_reader_handle): the box the dispatch answers, where the
+     route took the handle out of it and the box here put it in a new one
+     (`env[node.name]` with boxed keys, #10302) */
+  { int u = node >= 0 ? nt_paren_single(c->nt, node) : -1;
+    if (!lift && u == node && !arg_ran_first(node, 0) && repr_boxed_reader_handle(c, u)) {
+      int sv = view_push(c, u, TY_POLY);
+      emit_expr(c, u, b);
+      view_pop(c, sv);
+      return 1;
+    } }
   if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) ||
                                                 (strbuf_route_ivar_get(c, node) &&
                                                  share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) ||
