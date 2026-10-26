@@ -6,14 +6,16 @@
 # not the one from before it (raised where the signal landed, it read 0.0).
 # The second loop is a counted one, whose runs end at a computed bound. Each
 # loop's signal comes from a child started just ahead of it, so it lands in
-# that loop however long the rescue before it took.
+# that loop however long the rescue before it took. The last loop steps two
+# instance variables together, and the caller's rescue reads them in step.
 $stdout.sync = true
 P = Struct.new(:x)
 class K
   attr_accessor :y
-  attr_reader :z
-  def initialize; @y = 0.0; @z = 0.0; end
+  attr_reader :z, :a, :b
+  def initialize; @y = 0.0; @z = 0.0; @a = 0; @b = 0; end
   def spin; while true; @z = @z + 1.0; end; end
+  def pair; while true; @a += 1; @b += 1; end; end
 end
 pid = Process.pid
 k = K.new
@@ -51,4 +53,10 @@ begin
   end
 rescue Interrupt
   puts(pr.call > 0 ? "cell advanced" : "cell stale")
+end
+Process.spawn("sh", "-c", "sleep 0.2; kill -INT #{pid}")
+begin
+  k.pair
+rescue Interrupt
+  puts(k.a == k.b && k.a > 0 ? "ivar pair in step" : "ivar pair out of step")
 end

@@ -12670,7 +12670,7 @@ static const char *const interrupt_above[] = { "Interrupt", "SignalException", "
    signal raised where it landed, between two statements of a pass, would
    show that code a pass half done, which CRuby never does: it takes an
    interrupt between passes. No pure region starts there. */
-static int loop_rescue_sees_interrupt(Compiler *c, int id) {
+int loop_rescue_sees_interrupt(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const int *par = codegen_node_parents(c, id);
   if (!par) return 1;
@@ -12684,19 +12684,37 @@ static int loop_rescue_sees_interrupt(Compiler *c, int id) {
   }
   return 0;
 }
+/* Is `body` the body of a pure loop or counting iterator that starts no
+   pure region because its method reads its locals after an Interrupt
+   (loop_rescue_sees_interrupt)? Such a loop polls at each pass even where
+   another loop of its function encloses it: that loop's poll, which a
+   counted loop otherwise leaves the signal to, waits for this one to end,
+   and the pure region it no longer has was its only way to take the signal. */
+int loop_body_polls_alone(Compiler *c, int body) {
+  const int *par = body >= 0 ? codegen_node_parents(c, body) : NULL;
+  if (!par) return 0;
+  int blk = block_of_body(c, body);
+  int own = blk >= 0 ? par[blk] : par[body];
+  if (own < 0) return 0;
+  NodeKind k = nt_kind(c->nt, own);
+  int pure = k == NK_WhileNode || k == NK_UntilNode ? poll_pure_loop(c, own) : k == NK_CallNode && poll_pure_iter(c, own);
+  return pure && loop_rescue_sees_interrupt(c, own);
+}
 /* A pure loop (poll_pure_loop) outside a pure region is marked around: a
    signal while it runs is raised where it lands, and it carries no poll
    (#9222). One that also stores where a rescue can read it, or whose
    method reads its locals after an Interrupt (loop_rescue_sees_interrupt),
    is chunked instead, where it would poll at each pass (a counted loop
-   another loop of its function encloses polls nowhere). */
+   another loop of its function encloses polls nowhere, but for the second
+   kind: loop_body_polls_alone). */
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   Scope *sc = comp_scope_of(c, id);
   int si = sc ? (int)(sc - c->scopes) : -1;
   int in_pure = g_pure_region > 0 || (si >= 0 && poll_pure_method(c, si));
-  int wrap = !in_pure && poll_pure_loop(c, id) && !loop_rescue_sees_interrupt(c, id);
+  int pure = !in_pure && poll_pure_loop(c, id), sees = pure && loop_rescue_sees_interrupt(c, id);
+  int wrap = pure && !sees;
   if (!wrap && !in_pure && poll_chunk_loop(c, id) &&
-      (g_poll_loop_nest == 0 || is_until ||
+      (sees || g_poll_loop_nest == 0 || is_until ||
        !poll_while_counted(c, nt_ref(c->nt, id, "predicate"), nt_ref(c->nt, id, "statements"))) &&
       emit_while_chunked(c, id, b, indent, is_until))
     return;
