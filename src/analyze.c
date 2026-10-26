@@ -19008,6 +19008,29 @@ static void compute_byref_out_params(Compiler *c) {
   for (int si = 1; si < n; si++)
     lends[si] = elig[si] || ((c->scopes[si].yields || c->scopes[si].is_lowered_yield) &&
                              yield_lowers_block(c, si));
+  /* The eligible scopes by name, each name's chained from efirst through
+     enext: a call on a POLY receiver below marks those of its name, found
+     by hash rather than by a walk of every scope at every such call. */
+  ANameHash enames; memset(&enames, 0, sizeof enames);
+  int *efirst = NULL, ecap = 0;
+  int *enext = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!enext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int si = 1; si < n; si++) {
+    enext[si] = -1;
+    const char *sn = c->scopes[si].name;
+    if (!elig[si] || !sn) continue;
+    int e = anh_find(&enames, sn);
+    if (e < 0) {
+      anh_add(&enames, sn); e = anh_find(&enames, sn);
+      if (e >= ecap) {
+        ecap = e + 64;
+        efirst = realloc(efirst, sizeof(int) * (size_t)ecap);
+        if (!efirst) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      efirst[e] = -1;
+    }
+    enext[si] = efirst[e]; efirst[e] = si;
+  }
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -19032,9 +19055,10 @@ static void compute_byref_out_params(Compiler *c) {
     if (k == NK_CallNode) {
       int rcv = nt_ref(nt, id, "receiver");
       const char *cn = nt_str(nt, id, "name");
-      if (rcv >= 0 && cn && comp_ntype(c, rcv) == TY_POLY)
-        for (int si = 1; si < n; si++)
-          if (elig[si] && c->scopes[si].name && sp_streq(c->scopes[si].name, cn)) polyr[si] = 1;
+      if (rcv >= 0 && cn && comp_ntype(c, rcv) == TY_POLY) {
+        int e = anh_find(&enames, cn);
+        for (int si = e >= 0 ? efirst[e] : -1; si >= 0; si = enext[si]) polyr[si] = 1;
+      }
     }
     /* a plain rebind of a param blocks it (see the header comment) */
     if (k == NK_LocalVariableWriteNode ||
@@ -19188,6 +19212,9 @@ static void compute_byref_out_params(Compiler *c) {
   free(polyr);
   free(cellh);
   free(lends);
+  anh_free(&enames);
+  free(efirst);
+  free(enext);
 }
 
 /* Does scope mi's body contain a call to its own method name on implicit or
