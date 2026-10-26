@@ -17,6 +17,23 @@ const char *sp_exc_cur_cls(void);
 const char *sp_exc_cur_msg(void);
 void *sp_exc_cur_obj(void);
 void sp_fiber_reraise(const char *, const char *, void *);
+/* The nonlocal exit that reached a C frame's sp_exc_arm: taken before the
+ * frame is disarmed, and passed on once the frame has put its state back. A
+ * throw or break unwinding through C resumes; a raise is raised again. */
+typedef struct { int unwind; const char *cls, *msg; void *obj; } CextExit;
+static CextExit cext_exit_take(void) {
+    CextExit e;
+    e.unwind = sp_cext_unwinding();
+    e.cls = sp_exc_cur_cls(); e.msg = sp_exc_cur_msg();
+    e.obj = sp_exc_cur_obj();
+    return e;
+}
+static void cext_exit_resume(CextExit e) __attribute__((noreturn));
+static void cext_exit_resume(CextExit e) {
+    if (e.unwind) sp_cext_resume_unwind();
+    else sp_fiber_reraise(e.cls, e.msg, e.obj);
+    abort();
+}
 extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
 VALUE rb_cObject, rb_cBasicObject, rb_cClass, rb_cModule;
 VALUE rb_cString, rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cIO;
@@ -40,14 +57,10 @@ static sp_RbVal call_ruby_unlocked(int kind, const char *key, sp_RbVal receiver,
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots;
         sp_cext_lock_resume(depth);
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_RbVal result;
@@ -181,8 +194,7 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
     volatile size_t previous_paths=init_path_count;
     jmp_buf frame;
     if(setjmp(frame)!=0) {
-        int unwind=sp_cext_unwinding();
-        const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
+        CextExit left=cext_exit_take();
         sp_exc_disarm();
         for(size_t i=0;i<journal.count;i++) {
             rb_gc_unregister_address(addresses[i]);*addresses[i]=Qnil;
@@ -191,9 +203,7 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
         next_function=previous_function;next_constant=previous_constant;next_anonymous=previous_anonymous;
         while(init_path_count>previous_paths)free(init_paths[--init_path_count]);
         sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-        if(unwind)sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls,msg,obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     init_roots=&journal;binding=extension;next_function=0;next_constant=0;next_anonymous=0;extension->init();
@@ -730,13 +740,9 @@ static sp_RbVal sp_cext_invoke_locked(sp_cext_extension *ext,int slot,int arity,
     const int roots=sp_gc_nroots;
     jmp_buf frame;
     if(setjmp(frame)!=0) {
-        if(sp_cext_unwinding()) {
-            sp_exc_disarm();sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-            sp_cext_current_block=saved;sp_cext_resume_unwind();abort();
-        }
-        const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
+        CextExit left=cext_exit_take();
         sp_exc_disarm();sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-        sp_cext_current_block=saved;sp_fiber_reraise(cls,msg,obj);abort();
+        sp_cext_current_block=saved;cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     if(arity>=0 && argc!=arity) { rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d)",argc,arity); }
@@ -859,13 +865,10 @@ static sp_int callback_trampoline_locked(void *p, sp_int argc, sp_int *raw) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
         sp_cext_current_block = saved;
-        if (unwind) { sp_cext_resume_unwind(); abort(); }
-        sp_fiber_reraise(cls, msg, obj); abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     VALUE argv[SP_PROC_ARG_SLOTS];
@@ -883,13 +886,9 @@ static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_int result = callback_trampoline_locked(p, argc, raw);
@@ -907,13 +906,9 @@ static sp_RbVal catch_body(void *p) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     VALUE result = body->fn(body->tag, body->data, 0, NULL, Qnil);
@@ -960,13 +955,9 @@ VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); iteration = outer; sp_gc_nroots = roots;
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     iteration = &call;
@@ -994,13 +985,9 @@ void sp_cext_init(sp_cext_extension *extension) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_cext_init_locked(extension);
@@ -1015,13 +1002,9 @@ void *sp_cext_allocate(sp_cext_extension *ext,int slot,int cls) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     void * result = sp_cext_allocate_locked(ext,slot,cls);
@@ -1037,13 +1020,9 @@ sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_RbVal result = sp_cext_invoke_locked(ext,slot,arity,self,args,block);
