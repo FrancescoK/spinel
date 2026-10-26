@@ -40,3 +40,7 @@ end
 mut(b, +"m")
 mut(b)
 puts b.size
+
+# Dir.glob's base:
+Dir.glob("*.no-such-ext", base: b.clear!)
+puts b.size
