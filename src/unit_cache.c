@@ -225,14 +225,21 @@ static const char *inc_ccid(const char *cc_cmd) {
    text, the header hashes the headers it includes (an rt unit includes
    sp_rt.h only, so a program edit leaves its key alone), ccid the compiler
    and the flags how it was asked to compile. The flags the unit compile
-   adds are constant or follow from the unit hash, so they are not in it. */
+   adds are constant or follow from the unit hash, so they are not in it.
+   Under -g the object also records the directory cc ran in (spinel's
+   own, against which the markers' relative paths resolve), so it is in
+   the key: two checkouts building the same app.rb must not share one
+   object whose debug info points at the other's sources. */
 static void inc_key(const IncBuild *b, const CSplitUnit *u, char out[65]) {
   const char *ccid = inc_ccid(b->o->cc_cmd);
-  size_t l = strlen(ccid) + strlen(b->flags) + 4 * 65 + 64;
+  char cwd[4096] = "";
+  if (b->o->want_g && !getcwd(cwd, sizeof cwd)) cwd[0] = 0;
+  size_t l = strlen(ccid) + strlen(b->flags) + strlen(cwd) + 4 * 65 + 64;
   char *rec = malloc(l);
   int n = snprintf(rec, l, "spinel-unit-1\n%s\n%s\n%s\n", ccid, b->flags, b->res.rt_hash);
   if (!u->is_rt) n += snprintf(rec + n, l - (size_t)n, "%s\n", b->res.program_hash);
   n += snprintf(rec + n, l - (size_t)n, "%s\n", u->hash);
+  if (cwd[0]) n += snprintf(rec + n, l - (size_t)n, "cwd %s\n", cwd);
   sha256_hex(rec, (size_t)n, out);
   free(rec);
 }

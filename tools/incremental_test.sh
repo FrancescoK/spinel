@@ -16,7 +16,8 @@
 # rest pins the contract around it: the refused flags, the default build
 # untouched, the shape of a unit directory, the planted missing declaration
 # that must be a compile error and never an object, reproducible objects,
-# a corpus smoke, two builds sharing an empty cache, and the prune.
+# a corpus smoke, two builds sharing an empty cache, the prune, and the
+# working directory in a -g build's key.
 #
 # Every build runs with SPINEL_INCREMENTAL_STRICT=1, so a split or unit
 # compile the fallback would hide fails here instead. The cache lives in
@@ -457,6 +458,20 @@ fresh=0; [ -n "$(find "$O/.pruned" -mtime -1 2>/dev/null)" ] && fresh=1
 o=0; [ $rc = 0 ] && [ ! -e "$old" ] && [ ! -e "$stale" ] && [ $fresh = 1 ] && [ "$miss" = 0 ] && [ "$nobj1" = $((nobj0 - 1)) ] && o=1
 gone=0; [ -e "$old" ] || gone=1
 report "16 prune" $o "rc=$rc old-object-removed=$gone stale-tmp-removed=$([ -e "$stale" ] && echo 0 || echo 1) stamp-rewritten=$fresh objects=$nobj0->$nobj1 miss=$miss"
+
+# --- 17 -g in two directories ----------------------------------------------------
+# under -g an object records the directory cc ran in, which the markers'
+# relative paths resolve against: the same app.rb built from another
+# checkout on one cache compiles its own objects, and hits them next time
+export SPINEL_CACHE_DIR=$T/cache17
+mkdir -p "$T/d17a" "$T/d17b"
+cp test/raise_reraise_in_def.rb "$T/d17a/app.rb"; cp test/raise_reraise_in_def.rb "$T/d17b/app.rb"
+cd "$T/d17a" && ib g17a app.rb -g; ra=$rc
+cd "$T/d17b" && ib g17b app.rb -g; rb=$rc; mb=$miss; ub=$units
+ib g17c app.rb -g
+cd "$ROOT" || exit 2
+o=0; [ $ra = 0 ] && [ $rb = 0 ] && [ $rc = 0 ] && [ "$ub" -gt 0 ] && [ "$mb" = "$ub" ] && [ "$miss" = 0 ] && o=1
+report "17 -g in two directories" $o "rc=$ra/$rb/$rc other-dir-miss=$mb/$ub same-dir-miss=$miss"
 
 if [ $fail = 0 ]; then echo "incremental-test: pass"; else echo "incremental-test: FAILED:$failed"; fi
 exit $fail
