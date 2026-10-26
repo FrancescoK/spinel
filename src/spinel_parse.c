@@ -6804,9 +6804,10 @@ static int sp_graph_boot_load(SpLoadGraph *g, const char *lib_name) {
   return g->nedge - 1;
 }
 
-/* Boot library edge `e`'s LoadNode, ahead of the entry's statements, ahead
-   of those an earlier one put there. */
-static void sp_graph_boot_node(SpLoadGraph *g, int e) {
+/* Boot library edge `e`'s LoadNode, statement `at` of the entry's body: the
+   boot libraries ahead of the entry's statements in the order they load,
+   as their statement indices (`b - nboot`, sp_graph_boot) say. */
+static void sp_graph_boot_node(SpLoadGraph *g, int e, int at) {
   int id = node_counter++;
   nt_put_type(out_nt, id, "LoadNode");
   emit_str(id, "method", "require");
@@ -6818,8 +6819,9 @@ static void sp_graph_boot_node(SpLoadGraph *g, int e) {
   const int *v = nt_arr(out_nt, st, "body", &n);
   int *nv = malloc(sizeof(int) * (size_t)(n + 1));
   if (!nv) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  nv[0] = id;
-  if (n) memcpy(nv + 1, v, sizeof(int) * (size_t)n);
+  if (at) memcpy(nv, v, sizeof(int) * (size_t)at);
+  nv[at] = id;
+  if (n > at) memcpy(nv + at + 1, v + at, sizeof(int) * (size_t)(n - at));
   nt_node_set_arr(out_nt, st, "body", nv, n + 1);
   free(nv);
 }
@@ -7053,7 +7055,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   if (ok) sp_load_order_build(&g);
   for (int f = 0; f < g.nuser && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   for (int b = 0; b < g.nboot && ok; b++) {
-    sp_graph_boot_node(&g, g.boot[b].edge);
+    sp_graph_boot_node(&g, g.boot[b].edge, b);
     for (int f = g.boot[b].first; f < g.boot[b].end && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   }
   NodeTable *nt = out_nt;

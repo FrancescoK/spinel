@@ -2,7 +2,9 @@
 # Under --load-model=graph (#9898) each require is a LoadNode carrying the
 # file it loads: the one its own call resolved to, also where flatten meets
 # a file's requires in another order than its tree has them (a begin's
-# ensure before its else) and when two are on one line.
+# ensure before its else) and when two are on one line. The libraries
+# CRuby has at boot are LoadNodes ahead of the entry's statements, in the
+# order they load.
 #
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
@@ -62,5 +64,10 @@ program lines 'begin\n  puts "body"\nrescue\n  puts "rescue"\nelse\n  require_re
 loads lines 0 a=a.rb b=b.rb
 program one_line 'begin puts "body"; rescue; puts "rescue"; else require_relative "c"; ensure require_relative "d"; end\n' c d
 loads one_line 0 c=c.rb d=d.rb
+
+# libraries CRuby has at boot: Set, Enumerable's methods written in Ruby,
+# and the enumerator a break leaves
+program boot 's = Set.new([1, 2])\np s.size\np [1, 2].map { |x| break x }\n'
+loads boot 3 set=packages/set/set.rb builtins/enumerable=builtins/enumerable.rb builtins/enumerator=builtins/enumerator.rb
 
 [ $ok -eq 1 ] && echo "load-graph-test: pass" || exit 1
