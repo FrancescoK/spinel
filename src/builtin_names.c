@@ -105,6 +105,18 @@ int is_method_name_reflection(const char *n) {
          sp_streq(n, "singleton_method") || sp_streq(n, "respond_to?") || sp_streq(n, "method_defined?");
 }
 
+/* The calls given their code as a String, which the load graph reads as the
+   code it is */
+int is_code_eval_name(const char *n) {
+  return sp_streq(n, "eval") || sp_streq(n, "class_eval") || sp_streq(n, "module_eval") ||
+         sp_streq(n, "instance_eval");
+}
+
+/* A Symbol made of a value: the name it makes is known only at run time */
+int is_symbol_conversion(const char *n) {
+  return sp_streq(n, "to_sym") || sp_streq(n, "intern");
+}
+
 /* A call that can run code the analysis does not see, or capture a String:
    send and its siblings, call, new, lambda/proc, freeze, eval, and the
    instance_* / class_* / module_* / *method* reflection families. */

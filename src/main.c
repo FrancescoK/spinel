@@ -534,6 +534,9 @@ static int parse_flag(const char *a) {
   return 0;
 }
 static int run_table_mode(const NodeTable *nt, int mode) {
+  /* the lowering rows the graph matched on each call's parse, against the
+     node's (analyze_util.c); a report on stderr */
+  if (getenv("SPINEL_LOWER_ROWS_CHECK")) lower_rows_check(nt);
   if (mode == 1) nt_dump(nt, stdout);
   else if (mode == 2) value_pos_dump(nt, stdout);
   else if (mode == 3) return value_pos_check();
