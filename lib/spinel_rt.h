@@ -8488,16 +8488,17 @@ static sp_RbVal sp_poly_arr_live_recv(sp_RbVal v, const char *m) {
 }
 static inline void sp_PolyArray_set(sp_PolyArray *a, sp_int i, sp_RbVal v);   /* fwd: defined below */
 /* `a.fill(v[, start[, len]])` on a boxed receiver with Integer offsets
-   (argc counts v): a PolyArray, and an Integer or Float Array whose span
-   is in bounds and whose kind v is, fill in place; anything else fills a
-   boxed copy and writes it back. Answers the receiver. */
-static sp_RbVal sp_poly_fill(sp_RbVal recv, sp_RbVal v, int argc, sp_int start, sp_int len) {
+   (argc counts v; a nil start is 0, a nil length runs to the end): a
+   PolyArray, and an Integer or Float Array whose span is in bounds and
+   whose kind v is, fill in place; anything else fills a boxed copy and
+   writes it back. Answers the receiver. */
+static sp_RbVal sp_poly_fill(sp_RbVal recv, sp_RbVal v, int argc, sp_oint start, sp_oint len) {
   if (!(recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))) sp_raise_nomethod(sp_nomethod_msg("fill", recv));
   if (sp_poly_array_frozen(recv)) sp_raise_frozen_array_at(recv.v.p, recv.cls_id);
   sp_PolyArray *p = recv.cls_id == SP_BUILTIN_POLY_ARRAY ? (sp_PolyArray *)recv.v.p : NULL;
   sp_int alen = sp_poly_arr_len(recv), s = 0, e = alen;
-  if (argc >= 2) { s = start < 0 ? start + alen : start; if (s < 0) s = 0; }
-  if (argc == 3) e = len < 0 ? s : s + len;
+  if (argc >= 2 && !start.nil) { s = start.v < 0 ? start.v + alen : start.v; if (s < 0) s = 0; }
+  if (argc == 3 && !len.nil) e = len.v < 0 ? s : s + len.v;
   else if (s > alen) e = s;
   if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
     for (sp_int i = s; i < e; i++) sp_PolyArray_set(p, i, v);
