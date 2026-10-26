@@ -5549,6 +5549,14 @@ SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
   if (sp_nomethod_kernel_private(m)) return sp_sprintf("private method '%s' called for %s", m, d);
   return sp_sprintf("undefined method '%s' for %s", m, d);
 }
+/* The NoMethodError of a call on nil, as sp_raise_nomethod(sp_nomethod_msg(m,
+   nil)) raises it (the receiver staged, a Kernel private name spelled as
+   one); it does not return, so the C compiler takes a nil test's raise as
+   leaving and keeps nothing alive across it. */
+SP_NORETURN SP_COLD SP_NOINLINE static void sp_nil_recv_raise(const char *m) {
+  sp_raise_nomethod(sp_nomethod_msg(m, sp_box_nil()));
+  abort();
+}
 /* #succ / #next on a boxed receiver. Every kind that answers them has its own
    answer: an Integer counts up, a String or Symbol takes the succ sequence,
    and an Enumerator pulls its next value (#next only). Routing all of them

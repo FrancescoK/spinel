@@ -6173,7 +6173,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else {
       Repr br = repr_of(c, id);
       TyKind bt = br.as_ty;
-      buf_printf(b, "((void)sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())), %s)",
+      buf_printf(b, "((void)sp_nil_recv_raise(\"%s\"), %s)",
                  blockless_block_param_call_name(c, id),
                  (br.kind == RK_BOXED || bt == TY_UNKNOWN || bt == TY_NIL || bt == TY_VOID)
                    ? "sp_box_nil()" : oint_kind(bt) && node_is_oint(c, id) ? oint_nil(bt) : default_value_from_compiler(c, bt));

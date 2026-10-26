@@ -24489,7 +24489,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      reads the handle; a `&.` call's guard skips it instead) */
   for (int i = 0; hroute && i < nb; i++)
     if (node[i] == harg)
-      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", tmp[i],
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", tmp[i],
                  nt_str(nt, id, "name"));
   buf_puts(b, ob.p ? ob.p : "");
   buf_puts(b, "; })");
@@ -24930,7 +24930,7 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
   if (nt_str(c->nt, id, "ary_conv"))
     snprintf(out, n, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\")");
   else
-    snprintf(out, n, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", nt_str(c->nt, id, "name"));
+    snprintf(out, n, "sp_nil_recv_raise(\"%s\")", nt_str(c->nt, id, "name"));
 }
 /* An Array call that always raises for its operand (the operand is no Array:
    emit_array_operand_type_error, emit_array_operand_misfit) still dispatches
@@ -24956,7 +24956,7 @@ int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
   return t;
 }
 void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b) {
-  if (t) buf_printf(b, "if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
+  if (t) buf_printf(b, "if (_t%d == NULL) sp_nil_recv_raise(\"%s\"); ",
                     t, nt_str(c->nt, id, "name"));
 }
 /* The guard as a statement ahead of a statement-form emission of call `id`,
@@ -25432,7 +25432,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   else if (!rtext[0] && nt_kind(nt, r) == NK_InstanceVariableReadNode)
     buf_printf(b, "sp_nil_recv(\"%s\");%s", enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   else
-    buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
+    buf_printf(b, "sp_nil_recv_raise(\"%s\");%s",
                enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   free(rb.p);
   buf_puts(b, *lead ? "\n" : " ");
@@ -25465,7 +25465,7 @@ void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
     buf_printf(b, ") == NULL)) %s;", nr);
   }
   else
-    buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+    buf_printf(b, ") == NULL)) sp_nil_recv_raise(\"%s\");",
                enum_walk_name(c, id, r, cplan_call_name(c->nt, id)));
 }
 

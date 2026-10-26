@@ -3722,7 +3722,7 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, Buf *out) {
     if (hb.p) {
       int t = ++g_tmp;
       buf_printf(out, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-                 "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+                 "sp_nil_recv_raise(\"%s\"); _t%d; })",
                  t, hb.p, t, nt_str(c->nt, id, "name"), t);
       free(hb.p);
       return 2;
@@ -3744,7 +3744,7 @@ int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, Buf *out) {
   }
   int t = ++g_tmp;
   buf_printf(out, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+             "sp_nil_recv_raise(\"%s\"); _t%d; })",
              t, rb.p, t, name, t);
   free(rb.p);
   return 2;
@@ -3814,7 +3814,7 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
        the mutator can allocate (emit_route_recv_root) */
     int t = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+               "sp_nil_recv_raise(\"%s\"); _t%d; })",
                t, hb.p, t, nt_str(c->nt, id, "name"), t);
   }
   free(hb.p);
@@ -4137,7 +4137,7 @@ static int emit_strbuf_chain_in_place_m(Compiler *c, int v, int base, const char
     const char *nm = nt_str(c->nt, convs[i], "name");
     if (is_to_s_name(nm)) buf_printf(b, "if (!_t%d) _t%d = sp_String_new_shared(sp_str_frozen_empty); ", th, th);
     else if (!is_self_copy(nm))
-      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th, nm);
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", th, nm);
   }
   for (int i = na - 1; i >= 0; i--) {
     if (args[i] <= -2) {
@@ -4296,7 +4296,7 @@ static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b) {
   /* (the first link answers a nil receiver nil where nil defines it: tap, itself) */
   const char *fln = first >= 0 ? nt_str(nt, first, "name") : NULL;
   if (!strbuf_route_nonnil(c, base) && !(fln && is_nil_method(fln)))
-    buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", t,
+    buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", t,
                first >= 0 && nt_str(nt, first, "name") ? nt_str(nt, first, "name") : "<<");
   buf_printf(&rb, "_t%d; })", t);
   int ok = emit_strbuf_chain_in_place_m(c, v, base, rb.p, b, bang);
@@ -4385,7 +4385,7 @@ static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, in
   buf_puts(b, "({ ");
   size_t at = hb->len;
   if (hb != b) emit_indent(hb, g_indent);
-  const char *raise = " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));";
+  const char *raise = " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");";
   buf_printf(hb, "sp_String *_t%d = SP_STR_HDL(%s);", th, href);   /* (one representation: the text of either face) */
   if (check && check_first) buf_printf(hb, raise, th, nt_str(c->nt, v, "name"));
   buf_printf(hb, " SP_GC_ROOT(_t%d);", th);
@@ -4441,7 +4441,7 @@ static void emit_held_handle(Compiler *c, int r, Buf *b) {
     if (is_self_copy(rn)) buf_printf(b, "; _t%d; })", t);
     else if (is_to_s_name(rn))
       buf_printf(b, "; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, t);
-    else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+    else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); _t%d; })",
                     t, rn, t);
     return;
   }
@@ -4526,7 +4526,7 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); ", tH, hb.p);
     emit_ctype(c, ty, b);
     if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
-    else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+    else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");",
                     tH, tH, nt_str(c->nt, id, "name"));
     buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = ", tH, pre.p ? pre.p : "", tH);
     { int held = g_one_held;
@@ -4996,7 +4996,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     if (late) {
       amark = sb_shim_args_first(c, v, &apre, g_indent);
       buf_puts(b, apre.p ? apre.p : "");
-      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", th,
                  nt_str(c->nt, v, "name"));
       free(apre.p);
     }
@@ -16544,7 +16544,7 @@ static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *na
   emit_indent(b, indent);
   buf_puts(b, "if (SP_UNLIKELY(!(");
   emit_node_or_tmp(c, recv, recv_tmp, b);
-  buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
+  buf_printf(b, "))) sp_nil_recv_raise(\"%s\");\n", name);
 }
 /* Does a receiver typed as class `cid` store through a writer a descendant
    answers differently? Typed so, it can hold an instance of the descendant
@@ -18980,7 +18980,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       Buf *db = g_pre ? g_pre : b;
       emit_indent(db, g_pre ? g_indent : indent);
       emit_ctype(c, repr_of(c, grecv).as_ty, db);
-      buf_printf(db, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+      buf_printf(db, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_nil_recv_raise(\"%s\");\n",
                  tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(nt, id, "name"));
       free(rb.p);
       int slot = view_bind(grecv, "_t%d", tg);
@@ -19003,7 +19003,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
     if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
     else if (!nt_safe_nav(nt, id)) {
       emit_indent(b, indent);
-      buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+      buf_printf(b, "sp_nil_recv_raise(\"%s\");\n",
                  blockless_block_param_call_name(c, id));
     }
     return 1;
@@ -23363,7 +23363,7 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
   int t = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);", t, sref->p, t);
-  if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", t, name);
+  if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");", t, name);
   buf_puts(b, "\n");
   sref->len = 0;
   if (sref->p) sref->p[0] = 0;

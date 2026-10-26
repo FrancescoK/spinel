@@ -10504,7 +10504,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         /* (one-String mode: the receiver's text may be a held handle) */
         buf_printf(&hd, "const char *_t%d = SP_STR_B(%s); SP_GC_ROOT(_t%d);",
                    g_tmpid, rs.p ? rs.p : "", g_tmpid);
-        if (!g_noguard) buf_printf(&hd, " if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", g_tmpid, name);
+        if (!g_noguard) buf_printf(&hd, " if (!_t%d) sp_nil_recv_raise(\"%s\");", g_tmpid, name);
         buf_puts(&hd, "\n");
         buf_insert_at(g_pre, g_pre_mark, hd.p);
         free(hd.p);
@@ -10513,7 +10513,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (rt == TY_STRING) {
         buf_printf(b, "({ const char *_t%d = SP_STR_B(%s); ", g_tmpid, rs.p ? rs.p : "");
         if (g_root) buf_printf(b, "SP_GC_ROOT(_t%d); ", g_tmpid);
-        if (!g_noguard) buf_printf(b, "if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", g_tmpid, name);
+        if (!g_noguard) buf_printf(b, "if (!_t%d) sp_nil_recv_raise(\"%s\"); ", g_tmpid, name);
       }
       else {
         buf_printf(b, "({ sp_int _t%d = ", g_tmpid);
