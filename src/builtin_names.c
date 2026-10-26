@@ -91,6 +91,20 @@ int is_send_family(const char *n) {
   return sp_streq(n, "send") || sp_streq(n, "__send__") || sp_streq(n, "public_send");
 }
 
+/* The calls whose arguments name a method by a value (a Symbol, a String,
+   or one computed at run time): the send family, the Method and
+   UnboundMethod readers, define/alias/respond_to?/method_defined?. A
+   computed name among them can call or answer for any method the
+   receiver has; the analysis bounds it by the literals that reach it
+   (cf_collect_dyn), and the load graph counts a program's literals as
+   names where one is. */
+int is_method_name_reflection(const char *n) {
+  return is_send_family(n) || sp_streq(n, "method") || sp_streq(n, "public_method") ||
+         sp_streq(n, "instance_method") || sp_streq(n, "define_method") ||
+         sp_streq(n, "define_singleton_method") || sp_streq(n, "alias_method") ||
+         sp_streq(n, "singleton_method") || sp_streq(n, "respond_to?") || sp_streq(n, "method_defined?");
+}
+
 /* A call that can run code the analysis does not see, or capture a String:
    send and its siblings, call, new, lambda/proc, freeze, eval, and the
    instance_* / class_* / module_* / *method* reflection families. */
