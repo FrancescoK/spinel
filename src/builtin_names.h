@@ -421,4 +421,17 @@ int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a
 int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
 int boxed_stat_name(const char *n);   /* mode or a numeric field */
 int boxed_stat_reader(const char *n); /* mtime, atime, ftype */
+
+/* ---- The pre-installed packages' facts ----
+   Generated from their manifests (packages/<package>/spin.toml) into
+   src/package_facts.inc by tools/gen_package_facts.rb: the feature a package
+   is required by, whether CRuby has it loaded at boot, and the require it
+   rides as an add-on. */
+typedef struct {
+  const char *package;   /* "set" */
+  const char *feature;   /* its file, packages/<package>/<feature>.rb: "set", "io/buffer" */
+  int boot;              /* CRuby has it loaded before a program runs */
+  const char *rides;     /* the require that makes the add-on available ("time"), or NULL */
+} PackageFact;
+const PackageFact *package_fact_at(int i);   /* the i-th row, NULL past the last */
 #endif

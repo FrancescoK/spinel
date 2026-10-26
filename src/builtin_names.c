@@ -1610,3 +1610,12 @@ int boxed_stat_name(const char *name) {
 int boxed_stat_reader(const char *name) {
   return sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ftype");
 }
+
+/* The pre-installed packages' facts, from their manifests (package_facts.inc) */
+#include "package_facts.inc"
+#define SP_PACKAGE_FACT_ROW(pkg, feature, boot, rides) { pkg, feature, boot, rides },
+static const PackageFact package_facts[] = { SP_PACKAGE_FACTS(SP_PACKAGE_FACT_ROW) };
+#undef SP_PACKAGE_FACT_ROW
+const PackageFact *package_fact_at(int i) {
+  return i >= 0 && i < (int)(sizeof package_facts / sizeof package_facts[0]) ? &package_facts[i] : NULL;
+}
