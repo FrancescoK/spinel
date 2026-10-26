@@ -491,4 +491,12 @@ typedef struct {
   const char *rides;     /* the require that makes the add-on available ("time"), or NULL */
 } PackageFact;
 const PackageFact *package_fact_at(int i);   /* the i-th row, NULL past the last */
+
+/* ---- Spinel's native classes, modules and exceptions (BUILTIN_CLASSES) ----
+   One row per name: which predicate accepts it (BC_*) and its negative
+   cls_id (0 when codegen has none). */
+enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
+typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
+const BuiltinClass *builtin_class_at(int i);   /* the i-th row, NULL past the last */
+int is_native_class_name(const char *n);       /* any row: a class Spinel has without a library */
 #endif
