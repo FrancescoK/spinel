@@ -51,3 +51,24 @@ end
 Ctl.new(Store.new).run(false)
 Ctl.new(Store.new).run(true)
 puts MemStore.new.fetch("k") { "y" }
+
+# 3. The base method ignores its block and only the override yields; the
+#    dispatch still makes the block a proc, forwarded or given directly.
+class Plain
+  def fetch(key) = "none"
+end
+
+class Yielding < Plain
+  def fetch(key) = "y:" + yield
+end
+
+def via_plain(direct, &blk)
+  return yield if direct
+  Plain.new.fetch("k", &blk)
+end
+
+word = "w"
+puts via_plain(false) { word + "!" }
+puts via_plain(true) { word + "?" }
+puts Plain.new.fetch("k") { word + "." }
+puts Yielding.new.fetch("k") { word }
