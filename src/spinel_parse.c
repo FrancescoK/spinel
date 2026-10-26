@@ -16,6 +16,7 @@
 #include <string.h>
 #include <limits.h>
 #include <unistd.h>      /* readlink: resolve the executable for gem lookup */
+#include <sys/stat.h>    /* stat: a require's file is a regular one */
 #if defined(__APPLE__)
 #include <mach-o/dyld.h> /* _NSGetExecutablePath */
 #endif
@@ -2582,6 +2583,7 @@ int g_require_gate = 0;
    is still accepted and changes nothing. */
 int sp_share_strings_env(void) { return 1; }
 int g_require_gate_cli = 0;   /* --require-gate */
+int g_dump_load_graph = 0;    /* --dump-load-graph */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
 static int sp_req_feats_cap = 0;
@@ -3866,6 +3868,8 @@ typedef struct {
   size_t stmt_start;         /* line start of the top-level statement it is in */
   size_t ctl_stmt_start;     /* line start of the innermost statement around it with only control flow above */
   int rel_stmt;              /* (in a rewrite) stmt_start and ctl_stmt_start are offsets in its text */
+  int plain;                 /* a plain `require` (the load graph's; the plain pass still scans) */
+  int line;                  /* the call's line in its file */
 } SpReqSite;
 
 /* A rewrite the tree asks for: the text [a, b) becomes `text`, and the
@@ -3935,6 +3939,7 @@ static int sp_req_quoted_line(const pm_location_t *open, const pm_location_t *cl
    ancestors on `s`'s stack. `st->kw` and `st->end` are its span. */
 static void sp_req_site_place(const SpReqSiteScan *s, const pm_node_t *node, SpReqSite *st) {
   const char *t = s->text;
+  st->line = (int)pm_newline_list_line(&s->parser->newline_list, node->location.start, s->parser->start_line);
   size_t ls = sp_line_start_of(t, st->kw);
   st->margin = ls == st->kw;
   const pm_node_t *parent = s->depth > 0 ? s->stack[s->depth - 1] : NULL;
@@ -3977,12 +3982,13 @@ static int sp_req_unresolved(SpReqSiteScan *s, const pm_call_node_t *call, const
 
 static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
   const pm_parser_t *pp = s->parser;
-  if (!sp_pm_name_is(pp, call->name, "require_relative") || !call->arguments) return;
+  int plain = sp_pm_name_is(pp, call->name, "require");
+  if ((!plain && !sp_pm_name_is(pp, call->name, "require_relative")) || !call->arguments) return;
   if (call->receiver && (!sp_call_receiver_is_kernel(pp, call->receiver) ||
                          !call->call_operator_loc.start || *call->call_operator_loc.start != '.')) return;
   for (int i = 0; i < s->skip->n; i++) if (s->skip->v[i] == (const pm_node_t *)call) return;
   const pm_node_t *arg = call->arguments->arguments.nodes[0];
-  if (sp_req_dir_relative(s, call, arg)) return;
+  if (!plain && sp_req_dir_relative(s, call, arg)) return;
   const pm_location_t *open = NULL, *close = NULL;
   const pm_node_t *lit = arg;
   if (PM_NODE_TYPE(lit) == PM_PARENTHESES_NODE) {
@@ -4020,6 +4026,7 @@ static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
     }
     int adjacent = PM_NODE_TYPE(lit) == PM_INTERPOLATED_STRING_NODE &&
                    !((const pm_interpolated_string_node_t *)lit)->opening_loc.start;
+    if ((adjacent || binary) && plain) return;
     if (adjacent || binary) {
       /* a literal head is one the user meant as the path; any other head is a
          path only the run time knows (those of the file's own directory were
@@ -4049,6 +4056,7 @@ static void sp_req_site_note(SpReqSiteScan *s, const pm_call_node_t *call) {
   st.arg = (size_t)((const char *)open->end - t);
   st.arg_len = (size_t)(close->start - open->end);
   st.quote = (char)*open->start;
+  st.plain = plain;
   sp_req_site_place(s, (const pm_node_t *)call, &st);
   if (head_only) { st.ml = 0; st.has_modifier = 1; }   /* the rest is applied to the value */
   if (s->n == s->cap) {
@@ -4190,7 +4198,7 @@ static void sp_req_edit_put(SpReqEdit *e, const char *str, size_t kw, size_t ple
   SpReqSite *st = &e->sites[e->nsites++];
   *st = *place;
   st->kw = kw;
-  st->arg = kw + 18;                       /* past `require_relative "` */
+  st->arg = kw + (st->plain ? 9 : 18);     /* past `require "` or `require_relative "` */
   st->arg_len = plen;
   st->end = st->arg + plen + 1;
   st->quote = '"';
@@ -4472,7 +4480,8 @@ static void sp_req_autoload(SpReqSiteScan *s, const pm_call_node_t *c) {
     memset(&place, 0, sizeof place);
     place.kw = a; place.end = b;
     sp_req_site_place(s, (const pm_node_t *)c, &place);
-    sp_req_edit_put(sp_req_edit_new(s, a, b), buf, 0, flen, rel ? &place : NULL);
+    place.plain = !rel;
+    sp_req_edit_put(sp_req_edit_new(s, a, b), buf, 0, flen, &place);
   }
   else {                                   /* nil in place, the require at the end */
     sp_req_edit_put(sp_req_edit_new(s, a, b), "nil", 0, 0, NULL);
@@ -4480,7 +4489,9 @@ static void sp_req_autoload(SpReqSiteScan *s, const pm_call_node_t *c) {
     SpReqSite place;
     memset(&place, 0, sizeof place);
     place.margin = 1; place.rel_stmt = 1; place.stmt_start = place.ctl_stmt_start = at;
-    sp_req_edit_put(&s->tail, buf, at, flen, rel ? &place : NULL);
+    place.plain = !rel;
+    place.line = (int)pm_newline_list_line(&pp->newline_list, c->base.location.start, pp->start_line);
+    sp_req_edit_put(&s->tail, buf, at, flen, &place);
     sp_req_edit_put(&s->tail, "\n", 0, 0, NULL);
   }
 }
@@ -4649,7 +4660,197 @@ static void sp_req_note_hoist(SpEditMap *m, const SpReqSite *site, size_t ins, s
   sp_emap_add(m, site->end, value);
 }
 
-static char *resolve_requires(const char *source, const char *source_path,
+/* ---- The load graph (#9898, the load model's part 1) ----
+ *
+ * The files the program loads, keyed by canonical path, and each require
+ * site of each file read, resolved to its target: what a model that runs
+ * each file's top level when it is first required (CRuby's) compiles
+ * from. Today's splices still drive the program; the graph is built as
+ * they read the files, from each file's tree, and --dump-load-graph prints
+ * it with the plain pass's own resolutions beside it, so the two can be
+ * compared. A literal with interpolation gets an edge to a path known only
+ * at run time; a require of any other expression
+ * (`require File.join("lib", ARGV[0])`) is not a site yet. Files are the
+ * ones named or read; a file only the graph names is not walked yet.
+ * builtins/ and the libraries the parser prepends (Set, IO::Buffer) are
+ * left out for now. */
+enum { SP_LOAD_FILE, SP_LOAD_NATIVE, SP_LOAD_CORE, SP_LOAD_NONE, SP_LOAD_RUNTIME };
+typedef struct {
+  int from, line, plain;  /* the requiring file, the call's line, `require` (not _relative) */
+  char *name;             /* the path as written */
+  int how, to;            /* SP_LOAD_*; the target file for SP_LOAD_FILE */
+} SpLoadEdge;
+
+typedef struct {
+  char lib_dir[1024];     /* where plain requires look first (sp_lib_dir) */
+  char **file; int nfile, filecap;
+  unsigned char *walked; int walkcap;       /* [file] its sites are recorded */
+  SpLoadEdge *edge; int nedge, edgecap;     /* the tree's sites */
+  SpLoadEdge *spl; int nspl, splcap;        /* the plain pass's resolutions */
+} SpLoadGraph;
+
+/* The file `path`'s id, added the first time it is named. */
+static int sp_load_file(SpLoadGraph *g, const char *path) {
+  char *canon = sp_canonical_path(path);
+  for (int i = 0; i < g->nfile; i++) if (strcmp(g->file[i], canon) == 0) { free(canon); return i; }
+  g->file = sp_grow_strs(g->file, g->nfile, &g->filecap, 16);
+  g->file[g->nfile] = canon;
+  return g->nfile++;
+}
+
+/* 1 the first time file `id`'s sites are asked for: a file read again
+   (inlined under two conditions) records them once. */
+static int sp_load_walk(SpLoadGraph *g, int id) {
+  if (id >= g->walkcap) {
+    int cap = g->walkcap ? g->walkcap : 16;
+    while (cap <= id) cap *= 2;
+    g->walked = realloc(g->walked, (size_t)cap);
+    if (!g->walked) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    memset(g->walked + g->walkcap, 0, (size_t)(cap - g->walkcap));
+    g->walkcap = cap;
+  }
+  if (g->walked[id]) return 0;
+  return g->walked[id] = 1;
+}
+
+static void sp_load_edge(SpLoadEdge **v, int *n, int *cap, int from, int line, int plain,
+                         const char *name, int how, int to) {
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 16;
+    *v = realloc(*v, sizeof **v * (size_t)*cap);
+    if (!*v) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
+  SpLoadEdge e = { from, line, plain, strdup(name), how, to };
+  if (!e.name) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  (*v)[(*n)++] = e;
+}
+
+static int sp_lib_is_native(const char *name);
+static int sp_require_tolerated(const char *name);
+static const char *sp_package_feature(const char *lib_name);
+
+/* A regular file that can be read: a directory named `foo.rb` is not one,
+   and the lookup goes on past it, as it did when it read each candidate. */
+static int sp_lib_file(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode) && sp_path_exists(path);
+}
+
+/* Where `require "<lib_name>"` (".rb" taken off) finds its file, in the
+   order the plain pass looks: lib/, lib/ one level up, the `-I` roots,
+   builtins/, packages/ and packages/ one level up, the ffi and fiddle
+   packages only where their object is built. The tier that answers, with
+   the file in `out`; SP_LIB_NONE when no file does. */
+enum { SP_LIB_NONE, SP_LIB_LIB, SP_LIB_ROOT, SP_LIB_BUILTIN, SP_LIB_PACKAGE };
+static int sp_lib_lookup(const char *lib_dir, const char *lib_name, char *out, size_t n) {
+  snprintf(out, n, "%s/%s.rb", lib_dir, lib_name);
+  if (sp_lib_file(out)) return SP_LIB_LIB;
+  /* the compiler binary may live one level below the repo root (e.g.
+     build/spinel with the stdlib at ../lib) */
+  int exe_len = (int)strlen(lib_dir) - 4;   /* strip the trailing "/lib" */
+  if (exe_len < 0) exe_len = 0;
+  snprintf(out, n, "%.*s/../lib/%s.rb", exe_len, lib_dir, lib_name);
+  if (sp_lib_file(out)) return SP_LIB_LIB;
+  /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. They
+     come before the pre-installed packages, so a project's package of the
+     same name as a bundled one is the one a require reaches (#7207) */
+  const char *last = strrchr(lib_name, '/');
+  last = last ? last + 1 : lib_name;
+  for (int ri = 0; ri < sp_feature_roots_n; ri++) {
+    snprintf(out, n, "%s/%s.rb", sp_feature_roots[ri], lib_name);
+    if (sp_lib_file(out)) return SP_LIB_ROOT;
+    snprintf(out, n, "%s/%s/%s.rb", sp_feature_roots[ri], lib_name, last);
+    if (sp_lib_file(out)) return SP_LIB_ROOT;
+  }
+  int base_len = (int)strlen(lib_dir);
+  if (base_len >= 4 && strcmp(lib_dir + base_len - 4, "/lib") == 0) base_len -= 4;
+  /* builtins/: the core methods written in Ruby, `require "builtins/<x>"`
+     is <root>/builtins/<x>.rb */
+  if (strncmp(lib_name, "builtins/", 9) == 0) {
+    snprintf(out, n, "%.*s/%s.rb", base_len, lib_dir, lib_name);
+    if (sp_lib_file(out)) return SP_LIB_BUILTIN;
+    snprintf(out, n, "%.*s/../%s.rb", base_len, lib_dir, lib_name);
+    if (sp_lib_file(out)) return SP_LIB_BUILTIN;
+  }
+  /* pre-installed packages (the carved-out stdlib), beside lib/: the package
+     root is the require root, so `require "erb/util"` is
+     packages/erb/erb/util.rb */
+  const char *pkg = sp_package_feature(lib_name);
+  if (!pkg) return SP_LIB_NONE;
+  char first[256];
+  const char *sl = strchr(pkg, '/');
+  size_t fl = sl ? (size_t)(sl - pkg) : strlen(pkg);
+  if (fl >= sizeof first) fl = sizeof first - 1;
+  memcpy(first, pkg, fl);
+  first[fl] = 0;
+  snprintf(out, n, "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, pkg);
+  if (!sp_lib_file(out)) snprintf(out, n, "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, pkg);
+  if (!sp_lib_file(out)) return SP_LIB_NONE;
+  /* the ffi package is glue over the system libffi and fiddle its native
+     layer: without the built object the require stays the builtin DSL's */
+  int ffi = strcmp(lib_name, "ffi") == 0, fiddle = strcmp(lib_name, "fiddle") == 0;
+  if (ffi || fiddle) {
+    char op[1200];
+    snprintf(op, sizeof op, "%.*s%s", (int)(strlen(out) - strlen(ffi ? "ffi.rb" : "fiddle/fiddle.rb")), out,
+             ffi ? "sp_ffi.o" : "ffi/sp_ffi.o");
+    if (!sp_lib_file(op)) return SP_LIB_NONE;
+  }
+  return SP_LIB_PACKAGE;
+}
+
+/* The edge of the plain require of `name` (as written, between `quote`s) in
+   file `from`. */
+static void sp_load_plain(SpLoadGraph *g, SpLoadEdge **v, int *n, int *cap, int from, int line,
+                          const char *name, char quote) {
+  char lib_name[256], found[1024];
+  snprintf(lib_name, sizeof lib_name, "%s", name);
+  size_t ln = strlen(lib_name);
+  if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
+  if (quote == '"' && strstr(lib_name, "#{")) sp_load_edge(v, n, cap, from, line, 1, name, SP_LOAD_RUNTIME, -1);
+  else if (sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found))
+    sp_load_edge(v, n, cap, from, line, 1, name, SP_LOAD_FILE, sp_load_file(g, found));
+  else sp_load_edge(v, n, cap, from, line, 1, name,
+                    sp_lib_is_native(lib_name) ? SP_LOAD_NATIVE : sp_require_tolerated(lib_name) ? SP_LOAD_CORE
+                                                                                         : SP_LOAD_NONE, -1);
+}
+
+/* Sites by file, then line (the plain ones were noted first). */
+static int sp_load_edge_cmp(const void *x, const void *y) {
+  const SpLoadEdge *a = x, *b = y;
+  return a->from != b->from ? a->from - b->from : a->line - b->line;
+}
+
+static void sp_load_graph_dump(SpLoadGraph *g) {
+  static const char *const how[] = { "", "native", "core", "unresolved", "run-time" };
+  /* an insertion sort, which keeps two sites of one line in the order
+     they were noted */
+  for (int i = 1; i < g->nedge; i++)
+    for (int j = i; j > 0 && sp_load_edge_cmp(&g->edge[j - 1], &g->edge[j]) > 0; j--) {
+      SpLoadEdge t = g->edge[j]; g->edge[j] = g->edge[j - 1]; g->edge[j - 1] = t;
+    }
+  printf("load graph: %d files, %d sites\n", g->nfile, g->nedge);
+  for (int i = 0; i < g->nfile; i++) printf("file %d %s\n", i, g->file[i]);
+  for (int k = 0; k < 2; k++) {
+    const SpLoadEdge *v = k ? g->spl : g->edge;
+    int n = k ? g->nspl : g->nedge;
+    for (int i = 0; i < n; i++) {
+      if (k) printf("splice require \"%s\" -> ", v[i].name);
+      else printf("site %d:%d %s \"%s\" -> ", v[i].from, v[i].line, v[i].plain ? "require" : "require_relative",
+                  v[i].name);
+      if (v[i].how == SP_LOAD_FILE) printf("%d\n", v[i].to);
+      else printf("%s\n", how[v[i].how]);
+    }
+  }
+}
+
+static void sp_load_graph_free(SpLoadGraph *g) {
+  for (int i = 0; i < g->nfile; i++) free(g->file[i]);
+  for (int i = 0; i < g->nedge; i++) free(g->edge[i].name);
+  for (int i = 0; i < g->nspl; i++) free(g->spl[i].name);
+  free(g->file); free(g->walked); free(g->edge); free(g->spl);
+}
+
+static char *resolve_requires(SpLoadGraph *g, const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
   /* Get base directory */
   char *path_copy = strdup(source_path);
@@ -4680,6 +4881,20 @@ static char *resolve_requires(const char *source, const char *source_path,
                                   sp_autoload_is_main, &result, &rewrote, &nsites);
   sp_src_file_free(&file);
   free(blanked.v);
+  /* the file in the load graph, with its plain sites; the rest are the
+     require_relative sites below */
+  int gfile = g ? sp_load_file(g, source_path) : -1, gnew = g && sp_load_walk(g, gfile);
+  {
+    int n = 0;
+    for (int i = 0; i < nsites; i++) {
+      if (!sites[i].plain) { sites[n++] = sites[i]; continue; }
+      if (!gnew || sites[i].arg_len >= 256) continue;
+      char name[256];
+      snprintf(name, sizeof name, "%.*s", (int)sites[i].arg_len, result + sites[i].arg);
+      sp_load_plain(g, &g->edge, &g->nedge, &g->edgecap, gfile, sites[i].line, name, sites[i].quote);
+    }
+    nsites = n;
+  }
   if (rewrote) g_require_unread = 1;   /* a require the rewrites made */
   sp_autoload_is_main = 0;
   /* One pragma flag per line of `result`, kept in lockstep with every text
@@ -4721,6 +4936,7 @@ static char *resolve_requires(const char *source, const char *source_path,
     const char *req_val = "true";
     /* a name computed at run time: CRuby's LoadError (as for require) */
     if (site->quote == '"' && strstr(rel_path, "#{")) {
+      if (gnew) sp_load_edge(&g->edge, &g->nedge, &g->edgecap, gfile, site->line, 0, rel_path, SP_LOAD_RUNTIME, -1);
       char val[700];
       snprintf(val, sizeof val, "raise(LoadError, \"cannot load such file -- %s\")", rel_path);
       size_t cn = 0; unsigned char *cf = sp_fsl_make("", 0, &cn);
@@ -4753,6 +4969,8 @@ static char *resolve_requires(const char *source, const char *source_path,
         strcat(full_path, ".rb");
     }
 
+    if (gnew) sp_load_edge(&g->edge, &g->nedge, &g->edgecap, gfile, site->line, 0, rel_path, SP_LOAD_FILE,
+                           sp_load_file(g, full_path));
     char *canonical = sp_canonical_path(full_path);
     char *canon_keep = strdup(canonical);
     char *content;
@@ -4785,7 +5003,7 @@ else {
       }
 else {
         /* Recursively resolve */
-        char *resolved = resolve_requires(content, full_path, &cfsl, &cfsl_n);
+        char *resolved = resolve_requires(g, content, full_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
         sp_req_resolved++;
@@ -4941,7 +5159,7 @@ static const char *sp_package_feature(const char *lib_name) {
 }
 
 /* ---- Plain require resolution ---- */
-static char *resolve_plain_requires(char *source, const char *exe_path,
+static char *resolve_plain_requires(SpLoadGraph *g, char *source, const char *exe_path,
                                     unsigned char **fsl, size_t *fsl_n);
 
 static void sp_lib_dir(const char *exe_path, char *lib_dir, size_t lib_dir_n);
@@ -5194,7 +5412,7 @@ static char *sp_prepend_require(char *source, const char *exe_path, const char *
   sp_require_note_text(head, strlen(head));
   sp_src_lex_drop();
   free(source);
-  ns = resolve_plain_requires(ns, exe_path, fsl, fsl_n);
+  ns = resolve_plain_requires(NULL, ns, exe_path, fsl, fsl_n);
   size_t pl = strlen(SP_PUSH_PREFIX), il = strlen(SP_INSERT_PREFIX), nl = strlen(ns);
   char *w = strncmp(ns, SP_PUSH_PREFIX, pl) == 0 ? (char *)malloc(nl - pl + il + 1) : NULL;
   if (!w) return ns;
@@ -5528,7 +5746,7 @@ static void sp_lib_dir(const char *exe_path, char *lib_dir, size_t lib_dir_n) {
   strcat(lib_dir, "/lib");
 }
 
-static char *resolve_plain_requires(char *source, const char *exe_path,
+static char *resolve_plain_requires(SpLoadGraph *g, char *source, const char *exe_path,
                                     unsigned char **fsl, size_t *fsl_n) {
   char lib_dir[1024];
   sp_lib_dir(exe_path, lib_dir, sizeof lib_dir);
@@ -5573,6 +5791,7 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
        with the message it would carry, which the usual `rescue LoadError`
        fallback around it expects. */
     if (hit.arg[-1] == '"' && strstr(lib_name, "#{")) {
+      if (g) sp_load_edge(&g->spl, &g->nspl, &g->splcap, -1, 0, 1, lib_name, SP_LOAD_RUNTIME, -1);
       char val[400];
       snprintf(val, sizeof val, "raise(LoadError, \"cannot load such file -- %s\")", lib_name);
       size_t cn = 0; unsigned char *cf = sp_fsl_make("", 0, &cn);
@@ -5599,139 +5818,60 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
     unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
     /* the run-time part a hoisted require held back (sp_defer_runtime) */
     const char *dval = NULL;
+    /* what this splice reads, for the load graph's comparison */
+    int spl_how = SP_LOAD_FILE;
+    char spl_to[1024];
+    snprintf(spl_to, sizeof spl_to, "%s", lib_path);
     if (sp_path_already_included(canonical)) {
       content = strdup("# require skipped (already included)");
       dval = sp_defer_lookup(canonical);
       free(canonical);
       req_val = dval ? dval : "false";
       sp_req_resolved++;
+      /* (the file an earlier require of the name read) */
+      if (g && !sp_lib_lookup(lib_dir, lib_name, spl_to, sizeof spl_to))
+        spl_how = sp_lib_is_native(lib_name) ? SP_LOAD_NATIVE : sp_require_tolerated(lib_name) ? SP_LOAD_CORE : SP_LOAD_NONE;
     }
 else {
       sp_mark_path_included(canonical);
       free(canonical);
-      content = read_file(lib_path);
-      if (!content) {
-        /* the compiler binary may live one level below the repo root (e.g.
-           build/spinel with the stdlib at ../lib): retry one level up */
-        char alt_path[1024];
-        int exe_len = (int)strlen(lib_dir) - 4;   /* strip the trailing "/lib" */
-        if (exe_len < 0) exe_len = 0;
-        snprintf(alt_path, sizeof(alt_path), "%.*s/../lib/%s", exe_len, lib_dir, lib_name);
-        size_t al = strlen(alt_path);
-        if (al < sizeof(alt_path) - 4 && (al < 3 || strcmp(alt_path + al - 3, ".rb") != 0))
-          strcat(alt_path, ".rb");
-        content = read_file(alt_path);
-        if (content) snprintf(lib_path, sizeof(lib_path), "%s", alt_path);
-      }
-      if (!content) {
-        /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. They
-           come before the pre-installed packages, so a project's package of the
-           same name as a bundled one is the one a require reaches (#7207); lib/
-           stays first. */
-        char rp[1024];
-        const char *last = strrchr(lib_name, '/');
-        last = last ? last + 1 : lib_name;
-        for (int ri = 0; ri < sp_feature_roots_n && !content; ri++) {
-          snprintf(rp, sizeof(rp), "%s/%s.rb", sp_feature_roots[ri], lib_name);
-          content = read_file(rp);
-          if (!content) {
-            snprintf(rp, sizeof(rp), "%s/%s/%s.rb", sp_feature_roots[ri], lib_name, last);
-            content = read_file(rp);
-          }
-          if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
-        }
-        char *rc = content ? sp_canonical_path(lib_path) : NULL;
-        for (int i = sp_rr_included; rc && i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
+      char found[1024];
+      int tier = sp_lib_lookup(lib_dir, lib_name, found, sizeof found);
+      content = tier ? read_file(found) : NULL;
+      if (content) snprintf(lib_path, sizeof(lib_path), "%s", found);
+      if (content) snprintf(spl_to, sizeof spl_to, "%s", found);
+      if (content && tier == SP_LIB_ROOT) {
+        char *rc = sp_canonical_path(lib_path);
+        for (int i = sp_rr_included; i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
         if (root_dup) {
           free(content); content = strdup("# require skipped (already included)");
           dval = sp_defer_lookup(rc);
         }
-        else if (rc) sp_mark_path_included(rc);
+        else sp_mark_path_included(rc);
         free(rc);
       }
-      if (!content) {
-        /* pre-installed packages (the carved-out stdlib): packages/ sits
-           beside lib/ in both the repo and the installed tree. The package
-           root is the require root, so `require "erb"` is
-           packages/erb/erb.rb and `require "erb/util"` is
-           packages/erb/erb/util.rb. */
-        char gp[1024];
-        char first[256];
-        const char *pkg = sp_package_feature(lib_name);
-        {
-          const char *sl = pkg ? strchr(pkg, '/') : NULL;
-          size_t fl2 = !pkg ? 0 : sl ? (size_t)(sl - pkg) : strlen(pkg);
-          if (fl2 >= sizeof(first)) fl2 = sizeof(first) - 1;
-          if (pkg) memcpy(first, pkg, fl2);
-          first[fl2] = 0;
-        }
-        int base_len = (int)strlen(lib_dir);
-        if (base_len >= 4 && strcmp(lib_dir + base_len - 4, "/lib") == 0) base_len -= 4;
-        /* builtins/: the core methods written in Ruby (builtins/enumerable.rb),
-           spliced by sp_splice_builtins below rather than by a require the
-           program writes; `require "builtins/<x>"` is <root>/builtins/<x>.rb */
-        if (strncmp(lib_name, "builtins/", 9) == 0) {
-          snprintf(gp, sizeof(gp), "%.*s/%s.rb", base_len, lib_dir, lib_name);
-          content = read_file(gp);
-          if (!content) {
-            snprintf(gp, sizeof(gp), "%.*s/../%s.rb", base_len, lib_dir, lib_name);
-            content = read_file(gp);
-          }
-          if (content) sp_note_builtin_path(gp);
-        }
-        if (!content && pkg) {
-          snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, pkg);
-          content = read_file(gp);
-        }
-        if (!content && pkg) {
-          /* dev binary one level below the repo root (build/spinel) */
-          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, pkg);
-          content = read_file(gp);
-        }
-        /* the ffi package is glue over the system libffi, built only where
-           that is installed: without its object the require stays the
-           builtin DSL's (the tolerated no-op below) */
-        if (content && strcmp(lib_name, "ffi") == 0) {
-          char op[1200];
-          snprintf(op, sizeof op, "%.*s", (int)(strlen(gp) - strlen("ffi.rb")), gp);
-          strncat(op, "sp_ffi.o", sizeof op - strlen(op) - 1);
-          FILE *of = fopen(op, "rb");
-          if (of) fclose(of);
-          else { free(content); content = NULL; }
-        }
-        /* fiddle is the ffi package's native layer under the stdlib's API: it
-           exists where that object does */
-        if (content && strcmp(lib_name, "fiddle") == 0) {
-          char op[1200];
-          snprintf(op, sizeof op, "%.*s", (int)(strlen(gp) - strlen("fiddle/fiddle.rb")), gp);
-          strncat(op, "ffi/sp_ffi.o", sizeof op - strlen(op) - 1);
-          FILE *of = fopen(op, "rb");
-          if (of) fclose(of);
-          else { free(content); content = NULL; }
-        }
+      if (content && tier == SP_LIB_BUILTIN) sp_note_builtin_path(found);
 #if defined(_WIN32)
-        /* what a native Windows build answers differently for this file:
-           lib/win32/overlay/<the same path>, appended (sp_win32_driver.c) */
-        if (content) content = sp_w32_overlay(content, gp);
+      /* what a native Windows build answers differently for this file:
+         lib/win32/overlay/<the same path>, appended (sp_win32_driver.c) */
+      if (content && tier >= SP_LIB_BUILTIN) content = sp_w32_overlay(content, found);
 #endif
-        if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
-        /* --share-strings: a package's share declarations for it
-           (`native_share`), in <name>.share.rb beside the file, follow it.
-           Kept apart so a build without the flag parses no node of them. */
-        if (content && sp_share_strings_env() && strlen(gp) > 3) {
-          char sp[1100];
-          snprintf(sp, sizeof sp, "%.*s.share.rb", (int)(strlen(gp) - 3), gp);
-          char *side = read_file(sp);
-          if (side) {
-            size_t cl = strlen(content), sl = strlen(side);
-            char *both = malloc(cl + sl + 2);
-            if (!both) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-            memcpy(both, content, cl);
-            both[cl] = '\n';
-            memcpy(both + cl + 1, side, sl + 1);
-            free(content); free(side);
-            content = both;
-          }
+      /* --share-strings: a package's share declarations for it
+         (`native_share`), in <name>.share.rb beside the file, follow it.
+         Kept apart so a build without the flag parses no node of them. */
+      if (content && tier >= SP_LIB_BUILTIN && sp_share_strings_env() && strlen(found) > 3) {
+        char sp[1100];
+        snprintf(sp, sizeof sp, "%.*s.share.rb", (int)(strlen(found) - 3), found);
+        char *side = read_file(sp);
+        if (side) {
+          size_t cl = strlen(content), sl = strlen(side);
+          char *both = malloc(cl + sl + 2);
+          if (!both) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          memcpy(both, content, cl);
+          both[cl] = '\n';
+          memcpy(both + cl + 1, side, sl + 1);
+          free(content); free(side);
+          content = both;
         }
       }
       if (!content) {
@@ -5740,6 +5880,7 @@ else {
              harmless no-op, so don't warn. The require-gate still records it
              so the C-native feature (e.g. io/console) becomes available. */
           sp_feature_mark(lib_name);
+          spl_how = SP_LOAD_NATIVE;
           content = strdup("# require provided by Spinel runtime");
           req_val = "false";   /* already there: nothing was loaded */
           sp_req_resolved++;
@@ -5748,6 +5889,7 @@ else if (sp_require_tolerated(lib_name)) {
           /* A core capability Spinel provides without a file (Thread,
              Enumerator, Fiber, the ffi DSL); the require is a harmless
              no-op, like modern CRuby -- gate or no gate. */
+          spl_how = SP_LOAD_CORE;
           content = strdup("# require no-op (core feature)");
           req_val = "false";   /* already there: nothing was loaded */
           sp_req_resolved++;
@@ -5765,6 +5907,7 @@ else {
           fprintf(stderr,
                   "warning: '%s' is not available in Spinel; the require is ignored and code using it will fail\n",
                   lib_name);
+          spl_how = SP_LOAD_NONE;
           content = strdup("# require not resolved");
         }
       }
@@ -5773,12 +5916,14 @@ else {
            the require-gate enables any C-native methods it stands in for. */
         sp_feature_mark(lib_name);
         req_val = root_dup ? (dval ? dval : "false") : "true";   /* this require is what loaded it */
-        char *resolved = resolve_requires(content, lib_path, &cfsl, &cfsl_n);
+        char *resolved = resolve_requires(g, content, lib_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
         sp_req_resolved++;
       }
     }
+    if (g) sp_load_edge(&g->spl, &g->nspl, &g->splcap, -1, 0, 1, lib_name, spl_how,
+                        spl_how == SP_LOAD_FILE ? sp_load_file(g, spl_to) : -1);
     /* Stub arms above leave cfsl NULL: their content is a one-line comment. */
     if (!cfsl) cfsl = sp_fsl_make(content, 0, &cfsl_n);
     if (sp_require_preloaded(lib_name)) req_val = "false";
@@ -6125,10 +6270,15 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
-  char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
+  SpLoadGraph graph;
+  memset(&graph, 0, sizeof graph);
+  sp_lib_dir(argv0, graph.lib_dir, sizeof graph.lib_dir);
+  char *resolved = resolve_requires(&graph, source, source_file, &fsl, &fsl_n);
   sp_rr_included = sp_included_count;
   free(source);
-  source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
+  source = resolve_plain_requires(&graph, resolved, argv0, &fsl, &fsl_n);
+  if (g_dump_load_graph) sp_load_graph_dump(&graph);
+  sp_load_graph_free(&graph);
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "ThreadGroup", "builtins/thread_group", &fsl, &fsl_n);
