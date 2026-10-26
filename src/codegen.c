@@ -12949,7 +12949,10 @@ static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want
         buf_printf(b, "      if (_cv.tag == SP_TAG_INT) { %sreturn _cv.v.i; }\n",
                    with_ok ? "*ok = 1; " : "");
       else
-        buf_printf(b, "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
+        /* a String held in a shared handle (SP_BUILTIN_STRBUF, as an Array
+           element or a lifted local is) is still a String answer */
+        buf_printf(b, "      _cv = sp_rbval_str(_cv);\n"
+                      "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
                    with_ok ? "*ok = 1; " : "");
       buf_printf(b, "      %s }\n", dflt);
       continue;
