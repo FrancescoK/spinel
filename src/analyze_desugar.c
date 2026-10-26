@@ -23337,7 +23337,12 @@ static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
   memcpy(*buf + *len, t, tl); *len += tl; (*buf)[*len] = 0;
 }
 /* the string's text with `var` (a block parameter) read as `elem`; NULL
-   when an interpolation is anything else */
+   when an interpolation is anything else. Without a var, an interpolated
+   constant in call position (`#{Racc_Main_Parsing_Routine}(_racc_setup(),
+   false)`, racc's parser.rb: the constant holds the method's name) is the
+   send of what the constant holds, `__send__(Racc_Main_Parsing_Routine,
+   _racc_setup(), false)`, which reaches the private method the name spells
+   as the eval'd call does. */
 static char *sce_text(const NodeTable *nt, int str, const char *var, const char *elem) {
   char *buf = NULL; size_t len = 0, cap = 0;
   sce_append(&buf, &len, &cap, "");
@@ -23348,19 +23353,31 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
     return buf;
   }
   int pn = 0; const int *parts = nt_arr(nt, str, "parts", &pn);
+  int skip = 0;   /* bytes of the next literal part a constant's send took */
   for (int i = 0; i < pn; i++) {
     NodeKind k = nt_kind(nt, parts[i]);
     if (k == NK_StringNode) {
       const char *t = nt_str(nt, parts[i], "content");
       if (!t) { free(buf); return NULL; }
-      sce_append(&buf, &len, &cap, t);
+      sce_append(&buf, &len, &cap, t + skip);
+      skip = 0;
       continue;
     }
-    if (k != NK_EmbeddedStatementsNode || !var) { free(buf); return NULL; }
+    if (k != NK_EmbeddedStatementsNode) { free(buf); return NULL; }
     int stmts = nt_ref(nt, parts[i], "statements");
     int sn = 0; const int *ss = stmts >= 0 ? nt_arr(nt, stmts, "body", &sn) : NULL;
     if (sn != 1) { free(buf); return NULL; }
     int e = ss[0];
+    if (!var) {
+      const char *next = i + 1 < pn && nt_kind(nt, parts[i + 1]) == NK_StringNode ? nt_str(nt, parts[i + 1], "content") : NULL;
+      const char *cn = nt_kind(nt, e) == NK_ConstantReadNode ? nt_str(nt, e, "name") : NULL;
+      if (!cn || !next || next[0] != '(') { free(buf); return NULL; }
+      sce_append(&buf, &len, &cap, "__send__(");
+      sce_append(&buf, &len, &cap, cn);
+      if (next[1] == ')') { sce_append(&buf, &len, &cap, ")"); skip = 2; }
+      else { sce_append(&buf, &len, &cap, ", "); skip = 1; }
+      continue;
+    }
     const char *conv = NULL;
     if (nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "arguments") < 0 && nt_ref(nt, e, "block") < 0) {
       conv = nt_str(nt, e, "name"); e = nt_ref(nt, e, "receiver");
