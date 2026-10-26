@@ -18,6 +18,7 @@
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 void unsupported_feature_collect(Compiler *c, int id, const char *msg);
 int defer_refusals(void); /* codegen_util.c: explicit opt-in to runtime refusals */
+int defer_refusals_at(const Compiler *c, int node); /* ...or the node's file's `# spinel: defer-refusals` */
 /* (codegen_util.c) a refusal kept as a check where its value arrives,
    reported and counted as a deferred one; and whether the identity Set's
    proof marked any node for that check or a refusal where it is emitted
@@ -367,6 +368,7 @@ char *dm_eval_name(Compiler *c, int node, const char *bv, int lit);
 TyKind dm_lit_type(Compiler *c, int lit);
 int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx);
 const char *builtin_class_of_type(TyKind t);
+const char *object_fallback_class_of_type(TyKind t);
 /* Whether method `m` can take call `call_id`'s arguments (analyze_pass.c) */
 int method_takes_call_args(Compiler *c, Scope *m, int call_id);
 const char *resolve_class_alias(Compiler *c, const char *cname);
@@ -439,7 +441,6 @@ void class_unpin_ivar(ClassInfo *ci, const char *name);
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt);
 int param_seed_holds(LocalVar *lv, TyKind at);
 int ret_seed_holds(Scope *s, TyKind r);
-void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw);
 void sp_narrow_memo_bump(void);
 int infer_write_types(Compiler *c);
 void seed_unsupplied_nil_defaults(Compiler *c);
@@ -448,7 +449,6 @@ void an_cls_facts(Compiler *c);   /* analyze_cls.c (#8530) */
 int an_builtin_only_p(void);
 unsigned long infer_memo_edits(const Compiler *c); /* what infer_type's memo is keyed by */
 int infer_memo_usable(void);                       /* ... and whether it is in use */
-extern const char *g_an_pass_cur;                  /* the named pass running (AN_NAMED), for its statistics */
 TyKind an_builtin_answer(Compiler *c, int id);
 /* the kind of a value of class self_cls: a reopened builtin's own (Time -> TY_TIME),
    else the object */
@@ -852,6 +852,10 @@ void refuse_readonly_global_write(Compiler *c);
 /* Defined in codegen.c; the analyzer uses it to specialize/type a
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);
+/* the native-binding registries' growth and `;`-merge (analyze_scope.c),
+   shared with a bundled extension's __cext_link (analyze_cext.c) */
+void ffi_semi_append(char **slot, const char *add);
+void *ffi_grow(void *p, int n, int *cap, int init, size_t sz);
 int exc_class_defines(Compiler *c, const char *name);
 int super_reaches_exc_text(Compiler *c, int id, int reopen);
 int exc_message_super_to_s(Compiler *c, int id, int *out, int cap);

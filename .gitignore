@@ -44,3 +44,6 @@ CLAUDE.local.md
 lib/win32/*.a
 
 /lib/libspinel_cext_rt_mt.a
+# a bundled extension's declarations, written by `make` beside its package
+packages/racc/racc/cparse.rb
+packages/sqlite3/sqlite3/sqlite3_native.rb

@@ -88,6 +88,13 @@ typedef bool sp_bool;
 #define SP_NIL_OBJECT_ID 4
 #define SP_FALSE_OBJECT_ID 0
 #define SP_TRUE_OBJECT_ID 20
+/* A Symbol's object_id: its interned id * 16 + 12, low bits no other
+   kind's id has (CRuby tags a static Symbol's likewise). Every one is
+   even (no Integer's 2n+1), 4 mod 8 (no 8-aligned heap object's address,
+   no false's 0) and 12 mod 16 (no nil's 4, no true's 20), and two
+   Symbols' differ. The id is a non-negative index, so a 32-bit sp_int
+   holds 2**27 Symbols' ids. */
+#define SP_SYM_OBJECT_ID(id) ((sp_int)(id) * 16 + 12)
 
 /* A nullable Integer or Float in flight (a local, a parameter, a return, a
    temp, a container read that can miss): the value and its nil live side by

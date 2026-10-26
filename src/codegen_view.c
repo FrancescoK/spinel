@@ -59,7 +59,7 @@
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
 enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6, VK_TARGET = -7, VK_CONVERSION = -8 };
-static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
+static struct { Compiler *c; int id; int kind; int saved; int val; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
 static int view_face = -1;   /* the innermost face entry, or -1 */
 static int view_stmt = -1;   /* the innermost statement entry, or -1 */
 static int view_sp;
@@ -186,6 +186,7 @@ static int view_open(Compiler *c, int id, int kind, int v) {
   view_stack[tok].id = id;
   view_stack[tok].kind = kind;
   view_stack[tok].saved = view_read(c, kind, id);
+  view_stack[tok].val = v;
   view_write(c, kind, id, v);
   view_nodes++;
   view_epoch_n++;
@@ -219,6 +220,19 @@ int view_push_face(int node, TyKind kind) {
   view_stack[tok].arm_saved.pd_skip = view_face;   /* the face it hides */
   view_face = tok;
   return tok;
+}
+
+/* The innermost type view (view_push) on `node`, if one is open. A view
+   overrides the node's cached type for the emission it covers, so a per-site
+   answer for that node (yield_site_type) must yield to it too: a redispatched
+   receiver is a yield whose site type is the block's own, not the view's. */
+int view_type_top(int node, TyKind *kind) {
+  for (int i = view_sp - 1; i >= 0; i--)
+    if (view_stack[i].kind == VK_TYPE && view_stack[i].id == node) {
+      *kind = (TyKind)view_stack[i].val;
+      return 1;
+    }
+  return 0;
 }
 
 int view_face_top(int *node, TyKind *kind) {
@@ -371,8 +385,6 @@ void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node) {
 }
 
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n) {
-  static int trace = -1;
-  if (trace < 0) { const char *e = getenv("SP_ARM_TRACE"); trace = e && *e ? 1 : 0; }
   const ArmFact *rf = !g_arm_check && arm_site_reads(site) ? arm_fact_find(c, block, kind) : NULL;
   if (rf) {
     /* the body's types under this arm, as the analysis recorded them */
@@ -392,13 +404,5 @@ void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *bo
                   ty_name(c->ntype[f->nodes[i]]));
           break;
         }
-  }
-  if (trace) {
-    const char *cn = "?"; const char *rk = "?";
-    NT_FOREACH_KIND(c->nt, NK_CallNode, cid) if (nt_ref(c->nt, cid, "block") == block) {
-      cn = nt_str(c->nt, cid, "name"); int r = nt_ref(c->nt, cid, "receiver");
-      rk = r >= 0 ? ty_name(c->ntype[r]) : "-"; break; }
-    fprintf(stderr, "arm-trace: site %d block %d line %lld kind %s call %s recv %s\n", site, block,
-            (long long)(block >= 0 ? nt_int(c->nt, block, "node_line", 0) : 0), ty_name(kind), cn ? cn : "?", rk);
   }
 }

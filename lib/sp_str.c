@@ -254,6 +254,21 @@ uint32_t sp_uc_tolower(uint32_t cp){
   if(cp>=0x179&&cp<=0x17E){ if(cp&1)return cp+1; return cp; }
   return cp;
 }
+/* The encoding `s << t` gives s, for the first lb bytes of t: the rule of
+   sp_str_cat_binary, read before the bytes go in. */
+static int sp_str_cat_binary_n(const char *s, const char *t, size_t lb) {
+  int sb = sp_str_is_binary(s), tb = sp_str_is_binary(t);
+  if (sb == tb) return sb;
+  for (size_t i = 0; i < lb; i++)
+    if ((unsigned char)t[i] >= 0x80) return sp_str_ascii_only(s) ? tb : 1;
+  return sb;
+}
+/* an in-place append's receiver takes the encoding the rule picked */
+static void sp_str_set_binary_to(const char *s, int bin) {
+  if (bin == sp_str_is_binary(s)) return;
+  if (bin) sp_str_mark_binary((char *)s);
+  else sp_str_as_text(s);
+}
 /* `s << x`: append in place when the buffer has room, else move to a buffer
    with room to spare. The emitted form used to be `s = concat(s, x)`, a fresh
    exact-sized copy per append, so building a document one piece at a time was
@@ -265,8 +280,7 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
   if (!t) return s;
   size_t la = sp_str_byte_len(s), lb = sp_str_byte_len(t);
   if (lb == 0) return s;
-  int text_append = sp_str_is_binary(s) && !sp_str_is_binary(t) &&
-                    !sp_str_ascii_only(t) && sp_str_ascii_only(s);
+  int bin = sp_str_cat_binary_n(s, t, lb);
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
@@ -277,7 +291,7 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
       ((char *)s)[la + lb] = 0;
       sp_str_lcache_drop(s);
       sp_str_set_len((char *)s, la + lb);
-      if (text_append) sp_str_as_text((char *)s);
+      sp_str_set_binary_to(s, bin);
       return s;
     }
   }
@@ -287,10 +301,7 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
   memcpy(r + la, t, lb);
   r[la + lb] = 0;
   sp_str_set_len(r, la + lb);
-  /* Preserve BINARY when growing the receiver. A compatible text append to
-     an ASCII-only binary receiver is the exception: text_append has already
-     selected UTF-8, so do not mark the replacement buffer binary. */
-  if (sp_str_is_binary(s) && !text_append) sp_str_mark_binary(r);
+  if (bin) sp_str_mark_binary(r);
   return r;
 }
 /* The same append for the first `lb` bytes of `t`, for the append form of an
@@ -301,6 +312,7 @@ const char *sp_str_append_grow_n(const char *s, const char *t, size_t lb) {SP_GC
   if (!s) return t ? sp_str_from_bytes(t, lb) : sp_str_empty;
   if (!t || lb == 0) return s;
   size_t la = sp_str_byte_len(s);
+  int bin = sp_str_cat_binary_n(s, t, lb);
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
@@ -311,6 +323,7 @@ const char *sp_str_append_grow_n(const char *s, const char *t, size_t lb) {SP_GC
       ((char *)s)[la + lb] = 0;
       sp_str_lcache_drop(s);
       sp_str_set_len((char *)s, la + lb);
+      sp_str_set_binary_to(s, bin);
       return s;
     }
   }
@@ -320,7 +333,7 @@ const char *sp_str_append_grow_n(const char *s, const char *t, size_t lb) {SP_GC
   memcpy(r + la, t, lb);
   r[la + lb] = 0;
   sp_str_set_len(r, la + lb);
-  if (sp_str_is_binary(s)) sp_str_mark_binary(r);
+  if (bin) sp_str_mark_binary(r);
   return r;
 }
 const char*sp_str_substr(const char*s,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");if(len<=0){char*r=sp_str_alloc_raw(1);r[0]=0;sp_str_set_len(r,0);return sp_str_bin_from(r,s);}if(start<0)start=0;char*r=sp_str_alloc_raw(len+1);memcpy(r,s+start,len);r[len]=0;sp_str_set_len(r,(size_t)len);return sp_str_bin_from(r,s);}

@@ -1,0 +1,13 @@
+[package]
+name = "racc"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "racc/parser"` -- racc 1.8.1's runtime (lib/ vendored unchanged,
+# COPYING), with its C parser core racc/cparse compiled from source by the
+# C extension layer (#7210); Racc::Parser::Racc_Runtime_Type is "c".
+
+[cext.cparse]
+init = "Init_cparse"
+require = "racc/cparse"
+sources = ["ext/cparse/cparse.c"]
+cflags = ["-DRACC_INFO_VERSION=1.8.1", "-DHAVE_RB_EXT_RACTOR_SAFE"]

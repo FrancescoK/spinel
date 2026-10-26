@@ -2781,6 +2781,10 @@ static void emit_proc_arg_temp_init(Compiler *c, int node, int typed, const char
   if (!typed && (strncmp(past_open_parens(txt), "sp_raise_nomethod(", 18) == 0 || text_diverges(txt)))
     emit_unresolved_coerced_text(c, node, TY_INT, txt, b);
   else if (!typed && proc_arg_is_box_nil(txt)) buf_puts(b, "0");
+  /* a nil that runs code (a call answering nil) runs for its effects, and
+     the slot takes nil's 0: its value is a pointer's nil, or none */
+  else if (!typed && comp_ntype(c, node) == TY_NIL)
+    buf_printf(b, subtree_is_pure_read(c, node) ? "0" : "((void)(%s), 0)", txt);
   else buf_puts(b, txt);
   buf_puts(b, ";\n");
 }
@@ -4304,6 +4308,36 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* An arm emitted under a silent probe: a refusal inside it longjmps to the
+   caller's setjmp and the arm is dropped. arm_probe_begin points g_pre at
+   the arm's own prelude buffer and saves what the arm may leave changed;
+   arm_probe_dropped unwinds the scope moves and views a dropped arm opened;
+   arm_probe_end puts the rest back. That includes the emitter state an arm
+   repoints while it is emitted (self, while a callee's defaults are spelled
+   with the receiver as self), which left aimed at a dropped arm's buffers
+   had the next arm's self read through them, and the enclosing recovery
+   point, which left pointing into the probe's frame had a later refusal in
+   the same unit jump back into it after it had returned. */
+void arm_probe_begin(ArmProbe *p, Buf *pre) {
+  p->pre = g_pre; p->probe = g_unsup_probe;
+  p->hold = g_conv_hold; p->open_defaults = g_open_defaults;
+  memcpy(p->jb, g_unsup_recover, sizeof p->jb);
+  p->moves = comp_scope_move_depth(); p->views = view_mark();
+  p->state = emit_state_snapshot();
+  g_pre = pre; g_unsup_probe = 1;
+}
+void arm_probe_dropped(ArmProbe *p) {
+  comp_scope_move_unwind(p->moves); view_unwind(p->views);
+}
+void arm_probe_end(ArmProbe *p, int ok) {
+  emit_state_release(p->state, !ok);
+  memcpy(g_unsup_recover, p->jb, sizeof p->jb);
+  g_open_defaults = p->open_defaults;
+  g_conv_hold = p->hold;
+  g_unsup_probe = p->probe;
+  g_pre = p->pre;
+}
+
 static void emit_dyn_name_sym(Compiler *c, int sym, Buf *b) {
   TyKind st = comp_ntype(c, sym);
   if (st == TY_SYMBOL) emit_expr(c, sym, b);
@@ -4457,7 +4491,6 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     g_conv_hold = sv_conv;
   }
   free(sockr.p);
-  Buf *sv_pre = g_pre;
   int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4493,24 +4526,11 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        captured to `pre` and replayed inside the arm's own branch so they run
        only when this arm is taken. */
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    int sv_arm_argov = g_n_argov;
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
     int mi = cplan_user(c, arm)->mi;
     int self_ret = repr_self_handle(c, mi) && repr_call_returns_handle(c, arm);
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     /* an arm answering an Integer or Float that may be nil boxes its oint:
        unwrapped first, its nil raised TypeError where the send answers nil */
     int arm_oint = !self_ret && oint_kind(at) && node_may_be_nil(c, arm);
@@ -4530,13 +4550,9 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       else emit_expr(c, arm, &body);
       ok = 1;
     }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
-    g_open_defaults = sv_open_defaults; view_unbind(sv_arm_argov);
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
+    view_unbind(sv_arm_argov);
     /* the receiver's bytes an arm that does not answer its String reads
        are a read, not a copy: one node stands for the receiver of every arm,
        and the check would report the first arm that reads it */
@@ -4603,7 +4619,6 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   emit_dyn_name_sym(c, sym, b);
   /* a switch over the symbol, as the dynamic send's (emit_dynamic_send) */
   buf_printf(b, "; sp_bool _r%d = 0; switch (_t%d) { ", t, t);
-  Buf *sv_pre = g_pre;
   int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4617,30 +4632,11 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
       for (int q = 0; q < nseen && !dup; q++) dup = seen[q] == sid;
       if (dup) continue; }
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;
-    g_open_defaults = sv_open_defaults;
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
     if (ok) {
       buf_printf(b, "case %d: { ", comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
@@ -4693,7 +4689,6 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
      not an else-if chain: thousands of candidates nest that chain as deep,
      past what the C compiler's parser takes */
   buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; do { ", t, t, def ? "sp_bool" : "sp_RbVal", t);
-  Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
     TyKind at = repr_of(c, arm).as_ty;
@@ -4706,30 +4701,11 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
        that resolves by type but not by codegen longjmps out and is dropped;
        its preludes replay inside its own branch. */
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
-    g_pre = &pre;
-    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
-    ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
-    /* the emitter state an arm repoints while it is emitted -- self, while
-       a callee's defaults are spelled with the receiver as self -- is put
-       back when the arm is dropped partway, as the unit's own recovery
-       does: left aimed at the dropped arm's buffers, the next arm's self
-       read through them */
-    EmitUnitState *sv_state = emit_state_snapshot();
+    ArmProbe ap; arm_probe_begin(&ap, &pre);
     volatile int ok;
-    /* the enclosing recovery point is restored after the probe: left
-       pointing into this frame, a later refusal in the same unit jumped
-       back into it after it had returned */
-    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
-    emit_state_release(sv_state, !ok);
-    g_conv_hold = sv_hold;
-    g_open_defaults = sv_open_defaults;
-    g_unsup_probe = sv_probe;
-    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-    g_pre = sv_pre;
+    else { ok = 0; arm_probe_dropped(&ap); }
+    arm_probe_end(&ap, ok);
     if (ok) {
       buf_printf(b, "if (strcmp(_n%d, \"", t); emit_c_escaped(b, nm); buf_puts(b, "\") == 0) { ");
       if (pre.p && pre.len) buf_puts(b, pre.p);
@@ -6791,6 +6767,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
         emit_boxed(c, argv[k], b);
         buf_puts(b, ");");
       }
+      /* a frozen Array raises even when no value is given */
+      buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) && sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr, tr, tr);
       buf_printf(b, " sp_poly_insert_n(_t%d, _t%d, _t%d); })", tr, ti, ta);
     }
     if ((rvti_k == NK_LocalVariableReadNode ||
@@ -22276,8 +22254,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       /* An unresolved call raises NoMethodError by default, matching CRuby
          (a dead poly-dispatch arm still emits nothing; a live one raising here
          is exactly what CRuby would do). SPINEL_WARN_UNRESOLVED lists every
-         such site at compile time for auditing a port; SPINEL_GATE_RAISE=0 is
-         the transition escape hatch back to the old silent typed default. The
+         such site at compile time for auditing a port. The
          coercion paths the raise value flows through (return slots, string/int
          receiver+arg slots, ...) recognize the sp_raise_nomethod token and
          keep the side-effect -- see the staged groundwork notes below. */
@@ -24511,7 +24488,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      reads the handle; a `&.` call's guard skips it instead) */
   for (int i = 0; hroute && i < nb; i++)
     if (node[i] == harg)
-      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", tmp[i],
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", tmp[i],
                  nt_str(nt, id, "name"));
   buf_puts(b, ob.p ? ob.p : "");
   buf_puts(b, "; })");
@@ -24952,7 +24929,7 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
   if (nt_str(c->nt, id, "ary_conv"))
     snprintf(out, n, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\")");
   else
-    snprintf(out, n, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", nt_str(c->nt, id, "name"));
+    snprintf(out, n, "sp_nil_recv_raise(\"%s\")", nt_str(c->nt, id, "name"));
 }
 /* An Array call that always raises for its operand (the operand is no Array:
    emit_array_operand_type_error, emit_array_operand_misfit) still dispatches
@@ -24978,7 +24955,7 @@ int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
   return t;
 }
 void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b) {
-  if (t) buf_printf(b, "if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
+  if (t) buf_printf(b, "if (_t%d == NULL) sp_nil_recv_raise(\"%s\"); ",
                     t, nt_str(c->nt, id, "name"));
 }
 /* The guard as a statement ahead of a statement-form emission of call `id`,
@@ -25454,7 +25431,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   else if (!rtext[0] && nt_kind(nt, r) == NK_InstanceVariableReadNode)
     buf_printf(b, "sp_nil_recv(\"%s\");%s", enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   else
-    buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
+    buf_printf(b, "sp_nil_recv_raise(\"%s\");%s",
                enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   free(rb.p);
   buf_puts(b, *lead ? "\n" : " ");
@@ -25487,7 +25464,7 @@ void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
     buf_printf(b, ") == NULL)) %s;", nr);
   }
   else
-    buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+    buf_printf(b, ") == NULL)) sp_nil_recv_raise(\"%s\");",
                enum_walk_name(c, id, r, cplan_call_name(c->nt, id)));
 }
 
@@ -28331,20 +28308,24 @@ int strbuf_self_reader_handle(Compiler *c, int id) {
   return rp.handle || rp.demand;
 }
 
-/* A body emitted for a class other than its own (a yielding method spliced
-   into a subclass's caller) types its bare call by its own class's
-   dispatch, which joins every override's answer into a box; the dispatch
-   from dispatch_cid can answer a narrower type, which the call boxes for
-   that slot. The type to box, else TY_UNKNOWN. *nullable is set when the
+/* The type the dispatch for call `id` (mi its method on dispatch_cid)
+   answers where the call is typed boxed and the dispatch narrower, which the
+   call boxes for its slot; else TY_UNKNOWN. A body emitted for a class
+   other than its own (a yielding method spliced into a subclass's caller)
+   types its bare call by its own class's dispatch, which joins every
+   override's answer into a box, and the dispatch from dispatch_cid can
+   answer less. So can the call's own dispatch: the call was typed while the
+   overrides answered different kinds, and a pass after the fixpoint (a
+   backstop widening an ivar their Hashes hold) settled them on one, which
+   the switch then answers. *nullable is set when the
    one method the dispatch can run answers an Integer or Float that may be
    nil (an sp_oint / sp_ofloat, boxed with its nil). Where an override can
    run too, the class-id dispatch reads such an answer without its nil
    (sp_oint_arg), so a call that may reach one is left to the plain
    dispatch. */
-static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, int dispatch_cid, int mi,
-                                        int *nullable) {
+static TyKind dispatch_narrowed_ty(Compiler *c, int id, int dispatch_cid, int mi, int *nullable) {
   *nullable = 0;
-  if (dispatch_cid == self->class_id || self->is_cmethod || repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
+  if (repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
   const Scope *m = &c->scopes[mi];
   if (m->is_cmethod || (m->yields && nt_ref(c->nt, id, "block") >= 0)) return TY_UNKNOWN;
   const char *name = nt_str(c->nt, id, "name");
@@ -28361,6 +28342,26 @@ static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, 
   if (any_o && other) return TY_UNKNOWN;
   *nullable = any_o;
   return r;
+}
+
+/* emit_dispatch for call `id`, mi its method on dispatch_cid: boxed where
+   the call is typed boxed and the dispatch answers narrower
+   (dispatch_narrowed_ty) */
+void emit_dispatch_for_call(Compiler *c, int id, int dispatch_cid, int mi,
+                            const char *selfptr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int nullable = 0;
+  TyKind nty = dispatch_narrowed_ty(c, id, dispatch_cid, mi, &nullable);
+  if (nty == TY_UNKNOWN) {
+    emit_dispatch(c, dispatch_cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+    return;
+  }
+  Buf db; memset(&db, 0, sizeof db);
+  emit_dispatch(c, dispatch_cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), &db);
+  if (nullable) buf_printf(b, "%s(%s)", oint_box(nty), db.p ? db.p : "0");
+  else emit_boxed_text(c, nty, db.p ? db.p : "0", b);
+  free(db.p);
 }
 
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
@@ -28433,19 +28434,10 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self");
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
-    int nullable = 0;
-    TyKind nty = implicit_self_narrowed_ty(c, id, self, dispatch_cid, mi, &nullable);
-    if (nty != TY_UNKNOWN) {
-      Buf db; memset(&db, 0, sizeof db);
+    if (self->is_cmethod)
       emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
-                    nt_ref(nt, id, "block"), &db);
-      if (nullable) buf_printf(b, "%s(%s)", oint_box(nty), db.p ? db.p : "0");
-      else emit_boxed_text(c, nty, db.p ? db.p : "0", b);
-      free(db.p);
-      return 1;
-    }
-    emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
-                  nt_ref(nt, id, "block"), b);
+                    nt_ref(nt, id, "block"), b);
+    else emit_dispatch_for_call(c, id, dispatch_cid, mi, g_self, b);
     return 1;
   }
   return 0;

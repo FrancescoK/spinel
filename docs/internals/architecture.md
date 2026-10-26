@@ -34,10 +34,10 @@ Three rules follow from it:
 | membership in a family of names                                                | the name predicates                                | `builtin_names.c:is_call_alias`, `is_then_alias`, ...                                                                                           | the same inline `sp_streq` chain in inference and in codegen                                                                         |
 | when a pass runs, and what inference reads                                     | the phase driver and the counted setters           | `analyze.c:analyze_program`; `comp_set_ntype`, `lv_set_type`, `ivar_set_type`                                                                   | a loop appended to `analyze_program`; a direct write to a table `infer_type` reads                                                   |
 
-The String plan's row, and `--share-check` below, are being replaced
-(#9258): every String slot is becoming the handle, and until that lands
-a fix does not go into the String routes. A wrong answer on String
-identity is reported on #9258 instead.
+The String plan's row is what is left of the two String representations
+(#9258): every String slot is now its handle, the share analysis is gone,
+and the String plan and the byte routes are being removed. A change does
+not add to them.
 
 Codegen reads decisions, not types. A `comp_ntype` read in an emitter
 answers one of two questions, and both have a layer:
@@ -111,7 +111,6 @@ the count it reports.
 | `--plan-check`   | the builtin-op row, the user method and the dispatch arms codegen emitted a call through, against the ones inference answered it with | `tools/plan_check.sh` over the corpus; a conflict fails                               |
 | `--repr-check`   | codegen asks `repr_of` of every node it emits; the C must not change                                                                  | `make repr-check-test`                                                                |
 | `--check-traits` | every column of the type traits table, rendered from the function it summarizes                                                       | `make traits-check-test`                                                              |
-| `--share-check`  | each String the String plan needs as the object, against the conversion the emitter wrote                                             | `make share-check-ratchet`: its two lists, copies and plan disagreements, only shrink |
 | `--check-stores` | each value written raw into a C slot of another C type                                                                                | `make check-stores-test`                                                              |
 | value edges      | the generated table of how each node kind's parent uses its value, against its source                                                 | `make value-edges-check`                                                              |
 | counted setters  | the tables `infer_type` reads are written only through their setters                                                                  | `make ty-setter-check`                                                                |

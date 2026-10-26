@@ -731,6 +731,9 @@ int hc_iob_read(Compiler *c, int id);
    hc_iob_write: the call is a literal-typed set_value the cache writes */
 int hc_iobuf_w(Compiler *c, int recv, char *d, char *w, size_t cap);
 int hc_iob_write(Compiler *c, int id);
+/* the chunks an Integer#times loop of IO::Buffer elements runs ahead of its
+   `for`, which runs from *start to *bound (src/codegen_stmt.c) */
+int hv_emit(Compiler *c, int id, const char *count, Buf *b, int indent, char *start, char *bound, size_t cap);
 /* hc_array for a Float array whose in-range elements the reader needs to
    be no nil: *n names a length that is 0 while the array may hold one, or
    while `guard` (a Float local the loop does not assign; -1 for none) is
@@ -961,15 +964,15 @@ extern TyKind g_yield_slot_ty;
 extern const char *g_yield_proc_ref_fallback2;
 extern TyKind g_yield_slot_ty_fallback2;
 
-/* When set (SPINEL_LINE_MAP / SPINEL_DEBUG), emit `#line N "file"` directives
+/* When set (--line-map / --debug), emit `#line N "file"` directives
    at statement boundaries so a C compile error is reported against the
    original Ruby source line. Set once by codegen_program. */
 extern int g_line_map;
 void emit_current_line_directive(Compiler *c, Buf *b);
 extern int g_debug;
 extern int g_check_stores;
-extern int g_gate_raise;  /* SPINEL_GATE_RAISE: raise NoMethodError at the
-                             unresolved-call gate instead of a silent default. */
+extern int g_gate_raise;  /* codegen has started: the unresolved-call gate
+                             raises NoMethodError (codegen_program) */
 /* Emit a `#line` directive for node `id` into `b`, deduped against the last
    one emitted. No-op when g_line_map is off or the node has no line stamp. */
 void emit_line_directive(Compiler *c, int id, Buf *b);
@@ -1152,6 +1155,10 @@ int poll_scope_on_cycle(Compiler *c, int si);
 int poll_is_method_name(Compiler *c, const char *nm);
 int poll_pure_method(Compiler *c, int si);
 int poll_pure_loop(Compiler *c, int id);
+int poll_chunk_loop(Compiler *c, int id);
+int poll_pred_quiet(Compiler *c, int pred);
+/* the passes a chunked loop runs between two polls (poll_chunk_loop) */
+#define SP_SIG_CHUNK 1024
 int poll_pure_iter(Compiler *c, int id);
 int poll_pure_wrapped(Compiler *c, int si);
 extern int g_pure_region;
@@ -1256,6 +1263,7 @@ int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
 TyKind emit_range_step_array(Compiler *c, int id, Buf *b);
 int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
+void emit_loop_polls(Compiler *c, int body, Buf *b, int indent, int uncounted, int nest);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
 int  subtree_has_own_next(const NodeTable *nt, int id);
 int  subtree_owns_next(const NodeTable *nt, int body, int next);
@@ -1291,6 +1299,7 @@ int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
 void emit_boxed(Compiler *c, int node, Buf *b);
+int emit_poly_concat_splat(Compiler *c, int t, int splat, Buf *b);   /* `*x` into the PolyArray _t<t> */
 void emit_lines_sep(Compiler *c, int a, Buf *b);
 void emit_recv_rooted(Compiler *c, int recv, int t, const char *rootm, Buf *b);
 int  push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind art);
@@ -1697,6 +1706,9 @@ extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driv
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
 extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
+/* ...for one node: the switch, or its file's `# spinel: defer-refusals` */
+int defer_refusals_at(const Compiler *c, int node);
+extern int g_deferred_diags;   /* the refusals a deferral took (codegen_util.c) */
 /* --defer-refusals: an identity Set's value checked where it arrives
    (refuse_set_identity_members marks it, codegen_util.c renders it) */
 extern int g_idset_marks;
@@ -1869,6 +1881,13 @@ const char *array_kind(TyKind t);
 /* "Poly" / "Ptr" / array_kind, for a loop that walks the container. "Ptr" is
    a nested numeric table (sp_PtrArray of row pointers). */
 const char *array_iter_kind(TyKind t);
+/* The receiver of an Array mutator, refused when frozen: CRuby's modify
+   check runs before the mutator looks at its arguments, so a call that
+   changes nothing still raises FrozenError. Answers the receiver. */
+void emit_array_frozen_checked(Compiler *c, int recv, TyKind rt, Buf *b);
+/* The class id sp_raise_frozen_array_at names for an Array of kind rt;
+   NULL for a type that is not an Array. */
+const char *array_frozen_cls(TyKind rt);
 const char *array_to_poly_fn(TyKind t);
 int call_never_returns(Compiler *c, int id);
 /* comp_ntype for a fold seed, with an empty `[]` / `{}` literal resolved to
@@ -2346,6 +2365,9 @@ int emit_arm_args_text(Compiler *c, int mi, const char *armself, const char *con
 int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
+/* emit_dispatch for call `id` (mi its method on dispatch_cid), boxed where
+   the call is typed boxed and the dispatch answers a narrower type */
+void emit_dispatch_for_call(Compiler *c, int id, int dispatch_cid, int mi, const char *selfptr, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, int reader_oint, Buf *b);
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
 int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed);
@@ -2406,8 +2428,7 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
 
 /* #7483: a block's body typed again under one arm's type for its parameter
    (the caller set the parameter's slot to `kind`): each statement's
-   inference rerun, as the sites below did inline. SP_ARM_TRACE=1 names
-   each (site, block, kind) on stderr. */
+   inference rerun, as the sites below did inline. */
 enum { ARM_SITE_TAP = 1, ARM_SITE_EACH_SLICE, ARM_SITE_SPLIT, ARM_SITE_SCAN, ARM_SITE_STR_UPTO,
        ARM_SITE_COMB_CONS, ARM_SITE_FOLD_POLY, ARM_SITE_FOLD_POLY2, ARM_SITE_THEN, ARM_SITE_FOLD_PAIR };
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n);
@@ -2425,6 +2446,7 @@ const void *view_conversion(Compiler *c, int *node);
 int view_push_target(Compiler *c, int node, const char *name);
 const char *view_call_name(Compiler *c, int node);
 int emit_delegated_equality(Compiler *c, int id, int negate, Buf *b);
+int view_type_top(int node, TyKind *kind);   /* the open type view on node, if any */
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
 /* node `id`'s type with no view open, asked without recording it (codegen_util.c) */
@@ -2793,6 +2815,9 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until);
 void emit_for(Compiler *c, int id, Buf *b, int indent);
 void emit_return(Compiler *c, int id, Buf *b, int indent);
 int rescue_is_catchall_name(const char *n);
+int rescue_chain_catches(Compiler *c, int rc, const char *const *above, int bare);
+int loop_rescue_sees_interrupt(Compiler *c, int id);
+int loop_body_polls_alone(Compiler *c, int body);
 int subtree_has_retry(const NodeTable *nt, int id);
 void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *resultvar);
 void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar);
@@ -2848,6 +2873,18 @@ void emit_to_s_expr(Compiler *c, int node, Buf *b);
    does not dispatch. */
 typedef struct { Buf b; int *tmp; int n, cap; int guarded; } ConvHold;
 extern ConvHold *g_conv_hold;
+/* What a refusal deferred under --defer-refusals rolls back: the text
+   written since defer_mark, g_pre's, the conversion hold, the unit state.
+   The caller arms g_unsup_recover with its own setjmp in between. */
+typedef struct { jmp_buf outer; Buf *b; size_t len; Buf *pre; size_t pre_len; ConvHold *hold; EmitUnitState *state; int ndiag0; } DeferMark;
+void defer_mark(DeferMark *m, Buf *b);
+void defer_rollback(DeferMark *m, char *msg, size_t msz);
+void defer_done(DeferMark *m);
+/* an arm emitted under a silent probe (codegen_call.c) */
+typedef struct { jmp_buf jb; Buf *pre; int probe, open_defaults, moves, views; ConvHold *hold; EmitUnitState *state; } ArmProbe;
+void arm_probe_begin(ArmProbe *p, Buf *pre);
+void arm_probe_dropped(ArmProbe *p);
+void arm_probe_end(ArmProbe *p, int ok);
 extern unsigned g_conv_emitted;  /* implicit conversions emitted so far; read as a delta */
 Buf *conv_hold_begin(Buf *b, int *tmp);
 void conv_hold_end(int tmp);

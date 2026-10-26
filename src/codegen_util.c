@@ -37,18 +37,30 @@ int collect_mode(void) { return 1; }
    build goes on. */
 int defer_refusals(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_defer_refusals;
   return v;
 }
+/* ...and for one node: under the switch, or in a file whose
+   `# spinel: defer-refusals` magic comment defers its own refusals
+   (spinel_parse.c, sp_src_file_note_defers): a vendored library's line
+   Spinel does not compile raises where it runs, and the program that never
+   runs it builds. g_deferred_diags counts the refusals a deferral took
+   (one per deferred statement, method or check); the rest stop the build
+   (codegen_program). */
+int defer_refusals_at(const Compiler *c, int node) {
+  if (defer_refusals()) return 1;
+  return c && c->nt && node >= 0 && nt_file_defers(c->nt, (int)nt_int(c->nt, node, "node_file", -1));
+}
+int g_deferred_diags = 0;
 int collect_emit_anyway(void) {
   static int v = -1;
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
   return v;
 }
-/* 1 under --emit-types (main.c sets SPINEL_EMIT_TYPES to the JSON's path). */
+/* 1 under --emit-types (g_opt_emit_types: the JSON's path). */
 int emit_types_on(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_EMIT_TYPES"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_emit_types != NULL;
   return v;
 }
 /* 1 when a check that can go on past a refusal (the seal's) goes on to
@@ -67,7 +79,7 @@ int g_ndecide_cap = 0;
 int g_nd_call_id = -1;
 void nd_stamp(int id, int kind) {
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0) return;
   if (id >= g_ndecide_cap) {
     int ncap = g_ndecide_cap ? g_ndecide_cap : 1024;
@@ -445,7 +457,7 @@ void ucall_report(Compiler *c) {
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (g_plan_check) ucall_observe(c, id, mi, owner_ci, add);
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0 || mi < 0 || mi >= c->nscopes) return;
   Scope *m = &c->scopes[mi];
   if (!m->name || !*m->name) return;
@@ -1185,6 +1197,8 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   const char *ty = nt_type(c->nt, id);
   NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
+  /* an open type view on the yield (a redispatched receiver) is its type */
+  if (ty_k == NK_YieldNode) { TyKind vt; if (view_type_top(id, &vt)) { *out = vt; return 1; } }
   if (ty_k == NK_CallNode && yield_operator_site_type(c, id, out)) return 1;
   if (ty_k == NK_CallNode && yield_builtin_method_site_type(c, id, out)) return 1;
   if (ty_k != NK_YieldNode &&
@@ -4281,6 +4295,7 @@ void refusal_note_deferred(Compiler *c, int id, const char *msg) {
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   diag_record(file, ln, msg);
+  g_deferred_diags++;
   refuse_observe(msg);
   if (ln > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
   else fprintf(stderr, "spinel: %s\n", msg);
@@ -4503,7 +4518,7 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
      (desugar_attr_const_splat): refused where it is emitted, so a deferred
      refusal stands at its own statement */
   if (nt_int(c->nt, id, "attr_splat", 0)) diagnose_unsupported_call(c, id);
-  if (!defer_refusals()) return;
+  if (!defer_refusals_at(c, id)) return;
   /* an identity Set's call the proof refuses (refuse_set_identity_members),
      whose values are no single one a check could read where it arrives */
   if (g_idset_marks && nt_int(c->nt, id, "idset_refuse", 0)) unsupported_feature(c, id, g_sid_refusal_msg);
@@ -5736,6 +5751,22 @@ const char *array_iter_kind(TyKind t) {
   if (t == TY_POLY_ARRAY) return "Poly";
   if (ty_is_ptr_array(t)) return "Ptr";   /* a numeric table's rows, or objects */
   return array_kind(t);
+}
+const char *array_frozen_cls(TyKind rt) {
+  return rt == TY_POLY_ARRAY ? "SP_BUILTIN_POLY_ARRAY"
+       : rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY"
+       : rt == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY"
+       : rt == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY"
+       : ty_is_ptr_array(rt) ? "SP_BUILTIN_PTR_ARRAY" : NULL;
+}
+void emit_array_frozen_checked(Compiler *c, int recv, TyKind rt, Buf *b) {
+  const char *cls = array_frozen_cls(rt);
+  if (!cls) { emit_expr(c, recv, b); return; }
+  int t = ++g_tmp;
+  buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s); _t%d; })",
+             t, t, t, cls, t);
 }
 void emit_c_escaped_n(Buf *b, const char *s, size_t len) {
   for (size_t i = 0; i < len; i++) {

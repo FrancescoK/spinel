@@ -657,8 +657,6 @@ static int cs_lex(const char *t, size_t n, Item **items, int *nitems, UnitPragma
     nit++;
   }
   if (!ok) {
-    if (getenv("SPINEL_SPLIT_DEBUG"))
-      fprintf(stderr, "c_split: declined at item %d: %.200s\n", nit, nit < cap ? t + it[nit].st : "");
     free(it); free(up); return -1;
   }
 

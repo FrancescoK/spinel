@@ -23,6 +23,7 @@ void sp_cext_exception_caught(void *);
 
 VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+VALUE rb_eNotImpError;
 #define errinfo sp_cext_errinfo
 static int initialized;
 sp_RbVal (*sp_cext_exception_new_fn)(const char *, const char *) = NULL;
@@ -42,6 +43,7 @@ void sp_cext_exceptions_init(void) {
     rb_eRangeError = named_class(&("\xff" "RangeError")[1]);
     rb_eNoMemError = named_class(&("\xff" "NoMemoryError")[1]);
     rb_eSystemCallError = named_class(&("\xff" "SystemCallError")[1]);
+    rb_eNotImpError = named_class(&("\xff" "NotImplementedError")[1]);
 }
 static const char *class_name(VALUE klass) {
     sp_RbVal v = sp_cext_rbval(klass);

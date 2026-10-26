@@ -165,6 +165,9 @@ int is_mul_or_pow(const char *n); /* * ** */
 int is_unary_sign(const char *n); /* +@ -@ */
 int is_unary_minus(const char *n); /* -@ */
 int is_casecmp_family(const char *n); /* casecmp casecmp? */
+/* String#to_i([base]), #hex, #oct: the parses promote mode reads as a
+   Bignum past sp_int */
+int str_int_promotes(const char *n, int argc);
 int is_hash_key_value_each(const char *n); /* each_key each_value */
 int is_encoding_mutator(const char *n); /* encode! force_encoding */
 /* the most arguments the arms serve: force_encoding's one (two read as a

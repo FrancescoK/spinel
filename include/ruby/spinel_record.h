@@ -40,6 +40,16 @@ VALUE rb_str_freeze(VALUE);
 VALUE rb_str_intern(VALUE);
 VALUE rb_funcall(VALUE, ID, int, ...);
 VALUE rb_funcallv(VALUE, ID, int, const VALUE *);
+#define rb_funcall2 rb_funcallv
+/* a send whose argument count is the Array's, known only when it runs */
+VALUE rb_apply(VALUE, ID, VALUE);
+/* Class.new during Init: a class with no constant of its own */
+VALUE rb_class_new(VALUE);
+#define rb_class_new_instance(argc, argv, klass) rb_funcallv((klass), rb_intern("new"), (argc), (argv))
+/* StringValue: a String as it is, anything else through its to_str */
+VALUE sp_cext_to_str(VALUE, VALUE);
+#define StringValue(v) ((v) = (RB_TYPE_P((v), T_STRING) ? (v) : \
+  sp_cext_to_str((v), rb_respond_to((v), rb_intern("to_str")) ? rb_funcall((v), rb_intern("to_str"), 0) : Qundef)))
 #define RB_BLOCK_CALL_FUNC_ARGLIST(yielded, data) VALUE yielded, VALUE data, int argc, const VALUE *argv, VALUE blockarg
 typedef VALUE rb_block_call_func(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg));
 typedef rb_block_call_func *rb_block_call_func_t;
@@ -48,6 +58,7 @@ VALUE rb_iv_get(VALUE, const char *);
 VALUE rb_iv_set(VALUE, const char *, VALUE);
 VALUE rb_ivar_get(VALUE, ID);
 VALUE rb_ivar_set(VALUE, ID, VALUE);
+VALUE rb_ivar_defined(VALUE, ID);
 VALUE rb_const_get(VALUE, ID);
 VALUE rb_const_get_at(VALUE, ID);
 int rb_const_defined(VALUE, ID);

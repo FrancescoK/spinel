@@ -506,6 +506,9 @@ static void usage(void) {
     "  --exceptions=abort  With --target=wasm32-wasi, for a host without wasm\n"
     "              exception handling: a raise traps, and rescue, retry, catch and a\n"
     "              break or return that leaves a block through a frame are refused\n"
+    "  --gc=none   No garbage collector: memory is allocated and never reclaimed,\n"
+    "              for a short run under a host's memory cap (also --no-gc;\n"
+    "              --gc=on is the default). The collector leaves the build\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
@@ -791,6 +794,23 @@ static int cc_native_build(const char *cmd, size_t src_at, size_t src_end, const
   return cc_rc;
 }
 
+/* A pointer of the wrong type in generated code is a miscompile, not a style
+   question: it reads one struct through another's layout, which segfaults or
+   answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
+   element bound to a string handle, #3971). Both showed up only as a warning
+   in the build log, easy to scroll past. Fail the build instead, so the
+   emitter's own bug surfaces here rather than at run time.
+   A call to a function no declaration names is the same miscompile: C
+   takes it to return int, so a pointer result loses its upper half on a
+   64-bit target. Spinel declares every function it calls itself, so only
+   an ffi_source fragment can make one -- calling an ffi_func by its C
+   name, which the prologue declares under a private name (docs/FFI.md).
+   Under -Wno-all neither cc said so, and the program crashed at run time. */
+static void miscompile_errors(Str *cmd) {
+  s_add(cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion "
+             "-Werror=implicit-function-declaration ");
+}
+
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -862,6 +882,12 @@ int main(int argc, char **argv) {
       else { fprintf(stderr, "spinel: unknown --target %s (wasm32-wasi or native)\n", a + 9); return 1; }
       i++;
     }
+    else if (!strncmp(a, "--gc=", 5) || sp_streq(a, "--no-gc")) {
+      if (sp_streq(a, "--no-gc") || sp_streq(a + 5, "none")) g_gc_none = 1;
+      else if (sp_streq(a + 5, "on")) g_gc_none = 0;
+      else { fprintf(stderr, "spinel: unknown --gc %s (on or none)\n", a + 5); return 1; }
+      i++;
+    }
     else if (!strncmp(a, "--exceptions=", 13)) {
       if (sp_streq(a + 13, "abort")) exc_abort = 1;
       else if (sp_streq(a + 13, "unwind")) exc_abort = 0;
@@ -896,7 +922,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
-    else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
+    else if (sp_streq(a, "--defer-refusals")) { g_opt_defer_refusals = 1; i++; }
     /* (Strings are always shared now, #6765: the flag is kept so a build
        script that passes it still works) */
     else if (sp_streq(a, "--share-strings")) { i++; }
@@ -1061,7 +1087,7 @@ int main(int argc, char **argv) {
   }
 
   /* --rbs: extract advisory seeds via the sibling spinel_rbs_extract binary
-     and hand them to the analyzer through SPINEL_RBS_SEED. An empty result is a
+     and hand them to the analyzer through g_opt_rbs_seed. An empty result is a
      silent no-op; a missing extractor is warned about, since --rbs was asked for
      explicitly and the seeds would otherwise vanish without a trace (#1792). */
   char seed_path[4096] = {0};
@@ -1087,7 +1113,7 @@ int main(int argc, char **argv) {
       int rc = system(cmd.p);
       free(cmd.p);
       if (rc == 0 && file_exists(seed_path)) {
-        set_env("SPINEL_RBS_SEED", seed_path);
+        g_opt_rbs_seed = strdup(seed_path);
       }
       else {
         remove(seed_path);
@@ -1096,53 +1122,53 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Source mapping: codegen emits #line when SPINEL_DEBUG / SPINEL_LINE_MAP
-     is set. --debug/-g use the fuller debug path; otherwise line-map (on by
+  /* Source mapping: codegen emits #line under --debug or --line-map.
+     --debug/-g use the fuller debug path; otherwise line-map (on by
      default) just adds #line. The parser stamps node positions in every
-     compile (SPINEL_POSITIONS): the analysis reads them, and a node a rewrite
+     compile (g_opt_positions): the analysis reads them, and a node a rewrite
      made has none (cplan_nil's unset temp), so --no-line-map suppresses only
      the #line directives and decides what the default compile decides. The
-     emit modes that need positions force SPINEL_DEBUG below. */
-  if (debug) set_env("SPINEL_DEBUG", "1");
-  else if (line_map) set_env("SPINEL_LINE_MAP", "1");
-  set_env("SPINEL_POSITIONS", "1");
+     emit modes that need positions force the debug mode below. */
+  if (debug) g_opt_debug = 1;
+  else if (line_map) g_opt_line_map = 1;
+  g_opt_positions = 1;
   /* --warn-widen places each warning at its slot, which needs the parser's
      positions: forced past --no-line-map, as --emit-types forces them. */
-  if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
+  if (warn_widen) { g_opt_line_map = 1; g_opt_warn_widen = 1; }
   /* --check-stores reports each store at its Ruby line, so it needs them too */
-  if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
+  if (check_stores) { g_opt_line_map = 1; g_opt_check_stores = 1; }
   /* A decision key names its site by position: forced the same way. */
   if (refuse_log_overwrite(getenv("SPINEL_DECISIONS_LOG"))) return 1;
-  if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
+  if (decide_setup()) g_opt_line_map = 1;
 
   /* Analyze-only emit modes write their artifact from inside codegen_program
-     and produce an empty translation unit; route the output path via env. */
+     and produce an empty translation unit; the output path goes with them. */
   char emit_out[4096];
   if (emit_rbs) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".rbs", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_EMIT_RBS", emit_out);
+    g_opt_emit_rbs = strdup(emit_out);
   }
   else if (emit_types) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".types.json", sizeof emit_out - strlen(emit_out) - 1); }
     /* The positions the JSON carries need the parser's line map, not the
-       debug build: SPINEL_DEBUG also turns codegen's g_debug on, which drops
+       debug build: --debug also turns codegen's g_debug on, which drops
        `static`/always_inline from every method and switches the backtrace
        substrate on, so the C of `--emit-types -S` was the debug compile's,
        not what -S alone emits. Forced past --no-line-map, since the JSON
        is nothing without positions. */
-    set_env("SPINEL_LINE_MAP", "1");
-    set_env("SPINEL_EMIT_TYPES", emit_out);
+    g_opt_line_map = 1;
+    g_opt_emit_types = strdup(emit_out);
     /* `--emit-types -o x.json -S`: the JSON and the C of the same compile,
        in one run rather than two (a consumer showing both, rubys/spinel-ide) */
-    if (stdout_mode) set_env("SPINEL_EMIT_TYPES_KEEP_C", "1");
+    if (stdout_mode) g_opt_emit_types_keep_c = 1;
   }
   else if (emit_symbol_map) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".symbols.json", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_DEBUG", "1");
-    set_env("SPINEL_EMIT_SYMBOL_MAP", emit_out);
+    g_opt_debug = 1;
+    g_opt_emit_symbol_map = strdup(emit_out);
   }
   if (profile) {
     /* --profile also writes the symbol map next to the binary (offline
@@ -1150,7 +1176,7 @@ int main(int argc, char **argv) {
        real build after writing it (#1336). */
     char psym[4096];
     snprintf(psym, sizeof psym, "%s.symbols.json", output ? output : basename);
-    set_env("SPINEL_PROFILE_SYMBOL_MAP", psym);
+    g_opt_profile_symbol_map = strdup(psym);
   }
 
   /* ---------- pipeline: parse -> AST -> codegen ---------- */
@@ -1268,6 +1294,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
+     as the analysis refused rescue, retry and catch: a break out of a block
+     that is not spliced in, a return out of a proc, a Fiber's switch. The
+     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_).
+     Before the C is written: `-c` refuses as the build does. */
+  if (exc_abort) {
+    static const struct { const char *tok, *what; } nl[] = {
+      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
+      { "sp_proc_return(", "a return out of a proc" },
+      { "sp_Fiber_", "Fiber" },
+    };
+    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
+      if (strstr(csrc, nl[k].tok)) {
+        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
+        free(csrc);
+        return 1;
+      }
+  }
   /* Decide where the generated C goes. */
   char c_path[4096];
   int c_is_temp = 0;
@@ -1329,24 +1373,6 @@ int main(int argc, char **argv) {
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
   int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
-  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
-     as the analysis refused rescue, retry and catch: a break out of a block
-     that is not spliced in, a return out of a proc, a Fiber's switch. The
-     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_). */
-  if (exc_abort) {
-    static const struct { const char *tok, *what; } nl[] = {
-      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
-      { "sp_proc_return(", "a return out of a proc" },
-      { "sp_Fiber_", "Fiber" },
-    };
-    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
-      if (strstr(csrc, nl[k].tok)) {
-        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
-        free(csrc);
-        if (c_is_temp) remove(c_path);
-        return 1;
-      }
-  }
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
@@ -1426,13 +1452,7 @@ int main(int argc, char **argv) {
     bi_put(&bi, "define", "-D_TIME_BITS=64"); bi_put(&bi, "define", "-D_FILE_OFFSET_BITS=64");
     if (target_i386) { s_add(&cmd, "-msse2 -mfpmath=sse "); bi_put(&bi, "cflag", "-msse2"); bi_put(&bi, "cflag", "-mfpmath=sse"); }
   }
-  /* A pointer of the wrong type in generated code is a miscompile, not a style
-     question: it reads one struct through another's layout, which segfaults or
-     answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
-     element bound to a string handle, #3971). Both showed up only as a warning
-     in the build log, easy to scroll past. Fail the build instead, so the
-     emitter's own bug surfaces here rather than at run time. */
-  s_add(&cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion ");
+  miscompile_errors(&cmd);
   /* The error list is spinel's output, not cc's: the same flag assembly
      remaps every location onto the Ruby line and promotes two pointer
      warnings to errors. cc's own default cap (20 for clang) truncated that

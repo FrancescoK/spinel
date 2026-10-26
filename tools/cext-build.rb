@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 require 'digest'
 require 'fileutils'
+require 'pathname'
 require_relative 'spin/toml'
 require_relative 'cext-record'
 require_relative 'cext-extconf'
@@ -118,6 +119,7 @@ module CextBuild
                 plain[field] = (plain.fetch(field) + manifest.fetch(field)).uniq.sort
               end
               plain['constant_reads'] ||= manifest['constant_reads']
+              plain['spread_sends'] = true if manifest['spread_sends']
             else
               plain = manifest
             end
@@ -143,19 +145,49 @@ module CextBuild
 end
 
 module CextBuild
+  # A bundled package's extension (make: packages/<pkg>/build/cext): the
+  # archives go to OUT/<name>.a and OUT/<name>_mt.a, and the declarations
+  # beside the package's Ruby as <root>/<require>.rb, where the compiler's
+  # package tier finds them, with a `__cext_link` naming the archive
+  # (relative to the declaration file) and the libraries to link.
+  def self.bundle(root, out, results)
+    FileUtils.mkdir_p(out)
+    results.each do |result|
+      recipe = result.fetch('recipe')
+      name = recipe.fetch('name')
+      FileUtils.cp(File.join(result.fetch('directory'), 'extension.a'), File.join(out, name + '.a'))
+      FileUtils.cp(File.join(result.fetch('directory'), 'extension_mt.a'), File.join(out, name + '_mt.a'))
+      loader = File.join(root, recipe.fetch('require') + '.rb')
+      FileUtils.mkdir_p(File.dirname(loader))
+      archive = Pathname.new(File.join(out, name + '.a')).relative_path_from(Pathname.new(File.dirname(loader))).to_s
+      libs = recipe.fetch('libs').select { |l| l.start_with?('-l') }.map { |l| l.delete_prefix('-l') }.join(';')
+      text = File.read(File.join(result.fetch('include'), recipe.fetch('require') + '.rb'))
+      text << "__cext_link(#{archive.dump}, #{libs.dump})\n"
+      File.write(loader, text)
+    end
+    File.write(File.join(out, 'complete'), results.map { |r| r.fetch('directory') }.join("\n") + "\n")
+  end
+
   def self.main(args)
     flags_only = args.first == '--flags'
-    args.shift if flags_only
+    bundle_out = args.first == '--bundle'
+    args.shift if flags_only || bundle_out
     root = args.shift or raise Refusal, 'usage: spinel-cext-build ROOT CACHE [CC]'
     cache = args.shift or raise Refusal, 'usage: spinel-cext-build ROOT CACHE [CC]'
     cc = args.shift || ENV.fetch('CC', 'cc')
     raise Refusal, 'unexpected builder arguments' unless args.empty?
     root = File.expand_path(root)
     cache = File.expand_path(cache)
+    if bundle_out
+      out = cache
+      cache = File.join(out, 'cache')
+    end
     configured = recipes(root)
     configured = CextExtconf.configure(root, cache: cache, cc: cc) if configured.empty?
-    results = configured.map { |recipe| build(recipe, cache: cache, cc: cc) }
-    if flags_only
+    results = configured.map { |recipe| build(recipe, cache: cache, cc: cc).merge('recipe' => recipe) }
+    if bundle_out
+      bundle(root, out, results)
+    elsif flags_only
       results.each do |result|
         puts "include\t#{result.fetch('include')}"
         puts "link\t#{result.fetch('archive')}"

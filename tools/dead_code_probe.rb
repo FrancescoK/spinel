@@ -94,8 +94,7 @@ module DeadCodeProbe
   LABELS = %w[output-diff crash timeout link-error compiler-failure compile-error].freeze
   WRONG = LABELS.first(5).freeze
   # what changes the text spinel parses or the C it writes (src/spinel_parse.c)
-  PINNED = %w[SPINEL_NO_BUILTINS SPINEL_DEBUG SPINEL_LINE_MAP SPINEL_REQUIRE_GATE SPINEL_EMIT_TYPES
-              SPINEL_WARN_WIDEN].to_h { |v| [v, nil] }.freeze
+  PINNED = %w[SPINEL_NO_BUILTINS SPINEL_REQUIRE_GATE].to_h { |v| [v, nil] }.freeze
   BUILD_TIMEOUT = 600
 
   # What one build of a program came to. label is "same" (it printed the

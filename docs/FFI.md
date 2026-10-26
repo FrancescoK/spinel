@@ -77,6 +77,13 @@ generated program's function bodies. Use `ffi_cflags` and `ffi_lib` for any
 headers and libraries it needs. Because this is native C, it has the same trust
 and portability implications as a package-carried `.c` file.
 
+An `ffi_func` does not declare its function for the fragment: its `extern` is
+under a private name (see below). A fragment that calls a C function, an
+`ffi_func`'s included, declares it itself or includes the header that does,
+and may use the header's own types (`FILE *`, `char *`) whatever the specs say.
+A call to a function nothing declares is a build error, not a call C would
+take to return `int`, which cuts a returned pointer to its lower half.
+
 ### `ffi_func :name, [arg_types], ret_type`
 
 Declares a C function callable as `Module.name(...)`.

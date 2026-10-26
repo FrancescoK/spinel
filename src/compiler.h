@@ -68,17 +68,14 @@ extern int comp_scope_ver_cap, comp_class_ver_cap;
 #define COMP_TOUCH_LOG_CAP (1 << 22)
 extern int *comp_touch_log;
 static inline void comp_touch_note(int key) { if (comp_touch_log) comp_touch_log[comp_ty_edits & (COMP_TOUCH_LOG_CAP - 1)] = key; }
-extern unsigned long comp_touch_count[3];   /* (statistics) the program's, scopes', classes' writes */
-extern unsigned long comp_touch_why[8];     /* ... and the program's by cause: 0 other, 1 a pass boundary, 2 the node table, 3 a slot by pointer, 4 a new slot, 5 a new scope or class */
-extern int comp_touch_last_why;
-static inline void comp_touch_global_r(int why) { comp_global_ver = ++comp_ty_edits; comp_touch_count[0]++; comp_touch_why[why & 7]++; comp_touch_last_why = why & 7; comp_touch_note(-1); }
+static inline void comp_touch_global_r(int why) { (void)why; comp_global_ver = ++comp_ty_edits; comp_touch_note(-1); }
 static inline void comp_touch_global(void) { comp_touch_global_r(0); }
 static inline void comp_touch_scope(int idx) {
-  if (idx >= 0 && idx < comp_scope_ver_cap) { comp_scope_ver[idx] = ++comp_ty_edits; comp_touch_count[1]++; comp_touch_note(idx); }
+  if (idx >= 0 && idx < comp_scope_ver_cap) { comp_scope_ver[idx] = ++comp_ty_edits; comp_touch_note(idx); }
   else comp_touch_global();
 }
 static inline void comp_touch_class(int idx) {
-  if (idx >= 0 && idx < comp_class_ver_cap) { comp_class_ver[idx] = ++comp_ty_edits; comp_touch_count[2]++; comp_touch_note(-(idx + 2)); }
+  if (idx >= 0 && idx < comp_class_ver_cap) { comp_class_ver[idx] = ++comp_ty_edits; comp_touch_note(-(idx + 2)); }
   else comp_touch_global();
 }
 extern int imemo_dep_on;   /* an inference that records what it reads is open */
@@ -327,6 +324,9 @@ typedef struct {
                      zero value, so a kind whose zero is a real value (sp_int
                      0, 0.0) can still tell the two apart (mirrors
                      ConstantVar's const_def_write). */
+  int nil_only;     /* only ever saw nil: the late widening made it a boxed
+                       nil (TY_POLY), so an Integer or Float parameter it is
+                       handed to has to hold nil (nullable_int_value) */
   int maybe_unset;  /* (Integer / Float) some read can run before any write:
                        every write to it ahead of the read is conditional (a
                        modifier `if`, one branch, a loop body), so the read
@@ -1746,6 +1746,9 @@ TyKind native_spec_to_ty(const char *spec);
 /* IO::Buffer type-symbol table (index-compatible with lib/sp_iobuffer.h) */
 int comp_iob_sym_type(const char *name);
 int comp_iob_ty_is_float(int t);
+int comp_iob_ty_width(int t);
+int comp_iob_ty_be(int t);
+int comp_iob_ty_signed(int t);
 int comp_iob_ty_is_64(int t);
 
 /* Global variables and top-level constants. *_intern finds or creates. */
@@ -2017,7 +2020,6 @@ int        comp_is_nested_int_array_literal(Compiler *c, int node); /* `[[ints],
    pass did not see, a value it cannot bound). A class the set leaves out
    is one no instance of which reaches the node (analyze_cls.c, #8530). */
 const ClsSet *cls_fact_node(Compiler *c, int node);
-void cls_fact_use_report(Compiler *c);   /* SPINEL_CLS_USE: the consumers' arms (#8837) */
 /* Is class k one the fact bounds: a class the program defines, whose
    instances the pass follows from their construction? A reopened builtin's,
    a native class's and a module's are not. */

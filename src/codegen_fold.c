@@ -2739,6 +2739,8 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || (!sp_streq(name, "first") && !sp_streq(name, "take"))) return 0;
+  /* a program's own Enumerator#first / #take runs instead of the bounded fold */
+  if (comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, name) >= 0) return 0;
   int args = nt_ref(nt, id, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   if (ac != 1) return 0;
@@ -2756,6 +2758,10 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   /* a poly array has no array_kind; name it like every other Poly emit (#3604) */
   const char *k = rr.elem == TY_POLY ? "Poly" : array_kind(rt);
   if (!k) return 0;
+  /* first(n) answered poly beside another site's kind (the analyzer's per-site
+     answer for cycle.first): the elements are boxed into a poly array as the
+     bounded result, so the call's value has the kind its type names (T4) */
+  int boxed_out = comp_ntype(c, id) == TY_POLY_ARRAY && !sp_streq(k, "Poly");
   int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, tlen = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
   Buf nb; memset(&nb, 0, sizeof nb);
@@ -2769,13 +2775,23 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\");\n", tn);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+  if (boxed_out) buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+  else buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tlen, k, ta);
   emit_indent(g_pre, g_indent);
   /* the receiver's nils, repeated: each element copied with its nil */
   int onum_c = is_numeric_literal_tag(k);
-  buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
+  if (boxed_out) {
+    Buf eb; memset(&eb, 0, sizeof eb);
+    char src[ARGOV_TEXT_LEN];
+    snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d %% _t%d)", k, ta, ti, tlen);
+    emit_boxed_elem_read(c, ty_array_elem(rt), src, &eb);
+    buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, %s);\n",
+               tlen, ti, ti, tn, ti, tr, eb.p ? eb.p : "sp_box_nil()");
+    free(eb.p);
+  }
+  else buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
              "sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d %% _t%d));\n",
              tlen, ti, ti, tn, ti, k, onum_c ? "_o" : "", tr, k, onum_c ? "oget" : "get", ta, ti, tlen);
   buf_printf(b, "_t%d", tr);
@@ -4674,7 +4690,11 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
        the same place now that an empty body carries the nil it means (#4006).
        nil is a value in this slot, not the absence of one. */
     if (bt == TY_VOID) bt = TY_NIL;
-    if (bt == TY_UNKNOWN) bt = TY_INT;
+    /* A tail inference could not type is a call nothing resolves (`x.first`
+       on a String), which lowers to the nomethod gate's sp_RbVal token: a
+       boxed value, so it is carried boxed. Read as an Integer it was an
+       sp_RbVal assigned to an sp_int and the C did not build. */
+    if (bt == TY_UNKNOWN) bt = TY_POLY;
     /* a number that can be nil is carried boxed, so its nil reads falsy */
     int vpoly = (bt == TY_POLY || bt == TY_NIL || (oint_kind(bt) && bn > 0 && node_has_oint_form(c, bb[bn - 1])) ||
                  bv_value_may_be_nil(c, block, bt) ||   /* a `next nil` too */
@@ -6175,7 +6195,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        here now that an empty body carries the nil it means (#4006). Carry it
        boxed -- nil is a value in this slot, and a falsy one. */
     if (cty == TY_VOID || cty == TY_NIL) cty = TY_POLY;
-    if (cty == TY_UNKNOWN) cty = TY_INT;
+    /* an untyped tail is the nomethod gate's sp_RbVal token: boxed too */
+    if (cty == TY_UNKNOWN) cty = TY_POLY;
     /* A `next v` of another class than the tail shares the slot: `next false`
        into the Integer slot of `x if x > 0` was 0, which reads truthy, and the
        element was kept. Carry both boxed. */
@@ -7531,7 +7552,17 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   if (repr_of_slot(c, p).kind == RK_STRBUF && emit_strbuf_local_write_handle(c, provided, out)) return;
   if (repr_of_slot(c, p).handle) {
     int dvP = m->pdefault[idx];
-    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) {
+      /* (in the callee's context, as below: a call answering nil runs) */
+      if (subtree_is_pure_read(c, dvP)) { buf_puts(out, "NULL"); return; }
+      const char *svs = g_self, *svd = g_self_deref;
+      int sve = g_emitting_class_id;
+      char dself[32];
+      dflt_self_enter(m, dvP, dself, sizeof dself);
+      buf_puts(out, "({ (void)("); emit_expr(c, dvP, out); buf_puts(out, "); NULL; })");
+      g_self = svs; g_self_deref = svd; g_emitting_class_id = sve;
+      return;
+    }
     if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
@@ -11893,15 +11924,21 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     TyKind vt = oint_kind(r.as_ty) ? r.as_ty : (pl ? pl->type : TY_INT);
     const char *fn = kd == 1 ? (vt == TY_FLOAT ? "sp_ofloat_val" : "sp_oint_val")
                              : (vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in");
+    /* a boxed argument the binder still reads as a box (a local that only
+       holds nil): the checked value goes back into one, which the binder
+       unboxes again */
+    const char *bx = r.kind != RK_BOXED || oint_kind(r.as_ty) ? NULL : vt == TY_FLOAT ? "sp_box_float" : "sp_box_int";
     if (held[i] >= 0) {
       int tv = ++g_tmp;
       emit_indent(pre, g_indent);
       buf_printf(pre, "%s _t%d = %s(_t%d, \"%s\");\n", c_type_name(vt), tv, fn, held[i], what ? what : "");
-      view_bind(v, "_t%d", tv);
+      if (bx) view_bind(v, "%s(_t%d)", bx, tv);
+      else view_bind(v, "_t%d", tv);
     }
     else {
       Buf ob; memset(&ob, 0, sizeof ob); emit_oint_expr(c, v, vt, &ob);
-      view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      if (bx) view_bind(v, "%s(%s(%s, \"%s\"))", bx, fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      else view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
       free(ob.p);
     }
   }

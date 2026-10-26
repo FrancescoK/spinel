@@ -306,8 +306,9 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
 
   /* object_id: a stable integer id. Int uses MRI's 2n+1; pointer-backed
-     values use the pointer bit pattern; a symbol uses its interned id.
-     The immediates have fixed ids: nil is 4, false is 0, true is 20. */
+     values use the pointer bit pattern; a symbol's is SP_SYM_OBJECT_ID of
+     its interned id, apart from every other kind's. The immediates have
+     fixed ids: nil is 4, false is 0, true is 20. */
   if ((sp_streq(name, "object_id") || sp_streq(name, "__id__")) && recv >= 0 && argc == 0 &&
       /* a generated READER of this name owns it on a concrete object, as in
          CRuby (which warns and defines it): fall through to the member read,
@@ -326,7 +327,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* (2n+1 in unsigned arithmetic: an Integer past half the range would
        overflow the signed product) */
     else if (rt == TY_INT) { buf_puts(b, "((sp_int)(2*(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ")+1))"); }
-    else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
+    else if (rt == TY_SYMBOL) { buf_puts(b, "SP_SYM_OBJECT_ID("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_NIL_OBJECT_ID)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID)"); }
     /* a class value: the identity its box carries (its id, or the name a

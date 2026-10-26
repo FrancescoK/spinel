@@ -1715,7 +1715,6 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
     if (iv < 0 || class_ivar_pinned(ci, nm) || ci->ivar_int_table[iv]) return 0;
     if (ty_is_array(ci->ivar_types[iv]) && ci->ivar_types[iv] != TY_POLY_ARRAY) {
-      sp_ivwatch(nm, "aliased_local_push", ci->ivar_types[iv], TY_POLY_ARRAY);
       ivar_set_type(ci, iv, TY_POLY_ARRAY);
       changed = 1;
     }
@@ -1861,6 +1860,9 @@ static int alias_read_kind(NodeKind k) {
          k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode;
 }
 
+enum { VL_NIL = 1, VL_NARROW = 2 };
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
+
 static int widen_ivar_array_params(Compiler *c, const LWIndex *ivw, int cls, const char *inm);
 /* An ivar side the alias widening made the general container: marked for
    the re-narrow (ivar_alias_wide), and the parameters it is assigned hold
@@ -1890,7 +1892,8 @@ static int alias_ivar_widened(Compiler *c, const LWIndex *ivw, const AliasSide *
 /* Propagates container widening across direct aliases (`b = a`, and the
    same between ivars, globals, class variables and constants: `@b = @a`,
    `$b = a`, `M = L`; a reader's call names its ivar: `@mine = o.items`,
-   `k = s.member`). Two names of one Array or Hash must agree on its
+   `k = s.member`), and each arm of a conditional value (`b = g ? a : x`,
+   a `case`, `a || x`: value_leaves). Two names of one Array or Hash must agree on its
    kind: where they do not, the write between them converts, which is a
    copy, and a push or a store through the wider name never reaches the
    other. Whichever side is the general Array (the poly-keyed Hash) wins,
@@ -1910,19 +1913,26 @@ static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
   int n = 0, cap = 0;
   for (int wk = 0; wk < (int)(sizeof alias_writes / sizeof alias_writes[0]); wk++)
     NT_FOREACH_KIND(nt, alias_writes[wk], id) {
-      /* the value is a read of the other name (a write's value, `$b = $a =
-         [1]`, is not taken: an ivar write read as a value is emitted at its
-         value's type, not its slot's) */
-      int v = nt_paren_single(nt, nt_ref(nt, id, "value"));
-      if (v < 0 || !(alias_read_kind(nt_kind(nt, v)) || nt_kind(nt, v) == NK_CallNode)) continue;
-      AliasSide d, r;
-      if (!alias_side(c, v, &r) || !alias_side(c, id, &d) || d.slot == r.slot) continue;
-      if (n == cap) {
-        cap = cap ? cap * 2 : 16;
-        ev = (AliasSide *)realloc(ev, sizeof(AliasSide) * 2 * (size_t)cap);
-        if (!ev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      /* the value is a read of the other name, or a conditional or logical
+         operator whose arms read them, each its own alias (a write's value, `$b = $a = [1]`, is not taken: an ivar
+         write read as a value is emitted at its value's type, not its
+         slot's) */
+      int arms[16];
+      int na = value_leaves_ex(c, nt_ref(nt, id, "value"), arms, 0, 16, VL_NIL);
+      AliasSide d;
+      if (na <= 0 || !alias_side(c, id, &d)) continue;
+      for (int a = 0; a < na; a++) {
+        int v = nt_paren_single(nt, arms[a]);
+        AliasSide r;
+        if (!(alias_read_kind(nt_kind(nt, v)) || nt_kind(nt, v) == NK_CallNode) ||
+            !alias_side(c, v, &r) || d.slot == r.slot) continue;
+        if (n == cap) {
+          cap = cap ? cap * 2 : 16;
+          ev = (AliasSide *)realloc(ev, sizeof(AliasSide) * 2 * (size_t)cap);
+          if (!ev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        ev[2 * n] = d; ev[2 * n + 1] = r; n++;
       }
-      ev[2 * n] = d; ev[2 * n + 1] = r; n++;
     }
   int changed = 0, prop = 1;
   for (int sweep = 0; prop; sweep++) {
@@ -3118,8 +3128,52 @@ static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind 
     return push_widens_arrays(c->nt, id, vt) ? widen_boxed_array_sources(c, recv, vt, 0) : 0;
   if (!ty_is_array(rt) || rt == TY_POLY_ARRAY || ty_is_ptr_array(rt)) return 0;
   TyKind el = ty_array_elem(rt);
-  if (el == vt || (el == TY_FLOAT && vt == TY_INT) || !push_widens_arrays(c->nt, id, vt)) return 0;
+  if (el == vt || !push_widens_arrays(c->nt, id, vt)) return 0;
   return widen_arg_array(c, recv);
+}
+
+static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth);
+/* The Hash literals constant or global `recv` is assigned, directly or
+   through a local or a plain `begin` that hands one over (`T = begin h =
+   {"" => ""}; h.delete(""); h end`), are built as the Hash `want` its
+   stores widened it to. Left at their own variant, the write handed the
+   slot a Hash it has no conversion for (a copy would not be the Hash the
+   local holds), and the slot, joined with it, became the scalar box whose
+   String-valued Hash took no value of another class. */
+static void widen_named_hash_literals(Compiler *c, int recv, TyKind want) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  const char *nm = nt_str(nt, recv, "name");
+  if (!c->hash_want || !nm) return;
+  int gv = rk == NK_GlobalVariableReadNode;
+  if (!gv && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return;
+  const char *gn = gv ? comp_resolve_gvar(c, nm + 1) : NULL;
+  if (gv && !gn) return;
+  NT_FOREACH_KIND(nt, gv ? NK_GlobalVariableWriteNode : NK_ConstantWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(gv ? comp_resolve_gvar(c, wn + 1) : wn, gv ? gn : nm)) continue;
+    int v = nt_ref(nt, w, "value"), one;
+    if (vp_one(nt, v, VPS_BEGIN_PLAIN, &one) == VP1_NODE) v = one;
+    int lits[32], nl = container_literals(c, v, lits, 0, 32, 0);
+    for (int q = 0; q < nl; q++)
+      if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
+        comp_set_hash_want(c, lits[q], want);
+  }
+}
+
+/* ...each value of a push of several kinds its own evidence: their join
+   is the boxed reading push_escape_widen leaves alone (`f.concat([2], ["s"])`) */
+static int push_escape_widen_each(Compiler *c, int id, int recv, int is_push, TyKind vt) {
+  if (vt != TY_POLY || !is_push) return push_escape_widen(c, id, recv, is_push, vt);
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int cat = nm && sp_streq(nm, "concat"), from = nm && sp_streq(nm, "insert") ? 1 : 0;
+  int changed = 0;
+  for (int k = from; k < an && an > 1; k++)
+    changed |= push_escape_widen(c, id, recv, is_push, cat ? splice_incoming_elem(c, av[k]) : push_elem_ty(c, av[k]));
+  return changed;
 }
 
 static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
@@ -3133,12 +3187,11 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
   fold_evidence(&nt2, is_push, is_splice, kt, vt);
   if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
   ty_ref_set(c, nslot, nt2);
+  if (nhash) widen_named_hash_literals(c, recv, nt2);
   return 1;
 }
 
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
-enum { VL_NIL = 1, VL_NARROW = 2 };
-static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
 static int *cext_walk_values(Compiler *c);
 /* Is n (through parentheses) an element read out of the general Array,
    which holds its Strings as their handles? */
@@ -3648,7 +3701,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     LocalVar *slot_lv = NULL;   /* the local whose type slot is, if one */
     int slot_reset = 0;  /* slot is a plain local, reset+recomputed per iteration:
                             net change is the stash compare's job, not this site's */
-    const char *watch_nm = NULL;  /* ivar name for SP_IVWATCH, NULL for locals */
+    const char *watch_nm = NULL;  /* the ivar's name, NULL for a local */
     int watch_cls = -1;           /* the ivar's class, with watch_nm */
     if (rty && sp_streq(rty, "LocalVariableReadNode")) {
       const char *rnm = nt_str(nt, recv, "name");
@@ -3938,6 +3991,12 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       changed |= fold_named_slot_evidence(c, recv, is_push, is_splice, is_idx_write, (TyKind)kt, (TyKind)vt);
       continue;
     }
+    else if (is_push && nt_kind(nt, recv) == NK_ArrayNode) {
+      /* a literal nothing holds (`["q"].concat([1])`): it is built as the
+         general Array when the push stores a kind it cannot hold */
+      changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt);
+      continue;
+    }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
              nt_ref(nt, recv, "block") < 0) {
       /* `getter_method << x` / `getter_method[k] = v` where the getter
@@ -3946,7 +4005,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int recv_args = nt_ref(nt, recv, "arguments");
       int recv_argc = 0;
       if (recv_args >= 0) nt_arr(nt, recv_args, "arguments", &recv_argc);
-      if (recv_argc != 0) { changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
+      if (recv_argc != 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
       const char *mname = nt_str(nt, recv, "name");
       if (!mname) continue;
       /* The class the getter belongs to: the RECEIVER's when the push names one
@@ -4023,7 +4082,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
                 changed = 1;
               }
             }
-            changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt);
+            changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt);
             continue;
           }
           gcid = owner;
@@ -4031,7 +4090,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else {
         Scope *caller = comp_scope_of(c, recv);
-        if (!caller || caller->class_id < 0) continue;
+        /* (a top-level method's value: the Arrays it answers widen where
+           they are built) */
+        if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
         gcid = caller->class_id;
         cside = caller->is_cmethod;
       }
@@ -4059,7 +4120,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           if (!seen) { tcls[ntg] = gcls[j]; tiv[ntg] = giv[j]; ntg++; }
         }
       }
-      if (ntg <= 0) { free(tcls); free(tiv); changed |= push_escape_widen(c, id, recv, is_push, (TyKind)vt); continue; }
+      if (ntg <= 0) { free(tcls); free(tiv); changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
       /* a shared-mutable string spends its handle at a typed array's boundary,
          so the element slot stays a plain string (#3227) */
       if (is_push && vt == TY_STRBUF) vt = TY_STRING;
@@ -4110,7 +4171,6 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           ty_ref_set(c, tslot, TY_POLY_POLY_HASH);
           widen_ivar_hash_literals(c, &ivw_ix, tcls[ti], tiv[ti]);
         }
-        sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
         if (*tslot != tbefore) changed = 1;
         if (tbefore != TY_POLY_ARRAY && *tslot == TY_POLY_ARRAY)
           changed |= widen_ivar_array_params(c, &ivw_ix, tcls[ti], tiv[ti]);
@@ -4155,12 +4215,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          (*slot != before && ivar_has_param_write(c, &ivw_ix, watch_cls, watch_nm)))) {
       ty_ref_set(c, slot, TY_POLY_POLY_HASH);
       widen_ivar_hash_literals(c, &ivw_ix, watch_cls, watch_nm);
-      sp_ivwatch(watch_nm, "usage_idxwrite_misfit", before, *slot);
       changed = 1;
       continue;
     }
     if (!fits) continue;
-    sp_ivwatch(watch_nm, is_push ? "usage_push" : (is_idx_write ? "usage_idxwrite" : "usage_read"), before, *slot);
     if (*slot != before && !slot_reset) changed = 1;
     if (watch_nm && before != TY_POLY_ARRAY && *slot == TY_POLY_ARRAY)
       changed |= widen_ivar_array_params(c, &ivw_ix, watch_cls, watch_nm);
@@ -7224,15 +7282,11 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
    bind_args_params, and it closes with the pass. The write pass's stores
    (infer_write_container_usage) share the same way: a boxed receiver's
    arrays are the same from each of its stores, and a change it reports
-   ends the generation at the next store or walk.
-
-   With SPINEL_WBAS_SHADOW set, a visit skipped on the strength of a record
-   another walk from outside left is made all the same, in a fresh
-   generation, and must answer 0 and write nothing (wbas_shadow_end). */
-typedef struct { unsigned gen, walk; TyKind elem; signed char depth; } WbasRec;
+   ends the generation at the next store or walk. */
+typedef struct { unsigned gen; TyKind elem; signed char depth; } WbasRec;
 static struct { int cap; WbasRec *rec[2]; } wbas_memo;
 static struct { int cap, used; const LocalVar **key; WbasRec *rec; } wbas_lmemo;
-static unsigned wbas_gen = 1, wbas_gen_next = 1, wbas_walk = 0;
+static unsigned wbas_gen = 1, wbas_gen_next = 1;
 static int wbas_shared = 0;
 static void wbas_touch(void) {
   if (++wbas_gen_next == 0) {
@@ -7243,24 +7297,16 @@ static void wbas_touch(void) {
   }
   wbas_gen = wbas_gen_next;
 }
-static int wbas_shadow_on(void) {
-  static int on = -1;
-  if (on < 0) on = getenv("SPINEL_WBAS_SHADOW") != NULL;
-  return on;
-}
-/* 1 when `r` lets a visit at `depth` carrying `elem` be skipped; *shadow
-   says it was left by another walk from outside */
-static int wbas_rec_holds(const WbasRec *r, TyKind elem, int depth, int *shadow) {
-  if (r->gen != wbas_gen || r->elem != elem || r->depth > depth) return 0;
-  *shadow = wbas_shadow_on() && r->walk != wbas_walk;
-  return 1;
+/* 1 when `r` lets a visit at `depth` carrying `elem` be skipped */
+static int wbas_rec_holds(const WbasRec *r, TyKind elem, int depth) {
+  return r->gen == wbas_gen && r->elem == elem && r->depth <= depth;
 }
 static void wbas_rec_put(WbasRec *r, TyKind elem, int depth) {
   if (r->gen == wbas_gen && r->elem == elem && r->depth <= depth) return;
-  r->gen = wbas_gen; r->walk = wbas_walk; r->elem = elem; r->depth = (signed char)depth;
+  r->gen = wbas_gen; r->elem = elem; r->depth = (signed char)depth;
 }
-static int wbas_seen(int f, int v, TyKind elem, int depth, int *shadow) {
-  return v >= 0 && v < wbas_memo.cap && wbas_rec_holds(&wbas_memo.rec[f][v], elem, depth, shadow);
+static int wbas_seen(int f, int v, TyKind elem, int depth) {
+  return v >= 0 && v < wbas_memo.cap && wbas_rec_holds(&wbas_memo.rec[f][v], elem, depth);
 }
 static void wbas_note(Compiler *c, int f, int v, TyKind elem, int depth, unsigned gen) {
   if (v < 0 || gen != wbas_gen) return;
@@ -7284,10 +7330,10 @@ static int wbas_local_slot(const LocalVar *lv) {
   while (wbas_lmemo.rec[h].gen == wbas_gen && wbas_lmemo.key[h] != lv) h = (h + 1) & mask;
   return (int)h;
 }
-static int wbas_local_seen(const LocalVar *lv, TyKind elem, int depth, int *shadow) {
+static int wbas_local_seen(const LocalVar *lv, TyKind elem, int depth) {
   if (!wbas_lmemo.cap) return 0;
   int h = wbas_local_slot(lv);
-  return wbas_lmemo.key[h] == lv && wbas_rec_holds(&wbas_lmemo.rec[h], elem, depth, shadow);
+  return wbas_lmemo.key[h] == lv && wbas_rec_holds(&wbas_lmemo.rec[h], elem, depth);
 }
 static void wbas_local_note(const LocalVar *lv, TyKind elem, int depth, unsigned gen) {
   if (gen != wbas_gen) return;
@@ -7316,21 +7362,6 @@ static void wbas_local_note(const LocalVar *lv, TyKind elem, int depth, unsigned
   }
   wbas_rec_put(&wbas_lmemo.rec[h], elem, depth);
 }
-/* A shadowed visit runs in a generation of its own, which a record of
-   another walk cannot be in; the one it interrupted resumes after it. */
-static unsigned wbas_shadow_begin(void) {
-  unsigned outer = wbas_gen;
-  wbas_touch();
-  return outer;
-}
-static void wbas_shadow_end(unsigned outer, unsigned gen, int got, const char *what, int node) {
-  if (got || wbas_gen != gen) {
-    fprintf(stderr, "spinel: internal error: widen_boxed_array_sources skipped the %s at node %d, which %s\n",
-            what, node, got ? "widens" : "writes the analysis state");
-    exit(70);
-  }
-  wbas_gen = outer;
-}
 /* infer_param_types' per-node step: a change it reported ends the
    generation, and is kept in *any */
 static void wbas_share_step(int *changed, int *any) {
@@ -7351,22 +7382,17 @@ static void wbas_share_end(void) {
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
   if (depth == 0) {
-    wbas_walk++;
     if (!wbas_shared) wbas_touch();
     /* a change the sharing pass reported since its last step ends the
        generation before this walk reads what the earlier ones left */
     else if (wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
   }
   v = nt_paren_single(c->nt, v);
-  int ch = 0, shadow = 0;
-  if (!wbas_seen(0, v, elem, depth, &shadow)) {
+  int ch = 0;
+  if (!wbas_seen(0, v, elem, depth)) {
     unsigned gen = wbas_gen;
     ch = widen_boxed_array_sources_1(c, v, elem, depth);
     if (!ch) wbas_note(c, 0, v, elem, depth, gen);
-  }
-  else if (shadow) {
-    unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-    wbas_shadow_end(outer, gen, widen_boxed_array_sources_1(c, v, elem, depth), "value", v);
   }
   if (depth == 0 && !wbas_shared) wbas_touch();
   return ch;
@@ -7487,14 +7513,7 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
     /* every read of the local walks the same: keyed by the local, not by
        the read, which a function of W writes copying one local into
        another reads W times */
-    int shadow = 0;
-    if (wbas_local_seen(lv, elem, depth, &shadow)) {
-      if (shadow) {
-        unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-        wbas_shadow_end(outer, gen, widen_boxed_local_sources(c, sc, nm, lv, elem, depth), "local read", v);
-      }
-      return 0;
-    }
+    if (wbas_local_seen(lv, elem, depth)) return 0;
     unsigned gen = wbas_gen;
     int ch = widen_boxed_local_sources(c, sc, nm, lv, elem, depth);
     if (!ch) wbas_local_note(lv, elem, depth, gen);
@@ -7572,15 +7591,8 @@ static int widen_method_value_sources(Compiler *c, int v, int mi, TyKind elem, i
    values of a Hash), as far as its literals show them (container_literals). */
 static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth);
 static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) {
-  int shadow = 0;
   if (depth > 6) return 0;
-  if (wbas_seen(1, r, elem, depth, &shadow)) {
-    if (shadow) {
-      unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
-      wbas_shadow_end(outer, gen, widen_boxed_elem_sources_1(c, r, elem, depth), "container", r);
-    }
-    return 0;
-  }
+  if (wbas_seen(1, r, elem, depth)) return 0;
   unsigned gen = wbas_gen;
   int ch = widen_boxed_elem_sources_1(c, r, elem, depth);
   if (!ch) wbas_note(c, 1, r, elem, depth, gen);
@@ -16457,7 +16469,12 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
          methods first in a class method, the instance chain, and a
          top-level def last (comp_self_call_mi), as the splice resolves
          the call */
-      mi = comp_cbody_call_mi(c, id, name);
+      /* in a block run by instance_eval/exec the receiver's own method
+         answers first, as the call's typing and plan resolve it; left to
+         self, the block's parameters were never typed from its yields */
+      int iec = ie_class_of(c, id);
+      if (iec >= 0) mi = comp_method_in_chain(c, iec, name, NULL);
+      if (mi < 0) mi = comp_cbody_call_mi(c, id, name);
       if (mi < 0) mi = comp_self_call_mi(c, id, name);
     }
     else {
@@ -16695,6 +16712,15 @@ static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, i
      its own params directly from the call args. */
   if (rk == NK_LambdaNode || is_proc_create(c, recv))
     return cs_type_params_site(c, recv, argv, argc);
+  /* A parenthesized value (`(t = expr; lambda { |x| x.send(t) }).call(v)`,
+     which a computed Symbol's `.to_proc` becomes): the literal in its value
+     position. Left untyped, the parameter took the Integer default. */
+  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
+    if (depth > 4) return 0;
+    CsProcArms a = { c, recv, argv, argc, depth, 0 };
+    for_each_value_position(nt, recv, VPS_ALL, cs_proc_arm, &a);
+    return a.changed;
+  }
   /* A proc reached through a name: type the literal that name was assigned.
      A LOCAL was the only name looked at, so the identical lambda written to a
      constant or an instance variable kept the no-evidence int default and

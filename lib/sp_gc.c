@@ -1302,7 +1302,13 @@ static void sp_fin_after_mark(int full) {
  * entries of objects the cycle frees are dropped, where the finalizer
  * registry drops its own. The lock is the finalizer registry's rule: never
  * held across an allocation, so no collection stops a mutator inside it. */
+/* (hid, in a runtime built for C extensions: the table of the names an
+   extension sets without the @, which no Ruby code reads; sp_ivtbl_hidden_put) */
+#ifdef SP_CEXT
+typedef struct { const void *obj; void *tbl; void *hid; } sp_ivt_ent;
+#else
 typedef struct { const void *obj; void *tbl; } sp_ivt_ent;
+#endif
 static sp_ivt_ent *sp_ivt; static int sp_ivt_cap;   /* and sp_ivt_n, declared above sp_gc_verify_gen_run */
 static int *sp_ivt_ix; static int sp_ivt_icap;   /* entry index + 1; 0 empty; icap a power of two */
 #ifdef SP_THREADS
@@ -1343,23 +1349,47 @@ void *sp_ivtbl_get(const void *obj) {
   return t;
 }
 
-void sp_ivtbl_put(const void *obj, void *tbl) {
-  if (!obj) return;
-  SP_IVT_LOCK();
+/* the entry of obj, made when it has none (under the lock) */
+static sp_ivt_ent *sp_ivt_entry(const void *obj) {
   if (sp_ivt_icap && sp_ivt_n) {
     int s = sp_ivt_slot(obj);
-    if (sp_ivt_ix[s]) { sp_ivt[sp_ivt_ix[s] - 1].tbl = tbl; SP_IVT_UNLOCK(); return; }
+    if (sp_ivt_ix[s]) return &sp_ivt[sp_ivt_ix[s] - 1];
   }
   if (sp_ivt_n == sp_ivt_cap) {
     sp_ivt_cap = sp_ivt_cap ? sp_ivt_cap * 2 : 16;
     sp_ivt = (sp_ivt_ent *)realloc(sp_ivt, sizeof(sp_ivt_ent) * (size_t)sp_ivt_cap);
     if (!sp_ivt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  sp_ivt[sp_ivt_n].obj = obj; sp_ivt[sp_ivt_n].tbl = tbl; sp_ivt_n++;
+  memset(&sp_ivt[sp_ivt_n], 0, sizeof(sp_ivt_ent));
+  sp_ivt[sp_ivt_n].obj = obj; sp_ivt_n++;
   if ((size_t)sp_ivt_n * 2 > (size_t)sp_ivt_icap) sp_ivt_reindex(sp_ivt_icap ? sp_ivt_icap * 2 : 32);
   else sp_ivt_ix[sp_ivt_slot(obj)] = sp_ivt_n;
+  return &sp_ivt[sp_ivt_n - 1];
+}
+
+void sp_ivtbl_put(const void *obj, void *tbl) {
+  if (!obj) return;
+  SP_IVT_LOCK();
+  sp_ivt_entry(obj)->tbl = tbl;
   SP_IVT_UNLOCK();
 }
+
+#ifdef SP_CEXT
+void *sp_ivtbl_hidden_get(const void *obj) {
+  void *t = NULL;
+  SP_IVT_LOCK();
+  if (sp_ivt_n && obj) { int s = sp_ivt_slot(obj); if (sp_ivt_ix[s]) t = sp_ivt[sp_ivt_ix[s] - 1].hid; }
+  SP_IVT_UNLOCK();
+  return t;
+}
+
+void sp_ivtbl_hidden_put(const void *obj, void *tbl) {
+  if (!obj) return;
+  SP_IVT_LOCK();
+  sp_ivt_entry(obj)->hid = tbl;
+  SP_IVT_UNLOCK();
+}
+#endif
 
 /* Whether this cycle keeps obj: the finalizer registry's test. A value with
    one of the markers sp_gc_mark passes over (a static or a non-heap object)
@@ -1381,7 +1411,13 @@ static void sp_ivt_mark(int full, void (*drain)(void)) {
   for (int more = 1; more; ) {
     more = 0;
     for (int e = 0; e < sp_ivt_n; e++)
-      if (!done[e] && sp_ivt_key_live(sp_ivt[e].obj, full)) { done[e] = 1; more = 1; sp_gc_mark(sp_ivt[e].tbl); }
+      if (!done[e] && sp_ivt_key_live(sp_ivt[e].obj, full)) {
+        done[e] = 1; more = 1;
+        if (sp_ivt[e].tbl) sp_gc_mark(sp_ivt[e].tbl);
+#ifdef SP_CEXT
+        if (sp_ivt[e].hid) sp_gc_mark(sp_ivt[e].hid);
+#endif
+      }
     if (more) drain();
   }
   free(done);

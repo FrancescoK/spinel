@@ -158,27 +158,22 @@ static void imemo_rec_add(ImemoRec *r, int key) {
   if (r->n == IMEMO_DEPS) { r->n = -1; return; }
   r->dep[r->n++] = key;
 }
-/* SPINEL_IMEMO_TRACE=<node>: while that node's inference runs, every owner
-   noted and every nested inference is printed */
-static int g_imemo_trace_id = -2, g_imemo_trace;
-void imemo_dep_scope(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep scope %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : idx); }
-void imemo_dep_class(int idx) { if (g_imemo_trace) fprintf(stderr, "  dep class %d\n", idx); if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : -(idx + 2)); }
-void imemo_dep_global(void) { if (g_imemo_trace) fprintf(stderr, "  dep program\n"); if (g_imemo_rec_n > 0) g_imemo_rec[g_imemo_rec_n - 1].n = -1; }
+void imemo_dep_scope(int idx) { if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : idx); }
+void imemo_dep_class(int idx) { if (g_imemo_rec_n > 0) imemo_rec_add(&g_imemo_rec[g_imemo_rec_n - 1], idx < 0 ? -1 : -(idx + 2)); }
+void imemo_dep_global(void) { if (g_imemo_rec_n > 0) g_imemo_rec[g_imemo_rec_n - 1].n = -1; }
 static unsigned long imemo_owner_ver(int key) {
   if (key == -1) return comp_global_ver;
   if (key >= 0) return key < comp_scope_ver_cap ? comp_scope_ver[key] : comp_global_ver;
   int k = -(key + 2);
   return k < comp_class_ver_cap ? comp_class_ver[k] : comp_global_ver;
 }
-/* does node id's kept answer still stand? (g_imemo_fail: why not, for the
-   statistics -- the program moved, a scope, a class, or it read the program) */
-static unsigned long g_imemo_fail[4], g_imemo_fail_why[8];
+/* does node id's kept answer still stand? */
 static int imemo_deps_hold(int id) {
   const ImemoDeps *d = &g_imemo_deps[id];
-  if (d->n < 0) { if (comp_ty_edits <= d->at) return 1; g_imemo_fail[3]++; return 0; }
-  if (comp_global_ver > d->at) { g_imemo_fail[0]++; g_imemo_fail_why[comp_touch_last_why & 7]++; return 0; }
+  if (d->n < 0) return comp_ty_edits <= d->at;
+  if (comp_global_ver > d->at) return 0;
   for (int i = 0; i < d->n; i++)
-    if (imemo_owner_ver(d->dep[i]) > d->at) { g_imemo_fail[d->dep[i] >= 0 ? 1 : 2]++; return 0; }
+    if (imemo_owner_ver(d->dep[i]) > d->at) return 0;
   return 1;
 }
 /* node id's owners join the inference open now */
@@ -195,56 +190,19 @@ static unsigned long g_imemo_shadow_hits, g_imemo_shadow_bad;
 static void imemo_shadow_report(void) {
   fprintf(stderr, "imemo-shadow: %lu kept answers, %lu differ\n", g_imemo_shadow_hits, g_imemo_shadow_bad);
 }
-/* SPINEL_IMEMO_STATS=1: per named pass (g_an_pass_cur), what the lookups
-   met -- an answer of this tree, one kept from an earlier tree, a node never
-   inferred, or a stale answer (a table changed since) -- and of the stale
-   ones, how many the fresh inference answered the same: the ceiling for a
-   memo that outlives the edits it does not depend on. */
-const char *g_an_pass_cur;
-typedef struct { const char *pass; unsigned long tree, kept, fresh, stale, stale_same, nested; } ImemoStat;
-static ImemoStat g_imemo_stats[256];
-static int g_imemo_nstats, g_imemo_stats_on = -1;
-static ImemoStat *imemo_stat(void) {
-  const char *p = g_an_pass_cur ? g_an_pass_cur : "(none)";
-  for (int i = 0; i < g_imemo_nstats; i++) if (g_imemo_stats[i].pass == p) return &g_imemo_stats[i];
-  if (g_imemo_nstats == 256) return &g_imemo_stats[255];
-  g_imemo_stats[g_imemo_nstats].pass = p;
-  return &g_imemo_stats[g_imemo_nstats++];
-}
-static void imemo_stats_report(void) {
-  fprintf(stderr, "imemo-stats: writes: program %lu, scopes %lu, classes %lu; stale because: program moved %lu, a scope %lu, a class %lu, read the program %lu\n",
-          comp_touch_count[0], comp_touch_count[1], comp_touch_count[2], g_imemo_fail[0], g_imemo_fail[1], g_imemo_fail[2], g_imemo_fail[3]);
-  fprintf(stderr, "imemo-stats: the program's writes by cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
-          comp_touch_why[0], comp_touch_why[1], comp_touch_why[2], comp_touch_why[3], comp_touch_why[4], comp_touch_why[5]);
-  fprintf(stderr, "imemo-stats: stale after a program write by its latest cause: other %lu, pass boundary %lu, node table %lu, slot by pointer %lu, new slot %lu, new scope or class %lu\n",
-          g_imemo_fail_why[0], g_imemo_fail_why[1], g_imemo_fail_why[2], g_imemo_fail_why[3], g_imemo_fail_why[4], g_imemo_fail_why[5]);
-  fprintf(stderr, "imemo-stats: %-36s %12s %12s %12s %12s %12s %12s\n", "pass", "tree", "kept", "fresh", "stale", "stale-same", "nested");
-  for (int i = 0; i < g_imemo_nstats; i++) {
-    ImemoStat *s = &g_imemo_stats[i];
-    fprintf(stderr, "imemo-stats: %-36s %12lu %12lu %12lu %12lu %12lu %12lu\n", s->pass, s->tree, s->kept, s->fresh, s->stale, s->stale_same, s->nested);
-  }
-}
 /* A pass boundary: once the memo was emptied here, so that what came before
    a pass was never in doubt. The owners carry that now -- every write a pass
    makes, to a slot or to a fact inference reads, moves one -- so an answer
    crosses the boundary while its owners stand; the count still moves for the
-   memos keyed on it. SPINEL_IMEMO_BOUNDARY=1 empties the memo here as before. */
-static int g_imemo_bound = -1;
+   memos keyed on it. */
 void infer_memo_boundary(void) {
-  if (g_imemo_bound < 0) { const char *e = getenv("SPINEL_IMEMO_BOUNDARY"); g_imemo_bound = e && *e && *e != '0'; }
-  if (g_imemo_bound) comp_touch_global_r(1);
-  else comp_ty_edits++;
+  comp_ty_edits++;
 }
 static void imemo_mode_init(void) {
   const char *m = getenv("SPINEL_IMEMO");
   g_imemo_mode = !m ? IMEMO_ROUND : sp_streq(m, "tree") ? IMEMO_TREE :
                  sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_ROUND;
   if (g_imemo_mode == IMEMO_SHADOW) atexit(imemo_shadow_report);
-  const char *st = getenv("SPINEL_IMEMO_STATS");
-  g_imemo_stats_on = st && *st && *st != '0';
-  if (g_imemo_stats_on) atexit(imemo_stats_report);
-  const char *tr = getenv("SPINEL_IMEMO_TRACE");
-  if (tr && *tr) g_imemo_trace_id = atoi(tr);
   if (getenv("SPINEL_IMEMO_WHY")) comp_touch_log = calloc(COMP_TOUCH_LOG_CAP, sizeof(int));
 }
 static int g_infer_depth = 0;
@@ -375,9 +333,14 @@ static int ysa_find(int id, TyKind kind) {
    the first site's kind alone the yield stored the nil in an Integer slot
    and raised TypeError at run time (K-031). sort and reverse answer their
    receiver's own kind for an Array, and a String's reverse is a String: a
-   Hash or String site beside an Array site failed to compile (K-030b). */
+   Hash or String site beside an Array site failed to compile (K-030b).
+   find_index answers an Integer or nil per site, not an element: a Hash
+   site's Integer beside an Array site's nil was read as an RbVal (T4).
+   cycle answers an Enumerator per site, so a Hash site's endless cycle
+   beside an Array site's is answered by each site's own kind (T4). */
 static int yield_site_per_kind_name(const char *name) {
-  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse"));
+  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse") ||
+                  sp_streq(name, "find_index") || sp_streq(name, "cycle"));
 }
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
   const NodeTable *nt = c->nt;
@@ -2042,6 +2005,13 @@ int hash_enum_redispatch(Compiler *c, int id) {
     return 1;
   /* blockless each_with_index: an external Enumerator of [[k, v], i] */
   if (block < 0 && sp_streq(name, "each_with_index")) return 1;
+  /* blockless cycle: an Enumerator over the materialized pairs (T4) */
+  if (block < 0 && sp_streq(name, "cycle")) return 1;
+  /* blockless each_slice / each_cons on a yield (T4): a Hash site beside an
+     Array site on one yield rides the pair-array redispatch. A typed Hash
+     receiver keeps its own enumerator, whose each answers the Hash (CRuby). */
+  if (block < 0 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      nt_ref(nt, id, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_YieldNode) return 1;
   /* inject(:op) / reduce(:op): the Symbol-operator fold runs over the [k, v]
      pairs, the same materialization the block form below rides (#3830) */
   if (block < 0 && (is_reduce_alias(name))) return 1;
@@ -2699,6 +2669,16 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
       *range_has_float_bound = 1;
   }
 }
+/* `call`'s receiver is the argless, blockless `cycle` (the endless form), so
+   the call bounds that infinite enumerator. */
+static int yield_is_cycle_recv(const NodeTable *nt, int call) {
+  int r = nt_ref(nt, call, "receiver");
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "block") >= 0) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  int ra = nt_ref(nt, r, "arguments");
+  int rac = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
+  return rn && sp_streq(rn, "cycle") && rac == 0;
+}
 /* What the chain from the yield up to `node` answers at a site whose block
    answers `bt`, by ty_recv_builtin_result one link at a time. */
 static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) {
@@ -2708,6 +2688,12 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
   if (!yield_recv_chain_kind(c, nt_ref(nt, node, "receiver"), bt, &rk)) return 0;
   int an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  /* first(n) / take(n) over the endless cycle of a site's array: the bounded
+     elements, boxed as a poly array beside any other site's (T4). The fold
+     (emit_cycle_bounded_expr) boxes them to match. */
+  if (rk == TY_ENUMERATOR && (ac == 1 && (sp_streq(nt_str(nt, node, "name"), "first") ||
+      sp_streq(nt_str(nt, node, "name"), "take"))) && yield_is_cycle_recv(nt, node) &&
+      comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, nt_str(nt, node, "name")) < 0) { *out = TY_POLY_ARRAY; return 1; }
   /* Was `ac == 1` only (dig/[]/sample's own 1-arg needs); widened to any
      ac >= 1 so clamp's 2-arg form also gets its first bound's kind --
      every other existing arm here only ever matched ac == 1 anyway, so
@@ -5118,9 +5104,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
-    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
-       It reads the mode, so it sits ahead of the to_i row. */
-    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
+    /* promote mode: a String#to_i, #hex or #oct past sp_int is a Bignum
+       (sp_str_to_i_promote). It reads the mode, so it sits ahead of the rows. */
+    if (g_promote_mode && str_int_promotes(name, argc)) { *out = TY_POLY; return 1; }
     /* builtin-op rows (builtin_ops.c): the calls typed by name, arity, block
        form and, for the rows that guard it, the argument's kind (casecmp's
        and lines' separator) */
@@ -5502,7 +5488,7 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
       { *out = TY_FLOAT; return 1; }
     { *out = TY_UNKNOWN; return 1; }
   }
-  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = an_planned_call_ret(c, id, TY_INT); return 1; }
   if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
     /* The comparison is Boolean even when the plan routes it through a
        user method returning the ordering value. Keep that target too. */
@@ -6936,7 +6922,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : builtin_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : object_fallback_class_of_type(rt);
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
@@ -7536,7 +7522,9 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
     int cargs = nt_ref(nt, recv, "arguments");
     int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
     int pr = nt_ref(nt, recv, "receiver");
-    if (cac == 0 && pr >= 0) { TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) { *out = rt2; return 1; } }
+    if (cac == 0 && pr >= 0 && comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, name) < 0) {
+      TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) { *out = rt2; return 1; }
+    }
   }
 
   /* int_array.chunk_while/slice_when/chunk { |...| } .to_a -> a poly array (runs / pairs) */
@@ -8209,6 +8197,12 @@ static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const 
     const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
+  /* Symbol#to_proc answers a Proc whatever the name (desugar_symbol_var_block_arg
+     makes it the lambda). A local it is written to is a Proc from the first
+     round, so the lambda's `.call` sites type its parameter before the
+     Integer default does -- and before a send of a computed name lowers its
+     arms for that default. */
+  if (sp_streq(name, "to_proc") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_PROC;
   /* Symbol#<=> is defined only between Symbols; String included, any other
      operand is not comparable and the result is nil (#3081) */
   if (sp_streq(name, "<=>") && argc == 1) {
@@ -8444,7 +8438,8 @@ int an_push_widens_fresh(Compiler *c, int id) {
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!nm || recv < 0 || !is_push_alias(nm) || nt_ref(nt, id, "block") >= 0) return 0;
+  int cat = nm && sp_streq(nm, "concat");
+  if (!nm || recv < 0 || !(is_push_alias(nm) || cat) || nt_ref(nt, id, "block") >= 0) return 0;
   if (nt_kind(nt, nt_paren_single(c->nt, recv)) != NK_CallNode) return 0;
   TyKind rt = infer_type(c, recv);
   if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
@@ -8454,14 +8449,26 @@ int an_push_widens_fresh(Compiler *c, int id) {
   TyKind elem = ty_array_elem(rt);
   int a = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  /* concat splices each argument's elements: a typed Array of another
+     kind (an Integer stays an Integer beside Floats, as CRuby keeps it) */
+  if (cat) {
+    int other = 0;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
+      TyKind at = infer_type(c, av[k]);
+      if (at != TY_STR_ARRAY && at != TY_INT_ARRAY && at != TY_FLOAT_ARRAY && at != TY_POLY_ARRAY) return 0;
+      if (at != rt) other = 1;
+    }
+    return other;
+  }
   for (int k = 0; k < ac; k++) {
     if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
     TyKind at = infer_type(c, av[k]);
     if (at == TY_STRBUF) at = TY_STRING;
     int scalar = at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL || at == TY_BOOL ||
                  at == TY_BIGINT;
-    /* an Integer into a Float Array is stored as the Float it converts to */
-    if (scalar && at != elem && !(elem == TY_FLOAT && at == TY_INT)) return 1;
+    /* (an Integer beside Floats stays an Integer, as CRuby keeps it) */
+    if (scalar && at != elem) return 1;
   }
   return 0;
 }
@@ -8794,7 +8801,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        the exception has none -- `if msg.backtrace` in the logger gem's
        Formatter was refused as a non-bool condition because the call had
        no type at all */
-    if (is_poly_exc_boxed_call(name, argc)) return TY_POLY;
+    if (is_poly_exc_boxed_call(name, argc)) return an_planned_call_ret(c, id, TY_POLY);
   }
 
   TyKind send_ret;
@@ -9125,7 +9132,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     } }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
-      (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
+      (rt == TY_BOOL || rt == TY_NIL)) return an_planned_call_ret(c, id, TY_POLY);
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   { TyKind ed; if (recv < 0 && infer_enum_desugar_call(name, argc, &ed)) return ed; }
@@ -10129,7 +10136,6 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
      poly, uniformly, whatever any individual call site's block answers. That
      is the whole point of the clone -- everything the yield feeds widens with
      it, so one body serves every site (#3399). */
-  if (getenv("SP_DBG_PF2")) fprintf(stderr, "[y] node=%d scope=%d pf=%d name=%s\n", id, ymi, (ymi>=0&&ymi<c->nscopes)?c->scopes[ymi].is_proc_form:-1, (ymi>=0&&ymi<c->nscopes&&c->scopes[ymi].name)?c->scopes[ymi].name:"?");
   if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_proc_form) { *out = TY_POLY; return 1; }
   /* A lowered method's block is a proc as well, and its yield is a call
      on it: poly. Without this a lowered method no site ever gave a block
@@ -11395,6 +11401,14 @@ TyKind infer_uncached(Compiler *c, int id) {
        refused -- a lambda's keywords, `f.call(**h, "s" => nil)`, too. */
     if (hv != TY_UNKNOWN && spread_ty != TY_UNKNOWN && (spread_mixed || spread_ty != hv))
       return TY_POLY_POLY_HASH;
+    /* A literal a constant or a global is assigned, whose `[]=` stores
+       widened the slot to the poly-valued Hash of the literal's key
+       (fold_named_slot_evidence), is built as that Hash: the slot and the
+       literal are one Hash */
+    if (hv != TY_UNKNOWN && c->hash_want && id < c->node_cap && ty_is_hash(c->hash_want[id]) &&
+        c->hash_want[id] != hv && ty_hash_val(c->hash_want[id]) == TY_POLY &&
+        ty_hash_key(c->hash_want[id]) == ty_hash_key(hv))
+      return c->hash_want[id];
     if (hv != TY_UNKNOWN) return hv;
     /* keyword arguments are symbol-keyed */
     if (empty_spread && kt == TY_UNKNOWN) return nk == NK_KeywordHashNode ? TY_SYM_POLY_HASH : TY_POLY_POLY_HASH;
@@ -11953,27 +11967,20 @@ TyKind infer_type(Compiler *c, int id) {
      per asker, exponential in the chain's length (#4467) */
   int memo_ok = infer_memo_usable();
   if (g_imemo_rec_n >= IMEMO_REC_MAX) g_imemo_rec[IMEMO_REC_MAX - 1].n = -1;
-  int kept = 0, stale = 0;
-  TyKind kept_t = TY_UNKNOWN, stale_t = TY_UNKNOWN;
+  int kept = 0;
+  TyKind kept_t = TY_UNKNOWN;
   ImemoDeps kept_d = { 0, 0, {0} };
-  ImemoStat *stat = g_imemo_stats_on > 0 && memo_ok ? imemo_stat() : NULL;
   if (memo_ok && id < g_imemo_cap) {
     unsigned st = g_imemo_stamp[id];
     if (st == g_imemo_gen) {
-      if (stat) stat->tree++;
-      if (g_imemo_trace) fprintf(stderr, "  %*stree-hit %d %s -> %s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]));
       imemo_rec_merge(id); return g_imemo_val[id];
     }
     /* an answer of an earlier tree, kept while the owners it read stand */
     if (st && g_imemo_mode != IMEMO_TREE && imemo_deps_hold(id)) {
-      if (stat) stat->kept++;
-      if (g_imemo_trace) fprintf(stderr, "  %*skept-hit %d %s -> %s (at %lu, owners %d)\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", ty_name(g_imemo_val[id]), g_imemo_deps[id].at, g_imemo_deps[id].n);
       if (g_imemo_mode == IMEMO_ROUND) { imemo_rec_merge(id); return g_imemo_val[id]; }
       kept = 1; kept_t = g_imemo_val[id]; kept_d = g_imemo_deps[id];
     }
-    else if (st) { stale = 1; stale_t = g_imemo_val[id]; }
   }
-  if (stat && !kept) { if (g_infer_depth) stat->nested++; else if (stale) stat->stale++; else stat->fresh++; }
   /* the record of this inference: what it reads, noted by the lookups */
   unsigned long at0 = comp_ty_edits;
   int rec_i = -1;
@@ -11983,17 +11990,9 @@ TyKind infer_type(Compiler *c, int id) {
        neighbours' are read without a lookup */
     imemo_rec_add(&g_imemo_rec[rec_i], id < c->node_cap && c->nscope ? c->nscope[id] : -1);
   }
-  int tr_here = id == g_imemo_trace_id;
-  if (tr_here) { g_imemo_trace = 1; fprintf(stderr, "imemo-trace: node %d begins at edit %lu\n", id, comp_ty_edits); }
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
-  if (g_imemo_trace) {
-    const char *nm = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
-    fprintf(stderr, "  %*sinfer %d %s%s%s -> %s%s\n", g_infer_depth * 2, "", id, nt_type(c->nt, id) ? nt_type(c->nt, id) : "?",
-            nm ? " " : "", nm ? nm : "", ty_name(t), kept ? " (kept differs?)" : "");
-  }
-  if (tr_here) g_imemo_trace = 0;
   ImemoRec rec = { -1, {0} };
   if (rec_i >= 0) {
     rec = g_imemo_rec[rec_i];
@@ -12057,7 +12056,7 @@ TyKind infer_type(Compiler *c, int id) {
        arm scans the scopes by name, +10% analysis on optcarrot and +23% on
        a 2000-ivar class when it ran on every plain compile */
     static int want = -1;
-    if (want < 0) { const char *ww = getenv("SPINEL_WARN_WIDEN"), *et = getenv("SPINEL_EMIT_TYPES"); want = ((ww && *ww) || (et && *et)) ? 1 : 0; }
+    if (want < 0) want = (g_opt_warn_widen || g_opt_emit_types) ? 1 : 0;
     if (want && id < c->node_cap) c->norigin[id] = why_node_origin(c, id, t);
   }
   /* memo_ok still holds here: every mode section inside infer_uncached
@@ -12088,7 +12087,6 @@ TyKind infer_type(Compiler *c, int id) {
     d->at = at0; d->n = rec.n;
     for (int i = 0; i < (rec.n > 0 ? rec.n : 0); i++) d->dep[i] = rec.dep[i];
   }
-  if (stat && stale && g_infer_depth == 0 && stale_t == t) stat->stale_same++;
   if (kept) {
     g_imemo_shadow_hits++;
     if (kept_t != t) {

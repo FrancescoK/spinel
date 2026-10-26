@@ -1,0 +1,49 @@
+true
+true
+true
+"UTF-8"
+1
+2
+[1, "apple", 1.5, "ASCII-8BIT", 3, nil]
+[2, "pear", 2.0, "UTF-8", 5, "fresh"]
+true
+["apple"]
+["pear"]
+[{"id" => 1, "name" => "apple"}]
+["name", "price"]
+[1.5]
+[["apple", 1.5], ["pear", 2.0]]
+["pear", 2.0]
+false
+true
+2
+["pear", 2.0]
+[["integer", "real", "text", "null"]]
+[[42]]
+[["a-b"]]
+[[3.5]]
+[[0]]
+[["pear"], ["apple"]]
+3
+"undo"
+3
+near "frm": syntax error:
+select * frm items
+         ^
+1
+SQLite3::ConstraintException
+"UNIQUE constraint failed: items.id"
+true
+false
+["id", "name", "price", "data", "note"]
+[["id", "name"], [1, "apple"], [2, "pear"]]
+SQLite3::AuthorizationException
+1
+50
+[2]
+false
+false
+true
+[ArgumentError, "prepare called on a closed database"]
+101
+[[7]]

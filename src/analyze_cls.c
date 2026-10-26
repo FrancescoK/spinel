@@ -65,6 +65,10 @@ typedef struct { unsigned char *kw; int *el; } CFParams;
    arguments' containers (cf_kbuiltin_name, cf_kfills): 0 not asked, 1 no,
    2 yes. Both read tables the solve does not write. */
 typedef struct { const char *name; unsigned char kb, kf; } CFKName;
+/* a call cf_call_known binds (its node, receiver element, name, arguments
+   and block): the receiver's set it bound last, whether a class of that set
+   took the builtin answer, and whether it must bind every class again (cf_site) */
+typedef struct { int v, recv_el, argc, blk; char *nm; int *argv; int pidx; unsigned char builtin, stale; } CFSite;
 
 typedef struct CF {
   Compiler *c; const NodeTable *nt; int *par; int nnodes;
@@ -95,6 +99,9 @@ typedef struct CF {
      into them (`gcd`), and per scope whether it is one */
   struct { const char *base; int mi; } *scal; int nscal; unsigned char *scal_mi;
   int (*umemo)[3];            /* cf_union's answers, direct-mapped: (a, b, a | b) */
+  CFSite *site; int site_n, site_cap; int *site_h; int site_hcap;   /* cf_call_known's calls, hashed */
+  int cur_site;               /* the call cf_call_known is binding, -1 outside */
+  int **ysite; int *nysite, *cysite;    /* per scope while its yval_used is unset: the calls that bound a block to it */
   int rvis;                   /* (directed) every value the runtime may see: what it may hand a callback */
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
@@ -154,9 +161,7 @@ typedef struct CF {
   long st_edges, st_pts, st_drain, st_rounds;
   int *fs, nfs, cfs;                   /* new edges whose source's objects are yet to be sent: (src, dst, kind) */
   int *orig;                  /* (directed, SPINEL_CLS_FLOW=why) per element, the rule line that made it every class */
-  int dbg_seed, dbg_ptop;     /* SPINEL_CLS_FLOW_SEED, SPINEL_CLS_FLOW_PTOP: print where every class, and an untracked container, start */
-  int *all_seq, seq;          /* (directed) per element, the order it became every class in: SPINEL_CLS_FLOW_TRACE walks it back */
-  int pts_max;                /* objects an element holds before it joins the summary (CF_PTS_MAX; SPINEL_CLS_FLOW_PTSMAX overrides) */
+  int pts_max;                /* objects an element holds before it joins the summary (CF_PTS_MAX) */
   /* (directed, in a program that calls compare_by_identity) the kinds
      (CK_*, compiler.h) a value no class stands for brings in, per element
      (cf_kmark), and what cf_kinds carries them along besides the edges:
@@ -446,7 +451,7 @@ static void cf_grow_directed(CF *f) {
 #define CF_GROW(p) do { if (!((p) = realloc((p), sizeof *(p) * (size_t)ncap))) cf_oom(); } while (0)
   CF_GROW(f->succ); CF_GROW(f->nsucc); CF_GROW(f->csucc);
   CF_GROW(f->psucc); CF_GROW(f->npsucc); CF_GROW(f->cpsucc);
-  CF_GROW(f->inwl); CF_GROW(f->orig); CF_GROW(f->all_seq);
+  CF_GROW(f->inwl); CF_GROW(f->orig);
   CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts); CF_GROW(f->pbit); CF_GROW(f->npbit); CF_GROW(f->sent); CF_GROW(f->sentp);
   CF_GROW(f->pdel); CF_GROW(f->npdel); CF_GROW(f->cpdel);
   CF_GROW(f->ld); CF_GROW(f->nld); CF_GROW(f->cld);
@@ -457,7 +462,7 @@ static void cf_grow_directed(CF *f) {
   for (int i = f->dcap; i < ncap; i++) {
     f->succ[i] = NULL; f->nsucc[i] = 0; f->csucc[i] = 0;
     f->psucc[i] = NULL; f->npsucc[i] = 0; f->cpsucc[i] = 0;
-    f->inwl[i] = 0; f->orig[i] = 0; f->all_seq[i] = 0;
+    f->inwl[i] = 0; f->orig[i] = 0;
     f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0; f->pbit[i] = NULL; f->npbit[i] = 0; f->sent[i] = CF_EMPTY; f->sentp[i] = 0;
     f->pdel[i] = NULL; f->npdel[i] = 0; f->cpdel[i] = 0;
     f->ld[i] = NULL; f->nld[i] = 0; f->cld[i] = 0;
@@ -506,7 +511,6 @@ static void cf_escape(CF *f, int e);
 #define cf_ptop_set(f, x) cf_ptop_set_at((f), (x), __LINE__)
 static void cf_ptop_set_at(CF *f, int x, int line) {
   if (x < 0 || f->ptop[x]) return;
-  if (f->dbg_ptop) fprintf(stderr, "cls-flow-ptop: rule %d element %d set-all %d npts %d smc %d\n", line, x, f->set[x] == CF_ALL, f->npts[x], f->smc[x]);
   f->ptop[x] = 1; f->changed = 1;
   /* (why: a load out of it is every class because the container is; the
      container's own origin is the rule to name) */
@@ -570,7 +574,6 @@ static void cf_pts_add(CF *f, int x, int o) {
 }
 static void cf_escape(CF *f, int e) {
   if (e < 0 || f->esc[e]) return;
-  if (f->dbg_ptop) fprintf(stderr, "cls-flow-esc: element %d node-line %d kind %s name %s file %s\n", e, e < f->nnodes ? (int)nt_int(f->nt, e, "node_line", 0) : -1, e < f->nnodes ? nt_type(f->nt, e) : "slot", e < f->nnodes && nt_str(f->nt, e, "name") ? nt_str(f->nt, e, "name") : "-", e < f->nnodes && nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) ? nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) : "-");
   f->esc[e] = 1; f->changed = 1;
   /* e's values are the runtime's from now on, and so are the objects they
      hold (rtc is escaped: cf_pts_add joins each object's contents with it) */
@@ -698,7 +701,6 @@ static void cf_drain(CF *f) {
         int u = cf_union(f, f->set[y], sx);
         if (u != f->set[y]) {
           if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
-          if (u == CF_ALL) f->all_seq[y] = ++f->seq;
           f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
           if (u == CF_ALL) cf_ptop_set(f, y);
         }
@@ -732,7 +734,6 @@ static void cf_edge(CF *f, int src, int dst) {
   int u = cf_union(f, f->set[dst], f->set[src]);
   if (u != f->set[dst]) {
     if (u == CF_ALL && !f->orig[dst]) f->orig[dst] = f->orig[src] ? f->orig[src] : -1;
-    if (u == CF_ALL) f->all_seq[dst] = ++f->seq;
     f->set[dst] = u; cf_wl_push(f, dst);
     if (u == CF_ALL) cf_ptop_set(f, dst);
   }
@@ -976,23 +977,8 @@ static void cf_unite_at(CF *f, int a, int b, int line) {
   }
   f->changed = 1;
 }
-/* (measurement) SPINEL_CLS_SKIP=L1,L2,...: an every-class set a rule at one
-   of those lines (or seeding cause, 9000x) adds is not added. Unsound: it
-   bounds what each root costs, the harness the closed-world stages are
-   measured in (#8837). */
-static int cf_skip_line(int line) {
-  static int init, n, ls[256];
-  if (!init) {
-    init = 1;
-    const char *e = getenv("SPINEL_CLS_SKIP");
-    while (e && *e && n < 256) { ls[n++] = atoi(e); e = strchr(e, ','); if (e) e++; }
-  }
-  for (int i = 0; i < n; i++) if (ls[i] == line) return 1;
-  return 0;
-}
 static void cf_add_set_at(CF *f, int x, int pidx, int line) {
   if (x < 0) return;
-  if (pidx == CF_ALL && cf_skip_line(line)) return;
   if (f->directed) {
     /* (the kinds: a value from anywhere, or an object of a class the kinds
        cannot stand on) */
@@ -1008,8 +994,6 @@ static void cf_add_set_at(CF *f, int x, int pidx, int line) {
     int u = cf_union(f, f->set[x], pidx);
     if (u != f->set[x]) {
       if (u == CF_ALL && !f->orig[x]) f->orig[x] = pidx == CF_ALL ? line : -line;
-      if (u == CF_ALL) f->all_seq[x] = ++f->seq;
-      if (u == CF_ALL && f->dbg_seed) fprintf(stderr, "cls-flow-seed: rule %d element %d node-line %d kind %s\n", line, x, x < f->nnodes ? (int)nt_int(f->nt, x, "node_line", 0) : -1, x < f->nnodes ? nt_type(f->nt, x) : "slot");
       f->set[x] = u; f->changed = 1;
       if (u == CF_ALL) cf_ptop_set(f, x);
       cf_wl_push(f, x); cf_drain(f);
@@ -1939,7 +1923,13 @@ static void cf_proc_value_ready(CF *f, int e) {
   int om = cf_owner_def(f, e, 1, NULL);
   const char *en = nt_str(nt, e, "name");
   if (om < 0 || !en || !f->c->scopes[om].blk_param || !sp_streq(en, f->c->scopes[om].blk_param)) return;
-  if (!f->yval_used[om]) { f->yval_used[om] = 1; f->changed = 1; }
+  if (!f->yval_used[om]) {
+    f->yval_used[om] = 1; f->changed = 1;
+    /* (the calls that bound a block to om bind it again: its value now
+       goes to the yields', see cf_call_known) */
+    for (int i = 0; i < f->nysite[om]; i++) f->site[f->ysite[om][i]].stale = 1;
+    free(f->ysite[om]); f->ysite[om] = NULL; f->nysite[om] = f->cysite[om] = 0;
+  }
 }
 static void cf_bind_block(CF *f, int mi, int blk) {
   const NodeTable *nt = f->nt;
@@ -1976,6 +1966,8 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   }
   if (nt_kind(nt, blk) != NK_BlockNode) return;
   if (f->yval_used[mi]) cf_flow(f, blk, f->yval_el[mi]);
+  else if (f->cur_site >= 0 && (!f->nysite[mi] || f->ysite[mi][f->nysite[mi] - 1] != f->cur_site))
+    cf_push_int(&f->ysite[mi], &f->nysite[mi], &f->cysite[mi], f->cur_site);
   int body = nt_ref(nt, blk, "body");
   const char *names[CF_YARGS];
   int plain = 1;
@@ -2741,19 +2733,95 @@ static int cf_user_target_once(CF *f, int v, int mi, const int *argv, int argc, 
   if (*n < 256) { seen[*n] = mi; res[*n] = r; (*n)++; }
   return r;
 }
+static unsigned cf_site_hash(int v, int recv_el, const char *nm, const int *argv, int argc, int blk) {
+  unsigned long long h = (unsigned)v * 0x9E3779B97F4A7C15ULL ^ (unsigned)recv_el * 0xC2B2AE3D27D4EB4FULL ^
+                         (unsigned long long)sp_strhash(nm) << 20 ^ (unsigned)argc * 40503u ^ (unsigned)blk * 2654435761u;
+  for (int i = 0; i < argc; i++) h = (h ^ (unsigned)argv[i]) * 0x100000001B3ULL;
+  return (unsigned)(h >> 32);
+}
+/* The call's entry, made when new. The name and the arguments are
+   compared by value: a caller may pass them in a buffer of its own. */
+static int cf_site(CF *f, int v, int recv_el, const char *nm, const int *argv, int argc, int blk) {
+  if (f->site_n * 2 >= f->site_hcap) {
+    int ncap = f->site_hcap ? f->site_hcap * 2 : 1 << 12;
+    int *nh = malloc(sizeof *nh * (size_t)ncap);
+    if (!nh) cf_oom();
+    for (int i = 0; i < ncap; i++) nh[i] = -1;
+    for (int i = 0; i < f->site_hcap; i++)
+      if (f->site_h[i] >= 0) {
+        const CFSite *e = &f->site[f->site_h[i]];
+        unsigned j = cf_site_hash(e->v, e->recv_el, e->nm, e->argv, e->argc, e->blk) & (unsigned)(ncap - 1);
+        while (nh[j] >= 0) j = (j + 1) & (unsigned)(ncap - 1);
+        nh[j] = f->site_h[i];
+      }
+    free(f->site_h); f->site_h = nh; f->site_hcap = ncap;
+  }
+  unsigned j = cf_site_hash(v, recv_el, nm, argv, argc, blk) & (unsigned)(f->site_hcap - 1);
+  for (; f->site_h[j] >= 0; j = (j + 1) & (unsigned)(f->site_hcap - 1)) {
+    const CFSite *e = &f->site[f->site_h[j]];
+    if (e->v == v && e->recv_el == recv_el && e->argc == argc && e->blk == blk && sp_streq(e->nm, nm) &&
+        (argc == 0 || !memcmp(e->argv, argv, sizeof(int) * (size_t)argc))) return f->site_h[j];
+  }
+  if (f->site_n == f->site_cap) {
+    f->site_cap = f->site_cap ? f->site_cap * 2 : 1024;
+    if (!(f->site = realloc(f->site, sizeof *f->site * (size_t)f->site_cap))) cf_oom();
+  }
+  CFSite *e = &f->site[f->site_n];
+  e->v = v; e->recv_el = recv_el; e->argc = argc; e->blk = blk;
+  e->nm = strdup(nm); e->argv = argc > 0 ? malloc(sizeof(int) * (size_t)argc) : NULL;
+  if (!e->nm || (argc > 0 && !e->argv)) cf_oom();
+  if (argc > 0) memcpy(e->argv, argv, sizeof(int) * (size_t)argc);
+  e->pidx = CF_EMPTY; e->builtin = 0; e->stale = 0;
+  f->site_h[j] = f->site_n;
+  return f->site_n++;
+}
+/* every member of a is one of b's */
+static int cf_set_within(const ClsSet *a, const ClsSet *b) {
+  int j = 0;
+  for (int i = 0; i < a->nw; i++) {
+    while (j < b->nw && b->wi[j] < a->wi[i]) j++;
+    if (j == b->nw || b->wi[j] != a->wi[i] || (a->w[i] & ~b->w[j])) return 0;
+  }
+  return 1;
+}
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
-  int builtin = pidx == CF_EMPTY || s->bv || s->os;
+  int builtin = 0;
   char base[256] = "";
   int is_w = setter_base_name(nm, base, sizeof base);
   /* a method many of the classes answer with is bound once (a receiver
      that may be any of hundreds of classes, a protocol method's parameter) */
   int ut_mi[256], ut_r[256], nut = 0;
 #define CF_UT(mi) cf_user_target_once(f, v, (mi), argv, argc, blk, ut_mi, ut_r, &nut)
-  /* (the set by its index each step: binding a class's method adds sets,
-     and the pool they go into moves) */
-  for (int k = cls_set_next(&f->pool[pidx], -1); k >= 0; k = cls_set_next(&f->pool[pidx], k)) {
+  /* The walk visits every call each round, and a receiver's set only
+     grows: what a class's binding makes (edges, loads, stores, the
+     elements it names) stands, so a call binds only the classes its
+     receiver holds now that it did not at its last visit. A Rails
+     application's closed walk bound some 1.7 billion classes, nearly all
+     of them again. A block's binding also reads yval_used, which the walk
+     sets: a call that bound a block to a method before its flag was set
+     binds every class again at its next visit, as each visit did. The
+     builtin answer is kept per call for the classes bound, and taken
+     afresh for the set itself (an empty set takes it until a class comes). */
+  int si = cf_site(f, v, recv_el, nm, argv, argc, blk);
+  int last = f->site[si].pidx;
+  if (f->site[si].stale || !cf_set_within(&f->pool[last], s)) { last = CF_EMPTY; f->site[si].builtin = 0; }
+  f->site[si].stale = 0;
+  int outer = f->cur_site;
+  f->cur_site = si;
+  int nnew = 0, nbuf[256], *knew = nbuf;
+  if (s->n > (int)(sizeof nbuf / sizeof *nbuf) && !(knew = malloc(sizeof(int) * (size_t)s->n))) cf_oom();
+  {
+    const ClsSet *o = &f->pool[last];
+    for (int i = 0, j = 0; i < s->nw; i++) {
+      while (j < o->nw && o->wi[j] < s->wi[i]) j++;
+      unsigned long long m = s->w[i] & ~(j < o->nw && o->wi[j] == s->wi[i] ? o->w[j] : 0);
+      for (; m; m &= m - 1) knew[nnew++] = s->wi[i] * 64 + __builtin_ctzll(m);
+    }
+  }
+  for (int q = 0; q < nnew; q++) {
+    int k = knew[q];
     if (k >= c->nclasses) {
       /* the Class object: a construction, a class method, else Class's own */
       int kc = k - c->nclasses;
@@ -2829,6 +2897,14 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     int each = comp_method_in_chain(c, k, "each", NULL);
     if (each >= 0) for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[each][y], v); cf_store(f, recv_el, f->yarg_el[each][y]); }
   }
+  if (knew != nbuf) free(knew);
+  /* (by index: a binding may call again, and the table moves) */
+  f->cur_site = outer;
+  f->site[si].pidx = pidx;
+  builtin |= f->site[si].builtin;
+  f->site[si].builtin = (unsigned char)builtin;
+  s = &f->pool[pidx];
+  if (pidx == CF_EMPTY || s->bv || s->os) builtin = 1;
   if (builtin) {
     /* Deferred until the classes have settled: the builtin answer unifies
        the receiver with the call's value and arguments, which a receiver
@@ -2861,11 +2937,6 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
    takes the arguments and the block; the value is anything */
 static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int argc, int blk, int line) {
   Compiler *c = f->c;
-  /* (measurement) SPINEL_CLS_ANYSITE=<line>: the sites that rule makes anything */
-  if (getenv("SPINEL_CLS_ANYSITE") && f->set[v] != CF_ALL && atoi(getenv("SPINEL_CLS_ANYSITE")) == line && v < f->nnodes) {
-    const char *fp = nt_file_path(f->nt, (int)nt_int(f->nt, v, "node_file", 0));
-    fprintf(stderr, "cls-anysite: %s:%d %s\n", fp ? fp : "?", (int)nt_int(f->nt, v, "node_line", 0), nm);
-  }
   cf_add_set_at(f, v, CF_ALL, line);
   /* a reader of the name answers its ivar's object: the call's value holds
      each such object, so what is stored into it (`x.items << y`) reaches the
@@ -2913,7 +2984,7 @@ static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int ar
   (void)c;
 }
 
-/* (the call site's line is the root's, for SPINEL_CLS_FLOW=why and SKIP) */
+/* (the call site's line is the root's, for SPINEL_CLS_FLOW=why) */
 #define cf_call_any(f, v, nm, argv, argc, blk) cf_call_any_at((f), (v), (nm), (argv), (argc), (blk), __LINE__)
 static void cf_send_writers(CF *f, int v, int r, const int *argv, int argc) {
   Compiler *c = f->c;
@@ -4653,7 +4724,7 @@ static void cf_why_report(CF *f) {
 /* SPINEL_CLS_FACTS: each call's receiver fact, as the oracle reads it */
 static void cf_dump_facts(Compiler *c) {
   const NodeTable *nt = c->nt;
-  /* SPINEL_CLS_FACTS=vals: each call's own value, with its node (for SPINEL_CLS_FLOW_TRACE) */
+  /* SPINEL_CLS_FACTS=vals: each call's own value, with its node */
   if (sp_streq(getenv("SPINEL_CLS_FACTS"), "vals")) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       const ClsSet *s = cls_fact_node(c, id);
@@ -4696,80 +4767,6 @@ static void cf_dump_facts(Compiler *c) {
   }
 }
 
-/* SPINEL_CLS_FLOW_TRACE=<node or element>: from an element that is every
-   class, back along the edges to the element that became so first, with
-   the rule line that made it so (orig), what loaded it from an untracked
-   container, and whose contents it is. A debugging aid for #8837. */
-static void cf_el_describe(CF *f, int x, const char *tag) {
-  const NodeTable *nt = f->nt;
-  Compiler *c = f->c;
-  const char *kind = "slot";
-  char buf[64];
-  if (x < f->nnodes) kind = nt_type(nt, x);
-  else {
-    for (int o = 0; o < f->nobj && sp_streq(kind, "slot"); o++) if (f->obj_cont[o] == x) { snprintf(buf, sizeof buf, "contents-of-object:%d", o); kind = buf; }
-    for (int mi = 0; mi < c->nscopes && sp_streq(kind, "slot"); mi++) {
-      const char *nm = c->scopes[mi].name ? c->scopes[mi].name : "main";
-      if (f->ret_el[mi] == x) { snprintf(buf, sizeof buf, "ret:%.50s", nm); kind = buf; }
-      else if (f->yval_el[mi] == x) { snprintf(buf, sizeof buf, "yval:%.50s", nm); kind = buf; }
-      else for (int y = 0; y < CF_YARGS; y++) if (f->yarg_el[mi][y] == x) { snprintf(buf, sizeof buf, "yarg%d:%.50s", y, nm); kind = buf; }
-    }
-    for (int j = 0; j < f->ent_cap && sp_streq(kind, "slot"); j++) if (f->ent[j].name && f->ent[j].el == x) { snprintf(buf, sizeof buf, "entry:%d/%.40s", f->ent[j].cls, f->ent[j].name); kind = buf; }
-  }
-  const char *fp = x < f->nnodes ? nt_file_path(nt, (int)nt_int(nt, x, "node_file", 0)) : NULL;
-  const char *nm = x < f->nnodes ? nt_str(nt, x, "name") : NULL;
-  fprintf(stderr, "cls-flow-trace:%s el %d seq %d all %d ptop %d esc %d orig %d %s %s %s:%d\n", tag, x, f->all_seq[x], f->set[x] == CF_ALL, f->ptop[x], f->esc[x], f->orig[x],
-          kind, nm ? nm : "-", fp ? (strrchr(fp, '/') ? strrchr(fp, '/') + 1 : fp) : "-", x < f->nnodes ? (int)nt_int(nt, x, "node_line", 0) : -1);
-}
-static void cf_trace(CF *f, int x) {
-  const NodeTable *nt = f->nt;
-  unsigned char *seen = calloc((size_t)f->nel, 1);
-  if (!seen) return;
-  fprintf(stderr, "cls-flow-trace: dyn_all %d has_mm %d\n", f->dyn_all, f->has_mm);
-  for (int step = 0; x >= 0 && x < f->nel && step < 80 && !seen[x]; step++) {
-    seen[x] = 1;
-    cf_el_describe(f, x, "");
-    for (int cc = 0; cc < f->nel; cc++) if (f->ptop[cc]) for (int i = 0; i < f->nld[cc]; i++) if (f->ld[cc][i] == x) cf_el_describe(f, cc, "   loaded out of");
-    for (int o = 0; o < f->nobj; o++) if (f->obj_cont[o] == x) {
-      int n = 0, held = 0;
-      for (int e = 0; e < f->nel; e++) if (f->elobj[e] == o) cf_el_describe(f, e, "   object of");
-      for (int e = 0; e < f->nel; e++) if (cf_pts_has(f, e, o)) { held++; if (n < 12 && e >= f->nnodes) { cf_el_describe(f, e, "   held by"); n++; } }
-      for (int e = 0; e < f->nel && n < 24; e++) if (e < f->nnodes && cf_pts_has(f, e, o)) { cf_el_describe(f, e, "   held by"); n++; }
-      fprintf(stderr, "cls-flow-trace:   (object %d held by %d elements)\n", o, held);
-    }
-    int y = -1, best = f->all_seq[x];
-    for (int a = 0; a < f->nel; a++) {
-      if (f->set[a] != CF_ALL || seen[a] || f->all_seq[a] >= best) continue;
-      for (int i = 0; i < f->nsucc[a]; i++) if (f->succ[a][i] == x) { y = a; best = f->all_seq[a]; break; }
-    }
-    if (y < 0 && x < f->nnodes && nt_kind(nt, x) == NK_CallNode) {
-      int r = nt_ref(nt, x, "receiver");
-      if (r >= 0 && f->set[r] == CF_ALL && !seen[r] && f->all_seq[r] < f->all_seq[x]) y = r;
-    }
-    /* a store of y into a container holding the object whose contents x is */
-    if (y >= 0) for (int o = 0; o < f->nobj; o++) if (f->obj_cont[o] == x)
-      for (int cc = 0; cc < f->nel; cc++) if (cf_pts_has(f, cc, o)) for (int i = 0; i < f->nst[cc]; i++) if (f->st[cc][i] == y) cf_el_describe(f, cc, "   stored into");
-    x = y;
-  }
-  free(seen);
-}
-/* SPINEL_CLS_FLOW_OPATH=<src>,<dst>: a shortest path of edges (class or
-   object) from element src to dst, for where an object travelled */
-static void cf_opath(CF *f, int src, int dst) {
-  if (src < 0 || dst < 0 || src >= f->nel || dst >= f->nel) return;
-  int *prev = malloc(sizeof(int) * (size_t)f->nel), *q = malloc(sizeof(int) * (size_t)f->nel);
-  if (!prev || !q) return;
-  for (int i = 0; i < f->nel; i++) prev[i] = -2;
-  int qh = 0, qt = 0; q[qt++] = src; prev[src] = -1;
-  while (qh < qt && prev[dst] == -2) {
-    int x = q[qh++];
-    for (int i = 0; i < f->nsucc[x]; i++) { int y = f->succ[x][i]; if (prev[y] == -2) { prev[y] = x; q[qt++] = y; } }
-    for (int i = 0; i < f->npsucc[x]; i++) { int y = f->psucc[x][i]; if (prev[y] == -2) { prev[y] = x; q[qt++] = y; } }
-  }
-  if (prev[dst] == -2) { fprintf(stderr, "cls-flow-opath: no path %d -> %d\n", src, dst); }
-  else { int n = 0, path[4096]; for (int x = dst; x >= 0 && n < 4096; x = prev[x]) path[n++] = x; for (int i = n - 1; i >= 0; i--) cf_el_describe(f, path[i], " path"); }
-  free(prev); free(q);
-}
 /* The kind node v's own value brings in (cf_kinds): a literal of a kind
    whose identity is not CRuby's here (a number, a Range, a Regexp, a
    String literal), or a value the walk takes from no element (a builtin
@@ -5081,9 +5078,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   }
   if (directed) {
     cf_grow_directed(&f); f.gsum = -1;
-    f.dbg_seed = getenv("SPINEL_CLS_FLOW_SEED") != NULL; f.dbg_ptop = getenv("SPINEL_CLS_FLOW_PTOP") != NULL;
     /* (the closed walk's objects are its allocation kinds: no cap) */
-    f.pts_max = getenv("SPINEL_CLS_FLOW_PTSMAX") ? atoi(getenv("SPINEL_CLS_FLOW_PTSMAX")) : CF_CLOSED(&f) ? INT_MAX : CF_PTS_MAX;
+    f.pts_max = CF_CLOSED(&f) ? INT_MAX : CF_PTS_MAX;
     if (f.pts_max < 1) f.pts_max = CF_PTS_MAX;
   }
   const char *dump = getenv("SPINEL_CLS_FACTS");
@@ -5204,7 +5200,11 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   /* a yield whose value is read: not one in statement position ahead of
      another statement */
   f.yval_used = calloc((size_t)c->nscopes + 1, 1);
-  if (!f.yval_used) cf_oom();
+  f.ysite = calloc((size_t)c->nscopes + 1, sizeof *f.ysite);
+  f.nysite = calloc((size_t)c->nscopes + 1, sizeof *f.nysite);
+  f.cysite = calloc((size_t)c->nscopes + 1, sizeof *f.cysite);
+  if (!f.yval_used || !f.ysite || !f.nysite || !f.cysite) cf_oom();
+  f.cur_site = -1;
   NT_FOREACH_KIND(nt, NK_YieldNode, id) {
     int mi = cf_owner_def(&f, id, 0, NULL);
     if (mi < 0) continue;
@@ -5253,10 +5253,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     /* a method named like a call the analysis does not follow (`bind`,
        `send`, ...): such a call binds nothing, so its parameters are left
        to hold anything rather than nothing (#8720) */
-    const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
-    int sd_all = noseed && sp_streq(noseed, "all");
-    int sd_proto = cf_protocol_name(s->name) && !(noseed && sp_streq(noseed, "proto")) && !sd_all;
-    int sd_prelude = cf_prelude_scope(&f, mi) && !f.scal_mi[mi] && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
+    int sd_proto = cf_protocol_name(s->name);
+    int sd_prelude = cf_prelude_scope(&f, mi) && !f.scal_mi[mi];
     /* (directed) a prelude method is called by the calls of its name the
        walk sees (cf_modfn_bind), and by code it does not see with what the
        runtime holds */
@@ -5271,7 +5269,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
       sd_prelude = 0;
     }
     /* a module_function is bound from every call of its name (cf_modfn_bind) */
-    int sd_modfn = !CF_CLOSED(&f) && s->is_module_function && !(noseed && sp_streq(noseed, "modfn")) && !sd_all;
+    int sd_modfn = !CF_CLOSED(&f) && s->is_module_function;
     if (sd_proto || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) || (f.kon && cf_kdyn_method(c, mi)) ||
         s->is_proc_form || s->is_lowered_yield ||
         s->cs_synth || sd_modfn || sd_prelude ||
@@ -5291,10 +5289,6 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         if (s->blk_param && s->blk_param[0]) cf_all(&f, cf_lv_in(&f, mi, s->blk_param));
         continue;
       }
-      if (f.dbg_seed && s->nparams > 0) fprintf(stderr, "cls-flow-proto: %s params %d%s%s%s%s%s%s%s%s file %s\n", s->name, s->nparams,
-        cf_protocol_name(s->name) ? " proto" : "", cf_opaque_name(s->name) ? " opaque" : "", cf_is_dyn(&f, s->name) ? " dyn" : "",
-        s->is_proc_form ? " procform" : "", s->is_lowered_yield ? " lyield" : "", s->cs_synth ? " cssynth" : "", s->is_module_function ? " modfn" : "",
-        cf_prelude_scope(&f, mi) ? " prelude" : "", s->def_node >= 0 && nt_file_path(nt, (int)nt_int(nt, s->def_node, "node_file", 0)) ? nt_file_path(nt, (int)nt_int(nt, s->def_node, "node_file", 0)) : "-");
       /* (the kinds' walk) the runtime calls a class's `self.inherited(sub)`
          with a Class object of one of its subclasses */
       if (f.kon && s->is_cmethod && sp_streq(s->name, "inherited") && s->class_id >= 0 && s->class_id < c->nclasses &&
@@ -5303,8 +5297,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         if (pe >= 0) cf_add_set(&f, pe, cf_classvals_of(&f, f.desc[s->class_id]));
       }
       else {
-        /* the seeding's cause as a pseudo rule line (SPINEL_CLS_FLOW=why,
-           SPINEL_CLS_SKIP): 90001 a protocol name, 90002 a prelude helper,
+        /* the seeding's cause as a pseudo rule line (SPINEL_CLS_FLOW=why):
+           90001 a protocol name, 90002 a prelude helper,
            90003 a module_function, 90004 an opaque or dynamic name, 90005 a
            proc form, a lowered yield or a synthesized scope, 90006 the rest
            (a C extension's stub) */
@@ -5367,6 +5361,10 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   if (f.why) cf_why_report(&f);
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
+  for (int i = 0; i < f.site_n; i++) { free(f.site[i].nm); free(f.site[i].argv); }
+  free(f.site); free(f.site_h);
+  for (int i = 0; i <= c->nscopes; i++) free(f.ysite[i]);
+  free(f.ysite); free(f.nysite); free(f.cysite);
   for (int i = 0; i < f.nscal; i++) free((char *)f.scal[i].base);
   free(f.scal); free(f.scal_mi); free(f.blk_local);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
@@ -5384,8 +5382,6 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
   free(f.bn);
-  if (directed && getenv("SPINEL_CLS_FLOW_TRACE")) cf_trace(&f, atoi(getenv("SPINEL_CLS_FLOW_TRACE")));
-  if (directed && getenv("SPINEL_CLS_FLOW_OPATH")) { int a = 0, b = 0; if (sscanf(getenv("SPINEL_CLS_FLOW_OPATH"), "%d,%d", &a, &b) == 2) cf_opath(&f, a, b); }
   if (directed && getenv("SPINEL_CLS_FLOW")) fprintf(stderr, "cls-flow-stats: elements %d objects %d edges %ld pts-adds %ld drain-visits %ld rounds %d\n", f.nel, f.nobj, f.st_edges, f.st_pts, f.st_drain, f.round + 1);
   if (directed && getenv("SPINEL_CLS_FLOW") && sp_streq(getenv("SPINEL_CLS_FLOW"), "why")) {
     int cap = 100000; int *cnt = calloc((size_t)cap * 2, sizeof(int));   /* (the seeding's 9000x lines too) */
@@ -5394,7 +5390,6 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
       if (r < 0 || f.set[r] != CF_ALL) continue;
       int o = f.orig[r]; if (o < -cap || o > cap) o = 0;
       cnt[o + cap]++;
-      if (getenv("SPINEL_CLS_FLOW_EACH")) { const char *efp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0)); fprintf(stderr, "cls-flow-any: %s:%d %s orig %d\n", efp && *efp ? efp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", o); }
     }
     for (int o = 0; o < cap * 2; o++)
       if (cnt[o]) fprintf(stderr, "cls-flow-why: %s line %d: %d receivers\n", o - cap > 0 ? "every-class rule at" : o - cap < 0 ? "a set past the cap at" : "unknown", o - cap < 0 ? cap - o : o - cap, cnt[o]);
@@ -5707,72 +5702,4 @@ int cls_fact_idx(Compiler *c, int node) {
   if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return -1;
   int p = c->cls_fact[node];
   return p <= 0 || p >= c->ncls_pool ? -1 : p;
-}
-
-/* SPINEL_CLS_USE=1 (=2 per site): what the consumers can lose, the measure
-   the closed-world stages are judged by (#8837). On the settled types, each
-   call whose receiver is typed poly (a box) is counted with the program's
-   methods of its name: the arms every class allows, and those the class
-   fact allows. A receiver typed as one class is not counted here; one whose
-   class has subclasses with methods of the name is reported apart. */
-void cls_fact_use_report(Compiler *c) {
-  const char *e = getenv("SPINEL_CLS_USE");
-  if (!e || !c->cls_fact) return;
-  const NodeTable *nt = c->nt;
-  long calls = 0, poly = 0, poly_any = 0, poly_multi_all = 0, arms_all = 0, arms_fact = 0, mono_all = 0, mono_fact = 0;
-  long obj = 0, obj_virt = 0, obj_any = 0, oarms_all = 0, oarms_fact = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    int r = nt_ref(nt, id, "receiver");
-    const char *nm = nt_str(nt, id, "name");
-    if (r < 0 || !nm || r >= c->cls_fact_n) continue;
-    calls++;
-    TyKind t = infer_type(c, r);
-    int p = c->cls_fact[r];
-    const ClsSet *s = p == CF_ALL || p >= c->ncls_pool ? NULL : &c->cls_pool[p];
-    if (t == TY_POLY) {
-      poly++;
-      int aa = cf_arms(c, NULL, 1, nm);
-      int af = !s || (s->n == 0 && !s->bv && !s->os) ? aa : cf_arms(c, s, 0, nm);
-      if (!s) poly_any++;
-      if (aa >= 2) poly_multi_all++;
-      arms_all += aa; arms_fact += af; mono_all += aa <= 1; mono_fact += af <= 1;
-      if (e[0] == '2') {
-        const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
-        /* the receiver's shape: a call's answer, a parameter, another local, an ivar */
-        NodeKind rk = nt_kind(nt, r);
-        const char *shape = rk == NK_CallNode ? "call" : rk == NK_InstanceVariableReadNode ? "ivar" : rk == NK_SelfNode ? "self" : "other";
-        if (rk == NK_LocalVariableReadNode) {
-          int si = c->nscope && r < nt->count ? c->nscope[r] : -1;
-          LocalVar *lv = si >= 0 && si < c->nscopes ? scope_local(&c->scopes[si], nt_str(nt, r, "name")) : NULL;
-          shape = lv && lv->is_param ? "param" : lv && lv->is_block_param ? "blockparam" : "local";
-        }
-        fprintf(stderr, "cls-use: %s:%d %s poly fact %s arms %d/%d shape %s\n", fp && *fp ? fp : "?",
-                (int)nt_int(nt, id, "node_line", 0), nm, !s ? "ANY" : "set", af, aa, shape);
-      }
-    }
-    else if (ty_is_object(t)) {
-      int k = ty_object_class(t);
-      if (k < 0 || k >= c->nclasses) continue;
-      obj++;
-      int nd = 0; const int *ds = comp_descendants(c, k, &nd);
-      if (nd == 0) continue;
-      /* the class and its subtree, and those of them the fact allows */
-      int *sub = malloc(sizeof *sub * (size_t)(nd + 1)), *m = malloc(sizeof *m * (size_t)(nd + 1)), nm2 = 0;
-      if (!sub || !m) cf_oom();
-      sub[0] = k;
-      memcpy(sub + 1, ds, sizeof *ds * (size_t)nd);
-      int aa = cf_arms_list(c, sub, nd + 1, nm);
-      if (aa >= 2) {
-        obj_virt++;
-        for (int i = 0; i <= nd; i++) if (!s || cls_set_has(s, sub[i])) m[nm2++] = sub[i];
-        if (!s) obj_any++;
-        int af = !s || nm2 == 0 ? aa : cf_arms_list(c, m, nm2, nm);
-        oarms_all += aa; oarms_fact += af;
-      }
-      free(sub); free(m);
-    }
-  }
-  fprintf(stderr, "cls-use: %ld receivers; poly %ld (fact ANY %ld, name with 2+ program methods %ld): arms every-class %ld fact %ld, at most one arm every-class %ld fact %ld\n",
-          calls, poly, poly_any, poly_multi_all, arms_all, arms_fact, mono_all, mono_fact);
-  fprintf(stderr, "cls-use: object receivers %ld, with 2+ arms in the subtree %ld (fact ANY %ld): arms subtree %ld fact %ld\n", obj, obj_virt, obj_any, oarms_all, oarms_fact);
 }

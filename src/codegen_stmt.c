@@ -754,10 +754,8 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = &apre; g_indent = indent + 2;
     if (nt_kind(c->nt, a) == NK_SplatNode) {
-      int sx = nt_ref(c->nt, a, "expression");
-      buf_printf(&abody, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
-      if (sx >= 0) emit_boxed(c, sx, &abody); else buf_puts(&abody, "sp_box_nil()");
-      buf_puts(&abody, "));\n");
+      emit_poly_concat_splat(c, t, a, &abody);
+      buf_puts(&abody, "\n");
     }
     else {
       buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed_operand(c, argv, argc, k, &abody); buf_puts(&abody, ");\n");
@@ -3722,7 +3720,7 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, Buf *out) {
     if (hb.p) {
       int t = ++g_tmp;
       buf_printf(out, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-                 "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+                 "sp_nil_recv_raise(\"%s\"); _t%d; })",
                  t, hb.p, t, nt_str(c->nt, id, "name"), t);
       free(hb.p);
       return 2;
@@ -3744,7 +3742,7 @@ int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, Buf *out) {
   }
   int t = ++g_tmp;
   buf_printf(out, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+             "sp_nil_recv_raise(\"%s\"); _t%d; })",
              t, rb.p, t, name, t);
   free(rb.p);
   return 2;
@@ -3814,7 +3812,7 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
        the mutator can allocate (emit_route_recv_root) */
     int t = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); if (SP_UNLIKELY(!_t%d)) "
-               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+               "sp_nil_recv_raise(\"%s\"); _t%d; })",
                t, hb.p, t, nt_str(c->nt, id, "name"), t);
   }
   free(hb.p);
@@ -4137,7 +4135,7 @@ static int emit_strbuf_chain_in_place_m(Compiler *c, int v, int base, const char
     const char *nm = nt_str(c->nt, convs[i], "name");
     if (is_to_s_name(nm)) buf_printf(b, "if (!_t%d) _t%d = sp_String_new_shared(sp_str_frozen_empty); ", th, th);
     else if (!is_self_copy(nm))
-      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th, nm);
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", th, nm);
   }
   for (int i = na - 1; i >= 0; i--) {
     if (args[i] <= -2) {
@@ -4296,7 +4294,7 @@ static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b) {
   /* (the first link answers a nil receiver nil where nil defines it: tap, itself) */
   const char *fln = first >= 0 ? nt_str(nt, first, "name") : NULL;
   if (!strbuf_route_nonnil(c, base) && !(fln && is_nil_method(fln)))
-    buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", t,
+    buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", t,
                first >= 0 && nt_str(nt, first, "name") ? nt_str(nt, first, "name") : "<<");
   buf_printf(&rb, "_t%d; })", t);
   int ok = emit_strbuf_chain_in_place_m(c, v, base, rb.p, b, bang);
@@ -4385,7 +4383,7 @@ static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, in
   buf_puts(b, "({ ");
   size_t at = hb->len;
   if (hb != b) emit_indent(hb, g_indent);
-  const char *raise = " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));";
+  const char *raise = " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");";
   buf_printf(hb, "sp_String *_t%d = SP_STR_HDL(%s);", th, href);   /* (one representation: the text of either face) */
   if (check && check_first) buf_printf(hb, raise, th, nt_str(c->nt, v, "name"));
   buf_printf(hb, " SP_GC_ROOT(_t%d);", th);
@@ -4441,7 +4439,7 @@ static void emit_held_handle(Compiler *c, int r, Buf *b) {
     if (is_self_copy(rn)) buf_printf(b, "; _t%d; })", t);
     else if (is_to_s_name(rn))
       buf_printf(b, "; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, t);
-    else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+    else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); _t%d; })",
                     t, rn, t);
     return;
   }
@@ -4526,7 +4524,7 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     buf_printf(b, "({ sp_String *_t%d = SP_STR_HDL(%s); ", tH, hb.p);
     emit_ctype(c, ty, b);
     if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
-    else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+    else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");",
                     tH, tH, nt_str(c->nt, id, "name"));
     buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = ", tH, pre.p ? pre.p : "", tH);
     { int held = g_one_held;
@@ -4996,7 +4994,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     if (late) {
       amark = sb_shim_args_first(c, v, &apre, g_indent);
       buf_puts(b, apre.p ? apre.p : "");
-      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); ", th,
                  nt_str(c->nt, v, "name"));
       free(apre.p);
     }
@@ -5159,6 +5157,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      its statements, as `nil` is: wrapped as a String, its nil was an
      integer handed to the new handle */
   if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
+  /* a value that ran ahead into a temp (emit_arg_temp, `r.body = x.to_s`
+     with r a call evaluated first) ran there: the slot takes that temp's
+     handle (emit_strbuf_handle_of). A route below re-emitted the
+     conversion's receiver, a second call, or read the temp's bytes face
+     into the handle slot, which did not compile. */
+  { int vp = nt_paren_single(c->nt, v);
+    if (arg_ran_first(v, 0) || (vp >= 0 && arg_ran_first(vp, 0))) { emit_strbuf_handle_of(c, v, b); return; } }
   /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
   { int w = nt_paren_single(c->nt, v);
     if (repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
@@ -5288,7 +5293,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
      String, wrapped below as a new handle the way a store wraps one
      (emit_boxed); handed over bare, the C did not build. */
+  /* (a match global, `$&` or `$1`, is bytes the regexp runtime holds: a
+     new handle below, as any other bytes; aliased, the handle slot took a
+     `const char *`) */
   else if (rpv.as_ty == TY_STRBUF && !fresh &&
+           nt_kind(c->nt, v) != NK_BackReferenceReadNode && nt_kind(c->nt, v) != NK_NumberedReferenceReadNode &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
@@ -11711,22 +11720,31 @@ static int hcp_val(Compiler *c, int n, int depth) {
   }
   return 0;
 }
+/* No method of the program's named in one of the lists ops can stand in for
+   the builtin one on a value of the classes cls: none defined on one of them
+   or a class or module it reaches, nor at the top level (Object's), where a
+   `coerce` is no operand's */
+static int ops_builtin(Compiler *c, const char *const *cls, const char *const *const *ops) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!hcp_in(cls, c->classes[k].name)) continue;
+    for (int l = 0; ops[l]; l++)
+      for (int i = 0; ops[l][i]; i++) if (comp_method_in_chain(c, k, ops[l][i], NULL) >= 0) return 0;
+  }
+  for (int s = 1; s < c->nscopes; s++) {
+    const char *nm = c->scopes[s].name;
+    if (c->scopes[s].class_id >= 0 || !nm || sp_streq(nm, "coerce")) continue;
+    for (int l = 0; ops[l]; l++) if (hcp_in(ops[l], nm)) return 0;
+  }
+  return 1;
+}
 /* No operator of the program's can stand in for the builtin one on an Integer
-   or a nil: none defined on Integer, NilClass or a class or module they reach,
-   nor at the top level (Object's) */
+   or a nil */
 static int hcp_program_ok(Compiler *c) {
   static const char *const CLS[] = { "Integer", "NilClass", "Numeric", "Comparable", "Object", "Kernel",
                                      "BasicObject", NULL };
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!hcp_in(CLS, c->classes[k].name)) continue;
-    for (int i = 0; HCP_ARITH[i]; i++) if (comp_method_in_chain(c, k, HCP_ARITH[i], NULL) >= 0) return 0;
-    for (int i = 0; HCP_CMP[i]; i++) if (comp_method_in_chain(c, k, HCP_CMP[i], NULL) >= 0) return 0;
-    if (comp_method_in_chain(c, k, "-@", NULL) >= 0 || comp_method_in_chain(c, k, "coerce", NULL) >= 0) return 0;
-  }
-  for (int s = 1; s < c->nscopes; s++)
-    if (c->scopes[s].class_id < 0 && c->scopes[s].name && (hcp_op(c->scopes[s].name) || sp_streq(c->scopes[s].name, "-@")))
-      return 0;
-  return 1;
+  static const char *const MORE[] = { "-@", "coerce", NULL };
+  static const char *const *const OPS[] = { HCP_ARITH, HCP_CMP, MORE, NULL };
+  return ops_builtin(c, CLS, OPS);
 }
 /* The named scopes by name, from scope 1 on: a name's first scope, and
    whether another scope has the name. hcp_param_method wants a name no
@@ -12369,14 +12387,17 @@ static int poll_while_counted(Compiler *c, int pred, int body);
    Such a loop ends on its own, and polls for a delivered signal only where
    no loop of its function encloses it (#9222). A loop it holds must be one
    too. */
-static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *steps) {
+/* calls_ok: a chunked loop's question (chunk_counted_step), whose calls
+   reach only short methods poll_chunk_loop took, which write no local of
+   the loop's, and which checks its bound itself */
+static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *steps, int calls_ok) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_UntilNode) return 1;
   if (k == NK_WhileNode) {
     if (!poll_while_counted(c, nt_ref(nt, n, "predicate"), nt_ref(nt, n, "statements"))) return 1;
-    return poll_subtree_bad(c, nt_ref(nt, n, "statements"), v, step, steps);
+    return poll_subtree_bad(c, nt_ref(nt, n, "statements"), v, step, steps, calls_ok);
   }
   if (comp_is_local_write(k) || k == NK_LocalVariableOperatorWriteNode) {
     const char *nm = nt_str(nt, n, "name");
@@ -12384,18 +12405,24 @@ static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *st
   }
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, n, "name");
-    if (!nm || nt_ref(nt, n, "block") >= 0 || poll_is_method_name(c, nm)) return 1;
+    if (!nm || nt_ref(nt, n, "block") >= 0 || (!calls_ok && poll_is_method_name(c, nm))) return 1;
   }
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) if (poll_subtree_bad(c, nt_ref_at(nt, n, i), v, step, steps)) return 1;
+  for (int i = 0; i < nr; i++) if (poll_subtree_bad(c, nt_ref_at(nt, n, i), v, step, steps, calls_ok)) return 1;
   int na = nt_num_arrs(nt, n);
   for (int i = 0; i < na; i++) {
     int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (poll_subtree_bad(c, av[j], v, step, steps)) return 1;
+    for (int j = 0; j < an; j++) if (poll_subtree_bad(c, av[j], v, step, steps, calls_ok)) return 1;
   }
   return 0;
 }
+static int poll_while_counted_step(Compiler *c, int pred, int body, int *stepn, int calls_ok);
 static int poll_while_counted(Compiler *c, int pred, int body) {
+  int stepn;
+  return poll_while_counted_step(c, pred, body, &stepn, 0);
+}
+/* ...and the statement that steps it, in *stepn */
+static int poll_while_counted_step(Compiler *c, int pred, int body, int *stepn, int calls_ok) {
   const NodeTable *nt = c->nt;
   if (pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return 0;
   const char *op = nt_str(nt, pred, "name");
@@ -12420,7 +12447,7 @@ static int poll_while_counted(Compiler *c, int pred, int body) {
       const char *cn = nt_str(nt, val, "name");
       int r = nt_ref(nt, val, "receiver");
       if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, r, "name"), v)) continue;
-      if (up && cn && sp_streq(cn, "succ")) step = w;
+      if (up && cn && is_succ_alias(cn)) step = w;
       int a = nt_ref(nt, val, "arguments"), ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       if (cn && ac == 1 && nt_kind(nt, av[0]) == NK_IntegerNode && nt_int(nt, av[0], "value", 0) > 0 &&
           ((up && sp_streq(cn, "+")) || (down && sp_streq(cn, "-")))) step = w;
@@ -12428,10 +12455,11 @@ static int poll_while_counted(Compiler *c, int pred, int body) {
   }
   if (step < 0) return 0;
   int steps = 0;
-  if (poll_subtree_bad(c, body, v, step, &steps) || steps != 1) return 0;
+  if (poll_subtree_bad(c, body, v, step, &steps, calls_ok) || steps != 1) return 0;
   int a = nt_ref(nt, pred, "arguments"); int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int dummy = 0;
-  return ac == 1 && !poll_subtree_bad(c, av[0], v, -1, &dummy);
+  *stepn = step;
+  return ac == 1 && !poll_subtree_bad(c, av[0], v, -1, &dummy, calls_ok);
 }
 
 
@@ -12525,13 +12553,171 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
 }
 
 static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_until);
+/* Does a chunked loop's body write instance variable nm: by name, or through
+   a writer or a method, any of which may have self for its receiver? */
+static int chunk_writes_ivar(Compiler *c, int n, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if ((k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOperatorWriteNode) &&
+      sp_streq(nt_str(nt, n, "name"), nm)) return 1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, n, "name");
+    if (!cn || name_is_plain_setter(cn) || poll_is_method_name(c, cn)) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (chunk_writes_ivar(c, nt_ref_at(nt, n, i), nm)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (chunk_writes_ivar(c, av[j], nm)) return 1;
+  }
+  return 0;
+}
+/* A counted loop's (poll_while_counted) step, when its bound is an Integer
+   the body leaves as it is: a literal, or a local or an instance variable
+   it writes nowhere. 0 otherwise, and for a body with a `next`, which may
+   pass the step by: the run would not end, nor poll. */
+static long long chunk_counted_step(Compiler *c, int pred, int body) {
+  const NodeTable *nt = c->nt;
+  int w;
+  if (subtree_has_own_next(nt, body) || !poll_while_counted_step(c, pred, body, &w, 1)) return 0;
+  int a = nt_ref(nt, pred, "arguments"), ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int bd = ac == 1 ? av[0] : -1;
+  if (bd < 0 || c->ntype[bd] != TY_INT) return 0;
+  NodeKind bk = nt_kind(nt, bd);
+  if (bk == NK_IntegerNode) { if (nt_str(nt, bd, "bigval")) return 0; }
+  else if (bk == NK_LocalVariableReadNode) { if (subtree_changes_local(c, body, nt_str(nt, bd, "name"))) return 0; }
+  else if (bk == NK_InstanceVariableReadNode) { if (chunk_writes_ivar(c, body, nt_str(nt, bd, "name"))) return 0; }
+  else return 0;
+  int val = nt_ref(nt, w, "value");
+  if (nt_kind(nt, w) == NK_LocalVariableOperatorWriteNode) return nt_int(nt, val, "value", 0);
+  if (is_succ_alias(nt_str(nt, val, "name"))) return 1;
+  int va = nt_ref(nt, val, "arguments"), vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+  return vc == 1 ? nt_int(nt, vv[0], "value", 0) : 0;
+}
+/* A chunked loop (poll_chunk_loop): the pure loop's body runs SP_SIG_CHUNK
+   passes in an inner loop with no poll, and the outer one polls ahead of
+   each run of them. The poll is a call, so the C compiler stores what the
+   passes before it wrote, and the raise finds them there; between polls it
+   keeps the slots in registers as it does in a pure loop.
+
+   A counted loop's inner one tests only the last value of the variable this
+   run may reach, which the outer one sets from the bound (one compare a
+   pass: with a second test of the count, clang would not keep `@v += 1` in
+   a register). Any other loop counts its passes down and tests the
+   condition after each; the outer loop tests it again where it was false,
+   so only a test that writes nothing is taken (poll_pred_quiet). A `next` is
+   the inner loop's `continue`, which goes to the test. Answers 0, having
+   emitted nothing, for a test with a prelude of its own or one that writes. */
+static int emit_while_chunked(Compiler *c, int id, Buf *b, int indent, int is_until) {
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate"), body = nt_ref(nt, id, "statements");
+  if (subtree_has_loop_break(c, body)) return 0;   /* it would leave the inner loop only */
+  long long step = is_until ? 0 : chunk_counted_step(c, pred, body);
+  if (step > (1 << 20)) step = 0;   /* the run's span stays an Integer of any width */
+  if (!step && !poll_pred_quiet(c, pred)) return 0;
+  Buf ccond; memset(&ccond, 0, sizeof ccond);
+  Buf cv; memset(&cv, 0, sizeof cv);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  Buf cpre; memset(&cpre, 0, sizeof cpre);
+  Buf *sv_pre = g_pre; int sv_ind = g_indent;
+  g_pre = &cpre; g_indent = indent + 1;
+  emit_cond(c, pred, &ccond);
+  if (step) {
+    int a = nt_ref(nt, pred, "arguments"), ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+    emit_expr(c, nt_ref(nt, pred, "receiver"), &cv);
+    emit_expr(c, av[0], &cb);
+  }
+  g_pre = sv_pre; g_indent = sv_ind;
+  int ok = !(cpre.p && cpre.p[0]) && ccond.p && (!step || (cv.p && cb.p));
+  free(cpre.p);
+  if (!ok) { free(ccond.p); free(cv.p); free(cb.p); return 0; }
+  int k = ++g_tmp;
+  emit_indent(b, indent); buf_printf(b, "while (%s(%s)) {\n", is_until ? "!" : "", ccond.p);
+  emit_indent(b, indent + 1); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
+  /* (a counted loop's test is a comparison; any other test may be no call
+     at all, `while true`, and has no name) */
+  const char *op = step ? nt_str(nt, pred, "name") : NULL;
+  int up = op && op[0] == '<', incl = op && op[1] == '=';
+  long long span = (long long)SP_SIG_CHUNK * (long long)step;
+  if (step) {
+    /* the distance to the bound, which the test says is positive, taken
+       unsigned so a wide range cannot overflow it */
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_int _pl%d = (unsigned long long)(%s) - (unsigned long long)(%s) %s %lldULL ? (%s) %s %lldLL : (%s);\n",
+               k, up ? cb.p : cv.p, up ? cv.p : cb.p, incl ? ">=" : ">", span,
+               cv.p, up ? "+" : "-", incl ? span - 1 : span, cb.p);
+  }
+  else { emit_indent(b, indent + 1); buf_printf(b, "int _pk%d = %d;\n", k, SP_SIG_CHUNK); }
+  emit_indent(b, indent + 1); buf_puts(b, "do {\n");
+  g_pure_region++;
+  emit_loop_body(c, body, b, indent + 2);
+  g_pure_region--;
+  emit_indent(b, indent + 1);
+  if (step) buf_printf(b, "} while ((%s) %s _pl%d);\n", cv.p, op, k);
+  else buf_printf(b, "} while (--_pk%d && %s(%s));\n", k, is_until ? "!" : "", ccond.p);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  free(ccond.p); free(cv.p); free(cb.p);
+  return 1;
+}
+/* An Interrupt's class and those above it, which a rescue catching one names */
+static const char *const interrupt_above[] = { "Interrupt", "SignalException", "Exception", "Object", "BasicObject",
+                                               "Kernel", NULL };
+/* Does loop id run where its method reads its locals after an Interrupt
+   raised in it: inside an ensure, or the body of a begin one of whose
+   rescues can catch an Interrupt (a method's own rescue among them)? A
+   signal raised where it landed, between two statements of a pass, would
+   show that code a pass half done, which CRuby never does: it takes an
+   interrupt between passes. No pure region starts there. */
+int loop_rescue_sees_interrupt(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const int *par = codegen_node_parents(c, id);
+  if (!par) return 1;
+  for (int ch = id, p = par[id]; p >= 0; ch = p, p = par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+    if (k != NK_BeginNode) continue;
+    if (nt_ref(nt, p, "ensure_clause") >= 0) return 1;
+    if (ch != nt_ref(nt, p, "statements")) continue;
+    if (rescue_chain_catches(c, nt_ref(nt, p, "rescue_clause"), interrupt_above, 0)) return 1;
+  }
+  return 0;
+}
+/* Is `body` the body of a pure loop or counting iterator that starts no
+   pure region because its method reads its locals after an Interrupt
+   (loop_rescue_sees_interrupt)? Such a loop polls at each pass even where
+   another loop of its function encloses it: that loop's poll, which a
+   counted loop otherwise leaves the signal to, waits for this one to end,
+   and the pure region it no longer has was its only way to take the signal. */
+int loop_body_polls_alone(Compiler *c, int body) {
+  const int *par = body >= 0 ? codegen_node_parents(c, body) : NULL;
+  if (!par) return 0;
+  int blk = block_of_body(c, body);
+  int own = blk >= 0 ? par[blk] : par[body];
+  if (own < 0) return 0;
+  NodeKind k = nt_kind(c->nt, own);
+  int pure = k == NK_WhileNode || k == NK_UntilNode ? poll_pure_loop(c, own) : k == NK_CallNode && poll_pure_iter(c, own);
+  return pure && loop_rescue_sees_interrupt(c, own);
+}
 /* A pure loop (poll_pure_loop) outside a pure region is marked around: a
    signal while it runs is raised where it lands, and it carries no poll
-   (#9222) */
+   (#9222). One that also stores where a rescue can read it, or whose
+   method reads its locals after an Interrupt (loop_rescue_sees_interrupt),
+   is chunked instead, where it would poll at each pass (a counted loop
+   another loop of its function encloses polls nowhere, but for the second
+   kind: loop_body_polls_alone). */
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   Scope *sc = comp_scope_of(c, id);
   int si = sc ? (int)(sc - c->scopes) : -1;
-  int wrap = g_pure_region == 0 && !(si >= 0 && poll_pure_method(c, si)) && poll_pure_loop(c, id);
+  int in_pure = g_pure_region > 0 || (si >= 0 && poll_pure_method(c, si));
+  int pure = !in_pure && poll_pure_loop(c, id), sees = pure && loop_rescue_sees_interrupt(c, id);
+  int wrap = pure && !sees;
+  if (!wrap && !in_pure && poll_chunk_loop(c, id) &&
+      (sees || g_poll_loop_nest == 0 || is_until ||
+       !poll_while_counted(c, nt_ref(c->nt, id, "predicate"), nt_ref(c->nt, id, "statements"))) &&
+      emit_while_chunked(c, id, b, indent, is_until))
+    return;
   if (wrap) { emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++; }
   emit_while_loop(c, id, b, indent, is_until);
   if (wrap) { g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n"); }
@@ -12728,6 +12914,304 @@ void hc_iter_end(void *hv, Buf **bp, int indent, int keep) {
   g_hc = NULL; *bp = h->out;
   if (keep) hc_close(&h->r, h->buf.p ? h->buf.p : "", *bp, indent);
   free(h->buf.p); hc_region_free(&h->r); free(h);
+}
+
+/* ---- An IO::Buffer loop element by element, a chunk at a time ----
+
+   `n.times { |i| out.set_value(:T, i * W, e) }`, W being T's width and e
+   built from `src.get_value(:T2, i * W2)` (W2 T2's width), Integer and Float
+   literals and the builtin operators, stores element i of out from element
+   i of each source. In a region that caches the buffers' views, hv_emit puts
+   ahead of the loop's `for` a loop over chunks that the C compiler can
+   vectorize, each HV_CH bytes of out and at least HV_CH_MIN elements (a
+   byte's chunk long enough to pay for its tests, a double's short enough
+   for its temporary): a chunk reads its sources and computes e into a
+   temporary, then stores the temporary when every value of it fits T; the
+   `for` runs on from where the chunks stopped. What a chunk does is what the
+   `for` would have done over the same elements:
+   - the chunks run only when every element of every view is in range, out
+     is writable, and no source overlaps out but as the same bytes at the
+     same width (an update in place), so no read or write raises and no
+     store reaches another element's read;
+   - every node of e takes its values in an interval proved within int64
+     (hv_expr), so C's int64 arithmetic is the Integer's, and a 32-bit store
+     a value may not fit is tested as sp_iob_put_i tests it (an 8/16-bit
+     store wraps and a 64-bit one holds any sp_int); a chunk with a value
+     that does not fit is left to the `for`, which stores the elements ahead
+     of it and raises there;
+   - each chunk takes the polls the `for`'s body would (emit_loop_polls),
+     and tests the views again after them, as code that ran there may have
+     moved a buffer.
+   The operators are the builtin ones while the program defines none of
+   their names where an Integer or a Float reaches it (hv_ops_ok). */
+#define HV_CH 256
+#define HV_CH_MIN 64
+static const char *const HV_OPS[] = { "+", "-", "*", "/", "&", "|", "^", "<<", ">>", "-@", "coerce", NULL };
+static int g_hv_ops = 0;   /* 0 not computed, 1 builtin, -1 the program defines one */
+static int hv_ops_ok(Compiler *c) {
+  static const char *const CLS[] = { "Integer", "Float", "Numeric", "Comparable", "Object", "Kernel",
+                                     "BasicObject", NULL };
+  static const char *const *const OPS[] = { HV_OPS, NULL };
+  if (!g_hv_ops) g_hv_ops = ops_builtin(c, CLS, OPS) ? 1 : -1;
+  return g_hv_ops > 0;
+}
+
+typedef struct { int fl; int64_t lo, hi; } HvVal;   /* a Float, or an Integer in [lo, hi] */
+typedef struct { char d[48], l[48]; int w; } HvSrc;
+/* hv: the chunks' number, which names their C locals _hv<hv>_*: their own
+   numbering, as the header cache's, so a loop that does not qualify leaves
+   every temp after it as it was */
+typedef struct { Compiler *c; const char *pn; HvSrc src[8]; int nsrc; int hv; } HvCtx;
+static int g_hv_seq = 0;
+
+/* Is n a read of the block's parameter? */
+static int hv_param(HvCtx *x, int n) {
+  const NodeTable *nt = x->c->nt;
+  return nt_kind(nt, n) == NK_LocalVariableReadNode && nt_int(nt, n, "depth", 0) == 0 &&
+         nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), x->pn);
+}
+/* Is off `i * w` (or `w * i`, or `i` for a byte), i the block's parameter? */
+static int hv_index(HvCtx *x, int off, int w) {
+  const NodeTable *nt = x->c->nt;
+  off = nt_paren_single(nt, off);
+  if (w == 1 && hv_param(x, off)) return 1;
+  if (nt_kind(nt, off) != NK_CallNode || !nt_str(nt, off, "name") || !sp_streq(nt_str(nt, off, "name"), "*") ||
+      nt_ref(nt, off, "block") >= 0 || comp_ntype(x->c, off) != TY_INT)
+    return 0;
+  int recv = nt_ref(nt, off, "receiver");
+  int a = nt_ref(nt, off, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (recv < 0 || ac != 1) return 0;
+  int l = nt_paren_single(nt, recv), r = nt_paren_single(nt, av[0]);
+  if (nt_kind(nt, l) == NK_IntegerNode) { int t = l; l = r; r = t; }
+  return hv_param(x, l) && nt_kind(nt, r) == NK_IntegerNode && !nt_str(nt, r, "bigval") &&
+         nt_int(nt, r, "value", 0) == w;
+}
+/* the least b with v in [-2^b, 2^b - 1] */
+static int hv_bits(int64_t v) {
+  int b = 0;
+  while (b < 63 && (v < -((int64_t)1 << b) || v > ((int64_t)1 << b) - 1)) b++;
+  return b;
+}
+/* e's C text into out, its values into *v; 0 for a node the chunks cannot
+   compute as the loop does */
+static int hv_expr(HvCtx *x, int id, HvVal *v, Buf *out, int depth) {
+  Compiler *c = x->c;
+  const NodeTable *nt = c->nt;
+  if (depth > 32) return 0;
+  id = nt_paren_single(nt, id);
+  NodeKind k = nt_kind(nt, id);
+  TyKind t = comp_ntype(c, id);
+  if (k == NK_IntegerNode) {
+    if (t != TY_INT || nt_str(nt, id, "bigval")) return 0;
+    int64_t n = nt_int(nt, id, "value", 0);
+    if (n == INT64_MIN) return 0;
+    v->fl = 0; v->lo = v->hi = n;
+    buf_printf(out, "((int64_t)%lldLL)", (long long)n);
+    return 1;
+  }
+  if (k == NK_FloatNode) {
+    if (t != TY_FLOAT) return 0;
+    v->fl = 1;
+    buf_puts(out, "((double)"); emit_expr(c, id, out); buf_puts(out, ")");
+    return 1;
+  }
+  if (k != NK_CallNode || nt_ref(nt, id, "block") >= 0 || (t != TY_INT && t != TY_FLOAT)) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || recv < 0) return 0;
+  /* a source's element */
+  if (sp_streq(nm, "get_value")) {
+    if (!hc_iob_read(c, id) || x->nsrc >= (int)(sizeof x->src / sizeof x->src[0])) return 0;
+    int it = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+    int w = comp_iob_ty_width(it), fl = comp_iob_ty_is_float(it);
+    HvSrc *s = &x->src[x->nsrc];
+    /* (a 64-bit integer reads boxed, hc_iob_read; its bounds are no shift's) */
+    if ((!fl && w == 8) || (fl ? TY_FLOAT : TY_INT) != t || !hv_index(x, av[1], w) || !hc_iobuf(c, recv, s->d, s->l, sizeof s->d))
+      return 0;
+    s->w = w; x->nsrc++;
+    v->fl = fl;
+    if (!fl) {
+      int sg = comp_iob_ty_signed(it), bits = 8 * w;
+      v->lo = sg ? -((int64_t)1 << (bits - 1)) : 0;
+      v->hi = sg ? ((int64_t)1 << (bits - 1)) - 1 : (int64_t)(((uint64_t)1 << bits) - 1);
+    }
+    buf_printf(out, "%s(%s + (_hv%d_v + _hv%d_j) * %d, %d)", fl ? "sp_iob_decode_f" : "((int64_t)sp_iob_decode_i",
+               s->d, x->hv, x->hv, w, it);
+    if (!fl) buf_puts(out, ")");
+    return 1;
+  }
+  if (!call_is_scalar_op(c, id) && !sp_streq(nm, "-@")) return 0;
+  Buf ra; memset(&ra, 0, sizeof ra);
+  HvVal rv;
+  if (!hv_expr(x, recv, &rv, &ra, depth + 1)) { free(ra.p); return 0; }
+  if (sp_streq(nm, "-@") && ac == 0) {
+    if (!rv.fl && rv.lo == INT64_MIN) { free(ra.p); return 0; }
+    *v = rv;
+    if (!rv.fl) { v->lo = -rv.hi; v->hi = -rv.lo; }
+    buf_printf(out, "(-%s)", ra.p);
+    free(ra.p);
+    return (rv.fl ? TY_FLOAT : TY_INT) == t;
+  }
+  if (ac != 1) { free(ra.p); return 0; }
+  /* a shift by a literal count */
+  int sh = sp_streq(nm, "<<") ? 1 : sp_streq(nm, ">>") ? 2 : 0;
+  if (sh) {
+    int an = nt_paren_single(nt, av[0]);
+    long long n = nt_kind(nt, an) == NK_IntegerNode && !nt_str(nt, an, "bigval") ? nt_int(nt, an, "value", 0) : -1;
+    int ok = !rv.fl && t == TY_INT && n >= 0 && n <= (sh == 1 ? 62 : 63);
+    if (ok && sh == 1) {
+      ok = !__builtin_mul_overflow(rv.lo, (int64_t)1 << n, &v->lo) && !__builtin_mul_overflow(rv.hi, (int64_t)1 << n, &v->hi);
+      buf_printf(out, "((int64_t)((uint64_t)%s << %lld))", ra.p, n);
+    }
+    else if (ok) {
+      v->lo = rv.lo >> n; v->hi = rv.hi >> n;
+      buf_printf(out, "(%s >> %lld)", ra.p, n);
+    }
+    v->fl = 0;
+    free(ra.p);
+    return ok;
+  }
+  Buf rb; memset(&rb, 0, sizeof rb);
+  HvVal bv;
+  if (!hv_expr(x, av[0], &bv, &rb, depth + 1)) { free(ra.p); free(rb.p); return 0; }
+  int ok = 1, fl = rv.fl || bv.fl;
+  int bitop = sp_streq(nm, "&") || sp_streq(nm, "|") || sp_streq(nm, "^");
+  if (fl) {
+    /* a Float operation, an Integer operand taken as its Float */
+    ok = !bitop && t == TY_FLOAT && strchr("+-*/", nm[0]) && !nm[1];
+    if (ok) buf_printf(out, "(%s%s %s %s%s)", rv.fl ? "" : "(double)", ra.p, nm, bv.fl ? "" : "(double)", rb.p);
+  }
+  else if (t != TY_INT) ok = 0;
+  else if (bitop) {
+    if (nm[0] == '&' && (rv.lo >= 0 || bv.lo >= 0)) {
+      v->lo = 0;
+      v->hi = rv.lo >= 0 && bv.lo >= 0 ? (rv.hi < bv.hi ? rv.hi : bv.hi) : rv.lo >= 0 ? rv.hi : bv.hi;
+    }
+    else {
+      int b = hv_bits(rv.lo), b2;
+      if ((b2 = hv_bits(rv.hi)) > b) b = b2;
+      if ((b2 = hv_bits(bv.lo)) > b) b = b2;
+      if ((b2 = hv_bits(bv.hi)) > b) b = b2;
+      int neg = rv.lo < 0 || bv.lo < 0;
+      v->lo = neg ? (b == 63 ? INT64_MIN : -((int64_t)1 << b)) : 0;
+      v->hi = b == 63 ? INT64_MAX : ((int64_t)1 << b) - 1;
+    }
+    buf_printf(out, "(%s %s %s)", ra.p, nm, rb.p);
+  }
+  else if ((nm[0] == '+' || nm[0] == '-' || nm[0] == '*') && !nm[1]) {
+    if (nm[0] == '+')
+      ok = !__builtin_add_overflow(rv.lo, bv.lo, &v->lo) && !__builtin_add_overflow(rv.hi, bv.hi, &v->hi);
+    else if (nm[0] == '-')
+      ok = !__builtin_sub_overflow(rv.lo, bv.hi, &v->lo) && !__builtin_sub_overflow(rv.hi, bv.lo, &v->hi);
+    else {
+      int64_t p[4];
+      ok = !__builtin_mul_overflow(rv.lo, bv.lo, &p[0]) && !__builtin_mul_overflow(rv.lo, bv.hi, &p[1]) &&
+           !__builtin_mul_overflow(rv.hi, bv.lo, &p[2]) && !__builtin_mul_overflow(rv.hi, bv.hi, &p[3]);
+      if (ok) {
+        v->lo = v->hi = p[0];
+        for (int i = 1; i < 4; i++) { if (p[i] < v->lo) v->lo = p[i]; if (p[i] > v->hi) v->hi = p[i]; }
+      }
+    }
+    buf_printf(out, "(%s %s %s)", ra.p, nm, rb.p);
+  }
+  else ok = 0;   /* an Integer's / and % round toward -inf, C's toward 0 */
+  v->fl = fl;
+  free(ra.p); free(rb.p);
+  return ok;
+}
+
+/* The chunks ahead of an Integer#times loop's `for` (see above), counting to
+   `count`: answers 1 with the C locals the `for` starts from and counts to in
+   start and bound, or 0 with nothing emitted. */
+int hv_emit(Compiler *c, int id, const char *count, Buf *b, int indent, char *start, char *bound, size_t cap) {
+  extern int sp_target_int_bits;
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (!g_hc || sp_target_int_bits != 64 || !count || blk < 0 || nt_kind(nt, blk) != NK_BlockNode ||
+      !hv_ops_ok(c) || block_param_is_multi(c, blk, 0) || !block_param_name(c, blk, 0) || block_param_name(c, blk, 1))
+    return 0;
+  int body = nt_ref(nt, blk, "body"), n = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  if (n != 1 || nt_kind(nt, st[0]) != NK_CallNode || !hc_iob_write(c, st[0])) return 0;
+  int s = st[0];
+  int a = nt_ref(nt, s, "arguments"), ac = 0;
+  const int *av = nt_arr(nt, a, "arguments", &ac);
+  int ot = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+  int ow = comp_iob_ty_width(ot), ofl = comp_iob_ty_is_float(ot);
+  HvCtx x; memset(&x, 0, sizeof x);
+  x.c = c; x.pn = block_param_name(c, blk, 0);
+  x.hv = g_hv_seq + 1;
+  char od[48], ow_[48];
+  Buf e; memset(&e, 0, sizeof e);
+  HvVal v;
+  if (!hv_index(&x, av[1], ow) || !hv_expr(&x, av[2], &v, &e, 0) || (v.fl && !ofl) ||
+      !hc_iobuf_w(c, nt_ref(nt, s, "receiver"), od, ow_, sizeof od)) {
+    free(e.p);
+    return 0;
+  }
+  /* the test a 32-bit store's value takes (sp_iob_holds): [-2^31, 2^31 - 1]
+     signed, [-2^31, 2^32 - 1] unsigned */
+  const char *chk = NULL;
+  if (!ofl && ow == 4) {
+    int sg = comp_iob_ty_signed(ot);
+    int64_t lo = -((int64_t)1 << 31), hi = sg ? ((int64_t)1 << 31) - 1 : ((int64_t)1 << 32) - 1;
+    if (v.lo >= lo && v.hi <= hi) ;   /* every value fits */
+    else if (sg) chk = "((uint64_t)_r + 0x80000000u) >> 32";
+    else if (v.lo >= 0) chk = "(uint64_t)_r >> 32";
+    else if (v.hi <= hi) chk = "((uint64_t)_r + 0x80000000u) >> 63";
+    else { free(e.p); return 0; }
+  }
+  const char *tmp = ofl ? (ow == 4 ? "float" : "double") :
+                    ow == 1 ? "uint8_t" : ow == 2 ? "uint16_t" : ow == 4 ? "uint32_t" : "uint64_t";
+  int hv = g_hv_seq = x.hv;
+  int ch = HV_CH / ow < HV_CH_MIN ? HV_CH_MIN : HV_CH / ow;
+  /* the count is read once, for the `for` too: Integer#times takes it once,
+     and a trap run at a chunk's poll may assign a local it reads */
+  emit_indent(b, indent); buf_printf(b, "sp_int _hv%d_v = 0, _hv%d_n = %s;\n", hv, hv, count);
+  emit_indent(b, indent); buf_puts(b, "{\n");
+  emit_indent(b, indent + 1); buf_puts(b, "while (1) {\n");
+  if (!g_loop_polls_in_cond) emit_loop_polls(c, body, b, indent + 2, g_loop_uncounted, g_poll_loop_nest + 1);
+  emit_indent(b, indent + 2);
+  buf_printf(b, "if (!(_hv%d_n > 0 && _hv%d_n <= INT64_MAX / 8 && _hv%d_v <= _hv%d_n - %d && _hv%d_n * %d <= %s",
+             hv, hv, hv, hv, ch, hv, ow, ow_);
+  for (int i = 0; i < x.nsrc; i++) {
+    HvSrc *sr = &x.src[i];
+    buf_printf(b, " &&\n");
+    emit_indent(b, indent + 4);
+    buf_printf(b, "_hv%d_n * %d <= %s && ((uintptr_t)%s + (uintptr_t)(_hv%d_n * %d) <= (uintptr_t)%s || "
+                  "(uintptr_t)%s + (uintptr_t)(_hv%d_n * %d) <= (uintptr_t)%s",
+               hv, sr->w, sr->l, od, hv, ow, sr->d, sr->d, hv, sr->w, od);
+    if (sr->w == ow) buf_printf(b, " || %s == %s", sr->d, od);
+    buf_puts(b, ")");
+  }
+  buf_puts(b, ")) break;\n");
+  emit_indent(b, indent + 2);
+  buf_printf(b, "%s _hv%d_t[%d];\n", tmp, hv, ch);
+  if (chk) { emit_indent(b, indent + 2); buf_printf(b, "uint64_t _hv%d_b = 0;\n", hv); }
+  emit_indent(b, indent + 2);
+  buf_printf(b, "for (int _hv%d_j = 0; _hv%d_j < %d; _hv%d_j++) { %s _r = %s%s; ", hv, hv, ch, hv,
+             ofl ? "double" : "int64_t", v.fl || !ofl ? "" : "(double)", e.p);
+  if (chk) buf_printf(b, "_hv%d_b |= %s; ", hv, chk);
+  buf_printf(b, "_hv%d_t[_hv%d_j] = (%s)_r; }\n", hv, hv, tmp);
+  if (chk) { emit_indent(b, indent + 2); buf_printf(b, "if (SP_UNLIKELY(_hv%d_b)) break;\n", hv); }
+  emit_indent(b, indent + 2);
+  buf_printf(b, "for (int _hv%d_j = 0; _hv%d_j < %d; _hv%d_j++) ", hv, hv, ch, hv);
+  if (ofl)
+    buf_printf(b, "{ uint%d_t _u; memcpy(&_u, &_hv%d_t[_hv%d_j], %d); sp_iob_store(%s + (_hv%d_v + _hv%d_j) * %d, %d, %d, _u); }\n",
+               8 * ow, hv, hv, ow, od, hv, hv, ow, ow, comp_iob_ty_be(ot));
+  else
+    buf_printf(b, "sp_iob_store(%s + (_hv%d_v + _hv%d_j) * %d, %d, %d, (uint64_t)_hv%d_t[_hv%d_j]);\n",
+               od, hv, hv, ow, ow, comp_iob_ty_be(ot), hv, hv);
+  emit_indent(b, indent + 2); buf_printf(b, "_hv%d_v += %d;\n", hv, ch);
+  emit_indent(b, indent + 1); buf_puts(b, "}\n");
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  free(e.p);
+  snprintf(start, cap, "_hv%d_v", hv);
+  snprintf(bound, cap, "_hv%d_n", hv);
+  return 1;
 }
 
 static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b) {
@@ -14107,6 +14591,24 @@ static int rescue_operand_is_class_name(Compiler *c, int op) {
   return comp_class_index(c, n) >= 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
          is_builtin_exception_name(n);
 }
+/* Can rescue clause rc, or one further along its chain, catch an exception
+   of the class `above` starts with, `above` listing it and the classes and
+   modules above it? A bare rescue catches StandardError's classes, as
+   `bare` says; an operand that is not a class's name may hold any class
+   (rescue_operand_is_class_name) and is taken to catch. */
+int rescue_chain_catches(Compiler *c, int rc, const char *const *above, int bare) {
+  const NodeTable *nt = c->nt;
+  for (; rc >= 0; rc = nt_ref(nt, rc, "subsequent")) {
+    int nexc = 0; const int *exc = nt_arr(nt, rc, "exceptions", &nexc);
+    if (nexc == 0 && bare) return 1;
+    for (int i = 0; i < nexc; i++) {
+      if (!rescue_operand_is_class_name(c, exc[i])) return 1;
+      const char *n = nt_str(nt, exc[i], "name");
+      for (int j = 0; above[j]; j++) if (n && sp_streq(n, above[j])) return 1;
+    }
+  }
+  return 0;
+}
 
 /* exception frames a retry leaves on its way back to the body: the frame
    the rescue clauses of a begin with an ensure run in */
@@ -15168,8 +15670,10 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
      at two sites shares its node ids, so a setter that is a statement at one
      site must still yield its value at a value-position site */
   /* a counting iterator with a pure block is a pure loop (poll_pure_iter),
-     marked around as emit_while marks one */
-  if (g_pure_region == 0 && nt_kind(c->nt, id) == NK_CallNode && !poll_in_pure(c, id) && poll_pure_iter(c, id)) {
+     marked around as emit_while marks one (not where its method reads its
+     locals after an Interrupt: it polls at each pass there) */
+  if (g_pure_region == 0 && nt_kind(c->nt, id) == NK_CallNode && !poll_in_pure(c, id) && poll_pure_iter(c, id) &&
+      !loop_rescue_sees_interrupt(c, id)) {
     emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++;
     emit_with_prelude(c, id, b, indent, emit_stmt_inner);
     g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n");
@@ -16056,7 +16560,7 @@ static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *na
   emit_indent(b, indent);
   buf_puts(b, "if (SP_UNLIKELY(!(");
   emit_node_or_tmp(c, recv, recv_tmp, b);
-  buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
+  buf_printf(b, "))) sp_nil_recv_raise(\"%s\");\n", name);
 }
 /* Does a receiver typed as class `cid` store through a writer a descendant
    answers differently? Typed so, it can hold an instance of the descendant
@@ -18492,7 +18996,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       Buf *db = g_pre ? g_pre : b;
       emit_indent(db, g_pre ? g_indent : indent);
       emit_ctype(c, repr_of(c, grecv).as_ty, db);
-      buf_printf(db, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+      buf_printf(db, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_nil_recv_raise(\"%s\");\n",
                  tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(nt, id, "name"));
       free(rb.p);
       int slot = view_bind(grecv, "_t%d", tg);
@@ -18515,7 +19019,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
     if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
     else if (!nt_safe_nav(nt, id)) {
       emit_indent(b, indent);
-      buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+      buf_printf(b, "sp_nil_recv_raise(\"%s\");\n",
                  blockless_block_param_call_name(c, id));
     }
     return 1;
@@ -21078,7 +21582,6 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        STATEMENT where the singleton starts existing, and Ruby dates the
        override from here rather than from the object's construction (#4084).
        The object carries its parent's cls_id until this line runs. */
-    if (getenv("SP_DBG_SG")) { emit_indent(b, indent); buf_printf(b, "/* dbg DefNode recv=%d */\n", nt_ref(c->nt, id, "receiver")); }
     sg_refused_def(c, id);
     emit_sg_activate(c, id, nt_ref(c->nt, id, "receiver"), b, indent);
     return;
@@ -22055,37 +22558,50 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
    Without the switch, or outside a collect unit, it is emit_stmt. Answers
    whether the statement was emitted as written. */
 int g_stmt_deferrals = 0;
+void defer_mark(DeferMark *m, Buf *b) {
+  memcpy(m->outer, g_unsup_recover, sizeof m->outer);
+  m->b = b; m->len = b->len;
+  m->pre = g_pre; m->pre_len = g_pre ? g_pre->len : 0;
+  m->hold = g_conv_hold;
+  m->state = emit_state_snapshot();
+  m->ndiag0 = g_ndiags;
+}
+/* after the longjmp: the text and state back to the mark, and the
+   refusal's message (file:line: what) in msg */
+void defer_rollback(DeferMark *m, char *msg, size_t msz) {
+  g_stmt_deferrals++;
+  if (g_ndiags > m->ndiag0) g_deferred_diags++;
+  g_conv_hold = m->hold;
+  emit_state_release(m->state, 1); m->state = NULL;
+  g_pre = m->pre;
+  if (g_pre && g_pre->len > m->pre_len) { g_pre->len = m->pre_len; if (g_pre->p) g_pre->p[m->pre_len] = '\0'; }
+  m->b->len = m->len; if (m->b->p) m->b->p[m->len] = '\0';
+  g_unsup_armed = 1;
+  if (g_ndiags > m->ndiag0) {
+    const SpDiag *d = &g_diags[g_ndiags - 1];
+    if (d->line > 0) snprintf(msg, msz, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+    else snprintf(msg, msz, "%s", d->msg);
+  }
+  else snprintf(msg, msz, "refused at compile time");
+}
+void defer_done(DeferMark *m) {
+  if (m->state) emit_state_release(m->state, 0);
+  memcpy(g_unsup_recover, m->outer, sizeof m->outer);
+}
 static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int tail) {
-  if (!defer_refusals() || !g_unsup_armed) {
+  if (!defer_refusals_at(c, st) || !g_unsup_armed) {
     if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
     return 1;
   }
-  jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
-  size_t saved_len = b->len;
-  Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
-  ConvHold *saved_hold = g_conv_hold;
-  EmitUnitState *saved = emit_state_snapshot();
+  DeferMark dm; defer_mark(&dm, b);
   volatile int ok = 0;
-  int ndiag0 = g_ndiags;
   if (setjmp(g_unsup_recover) == 0) {
     if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
     ok = 1;
   }
   else {
-    g_stmt_deferrals++;
-    g_conv_hold = saved_hold;
-    emit_state_release(saved, 1); saved = NULL;
-    g_pre = saved_pre;
-    if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
-    b->len = saved_len; if (b->p) b->p[saved_len] = '\0';
-    g_unsup_armed = 1;
     char dmsg[2600];
-    if (g_ndiags > ndiag0) {
-      const SpDiag *d = &g_diags[g_ndiags - 1];
-      if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
-      else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
-    }
-    else snprintf(dmsg, sizeof dmsg, "refused at compile time");
+    defer_rollback(&dm, dmsg, sizeof dmsg);
     /* the statement may be the value of a statement expression (the last
        one of a block spliced as a find's condition), so the raise keeps a
        value of its type: void there does not compile */
@@ -22097,8 +22613,7 @@ static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int ta
     if (dval) buf_printf(b, "\"), %s);\n", default_value_from_compiler(c, dt));
     else buf_puts(b, "\");\n");
   }
-  if (saved) emit_state_release(saved, 0);
-  memcpy(g_unsup_recover, outer, sizeof outer);
+  defer_done(&dm);
   return ok;
 }
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
@@ -22114,7 +22629,7 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
    statement was emitted as written: the statements after a raise in its
    place cannot run, and are left out. */
 static int emit_body_stmt(Compiler *c, int st, Buf *b, int indent, int tail) {
-  if (defer_refusals() && g_unsup_armed && !g_unsup_probe && !g_unsup_quiet)
+  if (defer_refusals_at(c, st) && g_unsup_armed && !g_unsup_probe && !g_unsup_quiet)
     return emit_stmt_or_defer_as(c, st, b, indent, tail);
   if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
   return 1;
@@ -22864,7 +23379,7 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
   int t = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); SP_GC_ROOT(_t%d);", t, sref->p, t);
-  if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", t, name);
+  if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\");", t, name);
   buf_puts(b, "\n");
   sref->len = 0;
   if (sref->p) sref->p[0] = 0;
@@ -23799,6 +24314,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_printf(b, " }; if (!sp_poly_queue_push_n(_t%d, %d, _t%d)) {", tr, argc, ta);
       buf_printf(b, " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
                     " sp_raise_nomethod(sp_nomethod_msg(\"push\", _t%d));", tr, tr, tr);
+      /* a frozen Array raises even when no value is given */
+      if (argc == 0) buf_printf(b, " if (sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr);
       for (int a = 0; a < argc; a++) buf_printf(b, " sp_poly_shl(_t%d, _t%d[%d]);", tr, ta, a);
       buf_puts(b, " } }\n");
       return 1;
@@ -23957,7 +24474,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   }
   /* onto a fresh typed Array given another kind (an_push_widens_fresh): the
      value form rebuilds it as the general Array; the statement drops it */
-  if (is_push_alias(name) && argc >= 1 && an_push_widens_fresh(c, id)) {
+  if ((is_push_alias(name) || sp_streq(name, "concat")) && argc >= 1 && an_push_widens_fresh(c, id)) {
     emit_indent(b, indent); buf_puts(b, "(void)"); emit_expr(c, id, b); buf_puts(b, ";\n");
     return 1;
   }
@@ -24069,7 +24586,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        the _nilable store sets (sp_array.h) */
     const char *nilable = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) ? "_nilable" : "";
     emit_indent(b, indent);
-    buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    /* rooted across the arguments, which can allocate */
+    buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);\n", tr);
     Buf hd, lp; memset(&hd, 0, sizeof hd); memset(&lp, 0, sizeof lp);
     for (int a = 0; a < argc; a++) {
       int tn = ++g_tmp, ti = ++g_tmp;
@@ -24149,6 +24667,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_puts(&lp, "\n");
     }
     if (hd.p) buf_puts(b, hd.p);
+    /* a frozen receiver raises even when every argument is empty */
+    if (array_frozen_cls(rt)) {
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);\n",
+                 tr, tr, tr, array_frozen_cls(rt));
+    }
     if (lp.p) buf_puts(b, lp.p);
     emit_indent(b, indent + 1);
     for (int a = 0; a < argc; a++) buf_puts(b, "}");

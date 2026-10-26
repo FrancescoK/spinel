@@ -55,6 +55,10 @@ typedef struct {
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
   int nfiles;          /* length of `files` */
+  unsigned char *file_defers; /* FILE id -> 1 when the file's `# spinel: defer-refusals`
+                          magic comment turns its refusals into raises where they
+                          run (nt_put_file_defers); nfile_defers its length */
+  int nfile_defers;
   /* Bumped whenever a node is added or a string field is rewritten, i.e. by
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
@@ -229,6 +233,9 @@ int  nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames);
 /* Resolve a `node_file` id to its source path, or NULL if out of range.
    Used by codegen to emit `#line N "path"` directives in multi-file builds. */
 const char *nt_file_path(const NodeTable *nt, int fid);
+/* The file's `# spinel: defer-refusals` magic comment: set, and asked */
+void nt_put_file_defers(NodeTable *nt, int fid);
+int nt_file_defers(const NodeTable *nt, int fid);
 
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 static inline const char *nt_str(const NodeTable *nt, int id, const char *key) {
@@ -507,5 +514,13 @@ int        nt_num_refs(const NodeTable *nt, int id);
 int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be -1 */
 int        nt_num_arrs(const NodeTable *nt, int id);
 const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
+
+/* What the driver's flags ask of the parse, the analysis and codegen:
+   src/main.c sets them, spinel_parse.c defines them. A string is a path to
+   write, or NULL. */
+extern int g_opt_debug, g_opt_line_map, g_opt_positions, g_opt_warn_widen, g_opt_check_stores,
+           g_opt_defer_refusals, g_opt_emit_types_keep_c;
+extern const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_profile_symbol_map,
+                  *g_opt_rbs_seed;
 
 #endif

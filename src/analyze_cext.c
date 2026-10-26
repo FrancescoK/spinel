@@ -214,17 +214,63 @@ void desugar_cext_decls(Compiler *c) {
       } else if (sp_streq(name, "__cext_ivar") || sp_streq(name, "__cext_eval") || sp_streq(name, "__cext_constant_reads")) {
         need(c, site, ac, sp_streq(name, "__cext_constant_reads") ? 0 : 1);
         buf_puts(&b, "nil");
+      } else if (sp_streq(name, "__cext_link")) {
+        /* A bundled package's extension, built by make (packages/<pkg>/
+           build/cext): the archive to link, relative to the declaration
+           file, and the libraries it needs (`;`-separated). The driver takes
+           the `_mt` variant of the archive for a threaded program. */
+        need(c, site, ac, 2);
+        const char *archive = text(c, site, av[0]), *libs = text(c, site, av[1]);
+        const char *file = nt_file_path(nt, (int)nt_int(nt, site, "node_file", -1));
+        /* root-relative, as native_obj's paths are (the driver resolves them
+           beside lib/, RUN_ONE_TEST from the tree's root): from the file's
+           last "packages/" on, with the archive's `..` folded */
+        const char *pk = NULL;
+        for (const char *q = file; q && (q = strstr(q, "/packages/")); q++) pk = q + 1;
+        char path[2048];
+        if (archive[0] == '/' || !pk) snprintf(path, sizeof path, "%s", archive);
+        else {
+          const char *slash = strrchr(pk, '/');
+          snprintf(path, sizeof path, "%.*s/%s", (int)(slash - pk), pk, archive);
+          /* fold each "seg/../" */
+          for (char *dd; (dd = strstr(path, "/../")); ) {
+            char *seg = dd;
+            while (seg > path && seg[-1] != '/') seg--;
+            memmove(seg, dd + 4, strlen(dd + 4) + 1);
+          }
+        }
+        int seen = 0;
+        for (int k = 0; k < c->n_native_objs; k++) if (sp_streq(c->native_objs[k].path, path)) seen = 1;
+        if (!seen) {
+          c->native_objs = ffi_grow(c->native_objs, c->n_native_objs, &c->c_native_objs, 8, sizeof(NativeObj));
+          int oi = c->n_native_objs++;
+          c->native_objs[oi].mod = strdup("cext");
+          c->native_objs[oi].path = strdup(path);
+          c->native_objs[oi].feat = strdup("");
+        }
+        if (libs[0]) {
+          int li = -1;
+          for (int k = 0; k < c->n_ffi_libs; k++) if (sp_streq(c->ffi_libs[k].mod, "cext")) li = k;
+          if (li < 0) {
+            c->ffi_libs = ffi_grow(c->ffi_libs, c->n_ffi_libs, &c->c_ffi_libs, 8, sizeof(FfiLib));
+            c->ffi_libs[c->n_ffi_libs].mod = strdup("cext");
+            c->ffi_libs[c->n_ffi_libs].names = strdup(libs);
+            c->n_ffi_libs++;
+          }
+          else ffi_semi_append(&c->ffi_libs[li].names, libs);
+        }
+        buf_puts(&b, "nil");
       } else if (sp_streq(name, "__cext_stub")) {
         need(c, site, ac, 3);
         int kind = (int)integer(c, site, av[0]), argc = (int)integer(c, site, av[2]);
         const char *key = text(c, site, av[1]);
-        if (kind < 0 || kind > 5 || argc < 0)
+        if (kind < 0 || kind > 7 || argc < 0 || (kind >= 6 && argc != 1))
           unsupported_feature(c, site, "invalid C extension dispatch stub");
         int idx = c->n_cext_stubs++;
         c->cext_stubs = realloc(c->cext_stubs, sizeof(CextStub) * (size_t)c->n_cext_stubs);
         c->cext_stubs[idx] = (CextStub){strdup(key), kind, argc, site};
         buf_printf(&b, "def __cext_dispatch_%d(r", idx);
-        if (kind == 5) buf_puts(&b, ", name");
+        if (kind == 5 || kind == 7) buf_puts(&b, ", name");
         for (int j = 0; j < argc; j++) buf_printf(&b, ", a%d", j);
         buf_puts(&b, ", &block)\n__cext_box(block)\n__cext_box(");
         if (kind == 5) {
@@ -237,6 +283,13 @@ void desugar_cext_decls(Compiler *c) {
           buf_puts(&b, "r.__cext_target(");
           for (int j = 0; j < argc; j++) buf_printf(&b, "%sa%d", j ? ", " : "", j);
           buf_puts(&b, argc ? ", &block)" : "&block)");
+        } else if (kind == 6) {
+          /* a spread send: the arguments as one Array (rb_apply, and a
+           * rb_funcallv whose count the extension computes) */
+          buf_puts(&b, "r.__cext_target(*a0, &block)");
+        } else if (kind == 7) {
+          /* ...of a name the extension computed as well */
+          buf_puts(&b, "r.__send__(name, *a0, &block)");
         } else if (kind == 1 || kind == 2) {
           buf_printf(&b, "r.instance_variable_%s(", kind == 1 ? "get" : "set"); symbol(&b, key);
           buf_puts(&b, kind == 1 ? ")" : ", a0)");
@@ -493,7 +546,7 @@ void emit_cext_dispatch(Compiler *c, Buf *b) {
     int idx = sc->def_node >= 0 ? nt_int(c->nt, sc->def_node, "cext_stub", 0) - 1 : -1;
     if (idx < 0) continue;
     CextStub *stub = &c->cext_stubs[idx];
-    if ((stub->kind == 5) != computed) continue;
+    if (stub->kind == 7 || (stub->kind == 5) != computed) continue;
     if (computed) buf_printf(b, "if (kind == 0 && argc == %d) return ", stub->argc);
     else {
       buf_printf(b, "if (kind == %d && argc == %d && !strcmp(key, ", stub->kind, stub->argc);
@@ -502,6 +555,27 @@ void emit_cext_dispatch(Compiler *c, Buf *b) {
     emit_method_cname(c, sc, b); buf_puts(b, computed ? "(r, sp_box_sym(sp_sym_intern(key))" : "(r");
     for (int j = 0; j < stub->argc; j++) buf_printf(b, ", argv[%d]", j);
     buf_puts(b, ", block);\n");
+  }
+  /* a literal name's send with a count no stub has: through its spread
+   * stub, the arguments gathered into an Array; then a computed name's,
+   * sent or applied, through the computed spread stub */
+  for (int pass = 0; pass < 2; pass++)
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *sc = &c->scopes[mi];
+    int idx = sc->def_node >= 0 ? nt_int(c->nt, sc->def_node, "cext_stub", 0) - 1 : -1;
+    if (idx < 0 || c->cext_stubs[idx].kind != (pass ? 7 : 6)) continue;
+    if (pass) {
+      buf_puts(b, "if (kind == 6 && argc == 1) return ");
+      emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), argv[0], block);\n");
+      buf_puts(b, "if (kind == 0) { sp_PolyArray *spread = sp_PolyArray_new(); SP_GC_ROOT(spread);\n"
+                  "for (int i = 0; i < argc; i++) sp_PolyArray_push(spread, argv[i]);\nreturn ");
+      emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), sp_box_poly_array(spread), block); }\n");
+      continue;
+    }
+    buf_puts(b, "if (kind == 0 && !strcmp(key, "); emit_str_literal(b, c->cext_stubs[idx].key);
+    buf_puts(b, ")) { sp_PolyArray *spread = sp_PolyArray_new(); SP_GC_ROOT(spread);\n"
+                "for (int i = 0; i < argc; i++) sp_PolyArray_push(spread, argv[i]);\nreturn ");
+    emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_poly_array(spread), block); }\n");
   }
   emit_missing_cext_send(c, b);
   buf_puts(b, "sp_raise_cls(\"NoMethodError\", \"C extension dispatch has no compiled stub\");\n}\n");

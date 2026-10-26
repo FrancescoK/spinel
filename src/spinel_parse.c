@@ -47,11 +47,11 @@ static int node_counter;
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
 static const char *g_source_file = "";
-/* When SPINEL_DEBUG, SPINEL_LINE_MAP or SPINEL_POSITIONS is 1, flatten()
-   emits a per-node `node_line` field, which codegen places C `#line`
-   directives by and the analysis reads. The compiler driver sets
-   SPINEL_POSITIONS for every compile; off otherwise, so the AST text format
-   (and golden tests) are unchanged. */
+/* Under g_opt_debug, g_opt_line_map or g_opt_positions, flatten() emits a
+   per-node `node_line` field, which codegen places C `#line` directives by
+   and the analysis reads. The compiler driver sets g_opt_positions for
+   every compile; off otherwise, so the AST text format (and golden tests)
+   are unchanged. */
 static int g_emit_line = 0;
 /* The buffer-line -> (file, line) map is built for every program, not only
    under g_emit_line: `__FILE__` and `__dir__` in a required file answer
@@ -60,7 +60,7 @@ static int g_emit_line = 0;
    PUSH/POP marker lines it is rebuilt from are comments. g_emit_line still
    decides whether nodes carry their line for `#line` directives. */
 static int g_src_map = 1;
-/* --emit-types (SPINEL_EMIT_TYPES) also gets each node's END position, so a
+/* --emit-types (g_opt_emit_types) also gets each node's END position, so a
    consumer can pick the tightest span under a cursor: `pts`, `pts.map { }`
    and `.inspect` all start at one column. Only then: two more attributes on
    every node are node-table fields the ordinary compile has no use for (#4522). */
@@ -133,6 +133,43 @@ static bool sp_magic_comment_fsl_false(const pm_magic_comment_t *mc) {
   for (uint32_t i = 0; i < 5; i++)
     if (tolower(mc->value_start[i]) != "false"[i]) return false;
   return true;
+}
+
+/* The file's `# spinel: defer-refusals` magic comment: the file's refusals
+   compile to raises of NotImplementedError where they stand, as
+   --defer-refusals makes every file's (defer_refusals_at). A vendored
+   library carries it where a feature Spinel does not compile (sqlite3's
+   create_aggregate builds a class per call) must not keep a program that
+   never calls it from building. The paths are kept until the node table
+   takes its file table (sp_defer_paths_mark). */
+static char **sp_defer_paths; static int sp_defer_npaths;
+static char **sp_file_table; static int sp_file_count;   /* (defined with the map builder below) */
+static bool sp_magic_comment_is(const pm_magic_comment_t *mc, const char *key, const char *value) {
+  if (mc->key_length != strlen(key) || mc->value_length != strlen(value)) return false;
+  for (uint32_t i = 0; i < mc->key_length; i++) {
+    char ch = (char)tolower(mc->key_start[i]);
+    if ((ch == '-' ? '_' : ch) != key[i]) return false;
+  }
+  for (uint32_t i = 0; i < mc->value_length; i++) {
+    char ch = (char)tolower(mc->value_start[i]);
+    if ((ch == '_' ? '-' : ch) != value[i]) return false;
+  }
+  return true;
+}
+static void sp_src_file_note_defers(const SpSrcFile *f) {
+  for (const pm_list_node_t *n = f->parser.magic_comment_list.head; n; n = n->next) {
+    if (!sp_magic_comment_is((const pm_magic_comment_t *)n, "spinel", "defer-refusals")) continue;
+    char **grown = realloc(sp_defer_paths, sizeof(char *) * (size_t)(sp_defer_npaths + 1));
+    if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    sp_defer_paths = grown;
+    sp_defer_paths[sp_defer_npaths++] = strdup(f->path);
+    return;
+  }
+}
+static void sp_defer_paths_mark(NodeTable *nt) {
+  for (int i = 0; i < sp_file_count; i++)
+    for (int k = 0; k < sp_defer_npaths; k++)
+      if (sp_file_table[i] && strcmp(sp_file_table[i], sp_defer_paths[k]) == 0) nt_put_file_defers(nt, i);
 }
 
 /* The frozen_string_literal flag of the file's literals: 1, in every file.
@@ -244,9 +281,18 @@ static const uint8_t *g_owner;
 static int sp_line_map_n = 0;
 static char **sp_file_table;   /* id -> path; defined with the map builder below */
 
+/* --load-model=graph: a require is a LoadNode (sp_flatten_call_as, below) */
+int g_load_model_graph = 0;
+/* --load-model=graph: the file being flattened, as the table's file list
+   has it (0 is the entry); set with g_parser for each file */
+static int g_flat_file = 0;
+
 /* The file a node was written in when that is a required file, or NULL for
-   the entry script (file id 0) and when the map could not be built. */
+   the entry script (file id 0) and when the map could not be built. Under
+   --load-model=graph each file is flattened from its own parse, which says
+   which file it is. */
 static const char *sp_node_required_file(const pm_node_t *node) {
+  if (g_load_model_graph) return g_flat_file > 0 ? sp_file_table[g_flat_file] : NULL;
   if (sp_line_map_n <= 0) return NULL;
   pm_line_column_t lc = pm_newline_list_line_column(&g_parser->newline_list,
                                                     node->location.start,
@@ -307,8 +353,6 @@ static size_t prism_kind_to_pascal(const char *raw, char *out, size_t out_size) 
 
 /* ---- Forward ---- */
 static int flatten(pm_node_t *node);
-/* --load-model=graph: a require is a LoadNode (sp_flatten_call_as, below) */
-int g_load_model_graph = 0;
 static int sp_load_call(const pm_call_node_t *n);
 static int sp_flatten_call_as(int id, pm_call_node_t *n);
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
@@ -1115,7 +1159,7 @@ static int flatten_node(pm_node_t *node) {
                                                       g_parser->start_line);
     int32_t bl = lc.line;
     int orig = bl;
-    int fid = 0;
+    int fid = g_load_model_graph ? g_flat_file : 0;
     if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) {
       orig = sp_line_orig[bl];
       fid = sp_line_file[bl];
@@ -3354,6 +3398,23 @@ static int sp_require_truth(const pm_parser_t *parser, const pm_node_t *node, in
     case PM_FALSE_NODE: case PM_NIL_NODE: return 0;
     case PM_PARENTHESES_NODE:
       return sp_require_truth(parser, ((const pm_parentheses_node_t *)node)->body, engine);
+    /* `a and b` is settled by a false side or two true ones, `a or b` by a
+       true side or two false ones (racc: `Object.const_defined?(:RUBY_ENGINE)
+       and RUBY_ENGINE == 'jruby'`) */
+    case PM_AND_NODE: case PM_OR_NODE: {
+      int is_and = PM_NODE_TYPE(node) == PM_AND_NODE;
+      const pm_node_t *l = is_and ? ((const pm_and_node_t *)node)->left : ((const pm_or_node_t *)node)->left;
+      const pm_node_t *r = is_and ? ((const pm_and_node_t *)node)->right : ((const pm_or_node_t *)node)->right;
+      int lt = sp_require_truth(parser, l, engine), rt = sp_require_truth(parser, r, engine);
+      if (lt == !is_and || rt == !is_and) return !is_and;
+      return lt == is_and && rt == is_and ? is_and : -1;
+    }
+    /* `defined?(RUBY_ENGINE)`: the constant every program has */
+    case PM_DEFINED_NODE: {
+      const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
+      return engine && v && PM_NODE_TYPE(v) == PM_CONSTANT_READ_NODE &&
+             sp_pm_name_is(parser, ((const pm_constant_read_node_t *)v)->name, "RUBY_ENGINE") ? 1 : -1;
+    }
     case PM_STATEMENTS_NODE: {
       const pm_node_list_t *body = &((const pm_statements_node_t *)node)->body;
       return body->size == 1 ? sp_require_truth(parser, body->nodes[0], engine) : -1;
@@ -3365,9 +3426,18 @@ static int sp_require_truth(const pm_parser_t *parser, const pm_node_t *node, in
         int truth = sp_require_truth(parser, call->receiver, engine);
         return truth < 0 ? -1 : !truth;
       }
+      if (!call->arguments || call->arguments->arguments.size != 1) return -1;
+      /* `Object.const_defined?(:RUBY_ENGINE)` */
+      if (engine && sp_pm_name_is(parser, call->name, "const_defined?") &&
+          PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE &&
+          sp_pm_name_is(parser, ((const pm_constant_read_node_t *)call->receiver)->name, "Object")) {
+        const pm_node_t *arg = call->arguments->arguments.nodes[0];
+        const pm_string_t *s = PM_NODE_TYPE(arg) == PM_SYMBOL_NODE ? &((const pm_symbol_node_t *)arg)->unescaped :
+                               PM_NODE_TYPE(arg) == PM_STRING_NODE ? &((const pm_string_node_t *)arg)->unescaped : NULL;
+        return s && pm_string_length(s) == 11 && memcmp(pm_string_source(s), "RUBY_ENGINE", 11) == 0 ? 1 : -1;
+      }
       int eq = sp_pm_name_is(parser, call->name, "==");
       if (!engine || (!eq && !sp_pm_name_is(parser, call->name, "!="))) return -1;
-      if (!call->arguments || call->arguments->arguments.size != 1) return -1;
       const pm_node_t *a = call->receiver, *b = call->arguments->arguments.nodes[0];
       const pm_node_t *cst, *lit;
       if (PM_NODE_TYPE(a) == PM_CONSTANT_READ_NODE && PM_NODE_TYPE(b) == PM_STRING_NODE) { cst = a; lit = b; }
@@ -4903,6 +4973,7 @@ static char *resolve_requires(SpLoadGraph *g, const char *source, const char *so
      encoding and its dead requires are read from this parse. */
   SpSrcFile file;
   sp_src_file_parse(&file, source, source_path);
+  sp_src_file_note_defers(&file);
   int file_fsl = sp_src_file_fsl(&file);
   sp_src_file_warn_encoding(&file);
   size_t code_len = sp_src_file_code_len(&file);
@@ -6334,6 +6405,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     if (!text) { fprintf(stderr, "spinel_parse: cannot open '%s'\n", path); break; }
     SpSrcFile file;
     sp_src_file_parse(&file, text, path);
+    sp_src_file_note_defers(&file);
     sp_src_file_warn_encoding(&file);
     if (file.parser.error_list.size) {
       const pm_diagnostic_t *d = (const pm_diagnostic_t *)file.parser.error_list.head;
@@ -6342,21 +6414,10 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
       free(text);
       break;
     }
-    /* the file's own lines, frozen-literal pragma and path, read by
-       flatten as the spliced buffer's map gives them */
-    size_t nl = 1;
-    for (const char *p = text; *p; p++) nl += *p == '\n';
-    int fid = sp_intern_file(path);
-    sp_line_map_n = (int)nl;
-    sp_line_file = realloc(sp_line_file, sizeof(int) * (nl + 2));
-    sp_line_orig = realloc(sp_line_orig, sizeof(int) * (nl + 2));
-    sp_line_pop = calloc(nl + 2, sizeof(int)); sp_disp_file = calloc(nl + 2, sizeof(int)); sp_disp_line = calloc(nl + 2, sizeof(int));
-    if (!sp_line_file || !sp_line_orig || !sp_line_pop || !sp_disp_file || !sp_disp_line) {
-      fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
-    }
-    for (size_t l = 0; l < nl + 2; l++) { sp_line_file[l] = fid; sp_line_orig[l] = (int)l; }
-    free(g_fsl_lines);
-    g_fsl_lines = sp_fsl_make(text, sp_src_file_fsl(&file), &g_fsl_nlines);
+    /* the file in the table's file list, in graph order: flatten stamps a
+       node's position from this parse */
+    g_flat_file = sp_intern_file(path);
+    sp_src_file_fsl(&file);   /* (its pragma's warning; every literal is frozen) */
     g_parser = &file.parser;
     g_source_file = source_file;
     g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
@@ -6365,14 +6426,10 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     emit_int(root, "load_file", f);
     for (int id = start; id < node_counter; id++)
       if (nt_kind(out_nt, id) == NK_LoadNode) sp_load_resolve(&g, f, id);
-    free(sp_line_pop); free(sp_disp_file); free(sp_disp_line);
-    sp_line_pop = sp_disp_file = sp_disp_line = NULL;
     sp_src_file_free(&file);
     free(text);
     done = f + 1;
   }
-  sp_line_map_n = 0;
-  free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (done < g.nfile) {   /* a file that could not be read or parsed, reported above */
@@ -6383,33 +6440,30 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   else {
     nt_put_source_file(nt, source_file);
     for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
+    sp_defer_paths_mark(nt);
     if (g_dump_load_graph) sp_load_graph_dump(&g);
   }
   sp_load_graph_free(&g);
   return nt;
 }
 
+int g_opt_debug, g_opt_line_map, g_opt_positions, g_opt_warn_widen, g_opt_check_stores,
+    g_opt_defer_refusals, g_opt_emit_types_keep_c;
+const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_profile_symbol_map,
+           *g_opt_rbs_seed;
+
 /* Whether flatten stamps each node's position (node_line / node_file /
-   node_col, and its end where a report reads it), from the environment the
-   debug and report modes set; set before the requires are resolved, so the
-   resolvers insert the PUSH/POP markers the multi-file source map is
-   rebuilt from. */
-static void sp_parse_positions_from_env(void) {
-  const char *dbg = getenv("SPINEL_DEBUG");
-  const char *lm = getenv("SPINEL_LINE_MAP");
-  const char *ps = getenv("SPINEL_POSITIONS");
-  int on = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0')
-        || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0')
-        || (ps  != NULL && ps[0]  == '1' && ps[1]  == '\0');
+   node_col, and its end where a report reads it), as the debug and report
+   modes ask; set before the requires are resolved, so the resolvers insert
+   the PUSH/POP markers the multi-file source map is rebuilt from. */
+static void sp_parse_positions_from_opts(void) {
+  int on = g_opt_debug || g_opt_line_map || g_opt_positions;
   g_emit_line = on ? 1 : 0;
-  const char *et = getenv("SPINEL_EMIT_TYPES");
-  const char *ww = getenv("SPINEL_WARN_WIDEN");
-  const char *nc = getenv("SPINEL_NEW_CLAIMS");
-  g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
+  g_emit_end = (on && (g_opt_emit_types || g_opt_warn_widen)) ? 1 : 0;
 }
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
-  sp_parse_positions_from_env();
+  sp_parse_positions_from_opts();
   if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {
@@ -6528,9 +6582,9 @@ else {
        of the time it is being typed into, and its marker belongs on the
        token, not on line 1. */
     fprintf(stderr, "Parse errors in '%s':\n", source_file);
-    const char *types_out = getenv("SPINEL_EMIT_TYPES");
-    FILE *jf = (types_out && *types_out) ? fopen(types_out, "w") : NULL;
-    if (types_out && *types_out && !jf) fprintf(stderr, "spinel: cannot write '%s'\n", types_out);
+    const char *types_out = g_opt_emit_types;
+    FILE *jf = types_out ? fopen(types_out, "w") : NULL;
+    if (types_out && !jf) fprintf(stderr, "spinel: cannot write '%s'\n", types_out);
     if (jf) fputs("{\n  \"types\": [\n\n  ],\n  \"diagnostics\": [\n", jf);
     int nd = 0;
     pm_diagnostic_t *diag;
@@ -6595,6 +6649,7 @@ else {
      node's `node_file` id for its `#line` directive. */
   nt_put_source_file(out_nt, g_source_file);
   for (int i = 0; i < sp_file_count; i++) nt_put_file(out_nt, i, sp_file_table[i]);
+  sp_defer_paths_mark(out_nt);
   NodeTable *nt = out_nt;
   out_nt = NULL;
 

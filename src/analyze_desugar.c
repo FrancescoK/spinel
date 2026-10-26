@@ -294,7 +294,15 @@ int desugar_ie_bare_object_calls(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     int hit = 0;
     for (int k = 0; nm && names[k] && !hit; k++) hit = sp_streq(nm, names[k]);
-    if (!hit || comp_method_in_chain(c, cls, nm, NULL) >= 0) continue;
+    /* on an Array, Hash or String subclass instance, a method its builtin
+       answers (`a.instance_eval { size }`) asks the receiver too. The
+       receiver's class comes from inferred types, so the pass runs each
+       round. A top-level def of the name is left alone, and so is a
+       Hash subclass's store, which has no arm on self there (it stays
+       refused). */
+    int builtin = !hit && comp_method_index(c, nm) < 0 && comp_arysub_name_is_array(c, cls, nm) &&
+                  !(ty_is_hash(comp_ary_kind(c, cls)) && is_store_alias(nm));
+    if (!builtin && (!hit || comp_method_in_chain(c, cls, nm, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
@@ -1680,6 +1688,14 @@ static const char *erm_mixin_name(const NodeTable *nt, int st, int an, const int
   *first = 1;
   return sv;
 }
+/* the builtin modules whose singleton class takes a mixin (`::Process
+   .singleton_class.prepend(ForkHook)`, sqlite3's fork safety; minitest's
+   `::Warning.singleton_class.prepend ErrorOnWarning`): a reopening of the
+   module makes the mixin's methods its own */
+static int is_builtin_module_mixin_name(const char *leaf) {
+  return sp_streq(leaf, "Process") || sp_streq(leaf, "Kernel") || sp_streq(leaf, "Math") ||
+         sp_streq(leaf, "GC") || sp_streq(leaf, "Signal") || sp_streq(leaf, "Warning");
+}
 static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return st;
@@ -1715,6 +1731,15 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   if (!decl && !attr && !sp_streq(nm, "extend") && sclass < 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       is_builtin_reopen_name(leaf) && !sp_streq(leaf, "Toplevel") && !sp_streq(leaf, "Class"))
     decl = 1;
+  /* a builtin module's singleton class takes a mixin in a reopening
+     (`::Process.singleton_class.prepend(ForkHook)`, sqlite3's fork safety;
+     minitest's `::Warning.singleton_class.prepend ErrorOnWarning`): the
+     module's methods become its own */
+  if (!decl && !attr && sclass >= 0 &&
+      (nt_kind(nt, recv) == NK_ConstantReadNode ||
+       (nt_kind(nt, recv) == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) &&
+      is_builtin_module_mixin_name(leaf))
+    decl = 2;
   if (!decl) return st;
   if (an - first < 1 || !av) return st;
   for (int i = first; i < an; i++) {
@@ -1791,6 +1816,136 @@ static int erm_sclass_const_rewrite(NodeTable *nt, int st, int decl) {
   nt_node_set_ref(nt, rn, "body", body);
   return rn;
 }
+/* ---- a builtin module's singleton mixin inside a method ----
+   sqlite3's fork safety prepends its hook from a method the file calls as
+   it loads:
+     def hook!
+       ::Process.singleton_class.prepend(CoreExt)
+     end
+   The class graph is baked at compile time, so the mixin goes into a
+   reopening of the module at the top level (`module Process;
+   singleton_class.prepend ::SQLite3::ForkSafety::CoreExt; end`), from the
+   start rather than when the method runs, as a define_method in a method
+   body is defined; the statement itself is nil. The mixin is named by the
+   full path Ruby resolves the constant to where it is written
+   (ied_resolve); a constant that names no module of the program's is left
+   as it is, a refusal. */
+static int bsm_candidate(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0 || nt_safe_nav(nt, st)) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || (!sp_streq(nm, "prepend") && !sp_streq(nm, "include"))) return 0;
+  int sc = nt_ref(nt, st, "receiver");
+  if (sc < 0 || nt_kind(nt, sc) != NK_CallNode || !nt_str(nt, sc, "name") ||
+      !sp_streq(nt_str(nt, sc, "name"), "singleton_class") || nt_ref(nt, sc, "arguments") >= 0 ||
+      nt_ref(nt, sc, "block") >= 0) return 0;
+  int recv = nt_ref(nt, sc, "receiver");
+  if (recv < 0) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) return 0;
+  const char *leaf = nt_str(nt, recv, "name");
+  if (!leaf || !is_builtin_module_mixin_name(leaf)) return 0;
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || !av) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  return ak == NK_ConstantReadNode || ak == NK_ConstantPathNode;
+}
+static int bsm_hoist(Compiler *c, const int *parent, const IedPaths *ip, int st, int **top, int *ntop) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, st, "name");
+  int recv = nt_ref(nt, nt_ref(nt, st, "receiver"), "receiver");
+  const char *leaf = nt_str(nt, recv, "name");
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = nt_arr(nt, args, "arguments", &an);
+  /* the class and module bodies around the statement, innermost first */
+  int chain[IED_DEPTH]; int nc = 0;
+  for (int p = parent[st]; p >= 0 && nc < IED_DEPTH; p = parent[p])
+    if (nt_kind(nt, p) == NK_ClassNode || nt_kind(nt, p) == NK_ModuleNode) chain[nc++] = p;
+  const char *scopes[IED_DEPTH + 1]; int ns = 0;
+  char full[IED_DEPTH][1024];
+  for (int i = nc - 1; i >= 0; i--) {
+    if (!ied_define_path(nt, ip, nt_ref(nt, chain[i], "constant_path"), scopes, ns, full[i], sizeof full[i])) return 0;
+    for (int j = ns; j > 0; j--) scopes[j] = scopes[j - 1];
+    scopes[0] = full[i]; ns++;
+  }
+  char seg[QC_MAXDEPTH + 1][64]; int abs_anchor = 0;
+  int n = qc_read_chain(nt, av[0], seg, &abs_anchor);
+  if (n <= 0) return 0;
+  char path[1024];
+  if (ied_resolve(ip, seg, n, scopes, abs_anchor ? 0 : ns, path, sizeof path) != 2) return 0;
+  /* `module <leaf>; singleton_class.<nm> ::<path>; end`, the path absolute
+     (a ConstantPathNode with no parent is `::A`) */
+  int arg = -1;
+  for (char *q = path, *e; q && *q; q = e) {
+    e = strstr(q, "::");
+    if (e) { *e = 0; e += 2; }
+    int seg_node = fwd_new_node_like(nt, st, "ConstantPathNode");
+    if (seg_node < 0) return 0;
+    nt_node_set_str(nt, seg_node, "name", q);
+    nt_node_set_ref(nt, seg_node, "parent", arg);
+    arg = seg_node;
+  }
+  int sc = fwd_new_node_like(nt, st, "CallNode");
+  int call = fwd_new_node_like(nt, st, "CallNode");
+  int cargs = fwd_new_node_like(nt, st, "ArgumentsNode");
+  int rn = fwd_new_node_like(nt, st, "ModuleNode");
+  int body = fwd_new_node_like(nt, st, "StatementsNode");
+  int cpath = fwd_new_node_like(nt, st, "ConstantReadNode");
+  if (arg < 0 || sc < 0 || call < 0 || cargs < 0 || rn < 0 || body < 0 || cpath < 0) return 0;
+  nt_node_set_str(nt, sc, "name", "singleton_class");
+  nt_node_set_ref(nt, sc, "receiver", -1); nt_node_set_ref(nt, sc, "arguments", -1); nt_node_set_ref(nt, sc, "block", -1);
+  nt_node_set_arr(nt, cargs, "arguments", &arg, 1);
+  nt_node_set_str(nt, call, "name", nm);
+  nt_node_set_ref(nt, call, "receiver", sc); nt_node_set_ref(nt, call, "arguments", cargs); nt_node_set_ref(nt, call, "block", -1);
+  nt_node_set_str(nt, cpath, "name", leaf);
+  nt_node_set_arr(nt, body, "body", &call, 1);
+  nt_node_set_ref(nt, rn, "constant_path", cpath);
+  nt_node_set_ref(nt, rn, "body", body);
+  xc_push(top, ntop, rn);
+  nt_node_reset(nt, st, "NilNode");
+  return 1;
+}
+static int desugar_method_body_singleton_mixin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int root = nt->root_id, tstmts = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+  if (tstmts < 0 || nt_kind(nt, tstmts) != NK_StatementsNode) return 0;
+  int *parent = NULL, *top = NULL, ntop = 0;
+  IedPaths ip = {0};
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    int body = nt_ref(nt, id, "body"), bn = 0;
+    const int *bb0 = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (!bb0 || bn == 0) continue;
+    int any = 0;
+    for (int i = 0; i < bn && !any; i++) any = bsm_candidate(nt, bb0[i]);
+    if (!any) continue;
+    int *bb = (int *)malloc(sizeof(int) * (size_t)bn);
+    if (!bb) continue;
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (!parent) {
+      parent = an_parent_map(nt);
+      ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
+      if (!parent || !ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      ied_walk(nt, root, NULL, 0, n0, &ip);
+    }
+    for (int i = 0; i < bn; i++)
+      if (bsm_candidate(nt, bb[i]) && bsm_hoist(c, parent, &ip, bb[i], &top, &ntop)) changed = 1;
+    free(bb);
+  }
+  if (ntop) {
+    int tn = 0; const int *ts = nt_arr(nt, tstmts, "body", &tn);
+    int *all = (int *)malloc(sizeof(int) * (size_t)(tn + ntop));
+    if (!all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(all, ts, sizeof(int) * (size_t)tn);
+    memcpy(all + tn, top, sizeof(int) * (size_t)ntop);
+    nt_node_set_arr(nt, tstmts, "body", all, tn + ntop);
+    free(all);
+  }
+  free(parent); free(top);
+  if (ip.lex) ied_paths_free(&ip);
+  return changed;
+}
 int desugar_explicit_receiver_mixin(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1821,6 +1976,7 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
     if (any) { nt_node_set_arr(nt, stmts, "body", nb, bn); changed = 1; }
     free(nb);
   }
+  changed |= desugar_method_body_singleton_mixin(c);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
@@ -5460,6 +5616,25 @@ int desugar_engine_branches(Compiler *c) {
     engine_blank(nt, recv);
     engine_blank(nt, args);
     nt_node_reset(nt, id, truth ? "TrueNode" : "FalseNode");
+    nt_node_set_int(nt, id, "engine_check", 1);
+    changed = 1;
+  }
+  /* `Object.const_defined?(:RUBY_ENGINE)` is true in every program (racc
+     asks it before comparing the engine) */
+  for (int id = 0; eng && id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *op = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (!op || !sp_streq(op, "const_defined?") || recv < 0 || ac != 1 || nt_ref(nt, id, "block") >= 0) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(nt_str(nt, recv, "name"), "Object")) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *cn = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!cn || !sp_streq(cn, "RUBY_ENGINE")) continue;
+    engine_blank(nt, recv);
+    engine_blank(nt, args);
+    nt_node_reset(nt, id, "TrueNode");
     nt_node_set_int(nt, id, "engine_check", 1);
     changed = 1;
   }
@@ -15035,6 +15210,8 @@ int sym_block_values(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (ty_is_hash(rt) && sp_streq(nm, "to_h") && argc == 0) return 2;
   TyKind elem; int hash_pair;
+  /* an Enumerator yielding two values passes both on (each_with_index.map) */
+  if (recv >= 0 && bs_enum_yield_count(c, recv, nm, argc, &elem) == 2) return 2;
   return recv >= 0 && iter_shape_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
 }
 
@@ -17400,7 +17577,7 @@ int desugar_class_new_blocks(Compiler *c) {
        the surrounding locals stays a block */
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
-    int capture_refusal = reads_outer && !defer_refusals();
+    int capture_refusal = reads_outer && !defer_refusals_at(c, id);
     if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
@@ -23318,7 +23495,12 @@ static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
   memcpy(*buf + *len, t, tl); *len += tl; (*buf)[*len] = 0;
 }
 /* the string's text with `var` (a block parameter) read as `elem`; NULL
-   when an interpolation is anything else */
+   when an interpolation is anything else. Without a var, an interpolated
+   constant in call position (`#{Racc_Main_Parsing_Routine}(_racc_setup(),
+   false)`, racc's parser.rb: the constant holds the method's name) is the
+   send of what the constant holds, `__send__(Racc_Main_Parsing_Routine,
+   _racc_setup(), false)`, which reaches the private method the name spells
+   as the eval'd call does. */
 static char *sce_text(const NodeTable *nt, int str, const char *var, const char *elem) {
   char *buf = NULL; size_t len = 0, cap = 0;
   sce_append(&buf, &len, &cap, "");
@@ -23329,19 +23511,31 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
     return buf;
   }
   int pn = 0; const int *parts = nt_arr(nt, str, "parts", &pn);
+  int skip = 0;   /* bytes of the next literal part a constant's send took */
   for (int i = 0; i < pn; i++) {
     NodeKind k = nt_kind(nt, parts[i]);
     if (k == NK_StringNode) {
       const char *t = nt_str(nt, parts[i], "content");
       if (!t) { free(buf); return NULL; }
-      sce_append(&buf, &len, &cap, t);
+      sce_append(&buf, &len, &cap, t + skip);
+      skip = 0;
       continue;
     }
-    if (k != NK_EmbeddedStatementsNode || !var) { free(buf); return NULL; }
+    if (k != NK_EmbeddedStatementsNode) { free(buf); return NULL; }
     int stmts = nt_ref(nt, parts[i], "statements");
     int sn = 0; const int *ss = stmts >= 0 ? nt_arr(nt, stmts, "body", &sn) : NULL;
     if (sn != 1) { free(buf); return NULL; }
     int e = ss[0];
+    if (!var) {
+      const char *next = i + 1 < pn && nt_kind(nt, parts[i + 1]) == NK_StringNode ? nt_str(nt, parts[i + 1], "content") : NULL;
+      const char *cn = nt_kind(nt, e) == NK_ConstantReadNode ? nt_str(nt, e, "name") : NULL;
+      if (!cn || !next || next[0] != '(') { free(buf); return NULL; }
+      sce_append(&buf, &len, &cap, "__send__(");
+      sce_append(&buf, &len, &cap, cn);
+      if (next[1] == ')') { sce_append(&buf, &len, &cap, ")"); skip = 2; }
+      else { sce_append(&buf, &len, &cap, ", "); skip = 1; }
+      continue;
+    }
     const char *conv = NULL;
     if (nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "arguments") < 0 && nt_ref(nt, e, "block") < 0) {
       conv = nt_str(nt, e, "name"); e = nt_ref(nt, e, "receiver");

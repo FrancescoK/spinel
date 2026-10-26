@@ -107,3 +107,41 @@ and explicit refusals while preserving artifacts. It is also part of `make test`
 `make cext-recorder-oracle` builds the same fixture as a real CRuby extension
 and compares class hierarchy, methods/visibility/arity, constants/encoding,
 aliases, attributes, include/extend and shared string identity.
+
+## Later steps, in the same recorder and bridge
+
+Added for sqlite3 and racc/cparse (#7210's closing conditions):
+
+- **Hidden instance variables.** `rb_iv_get` / `rb_iv_set` of a literal name
+  without the `@` (`"-instances"`, CRuby's convention for an ivar no Ruby
+  code reaches), and `rb_ivar_defined(obj, rb_intern("-name"))`, are
+  accepted by the scanner and need no stub: the bridge keeps the value in a
+  table of the object's own beside its Ruby ivars (sp_ivtbl_hidden_put),
+  which `instance_variables`, `instance_variable_get` and `inspect` do not
+  see; the collector marks it while the object lives.
+- **Spread sends.** `rb_apply(recv, id, array)`, and `rb_funcallv` /
+  `rb_funcall2` whose count the extension computes, set `spread_sends` in
+  the manifest: every literal name then has a stub of kind 6
+  (`r.name(*a0, &block)`), which the dispatch also takes for a literal
+  name's send with a count no stub has; with `computed_ids` as well, a stub
+  of kind 7 (`r.__send__(name, *a0, &block)`) answers a computed name.
+- **`Class.new` during Init.** sqlite3's aggregator wraps its instances in
+  two classes made with `rb_funcall(rb_cClass, rb_intern("new"), 0)`. The
+  recorder records each as a class named `SpinelCextAnonymous_<ext>_<n>`,
+  in the order of the calls, and the bridge names them the same way;
+  `rb_gc_register_mark_object` is a registered root.
+- **`_GLOBAL_OFFSET_TABLE_`** is the linker's, named by PIE code for a
+  global another unit of the extension defines; the import check ignores it.
+- **A bundled package's extension.** `packages/<p>/spin.toml` with a
+  `[cext.*]` recipe is built by `make` (bin/spinel-cext-build --bundle):
+  the archives go to `packages/<p>/build/cext/`, and the declarations
+  beside the package's Ruby as `<p>/<require>.rb`, where the compiler's
+  package tier finds them, ending in `__cext_link(<archive>, <libs>)`,
+  which the compiler takes as a `native_obj` (the driver and RUN_ONE_TEST
+  link it, the `_mt` variant for a threaded program) and `-l` flags.
+  sqlite3 is built where libsqlite3 is (`SQLITE3_AVAILABLE`), racc's
+  cparse always.
+- **Exceptions of the program's classes** made in C (`rb_exc_new2` of a
+  class `rb_path2class` found) count as instantiated, so their ivars have
+  their slots; `rb_errinfo()` answers nil where Ruby calls a C method, as
+  CRuby's does once a rescue is done.
