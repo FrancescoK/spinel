@@ -2734,7 +2734,8 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
      elements, boxed as a poly array beside any other site's (T4). The fold
      (emit_cycle_bounded_expr) boxes them to match. */
   if (rk == TY_ENUMERATOR && (ac == 1 && (sp_streq(nt_str(nt, node, "name"), "first") ||
-      sp_streq(nt_str(nt, node, "name"), "take"))) && yield_is_cycle_recv(nt, node)) { *out = TY_POLY_ARRAY; return 1; }
+      sp_streq(nt_str(nt, node, "name"), "take"))) && yield_is_cycle_recv(nt, node) &&
+      comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, nt_str(nt, node, "name")) < 0) { *out = TY_POLY_ARRAY; return 1; }
   /* Was `ac == 1` only (dig/[]/sample's own 1-arg needs); widened to any
      ac >= 1 so clamp's 2-arg form also gets its first bound's kind --
      every other existing arm here only ever matched ac == 1 anyway, so
@@ -7563,7 +7564,9 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
     int cargs = nt_ref(nt, recv, "arguments");
     int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
     int pr = nt_ref(nt, recv, "receiver");
-    if (cac == 0 && pr >= 0) { TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) { *out = rt2; return 1; } }
+    if (cac == 0 && pr >= 0 && comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, name) < 0) {
+      TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) { *out = rt2; return 1; }
+    }
   }
 
   /* int_array.chunk_while/slice_when/chunk { |...| } .to_a -> a poly array (runs / pairs) */

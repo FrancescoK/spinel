@@ -1697,7 +1697,7 @@ int comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name) {
   const char *cn = t == TY_INT ? "Integer" : t == TY_FLOAT ? "Float"
                  : t == TY_STRING ? "String" : t == TY_SYMBOL ? "Symbol"
                  : (ty_is_array(t) || ty_is_obj_array(t)) ? "Array"
-                 : ty_is_hash(t) ? "Hash" : NULL;
+                 : ty_is_hash(t) ? "Hash" : t == TY_ENUMERATOR ? "Enumerator" : NULL;
   if (!cn || !name) return -1;
   int ci = comp_class_index(c, cn);
   if (ci < 0) return -1;
