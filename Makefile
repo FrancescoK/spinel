@@ -1673,6 +1673,16 @@ defer-refusals-test: $(SPINEL)
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "defer-refusals-test: pass"; else exit 1; fi
 
+.PHONY: analysis-forms-test
+# One of test-run's legs, named here beside its recipe.
+test-run: analysis-forms-test
+# The analysis' compile-time forms (a class body's table loop), run as the
+# graph load model runs them: under their test-only switch, the programs of
+# test/analysis-forms/ and the table-loop tests against their .expected, and
+# the table-loop refusals refused (tools/analysis_forms_check.sh).
+analysis-forms-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@tools/analysis_forms_check.sh $(SPINEL)
+
 # --check-stores: each value the emitter writes as it is into a C slot of
 # another C type is reported at its Ruby line, and the C is the same as without
 # the flag but for the comments marking those stores. raw_stores.rb holds the

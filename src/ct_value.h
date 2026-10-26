@@ -16,7 +16,14 @@
 
 typedef enum { MV_UNDEF = 0, MV_NIL, MV_TRUE, MV_FALSE, MV_INT, MV_STR, MV_SYM, MV_ARR } MvKind;
 
-typedef struct Mv { MvKind k; long long i; char *s; struct Mv *a; int n; } Mv;
+/* A String is an object with an identity. frozen: the object is frozen.
+   lit: a literal of the program made it -- frozen, it is the literal of its
+   bytes, the one object every such literal is; unfrozen, it is an object
+   the program holds (a table's element). A String an operation answers is a
+   new object, unfrozen and not a literal's; one that answers an object it
+   holds (String#to_s, Array#first) answers that object. An Array's identity
+   is its storage (a); each Array literal run makes a new one. */
+typedef struct Mv { MvKind k; long long i; char *s; struct Mv *a; int n; int frozen, lit; } Mv;
 
 /* a growing NUL-terminated text */
 typedef struct MvBuf { char *p; size_t len, cap; } MvBuf;
