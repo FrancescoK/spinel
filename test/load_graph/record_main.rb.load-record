@@ -1,0 +1,25 @@
+load record: 24 points, 1 regions
+r0 #0 f0 ProgramNode line 6
+r0 #1 f0 PreExecutionNode line 7
+  r0 #2 f0 CallNode puts line 7
+r0 #3 f0 CallNode puts line 6
+r0 #4 f0 LoadNode line 8
+r0 #5 f1 ProgramNode line 1
+r0 #6 f1 ClassNode Shape line 1
+  r0 #7 f1 DefNode initialize line 2
+r0 #8 f1 CallNode puts line 7
+r0 #9 f0 ClassNode Shape line 9
+  r0 #10 f0 CallNode attr_reader line 10
+  r0 #11 f0 CallNode each line 11
+    r0 #12 f0 CallNode define_method line 11
+  r0 #13 f0 IfNode line 12
+    r0 #14 may f0 DefNode odd#__cond1 line 13
+    r0 #15 may f0 GlobalVariableWriteNode $__cond_def1 line 13
+  r0 #16 f0 DefNode odd line 13
+  r0 #17 f0 ConstantWriteNode KEEP line 15
+  r0 #18 f0 DefNode area line 16
+r0 #19 f0 DefNode helper line 18
+r0 #20 f0 CallNode helper line 21
+  r0 #21 may f0 CallNode puts line 21
+r0 #22 f0 CallNode puts line 22
+r0 #23 f0 CallNode puts line 23

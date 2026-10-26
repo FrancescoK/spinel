@@ -14,7 +14,8 @@
 # a file's top level or one naming no file, an autoload, a load of the
 # entry file, an END block or a write of main's instance variable in a
 # required file, and a prepend after a require of a file that runs code. A
-# required file that only defines things costs no C.
+# required file that only defines things costs no C. The load record's
+# points of a program with a .load-record are those it lists.
 #
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
@@ -95,6 +96,14 @@ for e in test/load_graph/*.rb.expected; do
   else
     fail "$t did not compile"; sed -n 1,5p "$tmp/$b.c.out"
   fi
+done
+
+# ---- the load record: a test/load_graph program with a .load-record dumps
+# those points (--dump-load-record, analyze_elab.c) ----
+for e in test/load_graph/*.rb.load-record; do
+  t=${e%.load-record}
+  "$SPINEL" --load-model=graph --dump-load-record "$t" >"$tmp/record" 2>&1 || fail "$t: no load record"
+  cmp -s "$tmp/record" "$e" || { fail "$t's load record is not its .load-record"; diff "$e" "$tmp/record" | sed -n 1,10p; }
 done
 
 # A raise in a required file leaves its load with the frames it was raised
