@@ -52,8 +52,12 @@ int an_face_pinned(int node) {
 }
 TyKind face_of(int node) {
   int fn; TyKind fk;
+  /* An inference pin is newer than any codegen face: the emitter opens its
+     faces before it asks the inference. Inside the block of an iterator on
+     an Array subclass instance, an inference of another read of that
+     instance pins its own receiver, and the pin answers for it. */
+  if (an_npin > 0 && an_pin[an_npin - 1].node == node) return an_pin[an_npin - 1].kind;
   if (view_face_top(&fn, &fk)) return fn == node ? fk : TY_UNKNOWN;
-  if (an_npin > 0) return an_pin[an_npin - 1].node == node ? an_pin[an_npin - 1].kind : TY_UNKNOWN;
   return TY_UNKNOWN;
 }
 int face_active(void) {
