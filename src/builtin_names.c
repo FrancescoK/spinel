@@ -1610,3 +1610,90 @@ int boxed_stat_name(const char *name) {
 int boxed_stat_reader(const char *name) {
   return sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ftype");
 }
+
+/* The lowerings onto a library's method (builtin_names.h, LowerRow): one
+   row per shape, in the order each family's desugar asked its names. */
+static const char *const lr_walk_sources[] = { "each", "cycle", "new", NULL };
+static const LowerRow lower_rows[] = {
+  /* system(cmd, ..., out: File::NULL): CRuby's spawn-and-wait, with options */
+  { LR_SYSTEM_OPTIONS, "system", LR_RECV_NONE, NULL, NULL, NULL, 2, -1, LR_NO_BLOCK | LR_KWHASH, 0, 0, 0,
+    "__sp_system_spawn", "builtins/system_spawn" },
+  /* IO.popen(cmd) { |io| ... }: read through a pipe, the child reaped */
+  { LR_POPEN_BLOCK, "popen", LR_RECV_CONST, "IO", NULL, NULL, 0, -1, LR_BLOCK, 0, 0, 0,
+    "__sp_popen", "builtins/io_popen" },
+  /* File.foreach(path).first(n): the first n lines, read one at a time */
+  { LR_FOREACH_FIRST, "first", LR_RECV_CALL, "foreach", "File", NULL, 1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS,
+    1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS, "__sp_foreach_first", "builtins/file_foreach_first" },
+  { LR_FOREACH_FIRST, "first", LR_RECV_CALL, "foreach", "IO", NULL, 1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS,
+    1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS, "__sp_foreach_first", "builtins/file_foreach_first" },
+  /* an Enumerator's walk whose block breaks: the helper drives `each` */
+  { LR_ENUM_WALK, "map", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "collect", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "select", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_select", "builtins/enumerator" },
+  { LR_ENUM_WALK, "filter", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_select", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reject", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_reject", "builtins/enumerator" },
+  { LR_ENUM_WALK, "filter_map", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_filter_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_with_object", "builtins/enumerator" },
+  { LR_ENUM_WALK, "with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_with_object", "builtins/enumerator" },
+  { LR_ENUM_WALK, "inject", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject0", "builtins/enumerator" },
+  { LR_ENUM_WALK, "inject", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject1", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reduce", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject0", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reduce", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject1", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_slice", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_slice", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_cons", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_cons", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_entry", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_entry", "builtins/enumerator" },
+  /* `arr.map.with_index { }` is map's: only an Enumerator that walks its
+     source (each, cycle, a generator) is a plain walk with a counter */
+  { LR_ENUM_WALK, "with_index", LR_RECV_SOME, NULL, NULL, lr_walk_sources, 0, 1, LR_BLOCK_LITERAL | LR_BREAKS,
+    0, 0, 0, "__enumw_with_index", "builtins/enumerator" },
+  /* a String's piece walk with an index, the String no variable or the block breaking */
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_char", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_chars_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_line", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_lines_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_byte", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_bytes_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_codepoint", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_codepoints_with_index", "builtins/enumerator" },
+  /* Enumerable's other names for a definition builtins/enumerable.rb has */
+  { LR_ENUM_NAME, "collect_concat", LR_RECV_ANY, NULL, NULL, NULL, 0, -1, 0, 0, 0, 0, "flat_map", "builtins/enumerable" },
+  { LR_ENUM_NAME, "detect", LR_RECV_ANY, NULL, NULL, NULL, 0, -1, 0, 0, 0, 0, "find", "builtins/enumerable" },
+  /* Array#index with a block and no argument is find_index */
+  { LR_INDEX_BLOCK, "index", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK | LR_NO_ARGS, 0, 0, 0,
+    "find_index", "builtins/enumerable" },
+  /* a stored Enumerator's with_object(memo) { } is each_with_object */
+  { LR_WITH_OBJECT, "with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK, 0, 0, 0,
+    "each_with_object", "builtins/enumerable" },
+  /* to_set is Set.new(recv.to_a) */
+  { LR_TO_SET, "to_set", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0, "Set", "set" },
+};
+#define LOWER_ROW_N ((int)(sizeof lower_rows / sizeof lower_rows[0]))
+
+const LowerRow *lower_row_at(int i) {
+  return i >= 0 && i < LOWER_ROW_N ? &lower_rows[i] : NULL;
+}
+const LowerRow *lower_row_of(int family) {
+  for (int i = 0; i < LOWER_ROW_N; i++) if (lower_rows[i].family == family) return &lower_rows[i];
+  return NULL;
+}
+const LowerRow *lower_row_named(int family, const char *name) {
+  if (!name) return NULL;
+  for (int i = 0; i < LOWER_ROW_N; i++)
+    if (lower_rows[i].family == family && sp_streq(lower_rows[i].name, name)) return &lower_rows[i];
+  return NULL;
+}
