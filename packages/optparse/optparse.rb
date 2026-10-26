@@ -1311,14 +1311,14 @@ XXX
   # Version
   #
   def version
-    @version || (defined?(::Version) && ::Version)
+    (defined?(@version) && @version) || (defined?(::Version) && ::Version)
   end
 
   #
   # Release code
   #
   def release
-    @release || (defined?(::Release) ? ::Release : nil) || (defined?(::RELEASE) ? ::RELEASE : nil)
+    (defined?(@release) && @release) || (defined?(::Release) ? ::Release : nil) || (defined?(::RELEASE) ? ::RELEASE : nil)
   end
 
   #
