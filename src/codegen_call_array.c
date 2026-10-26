@@ -2624,6 +2624,67 @@ static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt,
   buf_puts(b, "; })");
 }
 
+/* An Array's or a String's index that is a Float Range (`a[r]`, `a[r] = v`,
+   `s.slice!(r)`, `a.values_at(r, 1)`) converts each end with to_int, as
+   CRuby does: the call reads it as the Integer Range sp_frange_ix makes of
+   it, viewed as one. A program's own method of the name takes the Range as
+   it is. A conversion that runs code is hoisted, so the receiver and the
+   earlier operands are held before it, and a literal's ends are held for
+   the arms that read them; under `&.` it waits for the nil
+   guard's re-entry. Answers the view mark to unwind to, or -1 for no such
+   call. */
+int frange_index_view(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  if (recv < 0 || !nm || sn_guard_pending(c, id)) return -1;
+  TyKind rt = comp_ntype(c, recv);
+  int vals = sp_streq(nm, "values_at");
+  int str = rt == TY_STRING || rt == TY_STRBUF;
+  if (str ? !is_seq_index_call(nm) : !ty_is_array(rt) || !(vals || (is_seq_index_call(nm) && !sp_streq(nm, "byteslice"))))
+    return -1;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int n = vals ? argc : argc >= 1 ? 1 : 0, any = 0;
+  for (int i = 0; i < n; i++) any |= comp_ntype(c, argv[i]) == TY_FLOAT_RANGE;
+  if (!any) return -1;
+  int ci = comp_class_index(c, str ? "String" : "Array");
+  if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return -1;
+  int mark = view_mark();
+  int held = subtree_is_pure_read(c, recv), done = 0;
+  for (int i = 0; i < n; i++) {
+    if (comp_ntype(c, argv[i]) != TY_FLOAT_RANGE) continue;
+    if (!subtree_is_pure_read(c, argv[i]) && g_pre) {
+      if (!held) view_bind(recv, "_t%d", hold_operand_pre(c, recv, repr_of(c, recv).as_ty, 0, ++g_tmp, 1));
+      held = 1;
+      for (; done < i; done++)
+        if (comp_ntype(c, argv[done]) != TY_FLOAT_RANGE &&
+            (!subtree_is_pure_read(c, argv[done]) || read_rebound_by(c, argv[done], argv[i])))
+          view_bind(argv[done], "_t%d", hold_operand_pre(c, argv[done], repr_of(c, argv[done]).as_ty, 0, ++g_tmp, 1));
+      done = i + 1;
+      if (nt_kind(nt, argv[i]) == NK_RangeNode)
+        for (int e = 0; e < 2; e++) {
+          int x = nt_ref(nt, argv[i], e ? "right" : "left");
+          if (x >= 0 && !subtree_is_pure_read(c, x))
+            view_bind(x, "_t%d", hold_operand_pre(c, x, repr_of(c, x).as_ty, 0, ++g_tmp, 1));
+        }
+    }
+    Buf ab = expr_buf(c, argv[i]);
+    const char *at = ab.p ? ab.p : "";
+    if (subtree_is_pure_read(c, argv[i]) && strlen(at) < ARGOV_TEXT_LEN - 16) view_bind(argv[i], "sp_frange_ix(%s)", at);
+    else if (g_pre) {
+      int t = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Range _t%d = sp_frange_ix(%s);\n", t, at);
+      view_bind(argv[i], "_t%d", t);
+    }
+    else { free(ab.p); view_unwind(mark); return -1; }
+    free(ab.p);
+    view_push(c, argv[i], TY_RANGE);
+  }
+  return mark;
+}
+
 /* an Array receiver: a store in expression position (a[i] = v, a[i, n] = src, a[range] = src),
    sum and the other methods of an empty literal, then the Array emitters (emit_array_call) */
 int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {

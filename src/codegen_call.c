@@ -27616,6 +27616,12 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
 
 static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  int fm = frange_index_view(c, id);
+  if (fm >= 0) {
+    emit_call(c, id, b);
+    view_unwind(fm);
+    return;
+  }
   int lk = an_push_lifts_boxed(c, id);
   if (lk) {
     int sv = g_lift_recv, svk = g_lift_kinds;

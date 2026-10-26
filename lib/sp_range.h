@@ -67,6 +67,13 @@ static inline sp_Range sp_range_ix(sp_Range r){
   sp_Range x=sp_range_new(r.first,(sp_int)t,r.fe==2);
   return x;
 }
+/* ...and a Float Range as one: each written end through to_int, an absent
+   one left open -- a[1.5..2] is a[1..2], an infinite end a RangeError */
+static inline sp_Range sp_frange_ix(sp_FloatRange f){
+  sp_oint b=(f.omitted&SP_FRANGE_NO_BEGIN)?sp_oint_nil():sp_oint_of(sp_float_arg_i(f.first));
+  sp_oint e=(f.omitted&SP_FRANGE_NO_END)?sp_oint_nil():sp_oint_of(sp_float_arg_i(f.last));
+  return sp_range_new_o(b,e,f.excl);
+}
 /* The end as a number for comparisons, and whether it was excluded as written. */
 static inline sp_float sp_range_end_num(sp_Range r){return r.fe?r.fend:(sp_float)r.last;}
 static inline sp_bool sp_range_excl_end(sp_Range r){return r.fe?r.fe==2:r.excl!=0;}

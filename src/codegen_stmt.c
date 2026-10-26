@@ -22450,6 +22450,14 @@ static int recv_rereadable(Compiler *c, int recv) {
 
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent);
 static int emit_array_mutate_stmt_dispatch(Compiler *c, int id, Buf *b, int indent) {
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  int fm = frange_index_view(c, id);
+  if (fm >= 0) {
+    int rv = emit_array_mutate_stmt_dispatch(c, id, b, indent);
+    view_unwind(fm);
+    if (!rv && g_pre && g_pre->len > pre0) { g_pre->len = pre0; g_pre->p[pre0] = 0; }
+    return rv;
+  }
   int recv = nt_ref(c->nt, id, "receiver");
   const char *name = nt_str(c->nt, id, "name");
   int args = nt_ref(c->nt, id, "arguments"), argc = 0;
