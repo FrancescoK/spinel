@@ -1,0 +1,4 @@
+class KwRestTypedFill
+  def outer: (**untyped) -> untyped
+  def inner: (?into: Hash[Symbol, untyped]?) -> untyped
+end
