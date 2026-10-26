@@ -54,4 +54,15 @@ int mv_pat_regexp(const char *p, const char *e, MvPat *pt);
 /* the length of a match of pt at s (0: none) */
 size_t mv_pat_at(const MvPat *pt, const char *s);
 
+/* ---- the methods an evaluator runs on a value, each answering as CRuby
+   does or 0 (not known here) */
+/* r.gsub(pt, rep) (all) or r.sub(pt, rep): an ASCII String receiver, and a
+   replacement without a backslash (which would name a group) */
+int mv_sub(Mv r, const MvPat *pt, const char *rep, int all, Mv *out);
+/* r.name with no argument (argc 0) or with a0 (argc 1): nil?, !, to_s,
+   to_sym, inspect, downcase / upcase / capitalize, compact, reverse,
+   size / length, first / last, join, the Integer comparisons and
+   arithmetic, == / !=, String and Array +, Array#[] */
+int mv_call(const char *name, Mv r, int argc, Mv a0, Mv *out);
+
 #endif

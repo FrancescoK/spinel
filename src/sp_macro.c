@@ -489,124 +489,14 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
   if (!mx_eval(c, n->receiver, &r)) goto done;
   if (argc == 2 && (strcmp(name, "gsub") == 0 || strcmp(name, "sub") == 0) && r.k == MV_STR && mv_ascii(r.s)) {
     MvPat pt; Mv rep;
-    /* a replacement with a backslash names a group: not followed */
-    if (!mx_pattern(args->nodes[0], c, &pt) || !mx_eval(c, args->nodes[1], &rep) || rep.k != MV_STR ||
-        strchr(rep.s, '\\')) goto done;
-    MvBuf b = {0};
-    int all = name[0] == 'g', did = 0;
-    for (const char *p = r.s; *p; ) {
-      size_t m = (all || !did) ? mv_pat_at(&pt, p) : 0;
-      if (m) { mvb_puts(&b, rep.s); p += m; did = 1; }
-      else mvb_putn(&b, p++, 1);
-    }
-    *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
+    if (mx_pattern(args->nodes[0], c, &pt) && mx_eval(c, args->nodes[1], &rep) && rep.k == MV_STR)
+      ok = mv_sub(r, &pt, rep.s, name[0] == 'g', out);
     goto done;
   }
   Mv a0; memset(&a0, 0, sizeof a0);
   if (argc == 1 && !mx_eval(c, args->nodes[0], &a0)) goto done;
   if (argc > 1) goto done;
-  if (argc == 0) {
-    if (strcmp(name, "nil?") == 0) { *out = mv_nil(); out->k = r.k == MV_NIL ? MV_TRUE : MV_FALSE; ok = 1; }
-    else if (strcmp(name, "!") == 0) { *out = mv_nil(); out->k = mv_truthy(r) ? MV_FALSE : MV_TRUE; ok = 1; }
-    else if (strcmp(name, "to_s") == 0 && r.k != MV_ARR) {
-      MvBuf b = {0}; mv_to_s(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-    }
-    else if (strcmp(name, "to_sym") == 0 && (r.k == MV_STR || r.k == MV_SYM)) { *out = r; out->k = MV_SYM; ok = 1; }
-    else if (strcmp(name, "inspect") == 0 && mv_inspect_exact(r)) {
-      MvBuf b = {0}; mv_inspect(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-    }
-    /* case mapping and length only over ASCII: CRuby's are by character,
-       with Unicode case rules */
-    else if ((strcmp(name, "downcase") == 0 || strcmp(name, "upcase") == 0 ||
-              strcmp(name, "capitalize") == 0) && (r.k == MV_STR || r.k == MV_SYM) && mv_ascii(r.s)) {
-      *out = mv_str(r.s, strlen(r.s), r.k);
-      for (char *p = out->s; *p; p++) {
-        if (name[0] == 'd') *p = (char)tolower((unsigned char)*p);
-        else if (name[0] == 'u') *p = (char)toupper((unsigned char)*p);
-        else *p = (char)(p == out->s ? toupper((unsigned char)*p) : tolower((unsigned char)*p));
-      }
-      ok = 1;
-    }
-    else if (strcmp(name, "compact") == 0 && r.k == MV_ARR) {
-      Mv v = r; v.a = calloc(r.n + 1, sizeof(Mv)); v.n = 0;
-      for (int i = 0; i < r.n; i++) if (r.a[i].k != MV_NIL) v.a[v.n++] = r.a[i];
-      *out = v; ok = 1;
-    }
-    else if (strcmp(name, "reverse") == 0 && r.k == MV_ARR) {
-      Mv v = r; v.a = calloc(r.n + 1, sizeof(Mv));
-      for (int i = 0; i < r.n; i++) v.a[i] = r.a[r.n - i - 1];
-      *out = v; ok = 1;
-    }
-    else if ((strcmp(name, "size") == 0 || strcmp(name, "length") == 0) && r.k != MV_NIL) {
-      *out = mv_nil(); out->k = MV_INT;
-      out->i = r.k == MV_ARR ? r.n : (r.k == MV_STR || r.k == MV_SYM) ? (long long)strlen(r.s) : 0;
-      ok = r.k == MV_ARR || ((r.k == MV_STR || r.k == MV_SYM) && mv_ascii(r.s));
-    }
-    else if ((strcmp(name, "first") == 0 || strcmp(name, "last") == 0) && r.k == MV_ARR) {
-      *out = r.n == 0 ? mv_nil() : r.a[name[0] == 'f' ? 0 : r.n - 1]; ok = 1;
-    }
-    else if (strcmp(name, "join") == 0 && r.k == MV_ARR) {
-      /* a nested array is flattened by CRuby: not followed here */
-      int flat = 1;
-      for (int i = 0; i < r.n; i++) if (r.a[i].k == MV_ARR) flat = 0;
-      if (flat) {
-        MvBuf b = {0};
-        for (int i = 0; i < r.n; i++) mv_to_s(r.a[i], &b);
-        *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-      }
-    }
-    goto done;
-  }
-  /* one argument */
-  if (strcmp(name, "join") == 0 && r.k == MV_ARR && (a0.k == MV_STR || a0.k == MV_NIL)) {
-    int flat = 1;
-    for (int i = 0; i < r.n; i++) if (r.a[i].k == MV_ARR) flat = 0;
-    if (!flat) goto done;
-    MvBuf b = {0};
-    for (int i = 0; i < r.n; i++) {
-      if (i && a0.k == MV_STR) mvb_puts(&b, a0.s);
-      mv_to_s(r.a[i], &b);
-    }
-    *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-  }
-  else if ((strcmp(name, "<") == 0 || strcmp(name, ">") == 0 || strcmp(name, "<=") == 0 ||
-            strcmp(name, ">=") == 0) && r.k == MV_INT && a0.k == MV_INT) {
-    int t = name[0] == '<' ? (name[1] ? r.i <= a0.i : r.i < a0.i) : (name[1] ? r.i >= a0.i : r.i > a0.i);
-    *out = mv_nil(); out->k = t ? MV_TRUE : MV_FALSE; ok = 1;
-  }
-  else if (strcmp(name, "==") == 0 || strcmp(name, "!=") == 0) {
-    int eq = mv_eq(r, a0);
-    *out = mv_nil(); out->k = (eq == (name[0] == '=')) ? MV_TRUE : MV_FALSE; ok = 1;
-  }
-  /* an Integer result past 64 bits is a Bignum in CRuby: not followed */
-  else if (strcmp(name, "+") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_add_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "*") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_mul_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "**") == 0 && r.k == MV_INT && a0.k == MV_INT && a0.i >= 0 && a0.i < 64) {
-    long long v = 1; int of = 0;
-    for (long long q = 0; q < a0.i && !of; q++) of = __builtin_mul_overflow(v, r.i, &v);
-    *out = r; out->i = v; ok = !of;
-  }
-  else if (strcmp(name, "-") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_sub_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "+") == 0 && r.k == MV_STR && a0.k == MV_STR) {
-    MvBuf b = {0}; mvb_puts(&b, r.s); mvb_puts(&b, a0.s);
-    *out = mv_str(b.p, b.len, MV_STR); free(b.p); ok = 1;
-  }
-  else if (strcmp(name, "+") == 0 && r.k == MV_ARR && a0.k == MV_ARR) {
-    Mv v = r; v.a = calloc(r.n + a0.n + 1, sizeof(Mv)); v.n = 0;
-    for (int i = 0; i < r.n; i++) v.a[v.n++] = r.a[i];
-    for (int i = 0; i < a0.n; i++) v.a[v.n++] = a0.a[i];
-    *out = v; ok = 1;
-  }
-  else if (strcmp(name, "[]") == 0 && r.k == MV_ARR && a0.k == MV_INT) {
-    long long ix = a0.i < 0 ? r.n + a0.i : a0.i;
-    *out = (ix >= 0 && ix < r.n) ? r.a[ix] : mv_nil(); ok = 1;
-  }
+  ok = mv_call(name, r, (int)argc, a0, out);
 done:
   free(name);
   return ok;
