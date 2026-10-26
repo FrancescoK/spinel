@@ -36766,6 +36766,14 @@ static int nn_index_inbounds(Compiler *c, int id) {
   return id >= 0 && nn_fresh() && id < nn_cap && nn_inb[id] &&
          decide_node(c->nt, id, "nn-inb", NULL);
 }
+/* `a[i]` on an array of pointers that the facts show reads within it: an
+   element, never the nil past the end (whether the element itself can be
+   nil is the nil fact's NFW_ELEM_NIL, asked apart) */
+int an_elem_read_in_bounds(Compiler *c, int id) {
+  return id >= 0 && nn_fresh() && id < nn_cap && nn_cand[id] &&
+         ty_is_ptr_array(comp_ntype(c, nt_ref(c->nt, id, "receiver"))) &&
+         decide_node(c->nt, id, "nn-inb-ptr", NULL);
+}
 /* An ivar read after a use that raised on its nil, with no write of it and
    no call that could make one between (nn_visit): its nil was tested */
 static int nn_ivar_read_nonnil(Compiler *c, int id) {
@@ -37141,6 +37149,12 @@ static int nn_numeric(TyKind t) {
 static int nn_int_array(TyKind t) {
   return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || (nn_inferring && t == TY_UNKNOWN);
 }
+/* An array whose length the facts follow: a numeric one, or one of
+   pointers (objects, rows), whose element read in range is an element
+   rather than the nil past the end (an_elem_read_in_bounds) */
+static int nn_len_array(TyKind t) {
+  return nn_int_array(t) || ty_is_ptr_array(t);
+}
 
 static int nn_name_in(const char *nm, const char *const *set) {
   if (!nm) return 0;
@@ -37157,7 +37171,7 @@ static int nn_growth_call(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!nm || recv < 0 || nn_array_reopened || nt_ref(nt, id, "block") >= 0 ||
-      !nn_int_array(comp_ntype(c, recv))) return 0;
+      !nn_len_array(comp_ntype(c, recv))) return 0;
   int ca = nt_ref(nt, id, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
@@ -37178,8 +37192,14 @@ static int nn_pure_call(Compiler *c, int id) {
                                        "&", "|", "^", "%", "~", "<<", ">>", "nil?", "!", "-@", "abs", NULL };
     return nn_name_in(nm, ops);
   }
-  if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
-    return sp_streq(nm, "[]") || sp_streq(nm, "size") || sp_streq(nm, "length");
+  if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || ty_is_ptr_array(rt))
+    return !nn_array_reopened && (sp_streq(nm, "[]") || sp_streq(nm, "size") || sp_streq(nm, "length"));
+  /* an attribute reader the class does not define a method for: it reads
+     its ivar and runs nothing */
+  if (ty_is_object(rt) && nt_ref(nt, id, "arguments") < 0) {
+    int k = ty_object_class(rt);
+    return comp_reader_in_chain(c, k, nm, NULL) && comp_method_in_chain(c, k, nm, NULL) < 0;
+  }
   return 0;
 }
 
@@ -37278,7 +37298,7 @@ static int nn_size_slot(Compiler *c, int sz) {
   int arr = nt_ref(nt, sz, "receiver");
   if (!sn || arr < 0 || !is_len_alias(sn) ||
       nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return -1;
-  if (!nn_int_array(comp_ntype(c, arr))) return -1;
+  if (!nn_len_array(comp_ntype(c, arr))) return -1;
   return nn_slot_of(c, arr);
 }
 
@@ -38008,7 +38028,7 @@ static void nn_facts(Compiler *c) {
      parameter's and an ivar's too: no nil, and no gap a write past the
      end left, can be in it at run time (elem_nil_reach_expr) */
   for (int id = 0; id < nn_cap; id++) {
-    if (!nn_cand[id]) continue;
+    if (!nn_cand[id] || !nn_int_array(comp_ntype(c, nt_ref(nt, id, "receiver")))) continue;
     if (!elem_nil_reach_expr(c, nt_ref(nt, id, "receiver"))) nn_inb[id] = 1;
   }
 }

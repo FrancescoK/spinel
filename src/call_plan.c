@@ -2818,7 +2818,7 @@ static int cplan_nil_user_method(Compiler *c, const char *name) {
 }
 
 int cplan_nil_written(int why) {
-  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL ||
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL || why == NFW_ELEM ||
          why == NFW_TAKEN;
 }
 
@@ -2930,6 +2930,9 @@ int cplan_nil(Compiler *c, int id) {
      ivar_tested, as above) */
   int why = nil_fact_why(c, r);
   if (!cplan_nil_written(why) && !conv && !ivar_tested) return CN_NONE;
+  /* an element read the facts keep within its array reads an element: it is
+     nil only where the array holds one (NFW_ELEM_NIL), not past the end */
+  if (why == NFW_ELEM && !conv && !ivar_tested && an_elem_read_in_bounds(c, r)) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

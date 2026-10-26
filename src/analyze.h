@@ -357,6 +357,8 @@ int hash_vals_nullable(Compiler *c, int node);
 int nullable_int_value_raw(Compiler *c, int id);
 /* `@x = v` at write node id leaves @x's nil bit clear, as it already was */
 int nn_ivar_write_keeps_clear(Compiler *c, int id);
+/* `a[i]` on a pointer array proven to read within it (no nil past the end) */
+int an_elem_read_in_bounds(Compiler *c, int id);
 /* is position pos of a multiple assignment's value, read from a constant Array of a proven length, within it and no nil (a position from the end is not asked)? */
 int masgn_const_elem_in_range(Compiler *c, int value, long long pos);
 int scalar_nil_only_call(Compiler *c, int id, TyKind rt);
