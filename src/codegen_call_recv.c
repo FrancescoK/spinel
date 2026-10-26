@@ -2397,7 +2397,9 @@ else {
       if (nt_kind(nt, argv[j]) == NK_LocalVariableReadNode) {
         Scope *asc = comp_scope_of(c, argv[j]);
         LocalVar *alv = asc ? scope_local(asc, nt_str(nt, argv[j], "name")) : NULL;
-        if (alv && alv->type != TY_UNKNOWN) ar = repr_of_slot(c, alv);
+        /* (an Array subclass instance's slot holds the instance: its
+           node, viewed as the instance's Array, is what is read) */
+        if (alv && alv->type != TY_UNKNOWN && comp_ty_ary_root(c, alv->type) < 0) ar = repr_of_slot(c, alv);
       }
       if (ar.elem != ty_array_elem(rt)) same = 0;
       if (ar.kind != RK_BOXED && ar.elem != TY_POLY && ar.elem != ty_array_elem(rt)) all_poly = 0;
