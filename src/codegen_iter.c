@@ -5452,7 +5452,9 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     /* live: CRuby answers nil when every element the loop reached was kept */
     if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
     else if (ote) buf_printf(b, "if (_t%d) sp_%sArray_cut(_t%d, _t%d);\n", t, kk, t, tw);
-    else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
+    /* (a block that cut the array leaves it cut, as CRuby does: the kept
+       elements past its new end are gone) */
+    else buf_printf(b, "if (_t%d && _t%d->len > _t%d) _t%d->len = _t%d;\n", t, t, tw, t, tw);
     if (flv) { lv_set_type(flv, fsaved); flv->nullable_int = fnsaved; }
     *tr = t; *torig = to; *twp = tw;
     return 1;
@@ -5483,7 +5485,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     buf_printf(b, "if (_t%d) { for (sp_int _t%d = _t%d; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++)", t, tj, ti, tj, kk, t, tj, tw);
     buf_printf(b, " if (_t%d != _t%d) %s(_t%d, _t%d, %s(_t%d, _t%d));", tw, tj, setf, t, tw, getf, t, tj);
     if (ote) buf_printf(b, " sp_%sArray_cut(_t%d, _t%d); }\n", kk, t, tw);
-    else buf_printf(b, " _t%d->len = _t%d; }\n", t, tw);
+    else buf_printf(b, " if (_t%d->len > _t%d) _t%d->len = _t%d; }\n", t, tw, t, tw);
   }
   emit_indent(b, indent); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent);
