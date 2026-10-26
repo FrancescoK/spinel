@@ -421,4 +421,13 @@ int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a
 int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
 int boxed_stat_name(const char *n);   /* mode or a numeric field */
 int boxed_stat_reader(const char *n); /* mtime, atime, ftype */
+/* names the compile-time evaluation and its questions ask about (ct_eval.c,
+   analyze_ct.c) */
+int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
+int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
+int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */
+int is_core_change_call(const char *n);    /* class_eval .. module_exec include prepend define_method send family alias_method remove_method undef_method: may change a class's methods */
+int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
+int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
+int is_refine_name(const char *n);         /* refine */
 #endif

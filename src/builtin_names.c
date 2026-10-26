@@ -1610,3 +1610,34 @@ int boxed_stat_name(const char *name) {
 int boxed_stat_reader(const char *name) {
   return sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ftype");
 }
+
+/* ---- the compile-time evaluation and its questions ---- */
+int is_class_const_name(const char *n) { return n && sp_streq(n, "Class"); }
+int is_hash_read_only(const char *n) {
+  static const char *const R[] = { "each", "each_pair", "[]", "fetch", "key?", "has_key?", "include?",
+    "member?", "key", "keys", "values", "size", "length", "empty?", "dig", "to_a", "frozen?", "freeze",
+    "each_key", "each_value", "values_at", "has_value?", "value?", "count", "any?", "all?", "none?",
+    "find", "detect", "map", "collect", "select", "filter", "reject", "min_by", "max_by", "sort_by",
+    "group_by", "sum", "inject", "reduce", "to_h", "invert", "sort", "first", "inspect", "to_s", "hash", "==", NULL };
+  for (int i = 0; n && R[i]; i++) if (sp_streq(n, R[i])) return 1;
+  return 0;
+}
+int is_hash_self_answer(const char *n) {
+  return n && (sp_streq(n, "each") || sp_streq(n, "each_pair") || sp_streq(n, "each_key") ||
+               sp_streq(n, "each_value") || sp_streq(n, "freeze") || sp_streq(n, "to_h"));
+}
+int is_core_change_call(const char *n) {
+  return n && (is_class_eval_family(n) || sp_streq(n, "prepend") || sp_streq(n, "include") ||
+               sp_streq(n, "define_method") || is_send_family(n) || sp_streq(n, "alias_method") ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
+}
+int is_singleton_reach_call(const char *n) {
+  return n && (sp_streq(n, "define_singleton_method") || sp_streq(n, "extend") ||
+               sp_streq(n, "singleton_class") || is_instance_eval_family(n));
+}
+int is_method_naming_call(const char *n) {
+  return n && (sp_streq(n, "define_method") || sp_streq(n, "define_singleton_method") ||
+               sp_streq(n, "alias_method") || sp_streq(n, "remove_method") || sp_streq(n, "undef_method") ||
+               sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n));
+}
+int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
