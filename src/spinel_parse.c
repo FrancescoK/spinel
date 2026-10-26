@@ -307,6 +307,10 @@ static size_t prism_kind_to_pascal(const char *raw, char *out, size_t out_size) 
 
 /* ---- Forward ---- */
 static int flatten(pm_node_t *node);
+/* --load-model=graph: a require is a LoadNode (sp_flatten_call_as, below) */
+int g_load_model_graph = 0;
+static int sp_load_call(const pm_call_node_t *n);
+static int sp_flatten_call_as(int id, pm_call_node_t *n);
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
 static void sp_inline_rbs_emit(const pm_node_t *node, int id);
 /* --no-inline-rbs: the driver clears it, and comments are only comments */
@@ -1207,12 +1211,7 @@ static int flatten_node(pm_node_t *node) {
   }
   case PM_CALL_NODE: {
     pm_call_node_t *n = (pm_call_node_t *)node;
-    { int pg = sp_program_guard(node);
-      if (pg) {
-        if (pg == 1) N("TrueNode"); else N("FalseNode");
-        I("program_guard", 1);
-        break;
-      } }
+    if (sp_flatten_call_as(id, n)) break;
     N("CallNode");
     NAME("name", n->name);
     /* a bare `warn`: the line and file it was written in, which `uplevel: 0`
@@ -2405,6 +2404,32 @@ else {
   return id;
 }
 
+/* A call flattened as node `id` of another kind: `__FILE__ == $0` and its
+   spellings as the constant they answer, stamped program_guard; and under
+   --load-model=graph a require as its LoadNode, which carries its path when
+   it is one literal, else the expression that computes it when it runs
+   (what it loads is resolved after the file is flattened, sp_parse_graph).
+   0 for a call flattened as a CallNode. */
+static int sp_flatten_call_as(int id, pm_call_node_t *n) {
+  pm_node_t *node = (pm_node_t *)n;
+  int pg = sp_program_guard(node);
+  if (pg) {
+    nt_put_type(out_nt, id, pg == 1 ? "TrueNode" : "FalseNode");
+    emit_int(id, "program_guard", 1);
+    return 1;
+  }
+  if (!g_load_model_graph || !sp_load_call(n)) return 0;
+  pm_node_t *arg = n->arguments->arguments.nodes[0];
+  nt_put_type(out_nt, id, "LoadNode");
+  char *m = cstr(n->name);
+  emit_str(id, "method", m);
+  free(m);
+  emit_int(id, "line", pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line));
+  if (PM_NODE_TYPE(arg) == PM_STRING_NODE) emit_pm_string(id, "path", &((pm_string_node_t *)arg)->unescaped);
+  else emit_ref(id, "argument", arg);
+  return 1;
+}
+
 /* ---- require_relative resolution ---- */
 static char *read_file(const char *path) {
   FILE *f = fopen(path, "rb");
@@ -2584,6 +2609,8 @@ int g_require_gate = 0;
 int sp_share_strings_env(void) { return 1; }
 int g_require_gate_cli = 0;   /* --require-gate */
 int g_dump_load_graph = 0;    /* --dump-load-graph */
+int g_parse_table_mode = 0;   /* --dump-ast and the other table modes: the table is all that is asked */
+int sp_parse_reported = 0;    /* the parse failed and said why (the driver adds nothing) */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
 static int sp_req_feats_cap = 0;
@@ -4814,6 +4841,17 @@ static void sp_load_plain(SpLoadGraph *g, SpLoadEdge **v, int *n, int *cap, int 
                                                                                          : SP_LOAD_NONE, -1);
 }
 
+/* Is `n` a require the load model loads: `require` or `require_relative`,
+   receiverless or on Kernel, with one argument and no block? */
+static int sp_load_call(const pm_call_node_t *n) {
+  if (!sp_pm_name_is(g_parser, n->name, "require") && !sp_pm_name_is(g_parser, n->name, "require_relative"))
+    return 0;
+  if (n->receiver && (!sp_call_receiver_is_kernel(g_parser, n->receiver) ||
+                      !n->call_operator_loc.start || *n->call_operator_loc.start != '.')) return 0;
+  return !n->block && n->arguments && n->arguments->arguments.size == 1 &&
+         PM_NODE_TYPE(n->arguments->arguments.nodes[0]) != PM_SPLAT_NODE;
+}
+
 /* Sites by file, then line (the plain ones were noted first). */
 static int sp_load_edge_cmp(const void *x, const void *y) {
   const SpLoadEdge *a = x, *b = y;
@@ -6232,27 +6270,151 @@ static void sp_inline_rbs_free(void) {}
    program path (used to locate the stdlib for plain `require`s). Returns
    the table, or NULL on a read or parse error. This is the library copy
    (the in-process lib API; no standalone CLI main). */
+/* What the LoadNode `id`, made by the file `from` of graph `g`, loads: a
+   file of the graph (added the first time), the runtime's native stand-in,
+   a core no-op, nothing (warned at compile time, LoadError when it runs),
+   or a path its expression computes when it runs. */
+static void sp_load_resolve(SpLoadGraph *g, int from, int id) {
+  static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
+  const char *method = nt_str(out_nt, id, "method"), *path = nt_str(out_nt, id, "path");
+  int rel = method && strcmp(method, "require_relative") == 0, how = SP_LOAD_NONE;
+  char found[1024];
+  if (!path) how = SP_LOAD_RUNTIME;
+  else if (rel) {
+    char *dir = strdup(g->file[from]), *sl = strrchr(dir, '/');
+    if (sl) *sl = 0;
+    snprintf(found, sizeof found, path[0] == '/' ? "%s%s" : "%s/%s", path[0] == '/' ? "" : dir, path);
+    free(dir);
+    sp_normalize_dots(found);
+    size_t fl = strlen(found);
+    if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
+    if (sp_lib_file(found)) how = SP_LOAD_FILE;
+  }
+  else {
+    char lib_name[256];
+    snprintf(lib_name, sizeof lib_name, "%s", path);
+    size_t ln = strlen(lib_name);
+    if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
+    if (sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found)) how = SP_LOAD_FILE;
+    else if (sp_lib_is_native(lib_name)) how = SP_LOAD_NATIVE;
+    else if (sp_require_tolerated(lib_name)) how = SP_LOAD_CORE;
+  }
+  int to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1, line = (int)nt_int(out_nt, id, "line", 0);
+  emit_str(id, "how", how_name[how]);
+  if (to >= 0) emit_int(id, "target_file", to);
+  /* (the graph --dump-load-graph prints) */
+  sp_load_edge(&g->edge, &g->nedge, &g->edgecap, from, line, !rel, path ? path : "(computed)", how, to);
+  if (how == SP_LOAD_NONE)
+    fprintf(stderr, "warning: %s:%d: cannot load such file -- %s (the %s raises LoadError when it runs)\n",
+            g->file[from], line, path, method);
+}
+
+/* --load-model=graph: the program as the files it loads, each flattened by
+   itself into the table as a root of its own (its ProgramNode carries its
+   graph id, `load_file`; the entry's is the table's root), each require a
+   LoadNode carrying what it loads (sp_load_resolve). The splices,
+   builtins/ and the parser's prepends are not run. Analysis does not read
+   such a table yet: only the table modes (--dump-ast) take it. */
+static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
+  if (!g_parse_table_mode) {
+    fprintf(stderr, "spinel: --load-model=graph is not supported by analysis yet (--dump-ast shows its node table)\n");
+    sp_parse_reported = 1;
+    return NULL;
+  }
+  SpLoadGraph g;
+  memset(&g, 0, sizeof g);
+  sp_lib_dir(argv0, g.lib_dir, sizeof g.lib_dir);
+  out_nt = nt_new_table();
+  node_counter = 0;
+  sp_load_file(&g, source_file);
+  int done = 0;
+  for (int f = 0; f < g.nfile; f++) {
+    const char *path = f ? g.file[f] : source_file;
+    char *text = read_file(path);
+    if (!text) { fprintf(stderr, "spinel_parse: cannot open '%s'\n", path); break; }
+    SpSrcFile file;
+    sp_src_file_parse(&file, text, path);
+    sp_src_file_warn_encoding(&file);
+    if (file.parser.error_list.size) {
+      const pm_diagnostic_t *d = (const pm_diagnostic_t *)file.parser.error_list.head;
+      fprintf(stderr, "Parse errors in '%s':\n  %s\n", path, d->message);
+      sp_src_file_free(&file);
+      free(text);
+      break;
+    }
+    /* the file's own lines, frozen-literal pragma and path, read by
+       flatten as the spliced buffer's map gives them */
+    size_t nl = 1;
+    for (const char *p = text; *p; p++) nl += *p == '\n';
+    int fid = sp_intern_file(path);
+    sp_line_map_n = (int)nl;
+    sp_line_file = realloc(sp_line_file, sizeof(int) * (nl + 2));
+    sp_line_orig = realloc(sp_line_orig, sizeof(int) * (nl + 2));
+    sp_line_pop = calloc(nl + 2, sizeof(int)); sp_disp_file = calloc(nl + 2, sizeof(int)); sp_disp_line = calloc(nl + 2, sizeof(int));
+    if (!sp_line_file || !sp_line_orig || !sp_line_pop || !sp_disp_file || !sp_disp_line) {
+      fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
+    }
+    for (size_t l = 0; l < nl + 2; l++) { sp_line_file[l] = fid; sp_line_orig[l] = (int)l; }
+    free(g_fsl_lines);
+    g_fsl_lines = sp_fsl_make(text, sp_src_file_fsl(&file), &g_fsl_nlines);
+    g_parser = &file.parser;
+    g_source_file = source_file;
+    g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
+    int start = node_counter, root = flatten(file.root);
+    if (!f) out_nt->root_id = root;
+    emit_int(root, "load_file", f);
+    for (int id = start; id < node_counter; id++)
+      if (nt_kind(out_nt, id) == NK_LoadNode) sp_load_resolve(&g, f, id);
+    free(sp_line_pop); free(sp_disp_file); free(sp_disp_line);
+    sp_line_pop = sp_disp_file = sp_disp_line = NULL;
+    sp_src_file_free(&file);
+    free(text);
+    done = f + 1;
+  }
+  sp_line_map_n = 0;
+  free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
+  NodeTable *nt = out_nt;
+  out_nt = NULL;
+  if (done < g.nfile) {   /* a file that could not be read or parsed, reported above */
+    nt_free(nt);
+    nt = NULL;
+    sp_parse_reported = 1;
+  }
+  else {
+    nt_put_source_file(nt, source_file);
+    for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
+    if (g_dump_load_graph) sp_load_graph_dump(&g);
+  }
+  sp_load_graph_free(&g);
+  return nt;
+}
+
+/* Whether flatten stamps each node's position (node_line / node_file /
+   node_col, and its end where a report reads it), from the environment the
+   debug and report modes set; set before the requires are resolved, so the
+   resolvers insert the PUSH/POP markers the multi-file source map is
+   rebuilt from. */
+static void sp_parse_positions_from_env(void) {
+  const char *dbg = getenv("SPINEL_DEBUG");
+  const char *lm = getenv("SPINEL_LINE_MAP");
+  const char *ps = getenv("SPINEL_POSITIONS");
+  int on = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0')
+        || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0')
+        || (ps  != NULL && ps[0]  == '1' && ps[1]  == '\0');
+  g_emit_line = on ? 1 : 0;
+  const char *et = getenv("SPINEL_EMIT_TYPES");
+  const char *ww = getenv("SPINEL_WARN_WIDEN");
+  const char *nc = getenv("SPINEL_NEW_CLAIMS");
+  g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
+}
+
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
+  sp_parse_positions_from_env();
+  if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {
     fprintf(stderr, "spinel_parse: cannot open '%s'\n", source_file);
     return NULL;
-  }
-
-  /* Set the debug flag before resolving requires so the resolvers insert the
-     PUSH/POP markers used to rebuild the multi-file source map. */
-  {
-    const char *dbg = getenv("SPINEL_DEBUG");
-    const char *lm = getenv("SPINEL_LINE_MAP");
-    const char *ps = getenv("SPINEL_POSITIONS");
-    int on = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0')
-          || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0')
-          || (ps  != NULL && ps[0]  == '1' && ps[1]  == '\0');
-    g_emit_line = on ? 1 : 0;
-    const char *et = getenv("SPINEL_EMIT_TYPES");
-    const char *ww = getenv("SPINEL_WARN_WIDEN");
-    const char *nc = getenv("SPINEL_NEW_CLAIMS");
-    g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
   }
 
   /* Resolve require_relative and plain require */
