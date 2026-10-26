@@ -28,6 +28,9 @@ int is_class_name_name(const char *n);   /* name */
 int is_inspect_name(const char *n);       /* inspect */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
+int is_method_name_reflection(const char *n); /* send family, method public_method instance_method define_method define_singleton_method alias_method singleton_method respond_to? method_defined? */
+int is_code_eval_name(const char *n);  /* eval class_eval module_eval instance_eval: given its code as a String */
+int is_symbol_conversion(const char *n); /* to_sym intern: a Symbol made of a value */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
@@ -476,6 +479,30 @@ typedef struct {
   const char *lib;                 /* the library that defines target, as a require names it */
 } LowerRow;
 const LowerRow *lower_row_at(int i);              /* the i-th row, NULL past the last */
+/* SPINEL_LOWER_ROWS_CHECK: the rows a call's parse matched travel on its node
+   as a mask of row indices (`lr_rows`), so only this many rows are checked */
+#define LOWER_ROWS_MASK_BITS 63
 const LowerRow *lower_row_of(int family);         /* the family's first row */
 const LowerRow *lower_row_named(int family, const char *name);   /* the family's row for a call name */
+
+/* ---- The pre-installed packages' facts ----
+   Generated from their manifests (packages/<package>/spin.toml) into
+   src/package_facts.inc by tools/gen_package_facts.rb: the feature a package
+   is required by, whether CRuby has it loaded at boot, and the require it
+   rides as an add-on. */
+typedef struct {
+  const char *package;   /* "set" */
+  const char *feature;   /* its file, packages/<package>/<feature>.rb: "set", "io/buffer" */
+  int boot;              /* CRuby has it loaded before a program runs */
+  const char *rides;     /* the require that makes the add-on available ("time"), or NULL */
+} PackageFact;
+const PackageFact *package_fact_at(int i);   /* the i-th row, NULL past the last */
+
+/* ---- Spinel's native classes, modules and exceptions (BUILTIN_CLASSES) ----
+   One row per name: which predicate accepts it (BC_*) and its negative
+   cls_id (0 when codegen has none). */
+enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
+typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
+const BuiltinClass *builtin_class_at(int i);   /* the i-th row, NULL past the last */
+int is_native_class_name(const char *n);       /* any row: a class Spinel has without a library */
 #endif
