@@ -172,6 +172,7 @@ typedef struct {
   X(KeywordHashNode) \
   X(KeywordRestParameterNode) \
   X(LambdaNode) \
+  X(LoadNode) \
   X(LocalVariableAndWriteNode) \
   X(LocalVariableOperatorWriteNode) \
   X(LocalVariableOrWriteNode) \
