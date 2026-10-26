@@ -4400,9 +4400,9 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
-  const char *fn = sp_streq(name, "httpdate") ? "sp_time_s_httpdate"
-                 : (sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) ? "sp_time_s_rfc2822"
-                 : (sp_streq(name, "xmlschema") || sp_streq(name, "iso8601")) ? "sp_time_s_xmlschema"
+  const char *fn = is_time_native_format(name)
+                   ? (is_iso8601_alias(name) ? "sp_time_s_xmlschema" : is_rfc2822_alias(name) ? "sp_time_s_rfc2822"
+                                                                                       : "sp_time_s_httpdate")
                  : sp_streq(name, "parse") ? "sp_time_s_parse"
                  : NULL;
   if (!fn || !sp_feature_required("time")) return NULL;

@@ -13219,7 +13219,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "sp_time_iso8601(%s)", r);
     }
     else if (sp_streq(name, "httpdate") && sp_feature_enabled("time")) buf_printf(b, "sp_time_httpdate(%s)", r);
-    else if ((sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) && sp_feature_enabled("time"))
+    else if (is_rfc2822_alias(name) && sp_feature_enabled("time"))
       buf_printf(b, "sp_time_rfc2822(%s)", r);
     else if (sp_streq(name, "eql?") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_TIME) {

@@ -225,6 +225,9 @@ int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
+int is_rfc2822_alias(const char *n);   /* rfc2822 rfc822 */
+int is_time_native_format(const char *n);   /* iso8601 xmlschema httpdate rfc2822 rfc822: Time#x and Time.x the runtime answers once "time" is required */
+int is_time_parser_name(const char *n);   /* parse strptime and the native formats: Time's class-method parsers */
 int sock_const_always(const char *n); /* Socket constants every platform defines */
 int is_exception_message(const char *n); /* message to_s */
 int is_socket_pair_alias(const char *n); /* pair socketpair */

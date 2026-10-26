@@ -4822,9 +4822,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
-    if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
-    if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
-        argc == 0 && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
+    /* the formats the runtime writes once "time" is required, iso8601 with
+       its fraction digits too (xmlschema's rows answer above) */
+    if (is_time_native_format(name) && (argc == 0 || is_iso8601_alias(name)) && sp_feature_enabled("time"))
+      { *out = TY_STRING; return 1; }
     /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
        the result is poly (#2677). */
     if (sp_streq(name, "<=>") && argc == 1)

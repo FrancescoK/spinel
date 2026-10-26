@@ -980,6 +980,23 @@ int is_iso8601_alias(const char *n) {
   return sp_streq(n, "iso8601") || sp_streq(n, "xmlschema");
 }
 
+int is_rfc2822_alias(const char *n) {
+  return sp_streq(n, "rfc2822") || sp_streq(n, "rfc822");
+}
+
+/* The formats Spinel's runtime writes and reads itself once "time" is
+   required, which CRuby's time.rb (packages/time) defines in Ruby: Time#x
+   and Time.x for each. time.rb's own definitions of them are not what a
+   program reaches here; its parse and strptime are (#9946). */
+int is_time_native_format(const char *n) {
+  return is_iso8601_alias(n) || sp_streq(n, "httpdate") || is_rfc2822_alias(n);
+}
+
+/* Time's class-method parsers: parse, strptime and the native formats */
+int is_time_parser_name(const char *n) {
+  return sp_streq(n, "parse") || sp_streq(n, "strptime") || is_time_native_format(n);
+}
+
 int is_prepend_alias(const char *n) {
   return sp_streq(n, "unshift") || sp_streq(n, "prepend");
 }

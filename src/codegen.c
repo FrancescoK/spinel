@@ -18511,20 +18511,13 @@ static void reject_runtime_send(Compiler *c) {
 /* The class-method parsers iso8601, xmlschema, httpdate, rfc2822 and
    rfc822 are the same limit without `require "time"`, as CRuby has them
    only once it is required. With it, they are read for one String argument
-   (time_strict_parser_call). */
-static int is_time_string_parser(const char *name) {
-  static const char *const names[] = { "parse", "strptime", "iso8601", "xmlschema",
-                                       "httpdate", "rfc2822", "rfc822" };
-  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
-    if (sp_streq(name, names[i])) return 1;
-  return 0;
-}
+   (time_strict_parser_call). The names: is_time_parser_name. */
 
 /* Is call `id` a builtin Time string parser (not a program's own)?
    Answers the refusal's words in msg when it is. */
 int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   const char *name = nt_str(c->nt, id, "name");
-  if (!name || !is_time_string_parser(name)) return 0;
+  if (!name || !is_time_parser_name(name)) return 0;
   /* the strict ones are there once `require "time"` is */
   if (time_strict_parser_call(c, id)) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
