@@ -561,6 +561,23 @@ static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_ce
   { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
 }
 
+/* A pointer of the wrong type in generated code is a miscompile, not a style
+   question: it reads one struct through another's layout, which segfaults or
+   answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
+   element bound to a string handle, #3971). Both showed up only as a warning
+   in the build log, easy to scroll past. Fail the build instead, so the
+   emitter's own bug surfaces here rather than at run time.
+   A call to a function no declaration names is the same miscompile: C
+   takes it to return int, so a pointer result loses its upper half on a
+   64-bit target. Spinel declares every function it calls itself, so only
+   an ffi_source fragment can make one -- calling an ffi_func by its C
+   name, which the prologue declares under a private name (docs/FFI.md).
+   Under -Wno-all neither cc said so, and the program crashed at run time. */
+static void miscompile_errors(Str *cmd) {
+  s_add(cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion "
+             "-Werror=implicit-function-declaration ");
+}
+
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -1252,13 +1269,7 @@ int main(int argc, char **argv) {
     bi_put(&bi, "define", "-D_TIME_BITS=64"); bi_put(&bi, "define", "-D_FILE_OFFSET_BITS=64");
     if (target_i386) { s_add(&cmd, "-msse2 -mfpmath=sse "); bi_put(&bi, "cflag", "-msse2"); bi_put(&bi, "cflag", "-mfpmath=sse"); }
   }
-  /* A pointer of the wrong type in generated code is a miscompile, not a style
-     question: it reads one struct through another's layout, which segfaults or
-     answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
-     element bound to a string handle, #3971). Both showed up only as a warning
-     in the build log, easy to scroll past. Fail the build instead, so the
-     emitter's own bug surfaces here rather than at run time. */
-  s_add(&cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion ");
+  miscompile_errors(&cmd);
   /* The error list is spinel's output, not cc's: the same flag assembly
      remaps every location onto the Ruby line and promotes two pointer
      warnings to errors. cc's own default cap (20 for clang) truncated that
