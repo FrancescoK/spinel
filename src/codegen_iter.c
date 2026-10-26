@@ -6254,12 +6254,14 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     if (repr_of(c, argv[0]).kind == RK_BOXED) emit_int_expr(c, argv[0], &hi);
     else emit_expr(c, argv[0], &hi);
     int ti = ++g_tmp;
-    /* the limit sits in the loop condition, so a side-effecting one would be
-       re-evaluated every round: it is computed once in Ruby */
-    if (subtree_has_side_effect(c, argv[0])) {
+    /* the limit sits in the loop condition, so one with a side effect, or one
+       the block writes (`1.upto(n) { n -= 1 }`), would be re-evaluated every
+       round: it is computed once in Ruby. Only a literal stays in place. A
+       Float limit keeps its type, as the comparison below reads it. */
+    if (nt_kind(nt, argv[0]) != NK_IntegerNode) {
       int th = ++g_tmp;
       emit_indent(b, indent);
-      buf_printf(b, "sp_int _t%d = %s;\n", th, hi.p ? hi.p : "0");
+      buf_printf(b, "%s _t%d = %s;\n", comp_ntype(c, argv[0]) == TY_FLOAT ? "sp_float" : "sp_int", th, hi.p ? hi.p : "0");
       free(hi.p); memset(&hi, 0, sizeof hi);
       buf_printf(&hi, "_t%d", th);
     }
@@ -8013,8 +8015,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     emit_int_expr(c, recv, &rb);
     /* The count is evaluated ONCE, so a receiver that can change (or change
        something) between rounds has to be hoisted: spliced into the loop
-       condition, `rng.next_int(n).times` re-rolled the die every round. */
-    if (subtree_has_side_effect(c, recv)) {
+       condition, `rng.next_int(n).times` re-rolled the die every round, and
+       `k.times { k = 1 }` read the block's k and ran once. Only a literal
+       stays in place, as a Range's or a for loop's bound is hoisted. */
+    if (nt_kind(nt, recv) != NK_IntegerNode) {
       int tn = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = %s;\n", tn, rb.p ? rb.p : "0");
