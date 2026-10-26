@@ -286,6 +286,7 @@ int g_load_model_graph = 0;
 /* --load-model=graph: the file being flattened, as the table's file list
    has it (0 is the entry); set with g_parser for each file */
 static int g_flat_file = 0;
+static int g_flat_builtin = 0;   /* ... and it is a builtins/ file */
 
 /* The file a node was written in when that is a required file, or NULL for
    the entry script (file id 0) and when the map could not be built. Under
@@ -2835,6 +2836,8 @@ static void sp_find_builtin_ranges(const char *src) {
   }
 }
 static int sp_in_builtin(const uint8_t *at) {
+  /* under --load-model=graph a builtins/ file is a root of its own */
+  if (g_load_model_graph) return g_flat_builtin;
   if (!sp_bi_base || !at) return 0;
   size_t off = (size_t)((const char *)at - sp_bi_base);
   for (int i = 0; i < sp_bi_n; i++) if (off >= sp_bi_lo[i] && off < sp_bi_hi[i]) return 1;
@@ -4781,7 +4784,7 @@ typedef struct {
 typedef struct {
   char lib_dir[1024];     /* where plain requires look first (sp_lib_dir) */
   char **file; int nfile, filecap;
-  unsigned char *walked; int walkcap;       /* [file] its sites are recorded */
+  unsigned char *flags; int flagcap;        /* [file] SP_FILE_* */
   SpLoadEdge *edge; int nedge, edgecap;     /* the tree's sites */
   SpLoadEdge *spl; int nspl, splcap;        /* the plain pass's resolutions */
 } SpLoadGraph;
@@ -4797,17 +4800,24 @@ static int sp_load_file(SpLoadGraph *g, const char *path) {
 
 /* 1 the first time file `id`'s sites are asked for: a file read again
    (inlined under two conditions) records them once. */
-static int sp_load_walk(SpLoadGraph *g, int id) {
-  if (id >= g->walkcap) {
-    int cap = g->walkcap ? g->walkcap : 16;
+enum { SP_FILE_WALKED = 1,    /* its sites are recorded */
+       SP_FILE_BUILTIN = 2 };  /* a builtins/ file: its nodes are builtin ones */
+static unsigned char *sp_load_flags(SpLoadGraph *g, int id) {
+  if (id >= g->flagcap) {
+    int cap = g->flagcap ? g->flagcap : 16;
     while (cap <= id) cap *= 2;
-    g->walked = realloc(g->walked, (size_t)cap);
-    if (!g->walked) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-    memset(g->walked + g->walkcap, 0, (size_t)(cap - g->walkcap));
-    g->walkcap = cap;
+    g->flags = realloc(g->flags, (size_t)cap);
+    if (!g->flags) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    memset(g->flags + g->flagcap, 0, (size_t)(cap - g->flagcap));
+    g->flagcap = cap;
   }
-  if (g->walked[id]) return 0;
-  return g->walked[id] = 1;
+  return &g->flags[id];
+}
+static int sp_load_walk(SpLoadGraph *g, int id) {
+  unsigned char *f = sp_load_flags(g, id);
+  if (*f & SP_FILE_WALKED) return 0;
+  *f |= SP_FILE_WALKED;
+  return 1;
 }
 
 static void sp_load_edge(SpLoadEdge **v, int *n, int *cap, int from, int line, int plain,
@@ -4955,7 +4965,7 @@ static void sp_load_graph_free(SpLoadGraph *g) {
   for (int i = 0; i < g->nfile; i++) free(g->file[i]);
   for (int i = 0; i < g->nedge; i++) free(g->edge[i].name);
   for (int i = 0; i < g->nspl; i++) free(g->spl[i].name);
-  free(g->file); free(g->walked); free(g->edge); free(g->spl);
+  free(g->file); free(g->flags); free(g->edge); free(g->spl);
 }
 
 static char *resolve_requires(SpLoadGraph *g, const char *source, const char *source_path,
@@ -6348,7 +6358,7 @@ static void sp_inline_rbs_free(void) {}
 static void sp_load_resolve(SpLoadGraph *g, int from, int id) {
   static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
   const char *method = nt_str(out_nt, id, "method"), *path = nt_str(out_nt, id, "path");
-  int rel = method && strcmp(method, "require_relative") == 0, how = SP_LOAD_NONE;
+  int rel = method && strcmp(method, "require_relative") == 0, how = SP_LOAD_NONE, tier = 0;
   char found[1024];
   if (!path) how = SP_LOAD_RUNTIME;
   else if (rel) {
@@ -6360,17 +6370,28 @@ static void sp_load_resolve(SpLoadGraph *g, int from, int id) {
     size_t fl = strlen(found);
     if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
     if (sp_lib_file(found)) how = SP_LOAD_FILE;
+    char rn[512];
+    snprintf(rn, sizeof rn, "%s", path);
+    size_t rl = strlen(rn);
+    if (rl > 3 && strcmp(rn + rl - 3, ".rb") == 0) rn[rl - 3] = '\0';
+    sp_note_required_feature(rn[0] == '.' && rn[1] == '/' ? rn + 2 : rn);
   }
   else {
     char lib_name[256];
     snprintf(lib_name, sizeof lib_name, "%s", path);
     size_t ln = strlen(lib_name);
     if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
-    if (sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found)) how = SP_LOAD_FILE;
+    tier = sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found);
+    if (tier) how = SP_LOAD_FILE;
     else if (sp_lib_is_native(lib_name)) how = SP_LOAD_NATIVE;
     else if (sp_require_tolerated(lib_name)) how = SP_LOAD_CORE;
+    /* the features a require enables (the require gate) and the ones it
+       names, as the inline model's plain pass records them */
+    if (how == SP_LOAD_FILE || how == SP_LOAD_NATIVE) sp_feature_mark(lib_name);
+    if (how != SP_LOAD_NONE) sp_note_required_feature(lib_name);
   }
   int to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1, line = (int)nt_int(out_nt, id, "line", 0);
+  if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
   emit_str(id, "how", how_name[how]);
   if (to >= 0) emit_int(id, "target_file", to);
   /* (the graph --dump-load-graph prints) */
@@ -6380,12 +6401,379 @@ static void sp_load_resolve(SpLoadGraph *g, int from, int id) {
             g->file[from], line, path, method);
 }
 
-/* --load-model=graph: the program as the files it loads, each flattened by
-   itself into the table as a root of its own (its ProgramNode carries its
-   graph id, `load_file`; the entry's is the table's root), each require a
-   LoadNode carrying what it loads (sp_load_resolve). The splices,
-   builtins/ and the parser's prepends are not run. Analysis does not read
-   such a table yet: only the table modes (--dump-ast) take it. */
+/* ---- What the program names, read from the trees (graph mode) ----
+ *
+ * The libraries CRuby has loaded before a program runs -- builtins/, Set,
+ * IO::Buffer, the time parsers (answer 6 of #9898) -- load at the program's
+ * start when the program uses them. Whether it does is asked of the files'
+ * trees, through the names each file's walk collects, tagged:
+ *   m:   a method called, or a Symbol naming one (`:name`, a `%i[]` word, not a
+ *        hash key's `name:`); mp: one called with parentheses
+ *   rm:  Const.method, a call on a top-level constant
+ *   c:   a top-level constant used as a receiver or as a path's parent
+ *   r:   a constant read
+ *   d:   a method defined
+ *   mod: cls:  a module or class opened
+ *   ed:  an instance method a `module Enumerable` reopening defines
+ *   p:IO::Buffer, break, syskw (a `system` call given keywords).
+ * A String an `eval` family call is given is read as the code it is, an
+ * interpolation in it as a name. */
+typedef struct { char **v; int n, cap, sorted; } SpNames;
+
+static void sp_names_add(SpNames *s, const char *tag, const char *b, size_t blen) {
+  if (s->n == s->cap) {
+    s->cap = s->cap ? s->cap * 2 : 256;
+    s->v = realloc(s->v, sizeof *s->v * (size_t)s->cap);
+    if (!s->v) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
+  size_t tl = strlen(tag);
+  char *k = malloc(tl + blen + 1);
+  if (!k) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  memcpy(k, tag, tl); memcpy(k + tl, b, blen); k[tl + blen] = '\0';
+  s->v[s->n++] = k;
+  s->sorted = 0;
+}
+
+static int sp_names_cmp(const void *x, const void *y) {
+  return strcmp(*(char *const *)x, *(char *const *)y);
+}
+
+static int sp_names_has(SpNames *s, const char *key) {
+  if (!s->sorted) { qsort(s->v, (size_t)s->n, sizeof *s->v, sp_names_cmp); s->sorted = 1; }
+  return bsearch(&key, s->v, (size_t)s->n, sizeof *s->v, sp_names_cmp) != NULL;
+}
+
+static int sp_names_has2(SpNames *s, const char *tag, const char *name) {
+  char k[256];
+  snprintf(k, sizeof k, "%s%s", tag, name);
+  return sp_names_has(s, k);
+}
+
+static void sp_names_free(SpNames *s) {
+  for (int i = 0; i < s->n; i++) free(s->v[i]);
+  free(s->v);
+  memset(s, 0, sizeof *s);
+}
+
+typedef struct { SpNames *s; const pm_parser_t *p; } SpNamesWalk;
+
+static void sp_names_const(SpNamesWalk *w, const char *tag, pm_constant_id_t id) {
+  const pm_constant_t *c = pm_constant_pool_id_to_constant(&w->p->constant_pool, id);
+  sp_names_add(w->s, tag, (const char *)c->start, c->length);
+}
+
+/* the name of the top-level constant `n` is (`X` or `::X`), 0 if it is none */
+static pm_constant_id_t sp_names_top_const(const pm_node_t *n) {
+  if (!n) return 0;
+  if (PM_NODE_TYPE(n) == PM_CONSTANT_READ_NODE) return ((const pm_constant_read_node_t *)n)->name;
+  if (PM_NODE_TYPE(n) == PM_CONSTANT_PATH_NODE && !((const pm_constant_path_node_t *)n)->parent)
+    return ((const pm_constant_path_node_t *)n)->name;
+  return 0;
+}
+
+static void sp_names_of(SpNames *s, const pm_parser_t *p, const pm_node_t *root);
+
+static void sp_names_call(SpNamesWalk *w, const pm_call_node_t *c) {
+  sp_names_const(w, "m:", c->name);
+  if (c->opening_loc.start) sp_names_const(w, "mp:", c->name);
+  pm_constant_id_t rc = sp_names_top_const(c->receiver);
+  if (rc) {
+    const pm_constant_t *rk = pm_constant_pool_id_to_constant(&w->p->constant_pool, rc);
+    const pm_constant_t *mk = pm_constant_pool_id_to_constant(&w->p->constant_pool, c->name);
+    char k[256];
+    int kl = snprintf(k, sizeof k, "%.*s.%.*s", (int)rk->length, rk->start, (int)mk->length, mk->start);
+    if (kl > 0 && (size_t)kl < sizeof k) sp_names_add(w->s, "rm:", k, (size_t)kl);
+    sp_names_const(w, "c:", rc);
+  }
+  const pm_node_list_t *args = c->arguments ? &c->arguments->arguments : NULL;
+  if (!args) return;
+  if (!c->receiver && sp_pm_name_is(w->p, c->name, "system"))
+    for (size_t i = 0; i < args->size; i++)
+      if (PM_NODE_TYPE(args->nodes[i]) == PM_KEYWORD_HASH_NODE) sp_names_add(w->s, "syskw", "", 0);
+  int t = args->size ? (int)PM_NODE_TYPE(args->nodes[0]) : 0;
+  if ((t != PM_STRING_NODE && t != PM_INTERPOLATED_STRING_NODE) ||
+      !(sp_pm_name_is(w->p, c->name, "eval") || sp_pm_name_is(w->p, c->name, "class_eval") ||
+        sp_pm_name_is(w->p, c->name, "module_eval") || sp_pm_name_is(w->p, c->name, "instance_eval")))
+    return;
+  /* the code, an interpolation read as a name (`def watch_#{kind}` is a def) */
+  const pm_node_list_t *parts = t == PM_STRING_NODE ? NULL : &((const pm_interpolated_string_node_t *)args->nodes[0])->parts;
+  size_t len = 0, np = parts ? parts->size : 1;
+  for (size_t i = 0; i < np; i++) {
+    const pm_node_t *pt = parts ? parts->nodes[i] : args->nodes[0];
+    len += PM_NODE_TYPE(pt) == PM_STRING_NODE ? pm_string_length(&((const pm_string_node_t *)pt)->unescaped) : 1;
+  }
+  char *code = malloc(len + 1);
+  if (!code) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  len = 0;
+  for (size_t i = 0; i < np; i++) {
+    const pm_node_t *pt = parts ? parts->nodes[i] : args->nodes[0];
+    if (PM_NODE_TYPE(pt) != PM_STRING_NODE) { code[len++] = 'x'; continue; }
+    const pm_string_t *str = &((const pm_string_node_t *)pt)->unescaped;
+    memcpy(code + len, pm_string_source(str), pm_string_length(str));
+    len += pm_string_length(str);
+  }
+  code[len] = '\0';
+  pm_parser_t ep;
+  sp_pm_parser_init(&ep, code, len, NULL);
+  pm_node_t *er = pm_parse(&ep);
+  sp_names_of(w->s, &ep, er);
+  pm_node_destroy(&ep, er);
+  pm_parser_free(&ep);
+  free(code);
+}
+
+/* The instance methods a reopening of Enumerable defines: every def without
+   a receiver in its body, under a condition or a visibility call as well
+   (CRuby defines it there when that code runs); not one of a class, module
+   or singleton class nested in it, nor one inside another def. */
+static bool sp_names_enum_defs(const pm_node_t *n, void *data) {
+  switch (PM_NODE_TYPE(n)) {
+    case PM_DEF_NODE:
+      if (!((const pm_def_node_t *)n)->receiver) sp_names_const(data, "ed:", ((const pm_def_node_t *)n)->name);
+      return false;
+    case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE: return false;
+    default: return true;
+  }
+}
+
+static bool sp_names_visit(const pm_node_t *n, void *data) {
+  SpNamesWalk *w = data;
+  switch (PM_NODE_TYPE(n)) {
+    case PM_CALL_NODE: sp_names_call(w, (const pm_call_node_t *)n); break;
+    case PM_SYMBOL_NODE: {
+      /* `:name` or a `%i[]` word (a hash key's `name:` names no method) */
+      const pm_symbol_node_t *sy = (const pm_symbol_node_t *)n;
+      if (sy->opening_loc.start || !sy->closing_loc.start)
+        sp_names_add(w->s, "m:", (const char *)pm_string_source(&sy->unescaped), pm_string_length(&sy->unescaped));
+      break;
+    }
+    case PM_CONSTANT_READ_NODE: sp_names_const(w, "r:", ((const pm_constant_read_node_t *)n)->name); break;
+    case PM_CONSTANT_PATH_NODE: {
+      const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)n;
+      pm_constant_id_t pc = sp_names_top_const(cp->parent);
+      if (pc) sp_names_const(w, "c:", pc);
+      if (!cp->parent) sp_names_const(w, "r:", cp->name);
+      if (pc && sp_pm_name_is(w->p, pc, "IO") && sp_pm_name_is(w->p, cp->name, "Buffer"))
+        sp_names_add(w->s, "p:IO::Buffer", "", 0);
+      break;
+    }
+    case PM_DEF_NODE: sp_names_const(w, "d:", ((const pm_def_node_t *)n)->name); break;
+    case PM_MODULE_NODE: {
+      const pm_module_node_t *m = (const pm_module_node_t *)n;
+      pm_constant_id_t mc = sp_names_top_const(m->constant_path);
+      if (mc) sp_names_const(w, "mod:", mc);
+      if (mc && sp_pm_name_is(w->p, mc, "Enumerable") && m->body) pm_visit_node(m->body, sp_names_enum_defs, w);
+      break;
+    }
+    case PM_CLASS_NODE: {
+      pm_constant_id_t cc = sp_names_top_const(((const pm_class_node_t *)n)->constant_path);
+      if (cc) sp_names_const(w, "cls:", cc);
+      break;
+    }
+    case PM_BREAK_NODE: sp_names_add(w->s, "break", "", 0); break;
+    default: break;
+  }
+  return true;
+}
+
+static void sp_names_of(SpNames *s, const pm_parser_t *p, const pm_node_t *root) {
+  SpNamesWalk w = { s, p };
+  if (root) pm_visit_node(root, sp_names_visit, &w);
+}
+
+/* The names of builtins/ file `lib_name` itself (its d: keys are what it
+   defines), 0 when it is not there. */
+static int sp_builtin_names(const char *lib_dir, const char *lib_name, SpNames *out) {
+  char found[1024];
+  if (sp_lib_lookup(lib_dir, lib_name, found, sizeof found) != SP_LIB_BUILTIN) return 0;
+  char *text = read_file(found);
+  if (!text) return 0;
+  pm_parser_t bp;
+  sp_pm_parser_init(&bp, text, strlen(text), NULL);
+  pm_node_t *br = pm_parse(&bp);
+  sp_names_of(out, &bp, br);
+  pm_node_destroy(&bp, br);
+  pm_parser_free(&bp);
+  free(text);
+  return 1;
+}
+
+/* Does the program call a method builtins/ file `lib_name` defines? */
+static int sp_calls_builtin(SpNames *facts, const char *lib_dir, const char *lib_name) {
+  SpNames b = { NULL, 0, 0, 0 };
+  int any = 0;
+  if (sp_builtin_names(lib_dir, lib_name, &b))
+    for (int i = 0; i < b.n && !any; i++)
+      if (!strncmp(b.v[i], "d:", 2) && sp_names_has2(facts, "m:", b.v[i] + 2)) any = 1;
+  sp_names_free(&b);
+  return any;
+}
+
+/* --load-model=graph: what file `f` of graph `g` is, flattened into the
+   table as a root of its own (its ProgramNode carries its graph id,
+   `load_file`; the entry's is the table's root), its requires LoadNodes
+   carrying what they load (sp_load_resolve), and the names it uses added to
+   `facts`. 0 when it could not be read or parsed (reported). */
+static int sp_graph_file(SpLoadGraph *g, int f, const char *source_file, SpNames *facts) {
+  const char *path = f ? g->file[f] : source_file;
+  char *text = read_file(path);
+  if (!text) { fprintf(stderr, "spinel_parse: cannot open '%s'\n", path); return 0; }
+  SpSrcFile file;
+  sp_src_file_parse(&file, text, path);
+  sp_src_file_note_defers(&file);
+  sp_src_file_warn_encoding(&file);
+  if (file.parser.error_list.size) {
+    const pm_diagnostic_t *d = (const pm_diagnostic_t *)file.parser.error_list.head;
+    fprintf(stderr, "Parse errors in '%s':\n  %s\n", path, d->message);
+    sp_src_file_free(&file);
+    free(text);
+    return 0;
+  }
+  /* the file in the table's file list, in graph order: flatten stamps a
+     node's position from this parse, and a builtins/ root's nodes as
+     builtin ones */
+  g_flat_file = sp_intern_file(path);
+  g_flat_builtin = (*sp_load_flags(g, f) & SP_FILE_BUILTIN) != 0;
+  g_bi_base = -1;
+  sp_src_file_fsl(&file);   /* (its pragma's warning; every literal is frozen) */
+  g_parser = &file.parser;
+  g_source_file = source_file;
+  g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
+  int start = node_counter, root = flatten(file.root);
+  if (!f) out_nt->root_id = root;
+  emit_int(root, "load_file", f);
+  for (int id = start; id < node_counter; id++)
+    if (nt_kind(out_nt, id) == NK_LoadNode) sp_load_resolve(g, f, id);
+  sp_names_of(facts, &file.parser, file.root);
+  sp_src_file_free(&file);
+  free(text);
+  return 1;
+}
+
+/* Library `lib_name`, which CRuby has loaded when the program starts, loads
+   at the program's start: a LoadNode ahead of the entry's statements, ahead
+   of those an earlier one put there (CRuby's core is loaded before any of
+   them), and the library a file of the graph. */
+static void sp_graph_boot_load(SpLoadGraph *g, const char *lib_name) {
+  char found[1024];
+  int tier = sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found);
+  if (!tier) return;
+  sp_feature_mark(lib_name);
+  sp_note_required_feature(lib_name);
+  int to = sp_load_file(g, found), id = node_counter++;
+  if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
+  nt_put_type(out_nt, id, "LoadNode");
+  emit_str(id, "method", "require");
+  emit_str(id, "path", lib_name);
+  emit_str(id, "how", "file");
+  emit_int(id, "target_file", to);
+  emit_int(id, "boot", 1);
+  sp_load_edge(&g->edge, &g->nedge, &g->edgecap, 0, 0, 1, lib_name, SP_LOAD_FILE, to);
+  int st = nt_ref(out_nt, out_nt->root_id, "statements"), n = 0;
+  const int *v = nt_arr(out_nt, st, "body", &n);
+  int *nv = malloc(sizeof(int) * (size_t)(n + 1));
+  if (!nv) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  nv[0] = id;
+  if (n) memcpy(nv + 1, v, sizeof(int) * (size_t)n);
+  nt_node_set_arr(out_nt, st, "body", nv, n + 1);
+  free(nv);
+}
+
+/* The libraries the program uses that CRuby has loaded before it starts,
+   decided from `facts` one by one, each one's own names counting for the
+   ones after it: RubyGems' `Gem`, `RbConfig` and ThreadGroup when named and
+   not defined, MonitorMixin, ObjectSpace's finalizers, Process.detach,
+   `system` with options, IO.popen, File.foreach(...).first, Set,
+   IO::Buffer, the time parsers for a program that requires "time", and the
+   core methods written in Ruby (Enumerable, Integer, Float, Comparable, the
+   enumerator a break leaves) the program calls. Each loaded library's files
+   are read before the next is asked about. */
+static int sp_graph_boot(SpLoadGraph *g, const char *source_file, SpNames *facts) {
+  static const char *const named[][2] = {
+    { "Gem", "builtins/gem" }, { "RbConfig", "builtins/rbconfig" }, { "ThreadGroup", "builtins/thread_group" } };
+  static const char *const enumerator[] = {
+    "map", "collect", "select", "filter", "reject", "filter_map", "each_with_object", "with_object",
+    "inject", "reduce", "each_slice", "each_cons", "each_entry", "with_index", NULL };
+  int no_builtins = getenv("SPINEL_NO_BUILTINS") != NULL;
+  for (int step = 0; step < 17; step++) {
+    const char *lib = NULL;
+    if (step < 3) {
+      if (sp_names_has2(facts, "c:", named[step][0]) && !sp_names_has2(facts, "mod:", named[step][0])) lib = named[step][1];
+    }
+    else if (step == 3) {
+      if (sp_names_has(facts, "r:MonitorMixin") && !sp_names_has(facts, "mod:MonitorMixin")) lib = "builtins/monitor_mixin";
+    }
+    else if (step == 4) {
+      if (sp_names_has(facts, "m:define_finalizer") && !sp_names_has(facts, "mod:ObjectSpace")) lib = "builtins/object_space";
+    }
+    else if (step == 5) {
+      if (sp_names_has(facts, "rm:Process.detach") && !sp_names_has(facts, "mod:Process")) lib = "builtins/process_detach";
+    }
+    else if (step == 6) { if (sp_names_has(facts, "syskw")) lib = "builtins/system_spawn"; }
+    else if (step == 7) { if (sp_names_has(facts, "rm:IO.popen")) lib = "builtins/io_popen"; }
+    else if (step == 8) {
+      if (sp_names_has(facts, "mp:foreach") && sp_names_has(facts, "mp:first")) lib = "builtins/file_foreach_first";
+    }
+    else if (step == 9) {
+      if (!sp_feature_required("set") && !sp_names_has(facts, "cls:Set") &&
+          (sp_names_has(facts, "r:Set") || sp_names_has(facts, "m:to_set"))) lib = "set";
+    }
+    else if (step == 10) {
+      if (!sp_feature_required("io/buffer") && sp_names_has(facts, "p:IO::Buffer")) lib = "io/buffer";
+    }
+    else if (step == 11) {
+      if (sp_feature_required("time") && (sp_names_has(facts, "rm:Time.parse") || sp_names_has(facts, "rm:Time.strptime")))
+        lib = SP_TIME_PARSERS_FEATURE;
+    }
+    else if (no_builtins) continue;
+    else if (step == 12) {
+      /* a program that reopens Enumerable with one of its names answers it itself */
+      SpNames b = { NULL, 0, 0, 0 };
+      int own = 0, any = 0;
+      if (!sp_builtin_names(g->lib_dir, "builtins/enumerable", &b)) {
+        /* the core methods written in Ruby ship beside the compiler */
+        fprintf(stderr, "spinel: builtins/enumerable.rb not found beside the compiler (looked under %s);\n"
+                        "        the toolchain is incomplete -- it ships with `make install`. SPINEL_NO_BUILTINS=1 compiles without it.\n",
+                g->lib_dir);
+        return 0;
+      }
+      for (int i = 0; i < b.n; i++) {
+        if (strncmp(b.v[i], "d:", 2)) continue;
+        if (sp_names_has2(facts, "ed:", b.v[i] + 2)) own = 1;
+        if (sp_names_has2(facts, "m:", b.v[i] + 2)) any = 1;
+      }
+      static const char *const aliases[][2] = {
+        { "with_object", "each_with_object" }, { "collect_concat", "flat_map" }, { "detect", "find" }, { "index", "find_index" } };
+      for (int k = 0; k < 4 && !any; k++)
+        if (sp_names_has2(&b, "d:", aliases[k][1]) && sp_names_has2(facts, "m:", aliases[k][0])) any = 1;
+      sp_names_free(&b);
+      if (any && !own) lib = "builtins/enumerable";
+    }
+    else if (step == 13) { if (sp_calls_builtin(facts, g->lib_dir, "builtins/integer")) lib = "builtins/integer"; }
+    else if (step == 14) { if (sp_calls_builtin(facts, g->lib_dir, "builtins/float")) lib = "builtins/float"; }
+    else if (step == 15) { if (sp_calls_builtin(facts, g->lib_dir, "builtins/comparable")) lib = "builtins/comparable"; }
+    else {
+      /* the enumerator builtins/enumerator.rb gives a block that breaks, or a
+         String walk with an index */
+      int str_walk = sp_names_has(facts, "m:with_index") &&
+                     (sp_names_has(facts, "m:each_char") || sp_names_has(facts, "m:each_line") ||
+                      sp_names_has(facts, "m:each_byte") || sp_names_has(facts, "m:each_codepoint"));
+      int any = 0;
+      for (int i = 0; enumerator[i] && !any; i++) any = sp_names_has2(facts, "m:", enumerator[i]);
+      if (any && (str_walk || sp_names_has(facts, "break"))) lib = "builtins/enumerator";
+    }
+    if (!lib) continue;
+    int from = g->nfile;
+    sp_graph_boot_load(g, lib);
+    for (int f = from; f < g->nfile; f++) if (!sp_graph_file(g, f, source_file, facts)) return 0;
+  }
+  return 1;
+}
+
+/* --load-model=graph: the program as the files it loads (sp_graph_file),
+   the libraries CRuby has loaded before it starts among them
+   (sp_graph_boot). Analysis does not read such a table yet: only the table
+   modes (--dump-ast) take it. */
 static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   if (!g_parse_table_mode) {
     fprintf(stderr, "spinel: --load-model=graph is not supported by analysis yet (--dump-ast shows its node table)\n");
@@ -6398,41 +6786,14 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   out_nt = nt_new_table();
   node_counter = 0;
   sp_load_file(&g, source_file);
-  int done = 0;
-  for (int f = 0; f < g.nfile; f++) {
-    const char *path = f ? g.file[f] : source_file;
-    char *text = read_file(path);
-    if (!text) { fprintf(stderr, "spinel_parse: cannot open '%s'\n", path); break; }
-    SpSrcFile file;
-    sp_src_file_parse(&file, text, path);
-    sp_src_file_note_defers(&file);
-    sp_src_file_warn_encoding(&file);
-    if (file.parser.error_list.size) {
-      const pm_diagnostic_t *d = (const pm_diagnostic_t *)file.parser.error_list.head;
-      fprintf(stderr, "Parse errors in '%s':\n  %s\n", path, d->message);
-      sp_src_file_free(&file);
-      free(text);
-      break;
-    }
-    /* the file in the table's file list, in graph order: flatten stamps a
-       node's position from this parse */
-    g_flat_file = sp_intern_file(path);
-    sp_src_file_fsl(&file);   /* (its pragma's warning; every literal is frozen) */
-    g_parser = &file.parser;
-    g_source_file = source_file;
-    g_stmt_next = g_stmt_end = NULL; g_owner = NULL;
-    int start = node_counter, root = flatten(file.root);
-    if (!f) out_nt->root_id = root;
-    emit_int(root, "load_file", f);
-    for (int id = start; id < node_counter; id++)
-      if (nt_kind(out_nt, id) == NK_LoadNode) sp_load_resolve(&g, f, id);
-    sp_src_file_free(&file);
-    free(text);
-    done = f + 1;
-  }
+  SpNames facts = { NULL, 0, 0, 0 };
+  int ok = 1;
+  for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_file(&g, f, source_file, &facts);
+  if (ok) ok = sp_graph_boot(&g, source_file, &facts);
+  sp_names_free(&facts);
   NodeTable *nt = out_nt;
   out_nt = NULL;
-  if (done < g.nfile) {   /* a file that could not be read or parsed, reported above */
+  if (!ok) {   /* a file that could not be read or parsed, reported above */
     nt_free(nt);
     nt = NULL;
     sp_parse_reported = 1;
