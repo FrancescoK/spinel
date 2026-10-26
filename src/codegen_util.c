@@ -7843,6 +7843,34 @@ void emit_slot_ctype(Compiler *c, const LocalVar *lv, Buf *b) {
    the same numbering in every struct of it and is no longer than it needs. */
 static int class_root(Compiler *c, int cid);
 static int ivar_has_nilbit_own(Compiler *c, int cid, int iv);
+/* The classes whose root is `root`, in index order, into *n: built for all
+   roots in one pass and kept while the classes and their parent links stay
+   (the count, comp_class_shape_gen), so a question asked of every ivar
+   walks its family, not every class of the program */
+static const int *class_family(Compiler *c, int root, int *n) {
+  static const NodeTable *m_nt = NULL;
+  static int m_ncls = -1;
+  static unsigned m_gen = 0;
+  static int *start = NULL, *members = NULL;
+  if (m_nt != c->nt || m_ncls != c->nclasses || m_gen != comp_class_shape_gen()) {
+    int nc = c->nclasses;
+    free(start); free(members);
+    start = calloc((size_t)nc + 2, sizeof *start);
+    members = malloc(sizeof *members * (size_t)(nc > 0 ? nc : 1));
+    int *roots = malloc(sizeof *roots * (size_t)(nc > 0 ? nc : 1));
+    if (!start || !members || !roots) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < nc; k++) { roots[k] = class_root(c, k); start[roots[k] + 1]++; }
+    for (int r = 0; r < nc; r++) start[r + 1] += start[r];
+    int *fill = calloc((size_t)nc + 1, sizeof *fill);
+    if (!fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < nc; k++) members[start[roots[k]] + fill[roots[k]]++] = k;
+    free(fill); free(roots);
+    m_nt = c->nt; m_ncls = nc; m_gen = comp_class_shape_gen();
+  }
+  if (root < 0 || root >= m_ncls) { *n = 0; return NULL; }
+  *n = start[root + 1] - start[root];
+  return members + start[root];
+}
 /* A field is one slot down its class family (a subclass lays the parent's
    fields first): a nil bit any class of the family keeps for it, every
    class keeps, so a parent's method that writes the field clears the bit a
@@ -7852,8 +7880,10 @@ int ivar_has_nilbit(Compiler *c, int cid, int iv) {
   ClassInfo *ci = &c->classes[cid];
   if (iv < 0 || iv >= ci->nivars || !oint_kind(ci->ivar_types[iv])) return 0;
   if (ivar_has_nilbit_own(c, cid, iv)) return 1;
-  int root = class_root(c, cid);
-  for (int k = 0; k < c->nclasses; k++) {
+  int root = class_root(c, cid), nfam = 0;
+  const int *fam = class_family(c, root, &nfam);
+  for (int fi = 0; fi < nfam; fi++) {
+    int k = fam[fi];
     if (k == cid) continue;
     ClassInfo *ck = &c->classes[k];
     if (iv >= ck->nivars || !ck->ivars[iv] || !ci->ivars[iv] || strcmp(ck->ivars[iv], ci->ivars[iv]) != 0) continue;
