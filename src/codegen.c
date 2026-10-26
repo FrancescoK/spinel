@@ -3,6 +3,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "timing.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -21039,6 +21040,35 @@ static void emit_global_mark_line(Compiler *c, TyKind t, const char *name, Buf *
   else if (t == TY_STR_RANGE) emit_srange_marks(c, name, mk);
   else if (needs_root(t)) buf_printf(mk, "  if (%s) sp_gc_mark((void *)%s);\n", name, name);
 }
+/* --timing: the emission's own phases, each from the end of the one
+   before (cg_prepare starts where the analysis ends), and the methods whose
+   emission took longest, slowest first */
+#define CG_SLOW_N 10
+static int cg_slow_s[CG_SLOW_N];
+static double cg_slow_ms[CG_SLOW_N];
+static void cg_slow_note(int s, double ms) {
+  int i = CG_SLOW_N;
+  while (i > 0 && (cg_slow_s[i - 1] < 0 || cg_slow_ms[i - 1] < ms)) i--;
+  if (i >= CG_SLOW_N) return;
+  memmove(&cg_slow_s[i + 1], &cg_slow_s[i], sizeof cg_slow_s[0] * (size_t)(CG_SLOW_N - 1 - i));
+  memmove(&cg_slow_ms[i + 1], &cg_slow_ms[i], sizeof cg_slow_ms[0] * (size_t)(CG_SLOW_N - 1 - i));
+  cg_slow_s[i] = s; cg_slow_ms[i] = ms;
+}
+static void cg_slow_report(Compiler *c) {
+  if (!sp_timing_on()) return;
+  for (int i = 0; i < CG_SLOW_N && cg_slow_s[i] >= 0; i++) {
+    Scope *sc = &c->scopes[cg_slow_s[i]];
+    const char *cn = sc->class_id >= 0 && sc->class_id < c->nclasses ? c->classes[sc->class_id].name : NULL;
+    fprintf(stderr, "spinel-timing: cg_method=%s%s%s ms=%.1f\n", cn ? cn : "", cn ? (sc->is_cmethod ? "." : "#") : "",
+            sc->name ? sc->name : "?", cg_slow_ms[i]);
+  }
+}
+/* (the end of one phase is the start of the next) */
+static double cg_phase(double t0, const char *phase) {
+  sp_timing_end(t0, phase, "");
+  return sp_timing_now();
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -21046,6 +21076,7 @@ char *codegen_program(const NodeTable *nt) {
   plain_note_parsed(c);   /* ahead of the analysis's desugars */
   g_tmc_c = c;
   analyze_program(c);
+  double tcg = sp_timing_now();
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
   /* --dump-repr: the analysis's answer, printed once the compile passes */
   char *repr_text = g_dump_repr ? repr_dump(c) : NULL;
@@ -21177,6 +21208,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_needs_class_machinery && program_reopens_builtin_class(c))
     buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
   if (c->n_cext_extensions) buf_puts(&b, "#define SP_CEXT 1\n/* SPINEL_USES_CEXT */\n");
+  tcg = cg_phase(tcg, "cg_prepare");
   emit_runtime_include(c, &b, 0);
   if (g_gc_none) buf_puts(&b, "void (*sp_gc_collect_fn)(void) = NULL;   /* --gc=none */\n");
   if (c->n_cext_extensions) {
@@ -21632,6 +21664,7 @@ char *codegen_program(const NodeTable *nt) {
      proc literals they contain accumulate static functions into g_procs /
      g_proc_protos; we splice those in ahead of these bodies, since a proc
      function must be declared before the body that references it. */
+  tcg = cg_phase(tcg, "cg_preamble");
   Buf *body = (Buf *)calloc(1, sizeof *body);  /* heap: must survive a collect-mode longjmp (see EMIT_COLLECT_UNIT) */
   emit_synth_line_marker(body);
   for (int i = 0; i < c->nclasses; i++)
@@ -21639,7 +21672,18 @@ char *codegen_program(const NodeTable *nt) {
       EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
   /* user-object Marshal dispatchers (after every class struct + pool define) */
   emit_obj_dispatchers(c, body);
+  tcg = cg_phase(tcg, "cg_classes");
+  int cg_prev_s = -1, cg_methods = 0;
+  double cg_prev_t = 0;
+  for (int i = 0; i < CG_SLOW_N; i++) cg_slow_s[i] = -1;
   for (int s = 1; s < c->nscopes; s++) {
+    /* (each scope's span ends where the next one's begins, a skipped
+       scope's being next to nothing) */
+    if (sp_timing_on()) {
+      double now = sp_timing_now();
+      if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, now - cg_prev_t);
+      cg_prev_s = s; cg_prev_t = now;
+    }
     if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
@@ -21691,6 +21735,14 @@ char *codegen_program(const NodeTable *nt) {
       }
     }
   }
+  if (sp_timing_on()) {
+    if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, sp_timing_now() - cg_prev_t);
+    for (int s = 1; s < c->nscopes; s++)
+      cg_methods += c->scopes[s].reachable && !c->scopes[s].yields;
+    char ex[32]; snprintf(ex, sizeof ex, " methods=%d", cg_methods);
+    sp_timing_end(tcg, "cg_methods", ex);
+    tcg = sp_timing_now();
+  }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
   unit_begin("dispatch2");
@@ -21732,6 +21784,7 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
 
+  tcg = cg_phase(tcg, "cg_dispatch");
   unit_begin("main");
   size_t main_frame_ins = 0, main_open = 0;
   int sv_main_cv = g_c_ret_void;
@@ -21923,6 +21976,7 @@ char *codegen_program(const NodeTable *nt) {
                    "  return _sp_main_rc;\n}\n");
   }
   if (!g_no_root_frame) gc_frame_build(c, body, main_frame_ins, "main");
+  tcg = cg_phase(tcg, "cg_main");
 
   emit_regex_section(c, &b);
   { const char *pdt[3] = { g_procs.p, body->p, b.p };
@@ -21949,7 +22003,9 @@ char *codegen_program(const NodeTable *nt) {
   /* Over the whole program, not per function: methods, procs, block bodies,
      constructors and main are emitted by different paths, and hooking them one
      at a time left a quarter of the stores bare. */
+  tcg = cg_phase(tcg, "cg_assemble");
   gc_wb_insert(c, &b, 0);
+  tcg = cg_phase(tcg, "cg_write_barriers");
   { Buf fz; memset(&fz, 0, sizeof fz);
     fzl_emit_defs(b.p ? b.p : "", &fz, 1);
     if (fz.len) buf_splice(&b, fzl_at, fz.p);
@@ -22014,6 +22070,8 @@ char *codegen_program(const NodeTable *nt) {
   if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
+  sp_timing_end(tcg, "cg_finish", "");
+  cg_slow_report(c);
   comp_free(c);
   if (types_out && !g_opt_emit_types_keep_c) return strdup("");
   return b.p;
