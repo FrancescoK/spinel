@@ -757,6 +757,19 @@ const char *builtin_class_of_type(TyKind t) {
   return NULL;
 }
 
+/* The class name of a type whose calls fall back to a program's own Object
+   method (object_reopen_answers): builtin_class_of_type's names plus the
+   kinds nothing else asks a name of. builtin_class_of_type stays as it was,
+   since the dynamic-send desugar and the other readers resolve through it. */
+const char *object_fallback_class_of_type(TyKind t) {
+  if (t == TY_RATIONAL) return "Rational";
+  if (t == TY_COMPLEX) return "Complex";
+  if (t == TY_PROC) return "Proc";
+  if (t == TY_QUEUE) return "Queue";
+  if (t == TY_EXCEPTION) return "Exception";
+  return builtin_class_of_type(t);
+}
+
 /* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
    `CONST = <expr>.class`), return the underlying class name so `class CONST`
    reopens that class. Returns NULL if `cname` is a plain new class name. */

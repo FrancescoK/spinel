@@ -146,7 +146,9 @@ STRICT_UCALL_PROGRAMS="test/call_plan_reflection_override.rb test/call_plan_lite
  test/call_plan_descendant_targets.rb test/call_plan_descendant_string.rb
  test/call_plan_misc_targets.rb test/call_plan_native_block_value.rb
  test/call_plan_reader_block_override.rb test/call_plan_rebound_output.rb
- test/devirt_call_return_box.rb test/obj_class_cmethod_subclass_self.rb"
+ test/devirt_call_return_box.rb test/obj_class_cmethod_subclass_self.rb
+ test/rational_complex_reopen_shared_name.rb test/object_spaceship_reopened_object.rb test/bool_reopen_sides.rb
+ test/exception_accessor_dispatch_class.rb test/kernel_reopen_public_receiver.rb"
 for f in $STRICT_UCALL_PROGRAMS; do
   if ! grep -q "^$f: plan-check: " "$OUT" ||
      grep -q "^$f: plan-check-exit:" "$OUT" ||

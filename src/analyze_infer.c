@@ -5502,7 +5502,7 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
       { *out = TY_FLOAT; return 1; }
     { *out = TY_UNKNOWN; return 1; }
   }
-  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = an_planned_call_ret(c, id, TY_INT); return 1; }
   if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
     /* The comparison is Boolean even when the plan routes it through a
        user method returning the ordering value. Keep that target too. */
@@ -6936,7 +6936,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : builtin_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : object_fallback_class_of_type(rt);
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
@@ -8794,7 +8794,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        the exception has none -- `if msg.backtrace` in the logger gem's
        Formatter was refused as a non-bool condition because the call had
        no type at all */
-    if (is_poly_exc_boxed_call(name, argc)) return TY_POLY;
+    if (is_poly_exc_boxed_call(name, argc)) return an_planned_call_ret(c, id, TY_POLY);
   }
 
   TyKind send_ret;
@@ -9125,7 +9125,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     } }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
-      (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
+      (rt == TY_BOOL || rt == TY_NIL)) return an_planned_call_ret(c, id, TY_POLY);
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   { TyKind ed; if (recv < 0 && infer_enum_desugar_call(name, argc, &ed)) return ed; }
