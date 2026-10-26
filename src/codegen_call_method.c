@@ -2022,16 +2022,25 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      arity was stamped onto the sp_BoundMethod at creation, so read it back
      (a non-Method poly here is a genuine NoMethodError, as before) (#3231). */
   if (recv >= 0 && argc == 0 && sp_streq(name, "arity") && repr_of(c, recv).kind == RK_BOXED) {
+    /* (a class method of the name too: the boxed value may be the class
+       itself, `handler.arity` for sqlite3's aggregator class, which the
+       dispatch's class-value arm answers) */
     int has_user_arity = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_arity; _k++)
-      if (comp_resolve_member(c, _k, name, 0, NULL, NULL)) has_user_arity = 1;
+      if (comp_resolve_member(c, _k, name, 0, NULL, NULL) || comp_cmethod_in_chain(c, _k, name, NULL) >= 0)
+        has_user_arity = 1;
     if (!has_user_arity) {
+      /* the site may be typed boxed (a C extension's stub answers a box):
+         the count goes out boxed then */
+      int boxed = comp_ntype(c, id) == TY_POLY;
       int t = ++g_tmp;
+      if (boxed) buf_puts(b, "sp_box_int(");
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d.cls_id == SP_BUILTIN_METHOD ? ((sp_BoundMethod *)_t%d.v.p)->arity"
                     " : _t%d.cls_id == SP_BUILTIN_PROC ? sp_proc_arity((sp_Proc *)_t%d.v.p)"
                     " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method 'arity'\")[1])), (sp_int)0); })",
                  t, t, t, t);
+      if (boxed) buf_puts(b, ")");
       return 1;
     }
   }

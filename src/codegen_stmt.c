@@ -5288,7 +5288,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
      String, wrapped below as a new handle the way a store wraps one
      (emit_boxed); handed over bare, the C did not build. */
+  /* (a match global, `$&` or `$1`, is bytes the regexp runtime holds: a
+     new handle below, as any other bytes; aliased, the handle slot took a
+     `const char *`) */
   else if (rpv.as_ty == TY_STRBUF && !fresh &&
+           nt_kind(c->nt, v) != NK_BackReferenceReadNode && nt_kind(c->nt, v) != NK_NumberedReferenceReadNode &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
