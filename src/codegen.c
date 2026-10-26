@@ -209,7 +209,15 @@ int poll_scope_on_cycle(Compiler *c, int si) {
    A signal there can be raised where it lands, so such code carries no poll:
    a pure method is entered through a wrapper that marks the region
    (sp_sig_async_ok), a pure loop is marked around it, and the C compiler
-   keeps the code it would fold or vectorize without the polls. */
+   keeps the code it would fold or vectorize without the polls.
+
+   It writes nothing that outlives its frame, though: an instance variable,
+   an attribute's or a Struct member's writer, a local a proc captured. With
+   no call in the loop the C compiler keeps such a slot in a register and
+   stores it after the loop, so a raise in the middle left a rescue reading
+   the value from before it. A loop that only adds those stores is a chunked
+   one (poll_chunk_loop): it polls once per SP_SIG_CHUNK passes, which is a
+   call the stores are made ahead of. */
 static int poll_scalar_ty(TyKind t) { return t == TY_INT || t == TY_FLOAT || t == TY_BOOL; }
 static int poll_pure_op(const char *nm) {
   static const char *const ops[] = { "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "<=>", "&", "|",
@@ -225,28 +233,48 @@ static int poll_math_fn(const char *nm) {
   return 0;
 }
 static unsigned char *g_pure_cand;
+/* methods that are pure but for those stores, which a chunked loop may call
+   where they are short (no loop, on no cycle) */
+static unsigned char *g_chunk_cand;
 static int g_pure_n = -1;
 int g_pure_region = 0;   /* inside a marked pure loop being emitted */
-static int poll_pure_node(Compiler *c, int n, int ret_ok);
-static int poll_pure_kids(Compiler *c, int n, int ret_ok) {
+/* stores: judging a chunked loop, whose stores (see above) are allowed */
+static int poll_pure_node(Compiler *c, int n, int ret_ok, int stores);
+static int poll_has_loop(const NodeTable *nt, int n);
+/* Is a local written at n one that outlives the frame: a proc's cell, or a
+   caller's slot the method writes through? */
+static int poll_local_on_heap(Compiler *c, int n) {
+  Scope *sc = comp_scope_of(c, n);
+  const char *nm = nt_str(c->nt, n, "name");
+  LocalVar *lv = sc && nm ? scope_local(sc, nm) : NULL;
+  return !lv || lv->is_cell || lv->byref_out || lv->inline_alias;
+}
+static int poll_pure_kids(Compiler *c, int n, int ret_ok, int stores) {
   const NodeTable *nt = c->nt;
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, n, i); if (ch >= 0 && !poll_pure_node(c, ch, ret_ok)) return 0; }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, n, i); if (ch >= 0 && !poll_pure_node(c, ch, ret_ok, stores)) return 0; }
   int na = nt_num_arrs(nt, n);
   for (int i = 0; i < na; i++) {
     int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (av[j] >= 0 && !poll_pure_node(c, av[j], ret_ok)) return 0;
+    for (int j = 0; j < an; j++) if (av[j] >= 0 && !poll_pure_node(c, av[j], ret_ok, stores)) return 0;
   }
   return 1;
 }
 /* Is a call of nm reaching only pure methods (every method of the name)? */
-static int poll_pure_targets(Compiler *c, const char *nm) {
+static int poll_pure_targets(Compiler *c, const char *nm, int stores) {
   int cnt, first = poll_names_of(c, nm, &cnt);
   if (cnt == 0) return 0;
-  for (int k = 0; k < cnt; k++) if (!g_pure_cand[g_poll_names[first + k].scope]) return 0;
+  for (int k = 0; k < cnt; k++) {
+    int t = g_poll_names[first + k].scope;
+    if (!stores) { if (!g_pure_cand[t]) return 0; continue; }
+    /* a chunked loop's call: one that may run long would be a pure region
+       (or a poll) inside it, so only a short one */
+    if (!g_pure_cand[t] && !g_chunk_cand[t]) return 0;
+    if (poll_scope_on_cycle(c, t) || poll_has_loop(c->nt, c->scopes[t].body)) return 0;
+  }
   return 1;
 }
-static int poll_pure_node(Compiler *c, int n, int ret_ok) {
+static int poll_pure_node(Compiler *c, int n, int ret_ok, int stores) {
   const NodeTable *nt = c->nt;
   switch (nt_kind(nt, n)) {
   case NK_IntegerNode: return !nt_str(nt, n, "bigval");
@@ -254,13 +282,15 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
   case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
     return 1;
   case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode:
+    if (!stores && poll_local_on_heap(c, n)) return 0;
+    return poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok, stores);
   case NK_InstanceVariableWriteNode: case NK_InstanceVariableOperatorWriteNode:
-    return poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok);
+    return stores && poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok, stores);
   case NK_StatementsNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
   case NK_AndNode: case NK_OrNode: case NK_WhileNode: case NK_UntilNode: case NK_BreakNode: case NK_NextNode:
-    return poll_pure_kids(c, n, ret_ok);
+    return poll_pure_kids(c, n, ret_ok, stores);
   case NK_ReturnNode:
-    return ret_ok && poll_pure_kids(c, n, ret_ok);
+    return ret_ok && poll_pure_kids(c, n, ret_ok, stores);
   case NK_CallNode: {
     const char *nm = nt_str(nt, n, "name");
     if (!nm || nt_ref(nt, n, "block") >= 0) return 0;
@@ -269,23 +299,23 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
     for (int i = 0; i < an; i++) {
       NodeKind ak = nt_kind(nt, av[i]);
       if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-      if (!poll_pure_node(c, av[i], ret_ok)) return 0;
+      if (!poll_pure_node(c, av[i], ret_ok, stores)) return 0;
     }
     if (recv >= 0 && poll_scalar_ty(c->ntype[recv]) && poll_pure_op(nm))
-      return an <= 1 && poll_pure_node(c, recv, ret_ok) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
+      return an <= 1 && poll_pure_node(c, recv, ret_ok, stores) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
     /* a Float power, and Math's functions of Floats: libm, which touches
        nothing of the runtime (an Integer power may grow into a Bignum) */
     if (recv >= 0 && sp_streq(nm, "**") && c->ntype[n] == TY_FLOAT && c->ntype[recv] == TY_FLOAT)
-      return an == 1 && poll_pure_node(c, recv, ret_ok) && poll_scalar_ty(c->ntype[av[0]]);
+      return an == 1 && poll_pure_node(c, recv, ret_ok, stores) && poll_scalar_ty(c->ntype[av[0]]);
     if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         poll_math_fn(nm) && c->ntype[n] == TY_FLOAT && !an_user_defines_method(c, nm)) {
       for (int i = 0; i < an; i++) if (!poll_scalar_ty(c->ntype[av[i]])) return 0;
       return 1;
     }
     if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && nt_kind(nt, recv) != NK_ConstantReadNode &&
-        !poll_pure_node(c, recv, ret_ok)) return 0;
+        !poll_pure_node(c, recv, ret_ok, stores)) return 0;
     if (!poll_scalar_ty(c->ntype[n])) return 0;
-    if (poll_pure_targets(c, nm)) return 1;
+    if (poll_pure_targets(c, nm, stores)) return 1;
     /* an attribute reader of a scalar instance variable */
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
     if (an == 0 && recv >= 0 && ty_is_object(rt)) {
@@ -293,10 +323,23 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
       int cnt; poll_names_of(c, nm, &cnt);
       return cnt == 0 && cid >= 0 && cid < c->nclasses && comp_is_reader(&c->classes[cid], nm);
     }
+    /* ...and, in a chunked loop, its writer storing a value of the
+       variable's own scalar type: the store an instance variable write is
+       (`obj.levar = (obj.levar ^ i) + 1` on a Struct) */
+    char base[256];
+    if (stores && an == 1 && recv >= 0 && ty_is_object(rt) && setter_base_name(nm, base, sizeof base)) {
+      int cid = ty_object_class(rt);
+      int cnt; poll_names_of(c, nm, &cnt);
+      if (cnt || cid < 0 || cid >= c->nclasses || !comp_is_writer(&c->classes[cid], base)) return 0;
+      char ivn[sizeof base + 1];
+      snprintf(ivn, sizeof ivn, "@%s", base);
+      int iv = comp_ivar_index(&c->classes[cid], ivn);
+      return iv >= 0 && poll_scalar_ty(c->classes[cid].ivar_types[iv]) && c->classes[cid].ivar_types[iv] == c->ntype[av[0]];
+    }
     return 0;
   }
   case NK_ArgumentsNode:
-    return poll_pure_kids(c, n, ret_ok);
+    return poll_pure_kids(c, n, ret_ok, stores);
   default:
     return 0;
   }
@@ -332,7 +375,14 @@ int poll_pure_method(Compiler *c, int si) {
     for (int changed = 1; changed; ) {
       changed = 0;
       for (int t = 0; t < ns; t++)
-        if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1)) { g_pure_cand[t] = 0; changed = 1; }
+        if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 0)) { g_pure_cand[t] = 0; changed = 1; }
+    }
+    free(g_chunk_cand); g_chunk_cand = calloc((size_t)ns + 1, 1);
+    for (int t = 0; t < ns; t++) g_chunk_cand[t] = (unsigned char)(!g_pure_cand[t] && poll_pure_shape(c, t));
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int t = 0; t < ns; t++)
+        if (g_chunk_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 1)) { g_chunk_cand[t] = 0; changed = 1; }
     }
   }
   return si >= 0 && si < g_pure_n && g_pure_cand[si];
@@ -363,7 +413,39 @@ int poll_pure_loop(Compiler *c, int id) {
   if (g_promote_mode || !sig_polls()) return 0;
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
-  return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0);
+  return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0, 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0, 0);
+}
+/* Is a chunked loop's test one that may be evaluated a second time: pure,
+   storing nowhere, writing no local? */
+static int poll_has_local_write(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (comp_is_local_write(k) || k == NK_LocalVariableOperatorWriteNode) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (poll_has_local_write(nt, nt_ref_at(nt, n, i))) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (poll_has_local_write(nt, av[j])) return 1;
+  }
+  return 0;
+}
+int poll_pred_quiet(Compiler *c, int pred) {
+  return poll_pure_node(c, pred, 0, 0) && !poll_has_local_write(c->nt, pred);
+}
+/* Is a while / until loop one that is pure but for its stores to instance
+   variables, writers and captured locals (see above)? It is emitted with an
+   inner loop of SP_SIG_CHUNK passes, polled ahead of each, so it holds no
+   loop (whose own poll would sit in the inner one); emit_while_chunked
+   turns down one with a break. A program with threads or finalizers polls
+   for those at each pass anyway. */
+int poll_chunk_loop(Compiler *c, int id) {
+  if (g_promote_mode || !sig_polls() || g_uses_threads || g_uses_finalizers) return 0;
+  (void)poll_pure_method(c, 0);
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate"), body = nt_ref(nt, id, "statements");
+  if (nt_loop_post(nt, id) || poll_has_loop(nt, pred) || poll_has_loop(nt, body)) return 0;
+  return poll_pure_node(c, pred, 0, 1) && (body < 0 || poll_pure_node(c, body, 0, 1));
 }
 /* Is a statement an Integer or Float counting iterator whose block is pure
    (`(a..b).each { |i| s += i % 7 }`, `n.times`, `a.upto(b)`, `a.downto(b)`,
@@ -390,15 +472,15 @@ int poll_pure_iter(Compiler *c, int id) {
   if (nt_kind(nt, r) == NK_RangeNode) {
     int lo = nt_ref(nt, r, "left"), hi = nt_ref(nt, r, "right");
     if (lo < 0 || hi < 0 || c->ntype[lo] != TY_INT || c->ntype[hi] != TY_INT) return 0;
-    if (!poll_pure_node(c, lo, 0) || !poll_pure_node(c, hi, 0)) return 0;
+    if (!poll_pure_node(c, lo, 0, 0) || !poll_pure_node(c, hi, 0, 0)) return 0;
   }
-  else if (is_each || !poll_scalar_ty(c->ntype[r]) || c->ntype[r] == TY_BOOL || !poll_pure_node(c, r, 0)) return 0;
+  else if (is_each || !poll_scalar_ty(c->ntype[r]) || c->ntype[r] == TY_BOOL || !poll_pure_node(c, r, 0, 0)) return 0;
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int i = 0; i < an; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-    if (!poll_scalar_ty(c->ntype[av[i]]) || c->ntype[av[i]] == TY_BOOL || !poll_pure_node(c, av[i], 0)) return 0;
+    if (!poll_scalar_ty(c->ntype[av[i]]) || c->ntype[av[i]] == TY_BOOL || !poll_pure_node(c, av[i], 0, 0)) return 0;
   }
   /* the block: plain parameters of a scalar kind, a body that is pure */
   int bp = nt_ref(nt, blk, "parameters");
@@ -420,7 +502,7 @@ int poll_pure_iter(Compiler *c, int id) {
     }
   }
   int body = nt_ref(nt, blk, "body");
-  return body < 0 || poll_pure_node(c, body, 0);
+  return body < 0 || poll_pure_node(c, body, 0, 0);
 }
 /* After pure method si was emitted at body[at..]: its C function becomes
    <name>__pure, its calls of pure methods call their __pure functions, and

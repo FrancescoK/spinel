@@ -1137,6 +1137,10 @@ int poll_scope_on_cycle(Compiler *c, int si);
 int poll_is_method_name(Compiler *c, const char *nm);
 int poll_pure_method(Compiler *c, int si);
 int poll_pure_loop(Compiler *c, int id);
+int poll_chunk_loop(Compiler *c, int id);
+int poll_pred_quiet(Compiler *c, int pred);
+/* the passes a chunked loop runs between two polls (poll_chunk_loop) */
+#define SP_SIG_CHUNK 1024
 int poll_pure_iter(Compiler *c, int id);
 int poll_pure_wrapped(Compiler *c, int si);
 extern int g_pure_region;
@@ -2793,6 +2797,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until);
 void emit_for(Compiler *c, int id, Buf *b, int indent);
 void emit_return(Compiler *c, int id, Buf *b, int indent);
 int rescue_is_catchall_name(const char *n);
+int rescue_chain_catches(Compiler *c, int rc, const char *const *above, int bare);
 int subtree_has_retry(const NodeTable *nt, int id);
 void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *resultvar);
 void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar);

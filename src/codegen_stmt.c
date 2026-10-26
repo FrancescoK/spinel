@@ -12389,14 +12389,17 @@ static int poll_while_counted(Compiler *c, int pred, int body);
    Such a loop ends on its own, and polls for a delivered signal only where
    no loop of its function encloses it (#9222). A loop it holds must be one
    too. */
-static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *steps) {
+/* calls_ok: a chunked loop's question (chunk_counted_step), whose calls
+   reach only short methods poll_chunk_loop took, which write no local of
+   the loop's, and which checks its bound itself */
+static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *steps, int calls_ok) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_UntilNode) return 1;
   if (k == NK_WhileNode) {
     if (!poll_while_counted(c, nt_ref(nt, n, "predicate"), nt_ref(nt, n, "statements"))) return 1;
-    return poll_subtree_bad(c, nt_ref(nt, n, "statements"), v, step, steps);
+    return poll_subtree_bad(c, nt_ref(nt, n, "statements"), v, step, steps, calls_ok);
   }
   if (comp_is_local_write(k) || k == NK_LocalVariableOperatorWriteNode) {
     const char *nm = nt_str(nt, n, "name");
@@ -12404,18 +12407,24 @@ static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *st
   }
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, n, "name");
-    if (!nm || nt_ref(nt, n, "block") >= 0 || poll_is_method_name(c, nm)) return 1;
+    if (!nm || nt_ref(nt, n, "block") >= 0 || (!calls_ok && poll_is_method_name(c, nm))) return 1;
   }
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) if (poll_subtree_bad(c, nt_ref_at(nt, n, i), v, step, steps)) return 1;
+  for (int i = 0; i < nr; i++) if (poll_subtree_bad(c, nt_ref_at(nt, n, i), v, step, steps, calls_ok)) return 1;
   int na = nt_num_arrs(nt, n);
   for (int i = 0; i < na; i++) {
     int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (poll_subtree_bad(c, av[j], v, step, steps)) return 1;
+    for (int j = 0; j < an; j++) if (poll_subtree_bad(c, av[j], v, step, steps, calls_ok)) return 1;
   }
   return 0;
 }
+static int poll_while_counted_step(Compiler *c, int pred, int body, int *stepn, int calls_ok);
 static int poll_while_counted(Compiler *c, int pred, int body) {
+  int stepn;
+  return poll_while_counted_step(c, pred, body, &stepn, 0);
+}
+/* ...and the statement that steps it, in *stepn */
+static int poll_while_counted_step(Compiler *c, int pred, int body, int *stepn, int calls_ok) {
   const NodeTable *nt = c->nt;
   if (pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return 0;
   const char *op = nt_str(nt, pred, "name");
@@ -12440,7 +12449,7 @@ static int poll_while_counted(Compiler *c, int pred, int body) {
       const char *cn = nt_str(nt, val, "name");
       int r = nt_ref(nt, val, "receiver");
       if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, r, "name"), v)) continue;
-      if (up && cn && sp_streq(cn, "succ")) step = w;
+      if (up && cn && is_succ_alias(cn)) step = w;
       int a = nt_ref(nt, val, "arguments"), ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       if (cn && ac == 1 && nt_kind(nt, av[0]) == NK_IntegerNode && nt_int(nt, av[0], "value", 0) > 0 &&
           ((up && sp_streq(cn, "+")) || (down && sp_streq(cn, "-")))) step = w;
@@ -12448,10 +12457,11 @@ static int poll_while_counted(Compiler *c, int pred, int body) {
   }
   if (step < 0) return 0;
   int steps = 0;
-  if (poll_subtree_bad(c, body, v, step, &steps) || steps != 1) return 0;
+  if (poll_subtree_bad(c, body, v, step, &steps, calls_ok) || steps != 1) return 0;
   int a = nt_ref(nt, pred, "arguments"); int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int dummy = 0;
-  return ac == 1 && !poll_subtree_bad(c, av[0], v, -1, &dummy);
+  *stepn = step;
+  return ac == 1 && !poll_subtree_bad(c, av[0], v, -1, &dummy, calls_ok);
 }
 
 
@@ -12545,13 +12555,151 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
 }
 
 static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_until);
+/* Does a chunked loop's body write instance variable nm: by name, or through
+   a writer or a method, any of which may have self for its receiver? */
+static int chunk_writes_ivar(Compiler *c, int n, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if ((k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOperatorWriteNode) &&
+      sp_streq(nt_str(nt, n, "name"), nm)) return 1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, n, "name");
+    if (!cn || name_is_plain_setter(cn) || poll_is_method_name(c, cn)) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (chunk_writes_ivar(c, nt_ref_at(nt, n, i), nm)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (chunk_writes_ivar(c, av[j], nm)) return 1;
+  }
+  return 0;
+}
+/* A counted loop's (poll_while_counted) step, when its bound is an Integer
+   the body leaves as it is: a literal, or a local or an instance variable
+   it writes nowhere. 0 otherwise, and for a body with a `next`, which may
+   pass the step by: the run would not end, nor poll. */
+static long long chunk_counted_step(Compiler *c, int pred, int body) {
+  const NodeTable *nt = c->nt;
+  int w;
+  if (subtree_has_own_next(nt, body) || !poll_while_counted_step(c, pred, body, &w, 1)) return 0;
+  int a = nt_ref(nt, pred, "arguments"), ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int bd = ac == 1 ? av[0] : -1;
+  if (bd < 0 || c->ntype[bd] != TY_INT) return 0;
+  NodeKind bk = nt_kind(nt, bd);
+  if (bk == NK_IntegerNode) { if (nt_str(nt, bd, "bigval")) return 0; }
+  else if (bk == NK_LocalVariableReadNode) { if (subtree_changes_local(c, body, nt_str(nt, bd, "name"))) return 0; }
+  else if (bk == NK_InstanceVariableReadNode) { if (chunk_writes_ivar(c, body, nt_str(nt, bd, "name"))) return 0; }
+  else return 0;
+  int val = nt_ref(nt, w, "value");
+  if (nt_kind(nt, w) == NK_LocalVariableOperatorWriteNode) return nt_int(nt, val, "value", 0);
+  if (is_succ_alias(nt_str(nt, val, "name"))) return 1;
+  int va = nt_ref(nt, val, "arguments"), vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+  return vc == 1 ? nt_int(nt, vv[0], "value", 0) : 0;
+}
+/* A chunked loop (poll_chunk_loop): the pure loop's body runs SP_SIG_CHUNK
+   passes in an inner loop with no poll, and the outer one polls ahead of
+   each run of them. The poll is a call, so the C compiler stores what the
+   passes before it wrote, and the raise finds them there; between polls it
+   keeps the slots in registers as it does in a pure loop.
+
+   A counted loop's inner one tests only the last value of the variable this
+   run may reach, which the outer one sets from the bound (one compare a
+   pass: with a second test of the count, clang would not keep `@v += 1` in
+   a register). Any other loop counts its passes down and tests the
+   condition after each; the outer loop tests it again where it was false,
+   so only a test that writes nothing is taken (poll_pred_quiet). A `next` is
+   the inner loop's `continue`, which goes to the test. Answers 0, having
+   emitted nothing, for a test with a prelude of its own or one that writes. */
+static int emit_while_chunked(Compiler *c, int id, Buf *b, int indent, int is_until) {
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate"), body = nt_ref(nt, id, "statements");
+  if (subtree_has_loop_break(c, body)) return 0;   /* it would leave the inner loop only */
+  long long step = is_until ? 0 : chunk_counted_step(c, pred, body);
+  if (step > (1 << 20)) step = 0;   /* the run's span stays an Integer of any width */
+  if (!step && !poll_pred_quiet(c, pred)) return 0;
+  Buf ccond; memset(&ccond, 0, sizeof ccond);
+  Buf cv; memset(&cv, 0, sizeof cv);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  Buf cpre; memset(&cpre, 0, sizeof cpre);
+  Buf *sv_pre = g_pre; int sv_ind = g_indent;
+  g_pre = &cpre; g_indent = indent + 1;
+  emit_cond(c, pred, &ccond);
+  if (step) {
+    int a = nt_ref(nt, pred, "arguments"), ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+    emit_expr(c, nt_ref(nt, pred, "receiver"), &cv);
+    emit_expr(c, av[0], &cb);
+  }
+  g_pre = sv_pre; g_indent = sv_ind;
+  int ok = !(cpre.p && cpre.p[0]) && ccond.p && (!step || (cv.p && cb.p));
+  free(cpre.p);
+  if (!ok) { free(ccond.p); free(cv.p); free(cb.p); return 0; }
+  int k = ++g_tmp;
+  emit_indent(b, indent); buf_printf(b, "while (%s(%s)) {\n", is_until ? "!" : "", ccond.p);
+  emit_indent(b, indent + 1); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
+  const char *op = nt_str(nt, pred, "name");
+  int up = op[0] == '<', incl = op[1] == '=';
+  long long span = (long long)SP_SIG_CHUNK * (long long)step;
+  if (step) {
+    /* the distance to the bound, which the test says is positive, taken
+       unsigned so a wide range cannot overflow it */
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_int _pl%d = (unsigned long long)(%s) - (unsigned long long)(%s) %s %lldULL ? (%s) %s %lldLL : (%s);\n",
+               k, up ? cb.p : cv.p, up ? cv.p : cb.p, incl ? ">=" : ">", span,
+               cv.p, up ? "+" : "-", incl ? span - 1 : span, cb.p);
+  }
+  else { emit_indent(b, indent + 1); buf_printf(b, "int _pk%d = %d;\n", k, SP_SIG_CHUNK); }
+  emit_indent(b, indent + 1); buf_puts(b, "do {\n");
+  g_pure_region++;
+  emit_loop_body(c, body, b, indent + 2);
+  g_pure_region--;
+  emit_indent(b, indent + 1);
+  if (step) buf_printf(b, "} while ((%s) %s _pl%d);\n", cv.p, op, k);
+  else buf_printf(b, "} while (--_pk%d && %s(%s));\n", k, is_until ? "!" : "", ccond.p);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  free(ccond.p); free(cv.p); free(cb.p);
+  return 1;
+}
+/* An Interrupt's class and those above it, which a rescue catching one names */
+static const char *const interrupt_above[] = { "Interrupt", "SignalException", "Exception", "Object", "BasicObject",
+                                               "Kernel", NULL };
+/* Does loop id run where its method reads its locals after an Interrupt
+   raised in it: inside an ensure, or the body of a begin one of whose
+   rescues can catch an Interrupt (a method's own rescue among them)? A
+   signal raised where it landed, between two statements of a pass, would
+   show that code a pass half done, which CRuby never does: it takes an
+   interrupt between passes. No pure region starts there. */
+static int loop_rescue_sees_interrupt(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const int *par = codegen_node_parents(c, id);
+  if (!par) return 1;
+  for (int ch = id, p = par[id]; p >= 0; ch = p, p = par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+    if (k != NK_BeginNode) continue;
+    if (nt_ref(nt, p, "ensure_clause") >= 0) return 1;
+    if (ch != nt_ref(nt, p, "statements")) continue;
+    if (rescue_chain_catches(c, nt_ref(nt, p, "rescue_clause"), interrupt_above, 0)) return 1;
+  }
+  return 0;
+}
 /* A pure loop (poll_pure_loop) outside a pure region is marked around: a
    signal while it runs is raised where it lands, and it carries no poll
-   (#9222) */
+   (#9222). One that also stores where a rescue can read it, or whose
+   method reads its locals after an Interrupt (loop_rescue_sees_interrupt),
+   is chunked instead, where it would poll at each pass (a counted loop
+   another loop of its function encloses polls nowhere). */
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   Scope *sc = comp_scope_of(c, id);
   int si = sc ? (int)(sc - c->scopes) : -1;
-  int wrap = g_pure_region == 0 && !(si >= 0 && poll_pure_method(c, si)) && poll_pure_loop(c, id);
+  int in_pure = g_pure_region > 0 || (si >= 0 && poll_pure_method(c, si));
+  int wrap = !in_pure && poll_pure_loop(c, id) && !loop_rescue_sees_interrupt(c, id);
+  if (!wrap && !in_pure && poll_chunk_loop(c, id) &&
+      (g_poll_loop_nest == 0 || is_until ||
+       !poll_while_counted(c, nt_ref(c->nt, id, "predicate"), nt_ref(c->nt, id, "statements"))) &&
+      emit_while_chunked(c, id, b, indent, is_until))
+    return;
   if (wrap) { emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++; }
   emit_while_loop(c, id, b, indent, is_until);
   if (wrap) { g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n"); }
@@ -14425,6 +14573,24 @@ static int rescue_operand_is_class_name(Compiler *c, int op) {
   return comp_class_index(c, n) >= 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
          is_builtin_exception_name(n);
 }
+/* Can rescue clause rc, or one further along its chain, catch an exception
+   of the class `above` starts with, `above` listing it and the classes and
+   modules above it? A bare rescue catches StandardError's classes, as
+   `bare` says; an operand that is not a class's name may hold any class
+   (rescue_operand_is_class_name) and is taken to catch. */
+int rescue_chain_catches(Compiler *c, int rc, const char *const *above, int bare) {
+  const NodeTable *nt = c->nt;
+  for (; rc >= 0; rc = nt_ref(nt, rc, "subsequent")) {
+    int nexc = 0; const int *exc = nt_arr(nt, rc, "exceptions", &nexc);
+    if (nexc == 0 && bare) return 1;
+    for (int i = 0; i < nexc; i++) {
+      if (!rescue_operand_is_class_name(c, exc[i])) return 1;
+      const char *n = nt_str(nt, exc[i], "name");
+      for (int j = 0; above[j]; j++) if (n && sp_streq(n, above[j])) return 1;
+    }
+  }
+  return 0;
+}
 
 /* exception frames a retry leaves on its way back to the body: the frame
    the rescue clauses of a begin with an ensure run in */
@@ -15486,8 +15652,10 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
      at two sites shares its node ids, so a setter that is a statement at one
      site must still yield its value at a value-position site */
   /* a counting iterator with a pure block is a pure loop (poll_pure_iter),
-     marked around as emit_while marks one */
-  if (g_pure_region == 0 && nt_kind(c->nt, id) == NK_CallNode && !poll_in_pure(c, id) && poll_pure_iter(c, id)) {
+     marked around as emit_while marks one (not where its method reads its
+     locals after an Interrupt: it polls at each pass there) */
+  if (g_pure_region == 0 && nt_kind(c->nt, id) == NK_CallNode && !poll_in_pure(c, id) && poll_pure_iter(c, id) &&
+      !loop_rescue_sees_interrupt(c, id)) {
     emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++;
     emit_with_prelude(c, id, b, indent, emit_stmt_inner);
     g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n");
