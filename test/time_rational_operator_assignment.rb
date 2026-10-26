@@ -1,11 +1,11 @@
 t = Time.at(10)
 t += Rational(1, 1_000_000)
 p [t.to_i, t.nsec]
-t -= Rational(3, 4)
+t += Rational(-3, 4)
 p [t.to_i, t.nsec]
 t += Rational(-1, 2)
 p [t.to_i, t.nsec]
-t -= Rational(-5, 4)
+t += Rational(5, 4)
 p [t.to_i, t.nsec]
 
 def advance
@@ -21,7 +21,7 @@ p [t.to_i, t.nsec]
 
 t = Time.at(0)
 p((t += Rational(1, 2)).nsec)
-p((t -= Rational(1, 4)).nsec)
+p((t += Rational(-1, 4)).nsec)
 
 def boxed_offset(offset)
   time = Time.at(0)
