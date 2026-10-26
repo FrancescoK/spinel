@@ -120,7 +120,12 @@ RUBY
 ./spinel -E app.rb a b c     # compile, run with ARGV=[a, b, c], discard binary
 ./spinel -e 'puts 42'        # compile inline source
 ./spinel app.rb --int-overflow=wrap   # +/-/* wrap silently instead of raising
+./spinel app.rb --incremental   # dev build: cache unchanged C units, recompile only what changed
 ```
+
+`--incremental` is a development-build mode: it gives up inlining across
+units for rebuilds that compile only the units an edit changed; release
+builds stay a single unit.
 
 `./spinel` is a single native binary (`build/spinel`; the repo-root
 `spinel` is a convenience symlink `make` creates) that parses, infers
@@ -399,6 +404,8 @@ src/node_table.c      The in-memory NodeTable and its --dump-ast printer
 src/analyze*.c        Whole-program type inference
 src/codegen*.c        C code generation
 src/main.c            CLI driver: pipeline + cc invocation
+src/csplit.c          C splitter: --jobs parts and --incremental units
+src/unit_cache.c      Object cache, parallel cc and link for --incremental
 lib/spinel_rt.h       Runtime library header (GC, arrays, hashes, strings)
 lib/sp_*.c            Out-of-line runtime (bigint, GC, fiber, I/O, time, ...)
 lib/regexp/           Built-in regexp engine; all linked into libspinel_rt.a

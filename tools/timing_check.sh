@@ -42,4 +42,12 @@ for p in cc_preprocess cc_split cc_link cc_total; do
   grep -q "phase=$p ms=" "$tmp/cc2.err" || fail "split: no $p"
 done
 grep -q 'phase=cc_compile ms=[0-9.]* jobs=2' "$tmp/cc2.err" || fail "split: no cc_compile jobs=2"
+# and of an --incremental build, whose cache stays in the temp directory
+SPINEL_CACHE_DIR="$tmp/cache" SPINEL_INCREMENTAL_STRICT=1 $SPINEL --timing --incremental -o "$tmp/c.out" $src 2>"$tmp/cc3.err" ||
+  fail "incremental compile"
+for p in cc_preprocess cc_split cache_lookup cc_link cc_total; do
+  grep -q "phase=$p ms=" "$tmp/cc3.err" || fail "incremental: no $p"
+done
+grep -q 'phase=cc_compile ms=[0-9.]* units=[0-9]* miss=[0-9]* jobs=[0-9]*' "$tmp/cc3.err" ||
+  fail "incremental: no cc_compile units= miss= jobs="
 [ $ok -eq 1 ] && echo "timing-test: pass" || exit 1

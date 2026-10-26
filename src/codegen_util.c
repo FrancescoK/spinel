@@ -907,6 +907,59 @@ const char *uid_new(void) {
   uid_names[uid_n] = strdup(nm);
   return uid_names[uid_n++];
 }
+
+/* --incremental (codegen_internal.h). A setter rather than an environment
+   variable, so nothing of the flag reaches the environment of cc or of a
+   program run under -E. */
+int g_incremental = 0;
+void unit_incremental_set(int on) { g_incremental = on; }
+
+/* s with every byte outside [A-Za-z0-9_] made `_`, as unit_begin spells a
+   tag, cut to fit out: a pragma's words must lex as identifiers */
+static void unit_sanitize(const char *s, char *out, size_t sz) {
+  size_t o = 0;
+  for (; *s && o < sz - 1; s++) {
+    char ch = *s;
+    int ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+    out[o++] = ok ? ch : '_';
+  }
+  out[o] = 0;
+}
+void unit_begin_in(Buf *dst, const char *tag, const char *group) {
+  unit_begin(tag);
+  if (!g_incremental) return;
+  char g[UNIT_TAG_MAX];
+  unit_sanitize(group, g, sizeof g);
+  /* g_unit_tag, not tag: a tag begun twice carries its _dN here too */
+  buf_printf(dst, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+  buf_printf(&g_procs, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+  buf_printf(&g_proc_protos, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+}
+void unit_pragma_reset(Buf *dst) {
+  if (g_incremental) buf_puts(dst, "#pragma spinel unit prog prog\n");
+}
+/* A required file is spelled as the main file's directory joined with the
+   require path (`main.rb`, `sub/helper.rb`; or `/abs/main.rb`,
+   `/abs/sub/helper.rb`), so the path past that directory is the same
+   however the main file was named, and a unit's group with it. */
+void unit_file_key(const NodeTable *nt, int node, char *out, size_t sz) {
+  const char *path = nt_file_path(nt, (int)nt_int(nt, node, "node_file", 0));
+  if (!path || !*path) path = nt->source_file ? nt->source_file : "";
+  const char *main_file = nt->source_file ? nt->source_file : "";
+  const char *ms = strrchr(main_file, '/');
+  size_t dl = ms ? (size_t)(ms - main_file) + 1 : 0;
+  const char *rel = path;
+  if (!strncmp(path, main_file, dl)) rel = path + dl;
+  else if (strrchr(path, '/')) rel = strrchr(path, '/') + 1;
+  const char *base = strrchr(rel, '/') ? strrchr(rel, '/') + 1 : rel;
+  char stem[UNIT_TAG_MAX];
+  snprintf(stem, sizeof stem, "%s", base);
+  char *dot = strrchr(stem, '.');
+  if (dot && dot > stem) *dot = 0;
+  char clean[UNIT_TAG_MAX];
+  unit_sanitize(stem, clean, sizeof clean - 8);
+  snprintf(out, sz, "%s_%06x", clean, unit_fnv(rel) & 0xffffffu);
+}
 /* A rename-table slot keeps its Buf when the table is cut back below it,
    and the next entry there rewrites it (buf_setf), so a name of any length
    fits and no site that cuts g_nren back has anything to free. */

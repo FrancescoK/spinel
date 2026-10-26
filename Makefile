@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -333,6 +333,12 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
 SPINEL_HDRS += src/decide.h
 SPINEL_OBJ  += build/csrc/decide.o
+# --incremental: the hashes that name a unit and key its cached object.
+SPINEL_HDRS += src/sha256.h
+SPINEL_OBJ  += build/csrc/sha256.o
+# --incremental's native step: preprocess, split into units, build.
+SPINEL_HDRS += src/unit_cache.h
+SPINEL_OBJ  += build/csrc/unit_cache.o
 
 build/csrc:
 	@mkdir -p build/csrc
@@ -5628,6 +5634,25 @@ gate-props: line-map-check
 unit-stability-test: $(SPINEL)
 	@tools/unit_stability.sh $(SPINEL)
 gate-props: unit-stability-test
+
+# An --incremental build links the binary a from-scratch build gives, and a
+# local edit recompiles a bounded number of units (tools/incremental_test.sh):
+# warm builds of the scale program's edits against SPINEL_NO_CACHE=1 builds,
+# the refused flags, a unit directory's shape, a planted missing declaration,
+# a corpus smoke, two builds on one cache and the prune. The archives are
+# prerequisites because every check links, threaded programs included.
+incremental-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
+	@tools/incremental_test.sh $(SPINEL)
+gate-props: incremental-test
+
+# Wall times, units and misses of the plain, --jobs and --incremental builds
+# of the scale program, cold, warm after each edit and as a no-op, at two unit
+# sizes, as a Markdown table (tools/incremental_bench.sh). The scale program
+# has K=100 and K=400 units unless INCREMENTAL_BENCH_K lists others. Minutes
+# long, so not a gate leg.
+incremental-bench: $(SPINEL) $(SP_RT_LIB)
+	@tools/incremental_bench.sh $(foreach k,$(INCREMENTAL_BENCH_K),-k $(k)) $(SPINEL)
+
 line-map-check: $(SPINEL) $(LINE_MAP_RBS)
 	@ok=1; \
 	tools/line_map_check.sh -j $(NPROC) $(LINE_MAP_SAMPLE) || ok=0; \
