@@ -9,16 +9,38 @@
    classes (builtin_class_at, builtin_names.c), read here and by the load
    graph. */
 
+/* The first row of each name, through a table hashed on the first ask: the
+   lookup compared the name with every row, and is asked of class names per
+   call (is_builtin_reopen, of each class a poly block dispatch weighs). */
+#define BUILTIN_ROW_CAP 512   /* a power of two above 4 * the rows */
+static short builtin_row_slot[BUILTIN_ROW_CAP];
+static int builtin_row_built;
+static int builtin_row_find(const char *n) {
+  const BuiltinClass *r;
+  if (!builtin_row_built) {
+    for (int i = 0; i < BUILTIN_ROW_CAP; i++) builtin_row_slot[i] = -1;
+    for (int i = 0; (r = builtin_class_at(i)) != NULL; i++) {
+      unsigned h = sp_strhash(r->name) & (BUILTIN_ROW_CAP - 1);
+      while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, r->name))
+        h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+      if (builtin_row_slot[h] < 0) builtin_row_slot[h] = (short)i;   /* a later row of the name: the first answers */
+    }
+    builtin_row_built = 1;
+  }
+  unsigned h = sp_strhash(n) & (BUILTIN_ROW_CAP - 1);
+  while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, n))
+    h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+  return builtin_row_slot[h];
+}
+
 /* A socket row is a constant only after `require "socket"`, as in CRuby. */
 static const BuiltinClass *builtin_row(const char *n) {
   if (!n) return NULL;
-  const BuiltinClass *r;
-  for (int i = 0; (r = builtin_class_at(i)) != NULL; i++) {
-    if (!sp_streq(n, r->name)) continue;
-    if ((r->flags & BC_SOCKET) && !sp_feature_required("socket")) return NULL;
-    return r;
-  }
-  return NULL;
+  int i = builtin_row_find(n);
+  const BuiltinClass *r = i >= 0 ? builtin_class_at(i) : NULL;
+  if (!r) return NULL;
+  if ((r->flags & BC_SOCKET) && !sp_feature_required("socket")) return NULL;
+  return r;
 }
 
 int is_builtin_class_name(const char *n) {
@@ -4163,9 +4185,9 @@ static const char *const io_family[] = {
 int io_family_name(const char *n) {
   if (!n) return 0;
   if (is_io_class_name(n)) return 1;
-  /* a socket class is the builtin only once the program loads socket */
-  if (!sp_feature_required("socket")) return 0;
-  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;
+  /* a socket class is the builtin only once the program loads socket
+     (asked after the name matches: it walks the program's requires) */
+  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return sp_feature_required("socket");
   return 0;
 }
 /* Class k is a reopening of one of them, not a class of that name nested
