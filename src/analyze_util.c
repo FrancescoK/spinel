@@ -2414,7 +2414,25 @@ TyKind yield_value_type(Compiler *c, int mi) {
   int pf_fwd = 0, poly_site = 0;
   if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
   YvtIt yit; yvt_it_init(c, &yit, mi);
-  for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
+  /* Under --load-model=graph the call sites are taken in the program's
+     order (prog_sort): where the first site's block answers (a method
+     specialized per site keeps one), it is the site the program reaches
+     first, whichever file holds it, not the one the node table happens to
+     number first. One program text (the inline model) numbers its nodes in
+     that order already, and its sites are read as they come. */
+  int nsite = 0, csite = 0, si = 0, *site = NULL;
+  if (prog_has_files(c)) {
+    for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
+      if (nsite == csite) {
+        csite = csite ? csite * 2 : 16;
+        site = realloc(site, sizeof(int) * (size_t)csite);
+        if (!site) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      site[nsite++] = ii;
+    }
+    prog_sort(c, site, nsite, yvt_ids);
+  }
+  for (int ii; (ii = site ? (si < nsite ? site[si++] : -1) : yvt_it_next(&yit)) >= 0; ) {
     int cid = yvt_ids[ii];
     /* A `callee(...)` forward carries its block implicitly inside the `...`
        (no explicit block node); treat it as a forwarded block too. */
@@ -2481,6 +2499,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
   /* A proc form forwarding its block (`def self.f(a, &) = g(a, &)` called
      only through a Method) hands on a real proc no literal types: its value
      is poly, where an unknown one unboxed it into the other arm's slot. */
+  free(site);
   if (result == TY_UNKNOWN && pf_fwd) result = TY_POLY;
   /* The only calls were on a poly receiver (a proc parameter, a value out of a
      poly collection). They still run this method with their block, and the
