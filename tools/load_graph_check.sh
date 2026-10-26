@@ -160,6 +160,14 @@ grep -qF "winsize" "$tmp/gate/out" || { fail "--require-gate: refused without na
 "$SPINEL" --load-model=graph --require-gate "$tmp/gate_req/main.rb" -o "$tmp/gate_req/bin" >"$tmp/gate_req/out" 2>&1 ||
   { fail "--require-gate: a feature a require names did not compile"; sed -n 1,3p "$tmp/gate_req/out"; }
 
+# a class-body call in a required file of a method a later file's
+# reopening aliases: refused as in one file (CRuby runs the def, 3; the
+# static alias would answer 19)
+mkdir "$tmp/late_alias"
+printf 'class A\n  def a = 3\n  def b = 19\n  p new.a\nend\n' > "$tmp/late_alias/lib.rb"
+printf 'require_relative "lib"\nclass A\n  alias_method :a, :b\nend\np A.new.a\n' > "$tmp/late_alias/main.rb"
+refused late_alias "is called in the class body before an alias rebinds it"
+
 # A required file that only defines things costs nothing: no function, no
 # load, and no Symbol for the def that ends it (its value is read by nothing).
 mkdir "$tmp/lean"
