@@ -196,8 +196,33 @@ endif
 # matching variant.
 BUNDLED_NATIVE_MT_OBJS = $(BUNDLED_NATIVE_OBJS:.o=_mt.o)
 PKG_MT_FLAGS = -DSP_THREADS -ftls-model=initial-exec
+# Bundled packages with a C extension (#7210): packages/<p>/spin.toml has a
+# [cext.*] recipe, and the extension is compiled from its source by the
+# recorder and the bridge (bin/spinel-cext-build --bundle) into
+# packages/<p>/build/cext, with its declarations written beside the
+# package's Ruby as <p>/<require>.rb (tools/cext-build.rb bundle), where
+# the compiler's package tier finds them; their `__cext_link` names the
+# archive and the libraries, which the driver and RUN_ONE_TEST link. racc's
+# cparse needs nothing of the system; sqlite3 is built where pkg-config
+# finds libsqlite3, and `require "sqlite3"` fails to load elsewhere.
+SQLITE3_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
+SQLITE3_LIBS := $(shell pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)
+SQLITE3_AVAILABLE := $(shell d=$$(mktemp -d) && printf '\043include <sqlite3.h>\nint main(void){return sqlite3_libversion_number()==0;}\n' > $$d/p.c 2>/dev/null && $(CC) $(SQLITE3_CFLAGS) $$d/p.c $(SQLITE3_LIBS) -o $$d/p >/dev/null 2>&1 && echo yes; rm -rf $$d)
+BUNDLED_CEXT_PKGS := racc
+ifeq ($(SQLITE3_AVAILABLE),yes)
+BUNDLED_CEXT_PKGS += sqlite3
+endif
+BUNDLED_CEXT_STAMPS := $(foreach p,$(BUNDLED_CEXT_PKGS),packages/$(p)/build/cext/complete)
+BUNDLED_CEXT_LOADERS := packages/racc/racc/cparse.rb packages/sqlite3/sqlite3/sqlite3_native.rb
+define BUNDLED_CEXT_RULE
+packages/$(1)/build/cext/complete: packages/$(1)/spin.toml $$(wildcard packages/$(1)/ext/*.c packages/$(1)/ext/*/*.c packages/$(1)/ext/*/*.h) bin/spinel-cext-build lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a tools/cext-build.rb tools/cext-record.rb tools/cext/recorder.c include/ruby.h include/ruby/spinel_record.h include/ruby/encoding.h
+	bin/spinel-cext-build --bundle packages/$(1) packages/$(1)/build/cext "$$(CC)"
+endef
+$(foreach p,$(BUNDLED_CEXT_PKGS),$(eval $(call BUNDLED_CEXT_RULE,$(p))))
+.PHONY: bundled-cext
+bundled-cext: $(BUNDLED_CEXT_STAMPS)
 
-all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h $(BUNDLED_CEXT_STAMPS)
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -1213,6 +1238,10 @@ PKG_TESTS := $(filter-out packages/ffi/test/%.rb packages/fiddle/test/%.rb,$(PKG
 endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
+# sqlite3's tests need its extension, built only where libsqlite3 is
+ifneq ($(SQLITE3_AVAILABLE),yes)
+PKG_TESTS := $(filter-out packages/sqlite3/test/%.rb,$(PKG_TESTS))
+endif
 endif
 ifneq ($(TEST_SKIP),)
 PKG_TESTS := $(filter-out $(TEST_SKIP),$(PKG_TESTS))
@@ -3983,13 +4012,21 @@ ckey=""; hit=0; own=0; \
   [ -f "$$pchf" ] || pchuse=""; \
   if sed -n '1,/^#include "spinel_rt.h"/p' "$$cfile" | grep '^#define' | grep -qv SP_TU_NO_POLY_RENDER; then pchuse=""; fi; \
   xlibs=$$(sed -n 's|^/\* SPINEL_LINK: \(.*\) \*/$$|\1|p' "$$cfile" | tr '\n' ' '); \
+  xobjs=$$(sed -n 's|^/\* SPINEL_LINK_OBJ: \(.*\) \*/$$|\1|p' "$$cfile" | tr '\n' ' '); \
+  keep=""; for o in $$xobjs; do case " $(BUNDLED_NATIVE_OBJS) " in *" $$o "*) ;; *) keep="$$keep $$o";; esac; done; xobjs="$$keep"; \
   bigopt=""; \
   if [ "$$(wc -l < "$$cfile")" -ge 2000 ]; then bigopt="-O0"; pchuse=""; fi; \
   if [ -f "$<.opt" ]; then bigopt=$$(cat "$<.opt"); pchuse=""; fi; \
   mtdef=""; rtlib="$(SP_RT_LIB)"; natobjs="$(BUNDLED_NATIVE_OBJS)"; mtld=""; \
   if grep -q SPINEL_USES_THREADS "$$cfile"; then \
     mtdef="$(MT_DEF)"; rtlib="$(SP_RT_MT_LIB)"; natobjs="$(BUNDLED_NATIVE_MT_OBJS)"; mtld="-lpthread"; pchuse=""; \
+    mtobjs=""; for o in $$xobjs; do m="$${o%.a}_mt.a"; [ -f "$$m" ] && o="$$m"; mtobjs="$$mtobjs $$o"; done; xobjs="$$mtobjs"; \
   fi; \
+  cextinc=""; \
+  if grep -q SPINEL_USES_CEXT "$$cfile"; then \
+    rtlib=$$(echo "$$rtlib" | sed 's|libspinel_rt|libspinel_cext_rt|'); pchuse=""; cextinc="-Iinclude"; \
+  fi; \
+  xlibs="$$xobjs $$xlibs"; \
   if [ -f "$<.expected" ]; then \
     ckey=$$(RC_CC="$(CC)" tools/result_cache.sh key "$<" "$$cfile" \
       "$(RESULT_CACHE_FP)|$(RESULT_CACHE_HARNESS)|$(CC)|$(TEST_SINGLE_INVOKE)|$(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib|$$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS)|$(TIMEOUT10)" \
@@ -4003,9 +4040,9 @@ ckey=""; hit=0; own=0; \
   if [ $$hit = 1 ]; then \
     :; \
   elif [ -n "$(TEST_SINGLE_INVOKE)" ]; then \
-    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib "$$cfile" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib $$cextinc "$$cfile" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   else \
-    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
+    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib $$cextinc -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
     $(CC) $(CFLAGS) "$$cfile.o" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   fi; }; \
 built=$$?; \
@@ -4054,7 +4091,7 @@ endef
 # Per-package test rules (one pattern rule per bundled package: GNU Make
 # patterns allow a single %, so the package name is fixed per rule).
 define PKG_TEST_RULE
-$(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
+$(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(BUNDLED_CEXT_STAMPS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
 	$$(RUN_ONE_TEST)
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
@@ -5685,6 +5722,13 @@ install: all bin/spin
 	rm -rf $(SPNLDIR)/builtins
 	cp -r builtins $(SPNLDIR)/builtins
 	rm -rf $(SPNLDIR)/packages/*/build
+	@# ...except a bundled extension's archives, which its declarations name
+	for p in $(BUNDLED_CEXT_PKGS); do \
+	  if [ -d packages/$$p/build/cext ]; then \
+	    install -d $(SPNLDIR)/packages/$$p/build/cext; \
+	    for a in packages/$$p/build/cext/*.a; do install -m 644 $$a $(SPNLDIR)/packages/$$p/build/cext/; done; \
+	  fi; \
+	done
 	@# cp -r keeps each file's mode, and a package object built through
 	@# sccache is 0640 whatever the umask (sccache 0.17 writes its outputs
 	@# that way, on a cache hit too). Installed by root, every program
@@ -5711,6 +5755,7 @@ uninstall:
 clean:
 	rm -rf build/ bin/
 	rm -f spinel
+	rm -rf packages/*/build/cext $(BUNDLED_CEXT_LOADERS)
 
 .PHONY: cext-compiler-test
 cext-compiler-test: $(SPINEL) lib/libspinel_rt.a lib/libspinel_cext_rt.a

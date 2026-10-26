@@ -1,0 +1,11 @@
+"c"
+"1.8.1"
+7
+13
+3
+67
+Racc::ParseError
+parse error on value "$end" ($end)
+Racc::ParseError
+42
+35
