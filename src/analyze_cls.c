@@ -2075,11 +2075,11 @@ static void cf_protocol_returns(CF *f, int v, int el) {
   int pidx = cf_set_of(f, el);
   if (pidx == CF_ALL || pidx == CF_EMPTY) return;
   if (!f->pr_built) cf_proto_ret_build(f);
-  const ClsSet *x = &f->pool[pidx];
-  if (x->n == 0) return;
+  if (f->pool[pidx].n == 0) return;
   for (int q = 0; q < CF_PRN; q++)
     for (int i = 0; i < f->pr_n[q]; i++) {
-      if (!cf_sets_meet(x, &f->pool[f->pr_disp[q][i]])) continue;
+      /* (by index: a flow adds sets, and the pool they go into moves) */
+      if (!cf_sets_meet(&f->pool[pidx], &f->pool[f->pr_disp[q][i]])) continue;
       int mi = f->pr_mi[q][i];
       cf_flow(f, f->ret_el[mi], v);
       if (q == 21)   /* each */
@@ -2113,8 +2113,9 @@ static int cf_element_answer(const char *nm) {
 static void cf_each_yields(CF *f, int recv_el, int pe) {
   int pidx = cf_set_of(f, recv_el);
   if (pidx == CF_ALL || pidx == CF_EMPTY) return;
-  const ClsSet *x = &f->pool[pidx];
-  for (int k = cls_set_next(x, -1); k >= 0; k = cls_set_next(x, k)) {
+  /* (the set by its index each step: a flow adds sets, and the pool they
+     go into moves) */
+  for (int k = cls_set_next(&f->pool[pidx], -1); k >= 0; k = cls_set_next(&f->pool[pidx], k)) {
     if (k < 0 || k >= f->c->nclasses) continue;
     int mi = comp_method_in_chain(f->c, k, "each", NULL);
     if (mi < 0 || cf_prelude_scope(f, mi)) continue;
@@ -2750,7 +2751,9 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
      that may be any of hundreds of classes, a protocol method's parameter) */
   int ut_mi[256], ut_r[256], nut = 0;
 #define CF_UT(mi) cf_user_target_once(f, v, (mi), argv, argc, blk, ut_mi, ut_r, &nut)
-  for (int k = cls_set_next(s, -1); k >= 0; k = cls_set_next(s, k)) {
+  /* (the set by its index each step: binding a class's method adds sets,
+     and the pool they go into moves) */
+  for (int k = cls_set_next(&f->pool[pidx], -1); k >= 0; k = cls_set_next(&f->pool[pidx], k)) {
     if (k >= c->nclasses) {
       /* the Class object: a construction, a class method, else Class's own */
       int kc = k - c->nclasses;
@@ -3337,8 +3340,8 @@ static void cf_call(CF *f, int v) {
     Scope *s = &c->scopes[si];
     int found = 0;
     if (s->def_node >= 0 && s->class_id >= 0) {
-      const ClsSet *ds = &f->pool[f->desc[s->class_id]];
-      if (ds->all) { cf_call_any(f, v, nm, argv, argc, blk); return; }
+      int dsi = f->desc[s->class_id];   /* (by index: a construction adds sets, and the pool moves) */
+      if (f->pool[dsi].all) { cf_call_any(f, v, nm, argv, argc, blk); return; }
       /* `new` or `allocate` in a class method: an instance of the class
          the method runs for, which a subclass's call makes its own */
       if (s->is_cmethod && (sp_streq(nm, "new") || sp_streq(nm, "allocate")) &&
@@ -3346,7 +3349,7 @@ static void cf_call(CF *f, int v) {
         cf_add_set(f, v, f->desc[s->class_id]);
         /* each class as `X.new` builds it: its initialize, or a Struct's
            or Data's members, which have none */
-        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i)) {
+        for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0; i = cls_set_next(&f->pool[dsi], i)) {
           cf_construct(f, -1, i, argv, argc, blk, nm);
           if (f->directed && cf_container_class(c, i)) { cf_kmark(f, v, CF_KPTOP); cf_ptop_set(f, v); }
         }
@@ -3355,16 +3358,16 @@ static void cf_call(CF *f, int v) {
       if (s->is_cmethod) {
         int cm = comp_cmethod_in_chain(c, s->class_id, nm, NULL);
         if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) found = 1;
-        for (int i = cls_set_next(ds, -1); i >= 0 && !found; i = cls_set_next(ds, i)) {
+        for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0 && !found; i = cls_set_next(&f->pool[dsi], i)) {
           int cm2 = comp_cmethod_in_chain(c, i, nm, NULL);
           if (cm2 >= 0 && cf_user_target(f, v, cm2, argv, argc, blk)) found = 1;
         }
         /* a singleton accessor of the class self is, or of a subclass */
         if (!found && cf_sg_access(f, v, s->class_id, nm, argv, argc)) found = 1;
-        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i)) if (i != s->class_id && cf_sg_access(f, v, i, nm, argv, argc)) found = 1;
+        for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0; i = cls_set_next(&f->pool[dsi], i)) if (i != s->class_id && cf_sg_access(f, v, i, nm, argv, argc)) found = 1;
       }
       else {
-        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i)) {
+        for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0; i = cls_set_next(&f->pool[dsi], i)) {
           int mi = comp_method_in_chain(c, i, nm, NULL);
           if (mi >= 0) { if (cf_user_target(f, v, mi, argv, argc, blk)) found = 1; continue; }
           if (comp_reader_in_chain(c, i, nm, NULL)) {
@@ -3378,7 +3381,7 @@ static void cf_call(CF *f, int v) {
           if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) found = 1;
         }
         if (!found && f->has_mm) {
-          for (int i = cls_set_next(ds, -1); i >= 0 && !found; i = cls_set_next(ds, i))
+          for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0 && !found; i = cls_set_next(&f->pool[dsi], i))
             if (comp_method_in_chain(c, i, "method_missing", NULL) >= 0) { cf_call_any(f, v, nm, argv, argc, blk); return; }
         }
       }
@@ -3408,13 +3411,13 @@ static void cf_call(CF *f, int v) {
        takes is no native call, and goes on (#8837: every such call was
        anything, 2,107 receivers of a large program's) */
     if (s->def_node >= 0 && s->class_id >= 0) {
-      const ClsSet *ds = &f->pool[f->desc[s->class_id]];
+      int dsi = f->desc[s->class_id];   /* (by index: an answer adds sets, and the pool moves) */
       int nat = cf_class_has_natives(f, s->class_id), whole = c->classes[s->class_id].is_native_class, bound = 0;
-      for (int i = cls_set_next(ds, -1); i >= 0 && !nat; i = cls_set_next(ds, i)) nat = cf_class_has_natives(f, i);
+      for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0 && !nat; i = cls_set_next(&f->pool[dsi], i)) nat = cf_class_has_natives(f, i);
       if (nat) {
         int self_el = cf_self_recv(f, v, si, nm);
         if (comp_native_method_find(c, s->class_id, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, s->class_id, nm, argc); bound = 1; }
-        for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i))
+        for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0; i = cls_set_next(&f->pool[dsi], i))
           if (i < c->nclasses && i != s->class_id && comp_native_method_find(c, i, nm, argc, 0) >= 0) { cf_native_answer(f, v, self_el, i, nm, argc); bound = 1; }
         if (bound || whole) {
           if (!bound) cf_all(f, v);
@@ -3552,10 +3555,10 @@ static void cf_call(CF *f, int v) {
     int si = cf_scope_of(f, v);
     Scope *s = &c->scopes[si];
     if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0 && comp_cmethod_in_chain(c, s->class_id, nm, NULL) < 0) {
-      const ClsSet *ds = &f->pool[f->desc[s->class_id]];
-      cf_add_set(f, v, f->desc[s->class_id]);
-      if (ds->all) { for (int i = 0; i < argc; i++) cf_all(f, argv[i]); return; }
-      for (int i = cls_set_next(ds, -1); i >= 0; i = cls_set_next(ds, i)) cf_construct(f, -1, i, argv, argc, blk, nm);
+      int dsi = f->desc[s->class_id];   /* (by index: a construction adds sets, and the pool moves) */
+      cf_add_set(f, v, dsi);
+      if (f->pool[dsi].all) { for (int i = 0; i < argc; i++) cf_all(f, argv[i]); return; }
+      for (int i = cls_set_next(&f->pool[dsi], -1); i >= 0; i = cls_set_next(&f->pool[dsi], i)) cf_construct(f, -1, i, argv, argc, blk, nm);
       return;
     }
   }
