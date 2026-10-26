@@ -706,9 +706,11 @@ static int dir_is_empty(const char *dir) {
 
 /* -c --incremental writes a directory, and refuse_overwrite's care applies
    to it: a regular file there, or a directory holding something other than
-   a previous unit set (no units.txt, and no program.c of spinel's, which
-   a declined split leaves), is not written into without --force. --force
-   replaces a file, but writes into a directory beside what is in it.
+   a previous unit set (no units.txt of spinel's, and no program.c of
+   spinel's, which a declined split leaves), is not written into without
+   --force; nor is one whose program.c spinel did not write, since the
+   unit set's program.c replaces it. --force replaces a file, but writes
+   into a directory beside what is in it.
    A missing directory is created, one level. 1: refused (said why). */
 static int units_dir_refused(const char *dir) {
   struct stat st;
@@ -718,8 +720,8 @@ static int units_dir_refused(const char *dir) {
     char m[4200], p[4200];
     snprintf(m, sizeof m, "%s/units.txt", dir);
     snprintf(p, sizeof p, "%s/program.c", dir);
-    struct stat ms;
-    ours = stat(m, &ms) == 0 || dir_is_empty(dir) || spinel_output(p) == 1;
+    int prog = spinel_output(p);
+    ours = dir_is_empty(dir) || ((c_split_units_manifest(m) || prog == 1) && prog != 0);
   }
   if (!ours && !g_force_overwrite) {
     if (S_ISDIR(st.st_mode))

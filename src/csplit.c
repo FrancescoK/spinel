@@ -1729,6 +1729,18 @@ static int cs_write_manifest(const char *dir, const CSplitResult *res) {
   return (ferror(f) | (fclose(f) != 0)) ? -1 : 0;
 }
 
+int c_split_units_manifest(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;
+  char h[73];
+  size_t n = fread(h, 1, sizeof h, f);
+  fclose(f);
+  if (n < sizeof h || memcmp(h, "rt_hash ", 8) != 0 || h[72] != '\n') return 0;
+  for (int k = 8; k < 72; k++)
+    if (!((h[k] >= '0' && h[k] <= '9') || (h[k] >= 'a' && h[k] <= 'f'))) return 0;
+  return 1;
+}
+
 void c_split_result_free(CSplitResult *res) {
   for (int k = 0; k < res->n; k++) free(res->units[k].groups);
   free(res->units);

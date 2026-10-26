@@ -62,7 +62,8 @@ static long long inc_copy(const char *from, const char *to) {
 
 /* A unit file a previous split wrote and this one did not: removed, so the
    directory holds the unit set units.txt lists and nothing else. Only when
-   a units.txt was there before, which proves the directory is spinel's. */
+   a units.txt of spinel's was there before, which proves the unit files
+   are spinel's too (--force writes beside a directory's own files). */
 static void inc_remove_stale(const char *dir, const CSplitResult *res) {
   DIR *d = opendir(dir);
   if (!d) return;
@@ -123,8 +124,7 @@ static int inc_write_dir(const char *flags, const char *c_path, const Incrementa
   char manifest[4200], prog[4200];
   snprintf(manifest, sizeof manifest, "%s/units.txt", dir);
   snprintf(prog, sizeof prog, "%s/program.c", dir);
-  struct stat st;
-  int had_manifest = stat(manifest, &st) == 0;
+  int had_manifest = c_split_units_manifest(manifest);
   if (inc_copy(c_path, prog) < 0) {
     fprintf(stderr, "spinel: incremental: cannot write %s\n", prog);
     return -1;

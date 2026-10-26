@@ -36,6 +36,10 @@ typedef struct {
    the unit holds something this reader does not read (the caller then
    compiles the single unit). */
 int c_split_units(const char *pre_path, const char *out_dir, const CSplitOpts *opts, CSplitResult *res);
+/* 1 when the file at path begins as the units.txt c_split_units writes
+   (its rt_hash line): a directory holding one is a unit set of spinel's,
+   not a units.txt of someone else's that happens to be there. */
+int c_split_units_manifest(const char *path);
 void c_split_result_free(CSplitResult *res);
 
 #endif
