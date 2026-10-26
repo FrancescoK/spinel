@@ -736,8 +736,8 @@ void compute_reachable(Compiler *c, int typed) {
   {
     int has_when = 0;
     for (int id = 0; id < c->nt->count && !has_when; id++) {
-      const char *ty = nt_type(c->nt, id);
-      if (ty && sp_streq(ty, "WhenNode")) has_when = 1;
+      NodeKind ty_k = nt_kind(c->nt, id);
+      if (ty_k == NK_WhenNode) has_when = 1;
     }
     if (has_when) {
       MARK_NAME("==="); MARK_NAME("==");
@@ -815,7 +815,7 @@ void compute_reachable(Compiler *c, int typed) {
       const char *ty = nt_type(c->nt, id);
       NodeKind ty_k = nt_kind(c->nt, id);
       if (!ty) continue;
-      if (ty_k == NK_ArrayPatternNode || sp_streq(ty, "FindPatternNode")) has_arr_pat = 1;
+      if (ty_k == NK_ArrayPatternNode || ty_k == NK_FindPatternNode) has_arr_pat = 1;
       else if (ty_k == NK_HashPatternNode) has_hash_pat = 1;
     }
     if (has_arr_pat) MARK_NAME("deconstruct");
@@ -2444,9 +2444,8 @@ static void rewrite_mixin_alias_args(Compiler *c, int call) {
 void rewrite_const_alias_receivers(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
     NodeKind k = nt_kind(nt, id);
-    if (ty && sp_streq(ty, "WhenNode")) {
+    if (k == NK_WhenNode) {
       int wn = 0; const int *wc = nt_arr(nt, id, "conditions", &wn);
       for (int i = 0; i < wn; i++) rewrite_const_alias_name(c, wc[i]);
       continue;
@@ -14294,7 +14293,7 @@ static char *oa_walk_disc(Compiler *c, int nc) {
   }
   { int root = nt->count > 0 ? nt->count - 1 : -1;
     for (int id = 0; id < nt->count; id++)
-      if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode")) { root = id; break; }
+      if (nt_kind(nt, id) == NK_ProgramNode) { root = id; break; }
     int ps = root >= 0 ? nt_ref(nt, root, "statements") : -1;
     int bn = 0; const int *bl = ps >= 0 ? nt_arr(nt, ps, "body", &bn) : NULL;
     for (int i = 0; i < bn; i++) if (bl[i] >= 0 && bl[i] < nc) walk_disc[bl[i]] = 1; }
@@ -14333,7 +14332,7 @@ static char *oa_walk_disc(Compiler *c, int nc) {
       mn = ssc ? ssc->name : NULL;
     }
     else if (k == NK_CallOrWriteNode || k == NK_CallAndWriteNode ||
-             (nt_type(nt, id) && sp_streq(nt_type(nt, id), "CallOperatorWriteNode")))
+             (nt_kind(nt, id) == NK_CallOperatorWriteNode))
       mn = nt_str(nt, id, "read_name") ? nt_str(nt, id, "read_name") : nt_str(nt, id, "name");
     else if (k == NK_CallNode) {
       const char *cn = nt_str(nt, id, "name");
@@ -14800,7 +14799,7 @@ static int narrow_object_arrays(Compiler *c) {
     int trim;   /* the node names the SETTER (trim the `=`) or the attribute */
     if (ty_k == NK_CallNode || ty_k == NK_CallTargetNode ||
         ty_k == NK_SymbolNode) trim = 1;
-    else if (sp_streq(ty, "CallOperatorWriteNode") || ty_k == NK_CallAndWriteNode ||
+    else if (ty_k == NK_CallOperatorWriteNode || ty_k == NK_CallAndWriteNode ||
              ty_k == NK_CallOrWriteNode) trim = 0;
     else continue;
     const char *nm = ty_k == NK_SymbolNode ? nt_str(nt, id, "value") : nt_str(nt, id, "name");
@@ -15496,15 +15495,6 @@ static void narrow_poly_int_locals(Compiler *c) {
                key can be any type). A `[]=` value (arg 1) is not an index. */
             TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
             if (ty_is_array(rt) || ty_is_obj_array(rt)) { claimed[av[0]] = 1; has_index = 1; }
-          }
-        }
-        else if (sp_streq(ty, "IndexNode")) {
-          int recv = nt_ref(nt, id, "receiver");
-          TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-          if (ty_is_array(rt) || ty_is_obj_array(rt)) {
-            int args = nt_ref(nt, id, "arguments"); int an = 0;
-            const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            for (int k2 = 0; k2 < an; k2++) if (is_read[av[k2]]) { claimed[av[k2]] = 1; has_index = 1; }
           }
         }
       }
@@ -18869,8 +18859,7 @@ static void compute_byref_out_params(Compiler *c) {
     changed = 0;
     for (int id = 0; id < nt->count; id++) {
       NodeKind k = nt_kind(nt, id);
-      NodeKind sk = nt_kind(nt, id);
-      if (sk == NK_SuperNode || sk == NK_ForwardingSuperNode) {
+      if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
         /* transitive through `super`: a parameter a super hands on into the
            parent's byref slot. A same-named parent shares the name group; one
            an included module brings is copied under a name of its own, and
@@ -18884,7 +18873,7 @@ static void compute_byref_out_params(Compiler *c) {
         for (int j = 0; j < m->nparams; j++) {
           if (!comp_byref_param(c, m, j)) continue;
           int pi = -1;
-          if (sk == NK_ForwardingSuperNode) pi = zsuper_param_source(c, s, m, j);
+          if (k == NK_ForwardingSuperNode) pi = zsuper_param_source(c, s, m, j);
           else {
             int an = arg_layout_param_node(c, m, id, j, NULL);
             if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
@@ -37444,9 +37433,10 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     nn_visit(c, nt_ref(nt, id, "body"), &e, id);
     return;
   }
+  case NK_ArgumentsNode:
+    nn_visit_args(c, id, f, ctx);
+    return;
   default: {
-    const char *ty = nt_type(nt, id);
-    if (ty && sp_streq(ty, "ArgumentsNode")) { nn_visit_args(c, id, f, ctx); return; }
     nn_visit_children_generic(c, id, f, ctx);
     /* control flow the walk does not follow: nothing survives it */
     if (k == NK_BeginNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_ForNode ||
@@ -37649,10 +37639,7 @@ static void nn_structure(Compiler *c) {
   nn_nroots = 0;
 #define NN_ROOT(b) do { int _b = (b); if (_b >= 0 && _b < nn_cap && !done[_b]) { done[_b] = 1; \
     nn_push(&nn_roots, &nn_nroots, &nn_croots, _b); } } while (0)
-  for (int p = 0; p < nt->count; p++) {
-    const char *ty = nt_type(nt, p);
-    if (ty && ty[0] == 'P' && sp_streq(ty, "ProgramNode")) NN_ROOT(nt_ref(nt, p, "statements"));
-  }
+  NT_FOREACH_KIND(nt, NK_ProgramNode, p) NN_ROOT(nt_ref(nt, p, "statements"));
   NT_FOREACH_KIND(nt, NK_ClassNode, p) NN_ROOT(nt_ref(nt, p, "body"));
   NT_FOREACH_KIND(nt, NK_ModuleNode, p) NN_ROOT(nt_ref(nt, p, "body"));
   NT_FOREACH_KIND(nt, NK_SingletonClassNode, p) NN_ROOT(nt_ref(nt, p, "body"));
@@ -39188,8 +39175,8 @@ int *du_parent_map(const NodeTable *nt) {
   int *stack = malloc(sizeof(int) * ((size_t)nt->count + 1));
   if (!seen || !stack) { free(seen); free(stack); return par; }
   for (int root = 0; root < nt->count; root++) {
-    const char *ty = nt_type(nt, root);
-    if (!ty || !sp_streq(ty, "ProgramNode") || seen[root]) continue;
+    NodeKind ty_k = nt_kind(nt, root);
+    if (ty_k != NK_ProgramNode || seen[root]) continue;
     int sp = 0;
     seen[root] = 1; par[root] = -1; stack[sp++] = root;
     while (sp > 0) {
@@ -39218,7 +39205,8 @@ int *du_parent_map(const NodeTable *nt) {
 static int du_param_binds(const NodeTable *nt, int n, const char *nm, int depth) {
   if (n < 0 || depth > 32) return 0;
   const char *ty = nt_type(nt, n);
-  if (ty && sp_streq(ty, "BlockLocalVariableNode")) return 0;
+  NodeKind ty_k = nt_kind(nt, n);
+  if (ty_k == NK_BlockLocalVariableNode) return 0;
   size_t tl = ty ? strlen(ty) : 0;
   if (tl > 13 && sp_streq(ty + tl - 13, "ParameterNode")) {
     const char *pn = nt_str(nt, n, "name");
@@ -45347,7 +45335,7 @@ static int iter_disc_call(Compiler *c, int call, int depth) {
        yield it): kept */
     int prm = nt_ref(nt, m->def_node, "parameters");
     int kwr = prm >= 0 ? nt_ref(nt, prm, "keyword_rest") : -1;
-    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "ForwardingParameterNode")) ok = 0;
+    if (kwr >= 0 && nt_kind(nt, kwr) == NK_ForwardingParameterNode) ok = 0;
     if (ok && m->blk_param) {
       int bpn = prm >= 0 ? nt_ref(nt, prm, "block") : -1;
       const char *bp = bpn >= 0 ? nt_str(nt, bpn, "name") : NULL;
@@ -45870,7 +45858,7 @@ static int sid_name_only_member(const NodeTable *nt, const int *parent, int lit)
       continue;
     }
     /* `Set.new(list)`, as `list.to_set` is lowered */
-    if (nt_type(nt, q) && sp_streq(nt_type(nt, q), "ArgumentsNode")) {
+    if (nt_kind(nt, q) == NK_ArgumentsNode) {
       int an = 0; const int *av = nt_arr(nt, q, "arguments", &an);
       int sn = parent[q], sr = sn >= 0 ? nt_ref(nt, sn, "receiver") : -1;
       if (an != 1 || av[0] != u || sn < 0 || nt_kind(nt, sn) != NK_CallNode || nt_ref(nt, sn, "arguments") != q ||
@@ -46272,8 +46260,7 @@ static int scan_block_changes(Compiler *c, int blk, int node, const char *subj, 
   default:
     /* an ensure clause holds statements, a break's or next's arguments
        values, which the walk takes in turn */
-    if (!nt_type(nt, node) || (!sp_streq(nt_type(nt, node), "EnsureNode") &&
-                               !sp_streq(nt_type(nt, node), "ArgumentsNode")))
+    if (nt_kind(nt, node) != NK_EnsureNode && nt_kind(nt, node) != NK_ArgumentsNode)
       return 1;
   }
   int nr = nt_num_refs(nt, node);
@@ -46523,8 +46510,8 @@ static void reject_retry_in_ensure(Compiler *c, int id, int ctx, int depth) {
       k == NK_BlockNode || k == NK_LambdaNode)
     ctx = 0;
   int in_rescue = k == NK_RescueNode ? nt_ref(nt, id, "statements") : -1;
-  const char *ty = nt_type(nt, id);
-  int in_ensure = ty && sp_streq(ty, "EnsureNode") ? nt_ref(nt, id, "statements") : -1;
+  NodeKind ty_k = nt_kind(nt, id);
+  int in_ensure = ty_k == NK_EnsureNode ? nt_ref(nt, id, "statements") : -1;
   const SpNode *nd = &nt->nodes[id];
   for (int i = 0; i < nd->nr; i++) {
     int ch = nd->r[i].ref;
@@ -46572,7 +46559,7 @@ static int def_params_all_optional(const NodeTable *nt, int pn) {
   if (n) return 0;
   const int *kws = nt_arr(nt, pn, "keywords", &n);
   for (int k = 0; k < n; k++)
-    if (nt_type(nt, kws[k]) && sp_streq(nt_type(nt, kws[k]), "RequiredKeywordParameterNode")) return 0;
+    if (nt_kind(nt, kws[k]) == NK_RequiredKeywordParameterNode) return 0;
   return 1;
 }
 
@@ -48303,11 +48290,10 @@ static int ur_value_use(Compiler *c, const UrCtx *u, int v) {
       int call = vp_up_block_call(nt, par, &up);
       return !(call >= 0 && nt_ref(nt, call, "block") == p && ur_block_dropped(c, u, call));
     }
-    default: {
-      /* kinds the node table names by type only */
-      const char *ty = nt_type(nt, p);
-      return !(ty && sp_streq(ty, "EnsureNode"));
-    }
+    case NK_EnsureNode:
+      return 0;
+    default:
+      return 1;
     }
   }
   return 1;
@@ -48374,15 +48360,12 @@ static int ur_names_method(const NodeTable *nt, const int *par, int v) {
   int p = par[v];
   if (p < 0) return 1;
   NodeKind pk = nt_kind(nt, p);
-  if (pk == NK_BlockArgumentNode) return 1;
-  const char *pty = nt_type(nt, p);
-  NodeKind pty_k = nt_kind(nt, p);
-  if (pty_k == NK_AliasMethodNode) return 1;
+  if (pk == NK_BlockArgumentNode || pk == NK_AliasMethodNode) return 1;
   if (pk == NK_CallNode) {   /* `:name.to_proc` */
     const char *nm = nt_str(nt, p, "name");
     return nt_ref(nt, p, "receiver") == v && nm && sp_streq(nm, "to_proc");
   }
-  if (!pty || !sp_streq(pty, "ArgumentsNode")) return 0;
+  if (pk != NK_ArgumentsNode) return 0;
   int call = par[p];
   const char *nm = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
   return !nm || str_in(nm, takers);
@@ -51522,7 +51505,7 @@ static void an_phase_proc_returns(Compiler *c) {
         /* (6a) an attribute's operator write (`box.items |= [x]`): the
            attribute's ivar in the receiver's class takes the answer */
         for (int id = 0; id < nt->count; id++) {
-          if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallOperatorWriteNode")) continue;
+          if (nt_kind(nt, id) != NK_CallOperatorWriteNode) continue;
           int vnode = nt_ref(nt, id, "value"), recv = nt_ref(nt, id, "receiver");
           const char *nm = nt_str(nt, id, "name");
           if (vnode < 0 || recv < 0 || !nm || infer_type(c, vnode) != TY_POLY_ARRAY) continue;
@@ -52532,7 +52515,7 @@ static void an_presence_writes(Compiler *c, int id) {
       if (name_is_plain_setter(wn)) an_presence_note_ivar(c, wn, strlen(wn) - 1, PRES_UNMARKED);
     }
   }
-  else if (sp_streq(nt_type(nt, id), "CallOperatorWriteNode")) {
+  else if (nt_kind(nt, id) == NK_CallOperatorWriteNode) {
     const char *op = nt_str(nt, id, "binary_operator"), *rn = nt_str(nt, id, "read_name");
     if (op && rn && is_bit_op(op)) an_presence_note_ivar(c, rn, strlen(rn), PRES_UNMARKED);
   }

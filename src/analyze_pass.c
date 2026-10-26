@@ -1039,7 +1039,7 @@ static int pm_seed_locals_poly(Compiler *c, Scope *ms, int pat) {
     return pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "value"));
   if (pk == NK_AssocSplatNode)
     return pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "value"));
-  if (pk == NK_ArrayPatternNode || sp_streq(pty, "FindPatternNode") ||
+  if (pk == NK_ArrayPatternNode || pk == NK_FindPatternNode ||
       pk == NK_HashPatternNode) {
     int n = 0;
     const int *kids = nt_arr(nt, pat,
@@ -1059,10 +1059,9 @@ static int pm_seed_locals_poly(Compiler *c, Scope *ms, int pat) {
 
 /* Is this pattern node a container whose inner bindings arrive boxed? */
 static int pm_is_container_pat(const NodeTable *nt, int pat) {
-  const char *pty = pat >= 0 ? nt_type(nt, pat) : NULL;
   NodeKind pk = nt_kind(nt, pat);
-  return pty && (pk == NK_ArrayPatternNode || sp_streq(pty, "FindPatternNode") ||
-                 pk == NK_HashPatternNode);
+  return pk == NK_ArrayPatternNode || pk == NK_FindPatternNode ||
+         pk == NK_HashPatternNode;
 }
 
 /* Both callers run this INSIDE infer_write_types, after its per-round reset of
@@ -1175,7 +1174,7 @@ static int infer_case_pattern_locals(Compiler *c) {
           if (mg != lv->type) lv_set_type(lv, mg);   /* reset slot: the sweep reports */
         }
       }
-      else if (sp_streq(pty, "FindPatternNode")) {
+      else if (pk == NK_FindPatternNode) {
         /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
            scrutinee's element type; required LV targets bind to an element. */
         TyKind arr_t = ty_is_array(scrutinee_t) ? scrutinee_t : TY_POLY_ARRAY;
@@ -4794,12 +4793,11 @@ static TyKind local_write_ty(Compiler *c, int id, int stashed) {
        that downstream uses like `x.map {...}` are not starved of type
        information. */
     if (newt == TY_UNKNOWN && nm) {
-      const char *vty2 = nt_type(nt, val_id);
       NodeKind vty2_k = nt_kind(nt, val_id);
-      int is_empty_col = vty2 && ((vty2_k == NK_ArrayNode &&
-                                   ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
-                                  (vty2_k == NK_HashNode &&
-                                   ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0));
+      int is_empty_col = (vty2_k == NK_ArrayNode &&
+                          ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
+                         (vty2_k == NK_HashNode &&
+                          ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0);
       if (is_empty_col) {
         Scope *s2 = comp_scope_of(c, id);
         LocalVar *lv2 = scope_local(s2, nm);
@@ -5000,8 +4998,9 @@ int infer_write_types(Compiler *c) {
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     if (!ty) continue;
-    if (sp_streq(ty, "MatchWriteNode")) {
+    if (ty_k == NK_MatchWriteNode) {
       /* `/(?<n>..)/ =~ str` binds each named group to a local: a String when
          the group participated, nil otherwise (NULL-encoded), so type each
          target as a nilable String. */
@@ -5345,19 +5344,16 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     if (ended == VPU_GAVE_UP) return 1;
     int p = up.parent;
     NodeKind pk = nt_kind(nt, p);
-    const char *pt = nt_type(nt, p);
-    NodeKind pt_k = nt_kind(nt, p);
     /* an interpolated statement list passes up to the interpolation, which
        consumes it */
-    if (pt_k == NK_EmbeddedStatementsNode) { u = p; continue; }
+    if (pk == NK_EmbeddedStatementsNode) { u = p; continue; }
     /* a condition, a pattern, a `when` or `in` clause's tests */
     if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_CaseNode || pk == NK_CaseMatchNode ||
-        (pt && (sp_streq(pt, "WhenNode") || pt_k == NK_InNode)))
+        pk == NK_WhenNode || pk == NK_InNode)
       return 0;
-    if (pt && (pt_k == NK_InterpolatedStringNode || pt_k == NK_InterpolatedSymbolNode ||
-               pt_k == NK_InterpolatedXStringNode ||
-               pt_k == NK_InterpolatedRegularExpressionNode ||
-               sp_streq(pt, "ProgramNode")))
+    if (pk == NK_InterpolatedStringNode || pk == NK_InterpolatedSymbolNode ||
+        pk == NK_InterpolatedXStringNode || pk == NK_InterpolatedRegularExpressionNode ||
+        pk == NK_ProgramNode)
       return 0;
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
@@ -5369,7 +5365,7 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
       if (nt_ref(nt, p, "receiver") == up.node) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
-    if (pt && sp_streq(pt, "ArgumentsNode")) {
+    if (pk == NK_ArgumentsNode) {
       int call = parent[p];
       if (call >= 0 && nt_kind(nt, call) == NK_CallNode &&
           str_in(nt_str(nt, call, "name"), consumes_args)) return 0;
@@ -7892,7 +7888,7 @@ static int call_kwargs_fit(Compiler *c, Scope *m, int kwh) {
   int kn = 0;
   const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
   for (int k = 0; k < kn; k++) {
-    if (!nt_type(nt, kws[k]) || !sp_streq(nt_type(nt, kws[k]), "RequiredKeywordParameterNode")) continue;
+    if (nt_kind(nt, kws[k]) != NK_RequiredKeywordParameterNode) continue;
     const char *name = nt_str(nt, kws[k], "name");
     int passed = 0;
     for (int e = 0; e < en && name && !passed; e++) {
@@ -11223,8 +11219,8 @@ int block_lead_only(Compiler *c, int block) {
   int P = 0; while (block_param_name(c, block, P)) P++;
   if (!block_rest_marker(c, block)) return P > 1;
   int pn = nt_ref(c->nt, nt_ref(c->nt, block, "parameters"), "parameters");
-  const char *rt = nt_type(c->nt, nt_ref(c->nt, pn, "rest"));
-  return P >= 1 && rt && sp_streq(rt, "ImplicitRestNode");
+  NodeKind rk = nt_kind(c->nt, nt_ref(c->nt, pn, "rest"));
+  return P >= 1 && rk == NK_ImplicitRestNode;
 }
 
 /* CRuby's auto-splat, for a block, a proc and instance_exec alike: one
@@ -11258,7 +11254,7 @@ int block_no_keywords(Compiler *c, int block) {
   int bp = nt_ref(c->nt, block, "parameters");
   int pn = bp >= 0 ? nt_ref(c->nt, bp, "parameters") : -1;
   int kr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kr >= 0 && nt_type(c->nt, kr) && sp_streq(nt_type(c->nt, kr), "NoKeywordsParameterNode");
+  return kr >= 0 && nt_kind(c->nt, kr) == NK_NoKeywordsParameterNode;
 }
 
 /* Name of a block's `**kw` keyword-rest parameter, or NULL (also NULL for

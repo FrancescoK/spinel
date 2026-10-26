@@ -722,15 +722,14 @@ int emit_op_method_arity(Compiler *c, const BopCtx *x, Buf *b) {
       const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
       if (kn > 0) kw_block = 1;
       for (int i = 0; i < kn; i++) {
-        const char *kty = nt_type(c->nt, kws[i]);
-        if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+        NodeKind kk = nt_kind(c->nt, kws[i]);
+        if (kk == NK_RequiredKeywordParameterNode) has_req_kw = 1;
       }
       int kwrp = nt_ref(c->nt, pn, "keyword_rest");
       if (kwrp >= 0) {
-        const char *kty = nt_type(c->nt, kwrp);
         NodeKind kk = nt_kind(c->nt, kwrp);
         if (kk == NK_KeywordRestParameterNode) kw_block = 1;
-        else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
+        else if (kk == NK_ForwardingParameterNode) has_forward = 1;
       }
     }
     if (ok) {

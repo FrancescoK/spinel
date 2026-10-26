@@ -179,8 +179,8 @@ static int nf_elem(NF *f, int v, int depth);
 /* the statement list of a program, directly under its ProgramNode */
 static int nf_is_program_list(NF *f, int n) {
   int p = n >= 0 ? f->par[n] : -1;
-  const char *ty = p >= 0 ? nt_type(f->nt, p) : NULL;
-  return nt_kind(f->nt, n) == NK_StatementsNode && ty && sp_streq(ty, "ProgramNode");
+  NodeKind k = nt_kind(f->nt, p);
+  return nt_kind(f->nt, n) == NK_StatementsNode && k == NK_ProgramNode;
 }
 
 /* Does a statement of the program's own list, ahead of the one holding

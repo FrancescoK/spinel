@@ -1178,7 +1178,7 @@ static int program_boxes_class_values(Compiler *c) {
     /* the reads resolved where they stand: `rescue K`, `include K` and its
        kin, `x.is_a?(K)` and its kin */
     if (pk == NK_RescueNode) continue;
-    if (nt_type(nt, par) && sp_streq(nt_type(nt, par), "ArgumentsNode") && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
+    if (nt_kind(nt, par) == NK_ArgumentsNode && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
       const char *cn = nt_str(nt, parent[par], "name");
       if (cn && (sp_streq(cn, "include") || sp_streq(cn, "extend") || sp_streq(cn, "prepend") ||
                  sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?") ||
@@ -2198,15 +2198,14 @@ int method_scope_arity(Compiler *c, int target, int *out) {
     int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
     if (kn > 0) kw_block = 1;
     for (int i = 0; i < kn; i++) {
-      const char *kty = nt_type(nt, kws[i]);
-      if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+      NodeKind kk = nt_kind(nt, kws[i]);
+      if (kk == NK_RequiredKeywordParameterNode) has_req_kw = 1;
     }
     int kwrp = nt_ref(nt, pn, "keyword_rest");
     if (kwrp >= 0) {
-      const char *kty = nt_type(nt, kwrp);
       NodeKind kk = nt_kind(nt, kwrp);
       if (kk == NK_KeywordRestParameterNode) kw_block = 1;
-      else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
+      else if (kk == NK_ForwardingParameterNode) has_forward = 1;
     }
   }
   int req = n_req + n_post + (has_req_kw ? 1 : 0);
@@ -11077,13 +11076,10 @@ static int arg_runs_nothing(Compiler *c, int n) {
     }
     case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
     case NK_KeywordHashNode: case NK_RangeNode: case NK_InterpolatedStringNode:
+    case NK_ArgumentsNode:
       break;
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, n);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
-      break;
-    }
+    default:
+      return subtree_is_pure_read(c, n);
   }
   int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
   for (int i = 0; i < nr; i++) if (!arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;
@@ -12010,7 +12006,7 @@ int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc) {
   }
   if (!kwsplat)
     for (int i = 0; i < nkw; i++) {
-      if (!nt_type(nt, kws[i]) || !sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) continue;
+      if (nt_kind(nt, kws[i]) != NK_RequiredKeywordParameterNode) continue;
       const char *pn2 = nt_str(nt, kws[i], "name");
       int given = 0;
       for (int e = 0; e < ne && !given; e++) {
@@ -12083,7 +12079,13 @@ static int subtree_sees_block(const NodeTable *nt, int node, const char *bname) 
   NodeKind k = nt_kind(nt, node);
   switch (k) {
     case NK_NONE: case NK_DefNode: case NK_ClassNode: case NK_ModuleNode:
-    case NK_SingletonClassNode: return 0;
+    case NK_SingletonClassNode:
+    /* the kinds that had no enumerator while this arm read them as NK_NONE */
+    case NK_ArgumentsNode: case NK_BlockLocalVariableNode: case NK_CallOperatorWriteNode: case NK_EnsureNode:
+    case NK_FindPatternNode: case NK_ForwardingParameterNode: case NK_ImplicitNode: case NK_ImplicitRestNode:
+    case NK_ItLocalVariableReadNode: case NK_ItParametersNode: case NK_MatchWriteNode:
+    case NK_NoKeywordsParameterNode: case NK_ProgramNode: case NK_RequiredKeywordParameterNode:
+    case NK_UnsupportedNode: case NK_WhenNode: return 0;
     case NK_BlockArgumentNode: case NK_YieldNode: case NK_SuperNode:
     case NK_ForwardingSuperNode: case NK_ForwardingArgumentsNode: return 1;
     case NK_CallNode: {
@@ -12315,10 +12317,10 @@ int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t
     req = nr + np2;
     rest = nt_ref(nt, pn, "rest") >= 0;
     int kr = nt_ref(nt, pn, "keyword_rest");
-    if (kr >= 0 && nt_type(nt, kr) && sp_streq(nt_type(nt, kr), "ForwardingParameterNode")) return 0;
+    if (kr >= 0 && nt_kind(nt, kr) == NK_ForwardingParameterNode) return 0;
     const int *kwn = nt_arr(nt, pn, "keywords", &nk);
     for (int i = 0; i < nk; i++) {
-      if (!nt_type(nt, kwn[i]) || !sp_streq(nt_type(nt, kwn[i]), "RequiredKeywordParameterNode")) continue;
+      if (nt_kind(nt, kwn[i]) != NK_RequiredKeywordParameterNode) continue;
       const char *kn = nt_str(nt, kwn[i], "name");
       if (!kn || nkw == (int)(sizeof kws / sizeof kws[0])) return 0;
       kws[nkw++] = kn;
@@ -14287,7 +14289,6 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
 
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
-  const char *rty = nt_type(nt, recv);
   NodeKind rk = nt_kind(nt, recv);
   /* a local statically holding one class constant dispatches like the
      constant itself (k = Klass; k.new(...)) */
@@ -14315,9 +14316,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
   }
-  if (rty && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
-              (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
-              (rk == NK_CallNode && is_struct_call(c, recv)))) {
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
+      (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
+      (rk == NK_CallNode && is_struct_call(c, recv))) {
     int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
            : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
                                                     : comp_class_index(c, nt_str(nt, recv, "name"));
@@ -15301,13 +15302,12 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
   }
   /* <StructClass>.members at the class level: the member symbol list */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
-    const char *mrty = nt_type(nt, recv);
     NodeKind mrk = nt_kind(nt, recv);
     int mci = -1;
     if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
       mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && (mrk == NK_LocalVariableReadNode ||
-                      (mrk == NK_CallNode && is_struct_call(c, recv))))
+    else if (mrk == NK_LocalVariableReadNode ||
+             (mrk == NK_CallNode && is_struct_call(c, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
@@ -19464,8 +19464,8 @@ static void sdefs_scan(const NodeTable *nt, int id, const char *cn, int in_singl
   }
   else if (ty_k == NK_BlockNode) sdefs_scan(nt, nt_ref(nt, id, "body"), cn, in_singleton);
   else if (ty_k == NK_IfNode || ty_k == NK_UnlessNode || ty_k == NK_ElseNode ||
-           sp_streq(ty, "WhenNode") || ty_k == NK_InNode || ty_k == NK_RescueNode ||
-           sp_streq(ty, "EnsureNode") || ty_k == NK_BeginNode || ty_k == NK_CaseNode ||
+           ty_k == NK_WhenNode || ty_k == NK_InNode || ty_k == NK_RescueNode ||
+           ty_k == NK_EnsureNode || ty_k == NK_BeginNode || ty_k == NK_CaseNode ||
            ty_k == NK_CaseMatchNode || ty_k == NK_WhileNode ||
            ty_k == NK_UntilNode || ty_k == NK_ForNode) {
     static const char *const KEYS[] = { "statements", "subsequent", "else_clause",
@@ -23095,7 +23095,7 @@ int subtree_is_pure_read(Compiler *c, int id) {
       LocalVar *cv = cn ? comp_const(c, cn) : NULL;
       return cv && cv->type != TY_UNKNOWN && !cv->init_guarded && !const_has_flag(cv);
     }
-    case NK_ParenthesesNode: case NK_StatementsNode:
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArgumentsNode:
       break;
     case NK_CallNode: {
       int alloc = 0;
@@ -23112,12 +23112,8 @@ int subtree_is_pure_read(Compiler *c, int id) {
         return 0;
       break;
     }
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, id);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return 0;
-      break;
-    }
+    default:
+      return 0;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -26133,12 +26129,12 @@ static int refuse_call_binds(Compiler *c, int pn, int id, int first, int is_bloc
   }
   if (kwh < 0 && !dsplat) {
     for (int i = 0; i < K; i++)
-      if (nt_type(nt, kws[i]) && sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) return 0;
+      if (nt_kind(nt, kws[i]) == NK_RequiredKeywordParameterNode) return 0;
     return 1;
   }
   if (dsplat) return 1;
   for (int i = 0; i < K; i++) {
-    if (!nt_type(nt, kws[i]) || !sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) continue;
+    if (nt_kind(nt, kws[i]) != NK_RequiredKeywordParameterNode) continue;
     const char *kn = nt_str(nt, kws[i], "name");
     int found = 0;
     for (int e = 0; e < nkeys && !found; e++) {
@@ -31757,13 +31753,9 @@ static int sn_arg_runs_nothing(Compiler *c, int n) {
       break;
     }
     case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
-    case NK_KeywordHashNode: case NK_RangeNode: break;
-    default: {
-      /* a call's argument list has no kind of its own */
-      const char *ty = nt_type(nt, n);
-      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
-      break;
-    }
+    case NK_KeywordHashNode: case NK_RangeNode: case NK_ArgumentsNode: break;
+    default:
+      return subtree_is_pure_read(c, n);
   }
   int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
   for (int i = 0; i < nr; i++) if (!sn_arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;

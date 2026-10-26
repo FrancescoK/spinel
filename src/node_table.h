@@ -75,12 +75,19 @@ typedef struct {
 
 /* Node-type kinds. The parser emits the type as a string ("CallNode"); to
    avoid an strcmp ladder on every per-node dispatch in the (iterated) analysis
-   passes, each node caches an integer kind, computed once by nt_kind. */
+   passes, each node caches an integer kind, computed once by nt_kind.
+   The list is sorted (nt_kind_resolve searches it by name). A type that is
+   not on it answers NK_NONE. The entries are Prism's node types, but two:
+   UnsupportedNode, the stand-in spinel_parse.c's flatten emits (with the
+   Prism kind's name in "kind" and the source line) for a Prism node type it
+   has no case for, which codegen refuses; and OperatorWriteNode, which no
+   node has. */
 #define SP_NODE_KINDS(X) \
   X(AliasGlobalVariableNode) \
   X(AliasMethodNode) \
   X(AlternationPatternNode) \
   X(AndNode) \
+  X(ArgumentsNode) \
   X(ArrayNode) \
   X(ArrayPatternNode) \
   X(AssocNode) \
@@ -88,12 +95,14 @@ typedef struct {
   X(BackReferenceReadNode) \
   X(BeginNode) \
   X(BlockArgumentNode) \
+  X(BlockLocalVariableNode) \
   X(BlockNode) \
   X(BlockParameterNode) \
   X(BlockParametersNode) \
   X(BreakNode) \
   X(CallAndWriteNode) \
   X(CallNode) \
+  X(CallOperatorWriteNode) \
   X(CallOrWriteNode) \
   X(CallTargetNode) \
   X(CapturePatternNode) \
@@ -122,10 +131,13 @@ typedef struct {
   X(DefinedNode) \
   X(ElseNode) \
   X(EmbeddedStatementsNode) \
+  X(EnsureNode) \
   X(FalseNode) \
+  X(FindPatternNode) \
   X(FloatNode) \
   X(ForNode) \
   X(ForwardingArgumentsNode) \
+  X(ForwardingParameterNode) \
   X(ForwardingSuperNode) \
   X(GlobalVariableAndWriteNode) \
   X(GlobalVariableOperatorWriteNode) \
@@ -137,6 +149,8 @@ typedef struct {
   X(HashPatternNode) \
   X(IfNode) \
   X(ImaginaryNode) \
+  X(ImplicitNode) \
+  X(ImplicitRestNode) \
   X(InNode) \
   X(IndexAndWriteNode) \
   X(IndexOperatorWriteNode) \
@@ -153,6 +167,8 @@ typedef struct {
   X(InterpolatedStringNode) \
   X(InterpolatedSymbolNode) \
   X(InterpolatedXStringNode) \
+  X(ItLocalVariableReadNode) \
+  X(ItParametersNode) \
   X(KeywordHashNode) \
   X(KeywordRestParameterNode) \
   X(LambdaNode) \
@@ -164,11 +180,13 @@ typedef struct {
   X(LocalVariableWriteNode) \
   X(MatchPredicateNode) \
   X(MatchRequiredNode) \
+  X(MatchWriteNode) \
   X(ModuleNode) \
   X(MultiTargetNode) \
   X(MultiWriteNode) \
   X(NextNode) \
   X(NilNode) \
+  X(NoKeywordsParameterNode) \
   X(NumberedParametersNode) \
   X(NumberedReferenceReadNode) \
   X(OperatorWriteNode) \
@@ -181,10 +199,12 @@ typedef struct {
   X(PinnedVariableNode) \
   X(PostExecutionNode) \
   X(PreExecutionNode) \
+  X(ProgramNode) \
   X(RangeNode) \
   X(RationalNode) \
   X(RedoNode) \
   X(RegularExpressionNode) \
+  X(RequiredKeywordParameterNode) \
   X(RequiredParameterNode) \
   X(RescueModifierNode) \
   X(RescueNode) \
@@ -204,7 +224,9 @@ typedef struct {
   X(TrueNode) \
   X(UndefNode) \
   X(UnlessNode) \
+  X(UnsupportedNode) \
   X(UntilNode) \
+  X(WhenNode) \
   X(WhileNode) \
   X(XStringNode) \
   X(YieldNode)

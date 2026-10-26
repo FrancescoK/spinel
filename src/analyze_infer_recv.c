@@ -895,7 +895,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           if (sv2 && (is_shift_op(sv2)) &&
               infer_type(c, argv[0]) == TY_PROC) { *out = TY_POLY; return 1; }
         }
-        const char *a0ty = nt_type(nt, argv[0]);
         NodeKind a0k = nt_kind(nt, argv[0]);
         /* a symbol literal, or a local statically holding one (s = :+) -- and
            only when there is no block: `inject(:s, &:+)` gives the operator in
@@ -904,7 +903,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            call from the elements while the emitter folded from the seed. */
         int is_sym_op = argc == 1 && nt_ref(nt, id, "block") < 0 &&
                         sym_static_value(c, argv[0]) != NULL;
-        (void)a0ty;
         /* `reduce(nil) { |acc, t| acc.nil? ? t : acc + t }` -- the idiom for a
            fold with no natural identity. The seed says nothing about the
            accumulator except that it starts empty, so the fold is boxed: a

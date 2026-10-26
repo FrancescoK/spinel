@@ -1567,7 +1567,7 @@ static int cf_block_params(CF *f, int blk, const char **out, int max, int *plain
   if (rp >= 0) {
     const char *rnm = nt_kind(nt, rp) == NK_RestParameterNode ? nt_str(nt, rp, "name") : NULL;
     if (rnm && rest) *rest = rnm;
-    else if (nt_kind(nt, rp) != NK_RestParameterNode && !(nt_type(nt, rp) && sp_streq(nt_type(nt, rp), "ImplicitRestNode"))) *plain = 0;
+    else if (nt_kind(nt, rp) != NK_RestParameterNode && nt_kind(nt, rp) != NK_ImplicitRestNode) *plain = 0;
   }
   return n;
 }
@@ -3832,6 +3832,12 @@ static void cf_node(CF *f, int v) {
   NodeKind k = nt_kind(nt, v);
   switch (k) {
   case NK_NONE:
+  /* the kinds that had no enumerator while this arm read them as NK_NONE */
+  case NK_ArgumentsNode: case NK_BlockLocalVariableNode: case NK_CallOperatorWriteNode: case NK_EnsureNode:
+  case NK_FindPatternNode: case NK_ForwardingParameterNode: case NK_ImplicitNode: case NK_ImplicitRestNode:
+  case NK_ItLocalVariableReadNode: case NK_ItParametersNode: case NK_MatchWriteNode:
+  case NK_NoKeywordsParameterNode: case NK_ProgramNode: case NK_RequiredKeywordParameterNode:
+  case NK_UnsupportedNode: case NK_WhenNode:
   case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode:
   case NK_RationalNode: case NK_ImaginaryNode: case NK_StringNode: case NK_SymbolNode:
   case NK_InterpolatedStringNode: case NK_InterpolatedSymbolNode: case NK_XStringNode:
@@ -4384,7 +4390,7 @@ static void cf_collect_exec(CF *f) {
       int e = nt_ref(nt, id, "expression");
       if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) continue;
       int p = f->par ? f->par[id] : -1;
-      while (p >= 0 && nt_type(nt, p) && sp_streq(nt_type(nt, p), "ArgumentsNode")) p = f->par[p];
+      while (p >= 0 && nt_kind(nt, p) == NK_ArgumentsNode) p = f->par[p];
       if (p < 0 || nt_kind(nt, p) != NK_CallNode || !cf_exec_call(f, nt_str(nt, p, "name"))) continue;
       int mi = cf_owner_def(f, id, 1, NULL);
       Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
@@ -4449,7 +4455,7 @@ static void cf_collect_blk_local(CF *f) {
        one's (cf_bind_block) */
     if (p >= 0 && nt_kind(nt, p) == NK_BlockArgumentNode) {
       int pc = f->par[p];
-      while (pc >= 0 && nt_type(nt, pc) && sp_streq(nt_type(nt, pc), "ArgumentsNode")) pc = f->par[pc];
+      while (pc >= 0 && nt_kind(nt, pc) == NK_ArgumentsNode) pc = f->par[pc];
       const char *cn = pc >= 0 && nt_kind(nt, pc) == NK_CallNode ? nt_str(nt, pc, "name") : NULL;
       int k = c->scopes[mi].class_id;
       ok = cn && nt_ref(nt, pc, "receiver") < 0 && nt_ref(nt, pc, "block") == p && k >= 0 && !c->scopes[mi].is_cmethod &&

@@ -4001,7 +4001,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* A composite expression answers "expression" even when its OPERANDS
        are undefined -- defined? never evaluates its argument. */
     else if (vk == NK_AndNode || vk == NK_OrNode ||
-             sp_streq(vt, "NotNode") || vk == NK_RangeNode ||
+             vk == NK_RangeNode ||
              vk == NK_HashNode || vk == NK_KeywordHashNode ||
              vk == NK_InterpolatedStringNode ||
              vk == NK_RegularExpressionNode ||
@@ -5769,7 +5769,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  if (sp_streq(ty, "MatchWriteNode")) {
+  if (ty_k == NK_MatchWriteNode) {
     /* `/(?<n>..)/ =~ str`: run the match (setting the match registers), bind
        each named group to its local (NULL = nil when it did not participate),
        and yield the `=~` result (match index, or nil). */

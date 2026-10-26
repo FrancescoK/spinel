@@ -1796,7 +1796,7 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
   int n0 = nt->count, changed = 0;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
-    int is_prog = nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode");
+    int is_prog = nt_kind(nt, id) == NK_ProgramNode;
     int stmts = is_prog ? nt_ref(nt, id, "statements")
               : (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, id, "body") : -1;
     if (stmts < 0 || nt_kind(nt, stmts) != NK_StatementsNode) continue;
@@ -5774,9 +5774,10 @@ static int dsend_local_names(Compiler *c, int arg, char ***names, int *n) {
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, vn)) continue;
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     size_t tl = ty ? strlen(ty) : 0;
     if (tl > 13 && sp_streq(ty + tl - 13, "ParameterNode")) ok = 0;
-    else if (ty && sp_streq(ty, "BlockLocalVariableNode")) ok = 0;
+    else if (ty_k == NK_BlockLocalVariableNode) ok = 0;
     else if (!comp_is_local_write(k)) continue;
     else if (k != NK_LocalVariableWriteNode) ok = 0;
     else { nw++; ok = dsend_literal_names(c, nt_ref(nt, id, "value"), names, n, &cap, &seen); }
@@ -6248,9 +6249,8 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || !argv) continue;
-    const char *a0 = nt_type(nt, argv[0]);
     NodeKind a0_k = nt_kind(nt, argv[0]);
-    if (a0 && (a0_k == NK_SymbolNode || (a0_k == NK_StringNode && !sock))) continue;  /* literal: handled earlier */
+    if (a0_k == NK_SymbolNode || (a0_k == NK_StringNode && !sock)) continue;  /* literal: handled earlier */
     /* a boxed socket write's literal payload is Object#send's one name for a
        value that is no socket: the method the retarget would have called */
     char sock_lit[256], *sock_name = NULL;
@@ -7469,8 +7469,8 @@ int desugar_call_op_write(Compiler *c) {
   int *parent = NULL;
   char *wname = NULL, *aname = NULL;   /* this round's copies, freed by the next */
   for (int id = 0; id < n0; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallOperatorWriteNode")) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_CallOperatorWriteNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *attr = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
@@ -9391,8 +9391,8 @@ int desugar_block_implicit_rest(Compiler *c) {
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
     int rest = nt_ref(nt, pn, "rest");
-    const char *rty = rest >= 0 ? nt_type(nt, rest) : NULL;
-    if (!rty || !sp_streq(rty, "ImplicitRestNode")) continue;
+    NodeKind rk = nt_kind(nt, rest);
+    if (rk != NK_ImplicitRestNode) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
     if (!reqs || rn < 1 || rn > 30) continue;
     int copy[32];
@@ -10390,12 +10390,11 @@ static int anon_fwd_rewrite(Compiler *c, int node, int parent, unsigned anon) {
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode) return 0;
-  const char *pty = parent >= 0 ? nt_type(nt, parent) : NULL;
   NodeKind pk = nt_kind(nt, parent);
   const char *nm = NULL, *field = NULL;
   if ((anon & 1) && k == NK_BlockArgumentNode) nm = "__anon_block", field = "expression";
-  else if ((anon & 2) && k == NK_SplatNode && pty &&
-           (sp_streq(pty, "ArgumentsNode") || pk == NK_ArrayNode))
+  else if ((anon & 2) && k == NK_SplatNode &&
+           (pk == NK_ArgumentsNode || pk == NK_ArrayNode))
     nm = "__anon_rest", field = "expression";
   else if ((anon & 4) && k == NK_AssocSplatNode) nm = "__anon_kwrest", field = "value";
   if (nm && nt_ref(nt, node, field) < 0) {
@@ -12226,7 +12225,8 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
   for (int p = 0; p < n0; p++) {
     const char *pt = nt_type(nt, p), *pn = nt_str(nt, p, "name");
-    if (pt && pn && sp_streq(pn, vn) && (strstr(pt, "ParameterNode") || sp_streq(pt, "BlockLocalVariableNode"))) return -1;
+    NodeKind pk = nt_kind(nt, p);
+    if (pt && pn && sp_streq(pn, vn) && (strstr(pt, "ParameterNode") || pk == NK_BlockLocalVariableNode)) return -1;
   }
   return w;
 }
@@ -15353,7 +15353,7 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   const char *xn = NULL;
   if (bp >= 0 && nt_kind(nt, bp) == NK_NumberedParametersNode)
     lone_req = nt_int(nt, bp, "maximum", 0) == 1;
-  else if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "ItParametersNode"))
+  else if (bp >= 0 && nt_kind(nt, bp) == NK_ItParametersNode)
     lone_req = 1;
   else if (bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode &&
            (pn = nt_ref(nt, bp, "parameters")) >= 0) {
@@ -15420,9 +15420,9 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
 void mark_match_ranges(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   for (int w = 0; w < nt->count; w++) {
-    const char *wty = nt_type(nt, w);
+    NodeKind wk = nt_kind(nt, w);
     int n = 0, rcv = -1; const int *conds = NULL;
-    if (wty && sp_streq(wty, "WhenNode")) conds = nt_arr(nt, w, "conditions", &n);
+    if (wk == NK_WhenNode) conds = nt_arr(nt, w, "conditions", &n);
     else if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name")) {
       const char *mn = nt_str(nt, w, "name");
       int args = nt_ref(nt, w, "arguments"), an = 0;
@@ -16985,10 +16985,9 @@ static int sc_value_taken(const NodeTable *nt, const int *parent, int id) {
   if (ended != VPU_ENDED) return 1;
   if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 0;
   NodeKind k = nt_kind(nt, up.parent);
-  const char *ty = nt_type(nt, up.parent);
   if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) &&
       nt_ref(nt, up.parent, "body") == up.node) return 0;
-  return !(ty && sp_streq(ty, "ProgramNode"));
+  return k != NK_ProgramNode;
 }
 
 /* Is the value of node id taken where it stands: anything but a statement,
@@ -21918,7 +21917,7 @@ int desugar_safe_nav_attr_write(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     NodeKind ty_k = nt_kind(nt, id);
-    if (!ty || !(sp_streq(ty, "CallOperatorWriteNode") || ty_k == NK_CallOrWriteNode ||
+    if (!ty || !(ty_k == NK_CallOperatorWriteNode || ty_k == NK_CallOrWriteNode ||
                  ty_k == NK_CallAndWriteNode)) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *rn = nt_str(nt, id, "name");
@@ -21988,7 +21987,7 @@ int desugar_const_attr_op_assign(Compiler *c) {
     const char *ty = nt_type(nt, id);
     NodeKind k = nt_kind(nt, id);
     if (!ty) continue;
-    int is_op = sp_streq(ty, "CallOperatorWriteNode"), is_or = k == NK_CallOrWriteNode, is_and = k == NK_CallAndWriteNode;
+    int is_op = k == NK_CallOperatorWriteNode, is_or = k == NK_CallOrWriteNode, is_and = k == NK_CallAndWriteNode;
     if (!is_op && !is_or && !is_and) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
@@ -22096,7 +22095,7 @@ int desugar_reopened_op_write(Compiler *c) {
   char *rn = NULL, *wn = NULL;   /* this round's copies, freed by the next */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
-    int f = -1, attr = nt_type(nt, id) && sp_streq(nt_type(nt, id), "CallOperatorWriteNode");
+    int f = -1, attr = nt_kind(nt, id) == NK_CallOperatorWriteNode;
     for (int j = 0; j < (int)(sizeof vars / sizeof vars[0]); j++) if (vars[j].k == k) f = j;
     if (f < 0 && k != NK_IndexOperatorWriteNode && !attr) continue;
     const char *bop = nt_str(nt, id, "binary_operator");
