@@ -213,7 +213,9 @@ static void nt_clone_collect(NodeTable *nt, int id, char *seen, int *list, int *
    replaced the subtree leaves it out of the program, and the passes that
    walk the node table by id rather than by tree would still see its
    definitions, block parameters and locals, and declare each of them
-   (rooted) in main. A NilNode is what those passes skip. */
+   (rooted) in main. A NilNode is what those passes skip. A replaced subtree
+   stays visible to such by-id walks; making its detachment real belongs to
+   the load-phase elaborator's work (#9898). */
 void nt_subtree_blank(NodeTable *nt, int id) {
   if (id < 0 || id >= nt->count) return;
   SpNode *nd = &nt->nodes[id];

@@ -196,11 +196,20 @@ static int ct_const_given_elsewhere(const NodeTable *nt, const int *parent, char
   return 0;
 }
 
-/* `n` names one of `names` (a constant read or a path's last name) */
-static int ct_names_one(const NodeTable *nt, int n, const char *const *names) {
+/* `n` names one of the classes and modules `anc` lists (CRuby's ancestors
+   of a core class, space-separated, as core_class_ancestors gives them): a
+   constant read or a path whose last name is one of them */
+static int ct_names_one(const NodeTable *nt, int n, const char *anc) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_UnsupportedNode;
-  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return 0;
-  for (int i = 0; names[i]; i++) if (ct_eq(nt_str(nt, n, "name"), names[i])) return 1;
+  const char *nm = nt_str(nt, n, "name");
+  if ((k != NK_ConstantReadNode && k != NK_ConstantPathNode) || !nm) return 0;
+  size_t l = strlen(nm);
+  for (const char *p = anc; p && *p; ) {
+    const char *e = strchr(p, ' ');
+    size_t pl = e ? (size_t)(e - p) : strlen(p);
+    if (pl == l && !strncmp(p, nm, l)) return 1;
+    p = e ? e + 1 : p + pl;
+  }
   return 0;
 }
 
@@ -214,9 +223,10 @@ static int ct_owner(const NodeTable *nt, const int *parent, int node) {
   return -1;
 }
 
-/* is owner `o` (ct_owner) one of `names`: a class or module of that name,
-   the singleton class of one, or the top level (Object, always among them) */
-static int ct_owned_by(const NodeTable *nt, int o, const char *const *names) {
+/* is owner `o` (ct_owner) one of `names` (ct_names_one): a class or module
+   of that name, the singleton class of one, or the top level (Object,
+   always among them) */
+static int ct_owned_by(const NodeTable *nt, int o, const char *names) {
   if (o < 0) return 1;
   int p = nt_ref(nt, o, nt_kind(nt, o) == NK_SingletonClassNode ? "expression" : "constant_path");
   return ct_names_one(nt, p, names);
@@ -236,34 +246,16 @@ static int ct_call_names(const NodeTable *nt, int call, const char *meth) {
   return 0;
 }
 
-/* The classes whose methods an instance of core class `cls` reaches,
-   itself first; NULL for a class not listed */
-static const char *const *ct_core_ancestry(const char *cls) {
-  static const char *const anc[][7] = {
-    { "String", "Comparable", "Object", "Kernel", "BasicObject", NULL },
-    { "Symbol", "Comparable", "Object", "Kernel", "BasicObject", NULL },
-    { "Integer", "Numeric", "Comparable", "Object", "Kernel", "BasicObject", NULL },
-    { "Array", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
-    { "Hash", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
-    { "Range", "Enumerable", "Object", "Kernel", "BasicObject", NULL },
-    { "Class", "Module", "Object", "Kernel", "BasicObject", NULL },
-    { "NilClass", "Object", "Kernel", "BasicObject", NULL },
-    { "TrueClass", "Object", "Kernel", "BasicObject", NULL },
-    { "FalseClass", "Object", "Kernel", "BasicObject", NULL },
-  };
-  for (size_t i = 0; i < sizeof anc / sizeof anc[0]; i++) if (ct_eq(anc[i][0], cls)) return anc[i];
-  return NULL;
-}
-
 /* Does the program change one of the core methods `ran[0..n)` (cls#meth) as
    instances of cls see it: a def, alias or definer call of that name in cls
    or one of its ancestors (a reopening, its singleton class, or the top
    level for Object), a mixin, class_eval, send or other change in one of
    them that the scan can't name, a refinement of one, or such a change
-   through a receiver that may hold one of them (a variable)? One walk of
-   the table for all of them. */
+   through a receiver that may hold one of them (a variable)? The ancestors
+   are CRuby's (core_class_ancestors); a class that table does not hold
+   counts as changed. One walk of the table for all of them. */
 static int ct_core_method_changed(const NodeTable *nt, const int *parent, const CtRan *ran, int n) {
-  for (int i = 0; i < n; i++) if (!ct_core_ancestry(ran[i].cls)) return 1;
+  for (int i = 0; i < n; i++) if (!core_class_ancestors(ran[i].cls)) return 1;
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     const char *nm = nt_str(nt, id, "name");
@@ -271,14 +263,14 @@ static int ct_core_method_changed(const NodeTable *nt, const int *parent, const 
       const char *dn = k == NK_DefNode ? nm : nt_str(nt, nt_ref(nt, id, "new_name"), "value");
       int r = k == NK_DefNode ? nt_ref(nt, id, "receiver") : -1;
       for (int i = 0; i < n; i++) {
-        const char *const *names = ct_core_ancestry(ran[i].cls);
+        const char *names = core_class_ancestors(ran[i].cls);
         if (!ct_eq(dn, ran[i].meth)) continue;
         if (r >= 0 && nt_kind(nt, r) != NK_SelfNode ? ct_names_one(nt, r, names)
                                                      : ct_owned_by(nt, ct_owner(nt, parent, id), names)) return 1;
       }
     }
     else if (k == NK_SingletonClassNode) {
-      for (int i = 0; i < n; i++) if (ct_names_one(nt, nt_ref(nt, id, "expression"), ct_core_ancestry(ran[i].cls))) return 1;
+      for (int i = 0; i < n; i++) if (ct_names_one(nt, nt_ref(nt, id, "expression"), core_class_ancestors(ran[i].cls))) return 1;
     }
     else if (k == NK_CallNode) {
       int r = nt_ref(nt, id, "receiver");
@@ -287,13 +279,13 @@ static int ct_core_method_changed(const NodeTable *nt, const int *parent, const 
       if (is_refine_name(nm)) {
         int an = 0, args = nt_ref(nt, id, "arguments");
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-        for (int i = 0; i < n && an; i++) if (ct_names_one(nt, av[0], ct_core_ancestry(ran[i].cls))) return 1;
+        for (int i = 0; i < n && an; i++) if (ct_names_one(nt, av[0], core_class_ancestors(ran[i].cls))) return 1;
         continue;
       }
       if (!naming && !change) continue;
       int mine = 0;
       for (int i = 0; i < n; i++) {
-        const char *const *names = ct_core_ancestry(ran[i].cls);
+        const char *names = core_class_ancestors(ran[i].cls);
         if (!(self_recv ? ct_owned_by(nt, ct_owner(nt, parent, id), names) : ct_names_one(nt, r, names))) continue;
         mine = 1;
         if (naming ? ct_call_names(nt, id, ran[i].meth) : 1) return 1;
