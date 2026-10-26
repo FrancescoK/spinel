@@ -4243,7 +4243,12 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode || prog_cmp(c, n, defn, alias_node, "the alias reading") <= 0 || prog_cmp(c, n, alias_node, alias_node, "the alias reading") >= 0) continue;
     const char *nm = nt_str(nt, n, "name");
-    if (!nm || !sp_streq(nm, nw) || c->nscope[n] != c->nscope[alias_node]) continue;
+    if (!nm || !sp_streq(nm, nw)) continue;
+    /* code run where the alias is: in its scope, or a file's top level as
+       the alias is (a class body runs in its file's top-level scope, and
+       under --load-model=graph a reopening in another file has another) */
+    Scope *ns = &c->scopes[c->nscope[n]], *as = &c->scopes[c->nscope[alias_node]];
+    if (ns != as && !(prog_is_top_scope(c, ns) && prog_is_top_scope(c, as))) continue;
     /* class-body code of this class (any reopening of it): a call of the
        same name in another class's body, or at the top level of a flattened
        program, is no call of this class's method */
