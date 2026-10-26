@@ -8639,7 +8639,13 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
            passed it nothing, answering 0 where Ruby answers `{x: 9}`. A
            positional parameter sharing the name takes the whole hash
            positionally, as the layout above says. */
-        if (!callee_has_kwarg(c, m, kname)) continue;
+        /* A key no keyword names goes into the `**` rest, where the value
+           is held boxed: an empty `{}` passed there is filled by whatever
+           the callee hands it on to, as a hash taken opaquely is */
+        if (!callee_has_kwarg(c, m, kname)) {
+          if (m->kwrest_idx >= 0) changed |= bind_empty_hash_arg(c, TY_POLY, val);
+          continue;
+        }
         LocalVar *p = scope_local(m, kname);
         TyKind at = infer_type(c, val);
         if (!p || param_seed_holds_arg(c, p, val, at)) continue;
