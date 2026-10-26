@@ -47808,6 +47808,7 @@ static void an_phase_desugar_register(Compiler *c) {
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   prog_walk_files(c);   /* walk_scope of each file's top level */
+  if (g_dump_load_record) { elab_dump(c, stdout); exit(0); }   /* the load phase's points, as the walk leaves them */
   expand_static_splat_args(c, 0, c->nt->count);
   register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
   register_structs(c);
