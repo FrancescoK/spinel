@@ -29,3 +29,5 @@ puts d.to_s
 puts d.hexdigest
 puts OpenSSL::Digest::SHA1.new("abc").hexdigest!
 p d.to_s.bytesize
+p d.hexdigest.bytesize
+p OpenSSL::Digest::SHA1.new("abc").hexdigest!.bytesize
