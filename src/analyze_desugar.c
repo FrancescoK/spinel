@@ -15210,6 +15210,8 @@ int sym_block_values(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (ty_is_hash(rt) && sp_streq(nm, "to_h") && argc == 0) return 2;
   TyKind elem; int hash_pair;
+  /* an Enumerator yielding two values passes both on (each_with_index.map) */
+  if (recv >= 0 && bs_enum_yield_count(c, recv, nm, argc, &elem) == 2) return 2;
   return recv >= 0 && iter_shape_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
 }
 

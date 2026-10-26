@@ -4674,7 +4674,11 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
        the same place now that an empty body carries the nil it means (#4006).
        nil is a value in this slot, not the absence of one. */
     if (bt == TY_VOID) bt = TY_NIL;
-    if (bt == TY_UNKNOWN) bt = TY_INT;
+    /* A tail inference could not type is a call nothing resolves (`x.first`
+       on a String), which lowers to the nomethod gate's sp_RbVal token: a
+       boxed value, so it is carried boxed. Read as an Integer it was an
+       sp_RbVal assigned to an sp_int and the C did not build. */
+    if (bt == TY_UNKNOWN) bt = TY_POLY;
     /* a number that can be nil is carried boxed, so its nil reads falsy */
     int vpoly = (bt == TY_POLY || bt == TY_NIL || (oint_kind(bt) && bn > 0 && node_has_oint_form(c, bb[bn - 1])) ||
                  bv_value_may_be_nil(c, block, bt) ||   /* a `next nil` too */
@@ -6175,7 +6179,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        here now that an empty body carries the nil it means (#4006). Carry it
        boxed -- nil is a value in this slot, and a falsy one. */
     if (cty == TY_VOID || cty == TY_NIL) cty = TY_POLY;
-    if (cty == TY_UNKNOWN) cty = TY_INT;
+    /* an untyped tail is the nomethod gate's sp_RbVal token: boxed too */
+    if (cty == TY_UNKNOWN) cty = TY_POLY;
     /* A `next v` of another class than the tail shares the slot: `next false`
        into the Integer slot of `x if x > 0` was 0, which reads truthy, and the
        element was kept. Carry both boxed. */
