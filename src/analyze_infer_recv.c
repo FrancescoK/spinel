@@ -52,8 +52,10 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
        recognises that shape by this call being typed an Enumerator. Left in the
        guard, `arr.map.each { }` typed neither and answered NoMethodError at run
        time (#4331). */
+    /* to_a / entries ignore their block: `arr.map.to_a { }` is the
+       Enumerator's elements */
     { const char *cn = nt_str(nt, n, "name");
-      if (cn && sp_streq(cn, "each")) return 0; }
+      if (cn && (sp_streq(cn, "each") || is_to_array_alias(cn))) return 0; }
     return 1;
   }
   return 0;
