@@ -5103,7 +5103,8 @@ signal-default-test: $(SPINEL)
 	fi; \
 	$(SPINEL) test/signal/trap_pure_loop.rb -o "$$tmp/tp" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile trap pure loop)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
-	  [ "$$(timeout 10 "$$tmp/tp" 2>/dev/null | tr '\n' ' ')" = "while stopped method stopped times stopped recursion stopped nest stopped " ] || { echo "signal-default-test: FAIL (a trap's proc did not run in a loop that computes only on scalars: it runs at a poll)"; ok=0; }; \
+	  timeout 10 "$$tmp/tp" > "$$tmp/tp.out" 2>/dev/null; rc=$$?; \
+	  [ "$$rc" -eq 0 ] && [ "$$(tr '\n' ' ' < "$$tmp/tp.out")" = "while stopped method stopped times stopped recursion stopped nest stopped " ] || { echo "signal-default-test: FAIL (a trap's proc did not run in a loop that computes only on scalars: it runs at a poll; exit $$rc)"; ok=0; }; \
 	fi; \
 	$(SPINEL) test/signal/interrupt_recursion.rb -o "$$tmp/ir" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile recursion)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
