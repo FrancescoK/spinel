@@ -12638,8 +12638,10 @@ static int emit_while_chunked(Compiler *c, int id, Buf *b, int indent, int is_un
   int k = ++g_tmp;
   emit_indent(b, indent); buf_printf(b, "while (%s(%s)) {\n", is_until ? "!" : "", ccond.p);
   emit_indent(b, indent + 1); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
-  const char *op = nt_str(nt, pred, "name");
-  int up = op[0] == '<', incl = op[1] == '=';
+  /* (a counted loop's test is a comparison; any other test may be no call
+     at all, `while true`, and has no name) */
+  const char *op = step ? nt_str(nt, pred, "name") : NULL;
+  int up = op && op[0] == '<', incl = op && op[1] == '=';
   long long span = (long long)SP_SIG_CHUNK * (long long)step;
   if (step) {
     /* the distance to the bound, which the test says is positive, taken
