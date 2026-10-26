@@ -65,6 +65,10 @@ typedef struct { unsigned char *kw; int *el; } CFParams;
    arguments' containers (cf_kbuiltin_name, cf_kfills): 0 not asked, 1 no,
    2 yes. Both read tables the solve does not write. */
 typedef struct { const char *name; unsigned char kb, kf; } CFKName;
+/* a call cf_call_known binds (its node, receiver element, name, arguments
+   and block): the receiver's set it bound last, whether a class of that set
+   took the builtin answer, and whether it must bind every class again (cf_site) */
+typedef struct { int v, recv_el, argc, blk; char *nm; int *argv; int pidx; unsigned char builtin, stale; } CFSite;
 
 typedef struct CF {
   Compiler *c; const NodeTable *nt; int *par; int nnodes;
@@ -95,6 +99,9 @@ typedef struct CF {
      into them (`gcd`), and per scope whether it is one */
   struct { const char *base; int mi; } *scal; int nscal; unsigned char *scal_mi;
   int (*umemo)[3];            /* cf_union's answers, direct-mapped: (a, b, a | b) */
+  CFSite *site; int site_n, site_cap; int *site_h; int site_hcap;   /* cf_call_known's calls, hashed */
+  int cur_site;               /* the call cf_call_known is binding, -1 outside */
+  int **ysite; int *nysite, *cysite;    /* per scope while its yval_used is unset: the calls that bound a block to it */
   int rvis;                   /* (directed) every value the runtime may see: what it may hand a callback */
   int **lv_el; int *nlv;                /* per scope, per local index */
   int *ret_el, *yval_el, *self_el, **yarg_el;
@@ -1940,7 +1947,13 @@ static void cf_proc_value_ready(CF *f, int e) {
   int om = cf_owner_def(f, e, 1, NULL);
   const char *en = nt_str(nt, e, "name");
   if (om < 0 || !en || !f->c->scopes[om].blk_param || !sp_streq(en, f->c->scopes[om].blk_param)) return;
-  if (!f->yval_used[om]) { f->yval_used[om] = 1; f->changed = 1; }
+  if (!f->yval_used[om]) {
+    f->yval_used[om] = 1; f->changed = 1;
+    /* (the calls that bound a block to om bind it again: its value now
+       goes to the yields', see cf_call_known) */
+    for (int i = 0; i < f->nysite[om]; i++) f->site[f->ysite[om][i]].stale = 1;
+    free(f->ysite[om]); f->ysite[om] = NULL; f->nysite[om] = f->cysite[om] = 0;
+  }
 }
 static void cf_bind_block(CF *f, int mi, int blk) {
   const NodeTable *nt = f->nt;
@@ -1977,6 +1990,8 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   }
   if (nt_kind(nt, blk) != NK_BlockNode) return;
   if (f->yval_used[mi]) cf_flow(f, blk, f->yval_el[mi]);
+  else if (f->cur_site >= 0 && (!f->nysite[mi] || f->ysite[mi][f->nysite[mi] - 1] != f->cur_site))
+    cf_push_int(&f->ysite[mi], &f->nysite[mi], &f->cysite[mi], f->cur_site);
   int body = nt_ref(nt, blk, "body");
   const char *names[CF_YARGS];
   int plain = 1;
@@ -2742,19 +2757,95 @@ static int cf_user_target_once(CF *f, int v, int mi, const int *argv, int argc, 
   if (*n < 256) { seen[*n] = mi; res[*n] = r; (*n)++; }
   return r;
 }
+static unsigned cf_site_hash(int v, int recv_el, const char *nm, const int *argv, int argc, int blk) {
+  unsigned long long h = (unsigned)v * 0x9E3779B97F4A7C15ULL ^ (unsigned)recv_el * 0xC2B2AE3D27D4EB4FULL ^
+                         (unsigned long long)sp_strhash(nm) << 20 ^ (unsigned)argc * 40503u ^ (unsigned)blk * 2654435761u;
+  for (int i = 0; i < argc; i++) h = (h ^ (unsigned)argv[i]) * 0x100000001B3ULL;
+  return (unsigned)(h >> 32);
+}
+/* The call's entry, made when new. The name and the arguments are
+   compared by value: a caller may pass them in a buffer of its own. */
+static int cf_site(CF *f, int v, int recv_el, const char *nm, const int *argv, int argc, int blk) {
+  if (f->site_n * 2 >= f->site_hcap) {
+    int ncap = f->site_hcap ? f->site_hcap * 2 : 1 << 12;
+    int *nh = malloc(sizeof *nh * (size_t)ncap);
+    if (!nh) cf_oom();
+    for (int i = 0; i < ncap; i++) nh[i] = -1;
+    for (int i = 0; i < f->site_hcap; i++)
+      if (f->site_h[i] >= 0) {
+        const CFSite *e = &f->site[f->site_h[i]];
+        unsigned j = cf_site_hash(e->v, e->recv_el, e->nm, e->argv, e->argc, e->blk) & (unsigned)(ncap - 1);
+        while (nh[j] >= 0) j = (j + 1) & (unsigned)(ncap - 1);
+        nh[j] = f->site_h[i];
+      }
+    free(f->site_h); f->site_h = nh; f->site_hcap = ncap;
+  }
+  unsigned j = cf_site_hash(v, recv_el, nm, argv, argc, blk) & (unsigned)(f->site_hcap - 1);
+  for (; f->site_h[j] >= 0; j = (j + 1) & (unsigned)(f->site_hcap - 1)) {
+    const CFSite *e = &f->site[f->site_h[j]];
+    if (e->v == v && e->recv_el == recv_el && e->argc == argc && e->blk == blk && sp_streq(e->nm, nm) &&
+        (argc == 0 || !memcmp(e->argv, argv, sizeof(int) * (size_t)argc))) return f->site_h[j];
+  }
+  if (f->site_n == f->site_cap) {
+    f->site_cap = f->site_cap ? f->site_cap * 2 : 1024;
+    if (!(f->site = realloc(f->site, sizeof *f->site * (size_t)f->site_cap))) cf_oom();
+  }
+  CFSite *e = &f->site[f->site_n];
+  e->v = v; e->recv_el = recv_el; e->argc = argc; e->blk = blk;
+  e->nm = strdup(nm); e->argv = argc > 0 ? malloc(sizeof(int) * (size_t)argc) : NULL;
+  if (!e->nm || (argc > 0 && !e->argv)) cf_oom();
+  if (argc > 0) memcpy(e->argv, argv, sizeof(int) * (size_t)argc);
+  e->pidx = CF_EMPTY; e->builtin = 0; e->stale = 0;
+  f->site_h[j] = f->site_n;
+  return f->site_n++;
+}
+/* every member of a is one of b's */
+static int cf_set_within(const ClsSet *a, const ClsSet *b) {
+  int j = 0;
+  for (int i = 0; i < a->nw; i++) {
+    while (j < b->nw && b->wi[j] < a->wi[i]) j++;
+    if (j == b->nw || b->wi[j] != a->wi[i] || (a->w[i] & ~b->w[j])) return 0;
+  }
+  return 1;
+}
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
-  int builtin = pidx == CF_EMPTY || s->bv || s->os;
+  int builtin = 0;
   char base[256] = "";
   int is_w = setter_base_name(nm, base, sizeof base);
   /* a method many of the classes answer with is bound once (a receiver
      that may be any of hundreds of classes, a protocol method's parameter) */
   int ut_mi[256], ut_r[256], nut = 0;
 #define CF_UT(mi) cf_user_target_once(f, v, (mi), argv, argc, blk, ut_mi, ut_r, &nut)
-  /* (the set by its index each step: binding a class's method adds sets,
-     and the pool they go into moves) */
-  for (int k = cls_set_next(&f->pool[pidx], -1); k >= 0; k = cls_set_next(&f->pool[pidx], k)) {
+  /* The walk visits every call each round, and a receiver's set only
+     grows: what a class's binding makes (edges, loads, stores, the
+     elements it names) stands, so a call binds only the classes its
+     receiver holds now that it did not at its last visit. A Rails
+     application's closed walk bound some 1.7 billion classes, nearly all
+     of them again. A block's binding also reads yval_used, which the walk
+     sets: a call that bound a block to a method before its flag was set
+     binds every class again at its next visit, as each visit did. The
+     builtin answer is kept per call for the classes bound, and taken
+     afresh for the set itself (an empty set takes it until a class comes). */
+  int si = cf_site(f, v, recv_el, nm, argv, argc, blk);
+  int last = f->site[si].pidx;
+  if (f->site[si].stale || !cf_set_within(&f->pool[last], s)) { last = CF_EMPTY; f->site[si].builtin = 0; }
+  f->site[si].stale = 0;
+  int outer = f->cur_site;
+  f->cur_site = si;
+  int nnew = 0, nbuf[256], *knew = nbuf;
+  if (s->n > (int)(sizeof nbuf / sizeof *nbuf) && !(knew = malloc(sizeof(int) * (size_t)s->n))) cf_oom();
+  {
+    const ClsSet *o = &f->pool[last];
+    for (int i = 0, j = 0; i < s->nw; i++) {
+      while (j < o->nw && o->wi[j] < s->wi[i]) j++;
+      unsigned long long m = s->w[i] & ~(j < o->nw && o->wi[j] == s->wi[i] ? o->w[j] : 0);
+      for (; m; m &= m - 1) knew[nnew++] = s->wi[i] * 64 + __builtin_ctzll(m);
+    }
+  }
+  for (int q = 0; q < nnew; q++) {
+    int k = knew[q];
     if (k >= c->nclasses) {
       /* the Class object: a construction, a class method, else Class's own */
       int kc = k - c->nclasses;
@@ -2830,6 +2921,14 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     int each = comp_method_in_chain(c, k, "each", NULL);
     if (each >= 0) for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[each][y], v); cf_store(f, recv_el, f->yarg_el[each][y]); }
   }
+  if (knew != nbuf) free(knew);
+  /* (by index: a binding may call again, and the table moves) */
+  f->cur_site = outer;
+  f->site[si].pidx = pidx;
+  builtin |= f->site[si].builtin;
+  f->site[si].builtin = (unsigned char)builtin;
+  s = &f->pool[pidx];
+  if (pidx == CF_EMPTY || s->bv || s->os) builtin = 1;
   if (builtin) {
     /* Deferred until the classes have settled: the builtin answer unifies
        the receiver with the call's value and arguments, which a receiver
@@ -5206,7 +5305,11 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   /* a yield whose value is read: not one in statement position ahead of
      another statement */
   f.yval_used = calloc((size_t)c->nscopes + 1, 1);
-  if (!f.yval_used) cf_oom();
+  f.ysite = calloc((size_t)c->nscopes + 1, sizeof *f.ysite);
+  f.nysite = calloc((size_t)c->nscopes + 1, sizeof *f.nysite);
+  f.cysite = calloc((size_t)c->nscopes + 1, sizeof *f.cysite);
+  if (!f.yval_used || !f.ysite || !f.nysite || !f.cysite) cf_oom();
+  f.cur_site = -1;
   NT_FOREACH_KIND(nt, NK_YieldNode, id) {
     int mi = cf_owner_def(&f, id, 0, NULL);
     if (mi < 0) continue;
@@ -5369,6 +5472,10 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   if (f.why) cf_why_report(&f);
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph); free(f.umemo);
+  for (int i = 0; i < f.site_n; i++) { free(f.site[i].nm); free(f.site[i].argv); }
+  free(f.site); free(f.site_h);
+  for (int i = 0; i <= c->nscopes; i++) free(f.ysite[i]);
+  free(f.ysite); free(f.nysite); free(f.cysite);
   for (int i = 0; i < f.nscal; i++) free((char *)f.scal[i].base);
   free(f.scal); free(f.scal_mi); free(f.blk_local);
   for (int i = 0; i < 4; i++) { free(f.tb[i].d); free(f.tb[i].t); }
