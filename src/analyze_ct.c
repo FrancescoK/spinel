@@ -636,8 +636,15 @@ int desugar_table_loops(Compiler *c) {
     int *nb = NULL, nn = 0, ncap = 0, any = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
-      if (ct_try_loop(nt, &parent, &pcount, bb, i, &nb, &nn, &ncap)) any = 1;
-      else ct_push(&nb, &nn, &ncap, st);
+      if (!ct_try_loop(nt, &parent, &pcount, bb, i, &nb, &nn, &ncap)) { ct_push(&nb, &nn, &ncap, st); continue; }
+      /* the body as it now reads, the statements after the loop still to
+         come: a later loop's questions find what this one defined in its
+         place, under this class (its parent map is made again) */
+      int done = nn;
+      for (int j = i + 1; j < bn; j++) ct_push(&nb, &nn, &ncap, bb[j]);
+      nt_node_set_arr(nt, body, "body", nb, nn);
+      nn = done;
+      any = 1;
     }
     if (any) { nt_node_set_arr(nt, body, "body", nb, nn); changed = 1; }
     free(nb); free(bb);
