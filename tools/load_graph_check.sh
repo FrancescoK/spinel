@@ -148,6 +148,18 @@ printf 'module Loud\n  def speak = "LOUD"\nend\nclass Dog\nend\nd = Dog.new\nbeg
 printf 'require_relative "lib"\n' > "$tmp/late_include/main.rb"
 refused late_include "a later statement mixes module Loud into class Dog"
 
+# --require-gate holds in graph mode as in the inline one: a feature no
+# require names is not there (CRuby's NoMethodError for winsize, refused
+# here), and one a require names is.
+mkdir "$tmp/gate" "$tmp/gate_req"
+printf 'p $stdout.winsize.class\n' > "$tmp/gate/main.rb"
+printf 'require "io/console"\np $stdout.winsize.class\n' > "$tmp/gate_req/main.rb"
+"$SPINEL" --load-model=graph --require-gate "$tmp/gate/main.rb" -o "$tmp/gate/bin" >"$tmp/gate/out" 2>&1 &&
+  fail "--require-gate: a feature no require names compiled"
+grep -qF "winsize" "$tmp/gate/out" || { fail "--require-gate: refused without naming winsize"; sed -n 1,3p "$tmp/gate/out"; }
+"$SPINEL" --load-model=graph --require-gate "$tmp/gate_req/main.rb" -o "$tmp/gate_req/bin" >"$tmp/gate_req/out" 2>&1 ||
+  { fail "--require-gate: a feature a require names did not compile"; sed -n 1,3p "$tmp/gate_req/out"; }
+
 # A required file that only defines things costs nothing: no function, no
 # load, and no Symbol for the def that ends it (its value is read by nothing).
 mkdir "$tmp/lean"

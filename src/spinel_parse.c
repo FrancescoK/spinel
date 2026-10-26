@@ -6459,6 +6459,10 @@ static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const c
   }
   int to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1;
   if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
+  /* a require written in a file read for g_require_unread, resolved: a file
+     of the graph, read before or now, or what the runtime provides */
+  if ((how == SP_LOAD_FILE || how == SP_LOAD_NATIVE || how == SP_LOAD_CORE) &&
+      !(*sp_load_flags(g, from) & SP_FILE_BUILTIN)) sp_req_resolved++;
   sp_load_edge(&g->edge, &g->nedge, &g->edgecap, from, line, !rel, path ? path : "(computed)", how, to);
   if (how == SP_LOAD_NONE)
     fprintf(stderr, "warning: %s:%d: cannot load such file -- %s (the %s raises LoadError when it runs)\n",
@@ -7025,6 +7029,11 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
     return 0;
   }
   sp_src_file_fsl(&r->src);   /* (its pragma's warning; every literal is frozen) */
+  /* the words that say the program may load a file not read here
+     (g_require_unread), in each file as written, as resolve_requires reads
+     them; a builtins/ file is the compiler's own, as the inline model's
+     splice of it is */
+  if (!(*sp_load_flags(g, f) & SP_FILE_BUILTIN)) sp_require_note_text(text, sp_src_file_code_len(&r->src));
   g_parser = &r->src.parser;
   const pm_node_t *root = r->src.root;
   const pm_statements_node_t *st = PM_NODE_TYPE_P(root, PM_PROGRAM_NODE) ? ((const pm_program_node_t *)root)->statements : NULL;
@@ -7479,6 +7488,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   for (int b = 0; b < g.nboot && ok; b++) sp_graph_boot_node(&g, g.boot[b], b);
   if (ok) sp_load_order_export(&g);
+  if (sp_req_written != sp_req_resolved) g_require_unread = 1;
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (!ok) {   /* a file that could not be read or parsed, reported above */
@@ -7520,6 +7530,11 @@ static void sp_parse_positions_from_opts(void) {
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   sp_parse_positions_from_opts();
+  /* `--require-gate` is the flag spelling of SPINEL_REQUIRE_GATE. An env
+     assignment cannot ride inside a flag string, and `spin flags` has to hand
+     a caller's Makefile the same gate `spin build` compiles under. Both load
+     models compile under it. */
+  g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
   if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {
@@ -7536,10 +7551,6 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     sp_mark_path_included(entry_canon);
     free(entry_canon);
   }
-  /* `--require-gate` is the flag spelling of SPINEL_REQUIRE_GATE. An env
-     assignment cannot ride inside a flag string, and `spin flags` has to hand
-     a caller's Makefile the same gate `spin build` compiles under. */
-  g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
   SpLoadGraph graph;
