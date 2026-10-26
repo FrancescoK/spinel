@@ -28331,20 +28331,24 @@ int strbuf_self_reader_handle(Compiler *c, int id) {
   return rp.handle || rp.demand;
 }
 
-/* A body emitted for a class other than its own (a yielding method spliced
-   into a subclass's caller) types its bare call by its own class's
-   dispatch, which joins every override's answer into a box; the dispatch
-   from dispatch_cid can answer a narrower type, which the call boxes for
-   that slot. The type to box, else TY_UNKNOWN. *nullable is set when the
+/* The type the dispatch for call `id` (mi its method on dispatch_cid)
+   answers where the call is typed boxed and the dispatch narrower, which the
+   call boxes for its slot; else TY_UNKNOWN. A body emitted for a class
+   other than its own (a yielding method spliced into a subclass's caller)
+   types its bare call by its own class's dispatch, which joins every
+   override's answer into a box, and the dispatch from dispatch_cid can
+   answer less. So can the call's own dispatch: the call was typed while the
+   overrides answered different kinds, and a pass after the fixpoint (a
+   backstop widening an ivar their Hashes hold) settled them on one, which
+   the switch then answers. *nullable is set when the
    one method the dispatch can run answers an Integer or Float that may be
    nil (an sp_oint / sp_ofloat, boxed with its nil). Where an override can
    run too, the class-id dispatch reads such an answer without its nil
    (sp_oint_arg), so a call that may reach one is left to the plain
    dispatch. */
-static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, int dispatch_cid, int mi,
-                                        int *nullable) {
+static TyKind dispatch_narrowed_ty(Compiler *c, int id, int dispatch_cid, int mi, int *nullable) {
   *nullable = 0;
-  if (dispatch_cid == self->class_id || self->is_cmethod || repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
+  if (repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
   const Scope *m = &c->scopes[mi];
   if (m->is_cmethod || (m->yields && nt_ref(c->nt, id, "block") >= 0)) return TY_UNKNOWN;
   const char *name = nt_str(c->nt, id, "name");
@@ -28361,6 +28365,26 @@ static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, 
   if (any_o && other) return TY_UNKNOWN;
   *nullable = any_o;
   return r;
+}
+
+/* emit_dispatch for call `id`, mi its method on dispatch_cid: boxed where
+   the call is typed boxed and the dispatch answers narrower
+   (dispatch_narrowed_ty) */
+void emit_dispatch_for_call(Compiler *c, int id, int dispatch_cid, int mi,
+                            const char *selfptr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int nullable = 0;
+  TyKind nty = dispatch_narrowed_ty(c, id, dispatch_cid, mi, &nullable);
+  if (nty == TY_UNKNOWN) {
+    emit_dispatch(c, dispatch_cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+    return;
+  }
+  Buf db; memset(&db, 0, sizeof db);
+  emit_dispatch(c, dispatch_cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), &db);
+  if (nullable) buf_printf(b, "%s(%s)", oint_box(nty), db.p ? db.p : "0");
+  else emit_boxed_text(c, nty, db.p ? db.p : "0", b);
+  free(db.p);
 }
 
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
@@ -28433,19 +28457,10 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   cplan_check_missing(c, id, mi, dispatch_cid, name, 0, "implicit-self");
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
-    int nullable = 0;
-    TyKind nty = implicit_self_narrowed_ty(c, id, self, dispatch_cid, mi, &nullable);
-    if (nty != TY_UNKNOWN) {
-      Buf db; memset(&db, 0, sizeof db);
+    if (self->is_cmethod)
       emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
-                    nt_ref(nt, id, "block"), &db);
-      if (nullable) buf_printf(b, "%s(%s)", oint_box(nty), db.p ? db.p : "0");
-      else emit_boxed_text(c, nty, db.p ? db.p : "0", b);
-      free(db.p);
-      return 1;
-    }
-    emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
-                  nt_ref(nt, id, "block"), b);
+                    nt_ref(nt, id, "block"), b);
+    else emit_dispatch_for_call(c, id, dispatch_cid, mi, g_self, b);
     return 1;
   }
   return 0;

@@ -12811,7 +12811,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       size_t pre_at = g_pre->len;
       int svo = 0;
       int sv = setter_value_open(c, id, b, &svt, &svo);
-      emit_dispatch(c, cid, name, selfptr.p ? selfptr.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+      /* the call's own method answers the call's slot, boxed where the
+         call is typed boxed (emit_dispatch_for_call) */
+      if (sv < 0 && sp_streq(name, nt_str(nt, id, "name")))
+        emit_dispatch_for_call(c, id, cid, mi, selfptr.p ? selfptr.p : "", b);
+      else
+        emit_dispatch(c, cid, name, selfptr.p ? selfptr.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
       setter_value_close(c, id, svt, svo, b, sv);
       recv_temp_named_if_preceded(recv, selfptr.p, pre_at);
       free(selfptr.p);

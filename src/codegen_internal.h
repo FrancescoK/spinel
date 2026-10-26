@@ -2331,6 +2331,9 @@ int emit_arm_args_text(Compiler *c, int mi, const char *armself, const char *con
 int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
+/* emit_dispatch for call `id` (mi its method on dispatch_cid), boxed where
+   the call is typed boxed and the dispatch answers a narrower type */
+void emit_dispatch_for_call(Compiler *c, int id, int dispatch_cid, int mi, const char *selfptr, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, int reader_oint, Buf *b);
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
 int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed);
