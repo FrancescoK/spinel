@@ -21069,6 +21069,69 @@ static double cg_phase(double t0, const char *phase) {
   return sp_timing_now();
 }
 
+/* --load-model=graph (#9898): each required file's top level as a function
+   of its own, which the first load of the file runs (sp_load_file), with
+   the file's own locals and frame; its BEGIN blocks run first, when it
+   loads. A file that only defines things has none, and no loaded flag
+   either while no load of it is a value. Every file's flag comes first,
+   since a load in one file may name any other. */
+static void emit_file_tops(Compiler *c, Buf *body) {
+  int n = nt_nroots(c->nt);
+  for (int f = 1; f < n; f++)
+    if (!prog_defines_only(c, f)) buf_printf(body, "static int sp_loaded_%d;\nstatic void sp_file_%d_top(void);\n", f, f);
+  /* a void function: a top-level `return` ends the file's load, as a void
+     method's return ends the method, not the program's main body */
+  int sv_cv = g_c_ret_void;
+  TyKind sv_rt = g_ret_type;
+  g_c_ret_void = 1; g_ret_type = TY_VOID;
+  for (int f = 1; f < n; f++) {
+    if (prog_defines_only(c, f)) continue;
+    Scope *s = &c->scopes[c->file_scope[f]];
+    char tag[32];
+    snprintf(tag, sizeof tag, "file_%d", f);
+    unit_begin(tag);
+    buf_printf(body, "static void sp_file_%d_top(void) {\n    SP_GC_SAVE();\n", f);
+    size_t frame_ins = body->len;
+    emit_scope_decls(c, s, body);
+    int sn = 0;
+    const int *sv = s->body >= 0 && nt_kind(c->nt, s->body) == NK_StatementsNode ? nt_arr(c->nt, s->body, "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++)
+      if (nt_kind(c->nt, sv[k]) == NK_PreExecutionNode) EMIT_COLLECT_UNIT(emit_stmts(c, nt_ref(c->nt, sv[k], "statements"), body, 1));
+    EMIT_COLLECT_UNIT(emit_stmts(c, s->body, body, 1));
+    buf_puts(body, "}\n");
+    if (!g_no_root_frame) gc_frame_build(c, body, frame_ins, tag);
+  }
+  g_c_ret_void = sv_cv; g_ret_type = sv_rt;
+}
+
+/* The top-level bodies that run as functions of their own: each required
+   file's top level (emit_file_tops) and the program's END blocks, each a
+   static function for atexit registration. Answers the END blocks' count. */
+static int emit_toplevel_fns(Compiler *c, Buf *body) {
+  emit_file_tops(c, body);
+  int end_count = 0;
+  int top_body = c->scopes[0].body;
+  if (top_body >= 0) {
+    NodeKind tk = nt_kind(c->nt, top_body);
+    int tn = 0;
+    const int *tbody = (tk == NK_StatementsNode)
+                       ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
+    for (int k = 0; k < tn; k++) {
+      NodeKind sk = nt_kind(c->nt, tbody[k]);
+      if (sk != NK_PostExecutionNode) continue;
+      int stmts = nt_ref(c->nt, tbody[k], "statements");
+      end_count++;
+      { char et[32]; snprintf(et, sizeof et, "end_%d", end_count); unit_begin(et); }
+      buf_printf(body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
+      size_t end_frame_ins = body->len;
+      EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
+      buf_puts(body, "}\n");
+      if (!g_no_root_frame) gc_frame_build(c, body, end_frame_ins, decide_node_site(c->nt, tbody[k]));
+    }
+  }
+  return end_count;
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -21356,7 +21419,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
+  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
 
   emit_cext_dispatch(c, &b);
   emit_user_exc_dispatch(c, &b);
@@ -21684,7 +21747,7 @@ char *codegen_program(const NodeTable *nt) {
       if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, now - cg_prev_t);
       cg_prev_s = s; cg_prev_t = now;
     }
-    if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
+    if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
     if (orphan) g_unsup_quiet = 1;
@@ -21760,29 +21823,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
   if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);
 
-  /* Emit END block static functions for atexit registration */
-  int end_count = 0;
-  {
-    int top_body = c->scopes[0].body;
-    if (top_body >= 0) {
-      NodeKind tk = nt_kind(c->nt, top_body);
-      int tn = 0;
-      const int *tbody = (tk == NK_StatementsNode)
-                         ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
-      for (int k = 0; k < tn; k++) {
-        NodeKind sk = nt_kind(c->nt, tbody[k]);
-        if (sk != NK_PostExecutionNode) continue;
-        int stmts = nt_ref(c->nt, tbody[k], "statements");
-        end_count++;
-        { char et[32]; snprintf(et, sizeof et, "end_%d", end_count); unit_begin(et); }
-        buf_printf(body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
-        size_t end_frame_ins = body->len;
-        EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
-        buf_puts(body, "}\n");
-        if (!g_no_root_frame) gc_frame_build(c, body, end_frame_ins, decide_node_site(c->nt, tbody[k]));
-      }
-    }
-  }
+  int end_count = emit_toplevel_fns(c, body);
 
   tcg = cg_phase(tcg, "cg_dispatch");
   unit_begin("main");

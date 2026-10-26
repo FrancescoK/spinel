@@ -1,0 +1,8 @@
+limits
+counter: 10
+main's x
+60
+9
+49
+4
+[:main_start, :counter_start, :limits, :counter_end, :main_end]

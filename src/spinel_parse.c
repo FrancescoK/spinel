@@ -2668,7 +2668,6 @@ int g_require_gate = 0;
 int sp_share_strings_env(void) { return 1; }
 int g_require_gate_cli = 0;   /* --require-gate */
 int g_dump_load_graph = 0;    /* --dump-load-graph */
-int g_parse_table_mode = 0;   /* --dump-ast and the other table modes: the table is all that is asked */
 int sp_parse_reported = 0;    /* the parse failed and said why (the driver adds nothing) */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
@@ -7421,11 +7420,6 @@ static void sp_load_order_export(const SpLoadGraph *g) {
    its own (sp_graph_flatten), each file's root in the table's file_roots,
    and the load order exported onto the roots (sp_load_order_export). */
 static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
-  if (!g_parse_table_mode) {
-    fprintf(stderr, "spinel: --load-model=graph is not supported by analysis yet (--dump-ast shows its node table)\n");
-    sp_parse_reported = 1;
-    return NULL;
-  }
   SpLoadGraph g;
   memset(&g, 0, sizeof g);
   sp_lib_dir(argv0, g.lib_dir, sizeof g.lib_dir);
