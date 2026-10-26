@@ -21758,10 +21758,12 @@ int desugar_index_assign_user_recv(Compiler *c) {
    the method returned. Where the value is taken, the node becomes
      (__ixr_N = r; __ixk_N_0 = k; (__ixv_N = v; __ixr_N[__ixk_N_0] = __ixv_N; __ixv_N))
    so each part runs once, in Ruby's order, and the expression answers the
-   held value (ix_held_store). self and a literal key stay where they are.
-   The receiver is typed as such a class, or is a box that can hold one. A
-   key list with a splat, a block or keywords is left alone, and so are a
-   class's own `self.[]=` and a reopened builtin's `[]=`. */
+   held value (ix_held_store). self, a constant and a literal key stay
+   where they are. An immediate value is passed and answered as itself.
+   The receiver is typed as such a class, or is a box that can hold one,
+   or names a class whose own `self.[]=` the call reaches. A key list with
+   a splat, a block or keywords is left alone, and so is a reopened
+   builtin's `[]=`. */
 static int ixa_literal(const NodeTable *nt, int n) {
   switch (nt_kind(nt, n)) {
     case NK_SymbolNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode:
@@ -21769,6 +21771,20 @@ static int ixa_literal(const NodeTable *nt, int n) {
       return 1;
     default: return 0;
   }
+}
+/* `C`, `A::B`, `::C`: a constant whose every segment is one, no call */
+static int ixa_const_chain(const NodeTable *nt, int n) {
+  for (int d = 0; n >= 0 && d < 64; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ConstantReadNode) return 1;
+    if (k != NK_ConstantPathNode) return 0;
+    n = nt_ref(nt, n, "parent");
+    if (n < 0) return 1;
+  }
+  return 0;
+}
+static int ixa_immediate(const NodeTable *nt, int n) {
+  return ixa_literal(nt, n) && nt_kind(nt, n) != NK_StringNode;
 }
 static int ixa_hold(NodeTable *nt, const char *name, int value) {
   int w = nt_new_node(nt, "LocalVariableWriteNode");
@@ -21788,12 +21804,20 @@ int desugar_index_assign_value(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (recv < 0 || !av || an < 2) continue;
+    if (!av || an < 2) continue;
     if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
-    TyKind rt = comp_ntype(c, recv);
-    if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
     int user = 0;
-    if (ty_is_object(rt)) {
+    if (recv < 0) {
+      /* `self[k] = v` in a class method (the receiver left as self's
+         call) of a class whose class-level `[]=` is the program's */
+      Scope *rs = comp_scope_of(c, id);
+      user = rs && rs->is_cmethod && rs->class_id >= 0 && rs->class_id < c->nclasses &&
+             comp_cmethod_in_chain(c, rs->class_id, "[]=", NULL) >= 0;
+      if (!user) continue;
+    }
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (recv >= 0 && !ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
+    if (!user && ty_is_object(rt)) {
       int cid = ty_object_class(rt);
       user = cid >= 0 && cid < c->nclasses && comp_method_in_chain(c, cid, "[]=", NULL) >= 0;
     }
@@ -21808,6 +21832,9 @@ int desugar_index_assign_value(Compiler *c) {
                comp_method_in_chain(c, pk, "[]=", NULL) >= 0;
       }
     }
+    /* a class-level `self.[]=` of a class a constant (or a local that
+       holds one class) names, as the class method call resolves it */
+    if (!user) user = class_recv_user_cmethod(c, recv, "[]=") >= 0;
     if (!user) continue;
     if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     /* a detached store (desugar_masgn_store_evidence's type evidence) has no parent */
@@ -21817,7 +21844,7 @@ int desugar_index_assign_value(Compiler *c) {
     if (nt_kind(nt, parent[id]) == NK_DefinedNode) continue;
     /* nt_new_node can move the table: copy what is read from it first */
     int nkeys = an - 1;
-    int *keys = malloc(sizeof(int) * (size_t)an), *body = malloc(sizeof(int) * (size_t)(an + 1));
+    int *keys = malloc(sizeof(int) * (size_t)an), *body = malloc(sizeof(int) * (size_t)(an + 2));
     if (!keys || !body) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int i = 0; i < an; i++) keys[i] = av[i];
     int val = keys[nkeys];
@@ -21829,7 +21856,8 @@ int desugar_index_assign_value(Compiler *c) {
     snprintf(vname, sizeof vname, "__ixv_%s", tag);
     Scope *sc = comp_scope_of(c, id);
     int base = nt->count, nb = 0, ok = 1;
-    int self_recv = nt_kind(nt, recv) == NK_SelfNode;
+    /* self and a constant read the same object twice */
+    int self_recv = recv < 0 || nt_kind(nt, recv) == NK_SelfNode || ixa_const_chain(nt, recv);
     int recv2 = recv;
     if (!self_recv) {
       int rw = ixa_hold(nt, rname, recv);
@@ -21844,7 +21872,11 @@ int desugar_index_assign_value(Compiler *c) {
       body[nb++] = kw;
       scope_local_intern(sc, kname);
     }
-    int vr = ok ? ixw_read(nt, vname) : -1;
+    /* an immediate value (nil, true, a Symbol, a number) is passed and
+       answered as itself: no held local, whose box an Integer parameter
+       another call types would have to unbox */
+    int imm = ixa_immediate(nt, val);
+    int vr = !ok ? -1 : imm ? val : ixw_read(nt, vname);
     int sa = vr >= 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
     int set = sa >= 0 ? nt_new_node(nt, "CallNode") : -1;
     if (set >= 0) {
@@ -21857,17 +21889,19 @@ int desugar_index_assign_value(Compiler *c) {
       nt_node_set_int(nt, set, "node_line", line);
       nt_node_set_int(nt, set, "node_file", file);
     }
-    /* the holds first, then (v = value; r[k] = v; v) */
-    int held = set >= 0 ? ix_held_store(nt, vname, val, set, -1) : -1;
-    int st = held >= 0 ? nt_new_node(nt, "StatementsNode") : -1;
+    /* the holds first, then (v = value; r[k] = v; v), or r[k] = imm; imm */
+    int held = set < 0 ? -1 : imm ? ix_store_call(nt, set) : ix_held_store(nt, vname, val, set, -1);
+    int ans = held >= 0 && imm ? nt_clone_subtree(nt, val) : -1;
+    int st = held >= 0 && (!imm || ans >= 0) ? nt_new_node(nt, "StatementsNode") : -1;
     if (st >= 0) {
       body[nb++] = held;
+      if (imm) body[nb++] = ans;
       nt_node_set_arr(nt, st, "body", body, nb);
       nt_node_reset(nt, id, "ParenthesesNode");
       nt_node_set_int(nt, id, "node_line", line);
       nt_node_set_int(nt, id, "node_file", file);
       nt_node_set_ref(nt, id, "body", st);
-      scope_local_intern(sc, vname);
+      if (!imm) scope_local_intern(sc, vname);
       changed = 1;
     }
     free(keys); free(body);
