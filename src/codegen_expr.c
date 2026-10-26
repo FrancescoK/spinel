@@ -3815,6 +3815,15 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     else if (vk == NK_InstanceVariableReadNode) {
       /* Return "instance-variable" only when the ivar is known to be assigned. */
       const char *inm = nt_str(nt, v, "name");
+      /* an attr_writer or attr_accessor of self's class or a superclass
+         writes it too (a Struct member is no ivar) */
+      Scope *ws = comp_scope_of(c, v);
+      for (int k = ws && !ws->is_cmethod ? ws->class_id : -1; k >= 0 && inm && !res; k = c->classes[k].parent) {
+        ClassInfo *wi = &c->classes[k];
+        int mi = comp_ivar_index(wi, inm);
+        if (comp_is_writer(wi, inm + 1) && !((wi->is_struct || wi->is_data) && mi >= 0 && mi < wi->nmembers))
+          res = "instance-variable";
+      }
       for (int kk = 0; kk < nt->count && !res; kk++) {
         NodeKind kt_k = nt_kind(nt, kk);
         if (kt_k == NK_InstanceVariableWriteNode &&
