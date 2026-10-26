@@ -9196,12 +9196,15 @@ static void emit_arg_temp(Compiler *c, int v) {
   }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
-  /* (one representation: a String of either face is held as it is, the C
-     compiler naming the type, and read where it is used, SP_STR_B: a handle
-     so held stays alive and keeps its identity, where a copy of its bytes
-     lost both; one_face below) */
+  /* (one representation: a String of either face is held as its handle,
+     and read where it is used, SP_STR_B: a handle so held stays alive and
+     keeps its identity, where a copy of its bytes lost both. Held as it
+     came, a bytes face was a view into the handle's payload, which a later
+     argument that grows or replaces the String moved: `m((n += 1; s), *r,
+     (s.replace(big); 0))` boxed the freed bytes. A fresh String's handle is
+     the one it was born in, adopted, and a handle is itself; one_face below) */
   int one_face = at == TY_STRING && !to && hb.p && !srange && !wshare && !conversion;
-  if (one_face) buf_printf(g_pre, "__auto_type _t%d = (%s);", t, hb.p);
+  if (one_face) buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s);", t, hb.p);
   else {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));
@@ -9328,15 +9331,26 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
     free(hh.p); free(vb.p);
     return t;
   }
+  /* ...and a String the head holds as its handle, read from it
+     (ran_first_bind_read): that handle, no second hold */
+  int rh = !boxed && ty == TY_STRING && vb.p ? ran_first_read_handle(node) : -1;
+  char rd[40];
+  if (rh >= 0 && snprintf(rd, sizeof rd, "sp_strbuf_read_pub(_t%d)", rh) > 0 && sp_streq(vb.p, rd)) {
+    free(vb.p);
+    one_face_mark(rh, node);
+    return rh;
+  }
   /* boxed from the head's temp, which roots what the box wraps */
   int wrap = !root || (boxed && head_held_box(c, node));
-  /* (one representation: a String of either face is held as it is, the
-     C compiler naming the type, and read where it is used (SP_STR_B); a
+  /* (one representation: a String of either face is held as its handle,
+     as a handle slot's String is, and read where it is used (SP_STR_B); a
      handle so held stays alive and keeps its identity, where a copy of its
-     bytes lost both) */
-  if (!boxed && ty == TY_STRING && vb.p) { buf_printf(b, "__auto_type _t%d = (%s);", t, vb.p); one_face_mark(t, node); }
-  /* ...and a handle slot's String of either face as the handle */
-  else if (!boxed && ty == TY_STRBUF && vb.p) buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+     bytes lost both, and a bytes face held as it came was a view of the
+     payload a later operand that grows the String moved) */
+  if (!boxed && (ty == TY_STRING || ty == TY_STRBUF) && vb.p) {
+    buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+    if (ty == TY_STRING) one_face_mark(t, node);
+  }
   else {
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
