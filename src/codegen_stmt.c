@@ -5128,7 +5128,7 @@ void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
       for (int i = 0; i < n - 1; i++) emit_stmt(c, st[i], &pre, 0);
       buf_printf(b, "({ %s", pre.p ? pre.p : "");
       free(pre.p);
-      emit_poly_arms_handle(c, strbuf_poly_user_base(c, st[n - 1]), b);
+      emit_poly_user_handle(c, st[n - 1], b);
       buf_puts(b, "; })");
       return;
     }
@@ -5136,6 +5136,28 @@ void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
   buf_puts(b, "sp_poly_as_strbuf(");
   emit_boxed(c, base, b);
   buf_puts(b, ")");
+}
+/* --share-strings: the handle of v, a boxed receiver's call whose arms
+   answer a String or a conversion over one (strbuf_poly_user_base): the
+   arms' handle, NULL for nil. A conversion answers a String with itself,
+   but an arm's String may be nil, which to_s turns into "" and to_str
+   raises for; the innermost plain one decides, as each later one answers
+   the String it is given (a `&.` link and itself hand a nil on). */
+void emit_poly_user_handle(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int base = strbuf_poly_user_base(c, v);
+  const char *conv = NULL;
+  for (int u = nt_paren_single(c->nt, v); u >= 0 && u != base && nt_kind(nt, u) == NK_CallNode;
+       u = nt_paren_single(c->nt, nt_ref(nt, u, "receiver"))) {
+    const char *nm = nt_str(nt, u, "name");
+    if (nm && !nt_safe_nav(nt, u) && !is_self_copy(nm)) conv = nm;
+  }
+  if (!conv) { emit_poly_arms_handle(c, base, b); return; }
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = ", t);
+  emit_poly_arms_handle(c, base, b);
+  if (is_to_s_name(conv)) buf_printf(b, "; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, t);
+  else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); _t%d; })", t, conv, t);
 }
 /* `s.dup` (1) or `s.clone` (2) on a String, the builtin's: no argument, no
    block, and no method of the program's reached; 0 for any other value. */
@@ -5244,7 +5266,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      for nil). A conversion over it (`call.to_s`) answers the same String
      (strbuf_poly_user_base). */
   else if (shared && strbuf_poly_user_base(c, v) >= 0)
-    emit_poly_arms_handle(c, strbuf_poly_user_base(c, v), b);
+    emit_poly_user_handle(c, v, b);
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
