@@ -8309,6 +8309,45 @@ static int bind_empty_hash_arg(Compiler *c, TyKind ptype, int anode) {
   return 0;
 }
 
+/* The hash type the keyword `kname` has where method m hands its `**` rest
+   on (`def outer(**kw) = inner(**kw)`): a call in m's own body that splats
+   the rest into a method of m's class, or a top-level one, whose keyword of
+   that name is a hash. An empty `{}` given to m under that key is that
+   method's hash, and built as anything else, it reached it as a converted
+   copy that took the writes in its place. TY_UNKNOWN when no such call. */
+static TyKind kwrest_forward_hash_type(Compiler *c, Scope *m, const char *kname) {
+  const NodeTable *nt = c->nt;
+  const char *rest = m->pnames[m->kwrest_idx];
+  if (!rest || m->is_cmethod) return TY_UNKNOWN;
+  for (int n = 0; n < nt->count; n++) {
+    if (nt_kind(nt, n) != NK_CallNode || comp_scope_of(c, n) != m) continue;
+    int recv = nt_ref(nt, n, "receiver");
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) continue;
+    int args = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int splats_rest = 0;
+    for (int a = 0; a < an && !splats_rest; a++) {
+      if (nt_kind(nt, av[a]) != NK_KeywordHashNode) continue;
+      int en = 0;
+      const int *el = nt_arr(nt, av[a], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? nt_ref(nt, el[e], "value") : -1;
+        const char *vn = v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode ? nt_str(nt, v, "name") : NULL;
+        if (vn && sp_streq(vn, rest)) { splats_rest = 1; break; }
+      }
+    }
+    if (!splats_rest) continue;
+    const char *nm = nt_str(nt, n, "name");
+    int ti = !nm ? -1 : m->class_id >= 0 ? comp_method_in_chain(c, m->class_id, nm, NULL) : comp_method_index(c, nm);
+    if (ti < 0) continue;
+    Scope *t = &c->scopes[ti];
+    if (!callee_has_kwarg(c, t, kname)) continue;
+    LocalVar *p = scope_local(t, kname);
+    if (p && ty_is_hash(p->type)) return p->type;
+  }
+  return TY_UNKNOWN;
+}
+
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -8643,7 +8682,10 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
            is held boxed: an empty `{}` passed there is filled by whatever
            the callee hands it on to, as a hash taken opaquely is */
         if (!callee_has_kwarg(c, m, kname)) {
-          if (m->kwrest_idx >= 0) changed |= bind_empty_hash_arg(c, TY_POLY, val);
+          if (m->kwrest_idx >= 0 && nt_kind(nt, val) == NK_LocalVariableReadNode) {
+            TyKind ft = kwrest_forward_hash_type(c, m, kname);
+            changed |= bind_empty_hash_arg(c, ty_is_hash(ft) ? ft : TY_POLY, val);
+          }
           continue;
         }
         LocalVar *p = scope_local(m, kname);
