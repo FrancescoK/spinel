@@ -236,11 +236,13 @@ static unsigned char *g_pure_cand;
 /* methods that are pure but for those stores, which a chunked loop may call
    where they are short (no loop, on no cycle) */
 static unsigned char *g_chunk_cand;
+static signed char *g_pure_short;   /* poll_scope_short's answers, -1 for none yet */
 static int g_pure_n = -1;
 int g_pure_region = 0;   /* inside a marked pure loop being emitted */
 /* stores: judging a chunked loop, whose stores (see above) are allowed */
 static int poll_pure_node(Compiler *c, int n, int ret_ok, int stores);
 static int poll_has_loop(const NodeTable *nt, int n);
+static int poll_scope_short(Compiler *c, int t);
 /* Is a local written at n one that outlives the frame: a proc's cell, or a
    caller's slot the method writes through? */
 static int poll_local_on_heap(Compiler *c, int n) {
@@ -268,9 +270,9 @@ static int poll_pure_targets(Compiler *c, const char *nm, int stores) {
     int t = g_poll_names[first + k].scope;
     if (!stores) { if (!g_pure_cand[t]) return 0; continue; }
     /* a chunked loop's call: one that may run long would be a pure region
-       (or a poll) inside it, so only a short one */
+       (or a poll) inside it, so only one that runs short all the way down */
     if (!g_pure_cand[t] && !g_chunk_cand[t]) return 0;
-    if (poll_scope_on_cycle(c, t) || poll_has_loop(c->nt, c->scopes[t].body)) return 0;
+    if (!poll_scope_short(c, t)) return 0;
   }
   return 1;
 }
@@ -377,6 +379,9 @@ int poll_pure_method(Compiler *c, int si) {
       for (int t = 0; t < ns; t++)
         if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 0)) { g_pure_cand[t] = 0; changed = 1; }
     }
+    free(g_pure_short); g_pure_short = malloc((size_t)ns + 1);
+    if (!g_pure_short) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g_pure_short, -1, (size_t)ns + 1);
     free(g_chunk_cand); g_chunk_cand = calloc((size_t)ns + 1, 1);
     for (int t = 0; t < ns; t++) g_chunk_cand[t] = (unsigned char)(!g_pure_cand[t] && poll_pure_shape(c, t));
     for (int changed = 1; changed; ) {
@@ -400,6 +405,40 @@ static int poll_has_loop(const NodeTable *nt, int n) {
     for (int j = 0; j < an; j++) if (poll_has_loop(nt, av[j])) return 1;
   }
   return 0;
+}
+/* Does every call in node n reach only methods that run short (below)? A
+   definition or a block in it is code of its own scope, not n's. */
+static int poll_calls_short(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode) return 1;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int cnt, first = nm ? poll_names_of(c, nm, &cnt) : 0;
+    if (nm) for (int k = 0; k < cnt; k++) if (!poll_scope_short(c, g_poll_names[first + k].scope)) return 0;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (!poll_calls_short(c, nt_ref_at(nt, n, i))) return 0;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!poll_calls_short(c, av[j])) return 0;
+  }
+  return 1;
+}
+/* Does method t run short: no loop, on no call cycle, and only calls of
+   methods that run short? A chunked loop calls only such (poll_pure_targets):
+   one that reached a loop would run that method's pure region in the middle
+   of a pass. On no cycle, t is not met again below itself. */
+static int poll_scope_short(Compiler *c, int t) {
+  if (t < 0 || t >= g_pure_n) return 0;
+  if (g_pure_short[t] >= 0) return g_pure_short[t];
+  g_pure_short[t] = 0;   /* met again while it is asked: not short */
+  int ok = !poll_scope_on_cycle(c, t) && !poll_has_loop(c->nt, c->scopes[t].body) &&
+           poll_calls_short(c, c->scopes[t].body);
+  return g_pure_short[t] = (signed char)ok;
 }
 /* A pure method that may run long: on a call cycle or holding a loop. Only
    such a one is entered through the region-marking wrapper; a short one is

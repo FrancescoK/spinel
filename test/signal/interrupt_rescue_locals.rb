@@ -6,7 +6,11 @@
 # runs; inside an ensure, or a rescue that can catch an Interrupt, such a
 # loop is chunked or polls at each pass instead. A `rescue => e` catches no
 # Interrupt: its loop keeps the pure region, and the Interrupt passes on to
-# the caller. Each loop's signal comes from a child started just ahead of it.
+# the caller. A loop another loop encloses (a `1.times` block here) and a
+# loop in a begin's else clause, which that begin's rescue does not cover,
+# are in step too, and take the signal at all: such a nested counted loop
+# polls at each run although another loop encloses it. Each loop's signal
+# comes from a child started just ahead of it.
 $stdout.sync = true
 pid = Process.pid
 def spin(pid)
@@ -56,4 +60,44 @@ begin
   std_rescue(pid)
 rescue Interrupt
   puts "rescue => e passed it on"
+end
+u = 0
+j = 0
+Process.spawn("sh", "-c", "sleep 0.2; kill -INT #{pid}")
+begin
+  1.times do
+    while j < 4_000_000_000_000
+      u = u + 2
+      j += 1
+    end
+  end
+rescue Interrupt
+  puts(u == 2 * j ? "nested while in step" : "nested while out of step")
+end
+s = 0
+t = 0
+Process.spawn("sh", "-c", "sleep 0.2; kill -INT #{pid}")
+begin
+  1.times do
+    4_000_000_000.times { |k| s += 3; t += 3 }
+  end
+rescue Interrupt
+  puts(s == t ? "nested times in step" : "nested times out of step")
+end
+y = 0
+i = 0
+Process.spawn("sh", "-c", "sleep 0.2; kill -INT #{pid}")
+begin
+  begin
+    y = 0
+  rescue Interrupt
+    puts "else rescued by its own begin"
+  else
+    while i < 4_000_000_000_000
+      y = y + 2
+      i += 1
+    end
+  end
+rescue Interrupt
+  puts(y == 2 * i ? "else in step" : "else out of step")
 end

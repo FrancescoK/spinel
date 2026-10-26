@@ -4447,7 +4447,9 @@ int next_is_block_value(Compiler *c, int next) {
    sits at the body top so `redo` re-runs the body without advancing. */
 /* A loop that may not end (loop, an unproved while) polls for a delivered
    signal at its back-edge; a counted one only when no loop of its function
-   encloses it, so an inner counted loop keeps no poll in its body (#9222) */
+   encloses it, so an inner counted loop keeps no poll in its body (#9222),
+   unless it is a pure one a rescue of Interrupt keeps from its pure region
+   (loop_body_polls_alone) */
 int g_loop_uncounted = 0, g_poll_loop_nest = 0;
 /* The polls at the top of a loop body (emit_loop_body): `uncounted`, the
    loop may not end; `nest`, how many loops of its function hold the body,
@@ -4459,7 +4461,7 @@ void emit_loop_polls(Compiler *c, int body, Buf *b, int indent, int uncounted, i
      the cache reloads after one runs, as after a safepoint. */
   if (g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
   /* and for a delivered Signal.trap, Ruby code as a finalizer is */
-  if (sig_polls() && (uncounted || nest == 1) && !poll_in_pure(c, body)) {
+  if (sig_polls() && (uncounted || nest == 1 || loop_body_polls_alone(c, body)) && !poll_in_pure(c, body)) {
     emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
   }
 }
