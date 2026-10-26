@@ -22372,38 +22372,50 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
    Without the switch, or outside a collect unit, it is emit_stmt. Answers
    whether the statement was emitted as written. */
 int g_stmt_deferrals = 0;
+void defer_mark(DeferMark *m, Buf *b) {
+  memcpy(m->outer, g_unsup_recover, sizeof m->outer);
+  m->b = b; m->len = b->len;
+  m->pre = g_pre; m->pre_len = g_pre ? g_pre->len : 0;
+  m->hold = g_conv_hold;
+  m->state = emit_state_snapshot();
+  m->ndiag0 = g_ndiags;
+}
+/* after the longjmp: the text and state back to the mark, and the
+   refusal's message (file:line: what) in msg */
+void defer_rollback(DeferMark *m, char *msg, size_t msz) {
+  g_stmt_deferrals++;
+  if (g_ndiags > m->ndiag0) g_deferred_diags++;
+  g_conv_hold = m->hold;
+  emit_state_release(m->state, 1); m->state = NULL;
+  g_pre = m->pre;
+  if (g_pre && g_pre->len > m->pre_len) { g_pre->len = m->pre_len; if (g_pre->p) g_pre->p[m->pre_len] = '\0'; }
+  m->b->len = m->len; if (m->b->p) m->b->p[m->len] = '\0';
+  g_unsup_armed = 1;
+  if (g_ndiags > m->ndiag0) {
+    const SpDiag *d = &g_diags[g_ndiags - 1];
+    if (d->line > 0) snprintf(msg, msz, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+    else snprintf(msg, msz, "%s", d->msg);
+  }
+  else snprintf(msg, msz, "refused at compile time");
+}
+void defer_done(DeferMark *m) {
+  if (m->state) emit_state_release(m->state, 0);
+  memcpy(g_unsup_recover, m->outer, sizeof m->outer);
+}
 static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int tail) {
   if (!defer_refusals_at(c, st) || !g_unsup_armed) {
     if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
     return 1;
   }
-  jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
-  size_t saved_len = b->len;
-  Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
-  ConvHold *saved_hold = g_conv_hold;
-  EmitUnitState *saved = emit_state_snapshot();
+  DeferMark dm; defer_mark(&dm, b);
   volatile int ok = 0;
-  int ndiag0 = g_ndiags;
   if (setjmp(g_unsup_recover) == 0) {
     if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
     ok = 1;
   }
   else {
-    g_stmt_deferrals++;
-    if (g_ndiags > ndiag0) g_deferred_diags++;
-    g_conv_hold = saved_hold;
-    emit_state_release(saved, 1); saved = NULL;
-    g_pre = saved_pre;
-    if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
-    b->len = saved_len; if (b->p) b->p[saved_len] = '\0';
-    g_unsup_armed = 1;
     char dmsg[2600];
-    if (g_ndiags > ndiag0) {
-      const SpDiag *d = &g_diags[g_ndiags - 1];
-      if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
-      else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
-    }
-    else snprintf(dmsg, sizeof dmsg, "refused at compile time");
+    defer_rollback(&dm, dmsg, sizeof dmsg);
     /* the statement may be the value of a statement expression (the last
        one of a block spliced as a find's condition), so the raise keeps a
        value of its type: void there does not compile */
@@ -22415,8 +22427,7 @@ static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int ta
     if (dval) buf_printf(b, "\"), %s);\n", default_value_from_compiler(c, dt));
     else buf_puts(b, "\");\n");
   }
-  if (saved) emit_state_release(saved, 0);
-  memcpy(g_unsup_recover, outer, sizeof outer);
+  defer_done(&dm);
   return ok;
 }
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {

@@ -2841,6 +2841,13 @@ void emit_to_s_expr(Compiler *c, int node, Buf *b);
    does not dispatch. */
 typedef struct { Buf b; int *tmp; int n, cap; int guarded; } ConvHold;
 extern ConvHold *g_conv_hold;
+/* What a refusal deferred under --defer-refusals rolls back: the text
+   written since defer_mark, g_pre's, the conversion hold, the unit state.
+   The caller arms g_unsup_recover with its own setjmp in between. */
+typedef struct { jmp_buf outer; Buf *b; size_t len; Buf *pre; size_t pre_len; ConvHold *hold; EmitUnitState *state; int ndiag0; } DeferMark;
+void defer_mark(DeferMark *m, Buf *b);
+void defer_rollback(DeferMark *m, char *msg, size_t msz);
+void defer_done(DeferMark *m);
 extern unsigned g_conv_emitted;  /* implicit conversions emitted so far; read as a delta */
 Buf *conv_hold_begin(Buf *b, int *tmp);
 void conv_hold_end(int tmp);
