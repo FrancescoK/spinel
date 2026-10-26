@@ -2034,6 +2034,9 @@ int cls_fact_may_ostruct(Compiler *c, int node);
 /* the fact's own index for recv's set, which names the set uniquely: 0 or -1
    for every class (nothing to filter by) */
 int cls_fact_idx(Compiler *c, int node);
+/* Does node's fact say nothing of its classes: every class, or the closed
+   world's value from anywhere (every class, Class object and builtin)? */
+int cls_fact_unbounded(Compiler *c, int node);
 /* What else than an object of a class of the program's node's value can be,
    as the same walk follows it (analyze_cls.c), in a program that calls
    compare_by_identity: CK_UNSAFE a value whose identity is not CRuby's here
