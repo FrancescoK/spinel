@@ -8647,9 +8647,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
           continue;
         }
         LocalVar *p = scope_local(m, kname);
+        if (!p) continue;
         TyKind at = infer_type(c, val);
-        if (!p || param_seed_holds_arg(c, p, val, at)) continue;
-        changed |= slot_take(c, p, at, val);
+        /* a signature's parameter keeps its type, and still types the
+           empty `{}` it is handed */
+        if (!param_seed_holds_arg(c, p, val, at)) changed |= slot_take(c, p, at, val);
         changed |= bind_empty_hash_arg(c, p->type, val);
       }
     }
