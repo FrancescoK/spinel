@@ -375,9 +375,14 @@ static int ysa_find(int id, TyKind kind) {
    the first site's kind alone the yield stored the nil in an Integer slot
    and raised TypeError at run time (K-031). sort and reverse answer their
    receiver's own kind for an Array, and a String's reverse is a String: a
-   Hash or String site beside an Array site failed to compile (K-030b). */
+   Hash or String site beside an Array site failed to compile (K-030b).
+   find_index answers an Integer or nil per site, not an element: a Hash
+   site's Integer beside an Array site's nil was read as an RbVal (T4).
+   cycle answers an Enumerator per site, so a Hash site's endless cycle
+   beside an Array site's is answered by each site's own kind (T4). */
 static int yield_site_per_kind_name(const char *name) {
-  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse"));
+  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse") ||
+                  sp_streq(name, "find_index") || sp_streq(name, "cycle"));
 }
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
   const NodeTable *nt = c->nt;
@@ -2042,6 +2047,13 @@ int hash_enum_redispatch(Compiler *c, int id) {
     return 1;
   /* blockless each_with_index: an external Enumerator of [[k, v], i] */
   if (block < 0 && sp_streq(name, "each_with_index")) return 1;
+  /* blockless cycle: an Enumerator over the materialized pairs (T4) */
+  if (block < 0 && sp_streq(name, "cycle")) return 1;
+  /* blockless each_slice / each_cons on a yield (T4): a Hash site beside an
+     Array site on one yield rides the pair-array redispatch. A typed Hash
+     receiver keeps its own enumerator, whose each answers the Hash (CRuby). */
+  if (block < 0 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      nt_ref(nt, id, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_YieldNode) return 1;
   /* inject(:op) / reduce(:op): the Symbol-operator fold runs over the [k, v]
      pairs, the same materialization the block form below rides (#3830) */
   if (block < 0 && (is_reduce_alias(name))) return 1;
@@ -2699,6 +2711,16 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
       *range_has_float_bound = 1;
   }
 }
+/* `call`'s receiver is the argless, blockless `cycle` (the endless form), so
+   the call bounds that infinite enumerator. */
+static int yield_is_cycle_recv(const NodeTable *nt, int call) {
+  int r = nt_ref(nt, call, "receiver");
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "block") >= 0) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  int ra = nt_ref(nt, r, "arguments");
+  int rac = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
+  return rn && sp_streq(rn, "cycle") && rac == 0;
+}
 /* What the chain from the yield up to `node` answers at a site whose block
    answers `bt`, by ty_recv_builtin_result one link at a time. */
 static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) {
@@ -2708,6 +2730,11 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
   if (!yield_recv_chain_kind(c, nt_ref(nt, node, "receiver"), bt, &rk)) return 0;
   int an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  /* first(n) / take(n) over the endless cycle of a site's array: the bounded
+     elements, boxed as a poly array beside any other site's (T4). The fold
+     (emit_cycle_bounded_expr) boxes them to match. */
+  if (rk == TY_ENUMERATOR && (ac == 1 && (sp_streq(nt_str(nt, node, "name"), "first") ||
+      sp_streq(nt_str(nt, node, "name"), "take"))) && yield_is_cycle_recv(nt, node)) { *out = TY_POLY_ARRAY; return 1; }
   /* Was `ac == 1` only (dig/[]/sample's own 1-arg needs); widened to any
      ac >= 1 so clamp's 2-arg form also gets its first bound's kind --
      every other existing arm here only ever matched ac == 1 anyway, so

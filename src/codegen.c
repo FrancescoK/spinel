@@ -882,6 +882,7 @@ TyKind yield_site_type(Compiler *c, int node) {
   TyKind u = repr_of(c, node).as_ty;
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_YieldNode || g_block_id < 0) return u;
+  { TyKind vt; if (view_type_top(node, &vt)) return vt; }
   int body = nt_ref(nt, g_block_id, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return u;
   int n = 0; const int *st = nt_arr(nt, body, "body", &n);
@@ -2564,6 +2565,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     RC(RF_SPECIAL, RW_YIELD);
     return;
   }
+  /* A yield under an open type view (a redispatched receiver, whose value is
+     bound to a temp of the view's kind) is boxed as that kind, not by the
+     spliced block's own tail: that tail answers a different site's value. */
+  { TyKind vt;
+    if (nt_kind(c->nt, node) == NK_YieldNode &&
+        view_type_top(node, &vt) && vt == TY_POLY_ARRAY) {
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)");
+      RC(RF_NULLABLE, RW_NONE);
+      return;
+    } }
   if (g_block_id >= 0 && nt_kind(c->nt, node) == NK_YieldNode) {
     /* A forwarding block (`wrap { yield }` handing its own block on) has a
        yield for its tail, and that node's cached type is one site's too:

@@ -1144,6 +1144,8 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   const char *ty = nt_type(c->nt, id);
   NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
+  /* an open type view on the yield (a redispatched receiver) is its type */
+  if (ty_k == NK_YieldNode) { TyKind vt; if (view_type_top(id, &vt)) { *out = vt; return 1; } }
   if (ty_k == NK_CallNode && yield_operator_site_type(c, id, out)) return 1;
   if (ty_k == NK_CallNode && yield_builtin_method_site_type(c, id, out)) return 1;
   if (ty_k != NK_YieldNode &&
