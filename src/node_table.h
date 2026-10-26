@@ -187,6 +187,8 @@ void nt_put_file(NodeTable *nt, int fid, const char *path);
 void nt_dump(const NodeTable *nt, FILE *out);
 
 void nt_free(NodeTable *nt);
+/* Renumber the nodes to an order: order[k] is the id node k had (node_table.c). */
+void nt_renumber(NodeTable *nt, const int *order);
 
 /* Deep-clone the subtree rooted at `root`; returns the new root id (or -1).
    Appends nodes and grows nt->count -- parallel per-node arrays must be

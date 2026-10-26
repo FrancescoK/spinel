@@ -19427,8 +19427,24 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       int *bcls, *bbody;
       int nbodies = class_body_list(c, &bcls, &bbody);
       int (*bord)[2] = malloc((size_t)(nbodies > 0 ? nbodies : 1) * sizeof *bord);
-      for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
-      qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
+      if (!bord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      /* The order of a class's bodies is the analysis's fact, which the
+         elaborator records (part 3b of #9898); until then codegen sorts:
+         class_body_list puts the definition first, which is not source order
+         where a later body is the def_node (`class CC < Object`). Node ids
+         order one file; across files the program module does (prog_sort). */
+      if (prog_has_files(c)) {
+        int *ix = malloc(sizeof(int) * (size_t)(nbodies > 0 ? nbodies : 1));
+        if (!ix) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int bi = 0; bi < nbodies; bi++) ix[bi] = bi;
+        prog_sort(c, ix, nbodies, bbody);
+        for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[ix[bi]]; bord[bi][1] = bcls[ix[bi]]; }
+        free(ix);
+      }
+      else {
+        for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
+        qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
+      }
       for (int bx = 0; bx < nbodies; bx++) {
         int ci = bord[bx][1];
         int body2 = bord[bx][0];

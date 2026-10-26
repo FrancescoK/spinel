@@ -13760,15 +13760,21 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   static char *seq_name[256]; static int seq_n[256]; static int nseq = 0;   /* across calls, as above */
   /* one copy per call site, exactly as desugar_builtins does for
      enumerable.rb (a shared definition would carry the union of every
-     call site's argument types onto every site). A copy of a builtins/
-     generic carries the copies its own sites took (bx_copy); a site in it
-     that has none is one whose generic's site the walk had not reached when
-     the copy was made (under --load-model=graph the files' nodes need not
-     come in the order they run), and takes a copy of its own as the walk
-     reaches it. */
-  int site_lo = nt->count;
-  for (int id = 0; id < nt->count; id++) {
-    if (id == n0) id = site_lo;   /* (an own reopen's clones above are no sites) */
+     call site's argument types onto every site). The program's own sites
+     come in the program's order (prog_sort: node order in one program text;
+     under --load-model=graph a builtins/ file, loaded at boot, ahead of the
+     program), so a generic's own sites take their copies before a call
+     clones the generic, and the clone carries them (bx_copy). A site in a
+     copy that has none takes a copy of its own as the walk reaches it, after
+     the program's. (An own reopen's clones, between n0 and site_lo, are no
+     sites.) */
+  int site_lo = nt->count, nfirst = 0;
+  int *first = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) if (nt_kind(nt, id) == NK_CallNode) first[nfirst++] = id;
+  if (prog_has_files(c)) prog_sort(c, first, nfirst, NULL);
+  for (int q = 0; ; q++) {
+    int id = q < nfirst ? first[q] : site_lo + (q - nfirst);
     if (id >= nt->count) break;
     if (nt_kind(nt, id) != NK_CallNode) continue;
     if (id >= site_lo && (nt_int(nt, id, "bx_copy", -1) >= 0 || !nt_int(nt, id, "node_bi", 0))) continue;
@@ -13801,6 +13807,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
     nb[nbn++] = copy;
   }
+  free(first);
   nt_node_set_arr(nt, top, "body", nb, nbn);
   for (int bx = 0; bx < SP_BX_N; bx++) {
     int n = sp_builtin_extra_names_n(bx);

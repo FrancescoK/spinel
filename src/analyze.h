@@ -129,6 +129,14 @@ int prog_defines_only(const Compiler *c, int i);
 int prog_ordered_load(const Compiler *c, int id);
 void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
 int *prog_top_seq(const Compiler *c, int *n, int **file);
+/* Does node a run before node b, as the program runs its files
+   (analyze_program.c)? PROG_UNKNOWN where no order is known: a file loaded
+   only from a method, a condition or a block, against another file. */
+enum { PROG_BEFORE = -1, PROG_SAME = 0, PROG_AFTER = 1, PROG_UNKNOWN = 2 };
+int prog_order(Compiler *c, int a, int b);
+void prog_sort(Compiler *c, int *v, int n, const int *node_of);
+int prog_has_files(const Compiler *c);
+int prog_cmp(Compiler *c, int a, int b, int at, const char *reader);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

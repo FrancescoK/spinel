@@ -1231,6 +1231,12 @@ typedef struct {
   /* the top-level scope of each file root (nt_root), by graph id: 0 for the
      entry (analyze_program.c) */
   int *file_scope;
+  /* each node's file and the load-order rank of its file's top-level
+     statement that holds it (prog_order), kept while comp_parent_map's
+     parents are */
+  int *prog_file, *prog_rank;
+  int prog_place_n;
+  unsigned prog_place_ver;
 
   /* the subset of `classes` synthesized for an anonymous Struct/Data, so
      resolving one does not walk every user class; invalidated wherever
