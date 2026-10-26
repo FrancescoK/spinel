@@ -433,32 +433,18 @@ static int poll_has_local_write(const NodeTable *nt, int n) {
 int poll_pred_quiet(Compiler *c, int pred) {
   return poll_pure_node(c, pred, 0, 0) && !poll_has_local_write(c->nt, pred);
 }
-/* Does node n hold a break (of the loop n is the body of, when it holds no
-   loop or block of its own)? */
-static int poll_has_break(const NodeTable *nt, int n) {
-  if (n < 0) return 0;
-  if (nt_kind(nt, n) == NK_BreakNode) return 1;
-  int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) if (poll_has_break(nt, nt_ref_at(nt, n, i))) return 1;
-  int na = nt_num_arrs(nt, n);
-  for (int i = 0; i < na; i++) {
-    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (poll_has_break(nt, av[j])) return 1;
-  }
-  return 0;
-}
 /* Is a while / until loop one that is pure but for its stores to instance
    variables, writers and captured locals (see above)? It is emitted with an
    inner loop of SP_SIG_CHUNK passes, polled ahead of each, so it holds no
-   break (that would leave the inner loop only) and no loop (whose own poll
-   would sit in the inner one). A program with threads or finalizers polls
+   loop (whose own poll would sit in the inner one); emit_while_chunked
+   turns down one with a break. A program with threads or finalizers polls
    for those at each pass anyway. */
 int poll_chunk_loop(Compiler *c, int id) {
   if (g_promote_mode || !sig_polls() || g_uses_threads || g_uses_finalizers) return 0;
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate"), body = nt_ref(nt, id, "statements");
-  if (nt_loop_post(nt, id) || poll_has_loop(nt, pred) || poll_has_loop(nt, body) || poll_has_break(nt, body)) return 0;
+  if (nt_loop_post(nt, id) || poll_has_loop(nt, pred) || poll_has_loop(nt, body)) return 0;
   return poll_pure_node(c, pred, 0, 1) && (body < 0 || poll_pure_node(c, body, 0, 1));
 }
 /* Is a statement an Integer or Float counting iterator whose block is pure

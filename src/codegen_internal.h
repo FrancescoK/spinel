@@ -2779,6 +2779,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until);
 void emit_for(Compiler *c, int id, Buf *b, int indent);
 void emit_return(Compiler *c, int id, Buf *b, int indent);
 int rescue_is_catchall_name(const char *n);
+int rescue_chain_catches(Compiler *c, int rc, const char *const *above, int bare);
 int subtree_has_retry(const NodeTable *nt, int id);
 void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *resultvar);
 void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar);

@@ -5074,6 +5074,10 @@ signal-default-test: $(SPINEL)
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/cs" 2>/dev/null | tr '\n' ' ')" = "ivar advanced struct advanced attr advanced cell advanced " ] || { echo "signal-default-test: FAIL (a rescue of a SIGINT in a scalar loop read a store from before the loop: chunked loop)"; ok=0; }; \
 	fi; \
+	$(SPINEL) test/signal/interrupt_rescue_locals.rb -o "$$tmp/rl" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile rescue locals)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout 10 "$$tmp/rl" 2>/dev/null | tr '\n' ' ')" = "while in step def rescue in step ensure in step rescue => e passed it on " ] || { echo "signal-default-test: FAIL (a rescue of a SIGINT in a scalar loop saw a pass half done: poll_rescue_frame)"; ok=0; }; \
+	fi; \
 	$(SPINEL) test/signal/interrupt_recursion.rb -o "$$tmp/ir" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile recursion)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/ir" 2>/dev/null)" = "recursion interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a recursion with no loop: the call graph lost its cycle, #9377)"; ok=0; }; \
