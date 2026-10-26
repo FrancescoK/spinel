@@ -1970,6 +1970,7 @@ int        send_family_program_owns(Compiler *c, const char *name);
    the kind of the Array the chain's instances embed, TY_POLY_ARRAY once the
    inference is past its optimistic stage with no element seen. */
 int        comp_ary_root(Compiler *c, int cid);
+int        comp_implicit_to_ary_mi(Compiler *c, int cid);
 int        comp_ty_ary_root(Compiler *c, TyKind t);
 TyKind     comp_ary_kind(Compiler *c, int cid);
 /* Whether Array answers a call named n on an instance of Array subclass

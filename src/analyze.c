@@ -52175,7 +52175,7 @@ static void an_phase_proc_returns(Compiler *c) {
           int val = av[an - 1];
           TyKind vt = infer_type(c, val), src = vt;
           if (ty_is_object(vt)) {
-            int tmi = comp_method_in_chain(c, ty_object_class(vt), "to_ary", NULL);
+            int tmi = comp_implicit_to_ary_mi(c, ty_object_class(vt));
             src = tmi >= 0 ? (TyKind)c->scopes[tmi].ret : TY_UNKNOWN;
           }
           if (src != TY_POLY_ARRAY) continue;

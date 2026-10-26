@@ -3128,7 +3128,8 @@ int desugar_compose_method_operand(Compiler *c) {
    with an Array: CRuby converts such an operand through to_ary, so the call
    takes `w.to_ary` at the AST, where the object operand raised NoMethodError
    (#7407 converts a boxed one at run time). Only when to_ary is known to
-   answer an Array, which is when the conversion and the call agree. */
+   answer an Array, which is when the conversion and the call agree. An
+   Array subclass instance is an Array already and keeps its own elements. */
 int desugar_array_op_to_ary(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -3145,8 +3146,7 @@ int desugar_array_op_to_ary(Compiler *c) {
     if (!ty_is_array(infer_type(c, recv))) continue;
     TyKind at = infer_type(c, av[0]);
     if (!ty_is_object(at)) continue;
-    int dc = -1;
-    int mi = comp_method_in_chain(c, ty_object_class(at), "to_ary", &dc);
+    int mi = comp_implicit_to_ary_mi(c, ty_object_class(at));
     if (mi < 0 || c->scopes[mi].nparams != 0 || !ty_is_array(c->scopes[mi].ret)) continue;
     int base = nt->count;
     int tp = nt_new_node(nt, "CallNode");
