@@ -1954,3 +1954,7 @@ int is_method_naming_call(const char *n) {
                sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n));
 }
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+int is_method_list_call(const char *n) {
+  return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
+}

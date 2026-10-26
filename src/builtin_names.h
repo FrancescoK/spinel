@@ -515,4 +515,5 @@ int is_core_change_call(const char *n);    /* class_eval .. module_exec include 
 int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
 int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
 int is_refine_name(const char *n);         /* refine */
+int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif

@@ -232,16 +232,22 @@ static int ct_owned_by(const NodeTable *nt, int o, const char *names) {
   return ct_names_one(nt, p, names);
 }
 
-/* the names a definer call gives or takes: 1 when one is `meth` or one is
-   not spelled */
+/* Does definer call `call` give or take a method `meth`: 1 when one of the
+   names it spells is `meth` or one is not spelled (a variable). A send of a
+   literal name (`send(:define_method, :inherited)`) is read as the call it
+   names; a send whose target is computed reaches only the program's own
+   methods, and like any call that names no method answers 0. */
 static int ct_call_names(const NodeTable *nt, int call, const char *meth) {
-  int an = 0, args = nt_ref(nt, call, "arguments");
+  const char *namer = nt_str(nt, call, "name");
+  int an = 0, args = nt_ref(nt, call, "arguments"), from = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (!an) return 1;
-  for (int i = 0; i < an; i++) {
+  if (namer && is_send_family(namer)) { namer = an ? ct_lit_name(nt, av[0]) : NULL; from = 1; }
+  if (!namer || !is_method_naming_call(namer)) return 0;
+  if (an <= from) return 1;
+  for (int i = from; i < an; i++) {
     const char *lit = ct_lit_name(nt, av[i]);
     if (!lit || ct_eq(lit, meth)) return 1;
-    if (is_define_method_name(nt_str(nt, call, "name")) || is_alias_method_name(nt_str(nt, call, "name"))) break;
+    if (!is_method_list_call(namer)) break;   /* define_method / alias_method: the first names the method */
   }
   return 0;
 }
@@ -309,7 +315,8 @@ static int ct_core_method_changed(const NodeTable *nt, const int *parent, const 
 }
 
 /* Does the program define a method `meth` anywhere, on any receiver: a def,
-   an alias, or a definer call that spells the name. Asked of the methods
+   an alias, or a definer call that names it or names a method the scan
+   can't read (ct_call_names), directly or through a send. Asked of the methods
    that run whatever class the receiver is: a hook CRuby calls (inherited,
    const_added) or a method a module of the program may override for itself
    (const_set, instance_variable_set). */
@@ -318,11 +325,7 @@ static int ct_method_defined(const NodeTable *nt, const char *meth) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_DefNode && ct_eq(nt_str(nt, id, "name"), meth)) return 1;
     if (k == NK_AliasMethodNode && ct_eq(nt_str(nt, nt_ref(nt, id, "new_name"), "value"), meth)) return 1;
-    if (k == NK_CallNode && is_method_naming_call(nt_str(nt, id, "name"))) {
-      int an = 0, args = nt_ref(nt, id, "arguments");
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an && ct_eq(ct_lit_name(nt, av[0]), meth)) return 1;
-    }
+    if (k == NK_CallNode && ct_call_names(nt, id, meth)) return 1;
   }
   return 0;
 }
