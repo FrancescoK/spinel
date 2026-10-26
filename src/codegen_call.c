@@ -17792,7 +17792,7 @@ int class_implicit_responds(Compiler *c, int cid, const char *qm) {
    compiler-synthesized helper, or a generated Struct iterator on a Data
    class. */
 int method_hidden_from_reflection(Compiler *c, int cid, const char *m) {
-  if (name_is_synth_method(c, m)) return 1;
+  if (name_is_synth_method(c, m) || comp_method_is_private_helper(c, cid, m)) return 1;
   if (class_struct_kind(c, cid) != 2) return 0;
   int mi = comp_method_in_chain(c, cid, m, NULL);
   return mi >= 0 && scope_is_struct_synth(c, mi);
@@ -17876,7 +17876,7 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
       nm = comp_prep_user_name(nm);
       if (nm == s->name) continue;
     }
-    if (name_is_synth_method(c, nm) || scope_is_struct_synth(c, si)) continue;
+    if (name_is_synth_method(c, nm) || comp_scope_is_private_helper(c, si) || scope_is_struct_synth(c, si)) continue;
     if (s->origin_module_ci > 0 && !with_modules) continue;
     refl_note(r, nm, refl_vis_wanted(refl_own_vis(c, ci, si, s->name), pub, prot, priv));
   }
@@ -18488,7 +18488,7 @@ int respond_to_user_defined(Compiler *c, int id, int recv) {
 /* Name `nm` of class k into the list its visibility answers by: `pub` for
    any respond_to?, `priv` for one with include_all only. */
 void emit_responds_name(Compiler *c, int k, const char *nm, Buf *pub, Buf *priv) {
-  if (name_is_synth_method(c, nm) || is_initialize_family(nm)) return;
+  if (name_is_synth_method(c, nm) || comp_method_is_private_helper(c, k, nm) || is_initialize_family(nm)) return;
   /* a name class k or a class between it and the definer undefines
      (`undef_method :x` in a subclass) is answered by none of k's objects */
   if (k >= 0 && comp_is_undeffed_in_chain(c, k, nm)) return;
@@ -30601,7 +30601,7 @@ int object_private_method_name(const char *qm) {
    without its deferral to the class's own respond_to? -- this is what that
    override's `super` asks. */
 static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
-  if (name_is_synth_method(c, qm)) return 0;
+  if (name_is_synth_method(c, qm) || comp_method_is_private_helper(c, cid, qm)) return 0;
   if (sp_streq(qm, "initialize_copy")) return 1;
   /* BasicObject#initialize is private too, unless the class made it public:
      a `public :initialize` counts whether or not the chain defines it */

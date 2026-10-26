@@ -1677,9 +1677,12 @@ int    comp_class_self_inst_mi(Compiler *c, int class_id, const char *name);
    method for: a builtins/ file's own helper (is_builtin_helper_name, the
    enumerator's `__enumw_map`) or a desugar's per-call-site copy (marked
    `private_helper` where it is made, enumerable.rb's `__enum_count__0`).
-   Only the lowering that names it calls it. comp_name_is_private_helper:
-   every scope of the name is one. */
+   Only the lowering that names it calls it. comp_method_is_private_helper:
+   the method an instance of class `cid` (-1: main) reaches by `m` is one;
+   comp_name_is_private_helper: every scope of the name is one, for a list
+   that knows no receiver. */
 int    comp_scope_is_private_helper(Compiler *c, int si);
+int    comp_method_is_private_helper(Compiler *c, int cid, const char *m);
 int    comp_name_is_private_helper(Compiler *c, const char *m);
 /* Does no Ruby method answer to `m`, though a scope has the name: a
    private helper or another synthesized method? Reflection and a computed

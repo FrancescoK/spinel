@@ -3449,6 +3449,21 @@ int comp_name_is_private_helper(Compiler *c, const char *m) {
   }
   return helper;
 }
+/* See compiler.h. The method an instance of `cid` reaches by `m` (its
+   chain, then the top-level def every object has as a private method),
+   for `cid` < 0 the top-level def alone: one name can be a builtin's
+   helper on one class (ThreadGroup's `__remove`) and a program's method on
+   another, so the answer is the resolved method's, not the name's. */
+int comp_method_is_private_helper(Compiler *c, int cid, const char *m) {
+  if (!m || m[0] != '_' || m[1] != '_') return 0;
+  /* the member an instance reaches: a reader the program declares nearer
+     than the helper is its own (comp_resolve_member) */
+  int mi = -1;
+  if (cid >= 0 && comp_resolve_member(c, cid, m, 0, NULL, &mi) == SP_MEMBER_ATTR) return 0;
+  for (int s = mi < 0 ? an_scopes_named_first(c, m) : -1; s >= 0 && mi < 0; s = an_scopes_named_next(c, m, s))
+    if (c->scopes[s].class_id < 0 && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form) mi = s;
+  return comp_scope_is_private_helper(c, mi);
+}
 /* Compiler-synthesized methods that must stay invisible to reflection
    (respond_to?, methods, instance_methods, method_defined?) and to a send
    with a computed name: they are implementation detail with no CRuby
@@ -3607,8 +3622,7 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
              : comp_method_in_chain(c, par, c->scopes[imi].name, NULL);
   }
   const char *sym = method_sym_arg(c, node);
-  /* a lowering's own helper is no method a Method can name */
-  if (!sym || comp_name_is_private_helper(c, sym)) return -1;
+  if (!sym) return -1;
   int recv = nt_ref(nt, node, "receiver");
   /* Klass.instance_method(:m): the class's INSTANCE method (Klass.method(:m)
      would be the class method) */
@@ -3663,6 +3677,8 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
    makes one for every method a `method(:name)` names). */
 int method_obj_target_mi(Compiler *c, int node) {
   int mi = method_obj_target_mi_raw(c, node);
+  /* a lowering's own helper is no method a Method can name */
+  if (comp_scope_is_private_helper(c, mi)) return -1;
   int pf = scope_proc_form_of(c, mi);
   return pf >= 0 ? pf : mi;
 }
