@@ -3644,16 +3644,22 @@ int comp_ret_next(const Compiler *c, int u) {
    name: one entry per (CallNode, argument) pair. Asking whether an ivar is
    lent to a callee walked every CallNode of the program once per question,
    and a machine-generated program asks it for nearly every method. Chains
-   carry hash collisions: callers keep their name/owner filters. An argument
-   array rewritten in place (nt_node_set_arr) leaves the table's version
-   alone, so a caller that may run after such a rewrite drops the index with
-   comp_ivarg_invalidate first. */
+   carry hash collisions: callers keep their name/owner filters. Rebuilt when
+   the table has changed since: its version, or its edits (an argument array
+   rewritten in place, nt_node_set_arr, leaves the version alone). Only the
+   calls are walked, through their kind chain. */
 static void ivarg_build(Compiler *c) {
   free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
   c->ivarg_call = c->ivarg_arg = NULL;
   const NodeTable *nt = c->nt;
-  int n = nt->count, np = 0;
-  for (int u = 0; u < n; u++) {
+  int np = 0, ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) ncalls++;
+  int *calls = malloc(sizeof(int) * (size_t)(ncalls > 0 ? ncalls : 1));
+  if (!calls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) calls[ncalls++] = u;
+  for (int q = 0; q < ncalls; q++) {
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3662,20 +3668,22 @@ static void ivarg_build(Compiler *c) {
   }
   int nb = 16;
   while (nb < np && nb < (1 << 22)) nb <<= 1;
-  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) return;
+  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) { free(calls); return; }
   c->ivarg_call = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   c->ivarg_arg = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   if (!c->ivarg_call || !c->ivarg_arg) {
     free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
     c->ivarg_head = c->ivarg_next = c->ivarg_call = c->ivarg_arg = NULL;
     c->ivarg_built = 0;
+    free(calls);
     return;
   }
   c->ivarg_nbuckets = nb;
   c->ivarg_count = np;
   for (int b = 0; b < nb; b++) c->ivarg_head[b] = -1;
   int e = np;
-  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+  for (int q = ncalls - 1; q >= 0; q--) {   /* reverse: chains run in node order */
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3691,11 +3699,12 @@ static void ivarg_build(Compiler *c) {
       c->ivarg_head[b] = e;
     }
   }
-  c->ivarg_version = nt->version;
+  free(calls);
+  c->ivarg_stamp = nt->edits + nt->version;
   c->ivarg_built = 1;
 }
 int comp_ivarg_first(Compiler *c, const char *name) {
-  if (!c->ivarg_built || c->ivarg_version != c->nt->version) ivarg_build(c);
+  if (!c->ivarg_built || c->ivarg_stamp != c->nt->edits + c->nt->version) ivarg_build(c);
   if (!c->ivarg_built || !name) return -1;
   return c->ivarg_head[sp_strhash(name) & (unsigned)(c->ivarg_nbuckets - 1)];
 }
