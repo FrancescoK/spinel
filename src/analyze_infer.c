@@ -11395,6 +11395,14 @@ TyKind infer_uncached(Compiler *c, int id) {
        refused -- a lambda's keywords, `f.call(**h, "s" => nil)`, too. */
     if (hv != TY_UNKNOWN && spread_ty != TY_UNKNOWN && (spread_mixed || spread_ty != hv))
       return TY_POLY_POLY_HASH;
+    /* A literal a constant or a global is assigned, whose `[]=` stores
+       widened the slot to the poly-valued Hash of the literal's key
+       (fold_named_slot_evidence), is built as that Hash: the slot and the
+       literal are one Hash */
+    if (hv != TY_UNKNOWN && c->hash_want && id < c->node_cap && ty_is_hash(c->hash_want[id]) &&
+        c->hash_want[id] != hv && ty_hash_val(c->hash_want[id]) == TY_POLY &&
+        ty_hash_key(c->hash_want[id]) == ty_hash_key(hv))
+      return c->hash_want[id];
     if (hv != TY_UNKNOWN) return hv;
     /* keyword arguments are symbol-keyed */
     if (empty_spread && kt == TY_UNKNOWN) return nk == NK_KeywordHashNode ? TY_SYM_POLY_HASH : TY_POLY_POLY_HASH;

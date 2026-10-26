@@ -3133,6 +3133,34 @@ static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind 
   return widen_arg_array(c, recv);
 }
 
+static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth);
+/* The Hash literals constant or global `recv` is assigned, directly or
+   through a local or a plain `begin` that hands one over (`T = begin h =
+   {"" => ""}; h.delete(""); h end`), are built as the Hash `want` its
+   stores widened it to. Left at their own variant, the write handed the
+   slot a Hash it has no conversion for (a copy would not be the Hash the
+   local holds), and the slot, joined with it, became the scalar box whose
+   String-valued Hash took no value of another class. */
+static void widen_named_hash_literals(Compiler *c, int recv, TyKind want) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  const char *nm = nt_str(nt, recv, "name");
+  if (!c->hash_want || !nm) return;
+  int gv = rk == NK_GlobalVariableReadNode;
+  if (!gv && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return;
+  const char *gn = gv ? comp_resolve_gvar(c, nm + 1) : NULL;
+  if (gv && !gn) return;
+  NT_FOREACH_KIND(nt, gv ? NK_GlobalVariableWriteNode : NK_ConstantWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(gv ? comp_resolve_gvar(c, wn + 1) : wn, gv ? gn : nm)) continue;
+    int v = nt_ref(nt, w, "value"), one;
+    if (vp_one(nt, v, VPS_BEGIN_PLAIN, &one) == VP1_NODE) v = one;
+    int lits[32], nl = container_literals(c, v, lits, 0, 32, 0);
+    for (int q = 0; q < nl; q++)
+      if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
+        comp_set_hash_want(c, lits[q], want);
+  }
+}
 static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
                                     int is_idx_write, TyKind kt, TyKind vt) {
   /* a qualified constant (`Codes::T["k"] = v`, `H::L << 64`) is the
@@ -3144,6 +3172,7 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
   fold_evidence(&nt2, is_push, is_splice, kt, vt);
   if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
   ty_ref_set(c, nslot, nt2);
+  if (nhash) widen_named_hash_literals(c, recv, nt2);
   return 1;
 }
 
