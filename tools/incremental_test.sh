@@ -66,12 +66,18 @@ stats() {
   : "${units:=-1}" "${hit:=-1}" "${miss:=-1}" "${rtf:=-}"
 }
 field() { printf '%s\n' "$_line" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+# every binary is linked as $T/o_NAME/prog and then moved to $T/NAME: the
+# macOS linker signs a binary under its file name (and its LC_UUID follows),
+# so two builds compared byte for byte must have been linked under one name
+out() { mkdir -p "$T/o_$1"; echo "$T/o_$1/prog"; }
+moved() { [ -f "$T/o_$1/prog" ] && mv "$T/o_$1/prog" "$T/$1"; return 0; }
 # ib NAME SRC [FLAG...]: an --incremental --cache-stats build of SRC into
 # $T/NAME, its log in $T/NAME.err, its exit status in rc, its stats parsed
 ib() {
   _n=$1; _s=$2; shift 2
-  "$SP" "$_s" --incremental --cache-stats "$@" -o "$T/$_n" > "$T/$_n.err" 2>&1
+  "$SP" "$_s" --incremental --cache-stats "$@" -o "$(out "$_n")" > "$T/$_n.err" 2>&1
   rc=$?
+  moved "$_n"
   stats "$T/$_n.err"
 }
 # ib_env VAR=VALUE... -- NAME SRC [FLAG...]: ib with those variables set for
@@ -341,7 +347,9 @@ rm -rf "$T/cache11"
 # one declaration left out of the table: implicit declarations are errors in
 # a unit compile, so this is a failed unit, never a cached object
 ib_env SPINEL_UNIT_DROP_DECL="$DESC" -- gap "$P"
-imp=$(grep -c 'implicit declaration' "$T/gap.err")
+# gcc says "implicit declaration of function", clang "call to undeclared
+# function"; both name the warning they turned into an error
+imp=$(grep -c 'implicit-function-declaration' "$T/gap.err")
 stf=$(grep -c '^spinel: incremental: unit .* did not compile; STRICT, failing' "$T/gap.err")
 o=0; [ $rc = 1 ] && [ "$imp" -ge 1 ] && [ "$stf" = 1 ] && o=1
 report "12 planted gap, STRICT" $o "$DESC: rc=$rc implicit-declaration=$imp strict-notice=$stf"
@@ -419,12 +427,13 @@ tail_of gapfb
 
 # --- 15 two builds on one empty cache -----------------------------------------
 export SPINEL_CACHE_DIR=$T/cache15
-"$SP" "$P" --incremental --cache-stats -o "$T/c15a" > "$T/c15a.err" 2>&1 &
+"$SP" "$P" --incremental --cache-stats -o "$(out c15a)" > "$T/c15a.err" 2>&1 &
 pa=$!
-"$SP" "$P" --incremental --cache-stats -o "$T/c15b" > "$T/c15b.err" 2>&1 &
+"$SP" "$P" --incremental --cache-stats -o "$(out c15b)" > "$T/c15b.err" 2>&1 &
 pb=$!
 wait $pa; ra=$?
 wait $pb; rb=$?
+moved c15a; moved c15b
 ib c15c "$P"
 ntmp=$(find "$T/cache15" -name '*.tmp.*' | wc -l | tr -d ' ')
 o=0; [ $ra = 0 ] && [ $rb = 0 ] && [ $rc = 0 ] && cmp -s "$T/c15a" "$T/c15b" && cmp -s "$T/c15a" "$T/b0" &&
