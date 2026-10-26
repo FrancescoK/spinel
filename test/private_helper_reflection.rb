@@ -3,7 +3,8 @@
 # (`__enum_count__0`, `__int_double__0` for a program's own Integer
 # method), ThreadGroup's `__remove`. No reflection and no send with a name
 # known only at run time sees them; a method the program itself names with
-# a leading `__` stays visible.
+# a leading `__` stays visible, also where a builtin's helper has the same
+# name (a program's own `Box#__remove` beside ThreadGroup's).
 
 class Integer
   def double = self * 2
@@ -13,6 +14,7 @@ def __int_twice(x) = x * 2
 
 class Box
   def __cmp_key = 7
+  def __remove(x) = "box #{x}"
   def go = 1
 end
 
@@ -44,3 +46,9 @@ p((g.method(:__remove) rescue $!.class))
 end
 p Box.instance_methods(false).sort
 p send("__int_twice", 5), Box.new.send("__cmp_key")
+b = Box.new
+%w[__remove].each do |n|
+  p [n, b.respond_to?(n), Box.method_defined?(n), b.send("#{n}", 1), b.method(:__remove).call(2)]
+  p [n, g.respond_to?(n, true), ThreadGroup.method_defined?(n), (g.send("#{n}", Thread.current) rescue $!.class)]
+end
+p b.methods.grep(/\A__r/), g.methods.grep(/\A__r/), Box.instance_methods(false).sort

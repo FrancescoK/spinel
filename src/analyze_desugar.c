@@ -5813,6 +5813,16 @@ static char **dsn_inames_build(Compiler *c, int *n) {
   *n = cnt;
   return in;
 }
+/* Does an object of class `cls` or of any subclass reach by `m` only a
+   compiler's own helper (comp_method_is_private_helper), never a method of
+   the program's? (-1: the class is not known, nothing to say) */
+static int dsend_name_is_helper(Compiler *c, int cls, const char *m) {
+  if (cls < 0 || !comp_method_is_private_helper(c, cls, m)) return 0;
+  for (int d = 0; d < c->nclasses; d++)
+    if (d != cls && is_descendant(c, d, cls) && comp_method_in_chain(c, d, m, NULL) >= 0 &&
+        !comp_method_is_private_helper(c, d, m)) return 0;
+  return 1;
+}
 static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out);
 static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***out) {
   if (!g_dsn.on) return dsend_receiver_names_uncached(c, cls, subclasses, out);
@@ -6474,6 +6484,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     char **own = NULL; int nown = 0;
     int computed = an_send_name_is_computed(c, argv[0]);
     int class_recv = -1;     /* the class a Class-valued receiver names */
+    int obj_recv = -1;       /* the class an object receiver is known to have */
     int builtin_recv = 0;   /* the arms are a builtin class's methods */
     /* A name that is not computed -- a variable, a parameter, a table read
        (`send(type, ...)`, `send(*DISPATCH[op])`) -- holds one of the names
@@ -6526,7 +6537,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          literals alone, and a String's `size` was no arm of the dispatch,
          which is never lowered again: the send raised NoMethodError. */
       if (rt == TY_UNKNOWN && g_infer_optimistic) continue;
-      if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own);
+      if (ty_is_object(rt)) { obj_recv = ty_object_class(rt); nown = dsend_receiver_names(c, obj_recv, 1, &own); }
       else if (rt == TY_POLY || rt == TY_UNKNOWN) {
         int cap = 0; ANameHash seen; memset(&seen, 0, sizeof seen);
         for (int k = 0; k < c->nclasses; k++) {
@@ -6730,8 +6741,10 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          (the enumerator's `__enumw_map`, a builtin's per-site copy): no
          Ruby name reaches it, and the dispatch raises NoMethodError for its
          name. (A literal the program spells keeps its arm, as a direct
-         call of that name does.) */
-      if (computed && name_is_synth_method(c, use[k])) continue;
+         call of that name does.) On a receiver of a known class it is the
+         method that class reaches: ThreadGroup's `__remove` is a helper
+         where a program's own `Box#__remove` is not. */
+      if (computed && (name_is_synth_method(c, use[k]) || dsend_name_is_helper(c, obj_recv, use[k]))) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
          that count gets no arm (a reader takes none, a writer one). The
