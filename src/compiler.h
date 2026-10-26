@@ -1293,7 +1293,7 @@ typedef struct {
   int *ivarg_call;      /* [ivarg_count] an entry's CallNode */
   int *ivarg_arg;       /* [ivarg_count] its InstanceVariableReadNode argument */
   int ivarg_nbuckets, ivarg_count;
-  unsigned ivarg_version;
+  unsigned long ivarg_stamp;   /* the table's edits + version it was built at */
   int ivarg_built;
 
   /* variable-site chains by (kind, variable); see comp_vsite_first */

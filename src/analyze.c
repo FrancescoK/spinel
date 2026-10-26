@@ -20283,8 +20283,10 @@ static int strbuf_elem_first_iterator(const char *n) {
    nodes in between) and again if the table grows; each list is ascending, so
    the stores are met in the order the walk met them. */
 typedef struct SbStoreEnt { const char *name; Scope *sc; int *ids; int n, cap; struct SbStoreEnt *next; } SbStoreEnt;
-#define SB_STORE_BUCKETS 4096
-static SbStoreEnt *sb_store_tab[SB_STORE_BUCKETS];
+/* (the buckets grow with the program: a fixed 4096 left a large one's
+   chains hundreds long, walked by every add and every lookup) */
+static SbStoreEnt **sb_store_tab;
+static unsigned sb_store_nb;
 static const NodeTable *sb_store_nt; static int sb_store_count = -1; static int sb_store_valid;
 static unsigned sb_store_hash(const char *nm, Scope *sc) {
   unsigned h = 2166136261u ^ (unsigned)(uintptr_t)sc;
@@ -20294,14 +20296,14 @@ static unsigned sb_store_hash(const char *nm, Scope *sc) {
 static void svc_clear(void);
 static void sb_store_clear(void) {
   svc_clear();
-  for (int b = 0; b < SB_STORE_BUCKETS; b++) {
+  for (unsigned b = 0; b < sb_store_nb; b++) {
     for (SbStoreEnt *e = sb_store_tab[b]; e; ) { SbStoreEnt *nx = e->next; free(e->ids); free(e); e = nx; }
     sb_store_tab[b] = NULL;
   }
   sb_store_valid = 0;
 }
 static void sb_store_add(const char *nm, Scope *sc, int id) {
-  unsigned b = sb_store_hash(nm, sc) % SB_STORE_BUCKETS;
+  unsigned b = sb_store_hash(nm, sc) & (sb_store_nb - 1);
   SbStoreEnt *e = sb_store_tab[b];
   while (e && !(e->sc == sc && sp_streq(e->name, nm))) e = e->next;
   if (!e) {
@@ -20315,6 +20317,14 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
   const NodeTable *nt = c->nt;
   if (!sb_store_valid || sb_store_nt != nt || sb_store_count != nt->count) {
     sb_store_clear();
+    unsigned nb = 4096;
+    while (nb < (unsigned)nt->count / 2 && nb < (1u << 24)) nb <<= 1;
+    if (nb != sb_store_nb) {
+      free(sb_store_tab);
+      sb_store_tab = calloc(nb, sizeof *sb_store_tab);
+      if (!sb_store_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      sb_store_nb = nb;
+    }
     for (int id = 0; id < nt->count; id++) {
       NodeKind k = nt_kind(nt, id);
       if (k == NK_LocalVariableWriteNode) {
@@ -20331,7 +20341,7 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
     }
     sb_store_nt = nt; sb_store_count = nt->count; sb_store_valid = 1;
   }
-  for (SbStoreEnt *e = sb_store_tab[sb_store_hash(nm, sc) % SB_STORE_BUCKETS]; e; e = e->next)
+  for (SbStoreEnt *e = sb_store_tab[sb_store_hash(nm, sc) & (sb_store_nb - 1)]; e; e = e->next)
     if (e->sc == sc && sp_streq(e->name, nm)) { *n = e->n; return e->ids; }
   *n = 0; return NULL;
 }
@@ -23845,8 +23855,15 @@ static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const c
   if (!lit && nt_kind(nt, hr) != NK_LocalVariableReadNode) return;
   const char *hn = lit ? NULL : nt_str(nt, hr, "name");
   Scope *hs = lit ? NULL : comp_scope_of(c, hr);
+  if (!lit && !hn) return;
   StoreVals stores = {0};
-  for (int w = 0; w < (lit ? 1 : nt->count); w++) {
+  /* a local's stores are its writes and the calls on it: the store index
+     lists those (sb_store_nodes), in node order, as the walk of the whole
+     table met them */
+  int nsn = 0;
+  const int *sns = lit ? NULL : sb_store_nodes(c, hn, hs, &nsn);
+  for (int si = 0; si < (lit ? 1 : nsn); si++) {
+    int w = lit ? 0 : sns[si];
     int ns = 0;
     if (lit) {
       int en = 0; const int *el = nt_arr(nt, hr, "elements", &en);
@@ -25519,6 +25536,34 @@ static int sb_iter_fresh_source(Compiler *c, int n) {
     return 0;
   return infer_type(c, n) == TY_STR_ARRAY;
 }
+/* The calls whose receiver is node u, chained (sb_rcall_first, then
+   sb_rcall_next by call): the question below asked each read of a local for
+   its call by walking every call of the program, per read and per iterator.
+   Built on first use and again whenever the table has changed since. */
+static int *sb_rcall_head, *sb_rcall_nx, sb_rcall_n = -1;
+static unsigned long sb_rcall_stamp;
+static const NodeTable *sb_rcall_nt;
+static int sb_rcall_first(Compiler *c, int u) {
+  const NodeTable *nt = c->nt;
+  unsigned long stamp = nt->edits + nt->version;
+  if (sb_rcall_nt != nt || sb_rcall_n != nt->count || sb_rcall_stamp != stamp) {
+    int n = nt->count;
+    free(sb_rcall_head); free(sb_rcall_nx);
+    sb_rcall_head = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+    sb_rcall_nx = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+    if (!sb_rcall_head || !sb_rcall_nx) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < n; i++) sb_rcall_head[i] = sb_rcall_nx[i] = -1;
+    for (int d = comp_kind_first(c, NK_CallNode); d >= 0; d = comp_kind_next(c, d)) {
+      if (nt_kind(nt, d) != NK_CallNode) continue;
+      int r = nt_ref(nt, d, "receiver");
+      if (r < 0 || r >= n || d >= n) continue;
+      sb_rcall_nx[d] = sb_rcall_head[r]; sb_rcall_head[r] = d;
+    }
+    sb_rcall_nt = nt; sb_rcall_n = n; sb_rcall_stamp = stamp;
+  }
+  return u >= 0 && u < sb_rcall_n ? sb_rcall_head[u] : -1;
+}
+static int sb_rcall_next(int d) { return d >= 0 && d < sb_rcall_n ? sb_rcall_nx[d] : -1; }
 /* An element iterator w over local `vn` (`a = s.split(";"); a.shift;
    a.each { |x| x.strip!; out << x }`) whose answer is dropped: a mutation of
    the String it yields is seen only through the block's own value when the
@@ -25553,8 +25598,8 @@ static int sb_iter_local_unobserved(Compiler *c, int w, int recv, const char *vn
     /* only the receiver of a call that hands out no String w mutates:
        a count, or (ahead of w) one taking an element out */
     int ok = 0;
-    for (int d = comp_kind_first(c, NK_CallNode); d >= 0 && !ok; d = comp_kind_next(c, d)) {
-      if (nt_kind(nt, d) != NK_CallNode || nt_ref(nt, d, "receiver") != u || nt_ref(nt, d, "block") >= 0) continue;
+    for (int d = sb_rcall_first(c, u); d >= 0 && !ok; d = sb_rcall_next(d)) {
+      if (nt_ref(nt, d, "block") >= 0) continue;
       const char *dn = nt_str(nt, d, "name");
       ok = dn && (sp_streq(dn, "size") || sp_streq(dn, "length") || sp_streq(dn, "empty?") ||
                   (u < w && (sp_streq(dn, "shift") || sp_streq(dn, "pop"))));
@@ -25715,7 +25760,6 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
   /* --share-strings: the one rule decides first (#6765) */
   changed |= share_default_apply(c, 1);
   sb_store_valid = 0;   /* this run's store index is built on first use */
-  comp_ivarg_invalidate(c);   /* an_ivar_lent's, likewise */
   const NodeTable *nt = c->nt;
   /* mutated string locals: receivers of an in-place mutator */
   /* per-kind chains: these walks run every fixpoint round, and the full-table
