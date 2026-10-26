@@ -2545,7 +2545,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
   if (rt != TY_POLY_ARRAY && repr_of(c, argv[1]).kind == RK_BOXED) {
     int tv = ++g_tmp;
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ti, tv); emit_boxed(c, argv[1], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) { (void)", tv, ti, ti);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if ((_t%d = sp_poly_frange_ix(_t%d)).tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) { (void)", tv, ti, ti, ti);
     int vbind = view_bind(argv[1], "_t%d", tv);
     int vv = view_push(c, argv[1], TY_POLY);
     int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
@@ -2572,7 +2572,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
     buf_puts(b, "; })");
     return;
   }
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ((_t%d = sp_poly_frange_ix(_t%d)).tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti, ti);
   /* (one-String mode: the splice answers the element, the handle, and the
      store the String's bytes; both arms answer the bytes) */
   int one_s = ty_array_elem(rt) == TY_STRING;
@@ -2607,7 +2607,7 @@ static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt,
   int rbind = view_bind(recv, "_t%d", tr);
   int ti = ++g_tmp;
   buf_printf(b, "sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ((_t%d = sp_poly_frange_ix(_t%d)).tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti, ti);
   Buf ab; memset(&ab, 0, sizeof ab);
   int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
   int v = view_push(c, argv[0], TY_RANGE);
