@@ -8444,7 +8444,8 @@ int an_push_widens_fresh(Compiler *c, int id) {
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!nm || recv < 0 || !is_push_alias(nm) || nt_ref(nt, id, "block") >= 0) return 0;
+  int cat = nm && sp_streq(nm, "concat");
+  if (!nm || recv < 0 || !(is_push_alias(nm) || cat) || nt_ref(nt, id, "block") >= 0) return 0;
   if (nt_kind(nt, nt_paren_single(c->nt, recv)) != NK_CallNode) return 0;
   TyKind rt = infer_type(c, recv);
   if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
@@ -8454,14 +8455,26 @@ int an_push_widens_fresh(Compiler *c, int id) {
   TyKind elem = ty_array_elem(rt);
   int a = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  /* concat splices each argument's elements: a typed Array of another
+     kind (an Integer stays an Integer beside Floats, as CRuby keeps it) */
+  if (cat) {
+    int other = 0;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
+      TyKind at = infer_type(c, av[k]);
+      if (at != TY_STR_ARRAY && at != TY_INT_ARRAY && at != TY_FLOAT_ARRAY && at != TY_POLY_ARRAY) return 0;
+      if (at != rt) other = 1;
+    }
+    return other;
+  }
   for (int k = 0; k < ac; k++) {
     if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
     TyKind at = infer_type(c, av[k]);
     if (at == TY_STRBUF) at = TY_STRING;
     int scalar = at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL || at == TY_BOOL ||
                  at == TY_BIGINT;
-    /* an Integer into a Float Array is stored as the Float it converts to */
-    if (scalar && at != elem && !(elem == TY_FLOAT && at == TY_INT)) return 1;
+    /* (an Integer beside Floats stays an Integer, as CRuby keeps it) */
+    if (scalar && at != elem) return 1;
   }
   return 0;
 }
