@@ -12195,20 +12195,6 @@ static int bi_kernel_call_name(const char *nm) {
   return str_in(nm, ks);
 }
 
-/* Retype every node of the subtree at `id` to a NilNode. The generic
-   definition is cloned per call site and then left out of the program, but
-   the passes that walk the node table by id rather than by tree still saw
-   its DefNode, its block parameters and its locals, and declared each of
-   them (rooted) in main. A NilNode is what those passes skip. */
-static void bi_subtree_blank(NodeTable *nt, int id) {
-  if (id < 0 || id >= nt->count) return;
-  SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) bi_subtree_blank(nt, nd->r[j].ref);
-  for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) bi_subtree_blank(nt, nd->a[j].ids[k]);
-  nt_node_set_type(nt, id, "NilNode");
-}
-
 /* does any DefNode among the program's own nodes carry this name? (the
    scopes are not built when desugar_builtins runs) */
 static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
@@ -12343,7 +12329,7 @@ int desugar_builtins(Compiler *c) {
        orphaned but still a ConstantReadNode, the constant made every
        program that mentioned a builtin carry the class machinery (the
        prologue scan walks the table by id) */
-    bi_subtree_blank(nt, cp);
+    nt_subtree_blank(nt, cp);
     nt_node_set_type(nt, st, "NilNode");
     changed = 1;
   }
@@ -12366,7 +12352,7 @@ int desugar_builtins(Compiler *c) {
     if (bi < nbuiltin) continue;
     int g = own_enum_generic(nt, own[k]);
     if (g < 0) break;
-    if (gdef[bi] >= 0) bi_subtree_blank(nt, gdef[bi]);
+    if (gdef[bi] >= 0) nt_subtree_blank(nt, gdef[bi]);
     gdef[bi] = g;
     changed = 1;
   }
@@ -12468,7 +12454,7 @@ int desugar_builtins(Compiler *c) {
     nb[nbn++] = copy;
   }
   nt_node_set_arr(nt, top, "body", nb, nbn);
-  for (int i = 0; i < sp_builtin_enum_names_n; i++) if (gdef[i] >= 0) bi_subtree_blank(nt, gdef[i]);
+  for (int i = 0; i < sp_builtin_enum_names_n; i++) if (gdef[i] >= 0) nt_subtree_blank(nt, gdef[i]);
   comp_grow_node_arrays(c);
   free(gdef); free(nb);
   return 1;
@@ -12589,8 +12575,8 @@ static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const u
     nt_node_set_arr(nt, st, "body", &keep, 1);
     keep = st;
   }
-  bi_subtree_blank(nt, pred);
-  if (drop >= 0) bi_subtree_blank(nt, drop);
+  nt_subtree_blank(nt, pred);
+  if (drop >= 0) nt_subtree_blank(nt, drop);
   nt_node_set_ref(nt, id, "predicate", -1);
   nt_node_set_ref(nt, id, "statements", -1);
   nt_node_set_ref(nt, id, k == NK_IfNode ? "subsequent" : "else_clause", -1);
@@ -13646,7 +13632,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, def, "name", gn); }
         if (bi >= 0) gdef[bx][bi] = def;
       }
-      bi_subtree_blank(nt, cp);
+      nt_subtree_blank(nt, cp);
       nt_node_set_type(nt, st, "NilNode");
       changed = 1;
       continue;
@@ -13683,7 +13669,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
            answer SPINEL_NO_BUILTINS=1 gives). */
         int bi0 = sp_builtin_extra_name_index(bx, name);
         if (bi0 >= 0 && gdef[bx] && gdef[bx][bi0] >= 0) {
-          bi_subtree_blank(nt, gdef[bx][bi0]);
+          nt_subtree_blank(nt, gdef[bx][bi0]);
           gdef[bx][bi0] = -1;
         }
         continue;
@@ -13705,14 +13691,14 @@ int desugar_builtin_scalar_defs(Compiler *c) {
       { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, clone, "name", gn); }
       int bi = sp_builtin_extra_name_index(bx, name);
       if (bi >= 0) {
-        if (gdef[bx][bi] >= 0) bi_subtree_blank(nt, gdef[bx][bi]);
+        if (gdef[bx][bi] >= 0) nt_subtree_blank(nt, gdef[bx][bi]);
         gdef[bx][bi] = clone;
       }
       else {
         int j = -1;
         for (int m = 0; m < odef_n[bx]; m++) if (sp_streq(odef_name[bx][m], name)) { j = m; break; }
         if (j >= 0) {
-          if (odef_def[bx][j] >= 0) bi_subtree_blank(nt, odef_def[bx][j]);
+          if (odef_def[bx][j] >= 0) nt_subtree_blank(nt, odef_def[bx][j]);
           odef_def[bx][j] = clone;
         }
         else {
@@ -13780,10 +13766,10 @@ int desugar_builtin_scalar_defs(Compiler *c) {
   nt_node_set_arr(nt, top, "body", nb, nbn);
   for (int bx = 0; bx < SP_BX_N; bx++) {
     int n = sp_builtin_extra_names_n(bx);
-    for (int i = 0; i < n; i++) if (gdef[bx] && gdef[bx][i] >= 0) bi_subtree_blank(nt, gdef[bx][i]);
+    for (int i = 0; i < n; i++) if (gdef[bx] && gdef[bx][i] >= 0) nt_subtree_blank(nt, gdef[bx][i]);
     free(gdef[bx]);
     for (int i = 0; i < odef_n[bx]; i++) {
-      if (odef_def[bx][i] >= 0) bi_subtree_blank(nt, odef_def[bx][i]);
+      if (odef_def[bx][i] >= 0) nt_subtree_blank(nt, odef_def[bx][i]);
       free(odef_name[bx][i]);
     }
     free(odef_name[bx]); free(odef_def[bx]);
@@ -14299,7 +14285,7 @@ int desugar_recursive_param_defaults(Compiler *c) {
     int v = ds[i].val;
     long long vl = nt_int(nt, v, "node_line", 0), vf = nt_int(nt, v, "node_file", 0),
               vc = nt_int(nt, v, "node_col", 0);
-    bi_subtree_blank(nt, v);
+    nt_subtree_blank(nt, v);
     nt_node_reset(nt, v, "CallNode");
     nt_node_set_int(nt, v, "node_line", vl);
     nt_node_set_int(nt, v, "node_file", vf);

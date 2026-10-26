@@ -505,4 +505,13 @@ enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
 typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
 const BuiltinClass *builtin_class_at(int i);   /* the i-th row, NULL past the last */
 int is_native_class_name(const char *n);       /* any row: a class Spinel has without a library */
+/* names the compile-time evaluation and its questions ask about (ct_eval.c,
+   analyze_ct.c) */
+int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
+int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
+int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */
+int is_core_change_call(const char *n);    /* class_eval .. module_exec include prepend define_method send family alias_method remove_method undef_method: may change a class's methods */
+int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
+int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
+int is_refine_name(const char *n);         /* refine */
 #endif

@@ -33,6 +33,7 @@ _Static_assert(NT_LOOP_BEGIN_MODIFIER == PM_LOOP_FLAGS_BEGIN_MODIFIER, "loop beg
 _Static_assert(NT_RE_IGNORE_CASE == PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE, "regexp /i flag");
 _Static_assert(NT_RE_EXTENDED == PM_REGULAR_EXPRESSION_FLAGS_EXTENDED, "regexp /x flag");
 _Static_assert(NT_RE_MULTI_LINE == PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE, "regexp /m flag");
+_Static_assert(NT_RE_ONCE == PM_REGULAR_EXPRESSION_FLAGS_ONCE, "regexp /o flag");
 _Static_assert(NT_RE_EUC_JP == PM_REGULAR_EXPRESSION_FLAGS_EUC_JP, "regexp /e flag");
 _Static_assert(NT_RE_ASCII_8BIT == PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT, "regexp /n flag");
 _Static_assert(NT_RE_WINDOWS_31J == PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J, "regexp /s flag");
@@ -7513,7 +7514,8 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   /* class-body loops over a literal Hash that define constants and classes
      (`H.each { |k, v| const_set(..., Class.new(P)) }`), run here and written
      back as the body's statements; line count kept */
-  { char *tl = sp_expand_table_loops(source);
+  { const char *sw = getenv("SPINEL_TABLE_LOOPS");   /* test-only: analyze_ct.c's switch */
+    char *tl = sw && strcmp(sw, "analysis") == 0 ? NULL : sp_expand_table_loops(source);
     if (tl) { free(source); source = tl; } }
 
   /* class-body macro calls (module_eval'd templates, computed

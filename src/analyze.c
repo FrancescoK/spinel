@@ -47385,6 +47385,9 @@ static void an_phase_desugar_register(Compiler *c) {
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
   desugar_static_class_eval(c);
+  /* a class body's loop over a constant table that defines constants and
+     classes, run now: its classes are written ones for every pass below */
+  desugar_table_loops(c);
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
