@@ -7394,6 +7394,38 @@ static void sp_load_order_export(const SpLoadGraph *g) {
   }
 }
 
+/* SPINEL_GRAPH_LAYOUT=reverse (a test hook, not a mode): lay the files'
+   nodes out in the reverse of the graph's order, the entry's last, each
+   file's own nodes in their order. Node ids say nothing about the order of
+   two files (the analysis asks the program module, prog_order), so the
+   program compiles to the same types, output and refusals either way (the
+   C differs only in names and numbering a walk gives in id order); a
+   difference names a reader that read ids as the order across files. */
+static void sp_graph_layout_hook(NodeTable *nt) {
+  const char *e = getenv("SPINEL_GRAPH_LAYOUT");
+  if (!e || strcmp(e, "reverse") != 0) return;
+  int n = nt->count, k = 0;
+  int *file = malloc(sizeof(int) * (size_t)(n ? n : 1)), *order = malloc(sizeof(int) * (size_t)(n ? n : 1));
+  if (!file || !order) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  for (int id = 0; id < n; id++) file[id] = -1;
+  for (int f = 0; f < nt->nfile_roots; f++) {   /* each file's tree, from its root */
+    int sp = 0;
+    order[sp++] = nt->file_roots[f];
+    while (sp > 0) {
+      int id = order[--sp];
+      if (id < 0 || id >= n || file[id] >= 0) continue;
+      file[id] = f;
+      const SpNode *nd = &nt->nodes[id];
+      for (int j = 0; j < nd->nr; j++) if (nd->r[j].ref >= 0) order[sp++] = nd->r[j].ref;
+      for (int j = 0; j < nd->na; j++) for (int q = 0; q < nd->a[j].n; q++) order[sp++] = nd->a[j].ids[q];
+    }
+  }
+  for (int f = nt->nfile_roots - 1; f >= -1; f--)
+    for (int id = 0; id < n; id++) if (file[id] == f) order[k++] = id;
+  nt_renumber(nt, order);
+  free(file); free(order);
+}
+
 /* --load-model=graph: the program as the files it loads, the libraries
    CRuby has loaded before it starts among them (sp_graph_boot): every file
    read and parsed first (sp_graph_read), then each flattened as a root of
@@ -7444,6 +7476,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     for (int id = 0; id < nt->count; id++)
       if (nt_kind(nt, id) == NK_ProgramNode && nt_int(nt, id, "load_file", -1) >= 0)
         nt->file_roots[nt_int(nt, id, "load_file", 0)] = id;
+    sp_graph_layout_hook(nt);
     if (g_dump_load_graph) { sp_load_graph_dump(&g); sp_load_order_dump(&g); }
   }
   sp_load_graph_free(&g);
