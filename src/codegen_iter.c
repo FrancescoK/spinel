@@ -4280,6 +4280,15 @@ void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
       buf_printf(b, "lv_%s = %.*sArray_oget(%s;\n", p0_ren, (int)(g - src_expr), src_expr, g + 10);
     else buf_printf(b, "lv_%s = %s(%s);\n", p0_ren, oint_of(pt), src_expr);
   }
+  /* a boxed source into a scalar param unboxes (the boxed upto/downto loop
+     of a receiver --int-overflow=promote boxes, `(n = 4).upto(n) { |i| }`):
+     assigned as it was, the C did not build */
+  else if (src_type == TY_POLY && (pt == TY_INT || pt == TY_FLOAT || pt == TY_BOOL)) {
+    Buf ub; memset(&ub, 0, sizeof ub);
+    emit_unbox_text(c, pt, src_expr, &ub);
+    buf_printf(b, "lv_%s = %s;\n", p0_ren, ub.p ? ub.p : src_expr);
+    free(ub.p);
+  }
   else {
     buf_printf(b, "lv_%s = %s;\n", p0_ren, src_expr);
   }
@@ -4438,8 +4447,25 @@ int next_is_block_value(Compiler *c, int next) {
    sits at the body top so `redo` re-runs the body without advancing. */
 /* A loop that may not end (loop, an unproved while) polls for a delivered
    signal at its back-edge; a counted one only when no loop of its function
-   encloses it, so an inner counted loop keeps no poll in its body (#9222) */
+   encloses it, so an inner counted loop keeps no poll in its body (#9222),
+   unless it is a pure one a rescue of Interrupt keeps from its pure region
+   (loop_body_polls_alone) */
 int g_loop_uncounted = 0, g_poll_loop_nest = 0;
+/* The polls at the top of a loop body (emit_loop_body): `uncounted`, the
+   loop may not end; `nest`, how many loops of its function hold the body,
+   the loop's own included. */
+void emit_loop_polls(Compiler *c, int body, Buf *b, int indent, int uncounted, int nest) {
+  if (g_uses_threads) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s;\n", hc_mark()); }
+  /* and for pending finalizers (sp_gc.h), when the program defines any. A
+     finalizer is Ruby code that may resize an array this loop has cached, so
+     the cache reloads after one runs, as after a safepoint. */
+  if (g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
+  /* and for a delivered Signal.trap, Ruby code as a finalizer is */
+  if (sig_polls() && (uncounted || nest == 1 || loop_body_polls_alone(c, body)) && !poll_in_pure(c, body)) {
+    emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
+  }
+}
+
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   int poll_uncounted = g_loop_uncounted; g_loop_uncounted = 0;
   int poll_nest = ++g_poll_loop_nest;
@@ -4477,15 +4503,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      there instead: see emit_while. */
   int polls_here = !g_loop_polls_in_cond;
   g_loop_polls_in_cond = 0;
-  if (polls_here && g_uses_threads) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s;\n", hc_mark()); }
-  /* and for pending finalizers (sp_gc.h), when the program defines any. A
-     finalizer is Ruby code that may resize an array this loop has cached, so
-     the cache reloads after one runs, as after a safepoint. */
-  if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
-  /* and for a delivered Signal.trap, Ruby code as a finalizer is */
-  if (polls_here && sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
-    emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
-  }
+  if (polls_here) emit_loop_polls(c, body, b, indent, poll_uncounted, poll_nest);
   /* a dispatch's builtin arm reads its RECEIVER as no object of the
      program's (g_poly_builtin_arm); the block's own calls are not that
      receiver's, and a user class owns their names as it does anywhere */
@@ -6254,12 +6272,23 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     if (repr_of(c, argv[0]).kind == RK_BOXED) emit_int_expr(c, argv[0], &hi);
     else emit_expr(c, argv[0], &hi);
     int ti = ++g_tmp;
-    /* the limit sits in the loop condition, so a side-effecting one would be
-       re-evaluated every round: it is computed once in Ruby */
-    if (subtree_has_side_effect(c, argv[0])) {
+    /* the limit sits in the loop condition, so one with a side effect, or one
+       the block writes (`1.upto(n) { n -= 1 }`), would be re-evaluated every
+       round: it is computed once in Ruby. Only a literal stays in place. A
+       Float limit keeps its type, as the comparison below reads it. Ruby
+       evaluates the receiver first, so a receiver that is no literal is
+       taken before the limit: `(n = 4).upto(n)` counts from 4 to 4. */
+    if (nt_kind(nt, argv[0]) != NK_IntegerNode) {
+      if (nt_kind(nt, recv) != NK_IntegerNode) {
+        int tr = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "__typeof__(%s) _t%d = %s;\n", lo.p ? lo.p : "0", tr, lo.p ? lo.p : "0");
+        free(lo.p); memset(&lo, 0, sizeof lo);
+        buf_printf(&lo, "_t%d", tr);
+      }
       int th = ++g_tmp;
       emit_indent(b, indent);
-      buf_printf(b, "sp_int _t%d = %s;\n", th, hi.p ? hi.p : "0");
+      buf_printf(b, "%s _t%d = %s;\n", comp_ntype(c, argv[0]) == TY_FLOAT ? "sp_float" : "sp_int", th, hi.p ? hi.p : "0");
       free(hi.p); memset(&hi, 0, sizeof hi);
       buf_printf(&hi, "_t%d", th);
     }
@@ -8013,17 +8042,22 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     emit_int_expr(c, recv, &rb);
     /* The count is evaluated ONCE, so a receiver that can change (or change
        something) between rounds has to be hoisted: spliced into the loop
-       condition, `rng.next_int(n).times` re-rolled the die every round. */
-    if (subtree_has_side_effect(c, recv)) {
+       condition, `rng.next_int(n).times` re-rolled the die every round, and
+       `k.times { k = 1 }` read the block's k and ran once. Only a literal
+       stays in place, as a Range's or a for loop's bound is hoisted. */
+    if (nt_kind(nt, recv) != NK_IntegerNode) {
       int tn = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = %s;\n", tn, rb.p ? rb.p : "0");
       free(rb.p); memset(&rb, 0, sizeof rb);
       buf_printf(&rb, "_t%d", tn);
     }
+    /* an IO::Buffer loop element by element runs its chunks first (hv_emit) */
+    char vs[32] = "0", vn[32];
+    int hv = !rr.big && hv_emit(c, id, rb.p, b, indent, vs, vn, sizeof vs);
     emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < ", t, t);
-    buf_puts(b, rb.p); buf_printf(b, "; _t%d++) {\n", t);
+    buf_printf(b, "for (sp_int _t%d = %s; _t%d < ", t, vs, t);
+    buf_puts(b, hv ? vn : rb.p); buf_printf(b, "; _t%d++) {\n", t);
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;

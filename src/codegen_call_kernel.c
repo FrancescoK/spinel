@@ -20,6 +20,18 @@
 static void oint_open(Compiler *c, int id, TyKind t, Buf *b) { if (!node_is_oint(c, id)) buf_printf(b, "%s(", oint_arg(t)); }
 static void oint_close(Compiler *c, int id, Buf *b) { if (!node_is_oint(c, id)) buf_puts(b, ")"); }
 
+/* `*x` gathered into the PolyArray `_t<t>`: the items of the Array the splat
+   makes of x (sp_splat_to_array), as one statement with no trailing space.
+   0, and nothing written, for a splat with no operand (an anonymous `*`). */
+int emit_poly_concat_splat(Compiler *c, int t, int splat, Buf *b) {
+  int sx = nt_kind(c->nt, splat) == NK_SplatNode ? nt_ref(c->nt, splat, "expression") : -1;
+  if (sx < 0) return 0;
+  buf_printf(b, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
+  emit_boxed(c, sx, b);
+  buf_puts(b, "));");
+  return 1;
+}
+
 /* the Kernel calls without a receiver: __dir__, at_exit, attr_* declarations, block_given?,
    the conversion functions (Integer, Float, String, Array, Hash, Rational, Complex), sleep,
    exit / exit! / abort, puts / print, p / pp, warn */
@@ -32,12 +44,7 @@ static int emit_p_splat_value(Compiler *c, int argc, const int *argv, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
   for (int k = 0; k < argc; k++) {
-    int sx = nt_kind(nt, argv[k]) == NK_SplatNode ? nt_ref(nt, argv[k], "expression") : -1;
-    if (sx >= 0) {
-      buf_printf(b, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
-      emit_boxed(c, sx, b);
-      buf_puts(b, ")); ");
-    }
+    if (emit_poly_concat_splat(c, t, argv[k], b)) buf_puts(b, " ");
     else {
       buf_printf(b, "sp_PolyArray_push(_t%d, ", t);
       emit_boxed(c, argv[k], b);
@@ -379,10 +386,21 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         else buf_printf(b, result.kind == RK_BOXED ? "sp_poly_flo_domain_ck(%s.v); sp_box_f_to_int(%s.v); })"
                                           : "sp_poly_flo_domain_ck(%s.v); sp_float_fit_i(%s.v); })", ref, ref);
       }
-      else if (at == TY_STRING && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
-        buf_puts(b, "sp_str_to_i_promote("); emit_expr(c, av[0], b); buf_puts(b, ", 0, 1)");
+      /* (a String the share rule holds as a handle reads as its bytes: it
+         fell to the TypeError below, `Integer($&)` held in a local under
+         --int-overflow=promote) */
+      else if ((at == TY_STRING || at == TY_STRBUF) && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
+        buf_puts(b, "sp_str_to_i_promote(");
+        if (at == TY_STRBUF) { buf_puts(b, "SP_STR_B("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, av[0], b);
+        buf_puts(b, ", 0, 1)");
       }
-      else if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (at == TY_STRING || at == TY_STRBUF) {
+        buf_puts(b, "sp_str_to_i_strict(");
+        if (at == TY_STRBUF) { buf_puts(b, "SP_STR_B("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, av[0], b);
+        buf_puts(b, ")");
+      }
       /* a Float truncates, and NaN or an infinity is CRuby's FloatDomainError
          rather than the C cast's undefined value */
       else if (at == TY_FLOAT) {

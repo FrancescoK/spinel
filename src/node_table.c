@@ -460,11 +460,26 @@ void nt_free(NodeTable *nt) {
   free(nt->source_file);
   for (int k = 0; k < nt->nfiles; k++) free(nt->files[k]);
   free(nt->files);
+  free(nt->file_defers);
   free(nt);
 }
 
 /* ---- accessors ---- */
 
+void nt_put_file_defers(NodeTable *nt, int fid) {
+  if (fid < 0) return;
+  if (fid >= nt->nfile_defers) {
+    unsigned char *grown = realloc(nt->file_defers, (size_t)fid + 1);
+    if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = nt->nfile_defers; k <= fid; k++) grown[k] = 0;
+    nt->file_defers = grown;
+    nt->nfile_defers = fid + 1;
+  }
+  nt->file_defers[fid] = 1;
+}
+int nt_file_defers(const NodeTable *nt, int fid) {
+  return nt && nt->file_defers && fid >= 0 && fid < nt->nfile_defers && nt->file_defers[fid];
+}
 const char *nt_file_path(const NodeTable *nt, int fid) {
   if (!nt || fid < 0 || fid >= nt->nfiles) return NULL;
   return nt->files[fid];

@@ -100,6 +100,23 @@ long rb_num2long(VALUE);
 #define INT2NUM(v) LL2NUM((int)(v))
 #define LONG2NUM(v) LL2NUM((long)(v))
 #define DBL2NUM(v) rb_float_new((double)(v))
+long long rb_num2ll(VALUE);
+#define NUM2LL(v) rb_num2ll((VALUE)(v))
+unsigned long rb_num2ulong(VALUE);
+#define NUM2ULONG(v) rb_num2ulong((VALUE)(v))
+#define NUM2SIZET(v) ((size_t)rb_num2ulong((VALUE)(v)))
+VALUE rb_ull2inum(unsigned long long);
+#define ULL2NUM(v) rb_ull2inum((unsigned long long)(v))
+#define ULONG2NUM(v) ULL2NUM((unsigned long)(v))
+#define SIZET2NUM(v) ULL2NUM((size_t)(v))
+double rb_num2dbl(VALUE);
+#define NUM2DBL(v) rb_num2dbl((VALUE)(v))
+/* CRuby's integer pack flags; rb_integer_pack takes two's complement in the
+ * native byte order */
+enum { INTEGER_PACK_MSWORD_FIRST = 0x01, INTEGER_PACK_LSWORD_FIRST = 0x02,
+       INTEGER_PACK_MSBYTE_FIRST = 0x10, INTEGER_PACK_LSBYTE_FIRST = 0x20,
+       INTEGER_PACK_NATIVE_BYTE_ORDER = 0x40, INTEGER_PACK_2COMP = 0x80 };
+int rb_integer_pack(VALUE, void *, size_t, size_t, size_t, int);
 #define ID2SYM(id) (((VALUE)(id) << RUBY_SPECIAL_SHIFT) | RUBY_SYMBOL_FLAG)
 #ifdef SP_CEXT_RECORDER
 /* Keep this ID-producing operation visible in preprocessed extension source. */
@@ -112,6 +129,21 @@ ID sp_cext_scanned_sym2id(VALUE);
 #define RUBY_FUNC_EXPORTED
 void ruby_xfree(void *);
 #define xfree ruby_xfree
+void *ruby_xmalloc(size_t);
+void *ruby_xmalloc2(size_t, size_t);
+void *ruby_xcalloc(size_t, size_t);
+void *ruby_xrealloc(void *, size_t);
+void *ruby_xrealloc2(void *, size_t, size_t);
+#define xmalloc ruby_xmalloc
+#define xmalloc2 ruby_xmalloc2
+#define xcalloc ruby_xcalloc
+#define xrealloc ruby_xrealloc
+#define xrealloc2 ruby_xrealloc2
+#define ALLOC_N(type,n) ((type *)ruby_xmalloc2((size_t)(n),sizeof(type)))
+#define ALLOC(type) ((type *)ruby_xmalloc(sizeof(type)))
+#define ZALLOC_N(type,n) ((type *)ruby_xcalloc((size_t)(n),sizeof(type)))
+#define ZALLOC(type) ZALLOC_N(type,1)
+#define REALLOC_N(var,type,n) ((var)=(type *)ruby_xrealloc2((void *)(var),(size_t)(n),sizeof(type)))
 void *sp_cext_allocv(VALUE *, size_t, size_t);
 #define RB_ALLOCV_N(type,handle,count) ((type *)sp_cext_allocv(&(handle),sizeof(type),(size_t)(count)))
 /* CRuby's value_type.h numbers */
@@ -127,6 +159,11 @@ VALUE rb_obj_class(VALUE);
 const char *rb_class2name(VALUE);
 void rb_check_type(VALUE, int);
 #define Check_Type(value,type) rb_check_type((VALUE)(value),(type))
+#define CLASS_OF(v) rb_obj_class((VALUE)(v))
+VALUE rb_obj_freeze(VALUE);
+VALUE rb_path2class(const char *);
+void rb_ext_ractor_safe(bool);
+int rb_scan_args(int, const VALUE *, const char *, ...);
 
 void rb_gc_mark(VALUE);
 void rb_gc_mark_movable(VALUE);
@@ -134,6 +171,11 @@ VALUE rb_gc_location(VALUE);
 void rb_gc_register_address(VALUE *);
 void rb_gc_unregister_address(VALUE *);
 void rb_global_variable(VALUE *);
+void rb_gc_register_mark_object(VALUE);
+VALUE sp_cext_obj_write(VALUE, VALUE *, VALUE);
+void sp_cext_obj_written(VALUE, VALUE);
+#define RB_OBJ_WRITE(a, slot, b) sp_cext_obj_write((VALUE)(a), (VALUE *)(slot), (VALUE)(b))
+#define RB_OBJ_WRITTEN(a, oldv, b) sp_cext_obj_written((VALUE)(a), (VALUE)(b))
 
 typedef void (*RUBY_DATA_FUNC)(void *);
 typedef struct rb_data_type_struct {
@@ -173,6 +215,11 @@ char *sp_cext_string_cstr(VALUE);
 #define StringValueCStr(v) sp_cext_string_cstr((v))
 VALUE rb_str_cat(VALUE, const char *, long);
 VALUE rb_str_cat_cstr(VALUE, const char *);
+#define rb_str_buf_cat rb_str_cat
+#define rb_str_buf_cat2 rb_str_cat_cstr
+VALUE rb_str_plus(VALUE, VALUE);
+VALUE rb_sym2str(VALUE);
+int rb_proc_arity(VALUE);
 int rb_block_given_p(void);
 VALUE rb_block_proc(void);
 VALUE rb_yield(VALUE);
@@ -186,18 +233,24 @@ VALUE rb_hash_new_capa(long);
 VALUE rb_hash_aset(VALUE, VALUE, VALUE);
 VALUE rb_ary_new_capa(long);
 #define rb_ary_new2 rb_ary_new_capa
+VALUE rb_ary_new_from_args(long, ...);
+#define rb_ary_new3 rb_ary_new_from_args
+VALUE rb_ary_new_from_values(long, const VALUE *);
+#define rb_ary_new4 rb_ary_new_from_values
 VALUE rb_ary_subseq(VALUE, long, long);
 VALUE rb_hash_aref(VALUE, VALUE);
 VALUE rb_ary_push(VALUE, VALUE);
 VALUE rb_ary_pop(VALUE);
 void rb_ary_store(VALUE, long, VALUE);
 VALUE rb_ary_entry(VALUE, long);
+VALUE rb_ary_delete(VALUE, VALUE);
 long sp_cext_array_len(VALUE);
 #define RARRAY_LEN(v) sp_cext_array_len(v)
 #define RARRAY_AREF(v,i) rb_ary_entry((v),(i))
 
 extern VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 extern VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+extern VALUE rb_eNotImpError;
 VALUE rb_protect(VALUE (*)(VALUE), VALUE, int *);
 VALUE rb_ensure(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE), VALUE);
 VALUE rb_rescue(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE, VALUE), VALUE);

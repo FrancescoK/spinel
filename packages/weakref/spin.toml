@@ -1,0 +1,7 @@
+[package]
+name = "weakref"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "weakref"` -- WeakRef, a reference the collector may recycle in
+# CRuby. Spinel's collector hands out no weak references, so a WeakRef here
+# keeps its object alive and is always weakref_alive? (docs/limitations.md).

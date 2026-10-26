@@ -5,6 +5,7 @@
 #include "sp_string.h"
 #include <ruby/encoding.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -16,6 +17,23 @@ const char *sp_exc_cur_cls(void);
 const char *sp_exc_cur_msg(void);
 void *sp_exc_cur_obj(void);
 void sp_fiber_reraise(const char *, const char *, void *);
+/* The nonlocal exit that reached a C frame's sp_exc_arm: taken before the
+ * frame is disarmed, and passed on once the frame has put its state back. A
+ * throw or break unwinding through C resumes; a raise is raised again. */
+typedef struct { int unwind; const char *cls, *msg; void *obj; } CextExit;
+static CextExit cext_exit_take(void) {
+    CextExit e;
+    e.unwind = sp_cext_unwinding();
+    e.cls = sp_exc_cur_cls(); e.msg = sp_exc_cur_msg();
+    e.obj = sp_exc_cur_obj();
+    return e;
+}
+static void cext_exit_resume(CextExit e) __attribute__((noreturn));
+static void cext_exit_resume(CextExit e) {
+    if (e.unwind) sp_cext_resume_unwind();
+    else sp_fiber_reraise(e.cls, e.msg, e.obj);
+    abort();
+}
 extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
 VALUE rb_cObject, rb_cBasicObject, rb_cClass, rb_cModule;
 VALUE rb_cString, rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cIO;
@@ -23,7 +41,7 @@ sp_RbVal (*sp_cext_class_lookup_fn)(const char *);
 void *(*sp_cext_object_alloc_fn)(int);
 void *(*sp_cext_class_alloc_fn)(int);
 static sp_cext_extension *binding;
-static size_t next_function, next_constant;
+static size_t next_function, next_constant, next_anonymous;
 /* Volatile journal fields survive longjmp; each nested Init owns only its
  * newly registered constant addresses, not the process-wide root registry. */
 typedef struct { VALUE **addresses; size_t count; } InitRoots;
@@ -39,14 +57,10 @@ static sp_RbVal call_ruby_unlocked(int kind, const char *key, sp_RbVal receiver,
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots;
         sp_cext_lock_resume(depth);
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_RbVal result;
@@ -115,6 +129,15 @@ VALUE rb_define_class(const char *name, VALUE superclass) { (void)superclass; re
 VALUE rb_define_class_under(VALUE outer, const char *name, VALUE superclass) { (void)superclass; return define_under(outer,name); }
 VALUE rb_define_module(const char *name) { return define_path(name); }
 VALUE rb_define_module_under(VALUE outer, const char *name) { return define_under(outer,name); }
+/* Class.new in Init is the class the recorder named for it, in creation
+ * order (tools/cext/recorder.c rb_class_new) */
+VALUE rb_class_new(VALUE superclass) {
+    (void)superclass;
+    if (!binding || !binding->name) rb_raise(rb_eNotImpError, "Class.new in a C extension outside its Init is not supported");
+    char name[256];
+    snprintf(name, sizeof name, "SpinelCextAnonymous_%s_%zu", binding->name, next_anonymous++);
+    return define_path(name);
+}
 static void bind_function(VALUE (*fn)(ANYARGS)) {
     if (!binding || next_function >= binding->count)
         sp_raise_cls("RuntimeError", "C extension definitions outside Init are unsupported");
@@ -133,7 +156,7 @@ void rb_undef_method(VALUE o,const char *n) { (void)o;(void)n; }
 void rb_undef_alloc_func(VALUE o) { (void)o; }
 static const char *const recorder_builtins[] = {"BasicObject","Object","Class","Module","String","Array","Hash",
     "Integer","Float","IO","Exception","StandardError","RuntimeError","TypeError","ArgumentError","RangeError",
-    "NoMemoryError","SystemCallError",NULL};
+    "NoMemoryError","SystemCallError","NotImplementedError",NULL};
 int rb_const_defined(VALUE outer,ID id) {
     const char *name=rb_id2name(id);
     if(!name)rb_raise(rb_eArgError,"unknown constant ID");
@@ -166,30 +189,27 @@ static void sp_cext_init_locked(sp_cext_extension *extension) {
     volatile InitRoots *previous_roots=init_roots;
     sp_cext_arena_mark mark=sp_cext_arena_enter();
     sp_cext_extension *previous=binding;
-    size_t previous_function=next_function, previous_constant=next_constant;
+    size_t previous_function=next_function, previous_constant=next_constant, previous_anonymous=next_anonymous;
     int roots=sp_gc_nroots;
     volatile size_t previous_paths=init_path_count;
     jmp_buf frame;
     if(setjmp(frame)!=0) {
-        int unwind=sp_cext_unwinding();
-        const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
+        CextExit left=cext_exit_take();
         sp_exc_disarm();
         for(size_t i=0;i<journal.count;i++) {
             rb_gc_unregister_address(addresses[i]);*addresses[i]=Qnil;
         }
         init_roots=previous_roots;free(addresses);binding=previous;
-        next_function=previous_function;next_constant=previous_constant;
+        next_function=previous_function;next_constant=previous_constant;next_anonymous=previous_anonymous;
         while(init_path_count>previous_paths)free(init_paths[--init_path_count]);
         sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-        if(unwind)sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls,msg,obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
-    init_roots=&journal;binding=extension;next_function=0;next_constant=0;extension->init();
+    init_roots=&journal;binding=extension;next_function=0;next_constant=0;next_anonymous=0;extension->init();
     sp_exc_disarm();init_roots=previous_roots;free(addresses);binding=previous;
     while(init_path_count>previous_paths)free(init_paths[--init_path_count]);
-    next_function=previous_function;next_constant=previous_constant;
+    next_function=previous_function;next_constant=previous_constant;next_anonymous=previous_anonymous;
     extension->initialized=1;
     sp_cext_arena_restore(mark);
 }
@@ -280,6 +300,147 @@ int rb_num2int(VALUE value) {
     if(number<INT_MIN)rb_raise(rb_eRangeError,"integer %ld too small to convert to 'int'",number);
     return (int)number;
 }
+/* NUM2LL: CRuby's rb_num2ll names the kind it cannot convert */
+long long rb_num2ll(VALUE value) {
+    sp_RbVal number=sp_cext_rbval(value);
+    if(number.tag==SP_TAG_NIL)rb_raise(rb_eTypeError,"no implicit conversion from nil");
+    if(number.tag==SP_TAG_BOOL)rb_raise(rb_eTypeError,"no implicit conversion from boolean");
+    if(number.tag==SP_TAG_STR || (number.tag==SP_TAG_OBJ && number.cls_id==SP_BUILTIN_STRBUF))
+        rb_raise(rb_eTypeError,"no implicit conversion from string");
+    return (long long)rb_num2long(value);
+}
+/* NUM2ULONG: a negative number wraps, as CRuby's rb_num2ulong */
+unsigned long rb_num2ulong(VALUE value) { return (unsigned long)rb_num2long(value); }
+VALUE rb_ull2inum(unsigned long long number) {
+    if(number<=(unsigned long long)INT64_MAX)return sp_cext_value(sp_box_int((int64_t)number));
+    /* past the word: twice its upper 63 bits, plus its low bit */
+    sp_Bigint *half=sp_bigint_new_int((int64_t)(number>>1));SP_GC_ROOT(half);
+    sp_Bigint *two=sp_bigint_new_int(2);SP_GC_ROOT(two);
+    sp_Bigint *twice=sp_bigint_mul(half,two);SP_GC_ROOT(twice);
+    sp_Bigint *bit=sp_bigint_new_int((int64_t)(number&1));SP_GC_ROOT(bit);
+    return sp_cext_value(sp_box_bigint(sp_bigint_add(twice,bit)));
+}
+double rb_num2dbl(VALUE value) { return sp_cext_num2dbl(sp_cext_rbval(value)); }
+int rb_integer_pack(VALUE value,void *words,size_t numwords,size_t wordsize,size_t nails,int flags) {
+    if(nails || (flags & ~(INTEGER_PACK_NATIVE_BYTE_ORDER|INTEGER_PACK_2COMP|INTEGER_PACK_LSWORD_FIRST)) ||
+       !(flags & INTEGER_PACK_2COMP) || ((flags & INTEGER_PACK_NATIVE_BYTE_ORDER)!=INTEGER_PACK_NATIVE_BYTE_ORDER) ||
+       (numwords>1 && !(flags & INTEGER_PACK_LSWORD_FIRST)))
+        rb_raise(rb_eNotImpError,"rb_integer_pack supports two's complement in the native byte order only");
+    sp_RbVal number=sp_cext_rbval(value);
+    if(number.tag!=SP_TAG_INT && number.tag!=SP_TAG_BIGINT)number=sp_box_int(rb_num2long(value));
+    return sp_cext_integer_pack(number,words,numwords,wordsize);
+}
+VALUE rb_obj_freeze(VALUE value) { (void)sp_cext_freeze(sp_cext_rbval(value));return value; }
+/* rb_path2class: a class of the program or a builtin by its full name */
+VALUE rb_path2class(const char *path) { return lookup(path); }
+VALUE rb_ary_delete(VALUE ary,VALUE item) { return sp_cext_value(sp_cext_ary_delete(sp_cext_rbval(ary),sp_cext_rbval(item))); }
+/* A value kept for the rest of the run: one more registered root */
+static VALUE *permanent;
+static size_t permanent_n,permanent_cap;
+void rb_gc_register_mark_object(VALUE value) {
+    if(SPECIAL_CONST_P(value))return;
+    if(permanent_n==permanent_cap) {
+        size_t n=permanent_cap?permanent_cap*2:16;
+        VALUE *next=realloc(permanent,n*sizeof(*next));
+        if(!next)rb_raise(rb_eNoMemError,"C extension root allocation failed");
+        for(size_t i=0;i<permanent_n;i++)rb_gc_unregister_address(&permanent[i]);
+        permanent=next;permanent_cap=n;
+        for(size_t i=0;i<permanent_n;i++)rb_gc_register_address(&permanent[i]);
+    }
+    permanent[permanent_n]=value;rb_gc_register_address(&permanent[permanent_n++]);
+}
+/* RB_OBJ_WRITE / RB_OBJ_WRITTEN: the store into a data object's struct, and
+ * the write barrier a generational collector needs for it */
+void sp_cext_obj_written(VALUE object,VALUE value) {
+    (void)value;
+    sp_RbVal r=sp_cext_rbval(object);
+    if(r.tag==SP_TAG_OBJ && r.v.p)sp_gc_wb(r.v.p);
+}
+VALUE sp_cext_obj_write(VALUE object,VALUE *slot,VALUE value) {
+    *slot=value;sp_cext_obj_written(object,value);return value;
+}
+void *ruby_xmalloc(size_t size) {
+    void *p=malloc(size?size:1);
+    if(!p)rb_raise(rb_eNoMemError,"failed to allocate memory");
+    return p;
+}
+void *ruby_xmalloc2(size_t count,size_t size) {
+    if(size && count>SIZE_MAX/size)rb_raise(rb_eArgError,"malloc: possible integer overflow");
+    return ruby_xmalloc(count*size);
+}
+void *ruby_xcalloc(size_t count,size_t size) {
+    void *p=calloc(count?count:1,size?size:1);
+    if(!p)rb_raise(rb_eNoMemError,"failed to allocate memory");
+    return p;
+}
+void *ruby_xrealloc(void *pointer,size_t size) {
+    void *p=realloc(pointer,size?size:1);
+    if(!p)rb_raise(rb_eNoMemError,"failed to allocate memory");
+    return p;
+}
+void *ruby_xrealloc2(void *pointer,size_t count,size_t size) {
+    if(size && count>SIZE_MAX/size)rb_raise(rb_eArgError,"realloc: possible integer overflow");
+    return ruby_xrealloc(pointer,count*size);
+}
+VALUE rb_sym2str(VALUE symbol) {
+    if(!SYMBOL_P(symbol))rb_raise(rb_eTypeError,"expected a Symbol");
+    return sp_cext_value(sp_cext_sym2str((sp_sym)SYM2ID(symbol)));
+}
+VALUE rb_str_plus(VALUE a,VALUE b) { return sp_cext_value(sp_cext_str_plus(sp_cext_rbval(a),sp_cext_rbval(b))); }
+int rb_proc_arity(VALUE proc) {
+    sp_RbVal r=sp_cext_rbval(proc);
+    if(r.tag!=SP_TAG_OBJ || r.cls_id!=SP_BUILTIN_PROC || !r.v.p)rb_raise(rb_eTypeError,"expected a Proc");
+    return (int)sp_proc_arity((sp_Proc *)r.v.p);
+}
+void rb_ext_ractor_safe(bool safe) { (void)safe; }
+/* StringValue's conversion: what to_str answered (Qundef when the object has
+ * no to_str), checked as CRuby's rb_string_value checks it */
+VALUE sp_cext_to_str(VALUE value,VALUE converted) {
+    const char *name=value==Qnil ? "nil" : value==Qtrue ? "true" : value==Qfalse ? "false" : rb_class2name(rb_obj_class(value));
+    if(converted==Qundef)rb_raise(rb_eTypeError,"no implicit conversion of %s into String",name);
+    if(rb_type(converted)!=T_STRING)
+        rb_raise(rb_eTypeError,"can't convert %s to String (%s#to_str gives %s)",name,name,rb_class2name(rb_obj_class(converted)));
+    return converted;
+}
+/* rb_scan_args: leading mandatory and optional counts, a rest `*`, trailing
+ * mandatory, `:` for keywords (taken as a trailing Hash) and `&` for the
+ * block, as CRuby's format reads */
+int rb_scan_args(int argc,const VALUE *argv,const char *fmt,...) {
+    const char *p=fmt;
+    int lead=0,opt=0,rest=0,trail=0,kw=0,blk=0;
+    if(*p>='0' && *p<='9')lead=*p++-'0';
+    if(*p>='0' && *p<='9')opt=*p++-'0';
+    if(*p=='*') { rest=1;p++; }
+    if(*p>='0' && *p<='9')trail=*p++-'0';
+    if(*p==':') { kw=1;p++; }
+    if(*p=='&') { blk=1;p++; }
+    if(*p)rb_raise(rb_eNotImpError,"rb_scan_args format \"%s\" is not supported",fmt);
+    VALUE keywords=Qnil;
+    if(kw && argc>lead+trail && rb_type(argv[argc-1])==T_HASH) { keywords=argv[argc-1];argc--; }
+    int min=lead+trail;
+    if(argc<min || (!rest && argc>min+opt)) {
+        if(rest)rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d+)",argc,min);
+        if(opt)rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d..%d)",argc,min,min+opt);
+        rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d)",argc,min);
+    }
+    va_list ap;va_start(ap,fmt);
+    int i=0;
+    for(int k=0;k<lead;k++) { VALUE *v=va_arg(ap,VALUE *);if(v)*v=argv[i];i++; }
+    int avail=argc-min;
+    for(int k=0;k<opt;k++) { VALUE *v=va_arg(ap,VALUE *);if(v)*v=k<avail?argv[i]:Qnil;if(k<avail)i++; }
+    if(rest) {
+        VALUE *v=va_arg(ap,VALUE *);
+        int n=argc-i-trail;
+        VALUE list=rb_ary_new();
+        for(int k=0;k<n;k++)rb_ary_push(list,argv[i+k]);
+        i+=n;if(v)*v=list;
+    }
+    for(int k=0;k<trail;k++) { VALUE *v=va_arg(ap,VALUE *);if(v)*v=argv[i];i++; }
+    if(kw) { VALUE *v=va_arg(ap,VALUE *);if(v)*v=keywords; }
+    if(blk) { VALUE *v=va_arg(ap,VALUE *);if(v)*v=rb_block_given_p()?rb_block_proc():Qnil; }
+    va_end(ap);
+    return argc;
+}
 int rb_type(VALUE value) { return sp_cext_type(sp_cext_rbval(value),sp_cext_data_class_fn); }
 /* CRuby's builtin_types names for Check_Type's message */
 static const char *type_name(int type) {
@@ -330,9 +491,76 @@ void *sp_cext_allocv(VALUE *handle,size_t size,size_t count) {
     uintptr_t pointer=(uintptr_t)RSTRING_PTR(*handle);
     return (void *)((pointer+alignment-1)/alignment*alignment);
 }
-struct sp_cext_encoding { int binary; };
-static struct sp_cext_encoding ascii8bit={1};
+/* The encodings a String of the program can carry, with CRuby's indexes:
+ * ASCII-8BIT or UTF-8 (sp_String.binary); US-ASCII is an encoding no String
+ * answers with, so a test for it is false. The UTF-16 pair exists only so
+ * that rb_enc_find_index names them: no String has either. */
+static sp_String *string(VALUE value);
+struct sp_cext_encoding { int binary; int index; const char *name; };
+static struct sp_cext_encoding ascii8bit={1,0,"ASCII-8BIT"}, utf8={0,1,"UTF-8"}, usascii={0,2,"US-ASCII"},
+    utf16le={0,100,"UTF-16LE"}, utf16be={0,101,"UTF-16BE"};
+static rb_encoding *const encodings[]={&ascii8bit,&utf8,&usascii,&utf16le,&utf16be,NULL};
 rb_encoding *rb_ascii8bit_encoding(void) { return &ascii8bit; }
+rb_encoding *rb_utf8_encoding(void) { return &utf8; }
+rb_encoding *rb_usascii_encoding(void) { return &usascii; }
+int rb_ascii8bit_encindex(void) { return ascii8bit.index; }
+int rb_utf8_encindex(void) { return utf8.index; }
+int rb_usascii_encindex(void) { return usascii.index; }
+rb_encoding *rb_default_internal_encoding(void) { return NULL; }
+int rb_enc_to_index(rb_encoding *encoding) { return encoding ? encoding->index : -1; }
+rb_encoding *rb_enc_from_index(int index) {
+    for(int i=0;encodings[i];i++)if(encodings[i]->index==index)return encodings[i];
+    return NULL;
+}
+int rb_enc_find_index(const char *name) {
+    for(int i=0;encodings[i];i++)if(!strcasecmp(encodings[i]->name,name))return encodings[i]->index;
+    if(!strcasecmp(name,"BINARY"))return ascii8bit.index;
+    return -1;
+}
+static int string_binary(VALUE value) {
+    sp_RbVal r=sp_cext_rbval(value);
+    if(r.tag==SP_TAG_STR)return r.v.s && sp_str_is_binary(r.v.s);
+    if(r.tag==SP_TAG_OBJ && r.cls_id==SP_BUILTIN_STRBUF && r.v.p)return ((sp_String *)r.v.p)->binary;
+    rb_raise(rb_eTypeError,"expected a String");
+}
+rb_encoding *rb_enc_get(VALUE value) { return string_binary(value) ? &ascii8bit : &utf8; }
+int rb_enc_get_index(VALUE value) { return rb_enc_get(value)->index; }
+VALUE rb_enc_from_encoding(rb_encoding *encoding) {
+    if(!encoding)return Qnil;
+    sp_RbVal v={SP_TAG_ENCODING,0,{.s=encoding->name}};
+    return sp_cext_value(v);
+}
+static rb_encoding *encoding_of(VALUE value) {
+    sp_RbVal r=sp_cext_rbval(value);
+    if(r.tag==SP_TAG_ENCODING && r.v.s) {
+        int index=rb_enc_find_index(r.v.s);
+        if(index>=0)return rb_enc_from_index(index);
+    }
+    if(r.tag==SP_TAG_STR && r.v.s) {
+        int index=rb_enc_find_index(r.v.s);
+        if(index>=0)return rb_enc_from_index(index);
+    }
+    rb_raise(rb_eArgError,"unknown encoding name");
+}
+/* A copy in the encoding: the bytes are kept, as CRuby keeps them between
+ * UTF-8 and ASCII-8BIT for ASCII text; a non-ASCII byte raises as CRuby's
+ * transcoder does. */
+static VALUE string_in_encoding(VALUE value,rb_encoding *to) {
+    if(to!=&ascii8bit && to!=&utf8)rb_raise(rb_eNotImpError,"converting a String to %s is not supported",to->name);
+    rb_encoding *from=rb_enc_get(value);
+    const char *bytes=RSTRING_PTR(value);long len=RSTRING_LEN(value);
+    if(from!=to) {
+        for(long i=0;i<len;i++)if((unsigned char)bytes[i]>=0x80) {
+            char what[32];snprintf(what,sizeof what,"\\x%02X",(unsigned char)bytes[i]);
+            sp_raise_cls("Encoding::UndefinedConversionError",sp_sprintf("\"%s\" from %s to %s",what,from->name,to->name));
+        }
+    }
+    VALUE copy=rb_str_new(bytes,len);
+    sp_String_force_encoding(string(copy),to==&ascii8bit);
+    return copy;
+}
+VALUE rb_str_encode(VALUE value,VALUE to,int flags,VALUE options) { (void)flags;(void)options;return string_in_encoding(value,encoding_of(to)); }
+VALUE rb_str_export_to_enc(VALUE value,rb_encoding *to) { return string_in_encoding(value,to); }
 static sp_String *string(VALUE value) {
     sp_RbVal r=sp_cext_rbval(value);
     if(r.tag==SP_TAG_OBJ && r.cls_id==SP_BUILTIN_STRBUF)return r.v.p;
@@ -350,9 +578,20 @@ VALUE rb_utf8_str_new(const char *bytes,long length) {
     return value;
 }
 VALUE rb_enc_associate(VALUE value,rb_encoding *encoding) {
-    if(encoding!=&ascii8bit)rb_raise(rb_eArgError,"unsupported C extension encoding");
-    sp_String_force_encoding(string(value),1);
+    if(encoding!=&ascii8bit && encoding!=&utf8 && encoding!=&usascii)rb_raise(rb_eArgError,"unsupported C extension encoding");
+    sp_String_force_encoding(string(value),encoding==&ascii8bit);
     return value;
+}
+VALUE rb_enc_associate_index(VALUE value,int index) {
+    rb_encoding *encoding=rb_enc_from_index(index);
+    if(!encoding)rb_raise(rb_eArgError,"unknown encoding index %d",index);
+    return rb_enc_associate(value,encoding);
+}
+VALUE rb_utf8_str_new_cstr(const char *bytes) { return rb_utf8_str_new(bytes,(long)strlen(bytes)); }
+VALUE rb_enc_interned_str_cstr(const char *bytes,rb_encoding *encoding) {
+    VALUE value=rb_utf8_str_new_cstr(bytes);
+    if(encoding==&ascii8bit)sp_String_force_encoding(string(value),1);
+    return rb_str_freeze(value);
 }
 extern sp_bool sp_str_valid_encoding(const char *);
 int rb_enc_str_coderange(VALUE value) {
@@ -413,6 +652,19 @@ VALUE rb_ary_new_capa(long capacity) {
     return rb_ary_new();
 }
 VALUE rb_ary_push(VALUE v,VALUE item) { sp_PolyArray_push(array(v),sp_cext_rbval(item));return v; }
+VALUE rb_ary_new_from_values(long n,const VALUE *values) {
+    if(n<0)rb_raise(rb_eArgError,"negative array size");
+    VALUE v=rb_ary_new();
+    for(long i=0;i<n;i++)rb_ary_push(v,values[i]);
+    return v;
+}
+VALUE rb_ary_new_from_args(long n,...) {
+    if(n<0)rb_raise(rb_eArgError,"negative array size");
+    VALUE v=rb_ary_new();
+    va_list ap;va_start(ap,n);
+    for(long i=0;i<n;i++)rb_ary_push(v,va_arg(ap,VALUE));
+    va_end(ap);return v;
+}
 VALUE rb_ary_pop(VALUE v) {
     sp_PolyArray *a=array(v);
     if(a->frozen)sp_raise_frozen_array_at(a,SP_BUILTIN_POLY_ARRAY);
@@ -446,7 +698,7 @@ ID rb_intern(const char *name) {
     return (ID)sp_json_sym_intern_fn(name);
 }
 const char *rb_id2name(ID id) { return sp_sym_name_fn?sp_sym_name_fn((sp_sym)id):NULL; }
-void rb_gc_start(void) { sp_gc_collect(); }
+void rb_gc_start(void) { if (sp_gc_collect_fn) sp_gc_collect_fn(); }
 int rb_block_given_p(void) { return current_block!=NULL; }
 VALUE rb_block_proc(void) {
     if(!current_block)rb_raise(rb_eArgError,"tried to create Proc object without a block");
@@ -470,6 +722,10 @@ VALUE rb_yield_values(int argc,...) {
     return rb_yield_values2(argc,values);
 }
 static sp_RbVal sp_cext_invoke_locked(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,sp_PolyArray *args,sp_Proc *block) {
+    /* no exception is in flight where Ruby calls a C method: rb_errinfo()
+       answers nil, as CRuby's does once a rescue is done, rather than the
+       exception a C raise left (sqlite3's step() re-raised the last one) */
+    sp_cext_set_errinfo(Qnil);
     sp_cext_init(ext);
     SP_GC_ROOT_RBVAL(self);SP_GC_ROOT(args);SP_GC_ROOT(block);
     sp_cext_arena_mark mark=sp_cext_arena_enter();
@@ -484,13 +740,9 @@ static sp_RbVal sp_cext_invoke_locked(sp_cext_extension *ext,int slot,int arity,
     const int roots=sp_gc_nroots;
     jmp_buf frame;
     if(setjmp(frame)!=0) {
-        if(sp_cext_unwinding()) {
-            sp_exc_disarm();sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-            sp_cext_current_block=saved;sp_cext_resume_unwind();abort();
-        }
-        const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
+        CextExit left=cext_exit_take();
         sp_exc_disarm();sp_cext_arena_restore(mark);sp_gc_nroots=roots;
-        sp_cext_current_block=saved;sp_fiber_reraise(cls,msg,obj);abort();
+        sp_cext_current_block=saved;cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     if(arity>=0 && argc!=arity) { rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d)",argc,arity); }
@@ -535,7 +787,18 @@ static VALUE dispatch(int kind, const char *key, VALUE receiver, int argc, const
 VALUE rb_funcallv(VALUE receiver, ID id, int argc, const VALUE *args) {
     const char *name = rb_id2name(id);
     if (!name) rb_raise(rb_eArgError, "unknown method ID");
+    /* Class.new in Init: the class the recorder declared for it */
+    if (binding && argc <= 1 && receiver == rb_cClass && !strcmp(name, "new"))
+        return rb_class_new(argc ? args[0] : rb_cObject);
     return dispatch(0, name, receiver, argc, args, NULL);
+}
+/* rb_apply: a send of the Array's elements, through the spread stub of
+ * the name (a call with as many arguments as the Array holds) */
+VALUE rb_apply(VALUE receiver, ID id, VALUE list) {
+    const char *name = rb_id2name(id);
+    if (!name) rb_raise(rb_eArgError, "unknown method ID");
+    (void)array(list);
+    return dispatch(6, name, receiver, 1, &list, NULL);
 }
 VALUE rb_funcall(VALUE receiver, ID id, int argc, ...) {
     if (argc < 0) rb_raise(rb_eArgError, "negative C extension call arity");
@@ -544,10 +807,29 @@ VALUE rb_funcall(VALUE receiver, ID id, int argc, ...) {
     for (int i = 0; i < argc; i++) args[i] = va_arg(ap, VALUE);
     va_end(ap); return rb_funcallv(receiver, id, argc, args);
 }
-VALUE rb_iv_get(VALUE receiver, const char *name) { return dispatch(1, name, receiver, 0, NULL, NULL); }
-VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) { return dispatch(2, name, receiver, 1, &value, NULL); }
+/* A name without the @ ("-instances") is a hidden ivar, which no Ruby code
+   reads (sp_cext_hidden_set); the rest are the object's own, reached
+   through the program's ivar stubs. */
+static int hidden_ivar(const char *name) { return name && name[0] && name[0] != '@'; }
+VALUE rb_iv_get(VALUE receiver, const char *name) {
+    if (hidden_ivar(name)) return sp_cext_value(sp_cext_hidden_get(sp_cext_rbval(receiver), (sp_sym)rb_intern(name)));
+    return dispatch(1, name, receiver, 0, NULL, NULL);
+}
+VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) {
+    if (hidden_ivar(name)) {
+        sp_cext_hidden_set(sp_cext_rbval(receiver), (sp_sym)rb_intern(name), sp_cext_rbval(value));
+        return value;
+    }
+    return dispatch(2, name, receiver, 1, &value, NULL);
+}
 VALUE rb_ivar_get(VALUE receiver, ID id) { return rb_iv_get(receiver, rb_id2name(id)); }
 VALUE rb_ivar_set(VALUE receiver, ID id, VALUE value) { return rb_iv_set(receiver, rb_id2name(id), value); }
+VALUE rb_ivar_defined(VALUE receiver, ID id) {
+    const char *name = rb_id2name(id);
+    if (!hidden_ivar(name))
+        rb_raise(rb_eNotImpError, "rb_ivar_defined of a Ruby instance variable (%s) is not supported", name ? name : "?");
+    return sp_cext_hidden_defined(sp_cext_rbval(receiver), (sp_sym)id) ? Qtrue : Qfalse;
+}
 VALUE rb_const_get(VALUE receiver, ID id) { (void)class_name(receiver); return dispatch(3, rb_id2name(id), receiver, 0, NULL, NULL); }
 VALUE rb_const_get_at(VALUE receiver, ID id) { return rb_const_get(receiver, id); }
 VALUE rb_eval_string(const char *code) { return dispatch(4, code, Qnil, 0, NULL, NULL); }
@@ -583,17 +865,14 @@ static sp_int callback_trampoline_locked(void *p, sp_int argc, sp_int *raw) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
         sp_cext_current_block = saved;
-        if (unwind) { sp_cext_resume_unwind(); abort(); }
-        sp_fiber_reraise(cls, msg, obj); abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     VALUE argv[SP_PROC_ARG_SLOTS];
-    for (int i = 0; i < argc; i++) argv[i] = sp_cext_value(_sp_proc_poly_args[i]);
+    for (int i = 0; i < argc; i++) argv[i] = sp_cext_value(sp_cext_widen_array(_sp_proc_poly_args[i]));
     VALUE yielded = argc ? argv[0] : Qnil;
     VALUE result = cap->callback(yielded, sp_cext_value(cap->data), (int)argc, argv, Qnil);
     sp_RbVal boxed = sp_cext_rbval(result);
@@ -607,13 +886,9 @@ static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_int result = callback_trampoline_locked(p, argc, raw);
@@ -631,13 +906,9 @@ static sp_RbVal catch_body(void *p) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     VALUE result = body->fn(body->tag, body->data, 0, NULL, Qnil);
@@ -684,13 +955,9 @@ VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); iteration = outer; sp_gc_nroots = roots;
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     iteration = &call;
@@ -718,13 +985,9 @@ void sp_cext_init(sp_cext_extension *extension) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_cext_init_locked(extension);
@@ -739,13 +1002,9 @@ void *sp_cext_allocate(sp_cext_extension *ext,int slot,int cls) {
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     void * result = sp_cext_allocate_locked(ext,slot,cls);
@@ -761,13 +1020,9 @@ sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,
     const int roots = sp_gc_nroots;
     jmp_buf frame;
     if (setjmp(frame) != 0) {
-        int unwind = sp_cext_unwinding();
-        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
-        void *obj = sp_exc_cur_obj();
+        CextExit left = cext_exit_take();
         sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
-        if (unwind) sp_cext_resume_unwind();
-        else sp_fiber_reraise(cls, msg, obj);
-        abort();
+        cext_exit_resume(left);
     }
     sp_exc_arm(frame);
     sp_RbVal result = sp_cext_invoke_locked(ext,slot,arity,self,args,block);

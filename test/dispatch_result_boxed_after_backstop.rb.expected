@@ -1,0 +1,7 @@
+{"viewer" => "guest"}
+["viewer"]
+{"viewer" => "guest", "role" => "admin"}
+["viewer", "role"]
+{}
+[]
+1

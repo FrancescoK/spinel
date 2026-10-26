@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen node-kinds-check node-kinds-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -196,8 +196,33 @@ endif
 # matching variant.
 BUNDLED_NATIVE_MT_OBJS = $(BUNDLED_NATIVE_OBJS:.o=_mt.o)
 PKG_MT_FLAGS = -DSP_THREADS -ftls-model=initial-exec
+# Bundled packages with a C extension (#7210): packages/<p>/spin.toml has a
+# [cext.*] recipe, and the extension is compiled from its source by the
+# recorder and the bridge (bin/spinel-cext-build --bundle) into
+# packages/<p>/build/cext, with its declarations written beside the
+# package's Ruby as <p>/<require>.rb (tools/cext-build.rb bundle), where
+# the compiler's package tier finds them; their `__cext_link` names the
+# archive and the libraries, which the driver and RUN_ONE_TEST link. racc's
+# cparse needs nothing of the system; sqlite3 is built where pkg-config
+# finds libsqlite3, and `require "sqlite3"` fails to load elsewhere.
+SQLITE3_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
+SQLITE3_LIBS := $(shell pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)
+SQLITE3_AVAILABLE := $(shell d=$$(mktemp -d) && printf '\043include <sqlite3.h>\nint main(void){return sqlite3_libversion_number()==0;}\n' > $$d/p.c 2>/dev/null && $(CC) $(SQLITE3_CFLAGS) $$d/p.c $(SQLITE3_LIBS) -o $$d/p >/dev/null 2>&1 && echo yes; rm -rf $$d)
+BUNDLED_CEXT_PKGS := racc
+ifeq ($(SQLITE3_AVAILABLE),yes)
+BUNDLED_CEXT_PKGS += sqlite3
+endif
+BUNDLED_CEXT_STAMPS := $(foreach p,$(BUNDLED_CEXT_PKGS),packages/$(p)/build/cext/complete)
+BUNDLED_CEXT_LOADERS := packages/racc/racc/cparse.rb packages/sqlite3/sqlite3/sqlite3_native.rb
+define BUNDLED_CEXT_RULE
+packages/$(1)/build/cext/complete: packages/$(1)/spin.toml $$(wildcard packages/$(1)/ext/*.c packages/$(1)/ext/*/*.c packages/$(1)/ext/*/*.h) bin/spinel-cext-build lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a tools/cext-build.rb tools/cext-record.rb tools/cext/recorder.c include/ruby.h include/ruby/spinel_record.h include/ruby/encoding.h
+	bin/spinel-cext-build --bundle packages/$(1) packages/$(1)/build/cext "$$(CC)"
+endef
+$(foreach p,$(BUNDLED_CEXT_PKGS),$(eval $(call BUNDLED_CEXT_RULE,$(p))))
+.PHONY: bundled-cext
+bundled-cext: $(BUNDLED_CEXT_STAMPS)
 
-all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h $(BUNDLED_CEXT_STAMPS)
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -294,7 +319,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
+SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/node_kinds.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
@@ -978,6 +1003,10 @@ wasm-test: $(SPINEL) wasm-rt
 	    echo "wasm-test: FAIL (--exceptions=abort built what it must refuse) $$t"; ok=0; \
 	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
 	  else echo "wasm-test: pass (--exceptions=abort refuses) $$t"; fi; \
+	  if WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --exceptions=abort -c --no-line-map $$t -o $$tmp/r.c >/dev/null 2>$$tmp/r.err; then \
+	    echo "wasm-test: FAIL (--exceptions=abort -c wrote what the build refuses) $$t"; ok=0; \
+	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort -c refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
+	  else echo "wasm-test: pass (--exceptions=abort -c refuses) $$t"; fi; \
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
@@ -1213,6 +1242,10 @@ PKG_TESTS := $(filter-out packages/ffi/test/%.rb packages/fiddle/test/%.rb,$(PKG
 endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
+# sqlite3's tests need its extension, built only where libsqlite3 is
+ifneq ($(SQLITE3_AVAILABLE),yes)
+PKG_TESTS := $(filter-out packages/sqlite3/test/%.rb,$(PKG_TESTS))
+endif
 endif
 ifneq ($(TEST_SKIP),)
 PKG_TESTS := $(filter-out $(TEST_SKIP),$(PKG_TESTS))
@@ -1478,7 +1511,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check node-kinds-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -1735,7 +1768,7 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	done; \
 	grep -Ev '^(root-elide|root-frame|inline-force|pd-hoist)@' "$$t.log" > "$$t.allow"; \
 	$(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.denied" && \
-	SPINEL_NO_PD_HOIST=1 SPINEL_LINE_MAP=1 $(SPINEL) --no-root-elision --no-root-frame --no-inline-hot $$f -c -o "$$t.c" >/dev/null 2>&1 && \
+	SPINEL_NO_PD_HOIST=1 $(SPINEL) --line-map --no-root-elision --no-root-frame --no-inline-hot $$f -c -o "$$t.c" >/dev/null 2>&1 && \
 	cmp -s "$$t.denied" "$$t.c" || \
 	  { echo "decisions-test: FAIL (denying the kinds that have a switch does not emit what the switches emit)"; ok=0; }; \
 	printf '# only this one\n\nroot-frame@Sprites#place\n' > "$$t.allow"; \
@@ -1865,6 +1898,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (scrub_bang_block compiled)"; ok=0; \
 	else grep -q "scrub! with a block" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (scrub_bang_block rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/ffi_source_undeclared_call.rb; \
+	if $(SPINEL) "$$t" -o "$$tmp/fsu" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (an ffi_source call to an undeclared function built)"; ok=0; \
+	else grep -Eq "(undeclared function|implicit declaration of function) .lfind" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (an ffi_source call to an undeclared function refused without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
 	t=test/reject/singleton_on_untraceable_recv.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
@@ -2300,6 +2338,17 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # point of having them: moving both together cannot say which heap paces the
 # collections (#4384). Read back off SPINEL_GC_STATS, which reports the two
 # separately, so the test asserts the mechanism rather than a timing.
+# --gc=none: the program answers as with the collector, and the collector
+# (sp_gc_collect and what only it reaches) is not in the binary.
+gc-none-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@tmp=$$(mktemp -d /tmp/spinel-gcnone.XXXXXX); ok=1; \
+	$(SPINEL) --gc=none test/gc_none_alloc.rb -o "$$tmp/t" >"$$tmp/cc.out" 2>&1 || { echo "gc-none-test: FAIL (compile)"; tail -5 "$$tmp/cc.out"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  $(TIMEOUT60) "$$tmp/t" > "$$tmp/out" 2>&1; cmp -s "$$tmp/out" test/gc_none_alloc.rb.expected || { echo "gc-none-test: FAIL (output)"; diff test/gc_none_alloc.rb.expected "$$tmp/out" | head -5; ok=0; }; \
+	  if command -v nm >/dev/null 2>&1; then nm "$$tmp/t" | grep -q ' sp_gc_collect$$' && { echo "gc-none-test: FAIL (the collector is still linked)"; ok=0; }; fi; \
+	fi; \
+	rm -rf "$$tmp"; if [ $$ok -eq 1 ]; then echo "gc-none-test: pass"; else exit 1; fi
+
 gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-threshold-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \
@@ -3004,6 +3053,13 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	grep -Eq '$(STR_SLOT_RE)[[:space:]]*iv_label' "$$tmp/out.c" || { echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; ok=0; }; \
 	if grep -Eq 'sp_RbVal[[:space:]]+iv_label' "$$tmp/out.c"; then echo "rbs-seed-test: FAIL (#1417: ivar stayed poly)"; ok=0; fi; \
 	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || { echo "rbs-seed-test: FAIL (nested_ivar C invalid)"; ok=0; }; \
+	;; \
+	seed_unknown_class_warns) \
+	$(SPINEL) test/rbs-seed/seed_unknown_class_warns.rb --rbs test/rbs-seed/sig -o "$$tmp/suc" 2>"$$tmp/suc.err" >/dev/null; \
+	grep -q 'warning: --rbs: Lane::Probe @bus: Bus names no class of the program; the seed is ignored' "$$tmp/suc.err" || { echo "rbs-seed-test: FAIL (an ivar seed naming no class was dropped without a warning)"; ok=0; }; \
+	grep -q 'warning: --rbs: Lane::Probe#poke: Bus names no class of the program; the seed is ignored' "$$tmp/suc.err" || { echo "rbs-seed-test: FAIL (a parameter seed naming no class was dropped without a warning)"; ok=0; }; \
+	[ "$$(grep -c 'names no class' "$$tmp/suc.err")" = 2 ] || { echo "rbs-seed-test: FAIL (a seed naming a builtin or a known class warned)"; sed -n 1,4p "$$tmp/suc.err"; ok=0; }; \
+	"$$tmp/suc" > "$$tmp/suc.out" 2>/dev/null && cmp -s "$$tmp/suc.out" test/rbs-seed/seed_unknown_class_warns.expected || { echo "rbs-seed-test: FAIL (seed_unknown_class_warns output mismatch)"; ok=0; }; \
 	;; \
 	nested_array_ivar) \
 	$(SPINEL) test/rbs-seed/nested_array_ivar.rb --rbs test/rbs-seed/sig \
@@ -3976,13 +4032,21 @@ ckey=""; hit=0; own=0; \
   [ -f "$$pchf" ] || pchuse=""; \
   if sed -n '1,/^#include "spinel_rt.h"/p' "$$cfile" | grep '^#define' | grep -qv SP_TU_NO_POLY_RENDER; then pchuse=""; fi; \
   xlibs=$$(sed -n 's|^/\* SPINEL_LINK: \(.*\) \*/$$|\1|p' "$$cfile" | tr '\n' ' '); \
+  xobjs=$$(sed -n 's|^/\* SPINEL_LINK_OBJ: \(.*\) \*/$$|\1|p' "$$cfile" | tr '\n' ' '); \
+  keep=""; for o in $$xobjs; do case " $(BUNDLED_NATIVE_OBJS) " in *" $$o "*) ;; *) keep="$$keep $$o";; esac; done; xobjs="$$keep"; \
   bigopt=""; \
   if [ "$$(wc -l < "$$cfile")" -ge 2000 ]; then bigopt="-O0"; pchuse=""; fi; \
   if [ -f "$<.opt" ]; then bigopt=$$(cat "$<.opt"); pchuse=""; fi; \
   mtdef=""; rtlib="$(SP_RT_LIB)"; natobjs="$(BUNDLED_NATIVE_OBJS)"; mtld=""; \
   if grep -q SPINEL_USES_THREADS "$$cfile"; then \
     mtdef="$(MT_DEF)"; rtlib="$(SP_RT_MT_LIB)"; natobjs="$(BUNDLED_NATIVE_MT_OBJS)"; mtld="-lpthread"; pchuse=""; \
+    mtobjs=""; for o in $$xobjs; do m="$${o%.a}_mt.a"; [ -f "$$m" ] && o="$$m"; mtobjs="$$mtobjs $$o"; done; xobjs="$$mtobjs"; \
   fi; \
+  cextinc=""; \
+  if grep -q SPINEL_USES_CEXT "$$cfile"; then \
+    rtlib=$$(echo "$$rtlib" | sed 's|libspinel_rt|libspinel_cext_rt|'); pchuse=""; cextinc="-Iinclude"; \
+  fi; \
+  xlibs="$$xobjs $$xlibs"; \
   if [ -f "$<.expected" ]; then \
     ckey=$$(RC_CC="$(CC)" tools/result_cache.sh key "$<" "$$cfile" \
       "$(RESULT_CACHE_FP)|$(RESULT_CACHE_HARNESS)|$(CC)|$(TEST_SINGLE_INVOKE)|$(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib|$$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS)|$(TIMEOUT10)" \
@@ -3996,9 +4060,9 @@ ckey=""; hit=0; own=0; \
   if [ $$hit = 1 ]; then \
     :; \
   elif [ -n "$(TEST_SINGLE_INVOKE)" ]; then \
-    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib "$$cfile" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib $$cextinc "$$cfile" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   else \
-    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
+    $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib $$cextinc -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
     $(CC) $(CFLAGS) "$$cfile.o" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   fi; }; \
 built=$$?; \
@@ -4047,7 +4111,7 @@ endef
 # Per-package test rules (one pattern rule per bundled package: GNU Make
 # patterns allow a single %, so the package name is fixed per rule).
 define PKG_TEST_RULE
-$(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
+$(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(BUNDLED_CEXT_STAMPS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
 	$$(RUN_ONE_TEST)
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
@@ -4399,30 +4463,6 @@ respond-to-audit: $(SPINEL) $(SP_RT_LIB)
 cls-fact-check: $(SPINEL)
 	@sh tools/cls_fact_check.sh $(TESTS)
 
-# The "new String" claims (#9135) held against CRuby. Under --share-strings
-# the share facts claim that some values are new Strings no other name holds
-# (SPINEL_NEW_CLAIMS=FILE lists them; the C is the same with it set). Each
-# program in ORACLE_TESTS (default: test/share and the oracle's own
-# fixtures) runs under CRuby with its claims checked where they are made;
-# a claim whose object a live name can still reach is disproved, and any
-# disproved claim fails the target (exit 1). The report goes to
-# ORACLE_REPORT. The self-test feeds the tool hand-written claims, a true and
-# a false one for each check it knows, and the claims past compilers made for
-# three programs they got wrong. Neither is part of `make gate`: a soundness
-# tool, run when the freshness predicates change and on demand. It needs
-# Ruby 4.0 (GATE_RUBY or PATH).
-ORACLE_TESTS ?= $(wildcard test/share/*.rb test/new-string-oracle/*.rb)
-ORACLE_JOBS ?= 2
-ORACLE_REPORT ?= build/new-string-oracle.txt
-.PHONY: new-string-oracle new-string-oracle-selftest
-new-string-oracle-selftest:
-	@r=$$(sh tools/gate-ruby) || { echo "new-string-oracle-selftest: needs Ruby 4.0 or later (set GATE_RUBY)"; exit 1; }; \
-	"$$r" tools/new_string_oracle_test.rb
-new-string-oracle: $(SPINEL) new-string-oracle-selftest
-	@r=$$(sh tools/gate-ruby) || exit 1; \
-	mkdir -p $(dir $(ORACLE_REPORT)); \
-	"$$r" tools/new_string_oracle.rb --spinel $(SPINEL) --jobs $(ORACLE_JOBS) --report $(ORACLE_REPORT) $(ORACLE_TESTS)
-
 # Inference properties the stdout comparison cannot see: a boxed slot still
 # prints the right answer, so a type regression here is invisible to `make
 # test`. Assert the emitted C signature directly, the way rbs-seed-test does
@@ -4469,6 +4509,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  grep -q 'SP_TU_NO_POLY_RENDER' "$$tmp/dfn.c" || { echo "infer-test: FAIL (a statement def made its name a Symbol of the program)"; ok=0; }; \
 	  $(SPINEL) $$flags test/no_poly_values_unrun_code.rb -c --no-line-map -o "$$tmp/npu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (no_poly_values_unrun_code: -c)"; ok=0; }; \
 	  grep -q 'SP_TU_NO_POLY_VALUES' "$$tmp/npu.c" || { echo "infer-test: FAIL (code the program never runs counted as a poly value)"; ok=0; }; \
+	  $(SPINEL) $$flags test/no_poly_values_dropped.rb -c --no-line-map -o "$$tmp/npd.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (no_poly_values_dropped: -c)"; ok=0; }; \
+	  grep -q 'SP_TU_NO_POLY_VALUES' "$$tmp/npd.c" || { echo "infer-test: FAIL (a value the program throws away counted as a poly value)"; ok=0; }; \
 	  $(SPINEL) $$flags -e 'module Host' -e '  ffi_func :abs, [:int], :int' -e 'end' -e 'module Fn' -e '  def self.run = Host.abs(-3)' -e 'end' -e 'p Fn.run' -c --no-line-map -o "$$tmp/npf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (an ffi_func program: -c)"; ok=0; }; \
 	  grep -q 'SP_TU_NO_POLY_VALUES' "$$tmp/npf.c" || { echo "infer-test: FAIL (an ffi_func's argument list counted as a poly value)"; ok=0; }; \
 	  for t in $(patsubst test/%.rb,%,$(shell grep -l '^\# spinel: infer-ivar-get$$' test/*.rb)); do \
@@ -4755,6 +4797,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'sp_PtrArray \* *lv_bare' "$$tmp/ca.c" || { echo "infer-test: FAIL (a table handed to a RECEIVERLESS new(...) lost its typed representation)"; grep -oE 'sp_[A-Za-z]+Array \* *lv_bare' "$$tmp/ca.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *iv_u;' "$$tmp/ca.c" || { echo "infer-test: FAIL (the ivar a receiverless new(...) stored the table in stayed boxed)"; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_urow' "$$tmp/ca.c" || { echo "infer-test: FAIL (a row read out of the receiverless-constructed table stayed boxed)"; ok=0; }; \
+	$(SPINEL) test/nested_empty_rows_push_evidence.rb -c --no-line-map -o "$$tmp/nerp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (nested_empty_rows_push_evidence: -c)"; ok=0; }; \
+	grep -q 'sp_PtrArray \* iv_adj;' "$$tmp/nerp.c" && grep -q 'sp_PtrArray \* lv_t = NULL;' "$$tmp/nerp.c" && grep -q 'sp_PtrArray \* lv_f = NULL;' "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table of empty rows pushed only Integers or only Floats stayed boxed)"; ok=0; }; \
+	for v in lv_a lv_b lv_c lv_d lv_e lv_h lv_k lv_l lv_m lv_n; do grep -q "sp_PolyArray \* $$v = NULL;" "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table of empty rows whose row escapes or takes another kind narrowed: $$v)"; ok=0; }; done; \
+	grep -q 'sp_PolyArray \* iv_rows;' "$$tmp/nerp.c" && grep -q 'sp_PolyArray \* iv_cells;' "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table whose row a method's read value hands on narrowed)"; ok=0; }; \
+	[ "$$(grep -A2 'sp_IntArray \*_t[0-9]* = sp_IntArray_new();' "$$tmp/nerp.c" | grep -c 'sp_PtrArray_push')" -ge 2 ] && [ "$$(grep -A2 'sp_FloatArray \*_t[0-9]* = sp_FloatArray_new();' "$$tmp/nerp.c" | grep -c 'sp_PtrArray_push')" -ge 1 ] || { echo "infer-test: FAIL (a narrowed table of empty rows built its rows boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/map_table_rows.rb -c --no-line-map -o "$$tmp/mtr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile map_table_rows)"; exit 1; }; \
 	grep -Eq 'sp_PtrArray \* *lv_picked' "$$tmp/mtr.c" || { echo "infer-test: FAIL (a table of rows built by map lost its typed representation)"; grep -oE 'sp_[A-Za-z]+Array \* *lv_picked' "$$tmp/mtr.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *iv_rows;' "$$tmp/mtr.c" || { echo "infer-test: FAIL (the ivar holding a mapped table stayed boxed)"; ok=0; }; \
@@ -5063,6 +5110,14 @@ signal-default-test: $(SPINEL)
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/pi" 2>/dev/null | tr '\n' ' ')" = "each interrupted times interrupted " ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a counting iterator with a pure block)"; ok=0; }; \
 	fi; \
+	$(SPINEL) test/signal/interrupt_chunked_store.rb -o "$$tmp/cs" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile chunked store)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout 10 "$$tmp/cs" 2>/dev/null | tr '\n' ' ')" = "ivar advanced struct advanced attr advanced cell advanced ivar pair in step " ] || { echo "signal-default-test: FAIL (a rescue of a SIGINT in a scalar loop read a store from before the loop: chunked loop)"; ok=0; }; \
+	fi; \
+	$(SPINEL) test/signal/interrupt_rescue_locals.rb -o "$$tmp/rl" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile rescue locals)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout 10 "$$tmp/rl" 2>/dev/null | tr '\n' ' ')" = "while in step def rescue in step ensure in step rescue => e passed it on nested while in step nested times in step else in step " ] || { echo "signal-default-test: FAIL (a rescue of a SIGINT in a scalar loop saw a pass half done: poll_rescue_frame)"; ok=0; }; \
+	fi; \
 	$(SPINEL) test/signal/interrupt_recursion.rb -o "$$tmp/ir" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile recursion)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/ir" 2>/dev/null)" = "recursion interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a recursion with no loop: the call graph lost its cycle, #9377)"; ok=0; }; \
@@ -5307,6 +5362,22 @@ value-edges-check:
 	fi
 value-edges-regen:
 	@$(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --write
+
+# The node kinds (src/node_kinds.inc) against the same config.yml: Prism's node
+# types, sorted, and the compiler's own (tools/gen_node_kinds.rb). A PRISM_VERSION
+# bump that adds a node type fails here until `make node-kinds-regen` writes
+# it in. One of test-run's legs, and skipped on the same terms as
+# value-edges-check.
+node-kinds-check:
+	@if [ ! -f "$(PRISM_DIR)/config.yml" ]; then \
+	  echo "node-kinds-check: skipped ($(PRISM_DIR)/config.yml not found; run 'make deps')"; \
+	elif ! command -v $(VALUE_EDGES_RUBY) >/dev/null 2>&1; then \
+	  echo "node-kinds-check: skipped (no $(VALUE_EDGES_RUBY))"; \
+	else \
+	  PRISM_CONFIG="$(PRISM_DIR)/config.yml" $(VALUE_EDGES_RUBY) tools/gen_node_kinds.rb --check; \
+	fi
+node-kinds-regen:
+	@PRISM_CONFIG="$(PRISM_DIR)/config.yml" $(VALUE_EDGES_RUBY) tools/gen_node_kinds.rb --write
 
 # lib/sp_poly_cold.c holds functions spinel_rt.h used to define static in every
 # generated unit. Compiled once, its object must not depend on the integer
@@ -5662,6 +5733,13 @@ install: all bin/spin
 	rm -rf $(SPNLDIR)/builtins
 	cp -r builtins $(SPNLDIR)/builtins
 	rm -rf $(SPNLDIR)/packages/*/build
+	@# ...except a bundled extension's archives, which its declarations name
+	for p in $(BUNDLED_CEXT_PKGS); do \
+	  if [ -d packages/$$p/build/cext ]; then \
+	    install -d $(SPNLDIR)/packages/$$p/build/cext; \
+	    for a in packages/$$p/build/cext/*.a; do install -m 644 $$a $(SPNLDIR)/packages/$$p/build/cext/; done; \
+	  fi; \
+	done
 	@# cp -r keeps each file's mode, and a package object built through
 	@# sccache is 0640 whatever the umask (sccache 0.17 writes its outputs
 	@# that way, on a cache hit too). Installed by root, every program
@@ -5688,6 +5766,7 @@ uninstall:
 clean:
 	rm -rf build/ bin/
 	rm -f spinel
+	rm -rf packages/*/build/cext $(BUNDLED_CEXT_LOADERS)
 
 .PHONY: cext-compiler-test
 cext-compiler-test: $(SPINEL) lib/libspinel_rt.a lib/libspinel_cext_rt.a

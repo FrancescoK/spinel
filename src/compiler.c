@@ -82,9 +82,6 @@ unsigned long comp_ty_edits;
 unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
 int comp_scope_ver_cap, comp_class_ver_cap;
 int *comp_touch_log;
-unsigned long comp_touch_count[3];
-unsigned long comp_touch_why[8];
-int comp_touch_last_why;
 int comp_ref_owner(Compiler *c, TyRef r) {
   uintptr_t p = (uintptr_t)r;
   for (int k = 0; k < c->nclasses; k++) {
@@ -149,8 +146,8 @@ Compiler *comp_new(const NodeTable *nt) {
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
-     reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
-     are. An environment that exports the variable as "0" or "" means off. */
+     reads it, and so is "0". An environment that exports the variable as
+     "0" or "" means off. */
   c->share_strings = 1;
   comp_node_pbases(c);
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
@@ -1697,7 +1694,7 @@ int comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name) {
   const char *cn = t == TY_INT ? "Integer" : t == TY_FLOAT ? "Float"
                  : t == TY_STRING ? "String" : t == TY_SYMBOL ? "Symbol"
                  : (ty_is_array(t) || ty_is_obj_array(t)) ? "Array"
-                 : ty_is_hash(t) ? "Hash" : NULL;
+                 : ty_is_hash(t) ? "Hash" : t == TY_ENUMERATOR ? "Enumerator" : NULL;
   if (!cn || !name) return -1;
   int ci = comp_class_index(c, cn);
   if (ci < 0) return -1;
@@ -2685,6 +2682,11 @@ int comp_iob_sym_type(const char *name) {
   return -1;
 }
 int comp_iob_ty_is_float(int t) { return t >= 14 && t <= 17; }
+/* a code's width and byte order (sp_iob_width, sp_iob_big_endian), and
+   whether an integer one is signed (an odd code) */
+int comp_iob_ty_width(int t) { return t >= 14 ? (t == 14 || t == 16 ? 4 : 8) : t <= 1 ? 1 : t <= 5 ? 2 : t <= 9 ? 4 : 8; }
+int comp_iob_ty_be(int t) { return t >= 14 ? t >= 16 : t >= 2 && ((t - 2) & 2); }
+int comp_iob_ty_signed(int t) { return t < 14 && (t & 1); }
 /* the 64-bit integer types stay BOXED through the fold: u64 values above
    2^63-1 are Bignums, and the signed ones take the same path */
 int comp_iob_ty_is_64(int t) {
@@ -3644,16 +3646,22 @@ int comp_ret_next(const Compiler *c, int u) {
    name: one entry per (CallNode, argument) pair. Asking whether an ivar is
    lent to a callee walked every CallNode of the program once per question,
    and a machine-generated program asks it for nearly every method. Chains
-   carry hash collisions: callers keep their name/owner filters. An argument
-   array rewritten in place (nt_node_set_arr) leaves the table's version
-   alone, so a caller that may run after such a rewrite drops the index with
-   comp_ivarg_invalidate first. */
+   carry hash collisions: callers keep their name/owner filters. Rebuilt when
+   the table has changed since: its version, or its edits (an argument array
+   rewritten in place, nt_node_set_arr, leaves the version alone). Only the
+   calls are walked, through their kind chain. */
 static void ivarg_build(Compiler *c) {
   free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
   c->ivarg_call = c->ivarg_arg = NULL;
   const NodeTable *nt = c->nt;
-  int n = nt->count, np = 0;
-  for (int u = 0; u < n; u++) {
+  int np = 0, ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) ncalls++;
+  int *calls = malloc(sizeof(int) * (size_t)(ncalls > 0 ? ncalls : 1));
+  if (!calls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  ncalls = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) calls[ncalls++] = u;
+  for (int q = 0; q < ncalls; q++) {
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3662,20 +3670,22 @@ static void ivarg_build(Compiler *c) {
   }
   int nb = 16;
   while (nb < np && nb < (1 << 22)) nb <<= 1;
-  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) return;
+  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) { free(calls); return; }
   c->ivarg_call = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   c->ivarg_arg = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
   if (!c->ivarg_call || !c->ivarg_arg) {
     free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
     c->ivarg_head = c->ivarg_next = c->ivarg_call = c->ivarg_arg = NULL;
     c->ivarg_built = 0;
+    free(calls);
     return;
   }
   c->ivarg_nbuckets = nb;
   c->ivarg_count = np;
   for (int b = 0; b < nb; b++) c->ivarg_head[b] = -1;
   int e = np;
-  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+  for (int q = ncalls - 1; q >= 0; q--) {   /* reverse: chains run in node order */
+    int u = calls[q];
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -3691,11 +3701,12 @@ static void ivarg_build(Compiler *c) {
       c->ivarg_head[b] = e;
     }
   }
-  c->ivarg_version = nt->version;
+  free(calls);
+  c->ivarg_stamp = nt->edits + nt->version;
   c->ivarg_built = 1;
 }
 int comp_ivarg_first(Compiler *c, const char *name) {
-  if (!c->ivarg_built || c->ivarg_version != c->nt->version) ivarg_build(c);
+  if (!c->ivarg_built || c->ivarg_stamp != c->nt->edits + c->nt->version) ivarg_build(c);
   if (!c->ivarg_built || !name) return -1;
   return c->ivarg_head[sp_strhash(name) & (unsigned)(c->ivarg_nbuckets - 1)];
 }

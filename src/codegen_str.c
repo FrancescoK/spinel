@@ -130,8 +130,10 @@ static int str_handle_new(Compiler *c, int v, int form, unsigned dest, StrForm *
     sf->needs |= SF_ALLOCATES;
     return SPF_WRAP;
   }
+  /* (a nil that is no bare read -- a call answering nil -- runs first) */
   if (comp_ntype(c, v) == TY_NIL) {
-    buf_puts(b, "NULL");
+    if (subtree_is_pure_read(c, v)) buf_puts(b, "NULL");
+    else { buf_puts(b, "({ (void)("); emit_expr(c, v, b); buf_puts(b, "); NULL; })"); }
     return SPF_BYTES;
   }
   if (repr_of(c, v).kind == RK_BOXED) {

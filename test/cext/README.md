@@ -85,3 +85,13 @@ Step 5 adds the compiler bridge and an end-to-end CRuby oracle:
 retained object archive passed with `--link`. Native methods use the ordinary
 call plan, data objects carry their Ruby ivars, and boundary sharing is decided
 by analysis.
+
+The later steps (sqlite3 and racc/cparse end to end, #7210) are listed at
+the end of [the recorder contract](../../docs/internals/cext-recorder.md):
+hidden instance variables, spread sends, `Class.new` during Init, the
+C API sqlite3 needs (`rb_scan_args`, the number conversions and
+`rb_integer_pack`, the encodings, `StringValue`, `rb_path2class`, ...), and
+the bundled packages `packages/sqlite3` and `packages/racc`, whose
+extensions `make` builds (`make bundled-cext`) and whose tests the gate runs
+with the other packages'. Their CRuby oracle cases are
+`test/cext/compiler/{hidden_ivars,raise_program_class,conversions,spread_sends}`.

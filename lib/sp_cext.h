@@ -11,6 +11,16 @@ void sp_cext_hash_set(sp_RbVal, sp_RbVal, sp_RbVal);
 sp_int sp_cext_object_to_int(sp_RbVal);
 int sp_cext_type(sp_RbVal, int (*)(int));
 sp_RbVal sp_cext_hash_get(sp_RbVal, sp_RbVal);
+int sp_cext_hidden_defined(sp_RbVal, sp_sym);
+sp_RbVal sp_cext_hidden_get(sp_RbVal, sp_sym);
+void sp_cext_hidden_set(sp_RbVal, sp_sym, sp_RbVal);
+sp_RbVal sp_cext_freeze(sp_RbVal);
+sp_RbVal sp_cext_ary_delete(sp_RbVal, sp_RbVal);
+double sp_cext_num2dbl(sp_RbVal);
+int sp_cext_integer_pack(sp_RbVal, void *, size_t, size_t);
+sp_RbVal sp_cext_sym2str(sp_sym);
+sp_RbVal sp_cext_str_plus(sp_RbVal, sp_RbVal);
+sp_RbVal sp_cext_widen_array(sp_RbVal);
 
 /* Internal bridge. The compiler/recorder will use this only for opted-in
  * extensions; an ordinary generated translation unit never includes it. */
@@ -21,6 +31,7 @@ typedef struct {
     int initialized;
     VALUE *constants;
     size_t constant_count;
+    const char *name;   /* the extension's name: its Class.new classes are named by it */
 } sp_cext_extension;
 sp_PolyArray *sp_cext_share_new_array(sp_PolyArray *);
 void sp_cext_init(sp_cext_extension *);

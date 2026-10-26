@@ -6,6 +6,7 @@
 #include "value_pos.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
+#include <ctype.h>
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -36,18 +37,30 @@ int collect_mode(void) { return 1; }
    build goes on. */
 int defer_refusals(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_defer_refusals;
   return v;
 }
+/* ...and for one node: under the switch, or in a file whose
+   `# spinel: defer-refusals` magic comment defers its own refusals
+   (spinel_parse.c, sp_src_file_note_defers): a vendored library's line
+   Spinel does not compile raises where it runs, and the program that never
+   runs it builds. g_deferred_diags counts the refusals a deferral took
+   (one per deferred statement, method or check); the rest stop the build
+   (codegen_program). */
+int defer_refusals_at(const Compiler *c, int node) {
+  if (defer_refusals()) return 1;
+  return c && c->nt && node >= 0 && nt_file_defers(c->nt, (int)nt_int(c->nt, node, "node_file", -1));
+}
+int g_deferred_diags = 0;
 int collect_emit_anyway(void) {
   static int v = -1;
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
   return v;
 }
-/* 1 under --emit-types (main.c sets SPINEL_EMIT_TYPES to the JSON's path). */
+/* 1 under --emit-types (g_opt_emit_types: the JSON's path). */
 int emit_types_on(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("SPINEL_EMIT_TYPES"); v = e && *e ? 1 : 0; }
+  if (v < 0) v = g_opt_emit_types != NULL;
   return v;
 }
 /* 1 when a check that can go on past a refusal (the seal's) goes on to
@@ -66,7 +79,7 @@ int g_ndecide_cap = 0;
 int g_nd_call_id = -1;
 void nd_stamp(int id, int kind) {
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0) return;
   if (id >= g_ndecide_cap) {
     int ncap = g_ndecide_cap ? g_ndecide_cap : 1024;
@@ -326,12 +339,9 @@ static void ucall_resolver_report(Compiler *c) {
                 arm a probe dropped)
    A refusal raised while analysis runs is not codegen's and is not held.
    The report is printed by ucall_report, or at exit for a refused run. */
-/* The parser's stand-in for a Prism node kind it has no case for. It has no
-   node kind of its own (NK_NONE, which several passes read as "no node"), so
-   it is told by its type name. */
+/* The parser's stand-in for a Prism node kind it has no case for. */
 static int unsup_stand_in(const NodeTable *nt, int id) {
-  const char *ty = nt_type(nt, id);
-  return ty && sp_streq(ty, "UnsupportedNode");
+  return nt_kind(nt, id) == NK_UnsupportedNode;
 }
 
 typedef struct { int id; char *msg; } RefuseObs;
@@ -447,7 +457,7 @@ void ucall_report(Compiler *c) {
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (g_plan_check) ucall_observe(c, id, mi, owner_ci, add);
   static int on = -1;
-  if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
+  if (on < 0) on = g_opt_emit_types != NULL;
   if (!on || id < 0 || mi < 0 || mi >= c->nscopes) return;
   Scope *m = &c->scopes[mi];
   if (!m->name || !*m->name) return;
@@ -1134,6 +1144,8 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   const char *ty = nt_type(c->nt, id);
   NodeKind ty_k = nt_kind(c->nt, id);
   if (!ty) return 0;
+  /* an open type view on the yield (a redispatched receiver) is its type */
+  if (ty_k == NK_YieldNode) { TyKind vt; if (view_type_top(id, &vt)) { *out = vt; return 1; } }
   if (ty_k == NK_CallNode && yield_operator_site_type(c, id, out)) return 1;
   if (ty_k == NK_CallNode && yield_builtin_method_site_type(c, id, out)) return 1;
   if (ty_k != NK_YieldNode &&
@@ -2037,7 +2049,7 @@ static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) 
   if (k == NK_NumberedParametersNode &&
       nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' &&
       (!nm[2] || !strncmp(nm + 2, "__b", 3))) return 1;
-  if (ty && sp_streq(ty, "ItParametersNode") && sp_streq(nm, "it")) return 1;
+  if (k == NK_ItParametersNode && sp_streq(nm, "it")) return 1;
   if (ty && (strstr(ty, "ParameterNode") || k == NK_LocalVariableTargetNode)) {
     const char *pn = nt_str(nt, id, "name");
     /* shadow-renaming rewrites a param's node-table name to NAME__bpNN;
@@ -2728,12 +2740,10 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
         if (ivs_subtree_writes(nt, nt_ref(nt, u, "block"), ivn, 0)) kind = 2;
       }
     }
-    /* `o.x ||= v` and its kin write through the writer too (a
-       CallOperatorWriteNode has no kind of its own: among the unkinded) */
-    static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_NONE };
+    /* `o.x ||= v` and its kin write through the writer too */
+    static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_CallOperatorWriteNode };
     for (int q = 0; q < 3 && kind == 1; q++)
       NT_FOREACH_KIND(nt, CW[q], u) {
-        if (CW[q] == NK_NONE && !(nt_type(nt, u) && sp_streq(nt_type(nt, u), "CallOperatorWriteNode"))) continue;
         const char *rn = nt_str(nt, u, "name"), *wn = nt_str(nt, u, "write_name");
         if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) { kind = 2; break; }
       }
@@ -4232,6 +4242,7 @@ void refusal_note_deferred(Compiler *c, int id, const char *msg) {
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   diag_record(file, ln, msg);
+  g_deferred_diags++;
   refuse_observe(msg);
   if (ln > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
   else fprintf(stderr, "spinel: %s\n", msg);
@@ -4454,7 +4465,7 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
      (desugar_attr_const_splat): refused where it is emitted, so a deferred
      refusal stands at its own statement */
   if (nt_int(c->nt, id, "attr_splat", 0)) diagnose_unsupported_call(c, id);
-  if (!defer_refusals()) return;
+  if (!defer_refusals_at(c, id)) return;
   /* an identity Set's call the proof refuses (refuse_set_identity_members),
      whose values are no single one a check could read where it arrives */
   if (g_idset_marks && nt_int(c->nt, id, "idset_refuse", 0)) unsupported_feature(c, id, g_sid_refusal_msg);
@@ -5687,6 +5698,22 @@ const char *array_iter_kind(TyKind t) {
   if (t == TY_POLY_ARRAY) return "Poly";
   if (ty_is_ptr_array(t)) return "Ptr";   /* a numeric table's rows, or objects */
   return array_kind(t);
+}
+const char *array_frozen_cls(TyKind rt) {
+  return rt == TY_POLY_ARRAY ? "SP_BUILTIN_POLY_ARRAY"
+       : rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY"
+       : rt == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY"
+       : rt == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY"
+       : ty_is_ptr_array(rt) ? "SP_BUILTIN_PTR_ARRAY" : NULL;
+}
+void emit_array_frozen_checked(Compiler *c, int recv, TyKind rt, Buf *b) {
+  const char *cls = array_frozen_cls(rt);
+  if (!cls) { emit_expr(c, recv, b); return; }
+  int t = ++g_tmp;
+  buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s); _t%d; })",
+             t, t, t, cls, t);
 }
 void emit_c_escaped_n(Buf *b, const char *s, size_t len) {
   for (size_t i = 0; i < len; i++) {
@@ -7309,14 +7336,20 @@ static int stmt_wr_walk(Compiler *c, int stmt, int id, const char ***names, int 
   if (id < 0) return 0;
   if (id < c->stmt_wr_cap) c->stmt_wr_mark[id] = stmt;
   NodeKind k = nt_kind(nt, id);
-  if (k == NK_NumberedParametersNode) return 1;
+  if (k == NK_NumberedParametersNode || k == NK_ItParametersNode) return 1;
   int lv_bind = k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
                 k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
                 k == NK_LocalVariableTargetNode;
   int param = k == NK_RequiredParameterNode || k == NK_OptionalParameterNode ||
               k == NK_RestParameterNode || k == NK_KeywordRestParameterNode ||
               k == NK_OptionalKeywordParameterNode || k == NK_BlockParameterNode;
-  if (k == NK_NONE) {
+  /* a kind read by its type name: NK_NONE, and the kinds that had no
+     enumerator when this was written and carry a name (a block-local
+     variable, an operator write's reader, a required keyword) or are a
+     parameter with none (`...`, `**nil`) */
+  if (k == NK_NONE || k == NK_BlockLocalVariableNode || k == NK_CallOperatorWriteNode ||
+      k == NK_ForwardingParameterNode || k == NK_NoKeywordsParameterNode ||
+      k == NK_RequiredKeywordParameterNode) {
     const char *ty = nt_type(nt, id);
     if (!ty) return 0;
     if (nt_str(nt, id, "name")) param = 1;
@@ -7546,8 +7579,7 @@ void arity_message(char *out, size_t n, int given, int min, int max, const char 
   snprintf(out, n, "wrong number of arguments (given %d, expected %s%s)", given, exp, kw ? kw : "");
 }
 static int param_is_required_kw(const NodeTable *nt, int p) {
-  const char *t = nt_type(nt, p);
-  return t && sp_streq(t, "RequiredKeywordParameterNode");
+  return nt_kind(nt, p) == NK_RequiredKeywordParameterNode;
 }
 /* The required-keyword suffix of a parameter list: a def's ParametersNode or
    a block's BlockParametersNode. "" when it has none. */
@@ -7603,7 +7635,7 @@ int scope_refuses_keywords(Compiler *c, const Scope *m) {
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn >= 0 && nt_kind(c->nt, pn) == NK_BlockParametersNode) pn = nt_ref(c->nt, pn, "parameters");
   int kr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kr >= 0 && nt_type(c->nt, kr) && sp_streq(nt_type(c->nt, kr), "NoKeywordsParameterNode");
+  return kr >= 0 && nt_kind(c->nt, kr) == NK_NoKeywordsParameterNode;
 }
 
 /* ---- The keyword ArgumentErrors, one builder beside the arity one ----

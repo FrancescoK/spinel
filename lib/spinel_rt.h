@@ -251,7 +251,7 @@ void sp_warning_warn(const char *msg);
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
 
 /* The unresolved-call gate (codegen_call.c) raises NoMethodError through this
-   single recognizable token under SPINEL_GATE_RAISE, so coercion sites can
+   single recognizable token, so coercion sites can
    detect and coerce it (sp_poly_to_i(sp_raise_nomethod(...)) etc.) rather than
    parse a comma-expression. Returns sp_RbVal so it composes in a poly slot;
    NORETURN, so the value is never produced. Unused when the gate stays silent. */
@@ -776,10 +776,7 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
 /* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at
    file scope, near the class _new function. SP_POOL_NEW(CLS, scan)
    replaces the body of an `sp_gc_alloc(sizeof(sp_CLS), NULL, scan)`
-   call, popping from the per-class free-list if non-empty.
-   Default cap can be overridden at runtime via SP_POOL_MAX envvar
-   (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
-   at exit. */
+   call, popping from the per-class free-list if non-empty. */
 #define SP_POOL_DEFAULT_MAX 1048576L
 /* Pool concurrency (threaded build). The free lists stay SHARED across
    workers. Pushes (recycle) happen only during the stop-the-world sweep,
@@ -855,10 +852,6 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   static long sp_##CLS##_pool_pops = 0; \
   static long sp_##CLS##_pool_freed = 0; \
   static long sp_##CLS##_pool_hwm = 0; \
-  SP_CONSTRUCTOR static void sp_##CLS##_pool_init(void) { \
-    const char *m = getenv("SP_POOL_MAX"); \
-    if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
-  } \
   /* Runs only from the sweep, so no pop can run concurrently -- but the sweep
      is PARALLEL in the threaded build (sp_sched_par_sweep: every parked worker
      sweeps its own slot), so several workers push onto this one list at once.
@@ -867,13 +860,6 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
      atomically. Single-threaded: the exact plain code this always had. */ \
   static void sp_##CLS##_pool_recycle(sp_gc_hdr *h) { \
     SP_POOL_RECYCLE_BODY(CLS, h) \
-  } \
-  SP_DESTRUCTOR static void sp_##CLS##_pool_report(void) { \
-    const char *e = getenv("SP_POOL_REPORT"); \
-    if (!e || !e[0] || e[0] == '0') return; \
-    fprintf(stderr, #CLS " pool: pops=%ld pushes=%ld over_cap_freed=%ld hwm=%ld retained=%ld cap=%ld\n", \
-      sp_##CLS##_pool_pops, sp_##CLS##_pool_pushes, sp_##CLS##_pool_freed, \
-      sp_##CLS##_pool_hwm, sp_##CLS##_pool_count, sp_##CLS##_pool_max); \
   }
 
 /* With the slab on the pool is bypassed: the slab's own allocation is as
@@ -3311,14 +3297,15 @@ static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
 }
 static sp_int sp_rbval_hash_key(sp_RbVal v);   /* with the Hash key machinery below */
 /* A boxed value's #object_id: an immediate's is the one its typed form
-   answers (an Integer's 2n+1, a Symbol's id * 2, true's, nil's, a Float's
-   key), so `[x][0].object_id == x.object_id`; any other is its identity.
+   answers (an Integer's 2n+1, a Symbol's SP_SYM_OBJECT_ID, true's, nil's,
+   a Float's key), so `[x][0].object_id == x.object_id`; any other is its
+   identity.
    The box's payload was read as the id, which for an Integer, a Symbol and
    true is not the typed one. */
 static inline sp_int sp_poly_object_id(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: return (sp_int)(2 * (uintptr_t)v.v.i + 1);   /* (unsigned: an Integer past half the range wraps, as the typed arm does) */
-    case SP_TAG_SYM: return (sp_int)v.v.i * 2;
+    case SP_TAG_SYM: return SP_SYM_OBJECT_ID(v.v.i);
     case SP_TAG_BOOL: return v.v.i ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID;
     case SP_TAG_NIL: return SP_NIL_OBJECT_ID;
     case SP_TAG_FLT: return sp_rbval_hash_key(v);
@@ -5547,6 +5534,14 @@ SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
   if (sp_nomethod_kernel_private(m)) return sp_sprintf("private method '%s' called for %s", m, d);
   return sp_sprintf("undefined method '%s' for %s", m, d);
+}
+/* The NoMethodError of a call on nil, as sp_raise_nomethod(sp_nomethod_msg(m,
+   nil)) raises it (the receiver staged, a Kernel private name spelled as
+   one); it does not return, so the C compiler takes a nil test's raise as
+   leaving and keeps nothing alive across it. */
+SP_NORETURN SP_COLD SP_NOINLINE static void sp_nil_recv_raise(const char *m) {
+  sp_raise_nomethod(sp_nomethod_msg(m, sp_box_nil()));
+  abort();
 }
 /* #succ / #next on a boxed receiver. Every kind that answers them has its own
    answer: an Integer counts up, a String or Symbol takes the succ sequence,
@@ -21083,6 +21078,13 @@ static sp_RbVal sp_str_to_i_promote(const char *s, sp_int base, int mode) {
   sp_Bigint *bi = sp_bigint_new_str(d, (int)b);
   free(d);
   return sp_box_bigint(bi);
+}
+/* promote mode's String#oct: CRuby reads it as to_i with radix -8, where a
+   prefix picks the base and the radix is 8 otherwise -- the negative radix
+   Integer() reads. #hex is #to_i(16). */
+static sp_RbVal sp_str_oct_promote(const char *s) {
+  if (SP_UNLIKELY(!s)) sp_nil_recv("oct");
+  return sp_str_to_i_promote(s, sp_int_negative_base(s, -8), 0);
 }
 /* Integer("...") on a String: strict, or nil-answering for the
    `exception: false` form. `base` 0 is the bare form. */

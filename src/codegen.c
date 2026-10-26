@@ -1,6 +1,8 @@
 #include <limits.h>
+#include <ctype.h>
 #include "codegen_internal.h"
 #include "call_plan.h"
+#include "codegen_call_arms.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -207,7 +209,15 @@ int poll_scope_on_cycle(Compiler *c, int si) {
    A signal there can be raised where it lands, so such code carries no poll:
    a pure method is entered through a wrapper that marks the region
    (sp_sig_async_ok), a pure loop is marked around it, and the C compiler
-   keeps the code it would fold or vectorize without the polls. */
+   keeps the code it would fold or vectorize without the polls.
+
+   It writes nothing that outlives its frame, though: an instance variable,
+   an attribute's or a Struct member's writer, a local a proc captured. With
+   no call in the loop the C compiler keeps such a slot in a register and
+   stores it after the loop, so a raise in the middle left a rescue reading
+   the value from before it. A loop that only adds those stores is a chunked
+   one (poll_chunk_loop): it polls once per SP_SIG_CHUNK passes, which is a
+   call the stores are made ahead of. */
 static int poll_scalar_ty(TyKind t) { return t == TY_INT || t == TY_FLOAT || t == TY_BOOL; }
 static int poll_pure_op(const char *nm) {
   static const char *const ops[] = { "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "<=>", "&", "|",
@@ -223,28 +233,50 @@ static int poll_math_fn(const char *nm) {
   return 0;
 }
 static unsigned char *g_pure_cand;
+/* methods that are pure but for those stores, which a chunked loop may call
+   where they are short (no loop, on no cycle) */
+static unsigned char *g_chunk_cand;
+static signed char *g_pure_short;   /* poll_scope_short's answers, -1 for none yet */
 static int g_pure_n = -1;
 int g_pure_region = 0;   /* inside a marked pure loop being emitted */
-static int poll_pure_node(Compiler *c, int n, int ret_ok);
-static int poll_pure_kids(Compiler *c, int n, int ret_ok) {
+/* stores: judging a chunked loop, whose stores (see above) are allowed */
+static int poll_pure_node(Compiler *c, int n, int ret_ok, int stores);
+static int poll_has_loop(const NodeTable *nt, int n);
+static int poll_scope_short(Compiler *c, int t);
+/* Is a local written at n one that outlives the frame: a proc's cell, or a
+   caller's slot the method writes through? */
+static int poll_local_on_heap(Compiler *c, int n) {
+  Scope *sc = comp_scope_of(c, n);
+  const char *nm = nt_str(c->nt, n, "name");
+  LocalVar *lv = sc && nm ? scope_local(sc, nm) : NULL;
+  return !lv || lv->is_cell || lv->byref_out || lv->inline_alias;
+}
+static int poll_pure_kids(Compiler *c, int n, int ret_ok, int stores) {
   const NodeTable *nt = c->nt;
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, n, i); if (ch >= 0 && !poll_pure_node(c, ch, ret_ok)) return 0; }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, n, i); if (ch >= 0 && !poll_pure_node(c, ch, ret_ok, stores)) return 0; }
   int na = nt_num_arrs(nt, n);
   for (int i = 0; i < na; i++) {
     int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (av[j] >= 0 && !poll_pure_node(c, av[j], ret_ok)) return 0;
+    for (int j = 0; j < an; j++) if (av[j] >= 0 && !poll_pure_node(c, av[j], ret_ok, stores)) return 0;
   }
   return 1;
 }
 /* Is a call of nm reaching only pure methods (every method of the name)? */
-static int poll_pure_targets(Compiler *c, const char *nm) {
+static int poll_pure_targets(Compiler *c, const char *nm, int stores) {
   int cnt, first = poll_names_of(c, nm, &cnt);
   if (cnt == 0) return 0;
-  for (int k = 0; k < cnt; k++) if (!g_pure_cand[g_poll_names[first + k].scope]) return 0;
+  for (int k = 0; k < cnt; k++) {
+    int t = g_poll_names[first + k].scope;
+    if (!stores) { if (!g_pure_cand[t]) return 0; continue; }
+    /* a chunked loop's call: one that may run long would be a pure region
+       (or a poll) inside it, so only one that runs short all the way down */
+    if (!g_pure_cand[t] && !g_chunk_cand[t]) return 0;
+    if (!poll_scope_short(c, t)) return 0;
+  }
   return 1;
 }
-static int poll_pure_node(Compiler *c, int n, int ret_ok) {
+static int poll_pure_node(Compiler *c, int n, int ret_ok, int stores) {
   const NodeTable *nt = c->nt;
   switch (nt_kind(nt, n)) {
   case NK_IntegerNode: return !nt_str(nt, n, "bigval");
@@ -252,13 +284,15 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
   case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
     return 1;
   case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode:
+    if (!stores && poll_local_on_heap(c, n)) return 0;
+    return poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok, stores);
   case NK_InstanceVariableWriteNode: case NK_InstanceVariableOperatorWriteNode:
-    return poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok);
+    return stores && poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok, stores);
   case NK_StatementsNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
   case NK_AndNode: case NK_OrNode: case NK_WhileNode: case NK_UntilNode: case NK_BreakNode: case NK_NextNode:
-    return poll_pure_kids(c, n, ret_ok);
+    return poll_pure_kids(c, n, ret_ok, stores);
   case NK_ReturnNode:
-    return ret_ok && poll_pure_kids(c, n, ret_ok);
+    return ret_ok && poll_pure_kids(c, n, ret_ok, stores);
   case NK_CallNode: {
     const char *nm = nt_str(nt, n, "name");
     if (!nm || nt_ref(nt, n, "block") >= 0) return 0;
@@ -267,23 +301,23 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
     for (int i = 0; i < an; i++) {
       NodeKind ak = nt_kind(nt, av[i]);
       if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-      if (!poll_pure_node(c, av[i], ret_ok)) return 0;
+      if (!poll_pure_node(c, av[i], ret_ok, stores)) return 0;
     }
     if (recv >= 0 && poll_scalar_ty(c->ntype[recv]) && poll_pure_op(nm))
-      return an <= 1 && poll_pure_node(c, recv, ret_ok) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
+      return an <= 1 && poll_pure_node(c, recv, ret_ok, stores) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
     /* a Float power, and Math's functions of Floats: libm, which touches
        nothing of the runtime (an Integer power may grow into a Bignum) */
     if (recv >= 0 && sp_streq(nm, "**") && c->ntype[n] == TY_FLOAT && c->ntype[recv] == TY_FLOAT)
-      return an == 1 && poll_pure_node(c, recv, ret_ok) && poll_scalar_ty(c->ntype[av[0]]);
+      return an == 1 && poll_pure_node(c, recv, ret_ok, stores) && poll_scalar_ty(c->ntype[av[0]]);
     if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         poll_math_fn(nm) && c->ntype[n] == TY_FLOAT && !an_user_defines_method(c, nm)) {
       for (int i = 0; i < an; i++) if (!poll_scalar_ty(c->ntype[av[i]])) return 0;
       return 1;
     }
     if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && nt_kind(nt, recv) != NK_ConstantReadNode &&
-        !poll_pure_node(c, recv, ret_ok)) return 0;
+        !poll_pure_node(c, recv, ret_ok, stores)) return 0;
     if (!poll_scalar_ty(c->ntype[n])) return 0;
-    if (poll_pure_targets(c, nm)) return 1;
+    if (poll_pure_targets(c, nm, stores)) return 1;
     /* an attribute reader of a scalar instance variable */
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
     if (an == 0 && recv >= 0 && ty_is_object(rt)) {
@@ -291,12 +325,25 @@ static int poll_pure_node(Compiler *c, int n, int ret_ok) {
       int cnt; poll_names_of(c, nm, &cnt);
       return cnt == 0 && cid >= 0 && cid < c->nclasses && comp_is_reader(&c->classes[cid], nm);
     }
+    /* ...and, in a chunked loop, its writer storing a value of the
+       variable's own scalar type: the store an instance variable write is
+       (`obj.levar = (obj.levar ^ i) + 1` on a Struct) */
+    char base[256];
+    if (stores && an == 1 && recv >= 0 && ty_is_object(rt) && setter_base_name(nm, base, sizeof base)) {
+      int cid = ty_object_class(rt);
+      int cnt; poll_names_of(c, nm, &cnt);
+      if (cnt || cid < 0 || cid >= c->nclasses || !comp_is_writer(&c->classes[cid], base)) return 0;
+      char ivn[sizeof base + 1];
+      snprintf(ivn, sizeof ivn, "@%s", base);
+      int iv = comp_ivar_index(&c->classes[cid], ivn);
+      return iv >= 0 && poll_scalar_ty(c->classes[cid].ivar_types[iv]) && c->classes[cid].ivar_types[iv] == c->ntype[av[0]];
+    }
     return 0;
   }
-  default: {
-    const char *ty = nt_type(nt, n);
-    return ty && sp_streq(ty, "ArgumentsNode") && poll_pure_kids(c, n, ret_ok);
-  }
+  case NK_ArgumentsNode:
+    return poll_pure_kids(c, n, ret_ok, stores);
+  default:
+    return 0;
   }
 }
 static int poll_pure_shape(Compiler *c, int si) {
@@ -330,7 +377,17 @@ int poll_pure_method(Compiler *c, int si) {
     for (int changed = 1; changed; ) {
       changed = 0;
       for (int t = 0; t < ns; t++)
-        if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1)) { g_pure_cand[t] = 0; changed = 1; }
+        if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 0)) { g_pure_cand[t] = 0; changed = 1; }
+    }
+    free(g_pure_short); g_pure_short = malloc((size_t)ns + 1);
+    if (!g_pure_short) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g_pure_short, -1, (size_t)ns + 1);
+    free(g_chunk_cand); g_chunk_cand = calloc((size_t)ns + 1, 1);
+    for (int t = 0; t < ns; t++) g_chunk_cand[t] = (unsigned char)(!g_pure_cand[t] && poll_pure_shape(c, t));
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int t = 0; t < ns; t++)
+        if (g_chunk_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1, 1)) { g_chunk_cand[t] = 0; changed = 1; }
     }
   }
   return si >= 0 && si < g_pure_n && g_pure_cand[si];
@@ -349,6 +406,40 @@ static int poll_has_loop(const NodeTable *nt, int n) {
   }
   return 0;
 }
+/* Does every call in node n reach only methods that run short (below)? A
+   definition or a block in it is code of its own scope, not n's. */
+static int poll_calls_short(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode) return 1;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int cnt, first = nm ? poll_names_of(c, nm, &cnt) : 0;
+    if (nm) for (int k = 0; k < cnt; k++) if (!poll_scope_short(c, g_poll_names[first + k].scope)) return 0;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (!poll_calls_short(c, nt_ref_at(nt, n, i))) return 0;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!poll_calls_short(c, av[j])) return 0;
+  }
+  return 1;
+}
+/* Does method t run short: no loop, on no call cycle, and only calls of
+   methods that run short? A chunked loop calls only such (poll_pure_targets):
+   one that reached a loop would run that method's pure region in the middle
+   of a pass. On no cycle, t is not met again below itself. */
+static int poll_scope_short(Compiler *c, int t) {
+  if (t < 0 || t >= g_pure_n) return 0;
+  if (g_pure_short[t] >= 0) return g_pure_short[t];
+  g_pure_short[t] = 0;   /* met again while it is asked: not short */
+  int ok = !poll_scope_on_cycle(c, t) && !poll_has_loop(c->nt, c->scopes[t].body) &&
+           poll_calls_short(c, c->scopes[t].body);
+  return g_pure_short[t] = (signed char)ok;
+}
 /* A pure method that may run long: on a call cycle or holding a loop. Only
    such a one is entered through the region-marking wrapper; a short one is
    left as it is (it never polled, and a wrapper per call costs more than it
@@ -361,7 +452,39 @@ int poll_pure_loop(Compiler *c, int id) {
   if (g_promote_mode || !sig_polls()) return 0;
   (void)poll_pure_method(c, 0);
   const NodeTable *nt = c->nt;
-  return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0);
+  return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0, 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0, 0);
+}
+/* Is a chunked loop's test one that may be evaluated a second time: pure,
+   storing nowhere, writing no local? */
+static int poll_has_local_write(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (comp_is_local_write(k) || k == NK_LocalVariableOperatorWriteNode) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (poll_has_local_write(nt, nt_ref_at(nt, n, i))) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (poll_has_local_write(nt, av[j])) return 1;
+  }
+  return 0;
+}
+int poll_pred_quiet(Compiler *c, int pred) {
+  return poll_pure_node(c, pred, 0, 0) && !poll_has_local_write(c->nt, pred);
+}
+/* Is a while / until loop one that is pure but for its stores to instance
+   variables, writers and captured locals (see above)? It is emitted with an
+   inner loop of SP_SIG_CHUNK passes, polled ahead of each, so it holds no
+   loop (whose own poll would sit in the inner one); emit_while_chunked
+   turns down one with a break. A program with threads or finalizers polls
+   for those at each pass anyway. */
+int poll_chunk_loop(Compiler *c, int id) {
+  if (g_promote_mode || !sig_polls() || g_uses_threads || g_uses_finalizers) return 0;
+  (void)poll_pure_method(c, 0);
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate"), body = nt_ref(nt, id, "statements");
+  if (nt_loop_post(nt, id) || poll_has_loop(nt, pred) || poll_has_loop(nt, body)) return 0;
+  return poll_pure_node(c, pred, 0, 1) && (body < 0 || poll_pure_node(c, body, 0, 1));
 }
 /* Is a statement an Integer or Float counting iterator whose block is pure
    (`(a..b).each { |i| s += i % 7 }`, `n.times`, `a.upto(b)`, `a.downto(b)`,
@@ -388,15 +511,15 @@ int poll_pure_iter(Compiler *c, int id) {
   if (nt_kind(nt, r) == NK_RangeNode) {
     int lo = nt_ref(nt, r, "left"), hi = nt_ref(nt, r, "right");
     if (lo < 0 || hi < 0 || c->ntype[lo] != TY_INT || c->ntype[hi] != TY_INT) return 0;
-    if (!poll_pure_node(c, lo, 0) || !poll_pure_node(c, hi, 0)) return 0;
+    if (!poll_pure_node(c, lo, 0, 0) || !poll_pure_node(c, hi, 0, 0)) return 0;
   }
-  else if (is_each || !poll_scalar_ty(c->ntype[r]) || c->ntype[r] == TY_BOOL || !poll_pure_node(c, r, 0)) return 0;
+  else if (is_each || !poll_scalar_ty(c->ntype[r]) || c->ntype[r] == TY_BOOL || !poll_pure_node(c, r, 0, 0)) return 0;
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int i = 0; i < an; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-    if (!poll_scalar_ty(c->ntype[av[i]]) || c->ntype[av[i]] == TY_BOOL || !poll_pure_node(c, av[i], 0)) return 0;
+    if (!poll_scalar_ty(c->ntype[av[i]]) || c->ntype[av[i]] == TY_BOOL || !poll_pure_node(c, av[i], 0, 0)) return 0;
   }
   /* the block: plain parameters of a scalar kind, a body that is pure */
   int bp = nt_ref(nt, blk, "parameters");
@@ -418,7 +541,7 @@ int poll_pure_iter(Compiler *c, int id) {
     }
   }
   int body = nt_ref(nt, blk, "body");
-  return body < 0 || poll_pure_node(c, body, 0);
+  return body < 0 || poll_pure_node(c, body, 0, 0);
 }
 /* After pure method si was emitted at body[at..]: its C function becomes
    <name>__pure, its calls of pure methods call their __pure functions, and
@@ -494,6 +617,7 @@ void poll_pure_proto(Compiler *c, int si, Buf *b) {
 #include "call_plan.h"
 #include "repr.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* classes whose pool a proc or fiber body has declared, per program */
 static unsigned char *g_pool_fwd = NULL;
@@ -880,6 +1004,7 @@ TyKind yield_site_type(Compiler *c, int node) {
   TyKind u = repr_of(c, node).as_ty;
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_YieldNode || g_block_id < 0) return u;
+  { TyKind vt; if (view_type_top(node, &vt)) return vt; }
   int body = nt_ref(nt, g_block_id, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return u;
   int n = 0; const int *st = nt_arr(nt, body, "body", &n);
@@ -2151,24 +2276,6 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
-  /* a block parameter every yield hands a new String (yb_param_fresh):
-     the element is a new handle over its bytes, which nothing else holds */
-  Scope *fys = nt_int(c->nt, node, "fresh_yield_box", 0) ? comp_scope_of(c, node) : NULL;
-  LocalVar *fyv = fys ? scope_local(fys, nt_str(c->nt, node, "name")) : NULL;
-  if (c->strbuf_box[node] && (t == TY_STRING || t == TY_STRBUF) && fyv && fyv->type == TY_STRING) {
-    char ref[1024];
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_local_ref(c, node, nt_str(c->nt, node, "name"), &rb);
-    snprintf(ref, sizeof ref, "%s", rb.p ? rb.p : "NULL");
-    free(rb.p);
-    buf_printf(b, "(%s ? ", ref);
-    str_box_open(b, 1);
-    buf_printf(b, "sp_String_new(%s)", ref);
-    str_box_close(b);
-    buf_puts(b, " : sp_box_nil())");
-    RC(RF_STRBUF_HANDLE, RW_NONE);
-    return;
-  }
   /* a demanded `s.to_s` over a local holding the handle: the conversion
      answers s's String, so the box is s's handle (an_str_conversion_local) */
   if (c->strbuf_box[node]) {
@@ -2580,6 +2687,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     RC(RF_SPECIAL, RW_YIELD);
     return;
   }
+  /* A yield under an open type view (a redispatched receiver, whose value is
+     bound to a temp of the view's kind) is boxed as that kind, not by the
+     spliced block's own tail: that tail answers a different site's value. */
+  { TyKind vt;
+    if (nt_kind(c->nt, node) == NK_YieldNode &&
+        view_type_top(node, &vt) && vt == TY_POLY_ARRAY) {
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)");
+      RC(RF_NULLABLE, RW_NONE);
+      return;
+    } }
   if (g_block_id >= 0 && nt_kind(c->nt, node) == NK_YieldNode) {
     /* A forwarding block (`wrap { yield }` handing its own block on) has a
        yield for its tail, and that node's cached type is one site's too:
@@ -4207,10 +4325,6 @@ static int method_inline_hint(Compiler *c, Scope *s) {
   int si = (int)(s - c->scopes);
   if (si < 0 || si >= g_mih_nscopes) return 0;
   int limit = 90;
-  /* read once: this runs per method, and getenv walks the environment (#4966) */
-  static int env_rd; static const char *env_nodes;
-  if (!env_rd) { env_nodes = getenv("SPINEL_INLINE_NODES"); env_rd = 1; }
-  { const char *e = env_nodes; if (e && *e) limit = atoi(e); }
   if (g_mih_limit_override > 0) limit = g_mih_limit_override;
   if (limit <= 0) return 0;
   if (g_mih_nodes[si] > limit) return 0;
@@ -4714,12 +4828,8 @@ static void fi_build(Compiler *c) {
        (larger) body budget: render_pixel is past the hint's, and it is
        exactly the method worth forcing. */
     int sv = g_mih_limit_override, sv2 = g_mih_callers_override;
-    { static int env_rd; static const char *env_fn, *env_fc;
-      if (!env_rd) { env_fn = getenv("SPINEL_INLINE_FORCE_NODES"); env_fc = getenv("SPINEL_INLINE_FORCE_CALLERS"); env_rd = 1; }
-      const char *e = env_fn;
-      g_mih_limit_override = (e && *e) ? atoi(e) : 250;
-      const char *e2 = env_fc;
-      g_mih_callers_override = (e2 && *e2) ? atoi(e2) : 12; }
+    g_mih_limit_override = 250;
+    g_mih_callers_override = 12;
     int ok = (method_inline_hint(c, m) == 1);
     g_mih_limit_override = sv; g_mih_callers_override = sv2;
     if (!ok) continue;
@@ -4761,8 +4871,7 @@ static void fi_build(Compiler *c) {
      TOP of a too-long chain shortens every path through it while leaving the
      small leaves -- the ones worth forcing -- alone. */
   {
-    const char *de = getenv("SPINEL_INLINE_FORCE_DEPTH");
-    int dlimit = (de && *de) ? atoi(de) : 6;
+    int dlimit = 6;
     if (dlimit > 0 && ncand > 0 && ncand <= 2048) {
       int *dep = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
       if (dep) {
@@ -4801,12 +4910,10 @@ static void fi_build(Compiler *c) {
      frame it contributes, accumulate that at every call site, and stop forcing
      once a caller's absorbed total passes the budget. */
   {
-    const char *fe = getenv("SPINEL_INLINE_FORCE_FRAME");
     /* 64 KB, the fiber stack's size when this budget was set; the stack is
        256 KB now (#4496) and the budget stays, since what it bounds is how
        much the forcing may add to a frame, not the frame itself */
-    long fbudget = (fe && *fe) ? atol(fe) : 64 * 1024;
-    int report = getenv("SPINEL_INLINE_FORCE_REPORT") != NULL;
+    long fbudget = 64 * 1024;
     /* The budget exists for SP_FIBER_STACK_SIZE. A program that runs no user
        code on a fiber stack has the process stack (megabytes) to spend, and
        bounding it there costs real throughput -- optcarrot's hot path absorbs
@@ -4860,9 +4967,6 @@ static void fi_build(Compiler *c) {
               over = 1; cand[cal[j]] = 0; trimmed = 1;
             }
           }
-          if (over && report)
-            fprintf(stderr, "inline-force: %s absorbed past %ld bytes, trimmed\n",
-                    c->scopes[si].name ? c->scopes[si].name : "(top)", fbudget);
         }
         if (!trimmed) break;
       }
@@ -4879,8 +4983,7 @@ static void fi_build(Compiler *c) {
      the budget -- the frame pass above, in nodes, and on every program. A
      body whose calls or callees cannot all be listed counts as over. */
   {
-    const char *se = getenv("SPINEL_INLINE_FORCE_SIZE");
-    long sbudget = (se && *se) ? atol(se) : 100000;
+    long sbudget = 100000;
     if (sbudget > 0 && sbudget < LONG_MAX / 4 && ncand > 0 && ncand <= 2048) {
       long *size = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
       long *own = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
@@ -4964,11 +5067,7 @@ static const char *decide_method_site(Compiler *c, Scope *s) {
 }
 
 static int method_inline_force(Compiler *c, Scope *s) {
-  static int env_rd; static const char *env_force;
-  if (!env_rd) { env_force = getenv("SPINEL_INLINE_FORCE"); env_rd = 1; }
-  { const char *e = env_force;
-    if (e && *e) { if (*e == '0') return 0; }
-    else if (!g_inline_hot) return 0; }
+  if (!g_inline_hot) return 0;
   if (g_debug) return 0;
   const NodeTable *nt = c->nt;
   if (g_fi_nt != nt || g_fi_ntcount != nt->count || g_fi_nscopes != c->nscopes || !g_fi_state)
@@ -7481,7 +7580,7 @@ static void collect_numbered_reads(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   NodeKind k = nt_kind(c->nt, id);
   if (k == NK_BlockNode || k == NK_LambdaNode) return;
-  if (k == NK_LocalVariableReadNode || (nt_type(c->nt, id) && sp_streq(nt_type(c->nt, id), "ItLocalVariableReadNode"))) {
+  if (k == NK_LocalVariableReadNode || k == NK_ItLocalVariableReadNode) {
     const char *nm = nt_str(c->nt, id, "name");
     if (nm && ((nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && (!nm[2] || nm[2] == '_')) ||
                (nm[0] == 'i' && nm[1] == 't' && (!nm[2] || nm[2] == '_'))))
@@ -7501,7 +7600,7 @@ static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
      a `-> { _1 }` has no node at all: they are the ones its body reads (an
      enclosing block's cannot be read there, as Ruby refuses it) */
   if (bp_node < 0 || nt_kind(nt, bp_node) == NK_NumberedParametersNode ||
-      (nt_type(nt, bp_node) && sp_streq(nt_type(nt, bp_node), "ItParametersNode"))) {
+      nt_kind(nt, bp_node) == NK_ItParametersNode) {
     collect_numbered_reads(c, nt_ref(nt, blk, "body"), out);
     return;
   }
@@ -9101,9 +9200,8 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
            parameter, not the enclosing scope's `nm`. Numbered and `it`
            parameters have no node of their own, and the list carries their
            renamed spelling. */
-        const char *pt = pn >= 0 ? nt_type(nt, pn) : NULL;
         NodeKind pk = nt_kind(nt, pn);
-        if (pt && (pk == NK_NumberedParametersNode || sp_streq(pt, "ItParametersNode"))) return 1;
+        if (pk == NK_NumberedParametersNode || pk == NK_ItParametersNode) return 1;
         if (!subtree_has_param_named_pub(nt, pn, nm)) return 1;
         break;
       }
@@ -9471,6 +9569,19 @@ static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf 
   g_ie_rself_on = 1;
 }
 
+/* A lambda's count check, ahead of its parameters' binding. Symbol#to_proc's
+   refuses a call with no receiver by saying so, not by the count its
+   `|recv, *args|` takes. */
+static void emit_lambda_arity_check(Compiler *c, int create, int lreq, int max, Buf *pb) {
+  const NodeTable *nt = c->nt;
+  char kw[256];
+  arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
+  if (nt_int(nt, create, "stp_arity", 0) && lreq == 1)
+    buf_puts(pb, "    if (argc == 0) sp_raise_cls(\"ArgumentError\", \"no receiver given\");\n");
+  buf_puts(pb, "    ");
+  emit_arity_check(pb, "argc", lreq, max, kw);
+  buf_puts(pb, ";\n");
+}
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind ck = nt_kind(nt, create);
@@ -9665,9 +9776,9 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       int kwrest = nt_ref(nt, pn, "keyword_rest");
       int has_req_kw = 0, has_opt_kw = 0;
       for (int i = 0; i < nkw; i++) {
-        const char *kt = nt_type(nt, kw[i]);
-        if (kt && sp_streq(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
-        else if (kt && sp_streq(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
+        NodeKind kt_k = nt_kind(nt, kw[i]);
+        if (kt_k == NK_RequiredKeywordParameterNode) has_req_kw = 1;
+        else if (kt_k == NK_OptionalKeywordParameterNode) has_opt_kw = 1;
       }
       NodeKind kwk = nt_kind(nt, kwrest);
       int has_kwrest = kwk == NK_KeywordRestParameterNode;
@@ -9675,8 +9786,8 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       /* `|a,|`'s rest is an ImplicitRestNode: it names nothing and collects
          nothing, and CRuby reports the signature as exactly its required
          count (`lambda { |a,| }.arity == 1`). */
-      const char *rest_ty = rest >= 0 ? nt_type(nt, rest) : NULL;
-      if (rest_ty && sp_streq(rest_ty, "ImplicitRestNode")) rest = -1;
+      NodeKind rest_k = nt_kind(nt, rest);
+      if (rest_k == NK_ImplicitRestNode) rest = -1;
       /* Only a rest parameter makes a PROC's arity negative: optional
          keywords and a keyword rest leave it at the required count, where a
          LAMBDA reports them as negative -- unless a required keyword is there
@@ -10138,7 +10249,7 @@ else if (orecv >= 0 && onm) {
   { int pnk = proc_params_node(c, create);
     int kwr = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     if (kwr >= 0) has_kwrest = 1;
-    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "NoKeywordsParameterNode")) no_kw = 1; }
+    if (kwr >= 0 && nt_kind(nt, kwr) == NK_NoKeywordsParameterNode) no_kw = 1; }
   /* The trailing argument is keywords when it is a Hash the call site passed
      as keywords (_sp_proc_kwpos, read before anything below can call another
      proc, and cleared whatever this proc's shape is). A caller that does not
@@ -10157,7 +10268,7 @@ else if (orecv >= 0 && onm) {
     int rn = pnr >= 0 ? nt_ref(nt, pnr, "rest") : -1;
     has_rest_marker = rn >= 0;
     as_lead_only = !nopts && !nposts && !has_kwp &&
-                   (rn < 0 ? arity > 1 : arity >= 1 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ImplicitRestNode")); }
+                   (rn < 0 ? arity > 1 : arity >= 1 && nt_kind(nt, rn) == NK_ImplicitRestNode); }
   int as_gate = !is_lambda && !as_lead_only && block_auto_splats(arity, nopts, nposts, has_rest_marker);
   if (!has_kwp && as_gate)
     buf_puts(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n");
@@ -10169,11 +10280,7 @@ else if (orecv >= 0 && onm) {
   int num_extra = proc_numbered_params_node(c, create) < 0 ? nnumbered : 0;
   if (is_lambda) {
     int lreq = arity + nposts + num_extra;
-    char kw[256];
-    arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
-    buf_puts(pb, "    ");
-    emit_arity_check(pb, "argc", lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, kw);
-    buf_puts(pb, ";\n");
+    emit_lambda_arity_check(c, create, lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, pb);
   }
   /* CRuby proc auto-splat: a single Array passed to a non-lambda proc is
      destructured across the parameters by the rule a yield's block follows
@@ -10431,7 +10538,7 @@ else if (orecv >= 0 && onm) {
     int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
     { int nreqkw = 0;
       for (int j = 0; j < nkw2; j++)
-        if (nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) nreqkw++;
+        if (nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode) nreqkw++;
       if (kwr0 < 0 || nreqkw) {
         buf_puts(pb, "    { static const char *const _pkw[] = {");
         for (int j = 0; j < nkw2; j++) {
@@ -10441,7 +10548,7 @@ else if (orecv >= 0 && onm) {
         buf_puts(pb, "0}, *const _pkr[] = {");
         for (int j = 0; j < nkw2; j++) {
           const char *kn = nt_str(nt, kwn[j], "name");
-          if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+          if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
             buf_printf(pb, "\"%s\", ", param_public_name(kn));
         }
         buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
@@ -10453,7 +10560,7 @@ else if (orecv >= 0 && onm) {
           buf_puts(pb, " && (0");
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+            if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
               buf_printf(pb, " || !sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))",
                          comp_sym_intern(c, param_public_name(kn)));
           }
@@ -10464,7 +10571,7 @@ else if (orecv >= 0 && onm) {
           char miss[512] = "", km[600]; int nm = 0;
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
-            if (!kn || !nt_type(nt, kwn[j]) || !sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) continue;
+            if (!kn || nt_kind(nt, kwn[j]) != NK_RequiredKeywordParameterNode) continue;
             char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(kn));
             kw_names_add(miss, sizeof miss, &nm, iv);
           }
@@ -12949,7 +13056,10 @@ static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want
         buf_printf(b, "      if (_cv.tag == SP_TAG_INT) { %sreturn _cv.v.i; }\n",
                    with_ok ? "*ok = 1; " : "");
       else
-        buf_printf(b, "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
+        /* a String held in a shared handle (SP_BUILTIN_STRBUF, as an Array
+           element or a lifted local is) is still a String answer */
+        buf_printf(b, "      _cv = sp_rbval_str(_cv);\n"
+                      "      if (_cv.tag == SP_TAG_STR && _cv.v.s) { %sreturn _cv.v.s; }\n",
                    with_ok ? "*ok = 1; " : "");
       buf_printf(b, "      %s }\n", dflt);
       continue;
@@ -14011,8 +14121,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
     if (i != s->kwrest_idx && callee_param_is_declared_kwarg(c, s, s->pnames[i]) &&
         !callee_param_is_declared_kwarg(c, pm, s->pnames[i])) extra++;
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kty && sp_streq(kty, "RequiredKeywordParameterNode") && kpn &&
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kk == NK_RequiredKeywordParameterNode && kpn &&
         !callee_param_is_declared_kwarg(c, s, kpn)) missing++;
   }
   if (!own && !missing && !(extra && pm->kwrest_idx < 0)) return;
@@ -14036,8 +14147,9 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   }
   buf_printf(g_pre, "0}, *const _kr%d[] = {", chk);
   for (int k = 0; k < kn; k++) {
-    const char *kty = nt_type(nt, kws[k]), *kpn = nt_str(nt, kws[k], "name");
-    if (kpn && kty && sp_streq(kty, "RequiredKeywordParameterNode")) buf_printf(g_pre, "\"%s\", ", kpn);
+    NodeKind kk = nt_kind(nt, kws[k]);
+    const char *kpn = nt_str(nt, kws[k], "name");
+    if (kpn && kk == NK_RequiredKeywordParameterNode) buf_printf(g_pre, "\"%s\", ", kpn);
   }
   buf_printf(g_pre, "0}, *const _kl%d[] = {", chk);
   for (int i = 0; i < s->nparams; i++)
@@ -16706,7 +16818,7 @@ static void class_ruby_name_into(Buf *b, const char *cn) {
 }
 
 /* Resolve the source file/line of a method's `def`, falling back gracefully
-   when positions weren't stamped (no SPINEL_DEBUG / SPINEL_LINE_MAP). */
+   when positions weren't stamped (no --debug / --line-map). */
 int scope_def_line(Compiler *c, Scope *s) {
   if (s->def_node < 0) return 0;
   return (int)nt_int(c->nt, s->def_node, "node_line", 0);
@@ -17443,7 +17555,7 @@ static int types_json_return_nullable(Compiler *c, const Scope *s, int *nullable
 /* Build the position-keyed type + diagnostics JSON for the ruby-lsp addon:
    every node with a concrete inferred type keyed by {file,line,col}, plus one
    warning per method whose signature degraded to untyped. Positions come from
-   the parser's node_line/node_col/node_file (the SPINEL_DEBUG machinery), so
+   the parser's node_line/node_col/node_file (the --debug machinery), so
    the driver enables it. */
 static char *build_types_json(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -17817,6 +17929,22 @@ static int thread_current_only(const NodeTable *nt, int **par, int i) {
   for (int j = 0; qm && safe[j]; j++) if (sp_streq(qm, safe[j])) return 1;
   return 0;
 }
+/* Is loop node id's value one the program can see besides nil: a valued
+   break inside it? */
+static int loop_value_live(Compiler *c, int id) {
+  return loop_has_valued_break(c, nt_ref(c->nt, id, "statements"));
+}
+/* A position of a method's answer that holds a poly, Array or Hash value
+   (a jump the walk does not follow, or one it gave up on, may) */
+static int scan_ret_leaf_polyish(const VpLeaf *leaf, void *ud) {
+  Compiler *c = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  if (leaf->kind != VPK_EXPR) return 1;
+  NodeKind k = nt_kind(c->nt, leaf->node);
+  if ((k == NK_WhileNode || k == NK_UntilNode) && !loop_value_live(c, leaf->node)) return 0;
+  TyKind t = c->ntype[leaf->node];
+  return t == TY_POLY || ty_is_array(t) || ty_is_hash(t);
+}
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
@@ -17836,7 +17964,7 @@ static void scan_prologue_features(Compiler *c) {
        an ensure clause runs. The landings that give it back (a catch, a
        wrapped break, a proc's home) are emitted only in a program that
        holds one with a body: elsewhere there is nothing to give back. */
-    if (sp_streq(ty, "EnsureNode") && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
+    if (ty_k == NK_EnsureNode && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
     /* trap / Signal.trap: the handler only records a delivery, and the proc
        runs at the safe points below (sp_sig_run_pending, lib/sp_cold.c) */
     if (ty_k == NK_CallNode && nt_str(nt, i, "name") && sp_streq(nt_str(nt, i, "name"), "trap"))
@@ -18045,13 +18173,25 @@ static void scan_prologue_features(Compiler *c) {
       if (dsl && dsl[i]) continue;
       int si = c->nscope[i];
       if (si > 0 && si < c->nscopes && scope_types_unseen(c, si)) continue;
+      /* a value the program throws away (a loop's, a statement's, a
+         DSL call's like attr_reader's) is never handed to a renderer */
+      if (an_node_dropped(c, i)) continue;
+      /* a statement list's value is its last statement's, judged on its
+         own; a loop with no valued break answers nil */
+      NodeKind ik = nt_kind(nt, i);
+      if (ik == NK_StatementsNode || ((ik == NK_WhileNode || ik == NK_UntilNode) && !loop_value_live(c, i))) continue;
       SP_TT(c->ntype[i]);
     }
     free(dsl);
     free(par);
     for (int sc = 0; sc < c->nscopes; sc++) {
       if (sc > 0 && scope_types_unseen(c, sc)) continue;
-      SP_TT(c->scopes[sc].ret);
+      /* a method's answer is a value where some position of its body
+         answers one (a loop with no valued break, a missing else: nil) */
+      if (c->scopes[sc].ret == TY_POLY && sc > 0 && c->scopes[sc].body >= 0 &&
+          !for_each_value_position(nt, c->scopes[sc].body, VP_FOLLOW_RETURN | VPS_ALL, scan_ret_leaf_polyish, c))
+        ;
+      else SP_TT(c->scopes[sc].ret);
       for (int l = 0; l < c->scopes[sc].nlocals; l++) SP_TT(c->scopes[sc].locals[l].type);
     }
     for (int k = 0; k < c->nclasses; k++)
@@ -18366,8 +18506,8 @@ static int scope_is_orphan_method(Compiler *c, int s) {
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
+  /* (a deferred one is refused where it is emitted, refuse_prepass_at_emit) */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
 /* `const_get(name)` with a runtime name that the lowering could not reach:
@@ -18377,8 +18517,7 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
 }
 
 /* A define_method in a method's body that would answer calls before that
@@ -18480,8 +18619,7 @@ static void reject_io_gets_last_line(Compiler *c) {
 }
 
 static void reject_runtime_send(Compiler *c) {
-  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 
 /* Time.parse / Time.strptime (docs/limitations.md, K-001): the `require
@@ -18546,8 +18684,8 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
    it: refused here, ahead of emission, it stopped the build of a program
    that only names it -- one that never runs that line. */
 static void reject_time_parse(Compiler *c) {
-  if (defer_refusals()) return;
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    if (defer_refusals_at(c, id)) continue;
     char msg[320];
     if (time_parse_refusal(c, id, msg, sizeof msg)) unsupported_feature(c, id, msg);
   }
@@ -20929,18 +21067,14 @@ char *codegen_program(const NodeTable *nt) {
   sp_yield_site_type_hook = sp_yield_site_type;
 
   /* `#line` directives are emitted only when the parser stamped per-node
-     source lines (SPINEL_LINE_MAP / SPINEL_DEBUG); the same env gates both
-     sides so codegen and the AST agree. */
-  g_line_map = (getenv("SPINEL_LINE_MAP") || getenv("SPINEL_DEBUG")) ? 1 : 0;
-  g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
-  g_check_stores = getenv("SPINEL_CHECK_STORES") ? 1 : 0;
+     source lines (--line-map / --debug); the same options gate both sides
+     so codegen and the AST agree. */
+  g_line_map = (g_opt_line_map || g_opt_debug) ? 1 : 0;
+  g_debug = g_opt_debug;
+  g_check_stores = g_opt_check_stores;
   /* The unresolved-call gate raises NoMethodError, matching CRuby (a silent
-     wrong answer is the worst failure mode). SPINEL_GATE_RAISE=0 restores the
-     old silent typed default as a transition escape hatch. */
-  {
-    const char *e = getenv("SPINEL_GATE_RAISE");
-    g_gate_raise = (e && *e == '0') ? 0 : 1;
-  }
+     wrong answer is the worst failure mode); set here, as codegen starts */
+  g_gate_raise = 1;
   /* Feature flags must be computed BEFORE the preamble emit below: the
      symbol runtime, class-name table, inspect dispatch, and Marshal stub
      emissions are gated on them (a `puts "hello"` program gets none). */
@@ -20953,8 +21087,8 @@ char *codegen_program(const NodeTable *nt) {
      unit so the driver writes no binary. */
   /* --profile: write the symbol map next to the binary, then continue to
      the real build (offline symbolization input for perf tooling, #1336). */
-  const char *psym_out = getenv("SPINEL_PROFILE_SYMBOL_MAP");
-  if (psym_out && *psym_out) {
+  const char *psym_out = g_opt_profile_symbol_map;
+  if (psym_out) {
     char *json = build_symbol_map_json(c);
     write_text_file(psym_out, json);
     free(json);
@@ -20962,18 +21096,17 @@ char *codegen_program(const NodeTable *nt) {
   /* --warn-widen, once, before the analysis-only modes return: the slots
      are settled here (the RBS below reads them), and emission below changes
      none of them (checked over the corpus). */
-  { const char *ww = getenv("SPINEL_WARN_WIDEN");
-    if (ww && *ww) each_widened_slot(c, warn_widened_slot, NULL); }
-  const char *sym_out = getenv("SPINEL_EMIT_SYMBOL_MAP");
-  if (sym_out && *sym_out) {
+  if (g_opt_warn_widen) each_widened_slot(c, warn_widened_slot, NULL);
+  const char *sym_out = g_opt_emit_symbol_map;
+  if (sym_out) {
     char *json = build_symbol_map_json(c);
     write_text_file(sym_out, json);
     free(json);
     comp_free(c);
     return strdup("");
   }
-  const char *rbs_out = getenv("SPINEL_EMIT_RBS");
-  if (rbs_out && *rbs_out) {
+  const char *rbs_out = g_opt_emit_rbs;
+  if (rbs_out) {
     char *rbs = build_rbs_text(c);
     write_text_file(rbs_out, rbs);
     free(rbs);
@@ -20984,8 +21117,7 @@ char *codegen_program(const NodeTable *nt) {
      a codegen verdict, and the JSON that answered "no diagnostics" for a
      program the compile refuses was worth less than no JSON (#4509). The C
      is discarded. */
-  const char *types_out = getenv("SPINEL_EMIT_TYPES");
-  if (types_out && !*types_out) types_out = NULL;
+  const char *types_out = g_opt_emit_types;
 
   /* Reject runtime-name send before any emission so the diagnostic fires
      regardless of how the call's result is later consumed. */
@@ -21011,6 +21143,9 @@ char *codegen_program(const NodeTable *nt) {
      THIS TU's definitions; the macro flips the header's prototypes off
      `static` before the include (ext-design.md, Layer 1). */
   if (g_ext_init_name) buf_puts(&b, "#define SPINEL_EXT_KERNEL 1\n");
+  /* --gc=none: the program defines the collector pointer itself, as NULL
+     (the runtime's is weak, lib/sp_alloc.c), so nothing names the collector */
+  if (g_gc_none) buf_puts(&b, "#define SP_GC_NONE 1\n");
   /* a computed instance_variable_set can reach a user class (#8219): the
      object-keyed ivar table admits its instances, for the names the class
      does not declare */
@@ -21030,15 +21165,18 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
   if (c->n_cext_extensions) buf_puts(&b, "#define SP_CEXT 1\n/* SPINEL_USES_CEXT */\n");
   emit_runtime_include(c, &b, 0);
+  if (g_gc_none) buf_puts(&b, "void (*sp_gc_collect_fn)(void) = NULL;   /* --gc=none */\n");
   if (c->n_cext_extensions) {
     buf_puts(&b, "#include \"sp_cext.h\"\nstatic void _sp_cext_setup(void);\nstatic sp_RbVal _sp_cext_dispatch(int, const char *, sp_RbVal, int, const sp_RbVal *, sp_Proc *);\n");
     for (int x = 0; x < c->n_cext_extensions; x++) {
       CextExtension *ext = &c->cext_extensions[x];
       buf_printf(&b, "extern void %s(void);\nstatic VALUE (*_sp_cext_fns_%d[%d])(ANYARGS);\n"
                  "static VALUE _sp_cext_consts_%d[%d];\n"
-                 "static sp_cext_extension _sp_cext_%d = {%s, _sp_cext_fns_%d, %d, 0, _sp_cext_consts_%d, %d};\n",
+                 "static sp_cext_extension _sp_cext_%d = {%s, _sp_cext_fns_%d, %d, 0, _sp_cext_consts_%d, %d, ",
                  ext->init, x, ext->slots ? ext->slots : 1, x, ext->constants ? ext->constants : 1,
                  x, ext->init, x, ext->slots, x, ext->constants);
+      emit_str_literal(&b, ext->name);
+      buf_puts(&b, "};\n");
     }
   }
   /* the frozen literals' file-scope objects go here, once the unit is done */
@@ -21525,7 +21663,8 @@ char *codegen_program(const NodeTable *nt) {
        raises NotImplementedError naming the refusal, when it is called. A
        refusal its statements raise in place (emit_stmt_or_defer) leaves the
        method as emitted. */
-    if (defer_refusals() && g_ndiags - (g_stmt_deferrals - ndefer0) > ndiag0 && c->scopes[s].body >= 0) {
+    if (defer_refusals_at(c, c->scopes[s].def_node) && g_ndiags - (g_stmt_deferrals - ndefer0) > ndiag0 && c->scopes[s].body >= 0) {
+      g_deferred_diags += g_ndiags - ndiag0 - (g_stmt_deferrals - ndefer0);
       char dmsg[2600];
       const SpDiag *d = &g_diags[g_ndiags - 1];
       if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
@@ -21661,7 +21800,7 @@ char *codegen_program(const NodeTable *nt) {
      the captured frames demangle to Class#method. Optimized/release builds
      leave sp_bt_enabled = 0 (frames inline away), keeping the empty-array
      behavior. */
-  if (getenv("SPINEL_DEBUG")) {
+  if (g_opt_debug) {
     buf_puts(body, "    sp_bt_enabled = 1;\n");
     buf_puts(body, "    sp_bt_srcfile = ");
     emit_str_literal(body, c->nt->source_file ? c->nt->source_file : "source.rb");
@@ -21846,12 +21985,12 @@ char *codegen_program(const NodeTable *nt) {
     char *json = build_types_json(c);
     write_text_file(types_out, json);
     free(json);
-    { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
-      if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
+    if (!g_opt_emit_types_keep_c) { free(b.p); b.p = NULL; }
   }
-  if (g_ndiags > 0 && defer_refusals())
-    fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", g_ndiags, g_ndiags == 1 ? "" : "s");
-  if (g_ndiags > 0 && !collect_emit_anyway() && !defer_refusals()) {
+  { int deferred = defer_refusals() ? g_ndiags : g_deferred_diags;
+    if (deferred > 0)
+      fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", deferred, deferred == 1 ? "" : "s"); }
+  if (g_ndiags > (defer_refusals() ? g_ndiags : g_deferred_diags) && !collect_emit_anyway()) {
     /* not "unsupported": spinel-doctor and spinel-reduce count the lines
        that say so, and this one is the count */
     fprintf(stderr, "spinel: %d refusal%s%s\n", g_ndiags, g_ndiags == 1 ? "" : "s",
@@ -21863,7 +22002,6 @@ char *codegen_program(const NodeTable *nt) {
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
   comp_free(c);
-  { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
-    if (types_out && !(keep && *keep)) return strdup(""); }
+  if (types_out && !g_opt_emit_types_keep_c) return strdup("");
   return b.p;
 }

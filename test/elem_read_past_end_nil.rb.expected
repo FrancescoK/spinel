@@ -1,0 +1,16 @@
+undefined method 'x' for nil
+undefined method '<<' for nil
+undefined method 'size' for nil
+undefined method '[]' for nil
+2
+1
+0.5
+6
+0
+pop: undefined method 'x' for nil
+0
+drain: undefined method 'x' for nil
+7
+method: undefined method 'x' for nil
+5
+5

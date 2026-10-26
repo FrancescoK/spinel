@@ -103,7 +103,12 @@ class CGI
       end
       i += 1
     end
-    out
+    # The bytes went in one `Integer#chr` at a time, and a byte past 0x7F
+    # is ASCII-8BIT, so the result is binary until it is named. CRuby
+    # names it UTF-8 (its default accept_charset), and keeps the
+    # argument's encoding where the bytes are not valid UTF-8.
+    out.force_encoding(Encoding::UTF_8)
+    out.valid_encoding? ? out : out.force_encoding(string.encoding)
   end
 
   def self.unescape(string)
@@ -171,7 +176,8 @@ class CGI
       out << (0x80 | ((cp >> 6) & 0x3F)).chr
       out << (0x80 | (cp & 0x3F)).chr
     end
-    out
+    # each byte past 0x7F went in as ASCII-8BIT; the whole is UTF-8
+    out.force_encoding(Encoding::UTF_8)
   end
 
   # The body of an entity -- what stood between "&" and ";" -- decoded,

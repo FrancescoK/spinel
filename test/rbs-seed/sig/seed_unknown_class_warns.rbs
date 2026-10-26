@@ -1,0 +1,11 @@
+module Lane
+  class Wire
+  end
+
+  class Probe
+    @bus: Bus
+    @wire: Wire
+    @at: Time
+    def poke: (Bus bus, Integer a) -> Integer
+  end
+end

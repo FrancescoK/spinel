@@ -120,6 +120,12 @@ int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
 }
 
+/* A name every builtin class that has it (Module, Symbol, Method, Thread,
+   Encoding, NameError) answers by reading a value, running no Ruby code */
+int is_plain_builtin_reader(const char *n) {
+  return sp_streq(n, "name");
+}
+
 /* `tap` alone: it answers its receiver, where then/yield_self answer the
    block's value (is_tap_alias takes all three) */
 int is_tap_name(const char *n) {
@@ -841,6 +847,11 @@ int is_select_reject(const char *n) {
 
 int is_casecmp_family(const char *n) {
   return sp_streq(n, "casecmp") || sp_streq(n, "casecmp?");
+}
+
+int str_int_promotes(const char *n, int argc) {
+  if (sp_streq(n, "to_i")) return argc <= 1;
+  return argc == 0 && (sp_streq(n, "hex") || sp_streq(n, "oct"));
 }
 
 int is_to_integer(const char *n) {

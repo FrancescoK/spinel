@@ -213,9 +213,6 @@ static bool cl_change_visit(const pm_node_t *n, void *data) {
 static int cl_changed(const pm_node_t *root, const char *const *names, const char *const *meths, int any_recv) {
   ClChange ch = { names, meths, any_recv, 0, NULL };
   pm_visit_node(root, cl_change_visit, &ch);
-  if (ch.hit && getenv("SPINEL_MACRO_DEBUG"))
-    fprintf(stderr, "table loops: changed by %.*s\n", (int)(ch.at->location.end - ch.at->location.start > 60 ? 60 :
-            ch.at->location.end - ch.at->location.start), (const char *)ch.at->location.start);
   return ch.hit;
 }
 
@@ -633,9 +630,6 @@ static void cl_try_body(ClWalk *w, pm_statements_node_t *st) {
       ed->e[ed->n].text = rep.p;
       ed->n++;
     }
-    else if (getenv("SPINEL_MACRO_DEBUG"))
-      fprintf(stderr, "table loop not expanded: %.*s\n", (int)(s->location.end - s->location.start > 60 ? 60 : s->location.end - s->location.start),
-              (const char *)s->location.start);
     free(out.p); free(kname); free(vname); free(keys); free(vals);
     for (int k = 0; k < c.nkl; k++) { free(c.kl[k].name); free(c.kl[k].ivars); }
     free(c.kl);
@@ -663,12 +657,10 @@ static char *sp_expand_table_loops(const char *source) {
       strstr(source, "def instance_variable_set")) return NULL;
   /* an inherited hook is called by CRuby while the new class has no name */
   if (strstr(source, "inherited")) {
-    if (getenv("SPINEL_MACRO_DEBUG")) fprintf(stderr, "table loops not expanded: the program has an inherited hook\n");
     return NULL;
   }
   /* a constant reached by name at run time is a write this pass can't see */
   if (strstr(source, "const_get")) {
-    if (getenv("SPINEL_MACRO_DEBUG")) fprintf(stderr, "table loops not expanded: the program calls const_get\n");
     return NULL;
   }
   size_t len = strlen(source);
@@ -687,8 +679,6 @@ static char *sp_expand_table_loops(const char *source) {
                                      "include", "define_method", "send", "__send__", "public_send",
                                      "alias_method", "remove_method", "undef_method", NULL };
   int core_changed = parser.error_list.size == 0 && cl_changed(root, core, via, 1);
-  if (core_changed && getenv("SPINEL_MACRO_DEBUG"))
-    fprintf(stderr, "table loops not expanded: the program changes a core class\n");
   if (parser.error_list.size == 0 && !core_changed) {
     MxEdits ed = {0};
     ClWalk w = { &ed, root, source };
@@ -705,8 +695,6 @@ static char *sp_expand_table_loops(const char *source) {
       }
       mxb_putn(&nb, (const char *)from, (size_t)((const uint8_t *)source + len - from));
       result = nb.p;
-      if (getenv("SPINEL_MACRO_DEBUG"))
-        for (int i = 0; i < ed.n; i++) fprintf(stderr, "table loop: %s\n", ed.e[i].text);
     }
     for (int i = 0; i < ed.n; i++) free(ed.e[i].text);
     free(ed.e);

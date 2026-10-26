@@ -106,9 +106,15 @@ static inline mrb_value mrb_nil_value(void) {
   mrb_value v; v.tt = MRB_TT_FALSE; v.value.i = 0; return v;
 }
 
-/* MRB_ENSURE stub - execute body, no exception handling */
+/* MRB_ENSURE stub: run body, then the cleanup block that follows the macro.
+ * A single for-statement, so the block is entered exactly once and after the
+ * body returns.  There is still no exception handling: a raise inside the
+ * body leaves through sp_raise and skips the cleanup.  It used to expand
+ * to `{ body } if(0) { cleanup }`, which dropped every cleanup block and
+ * leaked the scratch mpz_t's of the callers. */
 #define MRB_ENSURE(mrb, exc, body, data) \
-  { mrb_value exc = body(mrb, data); (void)exc; } if(0)
+  for (int mrb_ensure_once_ = ((exc) = (body)((mrb), (data)), (void)(exc), 1); \
+       mrb_ensure_once_; mrb_ensure_once_ = 0)
 
 /* Bigint object creation */
 struct RBasic {

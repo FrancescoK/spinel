@@ -836,7 +836,9 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int bv = kwh_lookup(nt, argv[1], "base");
       if (en == 1 && bv >= 0) {
         buf_puts(b, "sp_dir_glob_base("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (comp_ntype(c, bv) == TY_NIL) buf_puts(b, "NULL"); else emit_path_expr(c, bv, b);
+        if (comp_ntype(c, bv) != TY_NIL) emit_path_expr(c, bv, b);
+        else if (subtree_is_pure_read(c, bv)) buf_puts(b, "NULL");
+        else { buf_puts(b, "({ (void)("); emit_expr(c, bv, b); buf_puts(b, "); NULL; })"); }
         buf_puts(b, ")"); return 1;
       }
     }
@@ -1709,7 +1711,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
        refused here under --defer-refusals (the pass ahead of emission
        refuses them otherwise; see reject_time_parse) */
     { char tpm[320];
-      if (defer_refusals() && time_parse_refusal(c, id, tpm, sizeof tpm)) {
+      if (defer_refusals_at(c, id) && time_parse_refusal(c, id, tpm, sizeof tpm)) {
         unsupported_feature(c, id, tpm);
         buf_puts(b, "sp_box_nil()");
         return 1;

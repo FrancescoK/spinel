@@ -17,6 +17,7 @@
 #include "sp_types.h"
 #include "sp_gc.h"
 #include "sp_alloc.h"
+#include <string.h>
 
 /* Flag bits: the public constants share CRuby's values; SLICE is CRuby's
    internal display-only flag (no public constant). */
@@ -98,12 +99,19 @@ static inline const uint8_t *sp_iob_inline_ptr(sp_IOBuffer *b, sp_int off, int w
     return b->data + off;
   return NULL;
 }
-/* byte-assembled, as iob_load is: host-endian agnostic */
+/* the width-byte value at p, in the byte order be names: one unaligned load
+   (memcpy) and a byte swap when that order is not the host's, so a cached
+   loop's reads are a word each and the vectorizer can see through them. The
+   width is always 1, 2, 4 or 8 (sp_iob_width). */
+#define SP_IOB_HOST_BE (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
 static inline uint64_t sp_iob_load(const uint8_t *p, int width, int be) {
-  uint64_t v = 0;
-  if (be) for (int i = 0; i < width; i++) v = (v << 8) | p[i];
-  else    for (int i = 0; i < width; i++) v |= (uint64_t)p[i] << (8 * i);
-  return v;
+  int sw = be != SP_IOB_HOST_BE;
+  switch (width) {
+  case 1: return p[0];
+  case 2: { uint16_t x; memcpy(&x, p, 2); return sw ? __builtin_bswap16(x) : x; }
+  case 4: { uint32_t x; memcpy(&x, p, 4); return sw ? __builtin_bswap32(x) : x; }
+  default: { uint64_t x; memcpy(&x, p, 8); return sw ? __builtin_bswap64(x) : x; }
+  }
 }
 /* the value at p, its type a literal */
 static inline sp_int sp_iob_decode_i(const uint8_t *p, sp_int ty) {
@@ -164,9 +172,15 @@ sp_int sp_IOBuffer_set_v(sp_IOBuffer *b, sp_int ty, sp_int off, sp_RbVal v);
    invalid!", before the offset) and raises as before; both answer what
    the out-of-line write answers. The 64-bit integers come here too: any
    sp_int fits them. */
+/* the low width bytes of v at p, as sp_iob_load reads them back */
 static inline void sp_iob_store(uint8_t *p, int width, int be, uint64_t v) {
-  if (be) for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * (width - 1 - i)));
-  else    for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * i));
+  int sw = be != SP_IOB_HOST_BE;
+  switch (width) {
+  case 1: p[0] = (uint8_t)v; return;
+  case 2: { uint16_t x = (uint16_t)v; if (sw) x = __builtin_bswap16(x); memcpy(p, &x, 2); return; }
+  case 4: { uint32_t x = (uint32_t)v; if (sw) x = __builtin_bswap32(x); memcpy(p, &x, 4); return; }
+  default: { uint64_t x = sw ? __builtin_bswap64(v) : v; memcpy(p, &x, 8); return; }
+  }
 }
 /* an 8/16-bit store wraps and a 64-bit one holds any sp_int; a 32-bit one
    takes [-2^31, 2^31-1] signed, [-2^31, 2^32-1] unsigned */

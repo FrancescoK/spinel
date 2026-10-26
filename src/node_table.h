@@ -55,6 +55,10 @@ typedef struct {
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
   int nfiles;          /* length of `files` */
+  unsigned char *file_defers; /* FILE id -> 1 when the file's `# spinel: defer-refusals`
+                          magic comment turns its refusals into raises where they
+                          run (nt_put_file_defers); nfile_defers its length */
+  int nfile_defers;
   /* Bumped whenever a node is added or a string field is rewritten, i.e. by
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
@@ -75,139 +79,13 @@ typedef struct {
 
 /* Node-type kinds. The parser emits the type as a string ("CallNode"); to
    avoid an strcmp ladder on every per-node dispatch in the (iterated) analysis
-   passes, each node caches an integer kind, computed once by nt_kind. */
-#define SP_NODE_KINDS(X) \
-  X(AliasGlobalVariableNode) \
-  X(AliasMethodNode) \
-  X(AlternationPatternNode) \
-  X(AndNode) \
-  X(ArrayNode) \
-  X(ArrayPatternNode) \
-  X(AssocNode) \
-  X(AssocSplatNode) \
-  X(BackReferenceReadNode) \
-  X(BeginNode) \
-  X(BlockArgumentNode) \
-  X(BlockNode) \
-  X(BlockParameterNode) \
-  X(BlockParametersNode) \
-  X(BreakNode) \
-  X(CallAndWriteNode) \
-  X(CallNode) \
-  X(CallOrWriteNode) \
-  X(CallTargetNode) \
-  X(CapturePatternNode) \
-  X(CaseMatchNode) \
-  X(CaseNode) \
-  X(ClassNode) \
-  X(ClassVariableAndWriteNode) \
-  X(ClassVariableOperatorWriteNode) \
-  X(ClassVariableOrWriteNode) \
-  X(ClassVariableReadNode) \
-  X(ClassVariableTargetNode) \
-  X(ClassVariableWriteNode) \
-  X(ConstantAndWriteNode) \
-  X(ConstantOperatorWriteNode) \
-  X(ConstantOrWriteNode) \
-  X(ConstantPathAndWriteNode) \
-  X(ConstantPathNode) \
-  X(ConstantPathOperatorWriteNode) \
-  X(ConstantPathOrWriteNode) \
-  X(ConstantPathTargetNode) \
-  X(ConstantPathWriteNode) \
-  X(ConstantReadNode) \
-  X(ConstantTargetNode) \
-  X(ConstantWriteNode) \
-  X(DefNode) \
-  X(DefinedNode) \
-  X(ElseNode) \
-  X(EmbeddedStatementsNode) \
-  X(FalseNode) \
-  X(FloatNode) \
-  X(ForNode) \
-  X(ForwardingArgumentsNode) \
-  X(ForwardingSuperNode) \
-  X(GlobalVariableAndWriteNode) \
-  X(GlobalVariableOperatorWriteNode) \
-  X(GlobalVariableOrWriteNode) \
-  X(GlobalVariableReadNode) \
-  X(GlobalVariableTargetNode) \
-  X(GlobalVariableWriteNode) \
-  X(HashNode) \
-  X(HashPatternNode) \
-  X(IfNode) \
-  X(ImaginaryNode) \
-  X(InNode) \
-  X(IndexAndWriteNode) \
-  X(IndexOperatorWriteNode) \
-  X(IndexOrWriteNode) \
-  X(IndexTargetNode) \
-  X(InstanceVariableAndWriteNode) \
-  X(InstanceVariableOperatorWriteNode) \
-  X(InstanceVariableOrWriteNode) \
-  X(InstanceVariableReadNode) \
-  X(InstanceVariableTargetNode) \
-  X(InstanceVariableWriteNode) \
-  X(IntegerNode) \
-  X(InterpolatedRegularExpressionNode) \
-  X(InterpolatedStringNode) \
-  X(InterpolatedSymbolNode) \
-  X(InterpolatedXStringNode) \
-  X(KeywordHashNode) \
-  X(KeywordRestParameterNode) \
-  X(LambdaNode) \
-  X(LocalVariableAndWriteNode) \
-  X(LocalVariableOperatorWriteNode) \
-  X(LocalVariableOrWriteNode) \
-  X(LocalVariableReadNode) \
-  X(LocalVariableTargetNode) \
-  X(LocalVariableWriteNode) \
-  X(MatchPredicateNode) \
-  X(MatchRequiredNode) \
-  X(ModuleNode) \
-  X(MultiTargetNode) \
-  X(MultiWriteNode) \
-  X(NextNode) \
-  X(NilNode) \
-  X(NumberedParametersNode) \
-  X(NumberedReferenceReadNode) \
-  X(OperatorWriteNode) \
-  X(OptionalKeywordParameterNode) \
-  X(OptionalParameterNode) \
-  X(OrNode) \
-  X(ParametersNode) \
-  X(ParenthesesNode) \
-  X(PinnedExpressionNode) \
-  X(PinnedVariableNode) \
-  X(PostExecutionNode) \
-  X(PreExecutionNode) \
-  X(RangeNode) \
-  X(RationalNode) \
-  X(RedoNode) \
-  X(RegularExpressionNode) \
-  X(RequiredParameterNode) \
-  X(RescueModifierNode) \
-  X(RescueNode) \
-  X(RestParameterNode) \
-  X(RetryNode) \
-  X(ReturnNode) \
-  X(SelfNode) \
-  X(SingletonClassNode) \
-  X(SourceEncodingNode) \
-  X(SourceFileNode) \
-  X(SourceLineNode) \
-  X(SplatNode) \
-  X(StatementsNode) \
-  X(StringNode) \
-  X(SuperNode) \
-  X(SymbolNode) \
-  X(TrueNode) \
-  X(UndefNode) \
-  X(UnlessNode) \
-  X(UntilNode) \
-  X(WhileNode) \
-  X(XStringNode) \
-  X(YieldNode)
+   passes, each node caches an integer kind, computed once by nt_kind.
+   The list is src/node_kinds.inc, generated from Prism's node list (and
+   sorted, as nt_kind_resolve searches it by name), so every node type
+   Prism has is here and a new Prism version cannot leave one out; the
+   compiler's own types are named in tools/gen_node_kinds.rb. A type that is
+   not on the list answers NK_NONE. */
+#include "node_kinds.inc"
 
 typedef enum {
   NK_NONE = 0,
@@ -355,6 +233,9 @@ int  nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames);
 /* Resolve a `node_file` id to its source path, or NULL if out of range.
    Used by codegen to emit `#line N "path"` directives in multi-file builds. */
 const char *nt_file_path(const NodeTable *nt, int fid);
+/* The file's `# spinel: defer-refusals` magic comment: set, and asked */
+void nt_put_file_defers(NodeTable *nt, int fid);
+int nt_file_defers(const NodeTable *nt, int fid);
 
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 static inline const char *nt_str(const NodeTable *nt, int id, const char *key) {
@@ -633,5 +514,13 @@ int        nt_num_refs(const NodeTable *nt, int id);
 int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be -1 */
 int        nt_num_arrs(const NodeTable *nt, int id);
 const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
+
+/* What the driver's flags ask of the parse, the analysis and codegen:
+   src/main.c sets them, spinel_parse.c defines them. A string is a path to
+   write, or NULL. */
+extern int g_opt_debug, g_opt_line_map, g_opt_positions, g_opt_warn_widen, g_opt_check_stores,
+           g_opt_defer_refusals, g_opt_emit_types_keep_c;
+extern const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_profile_symbol_map,
+                  *g_opt_rbs_seed;
 
 #endif

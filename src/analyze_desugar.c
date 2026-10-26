@@ -9,6 +9,7 @@
 #include "builtin_ops.h"
 #include "analyze_internal.h"
 #include "value_pos.h"
+#include "call_plan.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
@@ -293,7 +294,15 @@ int desugar_ie_bare_object_calls(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     int hit = 0;
     for (int k = 0; nm && names[k] && !hit; k++) hit = sp_streq(nm, names[k]);
-    if (!hit || comp_method_in_chain(c, cls, nm, NULL) >= 0) continue;
+    /* on an Array, Hash or String subclass instance, a method its builtin
+       answers (`a.instance_eval { size }`) asks the receiver too. The
+       receiver's class comes from inferred types, so the pass runs each
+       round. A top-level def of the name is left alone, and so is a
+       Hash subclass's store, which has no arm on self there (it stays
+       refused). */
+    int builtin = !hit && comp_method_index(c, nm) < 0 && comp_arysub_name_is_array(c, cls, nm) &&
+                  !(ty_is_hash(comp_ary_kind(c, cls)) && is_store_alias(nm));
+    if (!builtin && (!hit || comp_method_in_chain(c, cls, nm, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
@@ -1679,6 +1688,14 @@ static const char *erm_mixin_name(const NodeTable *nt, int st, int an, const int
   *first = 1;
   return sv;
 }
+/* the builtin modules whose singleton class takes a mixin (`::Process
+   .singleton_class.prepend(ForkHook)`, sqlite3's fork safety; minitest's
+   `::Warning.singleton_class.prepend ErrorOnWarning`): a reopening of the
+   module makes the mixin's methods its own */
+static int is_builtin_module_mixin_name(const char *leaf) {
+  return sp_streq(leaf, "Process") || sp_streq(leaf, "Kernel") || sp_streq(leaf, "Math") ||
+         sp_streq(leaf, "GC") || sp_streq(leaf, "Signal") || sp_streq(leaf, "Warning");
+}
 static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return st;
@@ -1714,6 +1731,15 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   if (!decl && !attr && !sp_streq(nm, "extend") && sclass < 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       is_builtin_reopen_name(leaf) && !sp_streq(leaf, "Toplevel") && !sp_streq(leaf, "Class"))
     decl = 1;
+  /* a builtin module's singleton class takes a mixin in a reopening
+     (`::Process.singleton_class.prepend(ForkHook)`, sqlite3's fork safety;
+     minitest's `::Warning.singleton_class.prepend ErrorOnWarning`): the
+     module's methods become its own */
+  if (!decl && !attr && sclass >= 0 &&
+      (nt_kind(nt, recv) == NK_ConstantReadNode ||
+       (nt_kind(nt, recv) == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) &&
+      is_builtin_module_mixin_name(leaf))
+    decl = 2;
   if (!decl) return st;
   if (an - first < 1 || !av) return st;
   for (int i = first; i < an; i++) {
@@ -1790,12 +1816,142 @@ static int erm_sclass_const_rewrite(NodeTable *nt, int st, int decl) {
   nt_node_set_ref(nt, rn, "body", body);
   return rn;
 }
+/* ---- a builtin module's singleton mixin inside a method ----
+   sqlite3's fork safety prepends its hook from a method the file calls as
+   it loads:
+     def hook!
+       ::Process.singleton_class.prepend(CoreExt)
+     end
+   The class graph is baked at compile time, so the mixin goes into a
+   reopening of the module at the top level (`module Process;
+   singleton_class.prepend ::SQLite3::ForkSafety::CoreExt; end`), from the
+   start rather than when the method runs, as a define_method in a method
+   body is defined; the statement itself is nil. The mixin is named by the
+   full path Ruby resolves the constant to where it is written
+   (ied_resolve); a constant that names no module of the program's is left
+   as it is, a refusal. */
+static int bsm_candidate(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0 || nt_safe_nav(nt, st)) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || (!sp_streq(nm, "prepend") && !sp_streq(nm, "include"))) return 0;
+  int sc = nt_ref(nt, st, "receiver");
+  if (sc < 0 || nt_kind(nt, sc) != NK_CallNode || !nt_str(nt, sc, "name") ||
+      !sp_streq(nt_str(nt, sc, "name"), "singleton_class") || nt_ref(nt, sc, "arguments") >= 0 ||
+      nt_ref(nt, sc, "block") >= 0) return 0;
+  int recv = nt_ref(nt, sc, "receiver");
+  if (recv < 0) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) return 0;
+  const char *leaf = nt_str(nt, recv, "name");
+  if (!leaf || !is_builtin_module_mixin_name(leaf)) return 0;
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || !av) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  return ak == NK_ConstantReadNode || ak == NK_ConstantPathNode;
+}
+static int bsm_hoist(Compiler *c, const int *parent, const IedPaths *ip, int st, int **top, int *ntop) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, st, "name");
+  int recv = nt_ref(nt, nt_ref(nt, st, "receiver"), "receiver");
+  const char *leaf = nt_str(nt, recv, "name");
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = nt_arr(nt, args, "arguments", &an);
+  /* the class and module bodies around the statement, innermost first */
+  int chain[IED_DEPTH]; int nc = 0;
+  for (int p = parent[st]; p >= 0 && nc < IED_DEPTH; p = parent[p])
+    if (nt_kind(nt, p) == NK_ClassNode || nt_kind(nt, p) == NK_ModuleNode) chain[nc++] = p;
+  const char *scopes[IED_DEPTH + 1]; int ns = 0;
+  char full[IED_DEPTH][1024];
+  for (int i = nc - 1; i >= 0; i--) {
+    if (!ied_define_path(nt, ip, nt_ref(nt, chain[i], "constant_path"), scopes, ns, full[i], sizeof full[i])) return 0;
+    for (int j = ns; j > 0; j--) scopes[j] = scopes[j - 1];
+    scopes[0] = full[i]; ns++;
+  }
+  char seg[QC_MAXDEPTH + 1][64]; int abs_anchor = 0;
+  int n = qc_read_chain(nt, av[0], seg, &abs_anchor);
+  if (n <= 0) return 0;
+  char path[1024];
+  if (ied_resolve(ip, seg, n, scopes, abs_anchor ? 0 : ns, path, sizeof path) != 2) return 0;
+  /* `module <leaf>; singleton_class.<nm> ::<path>; end`, the path absolute
+     (a ConstantPathNode with no parent is `::A`) */
+  int arg = -1;
+  for (char *q = path, *e; q && *q; q = e) {
+    e = strstr(q, "::");
+    if (e) { *e = 0; e += 2; }
+    int seg_node = fwd_new_node_like(nt, st, "ConstantPathNode");
+    if (seg_node < 0) return 0;
+    nt_node_set_str(nt, seg_node, "name", q);
+    nt_node_set_ref(nt, seg_node, "parent", arg);
+    arg = seg_node;
+  }
+  int sc = fwd_new_node_like(nt, st, "CallNode");
+  int call = fwd_new_node_like(nt, st, "CallNode");
+  int cargs = fwd_new_node_like(nt, st, "ArgumentsNode");
+  int rn = fwd_new_node_like(nt, st, "ModuleNode");
+  int body = fwd_new_node_like(nt, st, "StatementsNode");
+  int cpath = fwd_new_node_like(nt, st, "ConstantReadNode");
+  if (arg < 0 || sc < 0 || call < 0 || cargs < 0 || rn < 0 || body < 0 || cpath < 0) return 0;
+  nt_node_set_str(nt, sc, "name", "singleton_class");
+  nt_node_set_ref(nt, sc, "receiver", -1); nt_node_set_ref(nt, sc, "arguments", -1); nt_node_set_ref(nt, sc, "block", -1);
+  nt_node_set_arr(nt, cargs, "arguments", &arg, 1);
+  nt_node_set_str(nt, call, "name", nm);
+  nt_node_set_ref(nt, call, "receiver", sc); nt_node_set_ref(nt, call, "arguments", cargs); nt_node_set_ref(nt, call, "block", -1);
+  nt_node_set_str(nt, cpath, "name", leaf);
+  nt_node_set_arr(nt, body, "body", &call, 1);
+  nt_node_set_ref(nt, rn, "constant_path", cpath);
+  nt_node_set_ref(nt, rn, "body", body);
+  xc_push(top, ntop, rn);
+  nt_node_reset(nt, st, "NilNode");
+  return 1;
+}
+static int desugar_method_body_singleton_mixin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int root = nt->root_id, tstmts = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+  if (tstmts < 0 || nt_kind(nt, tstmts) != NK_StatementsNode) return 0;
+  int *parent = NULL, *top = NULL, ntop = 0;
+  IedPaths ip = {0};
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    int body = nt_ref(nt, id, "body"), bn = 0;
+    const int *bb0 = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (!bb0 || bn == 0) continue;
+    int any = 0;
+    for (int i = 0; i < bn && !any; i++) any = bsm_candidate(nt, bb0[i]);
+    if (!any) continue;
+    int *bb = (int *)malloc(sizeof(int) * (size_t)bn);
+    if (!bb) continue;
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (!parent) {
+      parent = an_parent_map(nt);
+      ip.lex = (char **)calloc((size_t)n0 + 1, sizeof(char *));
+      if (!parent || !ip.lex) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      ied_walk(nt, root, NULL, 0, n0, &ip);
+    }
+    for (int i = 0; i < bn; i++)
+      if (bsm_candidate(nt, bb[i]) && bsm_hoist(c, parent, &ip, bb[i], &top, &ntop)) changed = 1;
+    free(bb);
+  }
+  if (ntop) {
+    int tn = 0; const int *ts = nt_arr(nt, tstmts, "body", &tn);
+    int *all = (int *)malloc(sizeof(int) * (size_t)(tn + ntop));
+    if (!all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(all, ts, sizeof(int) * (size_t)tn);
+    memcpy(all + tn, top, sizeof(int) * (size_t)ntop);
+    nt_node_set_arr(nt, tstmts, "body", all, tn + ntop);
+    free(all);
+  }
+  free(parent); free(top);
+  if (ip.lex) ied_paths_free(&ip);
+  return changed;
+}
 int desugar_explicit_receiver_mixin(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
-    int is_prog = nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode");
+    int is_prog = nt_kind(nt, id) == NK_ProgramNode;
     int stmts = is_prog ? nt_ref(nt, id, "statements")
               : (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, id, "body") : -1;
     if (stmts < 0 || nt_kind(nt, stmts) != NK_StatementsNode) continue;
@@ -1820,6 +1976,7 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
     if (any) { nt_node_set_arr(nt, stmts, "body", nb, bn); changed = 1; }
     free(nb);
   }
+  changed |= desugar_method_body_singleton_mixin(c);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
@@ -5462,6 +5619,25 @@ int desugar_engine_branches(Compiler *c) {
     nt_node_set_int(nt, id, "engine_check", 1);
     changed = 1;
   }
+  /* `Object.const_defined?(:RUBY_ENGINE)` is true in every program (racc
+     asks it before comparing the engine) */
+  for (int id = 0; eng && id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *op = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (!op || !sp_streq(op, "const_defined?") || recv < 0 || ac != 1 || nt_ref(nt, id, "block") >= 0) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(nt_str(nt, recv, "name"), "Object")) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *cn = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!cn || !sp_streq(cn, "RUBY_ENGINE")) continue;
+    engine_blank(nt, recv);
+    engine_blank(nt, args);
+    nt_node_reset(nt, id, "TrueNode");
+    nt_node_set_int(nt, id, "engine_check", 1);
+    changed = 1;
+  }
   for (int id = n0 - 1; id >= 0; id--) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_AndNode && k != NK_OrNode) continue;
@@ -5773,9 +5949,10 @@ static int dsend_local_names(Compiler *c, int arg, char ***names, int *n) {
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, vn)) continue;
     const char *ty = nt_type(nt, id);
+    NodeKind ty_k = nt_kind(nt, id);
     size_t tl = ty ? strlen(ty) : 0;
     if (tl > 13 && sp_streq(ty + tl - 13, "ParameterNode")) ok = 0;
-    else if (ty && sp_streq(ty, "BlockLocalVariableNode")) ok = 0;
+    else if (ty_k == NK_BlockLocalVariableNode) ok = 0;
     else if (!comp_is_local_write(k)) continue;
     else if (k != NK_LocalVariableWriteNode) ok = 0;
     else { nw++; ok = dsend_literal_names(c, nt_ref(nt, id, "value"), names, n, &cap, &seen); }
@@ -6247,9 +6424,8 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || !argv) continue;
-    const char *a0 = nt_type(nt, argv[0]);
     NodeKind a0_k = nt_kind(nt, argv[0]);
-    if (a0 && (a0_k == NK_SymbolNode || (a0_k == NK_StringNode && !sock))) continue;  /* literal: handled earlier */
+    if (a0_k == NK_SymbolNode || (a0_k == NK_StringNode && !sock)) continue;  /* literal: handled earlier */
     /* a boxed socket write's literal payload is Object#send's one name for a
        value that is no socket: the method the retarget would have called */
     char sock_lit[256], *sock_name = NULL;
@@ -7468,8 +7644,8 @@ int desugar_call_op_write(Compiler *c) {
   int *parent = NULL;
   char *wname = NULL, *aname = NULL;   /* this round's copies, freed by the next */
   for (int id = 0; id < n0; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallOperatorWriteNode")) continue;
+    NodeKind ty_k = nt_kind(nt, id);
+    if (ty_k != NK_CallOperatorWriteNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *attr = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
@@ -9390,8 +9566,8 @@ int desugar_block_implicit_rest(Compiler *c) {
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
     int rest = nt_ref(nt, pn, "rest");
-    const char *rty = rest >= 0 ? nt_type(nt, rest) : NULL;
-    if (!rty || !sp_streq(rty, "ImplicitRestNode")) continue;
+    NodeKind rk = nt_kind(nt, rest);
+    if (rk != NK_ImplicitRestNode) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
     if (!reqs || rn < 1 || rn > 30) continue;
     int copy[32];
@@ -10389,12 +10565,11 @@ static int anon_fwd_rewrite(Compiler *c, int node, int parent, unsigned anon) {
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode) return 0;
-  const char *pty = parent >= 0 ? nt_type(nt, parent) : NULL;
   NodeKind pk = nt_kind(nt, parent);
   const char *nm = NULL, *field = NULL;
   if ((anon & 1) && k == NK_BlockArgumentNode) nm = "__anon_block", field = "expression";
-  else if ((anon & 2) && k == NK_SplatNode && pty &&
-           (sp_streq(pty, "ArgumentsNode") || pk == NK_ArrayNode))
+  else if ((anon & 2) && k == NK_SplatNode &&
+           (pk == NK_ArgumentsNode || pk == NK_ArrayNode))
     nm = "__anon_rest", field = "expression";
   else if ((anon & 4) && k == NK_AssocSplatNode) nm = "__anon_kwrest", field = "value";
   if (nm && nt_ref(nt, node, field) < 0) {
@@ -12225,7 +12400,8 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
   for (int p = 0; p < n0; p++) {
     const char *pt = nt_type(nt, p), *pn = nt_str(nt, p, "name");
-    if (pt && pn && sp_streq(pn, vn) && (strstr(pt, "ParameterNode") || sp_streq(pt, "BlockLocalVariableNode"))) return -1;
+    NodeKind pk = nt_kind(nt, p);
+    if (pt && pn && sp_streq(pn, vn) && (strstr(pt, "ParameterNode") || pk == NK_BlockLocalVariableNode)) return -1;
   }
   return w;
 }
@@ -15034,6 +15210,8 @@ int sym_block_values(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (ty_is_hash(rt) && sp_streq(nm, "to_h") && argc == 0) return 2;
   TyKind elem; int hash_pair;
+  /* an Enumerator yielding two values passes both on (each_with_index.map) */
+  if (recv >= 0 && bs_enum_yield_count(c, recv, nm, argc, &elem) == 2) return 2;
   return recv >= 0 && iter_shape_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
 }
 
@@ -15352,7 +15530,7 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   const char *xn = NULL;
   if (bp >= 0 && nt_kind(nt, bp) == NK_NumberedParametersNode)
     lone_req = nt_int(nt, bp, "maximum", 0) == 1;
-  else if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "ItParametersNode"))
+  else if (bp >= 0 && nt_kind(nt, bp) == NK_ItParametersNode)
     lone_req = 1;
   else if (bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode &&
            (pn = nt_ref(nt, bp, "parameters")) >= 0) {
@@ -15419,9 +15597,9 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
 void mark_match_ranges(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   for (int w = 0; w < nt->count; w++) {
-    const char *wty = nt_type(nt, w);
+    NodeKind wk = nt_kind(nt, w);
     int n = 0, rcv = -1; const int *conds = NULL;
-    if (wty && sp_streq(wty, "WhenNode")) conds = nt_arr(nt, w, "conditions", &n);
+    if (wk == NK_WhenNode) conds = nt_arr(nt, w, "conditions", &n);
     else if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name")) {
       const char *mn = nt_str(nt, w, "name");
       int args = nt_ref(nt, w, "arguments"), an = 0;
@@ -16984,10 +17162,9 @@ static int sc_value_taken(const NodeTable *nt, const int *parent, int id) {
   if (ended != VPU_ENDED) return 1;
   if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 0;
   NodeKind k = nt_kind(nt, up.parent);
-  const char *ty = nt_type(nt, up.parent);
   if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) &&
       nt_ref(nt, up.parent, "body") == up.node) return 0;
-  return !(ty && sp_streq(ty, "ProgramNode"));
+  return k != NK_ProgramNode;
 }
 
 /* Is the value of node id taken where it stands: anything but a statement,
@@ -17400,7 +17577,7 @@ int desugar_class_new_blocks(Compiler *c) {
        the surrounding locals stays a block */
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
-    int capture_refusal = reads_outer && !defer_refusals();
+    int capture_refusal = reads_outer && !defer_refusals_at(c, id);
     if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
@@ -21758,10 +21935,12 @@ int desugar_index_assign_user_recv(Compiler *c) {
    the method returned. Where the value is taken, the node becomes
      (__ixr_N = r; __ixk_N_0 = k; (__ixv_N = v; __ixr_N[__ixk_N_0] = __ixv_N; __ixv_N))
    so each part runs once, in Ruby's order, and the expression answers the
-   held value (ix_held_store). self and a literal key stay where they are.
-   The receiver is typed as such a class, or is a box that can hold one. A
-   key list with a splat, a block or keywords is left alone, and so are a
-   class's own `self.[]=` and a reopened builtin's `[]=`. */
+   held value (ix_held_store). self, a constant and a literal key stay
+   where they are. An immediate value is passed and answered as itself.
+   The receiver is typed as such a class, or is a box that can hold one,
+   or names a class whose own `self.[]=` the call reaches. A key list with
+   a splat, a block or keywords is left alone, and so is a reopened
+   builtin's `[]=`. */
 static int ixa_literal(const NodeTable *nt, int n) {
   switch (nt_kind(nt, n)) {
     case NK_SymbolNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode:
@@ -21769,6 +21948,20 @@ static int ixa_literal(const NodeTable *nt, int n) {
       return 1;
     default: return 0;
   }
+}
+/* `C`, `A::B`, `::C`: a constant whose every segment is one, no call */
+static int ixa_const_chain(const NodeTable *nt, int n) {
+  for (int d = 0; n >= 0 && d < 64; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ConstantReadNode) return 1;
+    if (k != NK_ConstantPathNode) return 0;
+    n = nt_ref(nt, n, "parent");
+    if (n < 0) return 1;
+  }
+  return 0;
+}
+static int ixa_immediate(const NodeTable *nt, int n) {
+  return ixa_literal(nt, n) && nt_kind(nt, n) != NK_StringNode;
 }
 static int ixa_hold(NodeTable *nt, const char *name, int value) {
   int w = nt_new_node(nt, "LocalVariableWriteNode");
@@ -21788,12 +21981,20 @@ int desugar_index_assign_value(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (recv < 0 || !av || an < 2) continue;
+    if (!av || an < 2) continue;
     if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
-    TyKind rt = comp_ntype(c, recv);
-    if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
     int user = 0;
-    if (ty_is_object(rt)) {
+    if (recv < 0) {
+      /* `self[k] = v` in a class method (the receiver left as self's
+         call) of a class whose class-level `[]=` is the program's */
+      Scope *rs = comp_scope_of(c, id);
+      user = rs && rs->is_cmethod && rs->class_id >= 0 && rs->class_id < c->nclasses &&
+             comp_cmethod_in_chain(c, rs->class_id, "[]=", NULL) >= 0;
+      if (!user) continue;
+    }
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (recv >= 0 && !ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
+    if (!user && ty_is_object(rt)) {
       int cid = ty_object_class(rt);
       user = cid >= 0 && cid < c->nclasses && comp_method_in_chain(c, cid, "[]=", NULL) >= 0;
     }
@@ -21808,6 +22009,9 @@ int desugar_index_assign_value(Compiler *c) {
                comp_method_in_chain(c, pk, "[]=", NULL) >= 0;
       }
     }
+    /* a class-level `self.[]=` of a class a constant (or a local that
+       holds one class) names, as the class method call resolves it */
+    if (!user) user = class_recv_user_cmethod(c, recv, "[]=") >= 0;
     if (!user) continue;
     if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     /* a detached store (desugar_masgn_store_evidence's type evidence) has no parent */
@@ -21817,7 +22021,7 @@ int desugar_index_assign_value(Compiler *c) {
     if (nt_kind(nt, parent[id]) == NK_DefinedNode) continue;
     /* nt_new_node can move the table: copy what is read from it first */
     int nkeys = an - 1;
-    int *keys = malloc(sizeof(int) * (size_t)an), *body = malloc(sizeof(int) * (size_t)(an + 1));
+    int *keys = malloc(sizeof(int) * (size_t)an), *body = malloc(sizeof(int) * (size_t)(an + 2));
     if (!keys || !body) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int i = 0; i < an; i++) keys[i] = av[i];
     int val = keys[nkeys];
@@ -21829,7 +22033,8 @@ int desugar_index_assign_value(Compiler *c) {
     snprintf(vname, sizeof vname, "__ixv_%s", tag);
     Scope *sc = comp_scope_of(c, id);
     int base = nt->count, nb = 0, ok = 1;
-    int self_recv = nt_kind(nt, recv) == NK_SelfNode;
+    /* self and a constant read the same object twice */
+    int self_recv = recv < 0 || nt_kind(nt, recv) == NK_SelfNode || ixa_const_chain(nt, recv);
     int recv2 = recv;
     if (!self_recv) {
       int rw = ixa_hold(nt, rname, recv);
@@ -21844,7 +22049,11 @@ int desugar_index_assign_value(Compiler *c) {
       body[nb++] = kw;
       scope_local_intern(sc, kname);
     }
-    int vr = ok ? ixw_read(nt, vname) : -1;
+    /* an immediate value (nil, true, a Symbol, a number) is passed and
+       answered as itself: no held local, whose box an Integer parameter
+       another call types would have to unbox */
+    int imm = ixa_immediate(nt, val);
+    int vr = !ok ? -1 : imm ? val : ixw_read(nt, vname);
     int sa = vr >= 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
     int set = sa >= 0 ? nt_new_node(nt, "CallNode") : -1;
     if (set >= 0) {
@@ -21857,17 +22066,19 @@ int desugar_index_assign_value(Compiler *c) {
       nt_node_set_int(nt, set, "node_line", line);
       nt_node_set_int(nt, set, "node_file", file);
     }
-    /* the holds first, then (v = value; r[k] = v; v) */
-    int held = set >= 0 ? ix_held_store(nt, vname, val, set, -1) : -1;
-    int st = held >= 0 ? nt_new_node(nt, "StatementsNode") : -1;
+    /* the holds first, then (v = value; r[k] = v; v), or r[k] = imm; imm */
+    int held = set < 0 ? -1 : imm ? ix_store_call(nt, set) : ix_held_store(nt, vname, val, set, -1);
+    int ans = held >= 0 && imm ? nt_clone_subtree(nt, val) : -1;
+    int st = held >= 0 && (!imm || ans >= 0) ? nt_new_node(nt, "StatementsNode") : -1;
     if (st >= 0) {
       body[nb++] = held;
+      if (imm) body[nb++] = ans;
       nt_node_set_arr(nt, st, "body", body, nb);
       nt_node_reset(nt, id, "ParenthesesNode");
       nt_node_set_int(nt, id, "node_line", line);
       nt_node_set_int(nt, id, "node_file", file);
       nt_node_set_ref(nt, id, "body", st);
-      scope_local_intern(sc, vname);
+      if (!imm) scope_local_intern(sc, vname);
       changed = 1;
     }
     free(keys); free(body);
@@ -21917,7 +22128,7 @@ int desugar_safe_nav_attr_write(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     NodeKind ty_k = nt_kind(nt, id);
-    if (!ty || !(sp_streq(ty, "CallOperatorWriteNode") || ty_k == NK_CallOrWriteNode ||
+    if (!ty || !(ty_k == NK_CallOperatorWriteNode || ty_k == NK_CallOrWriteNode ||
                  ty_k == NK_CallAndWriteNode)) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *rn = nt_str(nt, id, "name");
@@ -21987,7 +22198,7 @@ int desugar_const_attr_op_assign(Compiler *c) {
     const char *ty = nt_type(nt, id);
     NodeKind k = nt_kind(nt, id);
     if (!ty) continue;
-    int is_op = sp_streq(ty, "CallOperatorWriteNode"), is_or = k == NK_CallOrWriteNode, is_and = k == NK_CallAndWriteNode;
+    int is_op = k == NK_CallOperatorWriteNode, is_or = k == NK_CallOrWriteNode, is_and = k == NK_CallAndWriteNode;
     if (!is_op && !is_or && !is_and) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
@@ -22095,7 +22306,7 @@ int desugar_reopened_op_write(Compiler *c) {
   char *rn = NULL, *wn = NULL;   /* this round's copies, freed by the next */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
-    int f = -1, attr = nt_type(nt, id) && sp_streq(nt_type(nt, id), "CallOperatorWriteNode");
+    int f = -1, attr = nt_kind(nt, id) == NK_CallOperatorWriteNode;
     for (int j = 0; j < (int)(sizeof vars / sizeof vars[0]); j++) if (vars[j].k == k) f = j;
     if (f < 0 && k != NK_IndexOperatorWriteNode && !attr) continue;
     const char *bop = nt_str(nt, id, "binary_operator");
@@ -23284,7 +23495,12 @@ static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
   memcpy(*buf + *len, t, tl); *len += tl; (*buf)[*len] = 0;
 }
 /* the string's text with `var` (a block parameter) read as `elem`; NULL
-   when an interpolation is anything else */
+   when an interpolation is anything else. Without a var, an interpolated
+   constant in call position (`#{Racc_Main_Parsing_Routine}(_racc_setup(),
+   false)`, racc's parser.rb: the constant holds the method's name) is the
+   send of what the constant holds, `__send__(Racc_Main_Parsing_Routine,
+   _racc_setup(), false)`, which reaches the private method the name spells
+   as the eval'd call does. */
 static char *sce_text(const NodeTable *nt, int str, const char *var, const char *elem) {
   char *buf = NULL; size_t len = 0, cap = 0;
   sce_append(&buf, &len, &cap, "");
@@ -23295,19 +23511,31 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
     return buf;
   }
   int pn = 0; const int *parts = nt_arr(nt, str, "parts", &pn);
+  int skip = 0;   /* bytes of the next literal part a constant's send took */
   for (int i = 0; i < pn; i++) {
     NodeKind k = nt_kind(nt, parts[i]);
     if (k == NK_StringNode) {
       const char *t = nt_str(nt, parts[i], "content");
       if (!t) { free(buf); return NULL; }
-      sce_append(&buf, &len, &cap, t);
+      sce_append(&buf, &len, &cap, t + skip);
+      skip = 0;
       continue;
     }
-    if (k != NK_EmbeddedStatementsNode || !var) { free(buf); return NULL; }
+    if (k != NK_EmbeddedStatementsNode) { free(buf); return NULL; }
     int stmts = nt_ref(nt, parts[i], "statements");
     int sn = 0; const int *ss = stmts >= 0 ? nt_arr(nt, stmts, "body", &sn) : NULL;
     if (sn != 1) { free(buf); return NULL; }
     int e = ss[0];
+    if (!var) {
+      const char *next = i + 1 < pn && nt_kind(nt, parts[i + 1]) == NK_StringNode ? nt_str(nt, parts[i + 1], "content") : NULL;
+      const char *cn = nt_kind(nt, e) == NK_ConstantReadNode ? nt_str(nt, e, "name") : NULL;
+      if (!cn || !next || next[0] != '(') { free(buf); return NULL; }
+      sce_append(&buf, &len, &cap, "__send__(");
+      sce_append(&buf, &len, &cap, cn);
+      if (next[1] == ')') { sce_append(&buf, &len, &cap, ")"); skip = 2; }
+      else { sce_append(&buf, &len, &cap, ", "); skip = 1; }
+      continue;
+    }
     const char *conv = NULL;
     if (nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "arguments") < 0 && nt_ref(nt, e, "block") < 0) {
       conv = nt_str(nt, e, "name"); e = nt_ref(nt, e, "receiver");

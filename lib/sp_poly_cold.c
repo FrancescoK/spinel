@@ -82,6 +82,141 @@ sp_RbVal sp_cext_hash_get(sp_RbVal hash, sp_RbVal key) {
     sp_raise_cls("TypeError", "expected a Hash");
   return sp_poly_index_poly(hash, key);
 }
+/* A C extension's hidden instance variables: a name rb_iv_set takes without
+   the @ (sqlite3's "-instances"), which CRuby keeps where no Ruby code reads
+   it. They live in a Hash of the object's own beside its Ruby ivars
+   (sp_ivtbl_hidden_put), keyed as a builtin value's ivars are, and a program
+   object by its address. */
+static const void *sp_cext_hidden_key(sp_RbVal o) {
+  if (o.tag == SP_TAG_OBJ && o.v.p && o.cls_id >= 0) return o.v.p;
+  return sp_bivar_key(o);
+}
+static sp_PolyPolyHash *sp_cext_hidden_table(sp_RbVal o) {
+  const void *key = sp_cext_hidden_key(o);
+  return key ? (sp_PolyPolyHash *)sp_ivtbl_hidden_get(key) : NULL;
+}
+int sp_cext_hidden_defined(sp_RbVal o, sp_sym name) {
+  sp_PolyPolyHash *t = sp_cext_hidden_table(o);
+  return t && sp_PolyPolyHash_has_key(t, sp_box_sym(name));
+}
+sp_RbVal sp_cext_hidden_get(sp_RbVal o, sp_sym name) {
+  sp_PolyPolyHash *t = sp_cext_hidden_table(o);
+  if (!t || !sp_PolyPolyHash_has_key(t, sp_box_sym(name))) return sp_box_nil();
+  return sp_PolyPolyHash_get(t, sp_box_sym(name));
+}
+void sp_cext_hidden_set(sp_RbVal o, sp_sym name, sp_RbVal value) {
+  if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
+    SP_GC_ROOT_RBVAL(o);
+    const char *what = sp_str_concat((&("\xff" "can't modify frozen ")[1]), sp_poly_class_name(o));
+    SP_GC_ROOT_STR(what);
+    sp_raise_frozen_obj(o, what);
+  }
+  const void *key = sp_cext_hidden_key(o);
+  if (!key)
+    sp_raise_cls("NotImplementedError",
+                 sp_sprintf("a hidden instance variable on a %s is not supported: the value keeps no identity "
+                            "for the variable to live on", sp_poly_class_name(o)));
+  SP_GC_ROOT_RBVAL(o); SP_GC_ROOT_RBVAL(value);
+  sp_PolyPolyHash *t = (sp_PolyPolyHash *)sp_ivtbl_hidden_get(key);
+  if (!t) {
+    t = sp_PolyPolyHash_new();
+    sp_ivtbl_hidden_put(key, t);
+  }
+  sp_PolyPolyHash_set(t, sp_box_sym(name), value);
+}
+/* rb_obj_freeze */
+sp_RbVal sp_cext_freeze(sp_RbVal v) {
+  return sp_poly_freeze(v);
+}
+/* rb_ary_delete: every element == item goes, and the answer is item, or nil
+   when none was there */
+sp_RbVal sp_cext_ary_delete(sp_RbVal ary, sp_RbVal item) {
+  if (ary.tag != SP_TAG_OBJ || ary.cls_id != SP_BUILTIN_POLY_ARRAY)
+    sp_raise_cls("TypeError", "expected a widened Array");
+  return sp_PolyArray_delete((sp_PolyArray *)ary.v.p, item);
+}
+/* NUM2DBL, as CRuby's rb_num2dbl: a real number converts; nil, true, false
+   and a String are a TypeError rather than Kernel#Float's parse */
+double sp_cext_num2dbl(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) sp_raise_cls("TypeError", "no implicit conversion to float from nil");
+  if (v.tag == SP_TAG_BOOL)
+    sp_raise_cls("TypeError", v.v.b ? "no implicit conversion to float from true" : "no implicit conversion to float from false");
+  if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF))
+    sp_raise_cls("TypeError", "no implicit conversion to float from string");
+  return sp_poly_to_f(v);
+}
+/* rb_integer_pack for a word order and byte order of the machine's own, in
+   two's complement: the words take the Integer's low bytes, and the answer
+   is its sign (-1, 0, +1), or +-2 when it does not fit, as CRuby's bary_pack
+   counts fitting: a positive Integer fits in the words' bits unsigned, a
+   negative one down to minus two to the bits less one (2**63 fits in a
+   64-bit word as 0x8000..., -(2**63) too, -(2**63) - 1 does not). */
+int sp_cext_integer_pack(sp_RbVal v, void *words, size_t numwords, size_t wordsize) {
+  size_t bytes = numwords * wordsize, nbits = bytes * 8;
+  unsigned char *out = words;
+  int sign;
+  int64_t low;        /* the low 64 bits, two's complement */
+  int fits;
+  if (v.tag == SP_TAG_BIGINT) {
+    sp_Bigint *b = (sp_Bigint *)v.v.p;
+    SP_GC_ROOT(b);
+    sign = sp_bigint_sign(b);
+    low = sp_unbox_i64(v);
+    intptr_t bl = sp_bigint_bit_length(b);   /* of the magnitude; of (magnitude - 1) when negative, as Integer#bit_length */
+    fits = sign >= 0 ? (size_t)bl <= nbits : (size_t)bl <= nbits - 1;
+  }
+  else if (v.tag == SP_TAG_INT) {
+    int64_t n = v.v.i;
+    sign = n < 0 ? -1 : n > 0 ? 1 : 0;
+    low = n;
+    if (bytes >= sizeof n) fits = 1;
+    else {
+      int64_t lo = bytes ? -((int64_t)1 << (nbits - 1)) : 0;
+      uint64_t hi = bytes ? (((uint64_t)1 << nbits) - 1) : 0;
+      fits = n < 0 ? n >= lo : (uint64_t)n <= hi;
+    }
+  }
+  else { sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Integer", sp_poly_class_name(v))); return 0; }
+  unsigned char raw[sizeof low];
+  memcpy(raw, &low, sizeof low);
+  int little = 1;
+  little = *(unsigned char *)&little;
+  for (size_t i = 0; i < bytes; i++) {
+    size_t k = little ? i : bytes - 1 - i;   /* the byte's significance */
+    out[i] = k < sizeof low ? raw[little ? k : sizeof low - 1 - k] : (sign < 0 ? 0xff : 0);
+  }
+  if (!fits) return sign < 0 ? -2 : 2;
+  return sign;
+}
+/* rb_sym2str: the Symbol's name as a frozen String */
+sp_RbVal sp_cext_sym2str(sp_sym s) {
+  return sp_box_str(sp_sym_to_s(s));
+}
+/* rb_str_plus: a new String of both, ASCII-8BIT when either is */
+sp_RbVal sp_cext_str_plus(sp_RbVal a, sp_RbVal b) {
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
+  sp_RbVal x = sp_poly_strbuf_deref(a), y = sp_poly_strbuf_deref(b);
+  if (x.tag != SP_TAG_STR || y.tag != SP_TAG_STR) sp_raise_cls("TypeError", "no implicit conversion into String");
+  SP_GC_ROOT_RBVAL(x); SP_GC_ROOT_RBVAL(y);
+  int64_t la = (int64_t)sp_str_byte_len(x.v.s), lb = (int64_t)sp_str_byte_len(y.v.s);
+  sp_String *r = sp_String_new_len(x.v.s, la); SP_GC_ROOT(r);
+  sp_String_append_n(r, y.v.s, (size_t)lb);
+  if (sp_str_is_binary(x.v.s) || sp_str_is_binary(y.v.s)) sp_String_force_encoding(r, 1);
+  return sp_box_obj(r, SP_BUILTIN_STRBUF);
+}
+/* An Array a method yields to a C extension's block (rb_block_call) that
+   the analysis did not widen, since the block reaches the method through
+   a name the extension computes (racc's yyparse(recv, mid)): C reads it as
+   a poly Array of its elements, a copy with its Strings shared, which it
+   reads as CRuby's; a change C makes to the copy does not reach the typed
+   Array (docs/limitations.md). A poly Array, or any other value, is itself. */
+sp_RbVal sp_cext_widen_array(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p || v.cls_id == SP_BUILTIN_POLY_ARRAY || !sp_poly_is_array_kind(v.cls_id)) return v;
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *copy = sp_poly_to_poly_array(v);
+  SP_GC_ROOT(copy);
+  return sp_box_poly_array(sp_cext_share_new_array(copy));
+}
 void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
   if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
     sp_raise_cls("TypeError", "expected a widened Hash");

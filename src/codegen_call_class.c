@@ -2483,38 +2483,18 @@ void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf 
    text is rolled back and 0 answered, with the refusal's message in msg, for
    the arm to raise it (emit_stmt_or_defer's rule, one arm wide). */
 static int ctor_defaults_or_defer(Compiler *c, int initm, Buf *out, char *msg, size_t msz) {
-  if (!defer_refusals() || !g_unsup_armed || g_unsup_probe || g_unsup_quiet) {
+  if (!defer_refusals_at(c, c->scopes[initm].def_node) || !g_unsup_armed || g_unsup_probe || g_unsup_quiet) {
     emit_args_filled(c, initm, -1, "", out);
     return 1;
   }
-  jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
-  size_t out_len = out->len;
-  Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
-  ConvHold *saved_hold = g_conv_hold;
-  EmitUnitState *saved = emit_state_snapshot();
-  int ndiag0 = g_ndiags;
+  DeferMark dm; defer_mark(&dm, out);
   volatile int ok = 0;
   if (setjmp(g_unsup_recover) == 0) {
     emit_args_filled(c, initm, -1, "", out);
     ok = 1;
   }
-  else {
-    g_stmt_deferrals++;
-    g_conv_hold = saved_hold;
-    emit_state_release(saved, 1); saved = NULL;
-    g_pre = saved_pre;
-    if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
-    out->len = out_len; if (out->p) out->p[out_len] = '\0';
-    g_unsup_armed = 1;
-    if (g_ndiags > ndiag0) {
-      const SpDiag *d = &g_diags[g_ndiags - 1];
-      if (d->line > 0) snprintf(msg, msz, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
-      else snprintf(msg, msz, "%s", d->msg);
-    }
-    else snprintf(msg, msz, "refused at compile time");
-  }
-  if (saved) emit_state_release(saved, 0);
-  memcpy(g_unsup_recover, outer, sizeof outer);
+  else defer_rollback(&dm, msg, msz);
+  defer_done(&dm);
   return ok;
 }
 /* `case ci:` raising the refusal ctor_defaults_or_defer kept */

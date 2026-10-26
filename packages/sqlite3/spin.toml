@@ -1,0 +1,19 @@
+[package]
+name = "sqlite3"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "sqlite3"` -- sqlite3-ruby 2.9.5 (lib/ and ext/ vendored unchanged,
+# BSD-3-Clause, LICENSE), its C extension compiled from source against the
+# system libsqlite3 (pkg-config sqlite3) by the C extension layer (#7210).
+# The HAVE_* flags are what the gem's extconf.rb sets for a libsqlite3 of
+# 3.39 or later and the Ruby C API this layer provides, less the two of
+# load_extension: macOS's libsqlite3 leaves it out (SQLITE_OMIT_LOAD_EXTENSION),
+# so Database#load_extension and #enable_load_extension are not defined.
+
+[cext.sqlite3_native]
+init = "Init_sqlite3_native"
+require = "sqlite3/sqlite3_native"
+sources = ["ext/sqlite3/*.c"]
+cflags = ["-Iext/sqlite3", "-DHAVE_RB_INTEGER_PACK", "-DHAVE_RB_PROC_ARITY", "-DHAVE_RB_ENC_INTERNED_STR_CSTR", "-DHAVE_SQLITE3_INITIALIZE", "-DHAVE_SQLITE3_BACKUP_INIT", "-DHAVE_SQLITE3_COLUMN_DATABASE_NAME", "-DHAVE_SQLITE3_OPEN_V2", "-DHAVE_SQLITE3_PREPARE_V2", "-DHAVE_SQLITE3_DB_NAME", "-DHAVE_SQLITE3_ERROR_OFFSET", "-DHAVE_TYPE_SQLITE3_INT64", "-DHAVE_TYPE_SQLITE3_UINT64"]
+libs = ["sqlite3"]
+init_imports = ["sqlite3_initialize", "sqlite3_libversion"]

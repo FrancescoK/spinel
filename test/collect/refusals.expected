@@ -93,10 +93,10 @@ spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a bui
 == test/reject/builtin_singleton_alias_chain.rb [promote] rc=1
 spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_class_prepend.rb [default] rc=1
-spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares: move it into `class X ... end` (see docs/limitations.md)
+spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares, or on Process, Kernel, Math, GC, Signal or Warning: move it into `class X ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_class_prepend.rb [promote] rc=1
-spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares: move it into `class X ... end` (see docs/limitations.md)
+spinel: test/reject/builtin_singleton_class_prepend.rb:6: singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement of a class or module body, or at the top level on a class or module the program declares, or on Process, Kernel, Math, GC, Signal or Warning: move it into `class X ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_kernel_alias.rb [default] rc=1
 spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
@@ -690,6 +690,8 @@ spinel: 1 refusal, nothing written
 == test/reject/ffi_ptr_ruby_object.rb [promote] rc=1
 spinel: test/reject/ffi_ptr_ruby_object.rb:11: unsupported ffi pointer argument (a Ruby object has no C address; pass an IO::Buffer, a String or a :ptr value): node N (CallNode `new`) recv=ConstantReadNode/ty49 argc=0
 spinel: 1 refusal, nothing written
+== test/reject/ffi_source_undeclared_call.rb [default] rc=0
+== test/reject/ffi_source_undeclared_call.rb [promote] rc=0
 == test/reject/fiber_prepended_initialize_block_given.rb [default] rc=1
 spinel: test/reject/fiber_prepended_initialize_block_given.rb:8: unsupported call: node N (CallNode `initialize`) recv=SelfNode/ty33 argc=1 arg0ty28
 spinel: 1 refusal, nothing written

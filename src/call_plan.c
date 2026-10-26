@@ -407,7 +407,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     cplan_resolve_poly(c, name, p, pcs, npc);
     return;
   }
-  if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
+  /* a reopening of the exception classes that defines the name stands for
+     the call; otherwise the call goes on to the Object fallback below */
+  if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); if (p->mi >= 0) return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
   /* a call written under a builtin alias (detect, collect_concat) that the
      desugar renamed to the builtin's own name reaches a reopen's method of
@@ -464,7 +466,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
-  const char *bcls = builtin_class_of_type(rt);
+  const char *bcls = object_fallback_class_of_type(rt);
   if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, name, p);
 }
 
@@ -1507,7 +1509,8 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
     if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "singleton_class"))
       why = "singleton_class.include(...) / singleton_class.prepend(...) is supported only as a statement "
-            "of a class or module body, or at the top level on a class or module the program declares: "
+            "of a class or module body, or at the top level on a class or module the program declares, "
+            "or on Process, Kernel, Math, GC, Signal or Warning: "
             "move it into `class X ... end` (see docs/limitations.md)";
     else if (!rcn && recv >= 0 && (comp_ntype(c, recv) == TY_CLASS ||
                                    (comp_ntype(c, recv) == TY_POLY && cplan_module_args(c, id))))
@@ -2815,7 +2818,7 @@ static int cplan_nil_user_method(Compiler *c, const char *name) {
 }
 
 int cplan_nil_written(int why) {
-  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL ||
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL || why == NFW_ELEM ||
          why == NFW_TAKEN;
 }
 
@@ -2927,6 +2930,9 @@ int cplan_nil(Compiler *c, int id) {
      ivar_tested, as above) */
   int why = nil_fact_why(c, r);
   if (!cplan_nil_written(why) && !conv && !ivar_tested) return CN_NONE;
+  /* an element read the facts keep within its array reads an element: it is
+     nil only where the array holds one (NFW_ELEM_NIL), not past the end */
+  if (why == NFW_ELEM && !conv && !ivar_tested && an_elem_read_in_bounds(c, r)) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

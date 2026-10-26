@@ -2268,11 +2268,6 @@ static void mx_analyze_writers(void) {
     mx_may_macro(m, NULL, NULL, 2, &w, &all, 0);
     m->rv = w.v; m->rn = w.n; m->rall = all;
     m->writer = all || w.n > 0;
-    if (getenv("SPINEL_MACRO_DEBUG") && m->writer) {
-      fprintf(stderr, "writer macro %s:%s", m->name, all ? " ALL" : "");
-      for (int q = 0; q < m->rn; q++) fprintf(stderr, " %s", m->rv[q]);
-      fprintf(stderr, "\n");
-    }
   }
 }
 
@@ -3021,8 +3016,6 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     int ok = mx_call_macro(&c, m, cn->arguments, &r) && !g_mx_full;
     if (!ok) {
       /* what it would have done at run time is not known here */
-      if (getenv("SPINEL_MACRO_DEBUG"))
-        fprintf(stderr, "macro not expanded: %.*s\n", (int)(s->location.end - s->location.start), (const char *)s->location.start);
       memcpy(k->iv, save, sizeof(MxVar) * (size_t)nsave); k->niv = nsave;
       k->unknown = 1;
       free(out.p); continue;
@@ -3041,8 +3034,6 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     }
     char *body = mx_join_residual(out.p ? out.p : "");
     if (!body) {
-      if (getenv("SPINEL_MACRO_DEBUG"))
-        fprintf(stderr, "macro residual not joinable: %.*s\n", (int)(s->location.end - s->location.start), (const char *)s->location.start);
       memcpy(k->iv, save, sizeof(MxVar) * (size_t)nsave); k->niv = nsave;
       k->unknown = 1;
       free(rep.p); free(out.p); continue;
@@ -3174,15 +3165,6 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
       if (!mc->cand[i] || strcmp(g_mx_macros[i].name, nm) != 0 ||
           !mx_call_fits(g_mx_macros[i].def, (const pm_call_node_t *)n)) continue;
       mc->counts[i]++;
-      if (getenv("SPINEL_MACRO_DEBUG") && !mc->result) {
-        int seen = 0;
-        for (int q = 0; q < g_mx_macros[i].expanded && q < 512; q++) if (g_mx_macros[i].sites[q] == n) seen = 1;
-        if (!seen) {
-          int line = 1;
-          for (const uint8_t *p = g_parser->start; p < n->location.start; p++) if (*p == '\n') line++;
-          fprintf(stderr, "unexpanded call of %s at buffer line %d\n", nm, line);
-        }
-      }
     }
     free(nm);
   }
@@ -3323,10 +3305,6 @@ static char *sp_expand_class_macros(const char *source) {
       !mx_source_attr_dyn(source) && !(strstr(source, "def self.") && strstr(source, "define_method")))
     return NULL;
   size_t len = strlen(source);
-  if (getenv("SPINEL_MACRO_DUMP")) {
-    FILE *df = fopen(getenv("SPINEL_MACRO_DUMP"), "w");
-    if (df) { fputs(source, df); fclose(df); }
-  }
   pm_parser_t parser;
   sp_pm_parser_init(&parser, source, len, NULL);
   pm_node_t *root = pm_parse(&parser);
@@ -3349,10 +3327,6 @@ static char *sp_expand_class_macros(const char *source) {
     mx_sort_tracked();
     { MxPoisonScan ps = { 0 }; pm_visit_node(root, mx_poison_visit, &ps); }
     pm_visit_node(root, mx_attr_visit, NULL);
-    if (getenv("SPINEL_MACRO_DEBUG")) {
-      for (int i = 0; i < g_mx_poison.n; i++) fprintf(stderr, "poisoned ivar: %s\n", g_mx_poison.v[i]);
-      if (g_mx_poison_all) fprintf(stderr, "poisoned: every ivar\n");
-    }
     if (g_mx_nmacros > 0) {
       MxEdits ed = {0};
       /* one walk in program order: a macro call sees only the extends the
@@ -3394,8 +3368,6 @@ static char *sp_expand_class_macros(const char *source) {
         pm_visit_node(root, mx_count_visit, &mc);
         for (int i = 0; i < nm; i++) {
           MxMacro *m = &g_mx_macros[i];
-          if (getenv("SPINEL_MACRO_DEBUG") && m->expanded)
-            fprintf(stderr, "macro %s: %d calls, %d expanded\n", m->name, mc.counts[i], m->expanded);
           drop[i] = cand[i] && mc.counts[i] == m->expanded;
         }
         free(mc.counts); free(mc.attr);
@@ -3448,8 +3420,6 @@ static char *sp_expand_class_macros(const char *source) {
           pm_node_destroy(&rp, rr);
           pm_parser_free(&rp);
         }
-        if (!again && getenv("SPINEL_MACRO_DEBUG"))
-          for (int i = 0; i < nall; i++) fprintf(stderr, "macro: %s\n", all[i].text);
         for (int i = 0; i < nall; i++) {
           int base = 0;
           for (int q = 0; q < ed.n && !base; q++) base = all[i].text == ed.e[q].text;

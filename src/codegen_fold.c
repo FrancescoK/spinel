@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include <ctype.h>
 
 /* One representation: a block parameter bound to a typed String Array's
    element holds the handle the Array keeps (the element is one), so its
@@ -2738,6 +2739,8 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || (!sp_streq(name, "first") && !sp_streq(name, "take"))) return 0;
+  /* a program's own Enumerator#first / #take runs instead of the bounded fold */
+  if (comp_builtin_kind_reopen_mi(c, TY_ENUMERATOR, name) >= 0) return 0;
   int args = nt_ref(nt, id, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   if (ac != 1) return 0;
@@ -2755,6 +2758,10 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   /* a poly array has no array_kind; name it like every other Poly emit (#3604) */
   const char *k = rr.elem == TY_POLY ? "Poly" : array_kind(rt);
   if (!k) return 0;
+  /* first(n) answered poly beside another site's kind (the analyzer's per-site
+     answer for cycle.first): the elements are boxed into a poly array as the
+     bounded result, so the call's value has the kind its type names (T4) */
+  int boxed_out = comp_ntype(c, id) == TY_POLY_ARRAY && !sp_streq(k, "Poly");
   int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, tlen = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
   Buf nb; memset(&nb, 0, sizeof nb);
@@ -2768,13 +2775,23 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\");\n", tn);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+  if (boxed_out) buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+  else buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tlen, k, ta);
   emit_indent(g_pre, g_indent);
   /* the receiver's nils, repeated: each element copied with its nil */
   int onum_c = is_numeric_literal_tag(k);
-  buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
+  if (boxed_out) {
+    Buf eb; memset(&eb, 0, sizeof eb);
+    char src[ARGOV_TEXT_LEN];
+    snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d %% _t%d)", k, ta, ti, tlen);
+    emit_boxed_elem_read(c, ty_array_elem(rt), src, &eb);
+    buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, %s);\n",
+               tlen, ti, ti, tn, ti, tr, eb.p ? eb.p : "sp_box_nil()");
+    free(eb.p);
+  }
+  else buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
              "sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d %% _t%d));\n",
              tlen, ti, ti, tn, ti, k, onum_c ? "_o" : "", tr, k, onum_c ? "oget" : "get", ta, ti, tlen);
   buf_printf(b, "_t%d", tr);
@@ -4522,6 +4539,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind elem_t = rr.elem;
 
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+  /* to_a and entries take no block: one given is never called, and the
+     answer is the pairs all the same (it collected nothing) */
+  if (is_toa) block = -1;
   if (is_toh && block >= 0) return 0;   /* block-form to_h maps each pair; not this {elem => index} lowering */
   if (!is_toa && !is_toh && block < 0) return 0;   /* only to_a/entries/to_h work without a block */
 
@@ -4670,7 +4690,11 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
        the same place now that an empty body carries the nil it means (#4006).
        nil is a value in this slot, not the absence of one. */
     if (bt == TY_VOID) bt = TY_NIL;
-    if (bt == TY_UNKNOWN) bt = TY_INT;
+    /* A tail inference could not type is a call nothing resolves (`x.first`
+       on a String), which lowers to the nomethod gate's sp_RbVal token: a
+       boxed value, so it is carried boxed. Read as an Integer it was an
+       sp_RbVal assigned to an sp_int and the C did not build. */
+    if (bt == TY_UNKNOWN) bt = TY_POLY;
     /* a number that can be nil is carried boxed, so its nil reads falsy */
     int vpoly = (bt == TY_POLY || bt == TY_NIL || (oint_kind(bt) && bn > 0 && node_has_oint_form(c, bb[bn - 1])) ||
                  bv_value_may_be_nil(c, block, bt) ||   /* a `next nil` too */
@@ -4678,6 +4702,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     int tv = ++g_tmp; char tvb[24]; snprintf(tvb, sizeof tvb, "_t%d", tv);
     emit_indent(g_pre, din);
     if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    /* (one representation: a handle slot takes the tail's String of either
+       face as the handle) */
+    else if (bt == TY_STRBUF) { buf_printf(g_pre, "sp_String *_t%d = NULL;\n", tv); g_bv_dest_ty = TY_STRBUF; }
     else { emit_ctype(c, bt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value_from_compiler(c, bt)); }
     emit_block_value_into(c, block, tvb, vpoly, din);
     /* Ruby truthiness of the block value: only nil/false are falsy. C
@@ -6168,7 +6195,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        here now that an empty body carries the nil it means (#4006). Carry it
        boxed -- nil is a value in this slot, and a falsy one. */
     if (cty == TY_VOID || cty == TY_NIL) cty = TY_POLY;
-    if (cty == TY_UNKNOWN) cty = TY_INT;
+    /* an untyped tail is the nomethod gate's sp_RbVal token: boxed too */
+    if (cty == TY_UNKNOWN) cty = TY_POLY;
     /* A `next v` of another class than the tail shares the slot: `next false`
        into the Integer slot of `x if x > 0` was 0, which reads truthy, and the
        element was kept. Carry both boxed. */
@@ -7023,8 +7051,8 @@ static void scope_param_shape(Compiler *c, Scope *m) {
   if (pn >= 0) {
     m->ps_kws = nt_arr(nt, pn, "keywords", &m->ps_nkw);
     int kwr = nt_ref(nt, pn, "keyword_rest");
-    const char *kwr_type = kwr >= 0 ? nt_type(nt, kwr) : NULL;
-    m->ps_fwd = kwr_type && sp_streq(kwr_type, "ForwardingParameterNode");
+    NodeKind kwr_type_k = nt_kind(nt, kwr);
+    m->ps_fwd = kwr_type_k == NK_ForwardingParameterNode;
   }
   if (pn >= 0 && nt_kind(nt, pn) == NK_ParametersNode) {
     int on = 0, postn = 0;
@@ -7524,7 +7552,17 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   if (repr_of_slot(c, p).kind == RK_STRBUF && emit_strbuf_local_write_handle(c, provided, out)) return;
   if (repr_of_slot(c, p).handle) {
     int dvP = m->pdefault[idx];
-    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) {
+      /* (in the callee's context, as below: a call answering nil runs) */
+      if (subtree_is_pure_read(c, dvP)) { buf_puts(out, "NULL"); return; }
+      const char *svs = g_self, *svd = g_self_deref;
+      int sve = g_emitting_class_id;
+      char dself[32];
+      dflt_self_enter(m, dvP, dself, sizeof dself);
+      buf_puts(out, "({ (void)("); emit_expr(c, dvP, out); buf_puts(out, "); NULL; })");
+      g_self = svs; g_self_deref = svd; g_emitting_class_id = sve;
+      return;
+    }
     if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
@@ -9189,12 +9227,15 @@ static void emit_arg_temp(Compiler *c, int v) {
   }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
-  /* (one representation: a String of either face is held as it is, the C
-     compiler naming the type, and read where it is used, SP_STR_B: a handle
-     so held stays alive and keeps its identity, where a copy of its bytes
-     lost both; one_face below) */
+  /* (one representation: a String of either face is held as its handle,
+     and read where it is used, SP_STR_B: a handle so held stays alive and
+     keeps its identity, where a copy of its bytes lost both. Held as it
+     came, a bytes face was a view into the handle's payload, which a later
+     argument that grows or replaces the String moved: `m((n += 1; s), *r,
+     (s.replace(big); 0))` boxed the freed bytes. A fresh String's handle is
+     the one it was born in, adopted, and a handle is itself; one_face below) */
   int one_face = at == TY_STRING && !to && hb.p && !srange && !wshare && !conversion;
-  if (one_face) buf_printf(g_pre, "__auto_type _t%d = (%s);", t, hb.p);
+  if (one_face) buf_printf(g_pre, "sp_String *_t%d = SP_STR_HDL(%s);", t, hb.p);
   else {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));
@@ -9321,15 +9362,26 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
     free(hh.p); free(vb.p);
     return t;
   }
+  /* ...and a String the head holds as its handle, read from it
+     (ran_first_bind_read): that handle, no second hold */
+  int rh = !boxed && ty == TY_STRING && vb.p ? ran_first_read_handle(node) : -1;
+  char rd[40];
+  if (rh >= 0 && snprintf(rd, sizeof rd, "sp_strbuf_read_pub(_t%d)", rh) > 0 && sp_streq(vb.p, rd)) {
+    free(vb.p);
+    one_face_mark(rh, node);
+    return rh;
+  }
   /* boxed from the head's temp, which roots what the box wraps */
   int wrap = !root || (boxed && head_held_box(c, node));
-  /* (one representation: a String of either face is held as it is, the
-     C compiler naming the type, and read where it is used (SP_STR_B); a
+  /* (one representation: a String of either face is held as its handle,
+     as a handle slot's String is, and read where it is used (SP_STR_B); a
      handle so held stays alive and keeps its identity, where a copy of its
-     bytes lost both) */
-  if (!boxed && ty == TY_STRING && vb.p) { buf_printf(b, "__auto_type _t%d = (%s);", t, vb.p); one_face_mark(t, node); }
-  /* ...and a handle slot's String of either face as the handle */
-  else if (!boxed && ty == TY_STRBUF && vb.p) buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+     bytes lost both, and a bytes face held as it came was a view of the
+     payload a later operand that grows the String moved) */
+  if (!boxed && (ty == TY_STRING || ty == TY_STRBUF) && vb.p) {
+    buf_printf(b, "sp_String *_t%d = SP_STR_HDL(%s);", t, vb.p);
+    if (ty == TY_STRING) one_face_mark(t, node);
+  }
   else {
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
@@ -9978,8 +10030,8 @@ static int ds_hash_keys_not_symbols(TyKind t) {
 static void kw_param_names(const NodeTable *nt, const int *kws, int kn, int required, Buf *out) {
   for (int ki = 0; ki < kn; ki++) {
     const char *kpn = nt_str(nt, kws[ki], "name");
-    const char *kty = nt_type(nt, kws[ki]);
-    if (kpn && (!required || (kty && sp_streq(kty, "RequiredKeywordParameterNode"))))
+    NodeKind kk = nt_kind(nt, kws[ki]);
+    if (kpn && (!required || (kk == NK_RequiredKeywordParameterNode)))
       buf_printf(out, "\"%s\", ", kpn);
   }
 }
@@ -10602,9 +10654,9 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   /* a `**` or a computed key may name any keyword: which are missing is
      the run time's (emit_ds_kwarg_check, on the hash they merge into) */
   for (int i = 0; i < kn && !P->spread && !P->computed; i++) {
-    const char *kty = nt_type(nt, kws[i]);
+    NodeKind kk = nt_kind(nt, kws[i]);
     const char *kpn = nt_str(nt, kws[i], "name");
-    if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
+    if (kk != NK_RequiredKeywordParameterNode || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
     char iv[300];
     kw_key_inspect(kpn, 1, iv, sizeof iv);
     kw_names_add(P->missing, sizeof P->missing, &P->nmissing, iv);
@@ -10767,7 +10819,7 @@ static int arity_unjudged(Compiler *c, Scope *m) {
         strncmp(m->pnames[i], "__bam_", 6) != 0) return 1;
   int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
   int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
-  return kwr >= 0 && nt_type(c->nt, kwr) && sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
+  return kwr >= 0 && nt_kind(c->nt, kwr) == NK_ForwardingParameterNode;
 }
 
 int splat_operand_is_scalar(TyKind t) {
@@ -11872,15 +11924,21 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
     TyKind vt = oint_kind(r.as_ty) ? r.as_ty : (pl ? pl->type : TY_INT);
     const char *fn = kd == 1 ? (vt == TY_FLOAT ? "sp_ofloat_val" : "sp_oint_val")
                              : (vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in");
+    /* a boxed argument the binder still reads as a box (a local that only
+       holds nil): the checked value goes back into one, which the binder
+       unboxes again */
+    const char *bx = r.kind != RK_BOXED || oint_kind(r.as_ty) ? NULL : vt == TY_FLOAT ? "sp_box_float" : "sp_box_int";
     if (held[i] >= 0) {
       int tv = ++g_tmp;
       emit_indent(pre, g_indent);
       buf_printf(pre, "%s _t%d = %s(_t%d, \"%s\");\n", c_type_name(vt), tv, fn, held[i], what ? what : "");
-      view_bind(v, "_t%d", tv);
+      if (bx) view_bind(v, "%s(_t%d)", bx, tv);
+      else view_bind(v, "_t%d", tv);
     }
     else {
       Buf ob; memset(&ob, 0, sizeof ob); emit_oint_expr(c, v, vt, &ob);
-      view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      if (bx) view_bind(v, "%s(%s(%s, \"%s\"))", bx, fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
+      else view_bind(v, "%s(%s, \"%s\")", fn, ob.p ? ob.p : oint_nil(vt), what ? what : "");
       free(ob.p);
     }
   }

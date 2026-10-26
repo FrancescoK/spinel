@@ -4,6 +4,7 @@
 #include "holder.h"
 #include "call_plan.h"
 #include "value_pos.h"
+#include "codegen_call_arms.h"
 
 /* defined? support: does this subtree reference a constant the compiler
    cannot resolve? Any such reference makes the whole defined? answer nil
@@ -1289,23 +1290,9 @@ static int node_in_subtree(const NodeTable *nt, int root, int id) {
   return 0;
 }
 
-/* Does this rescue clause (or one further along its chain) catch a NameError?
-   A bare rescue does -- it matches StandardError, which NameError is under. */
-static int rescue_chain_catches_nameerror(const NodeTable *nt, int rescue_id) {
-  for (int r = rescue_id; r >= 0; r = nt_ref(nt, r, "subsequent")) {
-    int nexc = 0;
-    const int *exc = nt_arr(nt, r, "exceptions", &nexc);
-    if (nexc == 0) return 1;
-    for (int i = 0; i < nexc; i++) {
-      const char *en = nt_str(nt, exc[i], "name");
-      /* a computed exception list says nothing statically: assume it may */
-      if (!en) return 1;
-      if (sp_streq(en, "NameError") || sp_streq(en, "StandardError") ||
-          sp_streq(en, "Exception")) return 1;
-    }
-  }
-  return 0;
-}
+/* A NameError's class and those above it (rescue_chain_catches) */
+static const char *const nameerror_above[] = { "NameError", "StandardError", "Exception", "Object", "BasicObject",
+                                               "Kernel", NULL };
 
 /* Is this constant reference written inside something that catches the
    NameError it raises? Referencing a missing constant on purpose, behind a
@@ -1318,7 +1305,7 @@ static int const_ref_is_rescued(Compiler *c, int id) {
     NodeKind k = nt_kind(nt, b);
     if (k == NK_BeginNode) {
       int rc = nt_ref(nt, b, "rescue_clause");
-      if (rc < 0 || !rescue_chain_catches_nameerror(nt, rc)) continue;
+      if (rc < 0 || !rescue_chain_catches(c, rc, nameerror_above, 1)) continue;
       if (node_in_subtree(nt, nt_ref(nt, b, "statements"), id)) return 1;
     }
     /* `X rescue fallback` catches StandardError, so it catches this too */
@@ -4000,7 +3987,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* A composite expression answers "expression" even when its OPERANDS
        are undefined -- defined? never evaluates its argument. */
     else if (vk == NK_AndNode || vk == NK_OrNode ||
-             sp_streq(vt, "NotNode") || vk == NK_RangeNode ||
+             vk == NK_RangeNode ||
              vk == NK_HashNode || vk == NK_KeywordHashNode ||
              vk == NK_InterpolatedStringNode ||
              vk == NK_RegularExpressionNode ||
@@ -5768,7 +5755,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  if (sp_streq(ty, "MatchWriteNode")) {
+  if (ty_k == NK_MatchWriteNode) {
     /* `/(?<n>..)/ =~ str`: run the match (setting the match registers), bind
        each named group to its local (NULL = nil when it did not participate),
        and yield the `=~` result (match index, or nil). */
@@ -6186,7 +6173,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else {
       Repr br = repr_of(c, id);
       TyKind bt = br.as_ty;
-      buf_printf(b, "((void)sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())), %s)",
+      buf_printf(b, "((void)sp_nil_recv_raise(\"%s\"), %s)",
                  blockless_block_param_call_name(c, id),
                  (br.kind == RK_BOXED || bt == TY_UNKNOWN || bt == TY_NIL || bt == TY_VOID)
                    ? "sp_box_nil()" : oint_kind(bt) && node_is_oint(c, id) ? oint_nil(bt) : default_value_from_compiler(c, bt));

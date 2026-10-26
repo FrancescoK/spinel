@@ -43,6 +43,10 @@ extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
 extern int g_require_gate_cli;
+extern int g_dump_load_graph;
+extern int g_parse_table_mode;
+extern int g_load_model_graph;
+extern int sp_parse_reported;
 /* RUBY_DESCRIPTION for the compiled program, in the `ruby -v` shape:
    "spinel <RUBY_VERSION> (<release> revision <rev>)" (codegen appends the
    platform). The version word is the one RUBY_VERSION and
@@ -485,28 +489,54 @@ static void usage(void) {
     "  --exceptions=abort  With --target=wasm32-wasi, for a host without wasm\n"
     "              exception handling: a raise traps, and rescue, retry, catch and a\n"
     "              break or return that leaves a block through a frame are refused\n"
+    "  --gc=none   No garbage collector: memory is allocated and never reclaimed,\n"
+    "              for a short run under a host's memory cap (also --no-gc;\n"
+    "              --gc=on is the default). The collector leaves the build\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --dump-load-graph  Print the files the program loads and what each require\n"
+    "              resolves to, and exit (debug)\n"
+    "  --load-model=MODEL  inline (default): required files are spliced in;\n"
+    "              graph: each file is its own root and a require a load node\n"
+    "              (with --dump-ast only, for now)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
 }
 
-/* --dump-ast (1), --dump-value-positions (2) and --check-value-pos (3) work
-   on the parsed table and stop; the mode a flag names, or 0. */
+/* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3) and
+   --dump-load-graph (4, which the parse prints as it resolves the requires)
+   work on the parsed table and stop; the mode a flag names, or 0. */
 static int table_mode_of(const char *a) {
-  if (sp_streq(a, "--dump-ast")) return 1;
-  if (sp_streq(a, "--dump-value-positions")) return 2;
-  return sp_streq(a, "--check-value-pos") ? 3 : 0;
+  if (sp_streq(a, "--dump-ast")) return g_parse_table_mode = 1;
+  if (sp_streq(a, "--dump-value-positions")) return g_parse_table_mode = 2;
+  if (sp_streq(a, "--dump-load-graph")) return g_parse_table_mode = g_dump_load_graph = 4;
+  return sp_streq(a, "--check-value-pos") ? (g_parse_table_mode = 3) : 0;
+}
+
+/* The flags the parse reads: `--require-gate` refuses an unresolvable
+   require instead of warning past it -- inside a resolved dependency set the
+   universe is known, so a require that resolves to nothing is a bug; `spin
+   build` has always compiled this way through SPINEL_REQUIRE_GATE, and `spin
+   flags` needs to hand the same gate to a caller driving the compiler itself
+   (#4105). `--load-model=inline|graph` picks how required files are loaded:
+   spliced into one program (the default), or each kept as its own root with
+   a load node per require (#9898; the table modes only, for now). 1 when `a`
+   is one of them. */
+static int parse_flag(const char *a) {
+  if (sp_streq(a, "--require-gate")) return g_require_gate_cli = 1;
+  if (sp_streq(a, "--load-model=inline")) { g_load_model_graph = 0; return 1; }
+  if (sp_streq(a, "--load-model=graph")) return g_load_model_graph = 1;
+  return 0;
 }
 static int run_table_mode(const NodeTable *nt, int mode) {
   if (mode == 1) nt_dump(nt, stdout);
   else if (mode == 2) value_pos_dump(nt, stdout);
-  else return value_pos_check();
+  else if (mode == 3) return value_pos_check();
   return 0;
 }
 
@@ -532,6 +562,23 @@ static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_ce
   }
   bi_put(bi, "include", lib_dir);
   { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
+}
+
+/* A pointer of the wrong type in generated code is a miscompile, not a style
+   question: it reads one struct through another's layout, which segfaults or
+   answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
+   element bound to a string handle, #3971). Both showed up only as a warning
+   in the build log, easy to scroll past. Fail the build instead, so the
+   emitter's own bug surfaces here rather than at run time.
+   A call to a function no declaration names is the same miscompile: C
+   takes it to return int, so a pointer result loses its upper half on a
+   64-bit target. Spinel declares every function it calls itself, so only
+   an ffi_source fragment can make one -- calling an ffi_func by its C
+   name, which the prologue declares under a private name (docs/FFI.md).
+   Under -Wno-all neither cc said so, and the program crashed at run time. */
+static void miscompile_errors(Str *cmd) {
+  s_add(cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion "
+             "-Werror=implicit-function-declaration ");
 }
 
 int main(int argc, char **argv) {
@@ -604,6 +651,12 @@ int main(int argc, char **argv) {
       else { fprintf(stderr, "spinel: unknown --target %s (wasm32-wasi or native)\n", a + 9); return 1; }
       i++;
     }
+    else if (!strncmp(a, "--gc=", 5) || sp_streq(a, "--no-gc")) {
+      if (sp_streq(a, "--no-gc") || sp_streq(a + 5, "none")) g_gc_none = 1;
+      else if (sp_streq(a + 5, "on")) g_gc_none = 0;
+      else { fprintf(stderr, "spinel: unknown --gc %s (on or none)\n", a + 5); return 1; }
+      i++;
+    }
     else if (!strncmp(a, "--exceptions=", 13)) {
       if (sp_streq(a + 13, "abort")) exc_abort = 1;
       else if (sp_streq(a + 13, "unwind")) exc_abort = 0;
@@ -638,7 +691,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
-    else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
+    else if (sp_streq(a, "--defer-refusals")) { g_opt_defer_refusals = 1; i++; }
     /* (Strings are always shared now, #6765: the flag is kept so a build
        script that passes it still works) */
     else if (sp_streq(a, "--share-strings")) { i++; }
@@ -675,12 +728,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--ext-init") && i + 1 < argc) { g_ext_init_name = argv[i + 1]; i += 2; }
     else if (sp_streq(a, "--ext-entry") && i + 1 < argc) { g_ext_entries = argv[i + 1]; i += 2; }
     else if (sp_streq(a, "--ext") && i + 1 < argc) { g_ext_target = argv[i + 1]; i += 2; }
-    /* Refuse an unresolvable require instead of warning past it. Inside a
-       resolved dependency set the universe is known, so a require that
-       resolves to nothing is a bug; `spin build` has always compiled this way
-       through SPINEL_REQUIRE_GATE, and `spin flags` needs to hand the same
-       gate to a caller driving the compiler itself (#4105). */
-    else if (sp_streq(a, "--require-gate")) { g_require_gate_cli = 1; i++; }
+    else if (parse_flag(a))                { i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
     else if (sp_streq(a, "--timing"))      { set_env("SP_TIMING", "1"); i++; }
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
@@ -865,7 +913,7 @@ int main(int argc, char **argv) {
   }
 
   /* --rbs: extract advisory seeds via the sibling spinel_rbs_extract binary
-     and hand them to the analyzer through SPINEL_RBS_SEED. An empty result is a
+     and hand them to the analyzer through g_opt_rbs_seed. An empty result is a
      silent no-op; a missing extractor is warned about, since --rbs was asked for
      explicitly and the seeds would otherwise vanish without a trace (#1792). */
   char seed_path[4096] = {0};
@@ -891,7 +939,7 @@ int main(int argc, char **argv) {
       int rc = system(cmd.p);
       free(cmd.p);
       if (rc == 0 && file_exists(seed_path)) {
-        set_env("SPINEL_RBS_SEED", seed_path);
+        g_opt_rbs_seed = strdup(seed_path);
       }
       else {
         remove(seed_path);
@@ -900,53 +948,53 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Source mapping: codegen emits #line when SPINEL_DEBUG / SPINEL_LINE_MAP
-     is set. --debug/-g use the fuller debug path; otherwise line-map (on by
+  /* Source mapping: codegen emits #line under --debug or --line-map.
+     --debug/-g use the fuller debug path; otherwise line-map (on by
      default) just adds #line. The parser stamps node positions in every
-     compile (SPINEL_POSITIONS): the analysis reads them, and a node a rewrite
+     compile (g_opt_positions): the analysis reads them, and a node a rewrite
      made has none (cplan_nil's unset temp), so --no-line-map suppresses only
      the #line directives and decides what the default compile decides. The
-     emit modes that need positions force SPINEL_DEBUG below. */
-  if (debug) set_env("SPINEL_DEBUG", "1");
-  else if (line_map) set_env("SPINEL_LINE_MAP", "1");
-  set_env("SPINEL_POSITIONS", "1");
+     emit modes that need positions force the debug mode below. */
+  if (debug) g_opt_debug = 1;
+  else if (line_map) g_opt_line_map = 1;
+  g_opt_positions = 1;
   /* --warn-widen places each warning at its slot, which needs the parser's
      positions: forced past --no-line-map, as --emit-types forces them. */
-  if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
+  if (warn_widen) { g_opt_line_map = 1; g_opt_warn_widen = 1; }
   /* --check-stores reports each store at its Ruby line, so it needs them too */
-  if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
+  if (check_stores) { g_opt_line_map = 1; g_opt_check_stores = 1; }
   /* A decision key names its site by position: forced the same way. */
   if (refuse_log_overwrite(getenv("SPINEL_DECISIONS_LOG"))) return 1;
-  if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
+  if (decide_setup()) g_opt_line_map = 1;
 
   /* Analyze-only emit modes write their artifact from inside codegen_program
-     and produce an empty translation unit; route the output path via env. */
+     and produce an empty translation unit; the output path goes with them. */
   char emit_out[4096];
   if (emit_rbs) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".rbs", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_EMIT_RBS", emit_out);
+    g_opt_emit_rbs = strdup(emit_out);
   }
   else if (emit_types) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".types.json", sizeof emit_out - strlen(emit_out) - 1); }
     /* The positions the JSON carries need the parser's line map, not the
-       debug build: SPINEL_DEBUG also turns codegen's g_debug on, which drops
+       debug build: --debug also turns codegen's g_debug on, which drops
        `static`/always_inline from every method and switches the backtrace
        substrate on, so the C of `--emit-types -S` was the debug compile's,
        not what -S alone emits. Forced past --no-line-map, since the JSON
        is nothing without positions. */
-    set_env("SPINEL_LINE_MAP", "1");
-    set_env("SPINEL_EMIT_TYPES", emit_out);
+    g_opt_line_map = 1;
+    g_opt_emit_types = strdup(emit_out);
     /* `--emit-types -o x.json -S`: the JSON and the C of the same compile,
        in one run rather than two (a consumer showing both, rubys/spinel-ide) */
-    if (stdout_mode) set_env("SPINEL_EMIT_TYPES_KEEP_C", "1");
+    if (stdout_mode) g_opt_emit_types_keep_c = 1;
   }
   else if (emit_symbol_map) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".symbols.json", sizeof emit_out - strlen(emit_out) - 1); }
-    set_env("SPINEL_DEBUG", "1");
-    set_env("SPINEL_EMIT_SYMBOL_MAP", emit_out);
+    g_opt_debug = 1;
+    g_opt_emit_symbol_map = strdup(emit_out);
   }
   if (profile) {
     /* --profile also writes the symbol map next to the binary (offline
@@ -954,7 +1002,7 @@ int main(int argc, char **argv) {
        real build after writing it (#1336). */
     char psym[4096];
     snprintf(psym, sizeof psym, "%s.symbols.json", output ? output : basename);
-    set_env("SPINEL_PROFILE_SYMBOL_MAP", psym);
+    g_opt_profile_symbol_map = strdup(psym);
   }
 
   /* ---------- pipeline: parse -> AST -> codegen ---------- */
@@ -1011,7 +1059,7 @@ int main(int argc, char **argv) {
   if (eval_path[0]) remove(eval_path);
   if (!nt) {
     /* an inline RBS error has been reported at the annotation */
-    if (!sp_inline_rbs_failed) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
+    if (!sp_inline_rbs_failed && !sp_parse_reported) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
     if (seed_path[0]) remove(seed_path);
     return 1;
   }
@@ -1072,6 +1120,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
+     as the analysis refused rescue, retry and catch: a break out of a block
+     that is not spliced in, a return out of a proc, a Fiber's switch. The
+     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_).
+     Before the C is written: `-c` refuses as the build does. */
+  if (exc_abort) {
+    static const struct { const char *tok, *what; } nl[] = {
+      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
+      { "sp_proc_return(", "a return out of a proc" },
+      { "sp_Fiber_", "Fiber" },
+    };
+    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
+      if (strstr(csrc, nl[k].tok)) {
+        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
+        free(csrc);
+        return 1;
+      }
+  }
   /* Decide where the generated C goes. */
   char c_path[4096];
   int c_is_temp = 0;
@@ -1133,24 +1199,6 @@ int main(int argc, char **argv) {
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
   int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
-  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
-     as the analysis refused rescue, retry and catch: a break out of a block
-     that is not spliced in, a return out of a proc, a Fiber's switch. The
-     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_). */
-  if (exc_abort) {
-    static const struct { const char *tok, *what; } nl[] = {
-      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
-      { "sp_proc_return(", "a return out of a proc" },
-      { "sp_Fiber_", "Fiber" },
-    };
-    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
-      if (strstr(csrc, nl[k].tok)) {
-        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
-        free(csrc);
-        if (c_is_temp) remove(c_path);
-        return 1;
-      }
-  }
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
@@ -1230,13 +1278,7 @@ int main(int argc, char **argv) {
     bi_put(&bi, "define", "-D_TIME_BITS=64"); bi_put(&bi, "define", "-D_FILE_OFFSET_BITS=64");
     if (target_i386) { s_add(&cmd, "-msse2 -mfpmath=sse "); bi_put(&bi, "cflag", "-msse2"); bi_put(&bi, "cflag", "-mfpmath=sse"); }
   }
-  /* A pointer of the wrong type in generated code is a miscompile, not a style
-     question: it reads one struct through another's layout, which segfaults or
-     answers garbage (a Symbol key dereferenced as a char *, #3975; an Integer
-     element bound to a string handle, #3971). Both showed up only as a warning
-     in the build log, easy to scroll past. Fail the build instead, so the
-     emitter's own bug surfaces here rather than at run time. */
-  s_add(&cmd, "-Werror=incompatible-pointer-types -Werror=int-conversion ");
+  miscompile_errors(&cmd);
   /* The error list is spinel's output, not cc's: the same flag assembly
      remaps every location onto the Ruby line and promotes two pointer
      warnings to errors. cc's own default cap (20 for clang) truncated that

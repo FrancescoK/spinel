@@ -30,10 +30,12 @@ static unsigned node_index;
 static unsigned function_index;
 static char **symbols;
 static size_t symbol_count;
+static unsigned anonymous_index;
 VALUE rb_cObject, rb_cBasicObject, rb_cClass, rb_cModule;
 VALUE rb_cString, rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cIO;
 VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+VALUE rb_eNotImpError;
 
 static void refuse(const char *api, const char *why) SP_CEXT_NORETURN;
 static void refuse(const char *api, const char *why) {
@@ -133,6 +135,7 @@ void sp_cext_record_begin(const char *name) {
     BUILTIN(rb_eRuntimeError, "RuntimeError", 0); BUILTIN(rb_eTypeError, "TypeError", 0);
     BUILTIN(rb_eArgError, "ArgumentError", 0); BUILTIN(rb_eRangeError, "RangeError", 0);
     BUILTIN(rb_eNoMemError, "NoMemoryError", 0); BUILTIN(rb_eSystemCallError, "SystemCallError", 0);
+    BUILTIN(rb_eNotImpError, "NotImplementedError", 0);
 #undef BUILTIN
     for (Node *n=nodes; n; n=n->next) { n->builtin=1; bind(rb_cObject,n->name,(VALUE)n); }
 }
@@ -246,8 +249,27 @@ void rb_define_const(VALUE o, const char *n, VALUE v) {
 void rb_gc_register_address(VALUE *v) { (void)v; }
 void rb_gc_unregister_address(VALUE *v) { (void)v; }
 void rb_global_variable(VALUE *v) { (void)v; }
+void rb_gc_register_mark_object(VALUE v) { (void)v; }
+void rb_ext_ractor_safe(bool safe) { (void)safe; }
+/* Class.new during Init (sqlite3's aggregator wrappers): a class the
+ * program's declarations name after the extension and the order of the call,
+ * which the bridge names the same way (lib/sp_cext_bridge.c rb_class_new) */
+VALUE rb_class_new(VALUE super) {
+    char name[256];
+    snprintf(name, sizeof name, "SpinelCextAnonymous_%s_%u", extension, anonymous_index++);
+    return define(rb_cObject, name, super, 0);
+}
 #define DENIED(api) refuse(api,"Ruby execution or runtime state is not allowed during Init")
-VALUE rb_funcall(VALUE v, ID id, int argc, ...) { (void)v;(void)id;(void)argc;DENIED("rb_funcall"); }
+VALUE rb_funcall(VALUE v, ID id, int argc, ...) {
+    /* the one send Init may make: Class.new, with or without a superclass */
+    if (v == rb_cClass && argc <= 1 && !strcmp(rb_id2name(id), "new")) {
+        VALUE super = rb_cObject;
+        if (argc == 1) { va_list ap; va_start(ap, argc); super = va_arg(ap, VALUE); va_end(ap); }
+        return rb_class_new(super);
+    }
+    DENIED("rb_funcall");
+}
+VALUE rb_apply(VALUE v, ID id, VALUE args) { (void)v;(void)id;(void)args;DENIED("rb_apply"); }
 VALUE rb_const_get(VALUE value,ID id) {
     const char *name=rb_id2name(id);constant_name(name);
     Binding *existing=binding(value,name);
@@ -329,6 +351,8 @@ VALUE rb_ll2inum(long long n) { (void)n;DENIED("LL2NUM"); }
 VALUE rb_float_new(double n) { (void)n;DENIED("DBL2NUM"); }
 VALUE rb_ary_new_capa(long n) { (void)n;DENIED("rb_ary_new_capa"); }
 VALUE rb_ary_push(VALUE v,VALUE i) { (void)v;(void)i;DENIED("rb_ary_push"); }
+VALUE rb_ary_new_from_args(long n,...) { (void)n;DENIED("rb_ary_new_from_args"); }
+VALUE rb_ary_new_from_values(long n,const VALUE *v) { (void)n;(void)v;DENIED("rb_ary_new_from_values"); }
 VALUE rb_ary_pop(VALUE v) { (void)v;DENIED("rb_ary_pop"); }
 void rb_ary_store(VALUE v,long i,VALUE item) { (void)v;(void)i;(void)item;DENIED("rb_ary_store"); }
 VALUE rb_ary_entry(VALUE v,long i) { (void)v;(void)i;DENIED("rb_ary_entry"); }
@@ -350,11 +374,15 @@ ID rb_intern2(const char *s, long len) {
     memcpy(name, s, (size_t)len); name[len] = 0;
     ID id = rb_intern(name); free(name); return id;
 }
-VALUE rb_funcallv(VALUE v, ID id, int argc, const VALUE *args) { (void)v;(void)id;(void)argc;(void)args;DENIED("rb_funcallv"); }
+VALUE rb_funcallv(VALUE v, ID id, int argc, const VALUE *args) {
+    if (v == rb_cClass && argc <= 1 && !strcmp(rb_id2name(id), "new")) return rb_class_new(argc ? args[0] : rb_cObject);
+    DENIED("rb_funcallv");
+}
 VALUE rb_iv_get(VALUE v, const char *s) { (void)v;(void)s;DENIED("rb_iv_get"); }
 VALUE rb_iv_set(VALUE v, const char *s, VALUE a) { (void)v;(void)s;(void)a;DENIED("rb_iv_set"); }
 VALUE rb_ivar_get(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_get"); }
 VALUE rb_ivar_set(VALUE v, ID id, VALUE a) { (void)v;(void)id;(void)a;DENIED("rb_ivar_set"); }
+VALUE rb_ivar_defined(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_defined"); }
 
 VALUE rb_block_call(VALUE v, ID id, int n, const VALUE *a, rb_block_call_func_t f, VALUE d) { (void)v;(void)id;(void)n;(void)a;(void)f;(void)d;DENIED("rb_block_call"); }
 VALUE rb_catch(const char *t,rb_block_call_func_t f,VALUE d) { (void)t;(void)f;(void)d;DENIED("rb_catch"); }
@@ -364,6 +392,43 @@ void rb_iter_break_value(VALUE v) { (void)v;DENIED("rb_iter_break_value"); }
 
 ID sp_cext_scanned_sym2id(VALUE v) { return (ID)(v >> RUBY_SPECIAL_SHIFT); }
 VALUE rb_str_intern(VALUE v) { (void)v;DENIED("rb_str_intern"); }
+long long rb_num2ll(VALUE v) { (void)v;DENIED("NUM2LL"); }
+unsigned long rb_num2ulong(VALUE v) { (void)v;DENIED("NUM2ULONG"); }
+VALUE rb_ull2inum(unsigned long long n) { (void)n;DENIED("ULL2NUM"); }
+double rb_num2dbl(VALUE v) { (void)v;DENIED("NUM2DBL"); }
+int rb_integer_pack(VALUE v,void *w,size_t n,size_t s,size_t nails,int flags) { (void)v;(void)w;(void)n;(void)s;(void)nails;(void)flags;DENIED("rb_integer_pack"); }
+VALUE rb_obj_freeze(VALUE v) { (void)v;DENIED("rb_obj_freeze"); }
+VALUE rb_path2class(const char *p) { (void)p;DENIED("rb_path2class"); }
+VALUE rb_ary_delete(VALUE v,VALUE i) { (void)v;(void)i;DENIED("rb_ary_delete"); }
+VALUE sp_cext_obj_write(VALUE o,VALUE *s,VALUE v) { (void)o;(void)s;(void)v;DENIED("RB_OBJ_WRITE"); }
+void sp_cext_obj_written(VALUE o,VALUE v) { (void)o;(void)v;DENIED("RB_OBJ_WRITTEN"); }
+VALUE rb_sym2str(VALUE v) { (void)v;DENIED("rb_sym2str"); }
+VALUE rb_str_plus(VALUE a,VALUE b) { (void)a;(void)b;DENIED("rb_str_plus"); }
+int rb_proc_arity(VALUE v) { (void)v;DENIED("rb_proc_arity"); }
+VALUE sp_cext_to_str(VALUE v,VALUE c) { (void)v;(void)c;DENIED("StringValue"); }
+int rb_scan_args(int argc,const VALUE *argv,const char *fmt,...) { (void)argc;(void)argv;(void)fmt;DENIED("rb_scan_args"); }
+void *ruby_xmalloc(size_t n) { return alloc(n); }
+void *ruby_xmalloc2(size_t c,size_t n) { return alloc(c*n); }
+void *ruby_xcalloc(size_t c,size_t n) { return alloc(c*n); }
+void *ruby_xrealloc(void *p,size_t n) { void *q=realloc(p,n); if(!q)refuse("xrealloc","out of memory"); return q; }
+void *ruby_xrealloc2(void *p,size_t c,size_t n) { return ruby_xrealloc(p,c*n); }
+int rb_enc_get_index(VALUE v) { (void)v;DENIED("rb_enc_get_index"); }
+int rb_utf8_encindex(void) { DENIED("rb_utf8_encindex"); }
+int rb_usascii_encindex(void) { DENIED("rb_usascii_encindex"); }
+int rb_ascii8bit_encindex(void) { DENIED("rb_ascii8bit_encindex"); }
+int rb_enc_find_index(const char *n) { (void)n;DENIED("rb_enc_find_index"); }
+rb_encoding *rb_utf8_encoding(void) { DENIED("rb_utf8_encoding"); }
+rb_encoding *rb_usascii_encoding(void) { DENIED("rb_usascii_encoding"); }
+rb_encoding *rb_enc_from_index(int i) { (void)i;DENIED("rb_enc_from_index"); }
+int rb_enc_to_index(rb_encoding *e) { (void)e;DENIED("rb_enc_to_index"); }
+rb_encoding *rb_enc_get(VALUE v) { (void)v;DENIED("rb_enc_get"); }
+VALUE rb_enc_from_encoding(rb_encoding *e) { (void)e;DENIED("rb_enc_from_encoding"); }
+VALUE rb_enc_associate_index(VALUE v,int i) { (void)v;(void)i;DENIED("rb_enc_associate_index"); }
+VALUE rb_str_export_to_enc(VALUE v,rb_encoding *e) { (void)v;(void)e;DENIED("rb_str_export_to_enc"); }
+VALUE rb_str_encode(VALUE v,VALUE to,int f,VALUE o) { (void)v;(void)to;(void)f;(void)o;DENIED("rb_str_encode"); }
+rb_encoding *rb_default_internal_encoding(void) { DENIED("rb_default_internal_encoding"); }
+VALUE rb_utf8_str_new_cstr(const char *s) { (void)s;DENIED("rb_utf8_str_new_cstr"); }
+VALUE rb_enc_interned_str_cstr(const char *s,rb_encoding *e) { (void)s;(void)e;DENIED("rb_enc_interned_str_cstr"); }
 
 void *rb_thread_call_without_gvl(void *(*fn)(void *), void *data,
                                void (*ubf)(void *), void *ubf_data) {
