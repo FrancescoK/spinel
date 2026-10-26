@@ -7843,9 +7843,10 @@ static void emit_obj_nil(Compiler *c, TyKind pt, int t, Buf *b) {
 static int const_toplevel_alias(Compiler *c, const char *name) {
   const NodeTable *nt = c->nt;
   int cap = 256, sp = 0, n = 0, ok = 1;
+  if (2 * nt_nroots(nt) > cap) cap = 2 * nt_nroots(nt);
   int *st = malloc(sizeof(int) * (size_t)cap);
   if (!st) return 0;
-  st[sp++] = nt->root_id; st[sp++] = 0;
+  for (int r = 0; r < nt_nroots(nt); r++) { st[sp++] = nt_root(nt, r); st[sp++] = 0; }   /* each file's tree */
   while (sp > 0 && ok) {
     int inside = st[--sp], id = st[--sp];
     if (id < 0 || id >= nt->count) continue;
@@ -15674,9 +15675,22 @@ void emit_synth_line_marker(Buf *b) {
   g_lm_last_depth = 0;
 }
 
+/* A require standing as a statement under --load-model=graph (#9898): the
+   load of the file it names, which runs the file's top level (sp_file_N_top,
+   emit_file_tops) the first time. A file that only defines things has
+   nothing to run, and its load, whose value is unused, is nothing; nor is a
+   require the runtime provides or a core no-op. */
+static void emit_load_stmt(Compiler *c, int id, Buf *b, int indent) {
+  int f = (int)nt_int(c->nt, id, "target_file", -1);
+  if (f < 0 || prog_defines_only(c, f)) return;
+  emit_indent(b, indent);
+  buf_printf(b, "(void)sp_load_file(&sp_loaded_%d, sp_file_%d_top);\n", f, f);
+}
+
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (g_repr_check) repr_check_ask(c, id);
   emit_line_directive(c, id, b);
+  if (nt_kind(c->nt, id) == NK_LoadNode) { emit_load_stmt(c, id, b, indent); return; }
   if (emit_const_recv_stmt_wrap(c, id, b, indent, 0)) return;
   /* A constant's visibility is not enforced (constants are resolved at
      compile time), so the class body skips these declarations -- also where

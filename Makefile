@@ -5115,8 +5115,9 @@ magic-comment-test: $(SPINEL)
 	@tools/magic_comment_check.sh
 
 # Under --load-model=graph each require's LoadNode carries the file its own
-# call loads, and the libraries CRuby has at boot come first in load order
-# (#9898). make test runs it.
+# call loads, the libraries CRuby has at boot come first in load order, and
+# each required file's top level runs at its require, once; what graph mode
+# does not compile yet it refuses by name (#9898). make test runs it.
 .PHONY: load-graph-test
 test-run: load-graph-test
 load-graph-test: $(SPINEL)
