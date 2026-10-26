@@ -51,7 +51,8 @@ takes is the call plan's and the builtin-op rows'. Codegen still reads
 emitter is converted, and a new one is a finding unless the type is
 itself the data, such as a class name in a diagnostic.
 (`comp_ntype` also normalizes `TY_STRBUF` to `TY_STRING`; that storage
-refinement goes away with the String work in #9258.)
+refinement is left from the two String representations (#9258) and goes
+with the rest of them.)
 
 ### Scopes and locals
 
