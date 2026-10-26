@@ -1861,6 +1861,9 @@ static int alias_read_kind(NodeKind k) {
          k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode;
 }
 
+enum { VL_NIL = 1, VL_NARROW = 2 };
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
+
 static int widen_ivar_array_params(Compiler *c, const LWIndex *ivw, int cls, const char *inm);
 /* An ivar side the alias widening made the general container: marked for
    the re-narrow (ivar_alias_wide), and the parameters it is assigned hold
@@ -1890,7 +1893,8 @@ static int alias_ivar_widened(Compiler *c, const LWIndex *ivw, const AliasSide *
 /* Propagates container widening across direct aliases (`b = a`, and the
    same between ivars, globals, class variables and constants: `@b = @a`,
    `$b = a`, `M = L`; a reader's call names its ivar: `@mine = o.items`,
-   `k = s.member`). Two names of one Array or Hash must agree on its
+   `k = s.member`), and each arm of a conditional value (`b = g ? a : x`,
+   a `case`, `a || x`: value_leaves). Two names of one Array or Hash must agree on its
    kind: where they do not, the write between them converts, which is a
    copy, and a push or a store through the wider name never reaches the
    other. Whichever side is the general Array (the poly-keyed Hash) wins,
@@ -1910,19 +1914,26 @@ static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
   int n = 0, cap = 0;
   for (int wk = 0; wk < (int)(sizeof alias_writes / sizeof alias_writes[0]); wk++)
     NT_FOREACH_KIND(nt, alias_writes[wk], id) {
-      /* the value is a read of the other name (a write's value, `$b = $a =
-         [1]`, is not taken: an ivar write read as a value is emitted at its
-         value's type, not its slot's) */
-      int v = nt_paren_single(nt, nt_ref(nt, id, "value"));
-      if (v < 0 || !(alias_read_kind(nt_kind(nt, v)) || nt_kind(nt, v) == NK_CallNode)) continue;
-      AliasSide d, r;
-      if (!alias_side(c, v, &r) || !alias_side(c, id, &d) || d.slot == r.slot) continue;
-      if (n == cap) {
-        cap = cap ? cap * 2 : 16;
-        ev = (AliasSide *)realloc(ev, sizeof(AliasSide) * 2 * (size_t)cap);
-        if (!ev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      /* the value is a read of the other name, or a conditional or logical
+         operator whose arms read them, each its own alias (a write's value, `$b = $a = [1]`, is not taken: an ivar
+         write read as a value is emitted at its value's type, not its
+         slot's) */
+      int arms[16];
+      int na = value_leaves_ex(c, nt_ref(nt, id, "value"), arms, 0, 16, VL_NIL);
+      AliasSide d;
+      if (na <= 0 || !alias_side(c, id, &d)) continue;
+      for (int a = 0; a < na; a++) {
+        int v = nt_paren_single(nt, arms[a]);
+        AliasSide r;
+        if (!(alias_read_kind(nt_kind(nt, v)) || nt_kind(nt, v) == NK_CallNode) ||
+            !alias_side(c, v, &r) || d.slot == r.slot) continue;
+        if (n == cap) {
+          cap = cap ? cap * 2 : 16;
+          ev = (AliasSide *)realloc(ev, sizeof(AliasSide) * 2 * (size_t)cap);
+          if (!ev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        ev[2 * n] = d; ev[2 * n + 1] = r; n++;
       }
-      ev[2 * n] = d; ev[2 * n + 1] = r; n++;
     }
   int changed = 0, prop = 1;
   for (int sweep = 0; prop; sweep++) {
@@ -3137,8 +3148,6 @@ static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_s
 }
 
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
-enum { VL_NIL = 1, VL_NARROW = 2 };
-static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
 static int *cext_walk_values(Compiler *c);
 /* Is n (through parentheses) an element read out of the general Array,
    which holds its Strings as their handles? */
