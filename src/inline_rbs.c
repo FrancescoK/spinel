@@ -1066,6 +1066,11 @@ static void ir_apply_ivar_decl(const ir_file *f, const ir_ann *a, const ir_conta
         const char *file;
         int line, fid;
         ir_orig(f, a->first_line, &file, &line, &fid);
+        /* the fact's own place, for a fact of declarations only: the first
+           one's, which sp_inline_rbs_done names when its class body is
+           never flattened (ir_nfact_for sets only its file; a line of 0
+           says no annotation gave it a place yet) */
+        if (fa->line == 0) { fa->file = file; fa->line = line; fa->fid = fid; fa->col = a->first_col + 1; }
         char ent[512];
         snprintf(ent, sizeof ent, "%s%s=%s@%d@%d@%d", fa->ivars.len ? "," : "", nm, tag.buf,
                  line, fid, a->first_col + 1);
