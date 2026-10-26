@@ -16,8 +16,9 @@
 # rest pins the contract around it: the refused flags, the default build
 # untouched, the shape of a unit directory, the planted missing declaration
 # that must be a compile error and never an object, reproducible objects,
-# a corpus smoke, two builds sharing an empty cache, the prune, and the
-# working directory in a -g build's key.
+# a corpus smoke, two builds sharing an empty cache, the prune, the
+# working directory in a -g build's key, a -g edit as local as a plain one,
+# and a directory spinel did not write left alone.
 #
 # Every build runs with SPINEL_INCREMENTAL_STRICT=1, so a split or unit
 # compile the fallback would hide fails here instead. The cache lives in
@@ -120,6 +121,9 @@ edit add-method 'f && /^end$/{print "  def extra = @id + 1"; f=0}'
 printf 'p Model%d.new(0).extra\n' "$MID" >> "$T/add-method.rb"
 edit add-literal 'f && /def label = /{sub(/"$/, "\" + \"!\""); f=0}'
 edit add-ivar 'f && /@extra = nil/{print "    @extra2 = 0"; f=0}'
+# a barrier more in a method, on its own line (under -g the markers keep
+# every later unit's text as it was)
+edit wb 'f && /^    @extra = v$/{sub(/@extra = v$/, "@extra = v; @label = \"m\""); f=0}'
 # one more no build has stored, for the unwritable cache to refuse
 edit d 'f && /def weight = 2/{sub(/= 2/, "= 4"); f=0}'
 # every incremental build of the scale program reads the same path, so an
@@ -472,6 +476,38 @@ ib g17c app.rb -g
 cd "$ROOT" || exit 2
 o=0; [ $ra = 0 ] && [ $rb = 0 ] && [ $rc = 0 ] && [ "$ub" -gt 0 ] && [ "$mb" = "$ub" ] && [ "$miss" = 0 ] && o=1
 report "17 -g in two directories" $o "rc=$ra/$rb/$rc other-dir-miss=$mb/$ub same-dir-miss=$miss"
+
+# --- 18 -g barrier temps -----------------------------------------------------------
+# under -g a method is not static, and the barrier temps of the methods
+# after it ran on from its count: the edit wb changes no more units of a
+# -g unit set than of a plain one
+mkdir -p "$T/s18"
+uset() {  # uset SRC NAME [FLAG...]: the sorted unit hashes of SRC's unit set
+  _s=$1; _n=$2; shift 2
+  cp "$T/$_s.rb" "$T/s18/prog.rb"
+  "$SP" "$T/s18/prog.rb" -c --incremental "$@" -o "$T/$_n" > "$T/$_n.err" 2>&1 || echo "$_n failed" >&2
+  awk 'NR>2{print $3}' "$T/$_n/units.txt" 2>/dev/null | sort > "$T/$_n.h"
+}
+uset base u18p; uset wb u18pw; uset base u18g -g; uset wb u18gw -g
+cp_=$(comm -13 "$T/u18p.h" "$T/u18pw.h" | wc -l | tr -d ' ')
+cg_=$(comm -13 "$T/u18g.h" "$T/u18gw.h" | wc -l | tr -d ' ')
+o=0; [ "$cp_" -ge 1 ] && [ "$cg_" -ge 1 ] && [ "$cg_" -le "$cp_" ] && o=1
+report "18 -g barrier temps" $o "changed units: -g=$cg_ plain=$cp_ of $(grep -c '' "$T/u18g.h")"
+
+# --- 19 a units.txt not of spinel's ------------------------------------------------
+# a directory is spinel's unit set by a units.txt spinel wrote, and even
+# then not when its program.c is someone else's: both are refused without
+# --force, and the program.c there is left as it was
+SM=test/raise_reraise_in_def.rb
+mkdir -p "$T/d19a" "$T/d19b"
+echo "my notes" > "$T/d19a/units.txt"; echo "int mine;" > "$T/d19a/program.c"
+cp "$T/u18p/units.txt" "$T/d19b/units.txt"; echo "int mine;" > "$T/d19b/program.c"
+"$SP" "$SM" -c --incremental -o "$T/d19a" > "$T/d19a.err" 2>&1; ra=$?
+"$SP" "$SM" -c --incremental -o "$T/d19b" > "$T/d19b.err" 2>&1; rb=$?
+ka=0; grep -qx 'int mine;' "$T/d19a/program.c" && ka=1
+kb=0; grep -qx 'int mine;' "$T/d19b/program.c" && kb=1
+o=0; [ $ra != 0 ] && [ $rb != 0 ] && [ $ka = 1 ] && [ $kb = 1 ] && o=1
+report "19 a units.txt not of spinel's" $o "rc=$ra/$rb program.c-kept=$ka/$kb"
 
 if [ $fail = 0 ]; then echo "incremental-test: pass"; else echo "incremental-test: FAILED:$failed"; fi
 exit $fail
