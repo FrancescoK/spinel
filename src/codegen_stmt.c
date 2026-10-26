@@ -5159,6 +5159,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      its statements, as `nil` is: wrapped as a String, its nil was an
      integer handed to the new handle */
   if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
+  /* a value that ran ahead into a temp (emit_arg_temp, `r.body = x.to_s`
+     with r a call evaluated first) ran there: the slot takes that temp's
+     handle (emit_strbuf_handle_of). A route below re-emitted the
+     conversion's receiver, a second call, or read the temp's bytes face
+     into the handle slot, which did not compile. */
+  { int vp = nt_paren_single(c->nt, v);
+    if (arg_ran_first(v, 0) || (vp >= 0 && arg_ran_first(vp, 0))) { emit_strbuf_handle_of(c, v, b); return; } }
   /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
   { int w = nt_paren_single(c->nt, v);
     if (repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
