@@ -18245,6 +18245,11 @@ static void scan_prologue_features(Compiler *c) {
     }
     for (int k = 0; k < c->nclasses; k++)
       for (int j = 0; j < c->classes[k].nivars; j++) SP_TT(c->classes[k].ivar_types[j]);
+    /* an Array or Hash subclass instance is a container the renderers walk
+       (`class A < Array; end; p A.new([1])`), though its slots are typed as
+       the class */
+    for (int k = 0; k < c->nclasses && !polyish; k++)
+      if (comp_ary_root(c, k) >= 0 && !comp_ary_is_str(c, k)) polyish = 1;
 #undef SP_TT
     g_tu_poly_values = polyish;
     if (polyish) { g_emit_sym_rt = 1; g_emit_class_names = 1; }
