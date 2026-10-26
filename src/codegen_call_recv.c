@@ -10681,11 +10681,8 @@ static void emit_isa_self_class(Compiler *c, int recv, int cid, Buf *b) {
    dispatch reads the temp through g_argov, and the temp is the result. A call
    emit_stmt is lowering (g_setter_stmt_id) has no reader for the value and
    emits as before. Returns the temp, or -1 when the call is left alone, and
-   the temp's type in *vt_out. */
-/* the setter-value temps that hold an oint (a small ring, as fold's) */
-static int g_sv_oint[32], g_sv_oint_n = 0;
-static int sv_oint_is(int tv) { for (int i = 0; i < 32; i++) if (tv && g_sv_oint[i] == tv) return 1; return 0; }
-static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
+   the temp's type in *vt_out, and in *so_out whether it holds an oint. */
+static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out, int *so_out) {
   const NodeTable *nt = c->nt;
   int argc; const int *argv = call_args(nt, id, &argc);
   if (id == g_setter_stmt_id || argc != 1 || nt_ref(nt, id, "block") >= 0 ||
@@ -10715,21 +10712,22 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
   if (boxed) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv); }
   else if (comp_ty_value_obj(c, vt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, vt, tv, g_pre); buf_puts(g_pre, "\n"); }
   else if (needs_root(vt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tv); }
-  if (so) { view_bind_o(argv[0], "_t%d", tv); g_sv_oint[g_sv_oint_n++ & 31] = tv; }
+  if (so) view_bind_o(argv[0], "_t%d", tv);
   else view_bind(argv[0], "_t%d", tv);
   buf_puts(b, "({ (void)(");
   *vt_out = boxed ? TY_POLY : vt;
+  *so_out = so;
   return tv;
 }
 /* The temp holds the argument as the dispatch reads it; the expression
    answers in the CALL's type, which the inference may have widened to poly
    (a class with both an attr_accessor and a `def x=` for the name) -- box
    the temp on the way out then. */
-static void setter_value_close(Compiler *c, int id, TyKind vt, Buf *b, int tv) {
+static void setter_value_close(Compiler *c, int id, TyKind vt, int so, Buf *b, int tv) {
   if (tv < 0) return;
   view_unbind(g_n_argov - 1);
   buf_puts(b, "); ");
-  if (sv_oint_is(tv)) {
+  if (so) {
     /* the oint: boxed with its nil, as it is where the consumer takes the
        oint, unwrapped for a plain one */
     if (repr_of(c, id).kind == RK_BOXED) buf_printf(b, "%s(_t%d)", oint_box(vt), tv);
@@ -12774,9 +12772,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
         TyKind svt = TY_UNKNOWN;
         size_t pre_at = g_pre->len;
-        int sv = setter_value_open(c, id, b, &svt);
+        int svo = 0;
+        int sv = setter_value_open(c, id, b, &svt, &svo);
         emit_dispatch(c, cid, name, selfv.p ? selfv.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
-        setter_value_close(c, id, svt, b, sv);
+        setter_value_close(c, id, svt, svo, b, sv);
         recv_temp_named_if_preceded(recv, selfv.p, pre_at);
         free(selfv.p);
         return 1;
@@ -12807,9 +12806,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       TyKind svt = TY_UNKNOWN;
       size_t pre_at = g_pre->len;
-      int sv = setter_value_open(c, id, b, &svt);
+      int svo = 0;
+      int sv = setter_value_open(c, id, b, &svt, &svo);
       emit_dispatch(c, cid, name, selfptr.p ? selfptr.p : "", nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
-      setter_value_close(c, id, svt, b, sv);
+      setter_value_close(c, id, svt, svo, b, sv);
       recv_temp_named_if_preceded(recv, selfptr.p, pre_at);
       free(selfptr.p);
       return 1;
