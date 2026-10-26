@@ -2756,6 +2756,10 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   /* a poly array has no array_kind; name it like every other Poly emit (#3604) */
   const char *k = rr.elem == TY_POLY ? "Poly" : array_kind(rt);
   if (!k) return 0;
+  /* first(n) answered poly beside another site's kind (the analyzer's per-site
+     answer for cycle.first): the elements are boxed into a poly array as the
+     bounded result, so the call's value has the kind its type names (T4) */
+  int boxed_out = comp_ntype(c, id) == TY_POLY_ARRAY && !sp_streq(k, "Poly");
   int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, tlen = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
   Buf nb; memset(&nb, 0, sizeof nb);
@@ -2769,13 +2773,23 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\");\n", tn);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+  if (boxed_out) buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+  else buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tlen, k, ta);
   emit_indent(g_pre, g_indent);
   /* the receiver's nils, repeated: each element copied with its nil */
   int onum_c = is_numeric_literal_tag(k);
-  buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
+  if (boxed_out) {
+    Buf eb; memset(&eb, 0, sizeof eb);
+    char src[ARGOV_TEXT_LEN];
+    snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d %% _t%d)", k, ta, ti, tlen);
+    emit_boxed_elem_read(c, ty_array_elem(rt), src, &eb);
+    buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, %s);\n",
+               tlen, ti, ti, tn, ti, tr, eb.p ? eb.p : "sp_box_nil()");
+    free(eb.p);
+  }
+  else buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
              "sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d %% _t%d));\n",
              tlen, ti, ti, tn, ti, k, onum_c ? "_o" : "", tr, k, onum_c ? "oget" : "get", ta, ti, tlen);
   buf_printf(b, "_t%d", tr);
