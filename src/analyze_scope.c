@@ -1032,7 +1032,7 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
    register_extends extends it into every root class, whose subclasses inherit. */
 static const char *const class_reopen_mod = "Class__reopen";
 
-static int is_class_const(const NodeTable *nt, int id) {
+int is_class_const(const NodeTable *nt, int id) {
   return id >= 0 && nt_kind(nt, id) == NK_ConstantReadNode &&
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
@@ -2763,7 +2763,7 @@ static int sg_ivar_related(Compiler *c, int wc, int oc) {
    class or module body or a class method (whose `@x` is the class's own). */
 static int sg_ivar_home(Compiler *c, int n) {
   Scope *s = comp_scope_of(c, n);
-  if (s != &c->scopes[0]) {
+  if (!prog_is_top_scope(c, s)) {
     if (s->def_node < 0 || s->is_cmethod || s->is_proc_form) return 0;
     if (s->class_id < 0) return 3;
     return comp_class_is_module(c, &c->classes[s->class_id]) ? 0 : 1;
@@ -3589,7 +3589,7 @@ static void stamp_const_write_encl(Compiler *c, int id, int ci) {
 
 void register_structs(Compiler *c) {
   const NodeTable *nt = c->nt;
-  stamp_const_write_encl(c, nt->root_id, -1);
+  for (int r = 0; r < nt_nroots(nt); r++) stamp_const_write_encl(c, nt_root(nt, r), -1);   /* each file's tree */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     NodeKind ty_k = nt_kind(nt, id);
@@ -6011,22 +6011,25 @@ static int gvar_read_hazard(Compiler *c, int n, const char *gname, int in_cbody)
 /* Is global `gname` assigned a non-nil value by a top-level statement that
    runs before anything could read it? Until its first assignment a global is
    nil, so a slot with no nil of its own has to box unless this holds. */
-int gvar_seeded_before_read(Compiler *c, const char *gname) {
-  const NodeTable *nt = c->nt;
-  int body = c->nscopes > 0 ? c->scopes[0].body : -1;
-  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
-  int n = 0; const int *st = nt_arr(nt, body, "body", &n);
-  for (int i = 0; i < n; i++) {
-    for (int w = st[i]; w >= 0 && nt_kind(nt, w) == NK_GlobalVariableWriteNode; w = nt_ref(nt, w, "value")) {
-      const char *nm = nt_str(nt, w, "name");
-      int v = nt_ref(nt, w, "value");
-      if (!nm || !sp_streq(comp_resolve_gvar(c, nm + 1), gname)) continue;
-      return v >= 0 && nt_kind(nt, v) != NK_NilNode && comp_nil_chain_bottom(nt, v) < 0 &&
-             !gvar_read_hazard(c, v, gname, 0);
-    }
-    if (gvar_read_hazard(c, st[i], gname, 0)) return 0;
+typedef struct { Compiler *c; const char *gname; int answer; } GvarSeed;   /* answer: -1 undecided */
+static void gvar_seed_stmt(void *ud, int stmt) {
+  GvarSeed *g = ud;
+  const NodeTable *nt = g->c->nt;
+  if (g->answer >= 0) return;
+  for (int w = stmt; w >= 0 && nt_kind(nt, w) == NK_GlobalVariableWriteNode; w = nt_ref(nt, w, "value")) {
+    const char *nm = nt_str(nt, w, "name");
+    int v = nt_ref(nt, w, "value");
+    if (!nm || !sp_streq(comp_resolve_gvar(g->c, nm + 1), g->gname)) continue;
+    g->answer = v >= 0 && nt_kind(nt, v) != NK_NilNode && comp_nil_chain_bottom(nt, v) < 0 &&
+                !gvar_read_hazard(g->c, v, g->gname, 0);
+    return;
   }
-  return 0;
+  if (gvar_read_hazard(g->c, stmt, g->gname, 0)) g->answer = 0;
+}
+int gvar_seeded_before_read(Compiler *c, const char *gname) {
+  GvarSeed g = { c, gname, -1 };
+  if (c->nscopes > 0) prog_top_stmts(c, gvar_seed_stmt, &g);   /* the files' top levels, in load order */
+  return g.answer > 0;
 }
 
 /* A global with no nil of its own that something could read before its first
@@ -12542,13 +12545,12 @@ void refuse_unreachable_bare_constants(Compiler *c) {
   b->nt = c->nt;
   b->cref[0] = "";
   b->ncref = 1;
-  int root = c->nt->root_id;
-  bc_walk(b, root, "", 0);
+  /* each pass reads every file's tree */
+  int nr = nt_nroots(c->nt);
+  for (int r = 0; r < nr; r++) bc_walk(b, nt_root(c->nt, r), "", 0);
   if ((b->nested.n > 0 || b->scoped_defined) && !b->give_up) {
-    b->ncref = 1;
-    bc_walk(b, root, "", 1);
-    b->ncref = 1;
-    if (!b->give_up) bc_walk(b, root, "", 2);
+    for (int r = 0; r < nr; r++) { b->ncref = 1; bc_walk(b, nt_root(c->nt, r), "", 1); }
+    for (int r = 0; r < nr && !b->give_up; r++) { b->ncref = 1; bc_walk(b, nt_root(c->nt, r), "", 2); }
   }
   bc_set_free(&b->defs); bc_set_free(&b->nested);
   bc_set_free(&b->unknown_set); bc_set_free(&b->unknown_inc); bc_set_free(&b->builtin_held);

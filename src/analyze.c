@@ -2396,7 +2396,7 @@ static void reject_dynamic_mixin_args(Compiler *c) {
     NodeKind k = nt_kind(nt, id);
     int body = -1;
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) body = nt_ref(nt, id, "body");
-    else if (id == nt->root_id) body = nt_ref(nt, id, "statements");
+    else if (prog_is_root(c, id)) body = nt_ref(nt, id, "statements");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     for (int i = 0; i < bn; i++) {
@@ -4214,7 +4214,8 @@ static void qc_resolve_headers(Compiler *c) {
   qc_hdr_nt = nt; qc_hdr_cc = c;
   char path[QC_MAXDEPTH][64];
   unsigned char lex[QC_MAXDEPTH + 1] = {1};
-  qc_resolve_walk(nt, nt->root_id, path, 0, lex);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+    qc_resolve_walk(nt, nt_root(nt, r), path, 0, lex);
   qc_refuse_holder_headers(c);
 }
 
@@ -4776,14 +4777,16 @@ void qualify_colliding_consts(Compiler *c) {
   QCWrite *ws = NULL; int wn = 0, wcap = 0;
   char path[QC_MAXDEPTH][64];
   qc_resolve_headers(c);
-  qc_collect_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+    qc_collect_writes(c, nt_root(nt, r), path, 0, &ws, &wn, &wcap);
   /* the class and module definitions, for a constant that shares a class's
      leaf name: `module Config; FileHandler = {...}` beside
      `module Servlet; class FileHandler`. The constant was stored under the
      bare leaf, so every read of the class by its path (`Servlet::FileHandler`)
      answered the Hash. */
   QCWrite *cws = NULL; int cwn = 0, cwcap = 0;
-  qc_collect_class_writes(c, nt->root_id, path, 0, &cws, &cwn, &cwcap);
+  for (int r = 0; r < nt_nroots(nt); r++)
+    qc_collect_class_writes(c, nt_root(nt, r), path, 0, &cws, &cwn, &cwcap);
   /* keep only names written under 2+ distinct module paths */
   int any = 0;
   for (int i = 0; i < wn; i++) {
@@ -4807,7 +4810,7 @@ void qualify_colliding_consts(Compiler *c) {
     /* rewrite reads first (they match against the original write names) */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
-    qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    for (int r = 0; r < nt_nroots(nt); r++) qc_rewrite_reads(c, nt_root(nt, r), mods, 0, ws, wn);
     qc_free_reverse_flags();
     /* then qualify the nested writes themselves */
     for (int i = 0; i < wn; i++) {
@@ -4937,7 +4940,8 @@ void qualify_colliding_classes(Compiler *c) {
   QCWrite *ws = NULL; int wn = 0, wcap = 0;
   char path[QC_MAXDEPTH][64];
   qc_resolve_headers(c);
-  qc_collect_class_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+    qc_collect_class_writes(c, nt_root(nt, r), path, 0, &ws, &wn, &wcap);
   /* A class under a builtin parent (`class String::Helper`) stays under the
      body it is written in, registered by its leaf. Another definition of
      that leaf in the same body, with another parent or none, would merge
@@ -4962,7 +4966,8 @@ void qualify_colliding_classes(Compiler *c) {
      qualified the nested ones that collide), for a nested class named like a
      top-level constant: `Config = {...}` beside `module Rack; class Config` */
   QCWrite *kws = NULL; int kwn = 0, kwcap = 0;
-  qc_collect_writes(c, nt->root_id, path, 0, &kws, &kwn, &kwcap);
+  for (int r = 0; r < nt_nroots(nt); r++)
+    qc_collect_writes(c, nt_root(nt, r), path, 0, &kws, &kwn, &kwcap);
   for (int i = 0; i < kwn; i++)
     if (qc_is_class_write(&kws[i], ws, wn)) { kws[i] = kws[--kwn]; i--; }
   /* keep only leaf names defined under 2+ distinct module paths */
@@ -5052,7 +5057,7 @@ void qualify_colliding_classes(Compiler *c) {
        then qualify the nested definitions themselves */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
-    qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    for (int r = 0; r < nt_nroots(nt); r++) qc_rewrite_reads(c, nt_root(nt, r), mods, 0, ws, wn);
     qc_free_reverse_flags();
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
@@ -6745,7 +6750,10 @@ static int inline_def_applicable(Compiler *c, const NodeTable *nt, int id, Scope
 
 static void apply_inline_rbs(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (nt->root_id < 0 || !nt_int(nt, nt->root_id, "rbs_any", 0)) return;
+  int any = 0;
+  for (int r = 0; r < nt_nroots(nt) && !any; r++)   /* each file's root says whether it has one */
+    any = nt_root(nt, r) >= 0 && nt_int(nt, nt_root(nt, r), "rbs_any", 0);
+  if (!any) return;
   int *sown = inline_struct_owner(c);
   for (int id = 0; id < nt->count; id++) {
     if (!nt_int(nt, id, "rbs_line", 0) && !nt_str(nt, id, "rbs_ivars")) continue;
@@ -39642,7 +39650,7 @@ static int wnh_last_stmt(Compiler *c, int id) {
   if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 1;
   if (!vp_is_value_edge(nt, st, id, VPS_NONE)) return 0;
   /* the last statement of the program's own body is run for its effect */
-  return st != c->scopes[0].body;
+  return !prog_is_root_stmts(c, st);
 }
 /* Is node n method mi's answer: its body's last statement, or the last
    statement of an `if` / `unless` / `else` arm in that place, or of a `case`
@@ -43256,9 +43264,10 @@ static int mixin_call_guarded(Compiler *c, TyKind rt, int cid, const char *name)
    instance method is a call on self. */
 static void refuse_mixin_after_calls(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int body = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
-  int n = 0;
-  const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  /* the top-level statements in load order: each placed file's after the
+     load that first runs it (prog_top_seq; the entry's alone under the
+     inline model) */
+  int n = 0, *st = prog_top_seq(c, &n, NULL);
   unsigned char *ahead = NULL;
   int marked = 0, runs = 0;   /* statements [0, marked) are in `ahead` */
   for (int j = 1; j < n; j++) {
@@ -43279,7 +43288,8 @@ static void refuse_mixin_after_calls(Compiler *c) {
     }
     for (; marked < j; marked++) {
       NodeKind qk = nt_kind(nt, st[marked]);
-      if (qk != NK_ClassNode && qk != NK_ModuleNode && qk != NK_DefNode) runs = 1;
+      /* (a load's file's statements follow it, and run or not themselves) */
+      if (qk != NK_ClassNode && qk != NK_ModuleNode && qk != NK_DefNode && qk != NK_LoadNode) runs = 1;
       mixin_mark_subtree(nt, st[marked], ahead);
     }
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -43332,11 +43342,11 @@ static void refuse_mixin_after_calls(Compiler *c) {
                "the call would reach the module's method before the module is there. Include or prepend "
                "the module where the class is defined, ahead of the call.",
                c->classes[hit].name, c->classes[cid].name);
-      free(ahead);
+      free(ahead); free(st);
       unsupported_feature(c, id, msg);
     }
   }
-  free(ahead);
+  free(ahead); free(st);
 }
 
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
@@ -44656,7 +44666,7 @@ void rewrite_builtin_cm_alias_call(Compiler *c, int id) {
    alone, raise where CRuby may answer. */
 static int cm_alias_order_unproven(Compiler *c, const int *par, int id, int an) {
   const NodeTable *nt = c->nt;
-  for (int n = par[an]; n >= 0 && n != nt->root_id; n = par[n]) {
+  for (int n = par[an]; n >= 0 && !prog_is_root(c, n); n = par[n]) {   /* up to its file's root */
     NodeKind k = nt_kind(nt, n);
     if (k != NK_StatementsNode && k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode) return 1;
   }
@@ -47422,7 +47432,9 @@ static void an_phase_desugar_register(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
   { top->body = nt_ref(c->nt, c->nt->root_id, "statements"); comp_touch_scope(top->idx); }
-  reject_retry_in_ensure(c, c->nt->root_id, 0, 0);
+  prog_file_scopes(c);   /* and each required file's (--load-model=graph) */
+  prog_refuse_loads(c);
+  for (int r = 0; r < nt_nroots(c->nt); r++) reject_retry_in_ensure(c, nt_root(c->nt, r), 0, 0);
   if (g_exc_abort) reject_exc_abort_constructs(c);
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
@@ -47743,6 +47755,7 @@ static void an_phase_desugar_register(Compiler *c) {
   /* builtins/integer.rb, float.rb, comparable.rb: the same idea, one more
      container per file (analyze_desugar.c's sp_bx_* table) */
   desugar_builtin_scalar_defs(c);
+  prog_refuse_order(c);                  /* (--load-model=graph: what these read across files) */
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
@@ -47778,7 +47791,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
-  walk_scope(c, c->nt->root_id, 0, -1);
+  prog_walk_files(c);   /* walk_scope of each file's top level */
   expand_static_splat_args(c, 0, c->nt->count);
   register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
   register_structs(c);
@@ -48488,6 +48501,9 @@ int an_def_value_used(const NodeTable *nt, const int *par, int v) {
         v = up.parent;
         continue;
       }
+      /* a required file's top level (--load-model=graph): nothing reads its
+         value, since its require answers true or false */
+      if (k == NK_ProgramNode && nt_int(nt, up.parent, "load_file", 0) > 0) return 0;
       return 1;
     }
     default:

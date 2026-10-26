@@ -4797,6 +4797,7 @@ typedef struct {
   int stmt, top;          /* --load-model=graph: the top-level statement of `from` the
                              call stands in (a boot library's: below 0, ahead of the
                              entry's first), and 1 when the call is that statement */
+  int node;               /* --load-model=graph: its LoadNode, once flattened (-1 before) */
 } SpLoadEdge;
 
 /* --load-model=graph: a require of a file's tree: its edge, the call node it
@@ -4809,6 +4810,7 @@ typedef struct {
   char *text;
   SpSrcFile src;
   int read;               /* text and src are set */
+  int root;               /* its ProgramNode, once flattened */
   SpGraphSite *site; int nsite, sitecap;
 } SpGraphFile;
 
@@ -4864,7 +4866,7 @@ static void sp_load_edge(SpLoadEdge **v, int *n, int *cap, int from, int line, i
     *v = realloc(*v, sizeof **v * (size_t)*cap);
     if (!*v) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   }
-  SpLoadEdge e = { from, line, plain, strdup(name), how, to, -1, 0 };
+  SpLoadEdge e = { from, line, plain, strdup(name), how, to, -1, 0, -1 };
   if (!e.name) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   (*v)[(*n)++] = e;
 }
@@ -7057,7 +7059,8 @@ static void sp_graph_site_take(int id, const pm_node_t *call) {
     if (r->site[k].call != call) continue;
     r->site[k].taken++;
     g_flat_sites.next = k + 1;
-    const SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
+    SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
+    e->node = id;
     emit_str(id, "how", how_name[e->how]);
     if (e->to >= 0) emit_int(id, "target_file", e->to);
     return;
@@ -7094,6 +7097,7 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   sp_inline_rbs_done();
   sp_inline_rbs_free();
   if (!f) out_nt->root_id = root;
+  r->root = root;
   emit_int(root, "load_file", f);
   /* each site made one LoadNode, and each LoadNode took a site */
   int loads = 0, once = 1;
@@ -7132,6 +7136,7 @@ static void sp_graph_boot_node(SpLoadGraph *g, int e, int at) {
   emit_str(id, "how", "file");
   emit_int(id, "target_file", g->edge[e].to);
   emit_int(id, "boot", 1);
+  g->edge[e].node = id;
   int st = nt_ref(out_nt, out_nt->root_id, "statements"), n = 0;
   const int *v = nt_arr(out_nt, st, "body", &n);
   int *nv = malloc(sizeof(int) * (size_t)(n + 1));
@@ -7355,11 +7360,46 @@ static void sp_load_order_dump(const SpLoadGraph *g) {
   free(fs);
 }
 
+/* --load-model=graph: the names builtins/enumerable.rb and the scalar
+   containers' files define, which the analysis rewrites calls onto
+   (desugar_builtins, desugar_builtin_scalar_defs), read as the inline model
+   reads them (sp_splice_builtins), whether the program loads the files or
+   not. */
+static void sp_graph_builtin_names(const char *lib_dir) {
+  if (getenv("SPINEL_NO_BUILTINS")) return;
+  char found[1024];
+  if (sp_builtin_enum_names_n == 0 &&
+      sp_lib_lookup(lib_dir, "builtins/enumerable", found, sizeof found) == SP_LIB_BUILTIN) {
+    char *text = read_file(found);
+    if (text) { sp_builtin_names_from(text); free(text); }
+  }
+  for (int i = 0; i < SP_BUILTIN_EXTRA_N; i++) {
+    SpBuiltinExtra *bf = &sp_builtin_extras[i];
+    if (bf->scanned) continue;
+    bf->scanned = 1;
+    if (sp_lib_lookup(lib_dir, bf->req, found, sizeof found) != SP_LIB_BUILTIN) continue;
+    char *text = read_file(found);
+    if (text) { sp_builtin_names_from_into(text, &bf->names, &bf->names_n); free(text); }
+  }
+}
+
+/* --load-model=graph: the load order handed to the analysis, as data in the
+   node table: each placed file's root carries `load_by`, the LoadNode whose
+   edge first runs its top level (entered[]); an unplaced file's root has
+   none. The analysis orders two files' nodes from it (prog_order), at the
+   LoadNodes' places in the table as they stand after any rewriting. */
+static void sp_load_order_export(const SpLoadGraph *g) {
+  for (int f = 1; f < g->nfile; f++) {
+    int e = g->entered[f];
+    if (e >= 0) emit_int(g->gf[f]->root, "load_by", g->edge[e].node);
+  }
+}
+
 /* --load-model=graph: the program as the files it loads, the libraries
    CRuby has loaded before it starts among them (sp_graph_boot): every file
    read and parsed first (sp_graph_read), then each flattened as a root of
-   its own (sp_graph_flatten). Analysis does not read such a table yet: only
-   the table modes (--dump-ast) take it. */
+   its own (sp_graph_flatten), each file's root in the table's file_roots,
+   and the load order exported onto the roots (sp_load_order_export). */
 static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   if (!g_parse_table_mode) {
     fprintf(stderr, "spinel: --load-model=graph is not supported by analysis yet (--dump-ast shows its node table)\n");
@@ -7369,6 +7409,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   SpLoadGraph g;
   memset(&g, 0, sizeof g);
   sp_lib_dir(argv0, g.lib_dir, sizeof g.lib_dir);
+  sp_graph_builtin_names(g.lib_dir);
   out_nt = nt_new_table();
   node_counter = 0;
   sp_load_file(&g, source_file);
@@ -7391,6 +7432,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     sp_inline_rbs_declare(&g.gf[f]->src.parser, g.gf[f]->src.root, g.gf[f]->text, strlen(g.gf[f]->text));
   for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_flatten(&g, f, source_file);
   for (int b = 0; b < g.nboot && ok; b++) sp_graph_boot_node(&g, g.boot[b], b);
+  if (ok) sp_load_order_export(&g);
   NodeTable *nt = out_nt;
   out_nt = NULL;
   if (!ok) {   /* a file that could not be read or parsed, reported above */
@@ -7402,6 +7444,12 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     nt_put_source_file(nt, source_file);
     for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
     sp_defer_paths_mark(nt);
+    nt->file_roots = calloc((size_t)g.nfile, sizeof(int));
+    if (!nt->file_roots) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    nt->nfile_roots = g.nfile;
+    for (int id = 0; id < nt->count; id++)
+      if (nt_kind(nt, id) == NK_ProgramNode && nt_int(nt, id, "load_file", -1) >= 0)
+        nt->file_roots[nt_int(nt, id, "load_file", 0)] = id;
     if (g_dump_load_graph) { sp_load_graph_dump(&g); sp_load_order_dump(&g); }
   }
   sp_load_graph_free(&g);

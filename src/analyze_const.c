@@ -257,6 +257,7 @@ static void cw_stmt(ConstWalk *w, int id, int depth) {
   cw_stmt_walk(w, id, depth);
   if (bi) w->clean = clean;
 }
+static void cw_top_stmt(void *w, int id) { cw_stmt(w, id, 0); }
 
 /* The constant a node reads by name: a bare or path constant, or the name
    const_get and its kin are given. */
@@ -326,6 +327,8 @@ static void cw_order(ConstWalk *w) {
   CwItem *stk = malloc(sizeof(CwItem) * (size_t)cap);
   if (!stk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   stk[sp++] = (CwItem){ nt->root_id, CW_VISIT };
+  unsigned char *loaded = calloc((size_t)nt_nroots(nt), 1);   /* a file's top level, entered at its load */
+  if (!loaded) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   while (sp > 0) {
     CwItem it = stk[--sp];
     if (it.tag == CW_LEAVE) { cur = it.id; continue; }
@@ -361,6 +364,9 @@ static void cw_order(ConstWalk *w) {
       stk = realloc(stk, sizeof(CwItem) * (size_t)cap);
       if (!stk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
+    /* a load at the top level runs its file's top level next */
+    int lf = prog_ordered_load(w->c, id);
+    if (lf >= 0 && !loaded[lf]) { loaded[lf] = 1; stk[sp++] = (CwItem){ nt_root(nt, lf), CW_VISIT }; }
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) {
       int nc = cw_cref_name(w, id, cur);
       if (nc >= 0) { stk[sp++] = (CwItem){ cur, CW_LEAVE }; cur = nc; }
@@ -381,6 +387,7 @@ static void cw_order(ConstWalk *w) {
     }
   }
   free(stk);
+  free(loaded);
 }
 
 /* The constant an assignment node writes, by name, and whether it is the
@@ -439,7 +446,7 @@ void an_const_presence(Compiler *c) {
       if (cn && (is_builtin_class_name(cn) || is_builtin_reopen_name(cn))) w.reopened = 1;
     }
   }
-  cw_stmts(&w, nt_ref(nt, nt->root_id, "statements"), 0);
+  prog_top_stmts(c, cw_top_stmt, &w);   /* the files' top levels, in load order */
   cw_order(&w);
   /* The first plain assignment of each constant, in program order. Any other
      assignment of it (inside a branch or a method, the forms that read it
