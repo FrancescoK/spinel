@@ -4520,3 +4520,37 @@ const LowerRow *lower_row_nt(const NodeTable *nt, int id, int family) {
   }
   return NULL;
 }
+
+/* SPINEL_LOWER_ROWS_CHECK, in the table modes: the load graph matches the
+   rows on each call's parse before the table exists (spinel_parse.c's
+   sp_pm_row_fits) and notes the rows it matched on the call's node
+   (`lr_rows`, a mask of row indices). For each family the first row so
+   noted must be the one lower_row_nt matches on the node, as flatten made
+   it. Each disagreement is reported with its place, then the count; the
+   number of disagreements. */
+int lower_rows_check(const NodeTable *nt) {
+  int calls = 0, bad = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    long long mask = nt_int(nt, id, "lr_rows", -1);
+    if (mask < 0) continue;
+    calls++;
+    for (int fam = LR_SYSTEM_OPTIONS; fam <= LR_TO_SET; fam++) {
+      const LowerRow *a = NULL, *r;
+      for (int i = 0; i < LOWER_ROWS_MASK_BITS && !a && (r = lower_row_at(i)) != NULL; i++)
+        if (r->family == fam && (mask >> i & 1)) a = r;
+      const LowerRow *b = lower_row_nt(nt, id, fam);
+      if (a == b) continue;
+      bad++;
+      int f = (int)nt_int(nt, id, "node_file", 0);
+      fprintf(stderr, "lower-rows-check: %s:%lld:%lld `%s`: the parse matches %s, the node %s\n",
+              f >= 0 && f < nt->nfiles && nt->files[f] ? nt->files[f] : "?", nt_int(nt, id, "node_line", 0),
+              nt_int(nt, id, "node_col", 0), nt_str(nt, id, "name"), a ? a->target : "no row", b ? b->target : "no row");
+    }
+  }
+  if (lower_row_at(LOWER_ROWS_MASK_BITS)) {
+    fprintf(stderr, "lower-rows-check: the rows past %d are not checked (the mask is full)\n", LOWER_ROWS_MASK_BITS);
+    bad++;
+  }
+  fprintf(stderr, "lower-rows-check: %d calls, %d disagreements\n", calls, bad);
+  return bad;
+}

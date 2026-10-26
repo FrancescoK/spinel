@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -5399,6 +5399,18 @@ package-facts-check:
 	fi
 package-facts-regen:
 	@$(VALUE_EDGES_RUBY) tools/gen_package_facts.rb --write
+
+# Graph mode decides a program's libraries from its parse, before the node
+# table exists, so it matches the lowering rows (builtin_names.c) on Prism's
+# calls where the desugars match them on the node table (lower_row_nt).
+# SPINEL_LOWER_ROWS_CHECK asks both of every call as it is flattened; this
+# runs it over the corpus and fails on a disagreement. Outside the gate.
+LOWER_ROWS_PROGS ?= $(wildcard test/*.rb test/share/*.rb test/share/*/*.rb benchmark/*.rb packages/*/test/*.rb)
+lower-rows-check: $(SPINEL)
+	@printf '%s\n' $(LOWER_ROWS_PROGS) | xargs -P $(NPROC) -n 1 sh -c \
+	  'SPINEL_LOWER_ROWS_CHECK=1 $(SPINEL) --load-model=graph --dump-ast "$$0" 2>&1 >/dev/null | grep "^lower-rows-check"' | \
+	  awk '/ calls, / { n++; c += $$2; d += $$4; next } { print } \
+	       END { printf "lower-rows-check: %d programs, %d calls, %d disagreements\n", n, c, d; exit d > 0 }'
 
 # lib/sp_poly_cold.c holds functions spinel_rt.h used to define static in every
 # generated unit. Compiled once, its object must not depend on the integer
