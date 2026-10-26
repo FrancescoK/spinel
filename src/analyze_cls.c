@@ -155,6 +155,7 @@ typedef struct CF {
   int *fs, nfs, cfs;                   /* new edges whose source's objects are yet to be sent: (src, dst, kind) */
   int *orig;                  /* (directed, SPINEL_CLS_FLOW=why) per element, the rule line that made it every class */
   int dbg_seed, dbg_ptop;     /* SPINEL_CLS_FLOW_SEED, SPINEL_CLS_FLOW_PTOP: print where every class, and an untracked container, start */
+  int dbg_anysite;            /* SPINEL_CLS_ANYSITE=<line>: print the sites that rule makes anything */
   int *all_seq, seq;          /* (directed) per element, the order it became every class in: SPINEL_CLS_FLOW_TRACE walks it back */
   int pts_max;                /* objects an element holds before it joins the summary (CF_PTS_MAX; SPINEL_CLS_FLOW_PTSMAX overrides) */
   /* (directed, in a program that calls compare_by_identity) the kinds
@@ -2862,7 +2863,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
 static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int argc, int blk, int line) {
   Compiler *c = f->c;
   /* (measurement) SPINEL_CLS_ANYSITE=<line>: the sites that rule makes anything */
-  if (getenv("SPINEL_CLS_ANYSITE") && f->set[v] != CF_ALL && atoi(getenv("SPINEL_CLS_ANYSITE")) == line && v < f->nnodes) {
+  if (f->dbg_anysite == line && f->set[v] != CF_ALL && v < f->nnodes) {
     const char *fp = nt_file_path(f->nt, (int)nt_int(f->nt, v, "node_file", 0));
     fprintf(stderr, "cls-anysite: %s:%d %s\n", fp ? fp : "?", (int)nt_int(f->nt, v, "node_line", 0), nm);
   }
@@ -5027,6 +5028,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
   memset(&f, 0, sizeof f);
+  { const char *e = getenv("SPINEL_CLS_ANYSITE"); f.dbg_anysite = e ? atoi(e) : 0; }
   f.rt_obj = f.rtc = f.rvis = f.dynarg = f.every = -1;   /* (made below, in directed mode: none until then) */
   /* directed 2: the walk of the kinds alone (cf_kinds), whose classes are
      not kept */
@@ -5246,6 +5248,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   for (int mi = 1; CF_CLOSED(&f) && mi < c->nscopes && !f.modfn_any; mi++) f.modfn_any = c->scopes[mi].is_module_function;
   for (int k = 0; k < c->nclasses; k++) f.nanon += c->classes[k].is_anon_struct != 0;
   cf_mark_dead_protocols(&f);
+  const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *s = &c->scopes[mi];
     f.has_super[mi] = (unsigned char)cf_scope_has_super(&f, mi);
@@ -5253,7 +5256,6 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     /* a method named like a call the analysis does not follow (`bind`,
        `send`, ...): such a call binds nothing, so its parameters are left
        to hold anything rather than nothing (#8720) */
-    const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
     int sd_all = noseed && sp_streq(noseed, "all");
     int sd_proto = cf_protocol_name(s->name) && !(noseed && sp_streq(noseed, "proto")) && !sd_all;
     int sd_prelude = cf_prelude_scope(&f, mi) && !f.scal_mi[mi] && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;

@@ -712,13 +712,14 @@ static unsigned char *sh_dead_nodes(Compiler *c) {
       Scope *m = &c->scopes[s];
       if ((m->reachable || was[s]) && m->def_node >= 0) { sh_mark_subtree(nt, m->def_node, live); sh_mark_subtree(nt, m->body, live); }
     }
+    int dbg_dead = getenv("SPINEL_SHARE_DEAD") != NULL;
     for (int s = 0; s < c->nscopes; s++) {
       Scope *m = &c->scopes[s];
       /* (dead only where the earlier census agrees: a scope a rewrite made
          is reached by a mark of its own, not by a name, as the proc form of
          a reopening's method is) */
       if (!m->reachable && !was[s] && m->def_node >= 0) { sh_mark_subtree(nt, m->def_node, g_dead); sh_mark_subtree(nt, m->body, g_dead);
-        if (getenv("SPINEL_SHARE_DEAD")) fprintf(stderr, "share dead: %s%s%s (scope %d, was %d)\n", m->class_id >= 0 ? c->classes[m->class_id].name : "", m->class_id >= 0 ? (m->is_cmethod ? "." : "#") : "", m->name ? m->name : "?", s, was[s]); }
+        if (dbg_dead) fprintf(stderr, "share dead: %s%s%s (scope %d, was %d)\n", m->class_id >= 0 ? c->classes[m->class_id].name : "", m->class_id >= 0 ? (m->is_cmethod ? "." : "#") : "", m->name ? m->name : "?", s, was[s]); }
       { m->reachable = was[s]; comp_touch_scope(m->idx); }
     }
     for (size_t i = 0; i < n; i++) if (live[i]) g_dead[i] = 0;

@@ -4757,7 +4757,8 @@ static void fi_build(Compiler *c) {
      TOP of a too-long chain shortens every path through it while leaving the
      small leaves -- the ones worth forcing -- alone. */
   {
-    const char *de = getenv("SPINEL_INLINE_FORCE_DEPTH");
+    static int de_rd; static const char *de;
+    if (!de_rd) { de = getenv("SPINEL_INLINE_FORCE_DEPTH"); de_rd = 1; }
     int dlimit = (de && *de) ? atoi(de) : 6;
     if (dlimit > 0 && ncand > 0 && ncand <= 2048) {
       int *dep = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
@@ -4797,12 +4798,12 @@ static void fi_build(Compiler *c) {
      frame it contributes, accumulate that at every call site, and stop forcing
      once a caller's absorbed total passes the budget. */
   {
-    const char *fe = getenv("SPINEL_INLINE_FORCE_FRAME");
+    static int fe_rd, report; static const char *fe;
+    if (!fe_rd) { fe = getenv("SPINEL_INLINE_FORCE_FRAME"); report = getenv("SPINEL_INLINE_FORCE_REPORT") != NULL; fe_rd = 1; }
     /* 64 KB, the fiber stack's size when this budget was set; the stack is
        256 KB now (#4496) and the budget stays, since what it bounds is how
        much the forcing may add to a frame, not the frame itself */
     long fbudget = (fe && *fe) ? atol(fe) : 64 * 1024;
-    int report = getenv("SPINEL_INLINE_FORCE_REPORT") != NULL;
     /* The budget exists for SP_FIBER_STACK_SIZE. A program that runs no user
        code on a fiber stack has the process stack (megabytes) to spend, and
        bounding it there costs real throughput -- optcarrot's hot path absorbs
@@ -4875,7 +4876,8 @@ static void fi_build(Compiler *c) {
      the budget -- the frame pass above, in nodes, and on every program. A
      body whose calls or callees cannot all be listed counts as over. */
   {
-    const char *se = getenv("SPINEL_INLINE_FORCE_SIZE");
+    static int se_rd; static const char *se;
+    if (!se_rd) { se = getenv("SPINEL_INLINE_FORCE_SIZE"); se_rd = 1; }
     long sbudget = (se && *se) ? atol(se) : 100000;
     if (sbudget > 0 && sbudget < LONG_MAX / 4 && ncand > 0 && ncand <= 2048) {
       long *size = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
