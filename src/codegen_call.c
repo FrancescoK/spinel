@@ -2781,6 +2781,10 @@ static void emit_proc_arg_temp_init(Compiler *c, int node, int typed, const char
   if (!typed && (strncmp(past_open_parens(txt), "sp_raise_nomethod(", 18) == 0 || text_diverges(txt)))
     emit_unresolved_coerced_text(c, node, TY_INT, txt, b);
   else if (!typed && proc_arg_is_box_nil(txt)) buf_puts(b, "0");
+  /* a nil that runs code (a call answering nil) runs for its effects, and
+     the slot takes nil's 0: its value is a pointer's nil, or none */
+  else if (!typed && comp_ntype(c, node) == TY_NIL)
+    buf_printf(b, subtree_is_pure_read(c, node) ? "0" : "((void)(%s), 0)", txt);
   else buf_puts(b, txt);
   buf_puts(b, ";\n");
 }
