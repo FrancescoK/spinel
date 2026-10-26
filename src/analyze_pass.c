@@ -4092,16 +4092,21 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         Scope *caller = comp_scope_of(c, recv);
         /* `def fs = @fs` at the top level, called there (`fs << 2`): main is
            the self, and the getter hands out main's ivar, a slot of the
-           Toplevel pseudo-class */
-        if (!caller || (caller->class_id < 0 && !caller->is_cmethod))
+           Toplevel pseudo-class. Not in an instance_eval block (its self is
+           the receiver), nor when a module main extends has the name (its
+           method comes first). */
+        int at_main = !caller || (caller->class_id < 0 && !caller->is_cmethod);
+        if (at_main && ie_class_of(c, recv) == -1 && !comp_toplevel_mod_defines(c, mname, 1))
           tl_getter = comp_method_index(c, mname);
-        if (tl_getter >= 0 && c->scopes[tl_getter].class_id < 0 && !c->scopes[tl_getter].is_cmethod)
-          gcid = comp_class_index(c, "Toplevel");
+        const char *tl_ivs[8];
+        if (tl_getter >= 0 && (c->scopes[tl_getter].class_id >= 0 || c->scopes[tl_getter].is_cmethod ||
+                               getter_exit_ivars(c, tl_getter, tl_ivs, 8) <= 0))
+          tl_getter = -1;
+        if (tl_getter >= 0) gcid = comp_class_index(c, "Toplevel");
         /* (another top-level method's value: the Arrays it answers widen
            where they are built) */
         else if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
         else {
-          tl_getter = -1;
           gcid = caller->class_id;
           cside = caller->is_cmethod;
         }
