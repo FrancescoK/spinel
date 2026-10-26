@@ -13187,7 +13187,9 @@ static int oa_block_has_nested_block(const NodeTable *nt, int blk) {
   return blk >= 0 && oa_block_has_nested_block_in(nt, nt_ref(nt, blk, "body"));
 }
 
-typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; } OAS;
+/* row_cls / row_escape / odd_elem: the evidence the rows a slot's element
+   reads answer give (oa_row_use), for a table whose rows are empty literals */
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; int row_cls, row_escape, odd_elem; } OAS;
 
 /* The (sidx, lv) -> first slot index map, so a lookup is not a scan of every
    slot: the pass asks once per node, and the slot list grows with the
@@ -13367,11 +13369,16 @@ static int oa_local_write_evidence(Compiler *c, int node) {
    resolution */
 static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
   oa_note_empty(c, S, node);
+  int ec;
   if (node >= 0 && infer_type(c, node) == TY_POLY) {
     sl[S].poly_elem = 1;
-    if (nt_kind(c->nt, node) == NK_LocalVariableReadNode) return oa_local_write_evidence(c, node);
+    ec = nt_kind(c->nt, node) == NK_LocalVariableReadNode ? oa_local_write_evidence(c, node) : oa_obj_class_of(c, node);
   }
-  return oa_obj_class_of(c, node);
+  else ec = oa_obj_class_of(c, node);
+  /* a neutral element that is no empty row (a nil, a value with no type
+     yet): the rows' own pushes cannot decide such a table (oa_row_use) */
+  if (ec == -1 && !is_empty_array_literal(c->nt, node, c->node_cap)) sl[S].odd_elem = 1;
+  return ec;
 }
 /* `[A.new, A.new]` passed straight to a method: a literal of objects only,
    built at the parameter's kind when that narrows (oa_note_src) */
@@ -13403,6 +13410,48 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if ((is_minmax_query(nm)) && argc == 0) return 1;
   if ((is_sort_family(nm)) && argc == 0) return 1;
   return 0;
+}
+
+/* A row an element read `rd` of slot S answers (`t[i]`, `t.first`). The rows
+   of `Array.new(n) { [] }` are empty literals, which say nothing of their
+   kind; the pushes into them do, and a table of them narrows on that alone
+   (step 7) when the pass sees every use of every row. So a row may be:
+   - pushed Integers or Floats (`t[i] << v`): evidence, a row kind per value,
+     and the push answers the row, so its value must be thrown away;
+   - read in a way its typed row answers (an element, a length, a walk);
+   - thrown away.
+   Anything else hands the row on, where a push the pass does not see could
+   store a value of another kind into a typed row: row_escape. */
+static void oa_row_use(Compiler *c, OAS *sl, int S, int rd, const int *par, const char *walk_disc, int nc) {
+  const NodeTable *nt = c->nt;
+  int p = par[rd];
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || nt_ref(nt, p, "receiver") != rd) {
+    if (!(rd < nc && walk_disc[rd])) sl[S].row_escape = 1;
+    return;
+  }
+  const char *nm = nt_str(nt, p, "name");
+  int args = nt_ref(nt, p, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int blk = nt_ref(nt, p, "block");
+  if (!nm || (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode)) { sl[S].row_escape = 1; return; }
+  if (is_push_alias(nm) && argc >= 1 && blk < 0) {
+    for (int a = 0; a < argc; a++) {
+      TyKind at = nt_kind(nt, argv[a]) == NK_SplatNode ? TY_UNKNOWN : infer_type(c, argv[a]);
+      sl[S].row_cls = oa_cls_join(sl[S].row_cls, at == TY_INT ? OA_CLS_IA : at == TY_FLOAT ? OA_CLS_FA : -2);
+    }
+    if (!(p < nc && walk_disc[p])) sl[S].row_escape = 1;
+    return;
+  }
+  if (blk < 0 && ((is_element_at_alias(nm) && argc == 1) ||
+                  ((is_len_alias(nm) || is_endpoint_query(nm) || sp_streq(nm, "empty?") ||
+                    is_minmax_query(nm) || sp_streq(nm, "sum")) && argc == 0) ||
+                  (sp_streq(nm, "include?") && argc == 1)))
+    return;
+  /* a walk answers the row, so its value too must be thrown away */
+  if (blk >= 0 && argc == 0 && (sp_streq(nm, "each") || sp_streq(nm, "each_with_index")) &&
+      p < nc && walk_disc[p])
+    return;
+  sl[S].row_escape = 1;
 }
 
 /* An @ivar (or a bare attr_reader that returns one) passed to a helper whose
@@ -14343,6 +14392,23 @@ static int oa_ignores_block_value(Compiler *c, int call) {
   return cls && !share_builtin_overridden(c, cls, nm);
 }
 
+/* an_value_dropped's answer, with the block of an iterator taken to throw
+   its value away only when oa_ignores_block_value says the receiver's
+   builtin walk does: a program's own `each` may read what its block
+   answers (`x = yield; x << "s"`), which an_value_dropped, knowing the
+   walk by its name alone, takes as thrown away */
+static int oa_value_dropped(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, id, AN_DROP_CLIMB, &up);
+  if (up.reach) return 0;
+  if (ended == VPU_DROPPED || vp_up_loop(nt, &up) >= 0) return 1;
+  if (vp_up_effect_clause(nt, &up)) return 1;
+  int call = vp_up_block_call(nt, par, &up);
+  return call >= 0 && oa_ignores_block_value(c, call);
+}
+
 /* walk_disc[id]: a walk's value is thrown away. An object array walk
    narrows only there: `y = a.each { }` or `a.each { break r }` hands the
    array (or the break value) to a consumer typed for the boxed array, which
@@ -14428,7 +14494,9 @@ static char *oa_walk_disc(Compiler *c, int nc) {
         }
         else if (ak != NK_SymbolNode) all = 1;
       }
-      if (!walk_disc[id] && !is_tail[id]) mn = cn;
+      /* (nor a call whose value its own place throws away, as the last
+         statement of an if's arm in a builtin walk's block is: oa_value_dropped) */
+      if (!walk_disc[id] && !is_tail[id] && !oa_value_dropped(c, id)) mn = cn;
     }
     if (mn && !anh_has(&read, mn)) anh_add(&read, mn);
   }
@@ -14557,7 +14625,7 @@ static int narrow_object_arrays(Compiler *c) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded || cext_scope(c, s)) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
       sl[n].old_pin = lv->oa_pin; lv->oa_pin = TY_UNKNOWN; n++;
     }
   }
@@ -14587,7 +14655,7 @@ static int narrow_object_arrays(Compiler *c) {
        Money#coerce for a pair) */
     if (method_name_implicitly_invoked(sc->name)) continue;
     if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
     sl[n].old_pin = sc->ret_oa_pin; sc->ret_oa_pin = TY_UNKNOWN; n++;
   }
   /* 1c. one slot per @ivar holding a poly array (#4444). An ivar's references
@@ -14624,7 +14692,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (comp_ivar_index(&c->classes[k], ivn) >= 0) { inherited = 1; break; }
       if (inherited) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv;
+      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
       /* An `Array[Array[Integer]]` / `Array[Array[Float]]` seed is element
          evidence, the same evidence a pushed row gives: it decides the kind
          when the program's own rows are silent (`Array.new(n) { [] }`), and
@@ -14926,6 +14994,7 @@ static int narrow_object_arrays(Compiler *c) {
   free(wn); free(wcls);
 
   OaByName oa_bn = oa_byname_build(c, sl, n);
+  const int *par = comp_parent_map(c);
   /* 4. CallNodes: classify slot-as-receiver (supported op + element evidence)
         and slot-as-arg (positional into a resolvable free method -> edge). */
   for (int id = 0; id < nt->count; id++) {
@@ -14941,6 +15010,9 @@ static int narrow_object_arrays(Compiler *c) {
       int S = read_slot[recv];
       if (oa_recv_op_ok(name, argc, has_block)) {
         claimed[recv] = 1;
+        /* an element read answers a row: what is done with it (oa_row_use) */
+        if (name && ((is_element_at_alias(name) && argc == 1) || (is_endpoint_query(name) && argc == 0)))
+          oa_row_use(c, sl, S, id, par, walk_disc, nc);
         if (name && is_push_alias(name)) {
           for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, argv[a]));
           /* an append answers the array: like a sort result it must land
@@ -14996,6 +15068,7 @@ static int narrow_object_arrays(Compiler *c) {
          boxed, those emitters walking only numeric rows. */
       else if (nested_row_iter_call(c, id)) {
         claimed[recv] = 1;
+        sl[S].row_escape = 1;   /* the block binds each row */
         int fold = name && (sp_streq(name, "reduce") || sp_streq(name, "inject") ||
                             sp_streq(name, "zip"));
         sl[S].row_iter |= fold ? 2 : 1;
@@ -15313,6 +15386,33 @@ static int narrow_object_arrays(Compiler *c) {
     if (sl[i].poly_elem) sl[r].poly_elem = 1;
     sl[r].row_iter |= sl[i].row_iter;
     if (!sl[i].alive) sl[r].alive = 0;
+    sl[r].row_cls = oa_cls_join(sl[r].row_cls, sl[i].row_cls);
+    sl[r].row_escape |= sl[i].row_escape;
+    sl[r].odd_elem |= sl[i].odd_elem;
+  }
+  /* A table whose every element is an empty row (`Array.new(n) { [] }`) has
+     no element evidence of its own. When every row it hands out is pushed
+     only Integers, or only Floats, and goes nowhere else (oa_row_use), the
+     pushes are its evidence, as an `Array[Array[Integer]]` seed is (#4484):
+     it narrows, and its empty rows are built at that kind below. */
+  for (int i = 0; i < n; i++) {
+    if (oa_uf_find(sl, i) != i || sl[i].cls != -1 || sl[i].row_escape || sl[i].odd_elem ||
+        !OA_CLS_IS_NESTED(sl[i].row_cls))
+      continue;
+    /* ... and when every empty row can be built at that kind: a row whose
+       want another producer already gave (the elements of a `[[], []]`
+       literal, which widen_nested_literals takes boxed while their kind is
+       still open) would be built at that one, a poly array the table reads
+       back as an sp_IntArray * */
+    int rows = 0, unbuilt = 0;
+    TyKind rk = sl[i].row_cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
+    for (int e = 0; e < g_oa_empt_n; e++) {
+      if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
+      int lit = g_oa_empt_node[e];
+      rows = 1;
+      if (c->arr_want && lit < c->node_cap && c->arr_want[lit] != TY_UNKNOWN && c->arr_want[lit] != rk) unbuilt = 1;
+    }
+    if (rows && !unbuilt) sl[i].cls = sl[i].row_cls;
   }
   for (int i = 0; i < n; i++) {
     int r = oa_uf_find(sl, i);

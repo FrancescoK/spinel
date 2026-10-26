@@ -4780,6 +4780,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'sp_PtrArray \* *lv_bare' "$$tmp/ca.c" || { echo "infer-test: FAIL (a table handed to a RECEIVERLESS new(...) lost its typed representation)"; grep -oE 'sp_[A-Za-z]+Array \* *lv_bare' "$$tmp/ca.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *iv_u;' "$$tmp/ca.c" || { echo "infer-test: FAIL (the ivar a receiverless new(...) stored the table in stayed boxed)"; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_urow' "$$tmp/ca.c" || { echo "infer-test: FAIL (a row read out of the receiverless-constructed table stayed boxed)"; ok=0; }; \
+	$(SPINEL) test/nested_empty_rows_push_evidence.rb -c --no-line-map -o "$$tmp/nerp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (nested_empty_rows_push_evidence: -c)"; ok=0; }; \
+	grep -q 'sp_PtrArray \* iv_adj;' "$$tmp/nerp.c" && grep -q 'sp_PtrArray \* lv_t = NULL;' "$$tmp/nerp.c" && grep -q 'sp_PtrArray \* lv_f = NULL;' "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table of empty rows pushed only Integers or only Floats stayed boxed)"; ok=0; }; \
+	for v in lv_a lv_b lv_c lv_d lv_e lv_h lv_k lv_l lv_m lv_n; do grep -q "sp_PolyArray \* $$v = NULL;" "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table of empty rows whose row escapes or takes another kind narrowed: $$v)"; ok=0; }; done; \
+	grep -q 'sp_PolyArray \* iv_rows;' "$$tmp/nerp.c" && grep -q 'sp_PolyArray \* iv_cells;' "$$tmp/nerp.c" || { echo "infer-test: FAIL (a table whose row a method's read value hands on narrowed)"; ok=0; }; \
+	[ "$$(grep -A2 'sp_IntArray \*_t[0-9]* = sp_IntArray_new();' "$$tmp/nerp.c" | grep -c 'sp_PtrArray_push')" -ge 2 ] && [ "$$(grep -A2 'sp_FloatArray \*_t[0-9]* = sp_FloatArray_new();' "$$tmp/nerp.c" | grep -c 'sp_PtrArray_push')" -ge 1 ] || { echo "infer-test: FAIL (a narrowed table of empty rows built its rows boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/map_table_rows.rb -c --no-line-map -o "$$tmp/mtr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile map_table_rows)"; exit 1; }; \
 	grep -Eq 'sp_PtrArray \* *lv_picked' "$$tmp/mtr.c" || { echo "infer-test: FAIL (a table of rows built by map lost its typed representation)"; grep -oE 'sp_[A-Za-z]+Array \* *lv_picked' "$$tmp/mtr.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *iv_rows;' "$$tmp/mtr.c" || { echo "infer-test: FAIL (the ivar holding a mapped table stayed boxed)"; ok=0; }; \
