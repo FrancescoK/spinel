@@ -9778,6 +9778,54 @@ static int desugar_hash_block_arg(Compiler *c) {
   return changed;
 }
 
+/* `expr.to_proc` over any other Symbol value (a method's result, an ivar,
+   `str.to_sym`) is bound to a local where it stands --
+   `(__svr_N = expr; __svr_N.to_proc)` -- which the next round sends as it
+   sends any Symbol local. The value is read once, where to_proc runs, not
+   once per call of the proc, and in its place among its neighbours. Under a
+   block argument it is the Symbol itself that is passed (`&expr`), which
+   desugar_poly_symbol_block_arg binds. A literal `:m.to_proc` keeps its own
+   lowerings. */
+static int sym_to_proc_bind_recv(Compiler *c, int id, int ex) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  NodeKind ek = nt_kind(nt, ex);
+  if (ek == NK_LocalVariableReadNode || ek == NK_SymbolNode || nt_safe_nav(nt, id) ||
+      infer_type(c, ex) != TY_SYMBOL) return 0;
+  NT_FOREACH_KIND(nt, NK_BlockArgumentNode, ba)
+    if (nt_ref(nt, ba, "expression") == id) {
+      nt_node_set_ref(nt, ba, "expression", ex);
+      nt_node_set_int(nt, id, "stp_detached", 1);   /* (out of the tree, as below) */
+      return 1;
+    }
+  Scope *sc = comp_scope_of(c, id);
+  if (!sc) return 0;
+  char vn[48];
+  snprintf(vn, sizeof vn, "__svr_%s", comp_node_tag(c, id));
+  int base = nt->count;
+  int w = nt_new_node(nt, "LocalVariableWriteNode");
+  int rd = nt_new_node(nt, "LocalVariableReadNode");
+  int tp = nt_new_node(nt, "CallNode");
+  int body = nt_new_node(nt, "StatementsNode");
+  if (w < 0 || rd < 0 || tp < 0 || body < 0) return 0;
+  nt_node_set_str(nt, w, "name", vn);
+  nt_node_set_ref(nt, w, "value", ex);
+  nt_node_set_str(nt, rd, "name", vn);
+  nt_node_set_str(nt, tp, "name", "to_proc");
+  nt_node_set_ref(nt, tp, "receiver", rd);
+  long long line = nt_int(nt, id, "node_line", 0);
+  if (line) nt_node_set_int(nt, tp, "node_line", line);
+  int stm[2] = { w, tp };
+  nt_node_set_arr(nt, body, "body", stm, 2);
+  nt_node_reset(nt, id, "ParenthesesNode");
+  nt_node_set_ref(nt, id, "body", body);
+  if (line) nt_node_set_int(nt, id, "node_line", line);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+  LocalVar *lv = scope_local_intern(sc, vn);
+  if (lv) lv_set_type(lv, TY_SYMBOL);
+  return 1;
+}
+
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -9798,7 +9846,9 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
       if (blk < 0) continue;
       ex = nt_ref(nt, blk, "expression");
     }
-    if (ex < 0 || nt_kind(nt, ex) != NK_LocalVariableReadNode) continue;
+    if (ex < 0 || !nt_type(nt, ex)) continue;
+    if (is_toproc && sym_to_proc_bind_recv(c, id, ex)) { changed = 1; continue; }
+    if (nt_kind(nt, ex) != NK_LocalVariableReadNode) continue;
     if (infer_type(c, ex) != TY_SYMBOL) continue;
     /* `m(&sym_var.to_proc)` is `m(&sym_var)`: the block argument takes the
        Symbol itself and the call becomes the block below, whose parameter

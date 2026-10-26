@@ -16738,6 +16738,15 @@ static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, i
      its own params directly from the call args. */
   if (rk == NK_LambdaNode || is_proc_create(c, recv))
     return cs_type_params_site(c, recv, argv, argc);
+  /* A parenthesized value (`(t = expr; lambda { |x| x.send(t) }).call(v)`,
+     which a computed Symbol's `.to_proc` becomes): the literal in its value
+     position. Left untyped, the parameter took the Integer default. */
+  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
+    if (depth > 4) return 0;
+    CsProcArms a = { c, recv, argv, argc, depth, 0 };
+    for_each_value_position(nt, recv, VPS_ALL, cs_proc_arm, &a);
+    return a.changed;
+  }
   /* A proc reached through a name: type the literal that name was assigned.
      A LOCAL was the only name looked at, so the identical lambda written to a
      constant or an instance variable kept the no-evidence int default and
