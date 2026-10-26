@@ -1723,3 +1723,167 @@ static const PackageFact package_facts[] = { SP_PACKAGE_FACTS(SP_PACKAGE_FACT_RO
 const PackageFact *package_fact_at(int i) {
   return i >= 0 && i < (int)(sizeof package_facts / sizeof package_facts[0]) ? &package_facts[i] : NULL;
 }
+
+/* One table for the builtin class/module/exception names. These four
+   predicates were four independent lists that had to be kept in step by hand,
+   and the code has a comment noting where they already disagree. A row now
+   carries every fact about one name: the flags say which predicate accepts it,
+   and `id` is its negative cls_id (0 when codegen has none). Adding a name is
+   one row instead of four edits.
+
+   The rows are exactly the union of the old lists, flags included, so every
+   predicate answers what it answered before -- what the table changes is that
+   the answers can no longer drift apart. It also makes the existing gaps
+   visible rather than implicit: six names are classes with no cls_id
+   (Encoding, GC, Method, ObjectSpace, Process, UnboundMethod), seven have a
+   cls_id but are not bare constants (the Thread:: / Process:: / Math::
+   qualified forms), and fourteen exception names have no id. Each is a
+   deliberate answer today; closing any of them is a behavior change and does
+   not belong in the same commit as the table.
+
+   The `CRUBY_KNOWN` list in codegen_call.c is a fifth list, for a different
+   question (names CRuby defines that spinel does not implement), and is left
+   alone here. */
+static const BuiltinClass BUILTIN_CLASSES[] = {
+  { "Integer",                      -100,  BC_CLASS },
+  { "Float",                        -101,  BC_CLASS },
+  { "String",                       -102,  BC_CLASS },
+  { "Symbol",                       -103,  BC_CLASS },
+  { "Array",                        -104,  BC_CLASS },
+  { "Hash",                         -105,  BC_CLASS },
+  { "Range",                        -106,  BC_CLASS },
+  { "Time",                         -107,  BC_CLASS },
+  { "Module",                       -108,  BC_CLASS },
+  { "Class",                        -109,  BC_CLASS },
+  { "NilClass",                     -110,  BC_CLASS },
+  { "TrueClass",                    -111,  BC_CLASS },
+  { "FalseClass",                   -112,  BC_CLASS },
+  { "Numeric",                      -113,  BC_CLASS },
+  { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
+  { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
+  { "Object",                       -116,  BC_CLASS },
+  { "BasicObject",                  -117,  BC_CLASS },
+  { "Proc",                         -118,  BC_CLASS },
+  { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
+  { "IO",                           -120,  BC_CLASS },
+  { "File",                         -121,  BC_CLASS },
+  { "Exception",                    -122,  BC_CLASS | BC_EXCEPTION },
+  { "StandardError",                -123,  BC_CLASS | BC_EXCEPTION },
+  { "RuntimeError",                 -124,  BC_CLASS | BC_EXCEPTION },
+  { "TypeError",                    -125,  BC_CLASS | BC_EXCEPTION },
+  { "ArgumentError",                -126,  BC_CLASS | BC_EXCEPTION },
+  { "NameError",                    -127,  BC_CLASS | BC_EXCEPTION },
+  { "NoMethodError",                -128,  BC_CLASS | BC_EXCEPTION },
+  { "StopIteration",                -129,  BC_CLASS | BC_EXCEPTION },
+  { "Math",                         -130,  BC_CLASS | BC_MODULE },
+  { "Complex",                      -131,  BC_CLASS },
+  { "IndexError",                   -132,  BC_CLASS | BC_EXCEPTION },
+  { "KeyError",                     -133,  BC_CLASS | BC_EXCEPTION },
+  { "RangeError",                   -134,  BC_CLASS | BC_EXCEPTION },
+  { "FloatDomainError",             -135,  BC_CLASS | BC_EXCEPTION },
+  { "ZeroDivisionError",            -136,  BC_CLASS | BC_EXCEPTION },
+  { "FrozenError",                  -137,  BC_CLASS | BC_EXCEPTION },
+  { "IOError",                      -138,  BC_CLASS | BC_EXCEPTION },
+  { "LocalJumpError",               -139,  BC_CLASS | BC_EXCEPTION },
+  { "NotImplementedError",          -140,  BC_CLASS | BC_EXCEPTION },
+  { "ScriptError",                  -141,  BC_CLASS | BC_EXCEPTION },
+  { "Rational",                     -142,  BC_CLASS },
+  { "Regexp",                       -143,  BC_CLASS },
+  { "Enumerator",                   -144,  BC_CLASS },
+  { "Struct",                       -145,  BC_CLASS },
+  { "Data",                         -146,  BC_CLASS },
+  { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
+  { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
+  { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
+  { "EncodingError",                -150,  BC_CLASS | BC_EXCEPTION },
+  { "SignalException",              -151,  BC_CLASS | BC_EXCEPTION },
+  { "Interrupt",                    -152,  BC_CLASS | BC_EXCEPTION },
+  { "ThreadError",                  -153,  BC_CLASS | BC_EXCEPTION },
+  { "FiberError",                   -154,  BC_CLASS | BC_EXCEPTION },
+  { "ClosedQueueError",             -155,  BC_CLASS | BC_EXCEPTION },
+  { "UncaughtThrowError",           -156,  BC_CLASS | BC_EXCEPTION },
+  { "NoMatchingPatternError",       -157,  BC_CLASS | BC_EXCEPTION },
+  { "NoMatchingPatternKeyError",    -158,  BC_CLASS | BC_EXCEPTION },
+  { "EOFError",                     -159,  BC_CLASS | BC_EXCEPTION },
+  { "Math::DomainError",            -160,  BC_EXCEPTION },
+  { "SystemExit",                   -161,  BC_CLASS | BC_EXCEPTION },
+  { "Signal",                       -162,  BC_CLASS | BC_MODULE },
+  { "Process::Status",              -163,  BC_CLASS },
+  { "Process::Tms",                 -164,  0 },
+  { "Dir",                          -165,  BC_CLASS },
+  { "BasicSocket",                  -166,  BC_CLASS | BC_SOCKET },
+  { "IPSocket",                     -167,  BC_CLASS | BC_SOCKET },
+  { "TCPSocket",                    -168,  BC_CLASS | BC_SOCKET },
+  { "TCPServer",                    -169,  BC_CLASS | BC_SOCKET },
+  { "UDPSocket",                    -170,  BC_CLASS | BC_SOCKET },
+  { "UNIXSocket",                   -171,  BC_CLASS | BC_SOCKET },
+  { "UNIXServer",                   -172,  BC_CLASS | BC_SOCKET },
+  { "Socket",                       -173,  BC_CLASS | BC_SOCKET },
+  { "Thread",                       -174,  BC_CLASS },
+  { "Mutex",                        -175,  BC_CLASS },
+  { "Thread::Mutex",                -175,  0 },
+  { "Queue",                        -176,  BC_CLASS },
+  { "Thread::Queue",                -176,  0 },
+  { "SizedQueue",                   -177,  BC_CLASS },
+  { "Thread::SizedQueue",           -177,  0 },
+  { "ConditionVariable",            -178,  BC_CLASS },
+  { "Thread::ConditionVariable",    -178,  0 },
+  { "Fiber",                        -179,  BC_CLASS },
+  { "MatchData",                    -180,  BC_CLASS },
+  { "Encoding",                     0,     BC_CLASS },
+  { "Enumerator::Chain",            0,     BC_CLASS },
+  { "Enumerator::Lazy",             0,     BC_CLASS },
+  { "Enumerator::Product",          0,     BC_CLASS },
+  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
+     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
+  { "JSON::JSONError",              0,     BC_EXCEPTION },
+  { "JSON::ParserError",            0,     BC_EXCEPTION },
+  { "JSON::NestingError",           0,     BC_EXCEPTION },
+  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
+  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
+  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
+  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
+  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
+  { "Errno::ENOENT",                0,     BC_EXCEPTION },
+  { "GC",                           0,     BC_CLASS | BC_MODULE },
+  { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
+  { "IO::TimeoutError",            0,     BC_EXCEPTION },
+  /* the socket library's: lib/sp_exc.c gives them their parents, so
+     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
+  { "SocketError",                  0,     BC_EXCEPTION },
+  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
+  { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
+  { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
+  { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
+  { "IO::EWOULDBLOCKWaitReadable",  0,     BC_EXCEPTION },
+  { "IO::EWOULDBLOCKWaitWritable",  0,     BC_EXCEPTION },
+  { "IO::WaitReadable",             0,     BC_EXCEPTION },
+  { "IO::WaitWritable",             0,     BC_EXCEPTION },
+  { "LoadError",                    0,     BC_EXCEPTION },
+  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
+  { "Method",                       0,     BC_CLASS },
+  { "NoMemoryError",                0,     BC_EXCEPTION },
+  { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
+  { "Process",                      0,     BC_CLASS | BC_MODULE },
+  { "Random",                       0,     BC_CLASS },
+  { "StringScanner::Error",         0,     BC_EXCEPTION },
+  { "SystemCallError",              0,     BC_EXCEPTION },
+  { "SystemStackError",             0,     BC_EXCEPTION },
+  { "UnboundMethod",                0,     BC_CLASS },
+};
+#define BUILTIN_CLASS_N ((int)(sizeof BUILTIN_CLASSES / sizeof BUILTIN_CLASSES[0]))
+
+/* The i-th row, NULL past the last. The socket rows are a constant only
+   after `require "socket"`: the analysis's predicates ask that themselves. */
+const BuiltinClass *builtin_class_at(int i) {
+  return i >= 0 && i < BUILTIN_CLASS_N ? &BUILTIN_CLASSES[i] : NULL;
+}
+/* Is `n` a class or module Spinel has natively (any row, the socket ones
+   whether or not "socket" is required)? The load graph asks it of a
+   library's `class X`: a native X is reopened, and the methods the library
+   adds to it are what a program's names reach. */
+int is_native_class_name(const char *n) {
+  if (!n) return 0;
+  for (int i = 0; i < BUILTIN_CLASS_N; i++) if (sp_streq(n, BUILTIN_CLASSES[i].name)) return 1;
+  return 0;
+}
