@@ -16425,6 +16425,11 @@ static void mark_empty_array_operands(Compiler *c) {
     }
     if (an > 0 && nm && !recv_empty) {
       TyKind rt = infer_type(c, recv);
+      /* an Array or Hash subclass instance's builtin call that reads its
+         arguments as Arrays reads them as its Array's or Hash's own would
+         (#7449); one storing an argument as an element (fill) is left */
+      { TyKind ak; if (comp_arysub_call(c, id, rt, &ak) && (ty_is_array(ak) || ty_is_hash(ak)) &&
+                       comp_arysub_args_viewed(c, id, ak)) rt = ak; }
       if ((ty_is_array(rt) && !seed) || ty_is_hash(rt)) {
         TyKind want = (ty_is_array(rt) && rt != TY_POLY_ARRAY && empty_arr_same_kind_method(nm))
                       ? rt : TY_POLY_ARRAY;
