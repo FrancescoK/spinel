@@ -489,6 +489,9 @@ static void usage(void) {
     "  --exceptions=abort  With --target=wasm32-wasi, for a host without wasm\n"
     "              exception handling: a raise traps, and rescue, retry, catch and a\n"
     "              break or return that leaves a block through a frame are refused\n"
+    "  --gc=none   No garbage collector: memory is allocated and never reclaimed,\n"
+    "              for a short run under a host's memory cap (also --no-gc;\n"
+    "              --gc=on is the default). The collector leaves the build\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
@@ -646,6 +649,12 @@ int main(int argc, char **argv) {
       if (sp_streq(a + 9, "wasm32-wasi")) target_wasi = 1;
       else if (sp_streq(a + 9, "native")) target_wasi = 0;
       else { fprintf(stderr, "spinel: unknown --target %s (wasm32-wasi or native)\n", a + 9); return 1; }
+      i++;
+    }
+    else if (!strncmp(a, "--gc=", 5) || sp_streq(a, "--no-gc")) {
+      if (sp_streq(a, "--no-gc") || sp_streq(a + 5, "none")) g_gc_none = 1;
+      else if (sp_streq(a + 5, "on")) g_gc_none = 0;
+      else { fprintf(stderr, "spinel: unknown --gc %s (on or none)\n", a + 5); return 1; }
       i++;
     }
     else if (!strncmp(a, "--exceptions=", 13)) {

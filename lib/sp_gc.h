@@ -527,6 +527,8 @@ extern double sp_gc_ph_mk_roots, sp_gc_ph_mk_fibers,
               sp_gc_ph_mk_globals, sp_gc_ph_mk_scan;
 extern int sp_gc_ph_on;
 void sp_gc_collect(void);
+/* the collector the program installs; NULL under --gc=none (sp_alloc.c) */
+extern void (*sp_gc_collect_fn)(void);
 #ifdef SP_THREADS
 /* Sweep one worker's young list on that worker (see sp_gc.c). Survivors come
    back as a local list for the collector to splice into the old heap. */

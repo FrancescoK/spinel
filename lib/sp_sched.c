@@ -1048,7 +1048,7 @@ void sp_gc_collect_request(void) {
 #ifdef SP_THREADS
   sp_stw_collect_impl(1);
 #else
-  sp_gc_collect();
+  if (sp_gc_collect_fn) sp_gc_collect_fn();   /* (--gc=none: nothing to collect) */
 #endif
   /* GC.start is a call of the program's, a safe point: what it freed is
      finalized before it returns, after the barrier has lifted */

@@ -21131,6 +21131,9 @@ char *codegen_program(const NodeTable *nt) {
      THIS TU's definitions; the macro flips the header's prototypes off
      `static` before the include (ext-design.md, Layer 1). */
   if (g_ext_init_name) buf_puts(&b, "#define SPINEL_EXT_KERNEL 1\n");
+  /* --gc=none: the program defines the collector pointer itself, as NULL
+     (the runtime's is weak, lib/sp_alloc.c), so nothing names the collector */
+  if (g_gc_none) buf_puts(&b, "#define SP_GC_NONE 1\n");
   /* a computed instance_variable_set can reach a user class (#8219): the
      object-keyed ivar table admits its instances, for the names the class
      does not declare */
@@ -21150,6 +21153,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
   if (c->n_cext_extensions) buf_puts(&b, "#define SP_CEXT 1\n/* SPINEL_USES_CEXT */\n");
   emit_runtime_include(c, &b, 0);
+  if (g_gc_none) buf_puts(&b, "void (*sp_gc_collect_fn)(void) = NULL;   /* --gc=none */\n");
   if (c->n_cext_extensions) {
     buf_puts(&b, "#include \"sp_cext.h\"\nstatic void _sp_cext_setup(void);\nstatic sp_RbVal _sp_cext_dispatch(int, const char *, sp_RbVal, int, const sp_RbVal *, sp_Proc *);\n");
     for (int x = 0; x < c->n_cext_extensions; x++) {

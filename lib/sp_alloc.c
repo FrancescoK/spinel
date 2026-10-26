@@ -715,17 +715,32 @@ static void sp_str_retune(size_t before, size_t promoted) {
    string variants retune only their own threshold, matching the original
    per-heap inline collection so the single-threaded path stays byte-identical;
    _all retunes both since one stop-the-world sweeps both heaps. */
+/* The collector the allocation triggers call. A program built with
+   --gc=none defines this pointer itself, as NULL: the definition here, being
+   weak, gives way, nothing then names the collector, and its mark, sweep
+   and verifiers leave the link (--gc-sections); the triggers are lifted the
+   first time one fires, so no allocation asks again. */
+SP_WEAK void (*sp_gc_collect_fn)(void) = sp_gc_collect;
+static int sp_gc_collect_installed(void) {
+  if (sp_gc_collect_fn) return 1;
+  SP_GC_CTR_SET(sp_gc_threshold, (size_t)-1 / 4);
+  SP_GC_CTR_SET(sp_str_threshold, (size_t)-1 / 4);
+  return 0;
+}
 void sp_gc_collect_retune(void) {
   /* the retune hook inside sp_gc_collect adjusts the object threshold */
-  sp_gc_collect();
+  if (!sp_gc_collect_installed()) return;
+  sp_gc_collect_fn();
   sp_gc_enforce_mem_limit();
 }
 void sp_str_collect_retune(void) {
   /* the gated sweep hook inside sp_gc_collect retunes the string threshold */
-  sp_gc_collect();
+  if (!sp_gc_collect_installed()) return;
+  sp_gc_collect_fn();
 }
 void sp_gc_collect_retune_all(void) {
-  sp_gc_collect();
+  if (!sp_gc_collect_installed()) return;
+  sp_gc_collect_fn();
   sp_gc_enforce_mem_limit();
 }
 /* Either heap over its trigger? Used by sp_stw_collect to skip a redundant

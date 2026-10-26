@@ -698,7 +698,7 @@ ID rb_intern(const char *name) {
     return (ID)sp_json_sym_intern_fn(name);
 }
 const char *rb_id2name(ID id) { return sp_sym_name_fn?sp_sym_name_fn((sp_sym)id):NULL; }
-void rb_gc_start(void) { sp_gc_collect(); }
+void rb_gc_start(void) { if (sp_gc_collect_fn) sp_gc_collect_fn(); }
 int rb_block_given_p(void) { return current_block!=NULL; }
 VALUE rb_block_proc(void) {
     if(!current_block)rb_raise(rb_eArgError,"tried to create Proc object without a block");

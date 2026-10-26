@@ -1511,7 +1511,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check node-kinds-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check node-kinds-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -2338,6 +2338,17 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # point of having them: moving both together cannot say which heap paces the
 # collections (#4384). Read back off SPINEL_GC_STATS, which reports the two
 # separately, so the test asserts the mechanism rather than a timing.
+# --gc=none: the program answers as with the collector, and the collector
+# (sp_gc_collect and what only it reaches) is not in the binary.
+gc-none-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@tmp=$$(mktemp -d /tmp/spinel-gcnone.XXXXXX); ok=1; \
+	$(SPINEL) --gc=none test/gc_none_alloc.rb -o "$$tmp/t" >"$$tmp/cc.out" 2>&1 || { echo "gc-none-test: FAIL (compile)"; tail -5 "$$tmp/cc.out"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  $(TIMEOUT60) "$$tmp/t" > "$$tmp/out" 2>&1; cmp -s "$$tmp/out" test/gc_none_alloc.rb.expected || { echo "gc-none-test: FAIL (output)"; diff test/gc_none_alloc.rb.expected "$$tmp/out" | head -5; ok=0; }; \
+	  if command -v nm >/dev/null 2>&1; then nm "$$tmp/t" | grep -q ' sp_gc_collect$$' && { echo "gc-none-test: FAIL (the collector is still linked)"; ok=0; }; fi; \
+	fi; \
+	rm -rf "$$tmp"; if [ $$ok -eq 1 ]; then echo "gc-none-test: pass"; else exit 1; fi
+
 gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -n "$(filter -DSP_ONE_STRING,$(COPT))" ]; then echo "gc-threshold-test: skipped (one-String mode: a String lives in the object heap, and the String heap these budgets weigh holds none)"; exit 0; fi; \
 	tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \

@@ -80,6 +80,7 @@ void an_rat_boxed_mark(int id);
 int an_rat_boxed(int id);
 int an_rat_value(Compiler *c, int n);
 extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
+extern int g_gc_none;     /* --gc=none (src/main.c) */
 /* is a def's value (the Symbol it names) used? par: an_parent_map */
 int an_def_value_used(const NodeTable *nt, const int *par, int v);
 int *an_parent_map(const NodeTable *nt);
