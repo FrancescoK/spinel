@@ -2913,7 +2913,31 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     if (!f->phase) { f->pending++; return; }
     if (argc > 0 && (sp_streq(nm, "resume") || sp_streq(nm, "transfer"))) cf_resume_args(f, argv, argc);
     if (cf_opaque_name(nm) || sp_streq(nm, "new") || sp_streq(nm, "allocate")) {
-      cf_all(f, v);
+      /* `new` on the receiver's builtin part (the Class(X) part made X
+         above): a runtime class makes a runtime value (Hash.new, a
+         String.new, StandardError.new), and a Class object of the
+         program's that the runtime was handed (a fetch's default, a
+         block's answer, cf_builtin_rule's rvis) may come back out of a
+         builtin as this receiver, so it makes an instance of that class
+         too. The walk revisits the call each round, so a Class object
+         handed over later joins as well. Every class where the walk keeps
+         no runtime (the unified walk) or a class can be made at run time
+         (Class.new, Struct.new, Data.define), whose Class object has no
+         bit of its own here (#10303) */
+      int made = !cf_opaque_name(nm) && f->directed && f->rvis >= 0 && f->rtc >= 0 &&
+                 !f->c->has_anonymous_classes && !f->nanon;
+      if (made) {
+        cf_add_set(f, v, cf_bv_set(f));
+        const int esc[2] = { f->rvis, f->rtc };
+        for (int e = 0; e < 2 && made; e++) {
+          int ps = cf_set_of(f, esc[e]);
+          if (ps == CF_ALL) { made = 0; break; }
+          /* (by index: a construction adds sets, and the pool moves) */
+          for (int i = cls_set_next(&f->pool[ps], -1); i >= 0; i = cls_set_next(&f->pool[ps], i))
+            if (i >= f->c->nclasses && i - f->c->nclasses < f->c->nclasses) cf_construct(f, v, i - f->c->nclasses, argv, argc, blk, nm);
+        }
+      }
+      if (!made) cf_all(f, v);
       for (int a = 0; a < argc; a++) cf_all(f, argv[a]);
       if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       if (sp_streq(nm, "new")) { CFByName *b = cf_byname(f, "initialize"); for (int q = 0; q < b->n; q++) cf_bind_args(f, b->mi[q], argv, argc); }
