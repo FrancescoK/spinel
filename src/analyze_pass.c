@@ -8534,6 +8534,22 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     if (p->push_fill_elem != TY_UNKNOWN)
       changed |= fill_empty_array_arg(c, anode, p->push_fill_elem);
     changed |= bind_empty_hash_arg(c, p->type, anode);
+    /* ...and a parameter of the caller handed on as it came, which no call
+       site has typed: every one passed an empty `{}`, or nothing settled.
+       The literal takes the Hash kind its use wants, as it does passed
+       here directly, so the parameter takes this one's; left open it was
+       widened to the boxed value afterwards, and the `{}` built as the
+       general Hash (`Client.new({})` forwarding to `Req.new(h)`). Once the
+       guesses are settled only: until then a call site may still type it. */
+    if (ty_is_hash(p->type) && !g_infer_optimistic) {
+      Scope *cs = comp_scope_of(c, call_id);
+      int ck = unassigned_param_read(c, cs, anode);
+      LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
+      if (cp && !cp->rbs_seeded && cp->type == TY_UNKNOWN) {
+        slot_rule(c, cp, p->type, anode, "handed on to a Hash parameter, and no call site gives it a type");
+        changed = 1;
+      }
+    }
     /* A key or value the method stores through a typed container parameter
        from another of its parameters is checked against this call's
        argument for it: one the container cannot hold widens it, as a

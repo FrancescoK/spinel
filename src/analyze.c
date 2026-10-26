@@ -51140,6 +51140,27 @@ static void an_phase_method_backstops(Compiler *c) {
         else if (ty_is_object(rt) && sc->class_id >= 0 && !sc->is_cmethod &&
                  is_descendant(c, ty_object_class(rt), sc->class_id)) called = 1;
       }
+      /* an initialize is called by name nowhere: `Klass.new(...)` reaches
+         it, and missing that left its parameter to be widened after the
+         re-bind below, so a boxed value it forwarded reached a parameter
+         typed from the other callers alone and was read as their kind */
+      if (!called && sc->class_id >= 0 && !sc->is_cmethod && sp_streq(sc->name, "initialize")) {
+        for (int id = an_calls_named_first(c, "new"); id >= 0 && !called; id = an_calls_named_next(id)) {
+          if (nt_kind(nt, id) != NK_CallNode) continue;
+          int rv = nt_ref(nt, id, "receiver");
+          Scope *cs = comp_scope_of(c, id);
+          int cid = -1;
+          if (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) cid = cs && cs->is_cmethod ? cs->class_id : -1;
+          else if (nt_kind(nt, rv) == NK_ConstantReadNode || nt_kind(nt, rv) == NK_ConstantPathNode)
+            cid = comp_class_index(c, nt_str(nt, rv, "name"));
+          else {
+            TyKind rt = infer_type(c, rv);
+            if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS) called = 1;
+            continue;
+          }
+          if (cid >= 0 && comp_method_in_chain(c, cid, "initialize", NULL) == s) called = 1;
+        }
+      }
       if (!called) continue;
       for (int i = 0; i < sc->nparams; i++) {
         LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
