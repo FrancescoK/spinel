@@ -20899,7 +20899,8 @@ static int sp_load_file(int *loaded, void (*top)(void)) {
   *loaded = 0;
   if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
   emsg = sp_exc_msg[sp_exc_top]; ecls = sp_exc_cls[sp_exc_top]; eobj = sp_exc_obj[sp_exc_top];
-  sp_pending_exc_obj = eobj;
+  /* the exception passes on: it keeps the frames of the raise in the file */
+  sp_pending_exc_obj = eobj; sp_bt_keep = 1;
   sp_raise_cls(ecls, emsg);
   return 1;
 }

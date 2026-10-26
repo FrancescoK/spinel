@@ -97,6 +97,20 @@ for e in test/load_graph/*.rb.expected; do
   fi
 done
 
+# A raise in a required file leaves its load with the frames it was raised
+# with: a --debug build's report of it names the raising method first, not
+# the load the exception passes through.
+mkdir "$tmp/bt"
+printf 'def helper\n  raise ArgumentError, "bad"\nend\nhelper\n' > "$tmp/bt/lib.rb"
+printf 'puts "before"\nrequire_relative "lib"\n' > "$tmp/bt/main.rb"
+if "$SPINEL" --load-model=graph --debug --no-inline-hot "$tmp/bt/main.rb" -o "$tmp/bt/bin" >/dev/null 2>&1; then
+  "$tmp/bt/bin" >/dev/null 2>"$tmp/bt/err"
+  head -1 "$tmp/bt/err" | grep -q "lib.rb:\([0-9]*:\)\{0,1\}in .helper': bad (ArgumentError)" ||
+    { fail "a raise in a required file lost its frames"; cat "$tmp/bt/err"; }
+else
+  fail "bt did not compile"
+fi
+
 # refused NAME MESSAGE: $tmp/NAME/main.rb refuses with MESSAGE
 refused() {
   if "$SPINEL" --load-model=graph "$tmp/$1/main.rb" -o "$tmp/$1/bin" >"$tmp/$1/out" 2>&1; then
