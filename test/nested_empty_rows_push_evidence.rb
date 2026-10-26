@@ -109,3 +109,27 @@ rs = Rows.new
 held = rs.add(0, 1)
 held << "z"
 p rs.rows
+
+# a program's own each reads what its block answers: the row add hands back
+class Yielder
+  def each
+    x = yield
+    x << "s"
+  end
+end
+
+class Cells
+  attr_reader :cells
+
+  def initialize = @cells = Array.new(2) { [] }
+
+  def add(v)
+    @cells[0] << v
+  end
+end
+cs = Cells.new
+cs.add(1)
+Yielder.new.each do
+  cs.add(2) if cs.cells[1].empty?
+end
+p cs.cells

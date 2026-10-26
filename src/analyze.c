@@ -14311,6 +14311,23 @@ static int oa_ignores_block_value(Compiler *c, int call) {
   return cls && !share_builtin_overridden(c, cls, nm);
 }
 
+/* an_value_dropped's answer, with the block of an iterator taken to throw
+   its value away only when oa_ignores_block_value says the receiver's
+   builtin walk does: a program's own `each` may read what its block
+   answers (`x = yield; x << "s"`), which an_value_dropped, knowing the
+   walk by its name alone, takes as thrown away */
+static int oa_value_dropped(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, id, AN_DROP_CLIMB, &up);
+  if (up.reach) return 0;
+  if (ended == VPU_DROPPED || vp_up_loop(nt, &up) >= 0) return 1;
+  if (vp_up_effect_clause(nt, &up)) return 1;
+  int call = vp_up_block_call(nt, par, &up);
+  return call >= 0 && oa_ignores_block_value(c, call);
+}
+
 /* walk_disc[id]: a walk's value is thrown away. An object array walk
    narrows only there: `y = a.each { }` or `a.each { break r }` hands the
    array (or the break value) to a consumer typed for the boxed array, which
@@ -14397,8 +14414,8 @@ static char *oa_walk_disc(Compiler *c, int nc) {
         else if (ak != NK_SymbolNode) all = 1;
       }
       /* (nor a call whose value its own place throws away, as the last
-         statement of an if's arm in an iterator's block is: an_value_dropped) */
-      if (!walk_disc[id] && !is_tail[id] && !an_value_dropped(nt, comp_parent_map(c), id)) mn = cn;
+         statement of an if's arm in a builtin walk's block is: oa_value_dropped) */
+      if (!walk_disc[id] && !is_tail[id] && !oa_value_dropped(c, id)) mn = cn;
     }
     if (mn && !anh_has(&read, mn)) anh_add(&read, mn);
   }
