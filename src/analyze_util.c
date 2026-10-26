@@ -3456,7 +3456,10 @@ int comp_name_is_private_helper(Compiler *c, const char *m) {
    another, so the answer is the resolved method's, not the name's. */
 int comp_method_is_private_helper(Compiler *c, int cid, const char *m) {
   if (!m || m[0] != '_' || m[1] != '_') return 0;
-  int mi = cid >= 0 ? comp_method_in_chain(c, cid, m, NULL) : -1;
+  /* the member an instance reaches: a reader the program declares nearer
+     than the helper is its own (comp_resolve_member) */
+  int mi = -1;
+  if (cid >= 0 && comp_resolve_member(c, cid, m, 0, NULL, &mi) == SP_MEMBER_ATTR) return 0;
   for (int s = mi < 0 ? an_scopes_named_first(c, m) : -1; s >= 0 && mi < 0; s = an_scopes_named_next(c, m, s))
     if (c->scopes[s].class_id < 0 && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form) mi = s;
   return comp_scope_is_private_helper(c, mi);
