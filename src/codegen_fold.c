@@ -4522,6 +4522,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind elem_t = rr.elem;
 
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+  /* to_a and entries take no block: one given is never called, and the
+     answer is the pairs all the same (it collected nothing) */
+  if (is_toa) block = -1;
   if (is_toh && block >= 0) return 0;   /* block-form to_h maps each pair; not this {elem => index} lowering */
   if (!is_toa && !is_toh && block < 0) return 0;   /* only to_a/entries/to_h work without a block */
 
