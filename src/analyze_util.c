@@ -3430,6 +3430,74 @@ int comp_class_self_inst_mi(Compiler *c, int class_id, const char *name) {
   int mi = comp_method_in_chain(c, class_id, name, &dc);
   return mi >= 0 && dc >= 0 && c->classes[dc].name && str_in(c->classes[dc].name, OBJ_SIDE) ? mi : -1;
 }
+/* See compiler.h. A builtins/ file's helper is known by its def's stamp
+   (node_bi) and its name, a desugar's copy by the mark the desugar sets on
+   it: a copy of a program's own Integer or Enumerable method has no stamp,
+   and its name is one the program could have written. */
+int comp_scope_is_private_helper(Compiler *c, int si) {
+  const Scope *s = si >= 0 && si < c->nscopes ? &c->scopes[si] : NULL;
+  if (!s || !s->name || s->def_node < 0) return 0;
+  if (nt_int(c->nt, s->def_node, "private_helper", 0)) return 1;
+  return nt_int(c->nt, s->def_node, "node_bi", 0) != 0 && is_builtin_helper_name(s->name);
+}
+int comp_name_is_private_helper(Compiler *c, const char *m) {
+  if (!m || m[0] != '_' || m[1] != '_') return 0;
+  int helper = 0;
+  for (int s = an_scopes_named_first(c, m); s >= 0; s = an_scopes_named_next(c, m, s)) {
+    if (!comp_scope_is_private_helper(c, s)) return 0;
+    helper = 1;
+  }
+  return helper;
+}
+/* Compiler-synthesized methods that must stay invisible to reflection
+   (respond_to?, methods, instance_methods, method_defined?) and to a send
+   with a computed name: they are implementation detail with no CRuby
+   counterpart. Matched by exact name, or by the definition's mark, so a
+   user-defined `__foo` stays visible. */
+int name_is_synth_method(Compiler *c, const char *m) {
+  if (!m) return 0;
+  if (comp_name_is_private_helper(c, m)) return 1;
+  if (sp_streq(m, "__enum_to_a")) return 1;
+  /* a class's copy of its initialize as a method, for its own calls of it
+     (desugar_explicit_initialize_calls) */
+  if (sp_streq(m, "__spinel_reinit")) return 1;
+  /* `__noarg inspect` / `__noarg to_s`: the no-argument siblings of an
+     inspect / to_s whose parameters are all optional
+     (desugar_noarg_display_wrappers); the space is no `def`'s, so a method
+     the program names `__noarg_inspect` is its own */
+  if (strncmp(m, "__noarg ", 8) == 0) return 1;
+  /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
+     so an override can reach it through super (#3738) */
+  if (strncmp(m, "__inc ", 6) == 0) return 1;
+  /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
+     Ruby method name */
+  if (strchr(m, '#')) return 1;
+  /* `__to_enum_<m>`, the Enumerator generator for `to_enum(:m)`
+     (synth_to_enum_generators): it shares the DefNode of the method it
+     wraps, which a user method of that name never does */
+  if (strncmp(m, "__to_enum_", 10) == 0) {
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (!s->name || !sp_streq(s->name, m) || s->def_node < 0) continue;
+      for (int sj = 0; sj < c->nscopes; sj++)
+        if (c->scopes[sj].name && sp_streq(c->scopes[sj].name, m + 10) &&
+            c->scopes[sj].def_node == s->def_node) return 1;
+    }
+    return 0;
+  }
+  /* a parameter default moved into a method of its own
+     (desugar_recursive_param_defaults, #4900): known by the mark on its
+     DefNode rather than its name, which the desugar picks so that no method
+     the program defines has it */
+  if (strncmp(m, "__sp_default_", 13) != 0) return 0;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->def_node >= 0 && s->name && sp_streq(s->name, m) &&
+        nt_int(c->nt, s->def_node, "default_helper", 0)) return 1;
+  }
+  return 0;
+}
+
 int comp_self_call_mi(Compiler *c, int id, const char *name) {
   if (!name) return -1;
   Scope *self = comp_scope_of(c, id);
@@ -3539,7 +3607,8 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
              : comp_method_in_chain(c, par, c->scopes[imi].name, NULL);
   }
   const char *sym = method_sym_arg(c, node);
-  if (!sym) return -1;
+  /* a lowering's own helper is no method a Method can name */
+  if (!sym || comp_name_is_private_helper(c, sym)) return -1;
   int recv = nt_ref(nt, node, "receiver");
   /* Klass.instance_method(:m): the class's INSTANCE method (Klass.method(:m)
      would be the class method) */

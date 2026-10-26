@@ -31,6 +31,7 @@ int is_send_family(const char *n);    /* send __send__ public_send */
 int is_method_name_reflection(const char *n); /* send family, method public_method instance_method define_method define_singleton_method alias_method singleton_method respond_to? method_defined? */
 int is_code_eval_name(const char *n);  /* eval class_eval module_eval instance_eval: given its code as a String */
 int is_symbol_conversion(const char *n); /* to_sym intern: a Symbol made of a value */
+int is_builtin_helper_name(const char *n); /* __x but not __x__: a builtins/ file's own helper */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */

@@ -117,6 +117,16 @@ int is_symbol_conversion(const char *n) {
   return sp_streq(n, "to_sym") || sp_streq(n, "intern");
 }
 
+/* The name a builtins/ file gives a helper of its own (the enumerator's
+   `__enumw_map`, enumerable.rb's `__no_false`, ThreadGroup's `__remove`):
+   a leading `__`, without the trailing one of CRuby's own `__send__`,
+   `__id__` and `__method__`. A definition of that name in a builtins/ file
+   is the compiler's, not a Ruby method (comp_scope_is_private_helper). */
+int is_builtin_helper_name(const char *n) {
+  size_t l = n ? strlen(n) : 0;
+  return l > 2 && n[0] == '_' && n[1] == '_' && !(n[l - 1] == '_' && n[l - 2] == '_');
+}
+
 /* A call that can run code the analysis does not see, or capture a String:
    send and its siblings, call, new, lambda/proc, freeze, eval, and the
    instance_* / class_* / module_* / *method* reflection families. */

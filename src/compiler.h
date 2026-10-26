@@ -1673,6 +1673,18 @@ int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
    as the fallback. See analyze_util.c. */
 int    comp_self_call_mi(Compiler *c, int call_node, const char *name);
 int    comp_class_self_inst_mi(Compiler *c, int class_id, const char *name);
+/* A definition the compiler keeps for its own lowering, which CRuby has no
+   method for: a builtins/ file's own helper (is_builtin_helper_name, the
+   enumerator's `__enumw_map`) or a desugar's per-call-site copy (marked
+   `private_helper` where it is made, enumerable.rb's `__enum_count__0`).
+   Only the lowering that names it calls it. comp_name_is_private_helper:
+   every scope of the name is one. */
+int    comp_scope_is_private_helper(Compiler *c, int si);
+int    comp_name_is_private_helper(Compiler *c, const char *m);
+/* Does no Ruby method answer to `m`, though a scope has the name: a
+   private helper or another synthesized method? Reflection and a computed
+   send's dispatch leave it out. See analyze_util.c. */
+int    name_is_synth_method(Compiler *c, const char *m);
 int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
 /* Does the receiver of a retargeted `recv.send(:name)` (send_blind) answer
    name itself -- an instance's method or reader, a class constant's class
