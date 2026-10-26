@@ -6257,8 +6257,17 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     /* the limit sits in the loop condition, so one with a side effect, or one
        the block writes (`1.upto(n) { n -= 1 }`), would be re-evaluated every
        round: it is computed once in Ruby. Only a literal stays in place. A
-       Float limit keeps its type, as the comparison below reads it. */
+       Float limit keeps its type, as the comparison below reads it. Ruby
+       evaluates the receiver first, so a receiver that is no literal is
+       taken before the limit: `(n = 4).upto(n)` counts from 4 to 4. */
     if (nt_kind(nt, argv[0]) != NK_IntegerNode) {
+      if (nt_kind(nt, recv) != NK_IntegerNode) {
+        int tr = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "__typeof__(%s) _t%d = %s;\n", lo.p ? lo.p : "0", tr, lo.p ? lo.p : "0");
+        free(lo.p); memset(&lo, 0, sizeof lo);
+        buf_printf(&lo, "_t%d", tr);
+      }
       int th = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "%s _t%d = %s;\n", comp_ntype(c, argv[0]) == TY_FLOAT ? "sp_float" : "sp_int", th, hi.p ? hi.p : "0");

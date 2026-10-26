@@ -69,6 +69,24 @@ q = 3
 1.upto(q) { q.times { q = 0 } }
 p q
 
+# the receiver is evaluated before the limit, as Ruby does
+n = 2
+c = []
+(n = 4).upto(n) { |i| c << i }
+p c
+x = 1
+c = []
+x.upto(x += 3) { |i| c << i }
+p c
+def start_low
+  @low = 1
+  5
+end
+@low = 9
+c = []
+start_low.downto(@low) { |i| c << i }
+p c
+
 # the enumerator forms were already read once
 k = 3
 p(k.times.map { k = 0; 1 }.sum)
