@@ -4280,6 +4280,15 @@ void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
       buf_printf(b, "lv_%s = %.*sArray_oget(%s;\n", p0_ren, (int)(g - src_expr), src_expr, g + 10);
     else buf_printf(b, "lv_%s = %s(%s);\n", p0_ren, oint_of(pt), src_expr);
   }
+  /* a boxed source into a scalar param unboxes (the boxed upto/downto loop
+     of a receiver --int-overflow=promote boxes, `(n = 4).upto(n) { |i| }`):
+     assigned as it was, the C did not build */
+  else if (src_type == TY_POLY && (pt == TY_INT || pt == TY_FLOAT || pt == TY_BOOL)) {
+    Buf ub; memset(&ub, 0, sizeof ub);
+    emit_unbox_text(c, pt, src_expr, &ub);
+    buf_printf(b, "lv_%s = %s;\n", p0_ren, ub.p ? ub.p : src_expr);
+    free(ub.p);
+  }
   else {
     buf_printf(b, "lv_%s = %s;\n", p0_ren, src_expr);
   }
