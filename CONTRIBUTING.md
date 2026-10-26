@@ -183,16 +183,15 @@ and coercions; not every handwritten argument or element store uses it.
   put a fact in the layer that owns it; convert old-style code on the lines
   you touch; when the right layer lacks the fact, add it there rather than
   special-casing one call site.
-- **Mutable Strings (#6765, #9258).** A String is shared by reference, as
-  in CRuby: it is the one mode, with no option for the copying behaviour,
-  and `--share-strings` is accepted and ignored. The direction (#9258): the
-  handle becomes the one representation of every String slot, with bytes
-  only as a transient read face inside an expression, and the share
-  analysis, the String plan and the route refusals go away as correctness
-  mechanisms. Until that lands, pull requests that add or widen a String
-  route (`strbuf_*`, `emit_strbuf_*`, `share_plan_*`, the `sh_*` walks) are
-  paused; reports of wrong answers on String identity, with a reduction,
-  are welcome on #9258.
+- **Strings (#9258).** A String is one object, as in CRuby: every String
+  slot holds its handle, so a change made through one name is seen through
+  every other name that holds the same String (`dup`, `clone` and
+  `String.new` make a new one). It is the only representation, and
+  `--share-strings` is accepted and does nothing. The share analysis that
+  chose between two representations is gone; what is left of the String plan
+  and the byte routes (`share_plan_*`, `strbuf_*`, `emit_strbuf_*`) is being
+  removed, so a change does not add to them. A program that answers
+  differently from CRuby is welcome as a new issue, with a reduction.
 
 ## Stacked pull requests
 

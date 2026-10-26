@@ -1,3 +1,0 @@
-# Hand-written claims for walk_robustness.rb: both are true, none is disproved.
-value	walk_robustness.rb	13	4	13	8	CallNode	+@	check=new
-need-one-name	walk_robustness.rb	14	8	14	16	LocalVariableWriteNode	f	check=one-name
