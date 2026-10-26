@@ -4026,7 +4026,9 @@ int call_user_yield_mi(Compiler *c, int id) {
     const char *cname = ((rk == NK_ConstantReadNode ||
                                  rk == NK_ConstantPathNode))
                         ? nt_str(nt, recv, "name") : NULL;
-    int ci = cname ? comp_class_index(c, cname) : -1;
+    /* ... and `self.class.run { }` by the class self.class names, as the
+       inliner does (self_class_static_ci) */
+    int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
     else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
   }
