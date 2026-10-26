@@ -375,9 +375,11 @@ static int ysa_find(int id, TyKind kind) {
    the first site's kind alone the yield stored the nil in an Integer slot
    and raised TypeError at run time (K-031). sort and reverse answer their
    receiver's own kind for an Array, and a String's reverse is a String: a
-   Hash or String site beside an Array site failed to compile (K-030b). */
+   Hash or String site beside an Array site failed to compile (K-030b).
+   find_index answers an Integer or nil per site, not an element: a Hash
+   site's Integer beside an Array site's nil was read as an RbVal (T4). */
 static int yield_site_per_kind_name(const char *name) {
-  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse"));
+  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse") || sp_streq(name, "find_index"));
 }
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
   const NodeTable *nt = c->nt;
