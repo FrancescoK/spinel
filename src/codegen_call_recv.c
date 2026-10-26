@@ -3284,6 +3284,15 @@ static void emit_bsearch_param(Compiler *c, int block, const char *bp, const cha
    to the end */
 static void emit_fill_offset(Compiler *c, int node, Buf *b) {
   if (node_has_oint_form(c, node)) { emit_oint_expr(c, node, TY_INT, b); return; }
+  /* a boxed one (a method's nilable Integer under --int-overflow=promote):
+     its nil is the slot's nil, anything else an Integer argument */
+  if (repr_of(c, node).kind == RK_BOXED) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_expr(c, node, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_arg_int_chk(_t%d)); })", t, t);
+    return;
+  }
   buf_puts(b, "sp_oint_of("); emit_int_expr(c, node, b); buf_puts(b, ")");
 }
 
