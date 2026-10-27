@@ -14630,6 +14630,29 @@ static int rescue_operand_is_class_name(Compiler *c, int op) {
   return comp_class_index(c, n) >= 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
          is_builtin_exception_name(n);
 }
+/* A rescue operand that names a constant defined nowhere (`rescue
+   Missing::Thing`): CRuby evaluates it when an exception reaches the
+   clause and raises NameError there, the exception being handled its
+   cause. The read raises (and warns at build time, emit_expr), after the
+   exception is pushed as the one being handled, as a body's raise does.
+   An int-valued expression for the clause's condition. A path counts
+   only when a segment before its last is missing: the runtime raises
+   some classes by their name alone (IO::Buffer::AccessError), which no
+   read here answers, and the name match keeps catching those. */
+static int rescue_operand_undefined(Compiler *c, int op) {
+  NodeKind k = nt_kind(c->nt, op);
+  if (k == NK_ConstantReadNode) return const_read_raises(c, op);
+  if (k != NK_ConstantPathNode) return 0;
+  int par = nt_ref(c->nt, op, "parent");
+  return par >= 0 && const_read_raises(c, par);
+}
+static void emit_rescue_undefined(Compiler *c, int op, int rc, Buf *b) {
+  buf_printf(b, "({ void *_cx_%d = sp_exc_obj[sp_exc_top] ? sp_exc_obj[sp_exc_top]"
+                " : (void *)sp_exc_new_for_catch(_rcls_%d, _rmsg_%d); sp_rescue_push(_cx_%d); (void)",
+             rc, rc, rc, rc);
+  emit_expr(c, op, b);
+  buf_puts(b, "; 0; })");
+}
 /* Can rescue clause rc, or one further along its chain, catch an exception
    of the class `above` starts with, `above` listing it and the classes and
    modules above it? A bare rescue catches StandardError's classes, as
@@ -14696,6 +14719,14 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   buf_printf(b, "const char *_rcls_%d = (const char *)sp_last_exc_cls; (void)_rcls_%d;\n", rc, rc);
   emit_indent(b, indent);
   buf_printf(b, "const char *_rmsg_%d = sp_exc_msg[sp_exc_top]; (void)_rmsg_%d;\n", rc, rc);
+  /* the first operand raises as the clause is reached: its body and the
+     clauses after it never run */
+  if (nexc > 0 && rescue_operand_undefined(c, exc[0])) {
+    emit_indent(b, indent);
+    emit_rescue_undefined(c, exc[0], rc, b);
+    buf_puts(b, ";\n");
+    return;
+  }
 
   /* type-match condition: an explicit StandardError-ish type is treated as a
      catch-all; otherwise exact class-name (hierarchy-aware) match. A BARE
@@ -14712,7 +14743,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
     /* `rescue nil, Exception` raises TypeError for the nil, and a call or a
        splat before Exception runs: only class names may come before the
        catchall, else the ordered matcher below keeps their order */
-    if (!rescue_operand_is_class_name(c, exc[i])) break;
+    if (!rescue_operand_is_class_name(c, exc[i]) || rescue_operand_undefined(c, exc[i])) break;
   }
 
   const char *save_cls = g_rescue_cls, *save_msg = g_rescue_msg;
@@ -14749,6 +14780,12 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
           buf_puts(b, ")");
           continue;
         }
+      }
+      if (rescue_operand_undefined(c, exc[i])) {
+        if (!first) buf_puts(b, " || ");
+        first = 0;
+        emit_rescue_undefined(c, exc[i], rc, b);
+        continue;
       }
       /* any other operand (a variable, a call, an ivar, a literal): the clause
          matches by the class value's identity at run time, and a value that is

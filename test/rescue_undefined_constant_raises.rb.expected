@@ -1,0 +1,5 @@
+[NameError, "uninitialized constant Missing", ArgumentError, "boom 1"]
+"ArgumentError matched"
+["uninitialized constant Nope2", TypeError]
+42
+["uninitialized constant Missing4", "z"]

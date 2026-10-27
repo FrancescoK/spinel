@@ -2206,7 +2206,12 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   if (pk == NK_AndNode)
     return comp_defined_guard_false(c, nt_ref(nt, pred, "left"));
   if (pk != NK_DefinedNode) return 0;
-  int v = nt_ref(nt, pred, "value");
+  return comp_const_undefined(c, nt_ref(nt, pred, "value"));
+}
+
+/* See compiler.h. */
+int comp_const_undefined(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
   if (v < 0) return 0;
   NodeKind vk = nt_kind(nt, v);
   if (vk == NK_ConstantReadNode)

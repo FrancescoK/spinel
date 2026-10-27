@@ -3788,6 +3788,24 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
 }
 
 /* Select the persistent slot with the same lookup and guards as a read. */
+/* See codegen_internal.h. The read is emitted aside and dropped: only
+   whether it is the NameError's raise is kept (a read that resolves
+   leaves no trace, its temporaries' numbers put back). */
+int const_read_raises(Compiler *c, int id) {
+  NodeKind k = nt_kind(c->nt, id);
+  if ((k != NK_ConstantReadNode && k != NK_ConstantPathNode) || !comp_const_undefined(c, id)) return 0;
+  Buf t, pre;
+  memset(&t, 0, sizeof t); memset(&pre, 0, sizeof pre);
+  Buf *saved_pre = g_pre; int saved_tmp = g_tmp;
+  g_pre = &pre;
+  emit_expr(c, id, &t);
+  g_pre = saved_pre; g_tmp = saved_tmp;
+  static const char raise[] = "(sp_raise_cls(\"NameError\"";
+  int r = !pre.p && t.p && !strncmp(t.p, raise, sizeof raise - 1);
+  free(t.p); free(pre.p);
+  return r;
+}
+
 void emit_constant_slot(Compiler *c, int id, Buf *b) {
   emit_constant_expr(c, id, b, c->nt, nt_type(c->nt, id), 1);
 }

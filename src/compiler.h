@@ -1852,6 +1852,10 @@ LocalVar *comp_const_intern(Compiler *c, const char *name);
    the left arm of an `&&` chain) over a constant that resolves to nothing;
    the guarded branch is compile-time dead. */
 int comp_defined_guard_false(Compiler *c, int pred);
+/* Does constant (path) node v name nothing at compile time, so that
+   `defined?(v)` is nil and a read of it raises NameError (a segment no
+   program constant, class or builtin resolves)? */
+int comp_const_undefined(Compiler *c, int v);
 /* the dual: statically-true defined?(Const / Const::Path) guard */
 int comp_defined_guard_true(Compiler *c, int pred);
 int comp_defined_early(Compiler *c, int pred, const char **early, int cap);
