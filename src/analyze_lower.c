@@ -365,7 +365,7 @@ static void lower_check_again(Compiler *c, LowerCtx *lc, int row) {
    tree. Report a node of it that a root still reaches. */
 void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int root) {
   const NodeTable *nt = c->nt;
-  int cap = 64, top = 0;
+  int cap = nt_nroots(nt) + 64, top = 0;   /* every root, then the walk's growth */
   int *st = malloc(sizeof(int) * (size_t)cap);
   unsigned char *seen = calloc((size_t)nt->count + 1, 1);
   if (!st || !seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
