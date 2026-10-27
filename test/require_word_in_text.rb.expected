@@ -1,0 +1,5 @@
+[7, 16, 11, 7, 16]
+require 'x' 5 require_relative
+require "y" and require_relative("z")
+{require: 1, require_relative: 2}
+["abz", "cd!"]

@@ -277,4 +277,19 @@ unread_form quote 1 'p $".size\n'
 unread_form interpolated 1 'p "#$:"\n'
 unread_form missing_require 1 'begin; require "no_such_file_for_load_bit"; rescue LoadError; end\n'
 
+# The same flag counts the require and require_relative calls of the trees
+# against the ones resolved: a require word in a comment, a String, a Symbol,
+# a hash key or a def name is no call and counts for nothing, a call of
+# another receiver or of a file that is not there leaves the program read as
+# one that may load an unread file, and one resolved does not.
+unread_flag test/require_word_in_text.rb 2 "require in a comment, a String and a Symbol"
+unread_flag test/require_word_missing.rb 1 "a require of a missing file"
+unread_form require_comment 2 '# require "foo"; require_relative "bar"; Kernel.require "baz"\n'
+unread_form require_string 2 'p "require \x27x\x27 require_relative"\n'
+unread_form require_symbol 2 'p :require, :require_relative\n'
+unread_form require_key 2 'p({ require: 1 })\n'
+unread_form require_def 2 'def require(x) = x\ndef require_all = 1\n'
+unread_form require_resolved 2 'require "tmpdir"\n'
+unread_form require_receiver 1 'class K; def self.require(x) = x; end\nK.require "x"\n'
+
 [ $ok -eq 1 ] && echo "load-graph-test: pass" || exit 1
