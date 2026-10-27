@@ -11147,10 +11147,8 @@ const char *obj_str_fn(Compiler *c, int cid, int want_inspect) {
   int mi = cid < 0 || cid >= c->nclasses ? -1 : display_method_scope(c, cid, want_inspect, NULL);
   if (mi >= 0) return mc_method(c, &c->scopes[mi]);
   /* the generated one, in mc_method's ring */
-  char *r = c->mc_ring[c->mc_ring_next++ & 7];
-  snprintf(r, sizeof c->mc_ring[0], "sp_%s_%s", cid < 0 || cid >= c->nclasses ? "" : c->classes[cid].c_name,
-           want_inspect ? "inspect" : "to_s");
-  return r;
+  return mc_ring_setf(c, "sp_%s_%s", cid < 0 || cid >= c->nclasses ? "" : c->classes[cid].c_name,
+                      want_inspect ? "inspect" : "to_s");
 }
 
 /* True when the resolved user to_s/inspect returns a boxed sp_RbVal (its
