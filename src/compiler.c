@@ -384,15 +384,18 @@ static void parsed_tag(Compiler *c, int id, char *t, size_t n) {
   else snprintf(t, n, "%d", v >> 1);
 }
 
-/* An appended node's tag: its origin's (nt_origin) and the step from there,
-   "qcount_34c2" for the second copy of count's node 34, "12r1" for a node
-   first linked as node 12's second ref, "12a0e3" as the fourth element of
-   its first array. The text is a function of where the node came from, so
-   neither the order rewrites append nodes in nor the order names are asked
-   in moves it. One past 32 characters keeps its head and a hash of the
-   whole, as a long base key does, and one another node already has takes
-   `dN`. A node linked nowhere when it is named has no origin and is
-   numbered by when it is asked ("u4"). */
+/* An appended node's tag: its origin's (nt_origin), the step from there,
+   the pass that appended it in four characters (a hash of its name, "0000"
+   for none) and which of that pass's nodes of this origin it is:
+   "qcount_34c3e822" for desugar_builtins' second copy of count's node 34,
+   "12r1p3e821" for its first node first linked as node 12's second ref,
+   "12a0p3e823" for its third first linked in node 12's first array. The
+   text is a function of where the node came from and of which pass made
+   it, so neither the order passes run and append nodes in nor the order
+   names are asked in moves it. One past 32 characters keeps its head and a
+   hash of the whole, as a long base key does, and one another node already
+   has takes `dN`. A node linked nowhere when it is named has no origin and
+   is numbered by when it is asked ("u4"). */
 static const char *appended_tag(Compiler *c, int id, int depth) {
   int i = id - c->node_ord_parsed;
   if (i >= c->node_tag_cap) {
@@ -405,16 +408,19 @@ static const char *appended_tag(Compiler *c, int id, int depth) {
   }
   if (c->node_tag[i]) return c->node_tag[i];
   c->node_tag[i] = "";   /* in progress: an origin that leads back here has none */
-  char t[256], ft[64], how = 0;
-  int a = 0, b = 0;
-  int from = depth < 64 ? nt_origin(c->nt, id, &how, &a, &b) : -1;
+  char t[256], ft[64], pid[5], how = 0;
+  int a = 0, k = 0;
+  unsigned pass = 0;
+  int from = depth < 64 ? nt_origin(c->nt, id, &how, &a, &pass, &k) : -1;
   const char *f = NULL;
   if (from >= 0 && from < c->node_ord_parsed) { parsed_tag(c, from, ft, sizeof ft); f = ft; }
   else if (from >= 0) f = appended_tag(c, from, depth + 1);
+  unsigned pv = pass ? 1 + pass % (36u * 36 * 36 * 36 - 1) : 0;
+  for (int q = 3; q >= 0; q--, pv /= 36) pid[q] = "0123456789abcdefghijklmnopqrstuvwxyz"[pv % 36];
+  pid[4] = 0;
   if (!f || !*f) snprintf(t, sizeof t, "u%d", c->node_tag_lost++);
-  else if (how == 'c') snprintf(t, sizeof t, "%sc%d", f, a);
-  else if (how == 'r') snprintf(t, sizeof t, "%sr%d", f, a);
-  else snprintf(t, sizeof t, "%sa%de%d", f, a, b);
+  else if (how == 'c') snprintf(t, sizeof t, "%sc%s%d", f, pid, k);
+  else snprintf(t, sizeof t, "%s%c%dp%s%d", f, how, a, pid, k);
   if (strlen(t) > 32) {
     unsigned h = 2166136261u;
     for (const char *q = t; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;

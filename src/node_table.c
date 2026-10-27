@@ -84,14 +84,14 @@ static void node_add_arr(SpNode *nd, const char *key, size_t klen, int *ids, int
 
 /* A node's entry in nt->aux (node_table.h), the array first extended to
    it: a new entry is unmarked, uncopied and of no origin. */
-struct NtAux { unsigned mark; int to, clone_n, from, a, b; char how; };
+struct NtAux { unsigned mark, pass; int to, from, a, k; char how; };
 static struct NtAux *nt_aux(NodeTable *nt, int id) {
   if (id >= nt->aux_cap) {
     int cap = nt->aux_cap ? nt->aux_cap : 1024;
     while (cap <= id) { if (cap > INT_MAX / 2) nt_oom(); cap *= 2; }
     struct NtAux *g = realloc(nt->aux, sizeof *g * (size_t)cap);
     if (!g) nt_oom();
-    for (int i = nt->aux_cap; i < cap; i++) g[i] = (struct NtAux){ 0, -1, 0, -1, 0, 0, 0 };
+    for (int i = nt->aux_cap; i < cap; i++) g[i] = (struct NtAux){ 0, 0, -1, -1, 0, 0, 0 };
     nt->aux = g; nt->aux_cap = cap;
   }
   return &nt->aux[id];
@@ -99,16 +99,60 @@ static struct NtAux *nt_aux(NodeTable *nt, int id) {
 /* ids [lo, hi) taken anew (a rewrite can drop the nodes it appended and
    append others in their place) */
 static void nt_aux_reset(NodeTable *nt, int lo, int hi) {
-  for (int i = lo; i < hi && i < nt->aux_cap; i++) nt->aux[i] = (struct NtAux){ 0, -1, 0, -1, 0, 0, 0 };
+  for (int i = lo; i < hi && i < nt->aux_cap; i++) nt->aux[i] = (struct NtAux){ 0, 0, -1, -1, 0, 0, 0 };
 }
 
-/* `child` linked under `parent` (how 'r': ref field a; 'a': array field a,
-   element b): the first link of a node appended since nt_track_origins
-   is where it came from */
-static void nt_place(NodeTable *nt, int parent, int child, char how, int a, int b) {
+/* The pass appending now, as its origins carry it: a hash of its name,
+   0 for none */
+static unsigned nt_pass_hash(const NodeTable *nt) {
+  if (!nt->pass) return 0;
+  unsigned h = 2166136261u;
+  for (const char *q = nt->pass; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+  return h ? h : 1;
+}
+/* One origin's count, in nt->counts: how many nodes the pass has given
+   (from, how, a) so far. */
+struct NtCount { unsigned pass; int from, a, n; char how; };
+static unsigned nt_count_slot(const struct NtCount *e, int cap, unsigned pass, int from, char how, int a) {
+  unsigned i = (pass ^ (unsigned)from * 2654435761u ^ (unsigned)a * 40503u ^ (unsigned char)how) & (unsigned)(cap - 1);
+  while (e[i].n && !(e[i].pass == pass && e[i].from == from && e[i].how == how && e[i].a == a))
+    i = (i + 1) & (unsigned)(cap - 1);
+  return i;
+}
+/* the k of the next node the pass (its hash) gives (from, how, a):
+   counted in that pass's own walk, so another pass that runs before or
+   after it does not move it */
+static int nt_count_next(NodeTable *nt, unsigned pass, int from, char how, int a) {
+  if (2 * (nt->ncounts + 1) > nt->counts_cap) {
+    int cap = nt->counts_cap ? nt->counts_cap * 2 : 256;
+    struct NtCount *g = calloc((size_t)cap, sizeof *g);
+    if (!g) nt_oom();
+    for (int i = 0; i < nt->counts_cap; i++)
+      if (nt->counts[i].n) {
+        const struct NtCount *o = &nt->counts[i];
+        g[nt_count_slot(g, cap, o->pass, o->from, o->how, o->a)] = *o;
+      }
+    free(nt->counts);
+    nt->counts = g; nt->counts_cap = cap;
+  }
+  struct NtCount *e = &nt->counts[nt_count_slot(nt->counts, nt->counts_cap, pass, from, how, a)];
+  if (!e->n) { *e = (struct NtCount){ pass, from, a, 0, how }; nt->ncounts++; }
+  return ++e->n;
+}
+/* `node` given its origin: its source (how 'c'), or the node it is first
+   linked under (how 'r': ref field a; 'a': array field a), by the pass
+   appending now, as that pass's k-th such node */
+static void nt_set_origin(NodeTable *nt, int node, int from, char how, int a) {
+  struct NtAux *x = nt_aux(nt, node);
+  x->from = from; x->how = how; x->a = a;
+  x->pass = nt_pass_hash(nt);
+  x->k = nt_count_next(nt, x->pass, from, how, a);
+}
+/* `child` linked under `parent`: the first link of a node appended since
+   nt_track_origins is where it came from */
+static void nt_place(NodeTable *nt, int parent, int child, char how, int a) {
   if (!nt->orig_lo || child < nt->orig_lo || child >= nt->count) return;
-  struct NtAux *x = nt_aux(nt, child);
-  if (!x->how) { x->from = parent; x->how = how; x->a = a; x->b = b; }
+  if (!nt_aux(nt, child)->how) nt_set_origin(nt, child, parent, how, a);
 }
 
 void nt_track_origins(NodeTable *nt) { nt->orig_lo = nt->count > 0 ? nt->count : 1; }
@@ -119,10 +163,10 @@ const char *nt_set_pass(NodeTable *nt, const char *pass) {
   return was;
 }
 
-int nt_origin(const NodeTable *nt, int id, char *how, int *a, int *b) {
+int nt_origin(const NodeTable *nt, int id, char *how, int *a, unsigned *pass, int *k) {
   if (!nt->orig_lo || id < nt->orig_lo || id >= nt->aux_cap || !nt->aux[id].how) return -1;
   const struct NtAux *x = &nt->aux[id];
-  *how = x->how; *a = x->a; *b = x->b;
+  *how = x->how; *a = x->a; *pass = x->pass; *k = x->k;
   return x->from;
 }
 
@@ -171,13 +215,13 @@ void nt_put_ref(NodeTable *nt, int id, const char *key, int child) {
   SpNode *nd = node_put(nt, id);
   if (!nd) return;
   node_add_ref(nd, key, strlen(key), child);
-  nt_place(nt, id, child, 'r', nd->nr - 1, 0);
+  nt_place(nt, id, child, 'r', nd->nr - 1);
 }
 void nt_put_arr(NodeTable *nt, int id, const char *key, int *ids, int n) {
   SpNode *nd = node_put(nt, id);
   if (!nd) { free(ids); return; }
   node_add_arr(nd, key, strlen(key), ids, n);
-  for (int e = 0; e < n; e++) nt_place(nt, id, ids[e], 'a', nd->na - 1, e);
+  for (int e = 0; e < n; e++) nt_place(nt, id, ids[e], 'a', nd->na - 1);
 }
 void nt_put_content(NodeTable *nt, int id, const char *content) {
   SpNode *nd = node_put(nt, id);
@@ -344,13 +388,10 @@ int nt_clone_subtree(NodeTable *nt, int root) {
       } }
   }
   nt->count = base + sn;
-  /* each copy is its source's next one */
+  /* each copy is the appending pass's next one of its source */
   nt_aux(nt, nt->count - 1);
   nt_aux_reset(nt, base, nt->count);
-  for (int i = 0; i < sn; i++) {
-    struct NtAux *x = &nt->aux[base + i];
-    if (nt->orig_lo) { x->from = list[i]; x->how = 'c'; x->a = ++nt->aux[list[i]].clone_n; }
-  }
+  if (nt->orig_lo) for (int i = 0; i < sn; i++) nt_set_origin(nt, base + i, list[i], 'c', 0);
   nt->version++; nt->edits++; nt->clone_version++;
   free(list);
   return base;   /* the root is the first node collected */
@@ -507,12 +548,12 @@ void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child) {
   for (int j = 0; j < nd->nr; j++)
     if (sp_streq(nd->r[j].key, key)) {
       if (nd->r[j].ref != child) { nd->r[j].ref = child; nt->edits++; }
-      nt_place(nt, id, child, 'r', j, 0);
+      nt_place(nt, id, child, 'r', j);
       return;
     }
   nt->edits++;
   node_add_ref(nd, key, strlen(key), child);
-  nt_place(nt, id, child, 'r', nd->nr - 1, 0);
+  nt_place(nt, id, child, 'r', nd->nr - 1);
 }
 
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n) {
@@ -528,7 +569,7 @@ void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int
   while (j < nd->na && !sp_streq(nd->a[j].key, key)) j++;
   if (j < nd->na) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; }
   else node_add_arr(nd, key, strlen(key), copy, n);
-  for (int e = 0; e < n; e++) nt_place(nt, id, ids[e], 'a', j, e);
+  for (int e = 0; e < n; e++) nt_place(nt, id, ids[e], 'a', j);
 }
 
 void nt_free(NodeTable *nt) {
@@ -550,6 +591,7 @@ void nt_free(NodeTable *nt) {
   free(nt->file_defers);
   free(nt->file_roots);
   free(nt->aux);
+  free(nt->counts);
   free(nt);
 }
 

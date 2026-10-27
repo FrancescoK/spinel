@@ -80,13 +80,17 @@ typedef struct {
      only while neither it nor version has moved (#8852). */
   unsigned long edits;
   /* Per node (node_table.c): where a node appended from orig_lo on came
-     from (nt_origin), how many copies were made of it, and the scratch
+     from and the pass that appended it (nt_origin), and the scratch
      nt_clone_subtree marks its subtree with (a node is in the clone being
      made while its mark is clone_gen), so a clone costs its subtree, not
      the table. orig_lo is 0 until nt_track_origins. */
   struct NtAux *aux;
   int aux_cap, orig_lo;
   unsigned clone_gen;
+  /* how many nodes each pass has given each origin (node_table.c), for the
+     k nt_origin answers */
+  struct NtCount *counts;
+  int counts_cap, ncounts;
   /* the analysis pass appending nodes now (nt_set_pass), NULL outside one */
   const char *pass;
 } NodeTable;
@@ -205,12 +209,14 @@ void nt_renumber(NodeTable *nt, const int *order);
    resized to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root);
 /* Where node `id` came from, for a node appended after nt_track_origins:
-   the node it is a copy of (*how 'c', *a its copy number, from 1), or the
-   node it was first linked under (*how 'r', *a the ref field's index;
-   *how 'a', *a the array field's index and *b the element's). -1 for any
-   other node, or one not linked anywhere yet. comp_node_tag names an
-   appended node from this, so the name is the same whenever it is asked. */
-int nt_origin(const NodeTable *nt, int id, char *how, int *a, int *b);
+   the node it is a copy of (*how 'c'), or the node it was first linked
+   under (*how 'r', *a the ref field's index; *how 'a', *a the array
+   field's index). *pass is a hash of the name of the pass that appended it
+   (nt_set_pass; 0 outside one), and *k counts from 1 the nodes that pass
+   gave this same origin. -1 for any other node, or one not linked anywhere
+   yet. comp_node_tag names an appended node from this, so the name is the
+   same whenever it is asked and whichever passes ran before. */
+int nt_origin(const NodeTable *nt, int id, char *how, int *a, unsigned *pass, int *k);
 void nt_track_origins(NodeTable *nt);   /* from the nodes appended next on */
 const char *nt_set_pass(NodeTable *nt, const char *pass);   /* the one before */
 void nt_subtree_blank(NodeTable *nt, int id);   /* every node of the subtree a NilNode */
