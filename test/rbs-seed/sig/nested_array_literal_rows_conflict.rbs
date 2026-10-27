@@ -1,0 +1,3 @@
+class LiteralRowConflict
+  @b: Array[Array[Integer]]
+end
