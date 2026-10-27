@@ -1780,22 +1780,26 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     then_body = nt_ref(c->nt, id, "statements");
     else_body = nt_ref(c->nt, id, kind == NK_UnlessNode ? "else_clause" : "subsequent");
   }
-  int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) {
-    int r = nt_ref_at(c->nt, id, i);
-    WalkCtx rw = cw;
-    rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
-    if (r >= 0) walk_scope_in(c, r, rw);
-  }
-  /* a file's BEGIN blocks first, as they run (pass 0), then the rest */
-  int na = nt_num_arrs(c->nt, id), begins = w.top && kind == NK_StatementsNode;
-  for (int pass = !begins; pass < 2; pass++)
-    for (int i = 0; i < na; i++) {
-      int n = 0;
-      const int *ids = nt_arr_at(c->nt, id, i, &n);
-      for (int j = 0; j < n; j++)
-        if (ids[j] >= 0 && (!begins || (nt_kind(c->nt, ids[j]) == NK_PreExecutionNode) == !pass)) walk_scope_in(c, ids[j], cw);
+  /* the parts in the order they run: the refs, the arrays (a file's BEGIN
+     blocks first), then the refs that run after them, a case's else and a
+     begin's ensure (elab_ref_last) */
+  int nr = nt_num_refs(c->nt, id), na = nt_num_arrs(c->nt, id), begins = w.top && kind == NK_StatementsNode;
+  for (int pass = 0; pass < 3; pass++) {
+    for (int i = 0; pass != 1 && i < nr; i++) {
+      int r = nt_ref_at(c->nt, id, i);
+      if (r < 0 || elab_ref_last(c->nt, id, r) != (pass == 2)) continue;
+      WalkCtx rw = cw;
+      rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
+      walk_scope_in(c, r, rw);
     }
+    for (int b = !begins; pass == 1 && b < 2; b++)
+      for (int i = 0; i < na; i++) {
+        int n = 0;
+        const int *ids = nt_arr_at(c->nt, id, i, &n);
+        for (int j = 0; j < n; j++)
+          if (ids[j] >= 0 && (!begins || (nt_kind(c->nt, ids[j]) == NK_PreExecutionNode) == !b)) walk_scope_in(c, ids[j], cw);
+      }
+  }
 }
 
 /* A walk of `id` from outside any class body */
