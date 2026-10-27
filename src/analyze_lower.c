@@ -32,7 +32,8 @@
 
 enum {
   LF_MARKS = 1,   /* sets marks only: no shape is eliminated, so no left */
-  LF_STMT = 2     /* enters at the statements of the bodies of its kinds, not at the nodes */
+  LF_STMT = 2,    /* enters at the statements of the bodies of its kinds, not at the nodes */
+  LF_PROGRAM = 4  /* a pass over the whole program: visited once, with id -1, and nothing is asked of a node */
 };
 enum { LW_MAX_KINDS = 6 };
 
@@ -63,8 +64,12 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_system_options_at, desugar_system_options_left, "`system(cmd, out: ..)`", desugar_system_options_gate },
   [LW_IO_POPEN_BLOCK] = { "desugar_io_popen_block", 0, { NK_CallNode },
     desugar_io_popen_block_at, desugar_io_popen_block_left, "`IO.popen(cmd) { }` in read mode", desugar_io_popen_block_gate },
+  [LW_USER_BACKTICK] = { "desugar_user_backtick", 0, { NK_XStringNode, NK_InterpolatedXStringNode },
+    desugar_user_backtick_at, NULL, "a backtick literal in a program that defines ` itself", desugar_user_backtick_gate },
   [LW_LITERAL_UNDEF_METHOD] = { "desugar_literal_undef_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
     desugar_literal_undef_method_at, desugar_literal_undef_method_left, "`undef_method :a` in a body" },
+  [LW_EXPLICIT_INITIALIZE_CALLS] = { "desugar_explicit_initialize_calls", LF_PROGRAM, { NK_NONE },
+    desugar_explicit_initialize_calls_at, NULL, "`initialize(x)` called in a method" },
   [LW_NOARG_DISPLAY_WRAPPERS] = { "desugar_noarg_display_wrappers", LF_STMT, { NK_ClassNode, NK_ModuleNode },
     desugar_noarg_display_wrappers_at, desugar_noarg_display_wrappers_left, "`def inspect(i = 0)` in a body" },
   [LW_PAREN_BLOCK_ARG] = { "desugar_paren_block_arg", 0, { NK_BlockArgumentNode },
@@ -84,6 +89,8 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
     mark_sym_proc_blocks_at, NULL, NULL },
+  [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", 0, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+    desugar_body_local_scopes_at, NULL, "a local of a class body" },
   [LW_ERRNO_ALIASES] = { "desugar_errno_aliases", 0, { NK_ConstantPathNode },
     desugar_errno_aliases_at, desugar_errno_aliases_left, "`Errno::EWOULDBLOCK`, an alias of another errno's class" },
   [LW_PAREN_DEF_BODY] = { "desugar_paren_def_body", 0, { NK_DefNode },
@@ -121,16 +128,22 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_const_attr_op_assign_at, desugar_const_attr_op_assign_left, "`Klass.a op= v`" },
   [LW_STORED_ENUM_EACH] = { "desugar_stored_enum_each", 0, { NK_CallNode },
     desugar_stored_enum_each_at, NULL, "`e.each { }` on a stored enumerator" },
+  [LW_SCOPE_NUMBERED_BLOCK_PARAMS] = { "scope_numbered_block_params", LF_PROGRAM, { NK_NONE },
+    scope_numbered_block_params_at, NULL, "two blocks of one scope with numbered parameters" },
   [LW_SINGLETON_CLASS_DEFINE_METHOD] = { "desugar_singleton_class_define_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
     desugar_singleton_class_define_method_at, desugar_singleton_class_define_method_left, "`singleton_class.define_method` in a body" },
   [LW_EMPTY_HASH_COMPARE_BY_IDENTITY] = { "desugar_empty_hash_compare_by_identity", 0, { NK_CallNode },
     desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left, "`{}.compare_by_identity`" },
   [LW_DEFINE_METHOD_PROC_ARG] = { "desugar_define_method_proc_arg", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_define_method_proc_arg_at, NULL, "`define_method(:m, proc)` in a body" },
+  [LW_DEFINE_METHOD_CAPTURES] = { "desugar_define_method_captures", 0, { NK_ProgramNode, NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+    desugar_define_method_captures_at, NULL, "a body local a define_method block captures" },
   [LW_DEFINE_METHOD_KEYWORDS] = { "desugar_define_method_keywords", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_define_method_keywords_at, NULL, "a `define_method` block with keyword or rest parameters" },
   [LW_NAME_ANON_BLOCK_KWREST] = { "name_anon_block_kwrest", 0, { NK_BlockNode, NK_LambdaNode },
     name_anon_block_kwrest_at, name_anon_block_kwrest_left, "an anonymous `**` block parameter" },
+  [LW_RENAME_SHADOWING_BLOCK_PARAMS] = { "rename_shadowing_block_params", LF_PROGRAM, { NK_NONE },
+    rename_shadowing_block_params_at, NULL, "a block parameter that shadows a local" },
   [LW_SYM_TO_PROC_CALL] = { "desugar_sym_to_proc_call", 0, { NK_CallNode },
     desugar_sym_to_proc_call_at, NULL, "`:m.to_proc.call(r, a)`" },
   [LW_ENUM_CHAIN_SHAPES] = { "desugar_enum_chain_shapes", 0, { NK_CallNode },
@@ -143,6 +156,8 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_match_predicate_at, desugar_match_predicate_left, "`x in pattern`" },
   [LW_SORT_BY_WITH_INDEX] = { "desugar_sort_by_with_index", 0, { NK_CallNode },
     desugar_sort_by_with_index_at, desugar_sort_by_with_index_left, "`sort_by.with_index { }`" },
+  [LW_FORWARDING_TO_REST_CALLEE] = { "desugar_forwarding_to_rest_callee", LF_PROGRAM, { NK_NONE },
+    desugar_forwarding_to_rest_callee_at, NULL, "`def m(...) = f(*a, **k)` forwarding to a rest callee" },
   [LW_ANON_BLOCK_PARAM] = { "desugar_anon_block_param", 0, { NK_DefNode },
     desugar_anon_block_param_at, desugar_anon_block_param_left, "an anonymous `&`, `*` or `**` method parameter" },
   [LW_BLOCK_IMPLICIT_REST] = { "desugar_block_implicit_rest", 0, { NK_BlockParametersNode },
@@ -160,6 +175,8 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_enumerator_produce_at, desugar_enumerator_produce_left, "`Enumerator.produce(x) { }`" },
   [LW_PARAM_DEFAULT_ASSIGNS_LOCAL] = { "desugar_param_default_assigns_local", 0, { NK_DefNode },
     desugar_param_default_assigns_local_at, NULL, "a parameter default that writes a local the body reads" },
+  [LW_RECURSIVE_PARAM_DEFAULTS] = { "desugar_recursive_param_defaults", LF_PROGRAM, { NK_NONE },
+    desugar_recursive_param_defaults_at, NULL, "a default that calls its own method" },
 };
 
 /* ---- the kinds a row enters at ---- */
@@ -217,6 +234,9 @@ static void lower_scratch_reset(LowerCtx *lc) {
   free(lc->ids);
   lc->ids = NULL;
   lc->nids = 0;
+  free(lc->aliases);
+  lc->aliases = NULL;
+  lc->naliases = 0;
 }
 
 /* Every site of a row, in the order the loops it replaces took them: with
@@ -232,6 +252,12 @@ static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, in
   const NodeTable *nt = c->nt;
   KindSet set = kind_set_of(w);
   int n = 0, end = ask ? nt->count : lc->n0;
+  if (w->flags & LF_PROGRAM) {
+    /* what a whole-program pass rewrote is not counted; whether it changed the table is */
+    unsigned long edits = nt->edits;
+    int r = ask ? 0 : w->visit(c, lc, -1);
+    return r ? r : nt->edits != edits;
+  }
   for (int id = 0; id < end; id++) {
     if (!kind_set_has(&set, nt_kind(nt, id))) continue;
     if (w->flags & LF_STMT) {

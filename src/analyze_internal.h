@@ -640,13 +640,9 @@ int fold_static_is_a(Compiler *c);
 int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
 int an_class_includes_enumerable(Compiler *c, int ci);
-int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
-int desugar_define_method_captures(Compiler *c);
-int desugar_body_local_scopes(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
-int desugar_recursive_param_defaults(Compiler *c);
 int desugar_enumerable_via_to_a(Compiler *c);
 int desugar_public_method(Compiler *c);
 int desugar_class_eval_value(Compiler *c);
@@ -698,19 +694,20 @@ int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 /* the rows, in the order the stage runs them */
 enum {
   LW_NIL_BLOCK_ARG, LW_THREAD_START, LW_MARSHAL_RESTORE, LW_SOCKET_OPEN, LW_SYSTEM_OPTIONS, LW_IO_POPEN_BLOCK,
-  LW_LITERAL_UNDEF_METHOD, LW_NOARG_DISPLAY_WRAPPERS,
+  LW_USER_BACKTICK, LW_LITERAL_UNDEF_METHOD, LW_EXPLICIT_INITIALIZE_CALLS, LW_NOARG_DISPLAY_WRAPPERS,
   LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_SELF_SUPERCLASS, LW_STRUCT_SUBCLASS_NEW_WRITE,
   LW_REFUSE_SUPERCLASS_EXPRS, LW_RESCUE_BLOCK_BODIES,
-  LW_MARK_SYM_PROC_BLOCKS, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES, LW_MARK_RANGE_LOCALS,
-  LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES, LW_ALIAS_METHOD_VALUES,
-  LW_REASSIGNED_BLOCK_PARAMS,
+  LW_MARK_SYM_PROC_BLOCKS, LW_BODY_LOCAL_SCOPES, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES,
+  LW_MARK_RANGE_LOCALS, LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES,
+  LW_ALIAS_METHOD_VALUES, LW_REASSIGNED_BLOCK_PARAMS,
   LW_ITSELF_RECEIVER, LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE,
-  LW_SAFE_NAV_ATTR_WRITE, LW_CONST_ATTR_OP_ASSIGN, LW_STORED_ENUM_EACH, LW_SINGLETON_CLASS_DEFINE_METHOD,
-  LW_EMPTY_HASH_COMPARE_BY_IDENTITY, LW_DEFINE_METHOD_PROC_ARG, LW_DEFINE_METHOD_KEYWORDS,
-  LW_NAME_ANON_BLOCK_KWREST, LW_SYM_TO_PROC_CALL, LW_ENUM_CHAIN_SHAPES, LW_BUILTIN_KWSPLAT, LW_RIGHTWARD_PATTERN,
-  LW_MATCH_PREDICATE, LW_SORT_BY_WITH_INDEX, LW_ANON_BLOCK_PARAM, LW_BLOCK_IMPLICIT_REST, LW_MULTI_VALUE_JUMP,
-  LW_BLOCK_DESTRUCTURE_PARAMS, LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS, LW_ENUMERATOR_PRODUCE,
-  LW_PARAM_DEFAULT_ASSIGNS_LOCAL,
+  LW_SAFE_NAV_ATTR_WRITE, LW_CONST_ATTR_OP_ASSIGN, LW_STORED_ENUM_EACH, LW_SCOPE_NUMBERED_BLOCK_PARAMS,
+  LW_SINGLETON_CLASS_DEFINE_METHOD, LW_EMPTY_HASH_COMPARE_BY_IDENTITY, LW_DEFINE_METHOD_PROC_ARG,
+  LW_DEFINE_METHOD_CAPTURES, LW_DEFINE_METHOD_KEYWORDS, LW_NAME_ANON_BLOCK_KWREST, LW_RENAME_SHADOWING_BLOCK_PARAMS,
+  LW_SYM_TO_PROC_CALL, LW_ENUM_CHAIN_SHAPES, LW_BUILTIN_KWSPLAT, LW_RIGHTWARD_PATTERN, LW_MATCH_PREDICATE,
+  LW_SORT_BY_WITH_INDEX, LW_FORWARDING_TO_REST_CALLEE, LW_ANON_BLOCK_PARAM, LW_BLOCK_IMPLICIT_REST,
+  LW_MULTI_VALUE_JUMP, LW_BLOCK_DESTRUCTURE_PARAMS, LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS,
+  LW_ENUMERATOR_PRODUCE, LW_PARAM_DEFAULT_ASSIGNS_LOCAL, LW_RECURSIVE_PARAM_DEFAULTS,
   LW__COUNT
 };
 
@@ -727,6 +724,8 @@ typedef struct LowerCtx {
   int used_built;
   int *ids;                 /* node ids a row's gate collected for its visits */
   int nids;
+  const char **aliases;     /* recursive_param_defaults: the program's alias pairs, new name then old */
+  int naliases;
   /* the parent map (lower_parents), valid for the table it was made of */
   int *parent;
   int parent_n, parent_live;
@@ -759,6 +758,11 @@ LowerGate desugar_itself_receiver_gate, desugar_builtin_kwsplat_gate;
 LowerFn desugar_itself_receiver_at, desugar_itself_receiver_left;
 LowerFn desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left;
 LowerFn refuse_superclass_exprs_at, desugar_sym_to_proc_call_at, desugar_builtin_kwsplat_at;
+LowerGate desugar_user_backtick_gate;
+LowerFn desugar_user_backtick_at;                                            /* analyze.c */
+LowerFn desugar_explicit_initialize_calls_at, scope_numbered_block_params_at, rename_shadowing_block_params_at;
+LowerFn desugar_body_local_scopes_at, desugar_define_method_captures_at;     /* analyze_desugar.c */
+LowerFn desugar_forwarding_to_rest_callee_at, desugar_recursive_param_defaults_at;
 LowerFn desugar_stored_enum_each_at;                                         /* analyze_desugar.c */
 LowerFn desugar_literal_undef_method_at, desugar_literal_undef_method_left;
 LowerFn desugar_alias_method_values_at, desugar_alias_method_values_left;
@@ -931,7 +935,6 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth, QCWri
 void qualify_colliding_consts(Compiler *c);
 void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
 void qualify_colliding_classes(Compiler *c);
-void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
 void expand_struct_forwarding_super(Compiler *c);
 void refuse_super_init_value(Compiler *c);
