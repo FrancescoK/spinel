@@ -146,7 +146,7 @@ static int cw_value_walk(ConstWalk *w, int id, int depth) {
       if (r < 0) {
         if (blk >= 0) return 0;
         /* the declarations of a body; a mixin runs the module's hook, if any */
-        if (is_attr_reader_family(nm) || is_attr_writer_family(nm) || is_visibility_or_module_function(nm))
+        if (is_attr_reader_family(nm) || is_attr_writer_family(nm) || visibility_of_name(nm))
           return 1;
         return is_mixin_call(nm) && !w->hooks ? 1 : 0;
       }

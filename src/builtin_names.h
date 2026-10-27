@@ -42,7 +42,10 @@ int is_tap_name(const char *n);       /* tap */
 int is_quantifier(const char *n);     /* all? any? none? one? */
 int is_set_op(const char *n);         /* & intersection | union - difference */
 int is_combination_family(const char *n);  /* combination permutation repeated_combination repeated_permutation */
-int is_visibility_name(const char *n);     /* private protected public */
+/* the visibility word a call names: module_function first, so that a
+   method visibility is `visibility_of_name(n) > BVIS_MODULE_FUNCTION` */
+enum { BVIS_MODULE_FUNCTION = 1, BVIS_PUBLIC, BVIS_PRIVATE, BVIS_PROTECTED };
+int visibility_of_name(const char *n);    /* module_function public private protected: BVIS_*, else 0 */
 int is_select_bang(const char *n);    /* select! filter! keep_if reject! delete_if: the in-place filters */
 int is_each_name(const char *n); /* each */
 int is_each_entry(const char *n); /* each_entry */
@@ -252,7 +255,6 @@ int is_extrema_family(const char *n); /* max min minmax */
 int is_io_wait(const char *n); /* wait_priority wait_readable wait_writable */
 int is_match_family(const char *n); /* !~ =~ match match? */
 int is_integer_iteration(const char *n); /* downto step times upto */
-int is_visibility_or_module_function(const char *n); /* module_function private protected public */
 int is_mixin_call(const char *n); /* include extend prepend */
 /* The calls on a class's constant or self that answer neither the class nor
    a block of its own (comp_class_may_be_value): new allocate name to_s

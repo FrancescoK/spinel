@@ -209,8 +209,14 @@ int is_combination_family(const char *n) {
          sp_streq(n, "repeated_combination") || sp_streq(n, "repeated_permutation");
 }
 
-int is_visibility_name(const char *n) {
-  return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public");
+/* The visibility a bare `module_function` / `public` / `private` /
+   `protected` sets: BVIS_* as named, 0 for any other name. */
+int visibility_of_name(const char *n) {
+  if (!n) return 0;
+  if (sp_streq(n, "public")) return BVIS_PUBLIC;
+  if (sp_streq(n, "private")) return BVIS_PRIVATE;
+  if (sp_streq(n, "protected")) return BVIS_PROTECTED;
+  return sp_streq(n, "module_function") ? BVIS_MODULE_FUNCTION : 0;
 }
 
 int is_select_bang(const char *n) {
@@ -606,10 +612,6 @@ int is_attr_writer_family(const char *n) {
   return sp_streq(n, "attr_writer") || sp_streq(n, "attr_accessor");
 }
 
-int is_visibility_or_module_function(const char *n) {
-  return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public") || sp_streq(n, "module_function");
-}
-
 int is_mixin_call(const char *n) {
   return sp_streq(n, "include") || sp_streq(n, "extend") || sp_streq(n, "prepend");
 }
@@ -621,7 +623,7 @@ int is_class_plain_query(const char *n) {
     "method_defined?", "instance_methods", "attr_accessor", "attr_reader", "attr_writer",
     "include?", NULL };
   for (int i = 0; n && names[i]; i++) if (sp_streq(n, names[i])) return 1;
-  return is_visibility_or_module_function(n);
+  return visibility_of_name(n) != 0;
 }
 
 int is_class_self_answer(const char *n) {
