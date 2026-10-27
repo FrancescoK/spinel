@@ -552,7 +552,7 @@ void emit_cext_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "if (kind == %d && argc == %d && !strcmp(key, ", stub->kind, stub->argc);
       emit_str_literal(b, stub->key); buf_puts(b, ")) return ");
     }
-    emit_method_cname(c, sc, b); buf_puts(b, computed ? "(r, sp_box_sym(sp_sym_intern(key))" : "(r");
+    buf_puts(b, mc_method(c, sc)); buf_puts(b, computed ? "(r, sp_box_sym(sp_sym_intern(key))" : "(r");
     for (int j = 0; j < stub->argc; j++) buf_printf(b, ", argv[%d]", j);
     buf_puts(b, ", block);\n");
   }
@@ -566,16 +566,16 @@ void emit_cext_dispatch(Compiler *c, Buf *b) {
     if (idx < 0 || c->cext_stubs[idx].kind != (pass ? 7 : 6)) continue;
     if (pass) {
       buf_puts(b, "if (kind == 6 && argc == 1) return ");
-      emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), argv[0], block);\n");
+      buf_puts(b, mc_method(c, sc)); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), argv[0], block);\n");
       buf_puts(b, "if (kind == 0) { sp_PolyArray *spread = sp_PolyArray_new(); SP_GC_ROOT(spread);\n"
                   "for (int i = 0; i < argc; i++) sp_PolyArray_push(spread, argv[i]);\nreturn ");
-      emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), sp_box_poly_array(spread), block); }\n");
+      buf_puts(b, mc_method(c, sc)); buf_puts(b, "(r, sp_box_sym(sp_sym_intern(key)), sp_box_poly_array(spread), block); }\n");
       continue;
     }
     buf_puts(b, "if (kind == 0 && !strcmp(key, "); emit_str_literal(b, c->cext_stubs[idx].key);
     buf_puts(b, ")) { sp_PolyArray *spread = sp_PolyArray_new(); SP_GC_ROOT(spread);\n"
                 "for (int i = 0; i < argc; i++) sp_PolyArray_push(spread, argv[i]);\nreturn ");
-    emit_method_cname(c, sc, b); buf_puts(b, "(r, sp_box_poly_array(spread), block); }\n");
+    buf_puts(b, mc_method(c, sc)); buf_puts(b, "(r, sp_box_poly_array(spread), block); }\n");
   }
   emit_missing_cext_send(c, b);
   buf_puts(b, "sp_raise_cls(\"NoMethodError\", \"C extension dispatch has no compiled stub\");\n}\n");

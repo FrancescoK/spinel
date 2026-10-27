@@ -34,8 +34,7 @@ static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, cons
   if (g_plan_check) ucall_observe(c, id, own, defc, 0);
   if (cv >= 0) view_pop(c, cv);
   if (expr_is_held_ref(c, recv)) {
-    buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[defc].c_name,
-               mc(c->scopes[own].name), c->classes[defc].c_name);
+    buf_printf(b, "%s((sp_%s *)(", mc_method(c, &c->scopes[own]), c->classes[defc].c_name);
     emit_expr(c, recv, b); buf_puts(b, "))");
   }
   else {
@@ -44,8 +43,7 @@ static void emit_exc_own_render_raw(Compiler *c, int id, int recv, int xcm, cons
     int tex = ++g_tmp;
     buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[defc].c_name, tex, c->classes[defc].c_name);
     emit_expr(c, recv, b);
-    buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tex, c->classes[defc].c_name,
-               mc(c->scopes[own].name), tex);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); %s(_t%d); })", tex, mc_method(c, &c->scopes[own]), tex);
   }
 }
 
@@ -76,7 +74,7 @@ static int emit_exception_object_accessor(Compiler *c, int id, int recv, const c
     Buf ab; memset(&ab, 0, sizeof ab);
     emit_builtin_op_text(c, id, recv, TY_EXCEPTION, name, xv, &ab);
     Buf ob; memset(&ob, 0, sizeof ob);
-    buf_printf(&ob, "sp_Object_%s(", mc(c->scopes[xom].name));
+    buf_printf(&ob, "%s(", mc_method(c, &c->scopes[xom]));
     emit_boxed_text(c, TY_EXCEPTION, xv, &ob);
     buf_puts(&ob, ")");
     Repr rp = repr_of(c, id);
@@ -583,7 +581,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           if (g_plan_check) ucall_observe(c, id, mi, xr[q], 1);   /* one definer's arm */
           if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
           Buf cb; memset(&cb, 0, sizeof cb);
-          buf_printf(&cb, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
+          buf_printf(&cb, "%s(_t%d", mc_method(c, &c->scopes[mi]), xt);
           emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", &cb);
           buf_puts(&cb, ")");
           TyKind mrt = (TyKind)c->scopes[mi].ret;

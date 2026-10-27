@@ -27,7 +27,7 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
      returns a boxed sp_RbVal; route it through sp_poly_to_s rather than a
      pointer cast (#3266). */
   buf_puts(b, ret_poly ? "sp_poly_to_s(" : "(const char *)(");
-  buf_printf(b, "sp_%s_%s((sp_%s *)", cn, obj_str_mname(c, ty_object_class(t), 0), cn);
+  buf_printf(b, "%s((sp_%s *)", obj_str_fn(c, ty_object_class(t), 0), cn);
   NodeKind rk = nt_kind(c->nt, arg);
   if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode || rk == NK_ConstantReadNode) {
     emit_expr(c, arg, b);
@@ -620,8 +620,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); ");
     if (!expr_is_held_ref(c, arg)) buf_printf(b, "SP_GC_ROOT(_t%d); ", pv);
     int rp = obj_str_ret_poly(c, ty_object_class(t), 1);
-    buf_printf(b, "sp_puts_line(_t%d ? %ssp_%s_%s(_t%d%s)%s : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", cn,
-               obj_str_mname(c, ty_object_class(t), 1), pv, obj_str_blockarg(c, ty_object_class(t), 1), rp ? ")" : "");
+    buf_printf(b, "sp_puts_line(_t%d ? %s%s(_t%d%s)%s : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "",
+               obj_str_fn(c, ty_object_class(t), 1), pv, obj_str_blockarg(c, ty_object_class(t), 1), rp ? ")" : "");
   }
   else if (t == TY_PROC) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
@@ -700,7 +700,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     const char *icn = obj_str_cname(c, cid, 1);
     if (icn && expr_is_held_ref(c, arg)) {
       int rp = obj_str_ret_poly(c, cid, 1);
-      buf_printf(b, "{ const char *_pi = %ssp_%s_%s((sp_%s *)(", rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), icn);
+      buf_printf(b, "{ const char *_pi = %s%s((sp_%s *)(", rp ? "sp_poly_to_s(" : "", obj_str_fn(c, cid, 1), icn);
       emit_expr(c, arg, b);
       buf_printf(b, ")%s)%s; sp_puts_line(_pi ? _pi : \"nil\"); }\n", obj_str_blockarg(c, cid, 1), rp ? ")" : "");
     }
@@ -709,8 +709,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
       int pv = ++g_tmp;
       buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", icn, pv, icn); emit_expr(c, arg, b);
       int rp = obj_str_ret_poly(c, cid, 1);
-      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = %ssp_%s_%s(_t%d%s)%s;"
-                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), pv,
+      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = %s%s(_t%d%s)%s;"
+                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", obj_str_fn(c, cid, 1), pv,
                     obj_str_blockarg(c, cid, 1), rp ? ")" : "");
     }
     else {
@@ -6615,8 +6615,8 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
       if (p2t == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, g_pre);
       else emit_expr(c, v, g_pre);
       buf_puts(g_pre, ";\n");
-      buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
-                 lval, c->classes[defcls2].c_name, mc(ms2->name),
+      buf_printf(b, "%s = %s((sp_%s *)%s, _t%d);\n",
+                 lval, mc_method(c, ms2),
                  c->classes[defcls2].c_name, rd, atmp2);
       return;
     }
@@ -8290,8 +8290,8 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       emit_ctype(c, art, as);
       buf_printf(as, " _t%d = ", at);
       emit_obj_deconstruct_open(c, pt, art, t, as);
-      if (aisv) buf_printf(as, "sp_%s_%s(_t%d)", acn, mc(c->scopes[am].name), t);
-      else      buf_printf(as, "sp_%s_%s((sp_%s *)_t%d)", acn, mc(c->scopes[am].name), acn, t);
+      if (aisv) buf_printf(as, "%s(_t%d)", mc_method(c, &c->scopes[am]), t);
+      else      buf_printf(as, "%s((sp_%s *)_t%d)", mc_method(c, &c->scopes[am]), acn, t);
       emit_obj_deconstruct_close(c, pt, art, as);
       buf_puts(as, ";\n");
       if (needs_root(art)) { emit_indent(as, ai); emit_gc_root_tmp(c, art, at, as); buf_puts(as, "\n"); }
@@ -9515,8 +9515,8 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         emit_indent(b, indent + 1); emit_ctype(c, drt, b);
         buf_printf(b, " _t%d = ", arm_t);
         emit_obj_deconstruct_open(c, pt, rrt, t, b);
-        if (isv) buf_printf(b, "sp_%s_%s(_t%d)", dcn, mc(c->scopes[dm].name), t);
-        else     buf_printf(b, "sp_%s_%s((sp_%s *)_t%d)", dcn, mc(c->scopes[dm].name), dcn, t);
+        if (isv) buf_printf(b, "%s(_t%d)", mc_method(c, &c->scopes[dm]), t);
+        else     buf_printf(b, "%s((sp_%s *)_t%d)", mc_method(c, &c->scopes[dm]), dcn, t);
         emit_obj_deconstruct_close(c, pt, rrt, b);
         buf_puts(b, ";\n");
         if (needs_root(drt)) { emit_indent(b, indent + 1); emit_gc_root_tmp(c, drt, arm_t, b); buf_puts(b, "\n"); }
@@ -10385,7 +10385,7 @@ static int emit_case_container_eq(Compiler *c, int cond, int t, TyKind pt, Buf *
     TyKind pty = eplv ? eplv->type : TY_POLY;
     int poly_ret = ems->ret == TY_POLY;
     buf_puts(b, poly_ret ? "sp_poly_truthy(" : "(");
-    emit_method_cname(c, ems, b);
+    buf_puts(b, mc_method(c, ems));
     buf_puts(b, "(");
     emit_expr(c, cond, b);
     buf_puts(b, ", ");
@@ -10443,7 +10443,7 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d ? ", ts, ta);
   if (via_eq) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void *)_t%d) || ", ts, ts, ta);
   buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : ret_ptr ? "(NULL != " : "(");
-  emit_method_cname(c, ws, b);
+  buf_puts(b, mc_method(c, ws));
   if (face) buf_printf(b, "(_t%d, %s(_t%d))) : _t%d.tag == SP_TAG_NIL; })", ta, face, t, ts);
   else if (raw) buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, t, ts);
   else buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
@@ -10478,7 +10478,7 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
       buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d == _t%d || ", tc, tc, t);
     }
     buf_puts(b, "(");
-    emit_method_cname(c, ems, b);
+    buf_puts(b, mc_method(c, ems));
     buf_puts(b, "(");
     if (ident) buf_printf(b, "_t%d", tc);
     else emit_expr(c, cond, b);
@@ -10558,7 +10558,7 @@ static void emit_when_boxed_user_arms(Compiler *c, int cond, int t, TyKind pt, i
     }
     buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) ? ", tpw, tpw, k);
     buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : ret_ptr ? "(NULL != " : "(");
-    emit_method_cname(c, ws, b);
+    buf_puts(b, mc_method(c, ws));
     buf_printf(b, "((sp_%s *)_t%d.v.p, ", c->classes[wdef].c_name, tpw);
     if (raw || pt == TY_POLY) buf_printf(b, "_t%d", t);
     else { char sref[24]; snprintf(sref, sizeof sref, "_t%d", t); emit_boxed_text(c, pt, sref, b); }
@@ -11119,7 +11119,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             int weq = wcid >= 0 ? comp_method_in_chain(c, wcid, "===", &wdef) : -1;
             if (weq < 0 && wcid >= 0) weq = comp_method_in_chain(c, wcid, "==", &wdef);
             if (weq >= 0 && wdef >= 0 && !comp_ty_value_obj(c, wpt)) {
-              buf_printf(b, "sp_%s_%s(", c->classes[wdef].c_name, mc(c->scopes[weq].name));
+              buf_printf(b, "%s(", mc_method(c, &c->scopes[weq]));
               emit_expr(c, conds[j], b);
               buf_printf(b, ", ");
               /* the user method takes its argument boxed when its parameter is
@@ -15977,8 +15977,8 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise)) {
         buf_printf(b, " case %d: { ", k);
         if (hread || wrap || (pt == TY_POLY && at == TY_STRING)) emit_writer_arm_src_root(at, src, b);
-        buf_printf(b, "%ssp_%s_%s(%s%s); break; }", pre.p ? pre.p : "",
-                   c->classes[wmdc].c_name, mc(arm->name), selfp, args.p ? args.p : "");
+        buf_printf(b, "%s%s(%s%s); break; }", pre.p ? pre.p : "",
+                   mc_method(c, arm), selfp, args.p ? args.p : "");
       }
       else
         buf_printf(b, " case %d: { %s break; }", k, raise);
@@ -16843,7 +16843,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
       Scope *ws = &c->scopes[wmi];
       LocalVar *vp = scope_local(ws, ws->pnames[1]);
       emit_indent(b, indent);
-      buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(ws->name), c->classes[cdef].c_name);
+      buf_printf(b, "%s((sp_%s *)", mc_method(c, ws), c->classes[cdef].c_name);
       emit_node_or_tmp(c, recv, recv_tmp, b); buf_puts(b, ", ");
       if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp);
       else masgn_index_key(c, argv[0], kt, b);
@@ -16918,7 +16918,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     }
     if (wmi >= 0 && cdef >= 0) {
       LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
-      buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(c->scopes[wmi].name), c->classes[cdef].c_name);
+      buf_printf(b, "%s((sp_%s *)", mc_method(c, &c->scopes[wmi]), c->classes[cdef].c_name);
       emit_node_or_tmp(c, crecv, recv_tmp, b); buf_puts(b, ", ");
       masgn_conv_param(c, id, wp, vt, val, b);
       buf_puts(b, ");\n");
@@ -19876,8 +19876,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
         emit_ctype(c, ipt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
         free(irv.p);
-        buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
-                   ref, c->classes[idefcls].c_name, mc(ims->name),
+        buf_printf(b, "%s = %s((sp_%s *)%s, _t%d);\n",
+                   ref, mc_method(c, ims),
                    c->classes[idefcls].c_name, ref, iatmp);
       }
       else {
@@ -19978,8 +19978,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
            object of another class was stamped with this one's id. Only a
            return inference left unknown keeps the object box. */
         Buf opc; memset(&opc, 0, sizeof opc);
-        buf_printf(&opc, "sp_%s_%s(%s(sp_%s *)(%s).v.p, %s)",
-                   c->classes[poly_defcls].c_name, mc(pms->name),
+        buf_printf(&opc, "%s(%s(sp_%s *)(%s).v.p, %s)",
+                   mc_method(c, pms),
                    pval ? "*" : "",
                    c->classes[poly_defcls].c_name, ref, uarg);
         if (pms->ret != TY_UNKNOWN) emit_boxed_ret_call(c, pms, opc.p, b);

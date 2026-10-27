@@ -297,7 +297,7 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; SP_GC_ROOT(_t%d); ", tvp);
     int sup_unb = method_expr_is_unbound(c, recv);
     buf_printf(b, "%ssp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(_t%d->self, _t%d->self_kind, (sp_int)(uintptr_t)&", sup_unb ? "sp_bm_set_unbound(" : "", tvp, tvp);
-    emit_method_cname(c, &c->scopes[pmip], b);
+    buf_puts(b, mc_method(c, &c->scopes[pmip]));
     buf_puts(b, ", ");
     emit_str_literal(b, c->scopes[pmip].name ? c->scopes[pmip].name : "?");
     { int ar; if (method_scope_arity(c, pmip, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
@@ -352,7 +352,7 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "({ void *_t%d = (void *)(", bt);
     emit_expr(c, argv[0], b);
     buf_printf(b, "); SP_GC_ROOT(_t%d); sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(_t%d, SP_BM_SELF_OBJ, (sp_int)(uintptr_t)&", bt, bt);
-    emit_method_cname(c, &c->scopes[t2], b);
+    buf_puts(b, mc_method(c, &c->scopes[t2]));
     buf_puts(b, ", ");
     emit_str_literal(b, method_sym_arg(c, mn2));
     { int ar; if (method_scope_arity(c, t2, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
@@ -806,7 +806,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          array pointer, `def f(a, b = 2)` was a C call one argument short, and
          a wrong count was the C compiler's error. */
       Scope *tms = &c->scopes[target];
-      emit_method_cname(c, tms, b);
+      buf_puts(b, mc_method(c, tms));
       buf_puts(b, "(");
       emit_args_filled(c, target, nt_ref(nt, id, "arguments"), "", b);
       emit_method_call_block(c, id, tms, tms->nparams > 0, b);
@@ -1522,7 +1522,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     int umi = method_obj_target_mi(c, id);
     if (umi >= 0) {
       buf_puts(b, "sp_bm_set_unbound(sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(NULL, SP_BM_SELF_NONE, (sp_int)(uintptr_t)&");
-      emit_method_cname(c, &c->scopes[umi], b);
+      buf_puts(b, mc_method(c, &c->scopes[umi]));
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, id));
       { int ar; if (method_scope_arity(c, umi, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
@@ -1708,7 +1708,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     else buf_puts(b, "NULL");
     buf_printf(b, ", %s, ", self_kind);
     if (mi_unemitted) buf_puts(b, "(sp_int)0");
-    else if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); emit_method_cname(c, &c->scopes[mi], b); }
+    else if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); buf_puts(b, mc_method(c, &c->scopes[mi])); }
     else {
       /* `<typed_array>.method(:op)`: lower through a per-(type, op) adapter
          matching the Method dispatch ABI (optcarrot's

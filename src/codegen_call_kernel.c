@@ -92,7 +92,7 @@ static int emit_kconv_obj_nil(Compiler *c, int arg, int ci, const char *m1, cons
   const char *cn = c->classes[d].c_name;
   int t = ++g_tmp;
   buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", cn, t, cn); emit_expr(c, arg, b);
-  buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d ? sp_%s_%s(_t%d) : %s; })", t, t, cn, mc(m1), t, nil_c);
+  buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d ? %s(_t%d) : %s; })", t, t, mc_method(c, &c->scopes[mi]), t, nil_c);
   return 1;
 }
 
@@ -631,9 +631,9 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                 comp_method_in_chain(c, ty_object_class(at), "to_a", NULL) >= 0)) {
         int acid = ty_object_class(at), adef = acid;
         const char *anm = comp_method_in_chain(c, acid, "to_ary", NULL) >= 0 ? "to_ary" : "to_a";
-        (void)comp_method_in_chain(c, acid, anm, &adef);
+        int ami = comp_method_in_chain(c, acid, anm, &adef);
         if (expr_is_held_ref(c, av[0])) {
-          buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[adef].c_name, mc(anm), c->classes[adef].c_name);
+          buf_printf(b, "%s((sp_%s *)(", mc_method(c, &c->scopes[ami]), c->classes[adef].c_name);
           emit_expr(c, av[0], b); buf_puts(b, "))");
         }
         else {
@@ -641,7 +641,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           int tao = ++g_tmp;
           buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[adef].c_name, tao, c->classes[adef].c_name);
           emit_expr(c, av[0], b);
-          buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tao, c->classes[adef].c_name, mc(anm), tao);
+          buf_printf(b, "); SP_GC_ROOT(_t%d); %s(_t%d); })", tao, mc_method(c, &c->scopes[ami]), tao);
         }
       }
       else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
@@ -683,7 +683,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int hci = ty_object_class(at), hdef = hci;
         int hmi = comp_method_in_chain(c, hci, "to_hash", &hdef);
         if (sp_streq(c->scopes[hmi].name, "to_hash")) buf_printf(b, "sp_%s_to_hash(", c->classes[hdef].c_name);
-        else { emit_method_cname(c, &c->scopes[hmi], b); buf_puts(b, "("); }
+        else { buf_puts(b, mc_method(c, &c->scopes[hmi])); buf_puts(b, "("); }
         buf_printf(b, "(sp_%s *)(", c->classes[hdef].c_name);
         emit_expr(c, av[0], b); buf_puts(b, "))");
       }

@@ -1473,7 +1473,7 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
     Scope *ks = &c->scopes[mis[i]];
     buf_printf(b, "if (_t%d.tag == %s) { ", ta, i == 0 ? "SP_TAG_INT" : "SP_TAG_FLT");
     Buf cb; memset(&cb, 0, sizeof cb);
-    emit_method_cname(c, ks, &cb);
+    buf_puts(&cb, mc_method(c, ks));
     buf_printf(&cb, "(_t%d.v.%s, ", ta, i == 0 ? "i" : "f");
     LocalVar *pv = ks->pnames && ks->pnames[0] ? scope_local(ks, ks->pnames[0]) : NULL;
     TyKind pt = pv ? pv->type : TY_POLY;
@@ -1813,7 +1813,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int bmi = comp_method_in_chain(c, ty_object_class(rt), "!", NULL);
       if (bmi >= 0) {
         buf_puts(b, "(");
-        emit_method_cname(c, &c->scopes[bmi], b);
+        buf_puts(b, mc_method(c, &c->scopes[bmi]));
         buf_puts(b, "(");
         emit_expr(c, recv, b);
         buf_puts(b, "))");

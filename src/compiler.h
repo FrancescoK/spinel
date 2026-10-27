@@ -1496,6 +1496,8 @@ typedef struct {
   int *cg_parent;
   int cg_parent_n;
   unsigned cg_parent_ver;
+  /* the last eight method C names mc_method spelled, and the next to reuse */
+  char mc_ring[8][600]; int mc_ring_next;
   /* --share-strings: does the program make an Enumerator over a String
      handle (str_enum_h_made): 0 not asked yet, 1 no, 2 yes */
   unsigned char str_enum_h;

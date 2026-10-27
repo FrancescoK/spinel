@@ -396,8 +396,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     else { snprintf(_dself, sizeof _dself, "(sp_%s *)_t%d.v.p", _dcn, tv); _dstruct = 1; }
     /* a yielding candidate is called through its proc-form clone (#3399) */
     int pfi9 = scope_proc_form_of(c, mi);
-    buf_printf(&cb, "sp_%s_%s(%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
-               mc(pfi9 >= 0 ? c->scopes[pfi9].name : c->scopes[mi].name), _dself);
+    buf_printf(&cb, "%s(%s", mc_method(c, &c->scopes[pfi9 >= 0 ? pfi9 : mi]), _dself);
     /* a default reading an earlier parameter (Thor's `say(message = "", color =
        nil, force_new_line = (message.to_s !~ ...))`) reads it through a local
        each argument binds to first, as the other arms do (ctor_arm_arg) */
@@ -1072,8 +1071,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
      sibling arm at the default dispatch has spelled this out since
      #2441; without it the C build stopped the moment ceaea73e gave
      `join` a user arm and that user's class was a value type. */
-  buf_printf(&cb, "sp_%s_%s(%s%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
-             mc(pfi8 >= 0 ? c->scopes[pfi8].name : c->scopes[mi].name),
+  buf_printf(&cb, "%s(%s%s", mc_method(c, &c->scopes[pfi8 >= 0 ? pfi8 : mi]),
              c->classes[defcls].is_value_type ? "*" : "", selfpbuf2);
   const char *saved_self = g_self;
   /* the defaults below read ivars off this receiver, whatever the
@@ -1229,8 +1227,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
      sibling arm at the default dispatch has spelled this out since
      #2441; without it the C build stopped the moment ceaea73e gave
      `join` a user arm and that user's class was a value type. */
-  buf_printf(&cb, "sp_%s_%s(%s%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
-             mc(pfi8 >= 0 ? c->scopes[pfi8].name : c->scopes[mi].name),
+  buf_printf(&cb, "%s(%s%s", mc_method(c, &c->scopes[pfi8 >= 0 ? pfi8 : mi]),
              c->classes[defcls].is_value_type ? "*" : "", selfpbuf2);
   const char *saved_self = g_self;
   /* the defaults below read ivars off this receiver, whatever the
@@ -1633,7 +1630,7 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
       }
       if (obj_pf >= 0) {
         Buf oc; memset(&oc, 0, sizeof oc);
-        emit_method_cname(c, &c->scopes[obj_pf], &oc);
+        buf_puts(&oc, mc_method(c, &c->scopes[obj_pf]));
         buf_printf(&oc, "(_t%d, _t%d)", tv, (*blk_tmp0));
         TyKind pr = (TyKind)c->scopes[obj_pf].ret;
         buf_puts(b, " default: ");
@@ -1662,7 +1659,7 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
         /* an optional parameter takes its default, spelled with the
            boxed receiver as self */
         Buf ob; memset(&ob, 0, sizeof ob);
-        buf_printf(&ob, "sp_Object_%s(_t%d", mc(c->scopes[obj_mi].name), tv);
+        buf_printf(&ob, "%s(_t%d", mc_method(c, &c->scopes[obj_mi]), tv);
         { const char *saved_self = g_self;
           char oselfbuf[32]; snprintf(oselfbuf, sizeof oselfbuf, "_t%d", tv);
           g_self = oselfbuf;
