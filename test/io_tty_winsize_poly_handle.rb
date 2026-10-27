@@ -8,8 +8,7 @@
 # What is pinned is reachability, not any particular terminal geometry: the
 # test runs with stdout redirected to a file, so it must not depend on a tty
 # existing. winsize is only asserted to answer WITHOUT NoMethodError, because
-# a non-tty answer legitimately differs between the engines (CRuby raises
-# Errno::ENOTTY; Spinel reports zeroes from the ioctl).
+# a non-tty answer raises Errno::ENOTTY in both engines.
 require "io/console"
 
 def winsize_reachable?(stream)

@@ -682,18 +682,19 @@ sp_int sp_File_fileno(sp_File *f) {
   return (sp_int)fileno(f->fp);
 }
 
-/* IO#winsize -> [rows, cols]. Queries the terminal; an OPEN non-tty
-   (pipe/file) has no size, so CRuby raises there, but returning [0, 0] keeps
-   the common "STDOUT.winsize" probe compiling and running without an
-   exception path. A closed handle is the macro's IOError, as everywhere. */
+/* IO#winsize -> [rows, cols]. Queries the terminal; an open non-tty
+   (pipe/file) has no size and raises the ioctl's Errno (ENOTTY), as CRuby's
+   io/console does. A closed handle is the macro's IOError, as everywhere. */
 sp_IntArray *sp_File_winsize(sp_File *f) {
   SP_IO_OPEN(f);
-  sp_int rows = 0, cols = 0;
   struct winsize ws;
-  if (ioctl(fileno(f->fp), TIOCGWINSZ, &ws) == 0) { rows = ws.ws_row; cols = ws.ws_col; }
+  if (ioctl(fileno(f->fp), TIOCGWINSZ, &ws) != 0) {
+    int e = errno;
+    sp_raise_cls(sp_errno_class_name(e), strerror(e));
+  }
   sp_IntArray *a = sp_IntArray_new();
-  sp_IntArray_push(a, rows);
-  sp_IntArray_push(a, cols);
+  sp_IntArray_push(a, (sp_int)ws.ws_row);
+  sp_IntArray_push(a, (sp_int)ws.ws_col);
   return a;
 }
 
