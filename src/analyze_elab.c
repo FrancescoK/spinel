@@ -87,6 +87,10 @@ struct LoadRecord {
   int tail[3];               /* Class, Module and Object, past the singletons (lr_runs); -1 for one the program has not */
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
+  /* the method histories by name (lr_vers_index), as of nentries entries */
+  long nentries, indexed;
+  unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
+  struct LrVers *vers; int nvers, cvers, *vers_head;
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -445,7 +449,9 @@ long long elab_sort_key(Compiler *c, int node) {
    runs them, in seq order, in the frame its statement's body opens: the
    class (or singleton class) a class body, `class << x` or class_eval
    block runs in, main's at a file's top level. */
-typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next; } LrHist;   /* a: class, or -2 - ElabVar; b: singleton */
+/* a: class, or -2 - ElabVar; b: singleton; nlink: the next method history
+   of the same name (lr_vers_index) */
+typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink; } LrHist;
 /* sup: the superclass the first header naming one names, as resolved
    there (has_sup); LR_UNKNOWN_CLASS when it is not a class the record knows */
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup; unsigned char has_sup; } LrClass;
@@ -479,7 +485,7 @@ static LrHist *lr_hist(LoadRecord *r, int a, int b, const char *name, int make) 
   if (!make) return NULL;
   r->hist = lr_grow(r->hist, &r->chist, r->nhist, sizeof *r->hist);
   LrHist *x = &r->hist[r->nhist];
-  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h] };
+  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h], -1 };
   if (!x->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   r->hhead[h] = r->nhist++;
   return x;
@@ -491,6 +497,7 @@ static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
   if (d.target && !(d.target = strdup(d.target))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   x->v = lr_grow(x->v, &x->cap, x->n, sizeof *x->v);
   x->v[x->n++] = d;
+  r->nentries++;
 }
 
 /* cls's history (LR_MAIN: main's, Object's), NULL past the record's classes */
@@ -887,6 +894,56 @@ void elab_program(Compiler *c) {
   if (r->check) elab_check_record(c);
 }
 
+/* ---- by name ----
+   The method histories of one name across the classes, chained through
+   LrHist.nlink from the name's entry; nver counts the versions they hold.
+   A version is an entry that gives or takes the method (a def, a
+   define_method, an attr, an alias, a module_function copy, an undef or
+   remove), not a visibility change. lr_vers_index indexes the histories as
+   they stand, again once more entries have been recorded. */
+typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes */
+
+static int lr_is_version(const LrDef *v) { return v->kind <= LR_REMOVE; }
+
+static void lr_vers_index(LoadRecord *r) {
+  if (r->vers_head && r->indexed == r->nentries) return;
+  if (!r->vers_head && !(r->vers_head = malloc(sizeof(int) * LR_BUCKETS))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < LR_BUCKETS; b++) r->vers_head[b] = -1;
+  r->nvers = 0;
+  for (int i = 0; i < r->nhist; i++) {
+    LrHist *h = &r->hist[i];
+    h->nlink = -1;
+    if (h->a < LR_MAIN) continue;
+    unsigned b = lr_hash(0, 0, h->name);
+    int k = r->vers_head[b];
+    while (k >= 0 && !sp_streq(r->vers[k].name, h->name)) k = r->vers[k].next;
+    if (k < 0) {
+      r->vers = lr_grow(r->vers, &r->cvers, r->nvers, sizeof *r->vers);
+      k = r->nvers++;
+      r->vers[k] = (LrVers){ h->name, -1, 0, r->vers_head[b], 0 };
+      r->vers_head[b] = k;
+    }
+    h->nlink = r->vers[k].first;
+    r->vers[k].first = i;
+    for (int j = 0; j < h->n; j++) r->vers[k].nver += lr_is_version(&h->v[j]);
+  }
+  r->indexed = r->nentries;
+}
+
+static LrVers *lr_vers(LoadRecord *r, const char *name) {
+  if (!name) return NULL;
+  lr_vers_index(r);
+  for (int k = r->vers_head[lr_hash(0, 0, name)]; k >= 0; k = r->vers[k].next)
+    if (sp_streq(r->vers[k].name, name)) return &r->vers[k];
+  return NULL;
+}
+
+int elab_method_versions(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
+  return x ? x->nver : 0;
+}
+
 /* ---- the queries ---- */
 /* The live version of history h at p (late: as of the load's end):
    ELAB_YES, ELAB_NO (none: ask on), LR_STOP (undefined here), ELAB_UNKNOWN. */
@@ -982,6 +1039,121 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
   if (!c->lrec || !c->lrec->recorded || !name) return ELAB_UNKNOWN;
   int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, 0, out, 0);
   return o == LR_STOP ? ELAB_NO : o;
+}
+
+/* Where the version recorded at node in cls's history of `name` (its
+   singleton's when sg) stops being that history's live entry: the next
+   version's point. */
+int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end) {
+  *end = (LoadPoint){ -1, -1 };
+  LoadRecord *r = c->lrec;
+  const LrHist *h = r && r->recorded ? lr_hist(r, cls, sg, name, 0) : NULL;
+  int i = 0;
+  while (h && i < h->n && !(h->v[i].node == node && lr_is_version(&h->v[i]))) i++;
+  LoadPoint p = elab_point_of(c, node);
+  if (!h || i == h->n || p.region < 0) return ELAB_UNKNOWN;
+  for (int j = i + 1; j < h->n; j++) {
+    const LrDef *v = &h->v[j];
+    if (!lr_is_version(v)) continue;
+    LoadPoint q = elab_point_of(c, v->node);
+    if (v->may || elab_cmp(p, q) != PROG_BEFORE) return ELAB_UNKNOWN;
+    *end = q;
+    return ELAB_YES;
+  }
+  return ELAB_NO;
+}
+
+/* Is class or module k one of cls's ancestors (its singleton's when sg)
+   at p, or may it be: cls, a superclass, a module mixed into one of them? */
+static int lr_in_ancestry(Compiler *c, int cls, int sg, int k, LoadPoint p) {
+  for (int a = cls, d = 0; a >= LR_MAIN && d < 64; a = lr_super(c, a), d++)
+    if (a == k) return 1;
+  return k >= 0 && lr_search(c, cls, sg, NULL, k, p, 0, 0, NULL, 0) != ELAB_NO;
+}
+
+/* Does node's statement run strictly between p0 and p1, or is it not
+   known not to? */
+static int lr_inside(Compiler *c, int node, LoadPoint p0, LoadPoint p1) {
+  LoadPoint q = elab_point_of(c, node);
+  int a = elab_cmp(p0, q), b = elab_cmp(q, p1);
+  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE);
+}
+
+/* The version of cls's `name` live at every point from p0 up to p1: the
+   one live just before p1, when nothing that could change the answer was
+   recorded in between -- a version of the name in a history on cls's
+   chain, a mixin into a class on it of a module that has or may have the
+   name, code the record cannot follow run on one of them. */
+int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p0, LoadPoint p1, const LrDef **out) {
+  if (out) *out = NULL;
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded || !name || cls < LR_MAIN || p0.region < 0 || elab_cmp(p0, p1) != PROG_BEFORE) return ELAB_UNKNOWN;
+  const LrVers *x = lr_vers(r, name);
+  for (int i = x ? x->first : -1; i >= 0; i = r->hist[i].nlink) {
+    const LrHist *h = &r->hist[i];
+    if ((h->b != sg && !sg) || !lr_in_ancestry(c, cls, sg, h->a, p1)) continue;
+    for (int j = 0; j < h->n; j++)
+      if (lr_is_version(&h->v[j]) && lr_inside(c, h->v[j].node, p0, p1)) return ELAB_UNKNOWN;
+  }
+  for (int k = LR_MAIN; k + 1 < r->ncls; k++) {
+    const LrClass *kc = lr_class(r, k);
+    const LrHist *op = lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(k), "", 0);
+    if ((!kc || !kc->nmix) && !op) continue;
+    if (!lr_in_ancestry(c, cls, sg, k, p1)) continue;
+    for (int j = 0; kc && j < kc->nmix; j++) {
+      const LrMixin *m = &kc->mix[j];
+      if (lr_inside(c, m->node, p0, p1) &&
+          (m->mod < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
+    }
+    for (int j = 0; op && j < op->n; j++)
+      if (lr_inside(c, op->v[j].node, p0, p1)) return ELAB_UNKNOWN;
+  }
+  int o = lr_search(c, cls, sg, name, -1, p1, 0, 0, out, 0);
+  return o == LR_STOP ? ELAB_NO : o;
+}
+
+/* Can the program run code the record has not seen? Only through a load
+   whose target it could not resolve: under --load-model=graph a LoadNode
+   whose path is computed when it runs, inline a require, require_relative,
+   load or autoload the parse left in the tree (one it resolved it spliced
+   away). Read from the tree, once. */
+int elab_runs_unseen(Compiler *c) {
+  LoadRecord *r = lr_get(c);
+  if (!r->unseen) {
+    const NodeTable *nt = c->nt;
+    int hit = 0, n = 0;
+    const int *v = nt_nodes_of_kind(nt, NK_LoadNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = is_load_how_computed(nt_str(nt, v[i], "how"));
+    v = nt_nodes_of_kind(nt, NK_CallNode, &n);
+    for (int i = 0; !hit && i < n; i++) {
+      int recv = nt_ref(nt, v[i], "receiver");
+      hit = is_file_load_name(nt_str(nt, v[i], "name")) &&
+            (recv < 0 || (nt_kind(nt, recv) == NK_ConstantReadNode && is_object_root(nt_str(nt, recv, "name"))));
+    }
+    r->unseen = hit ? 2 : 1;
+  }
+  return r->unseen == 2;
+}
+
+/* May a version of `name` run outside its interval? Only the calls bound
+   to it reach it while nothing else names the method: no Symbol or String
+   in the program spells the name (an alias, a method object, a send, a
+   respond_to?, an enum_for), the program names or makes no method by a
+   name it computes (Compiler.names_by_value), and it runs no code the
+   record has not seen (elab_runs_unseen). */
+int elab_version_captured(Compiler *c, const char *name) {
+  LrVers *x = c->lrec && c->lrec->recorded ? lr_vers(c->lrec, name) : NULL;
+  if (!x) return 1;
+  if (!x->captured) {
+    const NodeTable *nt = c->nt;
+    int hit = c->names_by_value || elab_runs_unseen(c), n = 0;
+    const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
+    v = nt_nodes_of_kind(nt, NK_StringNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "unescaped"), name);
+    x->captured = hit ? 2 : 1;
+  }
+  return x->captured == 2;
 }
 
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
@@ -1297,6 +1469,30 @@ void elab_dump(Compiler *c, FILE *out) {
       fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
     fputc('\n', out);
   }
+  /* a history with two versions or more: each one's interval, up to the
+     next version, and the version its own name reaches over it; the
+     versions of the name in every history; whether the program names it */
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    int nv = 0;
+    for (int j = 0; h->a >= LR_MAIN && j < h->n; j++) nv += lr_is_version(&h->v[j]);
+    if (nv < 2) continue;
+    fprintf(out, "versions %s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);
+    for (int j = 0, k = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      if (!lr_is_version(v)) continue;
+      LoadPoint end;
+      int e = elab_version_end(c, h->a, h->name, h->b, v->node, &end);
+      fprintf(out, "%s %s#%d", k++ ? "," : "", kinds[v->kind], elab_point_of(c, v->node).seq);
+      if (e != ELAB_YES) { fprintf(out, "..%s", e == ELAB_NO ? "end" : "?"); continue; }
+      const LrDef *d = NULL;
+      int o = elab_method_over(c, h->a, h->name, h->b, elab_point_of(c, v->node), end, &d);
+      fprintf(out, "..#%d over=", end.seq);
+      if (o == ELAB_YES && d) fprintf(out, "%s#%d", kinds[d->kind], elab_point_of(c, d->node).seq);
+      else fputs(o == ELAB_NO ? "none" : "unknown", out);
+    }
+    fprintf(out, "; %d of the name%s\n", elab_method_versions(c, h->name), elab_version_captured(c, h->name) ? ", named" : "");
+  }
 }
 
 /* The record's visibility of each instance method at the end of the load
@@ -1358,7 +1554,7 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   free(r->names);
-  free(r->hist); free(r->hhead); free(r->cls);
+  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }

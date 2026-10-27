@@ -1,0 +1,37 @@
+load record: 23 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 LoadNode line 8
+r0 #2 f1 ProgramNode line 2
+r0 #3 f1 ModuleNode Shiny line 2
+  r0 #4 f1 DefNode get line 3
+r0 #5 f0 ModuleNode Tally line 9
+  r0 #6 f0 DefNode up line 10
+r0 #7 f0 ModuleNode Tally line 12
+  r0 #8 f0 DefNode up line 13
+  r0 #9 f0 DefNode kept line 14
+r0 #10 f0 CallNode p line 16
+r0 #11 f0 ModuleNode Tally line 17
+  r0 #12 f0 DefNode kept line 18
+r0 #13 f0 CallNode p line 20
+r0 #14 f0 CallNode p line 21
+r0 #15 f0 ClassNode Box line 22
+  r0 #16 f0 DefNode get line 23
+r0 #17 f0 ClassNode Box line 25
+  r0 #18 f0 CallNode include line 26
+  r0 #19 f0 DefNode get line 27
+r0 #20 f0 ClassNode Box line 29
+  r0 #21 f0 DefNode get line 30
+r0 #22 f0 CallNode p line 32
+class Shiny: body#3
+class Tally: body#5 body#7 body#11
+class Box: body#15 body#17 body#20 include Shiny#18
+const Shiny: write#3
+Shiny#get: def#4 end=yes
+const Tally: write#5
+Tally.up: def#6 def#8 end=yes
+Tally.kept: def#9 def#12 end=yes
+const Box: write#15
+Box#get: def#16 def#19 def#21 end=yes
+versions Tally.up: def#6..#8 over=def#6, def#8..end; 2 of the name
+versions Tally.kept: def#9..#12 over=def#9, def#12..end; 2 of the name, named
+versions Box#get: def#16..#19 over=unknown, def#19..#21 over=def#19, def#21..end; 4 of the name

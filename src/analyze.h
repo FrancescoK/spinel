@@ -191,6 +191,29 @@ void elab_program(Compiler *c);
    hook (`inherited`, `included`, `method_added`, ...) is asked as the
    singleton method it is: sg = 1. */
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
+/* the versions of method `name` the record holds, in every class's and
+   module's histories: defs, define_methods, attrs, aliases, module_function
+   copies, undefs and removes (not visibility changes) */
+int elab_method_versions(Compiler *c, const char *name);
+/* where the version recorded at def node `node` in cls's history of `name`
+   (singleton when sg) is replaced: ELAB_YES with *end the next version's
+   point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN
+   when node is no version there or has no point, or the next version may
+   not run or runs in another region */
+int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end);
+/* the version of cls's method `name` (singleton when sg) live at every
+   point from p0 up to p1, as elab_method_at answers it: ELAB_UNKNOWN when
+   something recorded in between could change the answer (a version of
+   the name on cls's chain, a mixin of a module that may have it, code the
+   record cannot follow), or when p0 has no point or is not before p1 */
+int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p0, LoadPoint p1, const LrDef **out);
+/* can the program run code the record has not seen: a load whose target
+   it could not resolve (a computed path, a load the parse left)? */
+int elab_runs_unseen(Compiler *c);
+/* may a version of `name` run outside its interval: does the program name
+   the method by a Symbol or a String, name or make methods by computed
+   names, or run code the record has not seen? */
+int elab_version_captured(Compiler *c, const char *name);
 /* is module mod in the ancestors of cls (of its singleton when sg) at p? */
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
 /* was a non-nil value written to the variable before p: a write that
