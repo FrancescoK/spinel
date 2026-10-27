@@ -623,8 +623,11 @@ static int lr_class_opened(Compiler *c, int node) {
    instance_eval or instance_exec block on a class (LR_FS_IEVAL) a def, an
    alias or an undef goes on the singleton class, but self is the class
    itself: a call on self there (include, prepend, attr_accessor,
-   define_method, alias_method) is the class's own, as in CRuby. */
-enum { LR_FS_NONE, LR_FS_SCLASS, LR_FS_IEVAL };
+   define_method, alias_method) is the class's own, as in CRuby. In such a
+   block on a singleton class (LR_FS_IEVAL_SCLASS, `class << C;
+   instance_eval { ... }`) self is that singleton class, and a def goes on
+   the singleton class's own singleton, which the record does not hold. */
+enum { LR_FS_NONE, LR_FS_SCLASS, LR_FS_IEVAL, LR_FS_IEVAL_SCLASS };
 
 /* elab_program's state: each statement's frame class (fc) and singleton
    flag (fs), each frame's visibility state (vs) and each file's top
@@ -707,11 +710,11 @@ static int lr_class_ref(Compiler *c, int node) {
 }
 
 /* The class a call's receiver names: none or self, the frame's (its
-   singleton only in a `class << x` body); a constant, its class (not
+   singleton where self is a singleton class); a constant, its class (not
    singleton) */
 static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
   NodeKind k = recv >= 0 ? nt_kind(x->c->nt, recv) : NK_SelfNode;
-  *sg = k == NK_SelfNode && fs == LR_FS_SCLASS;
+  *sg = k == NK_SelfNode && (fs == LR_FS_SCLASS || fs == LR_FS_IEVAL_SCLASS);
   if (k == NK_SelfNode) return fc;
   return lr_class_ref(x->c, recv);
 }
@@ -756,7 +759,8 @@ static void lr_frame(ElabRec *x, int e) {
     const char *nm = nt_str(nt, call, "name");
     int rsg;
     cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
-    sg = is_instance_eval_family(nm) ? LR_FS_IEVAL : LR_FS_NONE;
+    /* the receiver's singleton side is self's, and a class_eval's definee */
+    sg = is_instance_eval_family(nm) ? (rsg ? LR_FS_IEVAL_SCLASS : LR_FS_IEVAL) : rsg ? LR_FS_SCLASS : LR_FS_NONE;
   }
   if (cls < LR_MAIN) cls = LR_UNKNOWN_CLASS;
   x->fc[e] = cls; x->fs[e] = (unsigned char)sg;
@@ -784,8 +788,15 @@ static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, L
     lr_version(x->r, cls, 1, name, (LrDef){ node, LR_COPY, SP_VIS_PUBLIC, (unsigned char)may, 0, name });
 }
 
+/* The class a frame's def, alias or undef defines on (in *sg, on its
+   singleton) */
+static int lr_definee(int fc, int fs, int *sg) {
+  *sg = fs != LR_FS_NONE;
+  return fs == LR_FS_IEVAL_SCLASS ? LR_UNKNOWN_CLASS : fc;
+}
+
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
-  int recv = nt_ref(x->c->nt, def, "receiver"), sg = fs != LR_FS_NONE, cls = fc;
+  int recv = nt_ref(x->c->nt, def, "receiver"), sg, cls = lr_definee(fc, fs, &sg);
   if (recv >= 0) { cls = lr_receiver(x, recv, fc, LR_FS_SCLASS, &sg); sg = 1; }
   lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
 }
@@ -1005,13 +1016,15 @@ static void lr_record_stmt(ElabRec *x, int e) {
     case NK_DefNode: lr_def(x, node, fc, fs, *vs, may); break;
     case NK_AliasMethodNode: {
       int nn = nt_ref(nt, node, "new_name"), on = nt_ref(nt, node, "old_name");
-      lr_method(x, fc, fs != LR_FS_NONE, nn >= 0 ? vis_arg_name(nt, nn) : NULL, node, LR_ALIAS, *vs, may, on >= 0 ? vis_arg_name(nt, on) : NULL);
+      int sg, cls = lr_definee(fc, fs, &sg);
+      lr_method(x, cls, sg, nn >= 0 ? vis_arg_name(nt, nn) : NULL, node, LR_ALIAS, *vs, may, on >= 0 ? vis_arg_name(nt, on) : NULL);
       break;
     }
     case NK_UndefNode: {
       int n = 0;
       const int *v = nt_arr(nt, node, "names", &n);
-      for (int i = 0; i < n; i++) lr_method(x, fc, fs != LR_FS_NONE, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
+      int sg, cls = lr_definee(fc, fs, &sg);
+      for (int i = 0; i < n; i++) lr_method(x, cls, sg, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
       break;
     }
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may); break;
