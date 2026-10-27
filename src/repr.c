@@ -33,17 +33,17 @@ static int class_chain_depth(Compiler *c, int cid, int k) {
   return 1 << 20;
 }
 
-/* A call on an object of class `cid` dispatches to `mi` or to a subclass's
-   own `nm`: can one of them answer nil -- its answer is an oint, or it
-   answers nil itself (`def nop = nil` beside an override answering 7)? The
-   dispatch switch then holds the oint (g_disp_ro). mi is -1 for an attr
-   reader, whose own answer is its field's (reader_ivar_has_nilbit). */
-static int dispatch_answers_nil(Compiler *c, int cid, const char *nm, int mi) {
+/* Call `call` on an object of class `cid` dispatches to `mi` or to a
+   subclass's own `nm`: can one of them answer nil -- its answer is an oint,
+   or it answers nil itself (`def nop = nil` beside an override answering
+   7)? The dispatch switch then holds the oint (g_disp_ro). mi is -1 for an
+   attr reader, whose own answer is its field's (reader_ivar_has_nilbit). */
+static int dispatch_answers_nil(Compiler *c, int call, int cid, const char *nm, int mi) {
   if (mi >= 0 && method_ret_is_oint(&c->scopes[mi])) return 1;
   int any_nil = mi >= 0 && (c->scopes[mi].ret == TY_NIL || c->scopes[mi].ret == TY_VOID), overridden = 0;
   int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
   for (int k = 0; k < nd; k++) {
-    int odef = -1, omi = comp_method_in_chain(c, ds[k], nm, &odef);
+    int odef = -1, omi = call_target(c, call, ds[k], nm, 0, &odef);
     if (omi < 0 || omi == mi || odef != ds[k]) continue;
     overridden = 1;
     if (method_ret_is_oint(&c->scopes[omi])) return 1;
@@ -265,7 +265,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
        carries a nil bit or a subclass's override can answer nil (the read
        dispatches, emit_reader_override_dispatch), the plain field
        otherwise, as with an explicit receiver below */
-    else if (src >= 0) return reader_ivar_has_nilbit(c, src, nm) || dispatch_answers_nil(c, src, nm, -1);
+    else if (src >= 0) return reader_ivar_has_nilbit(c, src, nm) || dispatch_answers_nil(c, node, src, nm, -1);
     else if (r < 0) mi = comp_self_call_mi(c, node, nm);
     else if (ty_is_object(rt)) {
       int cid = ty_object_class(rt);
@@ -278,7 +278,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       if (an2 == 0 && blk < 0 && comp_reader_in_chain(c, cid, nm, &rdef) &&
           (mi < 0 || (mdef != cid &&
                       class_chain_depth(c, cid, rdef < 0 ? cid : rdef) <= class_chain_depth(c, cid, mdef < 0 ? cid : mdef))))
-        return reader_ivar_has_nilbit(c, cid, nm) || dispatch_answers_nil(c, cid, nm, -1);
+        return reader_ivar_has_nilbit(c, cid, nm) || dispatch_answers_nil(c, node, cid, nm, -1);
     }
     else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
       int rci = comp_class_index(c, nt_str(nt, r, "name"));
@@ -310,7 +310,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int dcid = -1;
       if (r >= 0 && ty_is_object(rt)) dcid = ty_object_class(rt);
       else if (r < 0) { Scope *self = comp_scope_of(c, node); if (self && !self->is_cmethod) dcid = self->class_id; }
-      if (dcid >= 0 && dispatch_answers_nil(c, dcid, nm, mi)) return 1;
+      if (dcid >= 0 && dispatch_answers_nil(c, node, dcid, nm, mi)) return 1;
     }
     /* ...and a class method's call of a sibling: an inherited body runs for
        its class and each subclass, each calling its own class's method of the

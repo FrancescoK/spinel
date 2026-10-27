@@ -21,7 +21,6 @@ src/analyze.c a_dispatch_arm_takes_block which classes answer the name
 src/analyze.c act_add_overrides which subclasses override the name
 src/analyze.c act_has_override which subclasses override the name
 src/analyze.c compute_reachable comp_method_in_chain a send's name, in every class
-src/analyze.c dispatch_answers_nil which classes answer the name
 src/analyze.c ie_class_answers which classes answer the name
 src/analyze.c ie_class_value_target which classes answer the name
 src/analyze.c ie_poly_self_classes which classes answer the name
@@ -58,7 +57,6 @@ src/compiler.c mixin_answers_first which modules answer the name
 src/compiler.c mixin_level_answers which modules answer the name
 src/compiler.c mixin_level_walk which modules answer the name
 src/compiler.c pc_build which classes answer the name
-src/repr.c dispatch_answers_nil which classes answer the name
 
 # is a name defined (or listable) for a class, module or the program
 src/analyze.c ps_op_reopened an operator's presence
