@@ -8685,7 +8685,12 @@ int desugar_proc_expr_block_arg(Compiler *c) {
    through to_hash. Rewrite the splat's value from `obj` to `obj.to_hash` so the
    existing double-splat machinery (which pre-evaluates the source hash into a
    temp -- once) forwards the converted hash. Mirrors the `to_ary` splice
-   coercion; once rewritten the value is a to_hash call and is not revisited. */
+   coercion; once rewritten the value is a to_hash call and is not revisited.
+   A Hash subclass instance is a Hash already: CRuby splats its own pairs and
+   never calls its #to_hash, so its value becomes Hash's own `obj.to_h` (a
+   builtin_only call the class's methods do not take), where the splat of the
+   object found no pairs. A reopened Hash's own #to_hash keeps the to_hash
+   call, as on a plain object. */
 int desugar_to_hash_splat(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -8694,12 +8699,15 @@ int desugar_to_hash_splat(Compiler *c) {
     if (nt_kind(nt, id) != NK_AssocSplatNode) continue;
     int val = nt_ref(nt, id, "value");
     if (val < 0) continue;
-    if (nt_kind(nt, val) == NK_CallNode &&
-        nt_str(nt, val, "name") && sp_streq(nt_str(nt, val, "name"), "to_hash")) continue;
+    if (nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
+        (sp_streq(nt_str(nt, val, "name"), "to_hash") || nt_int(nt, val, "hashsub_splat", 0))) continue;
     TyKind t = infer_type(c, val);
     if (!ty_is_object(t)) continue;
     int cid = ty_object_class(t);
-    if (cid < 0 || comp_method_in_chain(c, cid, "to_hash", NULL) < 0) continue;
+    int sub = cid >= 0 && comp_ary_is_hash(c, cid);
+    int hdc = -1, hmi = cid >= 0 ? comp_method_in_chain(c, cid, "to_hash", &hdc) : -1;
+    if (sub && hmi >= 0 && hdc == comp_arysub_reopen(c, cid)) sub = 0;
+    if (cid < 0 || (!sub && hmi < 0)) continue;
     int base = nt->count;
     int clone = nt_clone_subtree(nt, val);
     int call = nt_new_node(nt, "CallNode");
@@ -8715,9 +8723,13 @@ int desugar_to_hash_splat(Compiler *c) {
       continue;
     }
     nt_node_set_ref(nt, call, "receiver", clone);
-    nt_node_set_str(nt, call, "name", "to_hash");
+    nt_node_set_str(nt, call, "name", sub ? "to_h" : "to_hash");
     nt_node_set_ref(nt, call, "arguments", -1);
     nt_node_set_ref(nt, call, "block", -1);
+    if (sub) {
+      nt_node_set_int(nt, call, "builtin_only", 1);
+      nt_node_set_int(nt, call, "hashsub_splat", 1);
+    }
     nt_node_set_ref(nt, id, "value", call);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
