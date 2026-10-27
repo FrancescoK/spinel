@@ -35317,11 +35317,79 @@ static int new_recv_arm(const VpLeaf *leaf, void *ud) {
   a->n += k;
   return 0;
 }
+/* The iterators whose block's first parameter is each element in turn */
+static int elem_block_iter(const char *nm) {
+  static const char *const IT[] = { "each", "map", "collect", "flat_map", "collect_concat", "select",
+    "filter", "reject", "find", "detect", "each_with_index", "filter_map", "any?", "all?", "none?",
+    "one?", "sum", "count", "min_by", "max_by", "sort_by", "group_by", "partition", "find_index",
+    "each_entry", "take_while", "drop_while", NULL };
+  return nm && str_in(nm, IT);
+}
+
+/* A read of a block's first parameter where the block walks a literal
+   Array (`[A, B].map { |k| k.new(v) }`) and nothing in it writes the
+   parameter: the classes the literal's elements name, as new_recv_classes
+   answers for `[A, B][i]`. 0 otherwise. */
+static int new_recv_block_param_classes(Compiler *c, int recv, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_str(nt, recv, "name");
+  if (!vn) return 0;
+  const int *par = comp_parent_map(c);
+  int blk = -1;
+  for (int p = par[recv]; p >= 0 && blk < 0; p = par[p]) {
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_DefNode || pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_LambdaNode) return 0;
+    if (pk != NK_BlockNode) continue;
+    int bp = nt_ref(nt, p, "parameters");
+    int ps = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int rn = 0; const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+    for (int i = 0; i < rn; i++) {
+      const char *pn = nt_str(nt, rq[i], "name");
+      if (pn && sp_streq(pn, vn)) {
+        if (i != 0 || nt_kind(nt, rq[i]) != NK_RequiredParameterNode) return 0;
+        blk = p;
+      }
+    }
+    /* a block that declares the name among its locals otherwise shadows it */
+    if (blk < 0 && bp >= 0) {
+      int ln = 0; const int *ls = nt_arr(nt, bp, "locals", &ln);
+      for (int i = 0; i < ln; i++) if (sp_streq(nt_str(nt, ls[i], "name"), vn)) return 0;
+    }
+  }
+  if (blk < 0) return 0;
+  int call = par[blk];
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != blk ||
+      !elem_block_iter(nt_str(nt, call, "name")))
+    return 0;
+  int ar = nt_ref(nt, call, "receiver");
+  if (ar < 0 || nt_kind(nt, ar) != NK_ArrayNode) return 0;
+  /* the parameter keeps the element: no write of the name inside the block */
+  Scope *sc = comp_scope_of(c, recv);
+  if (!sc) return 0;
+  for (int w = comp_lvw_first_sc(c, (int)(sc - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    for (int p = par[w]; p >= 0; p = par[p]) if (p == blk) return 0;
+  }
+  int en = 0; const int *ev = nt_arr(nt, ar, "elements", &en);
+  int n = 0;
+  for (int e = 0; e < en; e++) {
+    int k = n < cap ? new_recv_classes(c, ev[e], out + n, cap - n) : 0;
+    if (k <= 0) return 0;
+    n += k;
+  }
+  return n;
+}
+
 int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || cap <= 0) return 0;
   NodeKind rk = nt_kind(nt, recv);
-  if (rk == NK_LocalVariableReadNode) { int k = class_var_static_ci(c, recv); if (k < 0) return 0; out[0] = k; return 1; }
+  if (rk == NK_LocalVariableReadNode) {
+    int k = class_var_static_ci(c, recv);
+    if (k < 0) return new_recv_block_param_classes(c, recv, out, cap);
+    out[0] = k; return 1;
+  }
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
     int k = comp_class_index(c, nt_str(nt, recv, "name"));
     if (k < 0) return 0;
