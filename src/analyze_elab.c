@@ -122,6 +122,8 @@ static void lr_fit(LoadRecord *r, int n) {
   if (n > r->n) r->n = n;
 }
 
+static void lr_check_map(Compiler *c, const int *was, const unsigned char *wbits);
+
 /* Statement `node` joins the record where the walk stands, *pos; pos then
    stands on its path (EP_SPINE), as statement e */
 static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
@@ -265,6 +267,15 @@ int elab_ref_last(const NodeTable *nt, int id, int ref) {
                       (k == NK_BeginNode && ref == nt_ref(nt, id, "ensure_clause")));
 }
 
+/* Under the registration's walk, node id of the statement pos stands in
+   takes that statement's point at its first visit, for a query while the
+   walk runs; the climb places it again after the walk (elab_points_walk).
+   0 for a node of a statement's own visited before, whose subtree is. */
+static int lr_place(LoadRecord *r, int id, const ElabPos *pos) {
+  if (r->at[id] == -2) { r->at[id] = pos->e; r->bits[id] = pos->bits; return 1; }
+  return pos->kind != EP_NODE;
+}
+
 /* The statements at node id, which stands at pos, in the order they run:
    id itself when pos makes it one (a subtree two lists share joins once),
    then those its parts lead to (elab_child) */
@@ -276,20 +287,21 @@ static void elab_walk(ElabWalk *w, int id, ElabPos pos) {
     if (w->r->at[id] != -2) return;
     e = lr_add(w, id, &pos);
   }
+  else if (w->reg && !lr_place(w->r, id, &pos)) return;
   int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
   for (int pass = 0; pass < 3; pass++) {   /* the refs, the arrays, the refs that run last */
     for (int i = 0; pass != 1 && i < nr; i++) {
       int ch = nt_ref_at(nt, id, i);
       if (elab_ref_last(nt, id, ch) != (pass == 2)) continue;
       ElabPos q = elab_child(nt, id, ch, &pos);
-      if (q.kind != EP_NODE) elab_walk(w, ch, q);
+      if (q.kind != EP_NODE || w->reg) elab_walk(w, ch, q);
     }
     for (int i = 0; pass == 1 && i < na; i++) {
       int m = 0;
       const int *v = nt_arr_at(nt, id, i, &m);
       for (int j = 0; j < m; j++) {
         ElabPos q = elab_child(nt, id, v[j], &pos);
-        if (q.kind != EP_NODE) elab_walk(w, v[j], q);
+        if (q.kind != EP_NODE || w->reg) elab_walk(w, v[j], q);
       }
     }
   }
@@ -298,12 +310,14 @@ static void elab_walk(ElabWalk *w, int id, ElabPos pos) {
 
 /* Under the registration's walk (elab_program), the scope walk enters
    node ch at *pos: a statement joins the record (lr_add) and its index is
-   returned, for elab_walk_leave; a subtree two lists share, entered again,
-   is entered with the record off (e -1, as a walk outside it). */
+   returned, for elab_walk_leave; any other node takes its statement's
+   point (lr_place); a subtree two lists share, entered again, is entered
+   with the record off (e -1, as a walk outside it). */
 int elab_walk_enter(Compiler *c, int ch, ElabPos *pos) {
   LoadRecord *r = c->lrec;
-  if (!r || !r->walk || pos->kind != EP_NEW || ch < 0) return -1;
+  if (!r || !r->walk || ch < 0 || (pos->e < 0 && pos->kind != EP_NEW)) return -1;
   lr_fit(r, c->nt->count);
+  if (pos->kind != EP_NEW) { lr_place(r, ch, pos); return -1; }
   if (r->at[ch] == -2) return lr_add(r->walk, ch, pos);
   pos->kind = EP_NODE; pos->e = -1;
   return -1;
@@ -391,6 +405,14 @@ static void elab_points_walk(Compiler *c, int reg) {
   r->ver = nt->version;
   const int *par = comp_parent_map(c);
   int n = r->n;
+  /* a node the walk placed at its first visit is placed again by the
+     climb, as a rebuild places it; check mode compares the two */
+  int *was = reg && r->check ? malloc(sizeof(int) * (size_t)(n ? n : 1)) : NULL;
+  unsigned char *wbits = was ? malloc((size_t)(n ? n : 1)) : NULL;
+  if (was && !wbits) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (was) { memcpy(was, r->at, sizeof(int) * (size_t)n); memcpy(wbits, r->bits, (size_t)n); }
+  for (int id = 0; reg && id < n; id++)
+    if (r->at[id] < 0 || r->st[r->at[id]].node != id) { r->at[id] = -2; r->bits[id] = 0; }
   int *stack = malloc(sizeof(int) * (size_t)(n ? n : 1));
   if (!stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* The rest from their nearest walked statement, up each node's parent:
@@ -428,6 +450,8 @@ static void elab_points_walk(Compiler *c, int reg) {
       if ((r->bits[p] & LR_BODY) || nt_kind(nt, p) == NK_DefNode) r->bits[b] |= LR_BODY;
     }
   }
+  if (was) lr_check_map(c, was, wbits);
+  free(was); free(wbits);
   free(up); free(live); free(stack); free(w.entered);
   r->builds++;
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
@@ -1486,6 +1510,23 @@ static void elab_check_record(Compiler *c) {
       fprintf(stderr, "spinel-elab-check: bodies class=%s reader=%d record=%d\n", c->classes[ci].name, nr, no);
   }
   free(bci); free(bnode);
+}
+
+/* The map the walk made as it went (was, wbits: each node's point at its
+   first visit, -2 for one it did not reach) against the climb's */
+static void lr_check_map(Compiler *c, const int *was, const unsigned char *wbits) {
+  LoadRecord *r = c->lrec;
+  LrCheck *f = lr_family(r, "the walk's map");
+  for (int id = 0; id < r->n; id++) {
+    if (was[id] == -2) continue;
+    f->asked++;
+    if (was[id] == r->at[id] && wbits[id] == r->bits[id]) continue;
+    f->differ++;
+    if (r->shown++ >= LR_CHECK_SHOW) continue;
+    char d[96];
+    lr_node_desc(c, id, d, sizeof d);
+    fprintf(stderr, "spinel-elab-check: map node=%s walk=#%d bits=%d\n", d, was[id], wbits[id]);
+  }
 }
 
 /* ---- --dump-load-record ---- */
