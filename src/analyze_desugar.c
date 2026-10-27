@@ -12084,6 +12084,80 @@ static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
   return 0;
 }
 
+/* `raise NoMethodError, msg`, a dispatcher's arm for no method */
+int disp_raise_no_method(NodeTable *nt, const char *msg) {
+  int ec = nt_new_node(nt, "ConstantReadNode"), em = nt_new_node(nt, "StringNode");
+  nt_node_set_str(nt, ec, "name", "NoMethodError");
+  nt_node_set_str(nt, em, "content", msg);
+  int ea[2] = { ec, em }, eargs = nt_new_node(nt, "ArgumentsNode");
+  nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+  int raise = fwd_new_call(nt, -1, "raise", -1);
+  nt_node_set_ref(nt, raise, "arguments", eargs);
+  return raise;
+}
+
+/* A dispatcher: a def named `name` (on self when sg) at `like`'s place,
+   whose body is
+
+     if <arm[0].sel> == <arm[0].val> then <arm[0].callee>(<args>)
+     elsif ...
+     else <els>
+     end
+
+   Its parameters, which each arm's call passes on: ar required ones
+   (__cond0, ...), or, with ar -1, `*__condr, **__condk`; and `&__condb`
+   when blk. desugar_conditional_defs lowers a def chosen by a run-time
+   condition to one. */
+int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
+                   const DispArm *arm, int narm, int els) {
+  char pn[32];
+  int def = fwd_new_node_like(nt, like, "DefNode");
+  int chain = nt_new_node(nt, "ElseNode");
+  nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, els));
+  for (int k = narm - 1; k >= 0; k--) {
+    int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
+    for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
+    if (ar < 0) {
+      av[0] = nt_new_node(nt, "SplatNode");
+      nt_node_set_ref(nt, av[0], "expression", cdef_local(nt, "LocalVariableReadNode", "__condr"));
+      int as = nt_new_node(nt, "AssocSplatNode");
+      nt_node_set_ref(nt, as, "value", cdef_local(nt, "LocalVariableReadNode", "__condk"));
+      av[1] = nt_new_node(nt, "KeywordHashNode");
+      nt_node_set_arr(nt, av[1], "elements", &as, 1);
+    }
+    int call = fwd_new_call(nt, -1, arm[k].callee, -1);
+    if (na) {
+      int args = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, args, "arguments", av, na);
+      nt_node_set_ref(nt, call, "arguments", args);
+    }
+    if (blk) {
+      int ba = nt_new_node(nt, "BlockArgumentNode");
+      nt_node_set_ref(nt, ba, "expression", cdef_local(nt, "LocalVariableReadNode", "__condb"));
+      nt_node_set_ref(nt, call, "block", ba);
+    }
+    int ifn = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", arm[k].sel), "==",
+                                                       nt_new_int(nt, arm[k].val)));
+    nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
+    nt_node_set_ref(nt, ifn, "subsequent", chain);
+    chain = ifn;
+  }
+  int params = ar == 0 && !blk ? -1 : nt_new_node(nt, "ParametersNode"), pv[ar > 0 ? ar : 1];
+  for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); pv[a] = cdef_local(nt, "RequiredParameterNode", pn); }
+  if (ar > 0) nt_node_set_arr(nt, params, "requireds", pv, ar);
+  if (ar < 0) {
+    nt_node_set_ref(nt, params, "rest", cdef_local(nt, "RestParameterNode", "__condr"));
+    nt_node_set_ref(nt, params, "keyword_rest", cdef_local(nt, "KeywordRestParameterNode", "__condk"));
+  }
+  if (blk) nt_node_set_ref(nt, params, "block", cdef_local(nt, "BlockParameterNode", "__condb"));
+  nt_node_set_str(nt, def, "name", name);
+  nt_node_set_ref(nt, def, "receiver", sg ? nt_new_node(nt, "SelfNode") : -1);
+  nt_node_set_ref(nt, def, "parameters", params);
+  nt_node_set_ref(nt, def, "body", cdef_stmts(nt, chain));
+  return def;
+}
+
 int desugar_conditional_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
@@ -12143,27 +12217,21 @@ int desugar_conditional_defs(Compiler *c) {
       lone = nn;
       lone[nlone++] = strdup(base);
     }
-    char msg[512], nm[512], sel[64], pn[32];
+    char msg[512], sel[64];
     const char *cn = g[0].cls >= 0 ? nt_str(nt, nt_ref(nt, g[0].cls, "constant_path"), "name") : NULL;
     if (!cn) snprintf(msg, sizeof msg, "undefined method '%s' for main", base);
     else if (g[0].cm) snprintf(msg, sizeof msg, "undefined method '%s' for %s %s", base,
                                nt_kind(nt, g[0].cls) == NK_ModuleNode ? "module" : "class", cn);
     else snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s", base, cn);
     snprintf(sel, sizeof sel, "$__cond_def%d", ++groups);
-    int def = fwd_new_node_like(nt, g[ng - 1].def, "DefNode");
-    int ec = nt_new_node(nt, "ConstantReadNode"), em = nt_new_node(nt, "StringNode");
-    nt_node_set_str(nt, ec, "name", "NoMethodError");
-    nt_node_set_str(nt, em, "content", msg);
-    int ea[2] = { ec, em }, eargs = nt_new_node(nt, "ArgumentsNode");
-    nt_node_set_arr(nt, eargs, "arguments", ea, 2);
-    int raise = fwd_new_call(nt, -1, "raise", -1);
-    nt_node_set_ref(nt, raise, "arguments", eargs);
-    int chain = nt_new_node(nt, "ElseNode");
-    nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, raise));
+    DispArm *arm = malloc(sizeof(DispArm) * (size_t)ng);
+    char (*nm)[512] = malloc(sizeof *nm * (size_t)ng);
+    if (!arm || !nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int k = ng - 1; k >= 0; k--) {
       /* register_module_functions finds the arms by this name */
-      snprintf(nm, sizeof nm, "%s#__cond%d", base, serial + k + 1);
-      nt_set_str(nt, g[k].def, "name", nm);
+      snprintf(nm[k], sizeof nm[k], "%s#__cond%d", base, serial + k + 1);
+      arm[k] = (DispArm){ sel, k + 1, nm[k] };
+      nt_set_str(nt, g[k].def, "name", nm[k]);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "parameters"), base);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "body"), base);
       int wk = fwd_new_node_like(nt, g[k].def, "GlobalVariableWriteNode");
@@ -12182,48 +12250,13 @@ int desugar_conditional_defs(Compiler *c) {
         if (same && sp_streq(cdef_lit(nt, nw), base)) break;
         if (!same || !sp_streq(cdef_lit(nt, od), base) || (g[k].br >= 0 && !subtree_has(nt, g[k].br, v[a].al)))
           continue;
-        nt_node_set_str(nt, od, nt_kind(nt, od) == NK_SymbolNode ? "value" : "content", nm);
+        nt_node_set_str(nt, od, nt_kind(nt, od) == NK_SymbolNode ? "value" : "content", nm[k]);
       }
-      int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
-      for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
-      if (ar < 0) {
-        av[0] = nt_new_node(nt, "SplatNode");
-        nt_node_set_ref(nt, av[0], "expression", cdef_local(nt, "LocalVariableReadNode", "__condr"));
-        int as = nt_new_node(nt, "AssocSplatNode");
-        nt_node_set_ref(nt, as, "value", cdef_local(nt, "LocalVariableReadNode", "__condk"));
-        av[1] = nt_new_node(nt, "KeywordHashNode");
-        nt_node_set_arr(nt, av[1], "elements", &as, 1);
-      }
-      int call = fwd_new_call(nt, -1, nm, -1);
-      if (na) {
-        int args = nt_new_node(nt, "ArgumentsNode");
-        nt_node_set_arr(nt, args, "arguments", av, na);
-        nt_node_set_ref(nt, call, "arguments", args);
-      }
-      if (blk) {
-        int ba = nt_new_node(nt, "BlockArgumentNode");
-        nt_node_set_ref(nt, ba, "expression", cdef_local(nt, "LocalVariableReadNode", "__condb"));
-        nt_node_set_ref(nt, call, "block", ba);
-      }
-      int ifn = nt_new_node(nt, "IfNode");
-      nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", sel), "==",
-                                                         nt_new_int(nt, k + 1)));
-      nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
-      nt_node_set_ref(nt, ifn, "subsequent", chain);
-      chain = ifn;
     }
-    int params = ar == 0 && !blk ? -1 : nt_new_node(nt, "ParametersNode"), pv[ar > 0 ? ar : 1];
-    for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); pv[a] = cdef_local(nt, "RequiredParameterNode", pn); }
-    if (ar > 0) nt_node_set_arr(nt, params, "requireds", pv, ar);
-    if (ar < 0) {
-      nt_node_set_ref(nt, params, "rest", cdef_local(nt, "RestParameterNode", "__condr"));
-      nt_node_set_ref(nt, params, "keyword_rest", cdef_local(nt, "KeywordRestParameterNode", "__condk"));
-    }
-    if (blk) nt_node_set_ref(nt, params, "block", cdef_local(nt, "BlockParameterNode", "__condb"));
-    nt_node_set_str(nt, def, "name", base);
-    nt_node_set_ref(nt, def, "receiver", nt_ref(nt, g[ng - 1].def, "receiver") >= 0 ? nt_new_node(nt, "SelfNode") : -1);
-    nt_node_set_ref(nt, def, "parameters", params);
-    nt_node_set_ref(nt, def, "body", cdef_stmts(nt, chain));
+    int def = disp_def_build(nt, g[ng - 1].def, base, nt_ref(nt, g[ng - 1].def, "receiver") >= 0, ar, blk,
+                             arm, ng, disp_raise_no_method(nt, msg));
+    free(arm);
+    free(nm);
     cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
     free(base);
