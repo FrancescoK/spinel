@@ -31,3 +31,12 @@ p ::Array.new(t)
 p [*T.new([1, 2]), 3]
 x, y = T.new([5, 6])
 p x, y
+
+# a T that may be nil: nil is no size
+def copy_of(x)
+  Array.new(x)
+rescue TypeError => e
+  e.message
+end
+p copy_of(T.new([7]))
+p copy_of(nil)
