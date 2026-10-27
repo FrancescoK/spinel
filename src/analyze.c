@@ -23044,9 +23044,12 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
    so a guess made before the types settle (an untyped receiver read as a
    call the walk cannot follow) does not leave a handle behind, which the
    flags would keep. */
+/* (the slots' types, not the nodes': a node's type is a cache that the
+   passes of one round type and retype, so the same settled program reads
+   differently at each place in the round, and the rule's wait for the types
+   to hold still saw a swing that never ends, #10325) */
 static unsigned share_types_digest(Compiler *c) {
   unsigned h = 2166136261u;
-  for (int i = 0; i < c->nt->count; i++) { h ^= (unsigned)c->ntype[i]; h *= 16777619u; }
   for (int s = 0; s < c->nscopes; s++) {
     for (int l = 0; l < c->scopes[s].nlocals; l++) {
       h ^= (unsigned)c->scopes[s].locals[l].type; h *= 16777619u;
