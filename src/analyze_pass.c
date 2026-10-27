@@ -14518,96 +14518,93 @@ static int bdp_has_name(NodeTable *nt, int node) {
    so the receiver's kind is known; the caller re-runs the fixpoint. */
 
 
-int desugar_block_destructure_params(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int L = 0; L < n0; L++) {
-    NodeKind ty_k = nt_kind(nt, L);
-    /* DefNode too: `def m((a, b))` destructures an array parameter with the
-       same MultiTargetNode shape blocks use (its "parameters" is the bare
-       ParametersNode; the conditional unwrap below handles both). */
-    if ((ty_k != NK_BlockNode && ty_k != NK_LambdaNode &&
-                ty_k != NK_DefNode)) continue;
-    int bp = nt_ref(nt, L, "parameters");
-    if (bp < 0) continue;
-    NodeKind bpk = nt_kind(nt, bp);
-    int pn = (bpk == NK_BlockParametersNode) ? nt_ref(nt, bp, "parameters") : bp;
-    if (pn < 0) continue;
-    NodeKind pnk = nt_kind(nt, pn);
-    if (pnk != NK_ParametersNode) continue;
-    int nreq = 0; const int *reqs0 = nt_arr(nt, pn, "requireds", &nreq);
-    if (nreq == 0) continue;
-    int has_multi = 0;
-    for (int k = 0; k < nreq; k++) {
-      NodeKind rk = nt_kind(nt, reqs0[k]);
-      if (rk == NK_MultiTargetNode) { has_multi = 1; break; }
-    }
-    if (!has_multi) continue;
-    /* copy requireds: nt_new_node below may realloc the node storage reqs0 points into */
-    int *reqs = malloc(sizeof(int) * nreq);
-    if (!reqs) continue;
-    memcpy(reqs, reqs0, sizeof(int) * nreq);
-    int body = nt_ref(nt, L, "body");
+/* The ParametersNode of the block, lambda or def L when one of its required
+   parameters is a destructuring one (a MultiTargetNode), else -1. DefNode
+   too: `def m((a, b))` destructures an array parameter with the same
+   MultiTargetNode shape blocks use (its "parameters" is the bare
+   ParametersNode; the conditional unwrap handles both). */
+static int bdp_params(const NodeTable *nt, int L) {
+  int bp = nt_ref(nt, L, "parameters");
+  if (bp < 0) return -1;
+  int pn = (nt_kind(nt, bp) == NK_BlockParametersNode) ? nt_ref(nt, bp, "parameters") : bp;
+  if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) return -1;
+  int nreq = 0; const int *reqs0 = nt_arr(nt, pn, "requireds", &nreq);
+  for (int k = 0; k < nreq; k++)
+    if (nt_kind(nt, reqs0[k]) == NK_MultiTargetNode) return pn;
+  return -1;
+}
 
-    int *newreqs = malloc(sizeof(int) * nreq);
-    int *mws = malloc(sizeof(int) * nreq);
-    if (!newreqs || !mws) { free(reqs); free(newreqs); free(mws); continue; }
-    int nmw = 0, ok = 1;
-    for (int k = 0; k < nreq && ok; k++) {
-      NodeKind rk = nt_kind(nt, reqs[k]);
-      if (rk != NK_MultiTargetNode) { newreqs[k] = reqs[k]; continue; }
-      int bind = bdp_has_name(nt, reqs[k]);
-      char nm[64]; snprintf(nm, sizeof nm, "__destr_%s_%d", comp_node_tag(c, L), k);
-      int rp = nt_new_node(nt, "RequiredParameterNode");
-      if (rp < 0) { ok = 0; break; }
-      nt_node_set_str(nt, rp, "name", nm);
-      newreqs[k] = rp;
-      if (!bind) continue;  /* anonymous splat: nothing to assign */
-      int rd = nt_new_node(nt, "LocalVariableReadNode");
-      int mw = nt_new_node(nt, "MultiWriteNode");
-      if (rd < 0 || mw < 0) { ok = 0; break; }
-      nt_node_set_str(nt, rd, "name", nm);
-      if (!bdp_fill_targets(nt, reqs[k], mw)) { ok = 0; break; }
-      nt_node_set_ref(nt, mw, "value", rd);
-      /* the assignment is ours, not the program's: a body that had no
-         statements still answers nil (#3679) */
-      nt_node_set_int(nt, mw, "destr_splice", 1);
-      mws[nmw++] = mw;
-    }
-    if (!ok) { free(reqs); free(newreqs); free(mws); continue; }
-    /* prepend the destructuring assignments (in param order) to the block body */
-    if (nmw > 0) {
-      int is_stmts = body >= 0 && nt_kind(nt, body) == NK_StatementsNode;
-      int obn = 0; const int *ob0 = is_stmts ? nt_arr(nt, body, "body", &obn) : NULL;
-      int keep_body = (!is_stmts && body >= 0) ? 1 : 0;
-      int cnt = nmw + (is_stmts ? obn : keep_body);
-      int *bb = malloc(sizeof(int) * (cnt > 0 ? cnt : 1));
-      if (!bb) ok = 0;
-      else {
-        for (int i = 0; i < nmw; i++) bb[i] = mws[i];
-        if (is_stmts) {
-          for (int i = 0; i < obn; i++) bb[nmw + i] = ob0[i];
-          nt_node_set_arr(nt, body, "body", bb, cnt);
-        }
-        else {
-          if (keep_body) bb[nmw] = body;
-          int st = nt_new_node(nt, "StatementsNode");
-          if (st < 0) ok = 0;
-          else { nt_node_set_arr(nt, st, "body", bb, cnt); nt_node_set_ref(nt, L, "body", st); }
-        }
-        free(bb);
-      }
-    }
-    /* Only swap in the throwaway params once the assignments are prepended, so a
-       mid-transform OOM never leaves params rebound with nothing destructured. */
-    if (!ok) { free(reqs); free(newreqs); free(mws); continue; }
-    nt_node_set_arr(nt, pn, "requireds", newreqs, nreq);
-    changed = 1;
-    free(reqs); free(newreqs); free(mws);
+int desugar_block_destructure_params_left(Compiler *c, LowerCtx *lc, int id) {
+  return bdp_params(c->nt, id) >= 0;
+}
+
+int desugar_block_destructure_params_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int L = id;
+  int pn = bdp_params(nt, L);
+  if (pn < 0) return 0;
+  int nreq = 0; const int *reqs0 = nt_arr(nt, pn, "requireds", &nreq);
+  /* copy requireds: nt_new_node below may realloc the node storage reqs0 points into */
+  int *reqs = malloc(sizeof(int) * nreq);
+  if (!reqs) return 0;
+  memcpy(reqs, reqs0, sizeof(int) * nreq);
+  int body = nt_ref(nt, L, "body");
+
+  int *newreqs = malloc(sizeof(int) * nreq);
+  int *mws = malloc(sizeof(int) * nreq);
+  if (!newreqs || !mws) { free(reqs); free(newreqs); free(mws); return 0; }
+  int nmw = 0, ok = 1;
+  for (int k = 0; k < nreq && ok; k++) {
+    NodeKind rk = nt_kind(nt, reqs[k]);
+    if (rk != NK_MultiTargetNode) { newreqs[k] = reqs[k]; continue; }
+    int bind = bdp_has_name(nt, reqs[k]);
+    char nm[64]; snprintf(nm, sizeof nm, "__destr_%s_%d", comp_node_tag(c, L), k);
+    int rp = nt_new_node(nt, "RequiredParameterNode");
+    if (rp < 0) { ok = 0; break; }
+    nt_node_set_str(nt, rp, "name", nm);
+    newreqs[k] = rp;
+    if (!bind) continue;  /* anonymous splat: nothing to assign */
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    int mw = nt_new_node(nt, "MultiWriteNode");
+    if (rd < 0 || mw < 0) { ok = 0; break; }
+    nt_node_set_str(nt, rd, "name", nm);
+    if (!bdp_fill_targets(nt, reqs[k], mw)) { ok = 0; break; }
+    nt_node_set_ref(nt, mw, "value", rd);
+    /* the assignment is ours, not the program's: a body that had no
+       statements still answers nil (#3679) */
+    nt_node_set_int(nt, mw, "destr_splice", 1);
+    mws[nmw++] = mw;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (!ok) { free(reqs); free(newreqs); free(mws); return 0; }
+  /* prepend the destructuring assignments (in param order) to the block body */
+  if (nmw > 0) {
+    int is_stmts = body >= 0 && nt_kind(nt, body) == NK_StatementsNode;
+    int obn = 0; const int *ob0 = is_stmts ? nt_arr(nt, body, "body", &obn) : NULL;
+    int keep_body = (!is_stmts && body >= 0) ? 1 : 0;
+    int cnt = nmw + (is_stmts ? obn : keep_body);
+    int *bb = malloc(sizeof(int) * (cnt > 0 ? cnt : 1));
+    if (!bb) ok = 0;
+    else {
+      for (int i = 0; i < nmw; i++) bb[i] = mws[i];
+      if (is_stmts) {
+        for (int i = 0; i < obn; i++) bb[nmw + i] = ob0[i];
+        nt_node_set_arr(nt, body, "body", bb, cnt);
+      }
+      else {
+        if (keep_body) bb[nmw] = body;
+        int st = nt_new_node(nt, "StatementsNode");
+        if (st < 0) ok = 0;
+        else { nt_node_set_arr(nt, st, "body", bb, cnt); nt_node_set_ref(nt, L, "body", st); }
+      }
+      free(bb);
+    }
+  }
+  /* Only swap in the throwaway params once the assignments are prepended, so a
+     mid-transform OOM never leaves params rebound with nothing destructured. */
+  if (!ok) { free(reqs); free(newreqs); free(mws); return 0; }
+  nt_node_set_arr(nt, pn, "requireds", newreqs, nreq);
+  free(reqs); free(newreqs); free(mws);
+  return 1;
 }
 
 /* The assignment of `rd` to a single `for` target that is not a local: a
@@ -14686,49 +14683,47 @@ static int dfi_local_index(NodeTable *nt, int idx) {
    assigns only plain locals, so any other index binds a fresh local and the
    body opens by assigning it to the real target -- a plain write for one
    target, a multiple assignment for several. */
-int desugar_for_nonlocal_index(Compiler *c) {
+int desugar_for_nonlocal_index_left(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int F = 0; F < n0; F++) {
-    NodeKind k = nt_kind(nt, F);
-    if (k != NK_ForNode) continue;
-    int idx = nt_ref(nt, F, "index");
-    if (idx < 0 || dfi_local_index(nt, idx)) continue;
-    char nm[48]; snprintf(nm, sizeof nm, "__for_%s", comp_node_tag(c, F));
-    int lt = nt_new_node(nt, "LocalVariableTargetNode");
-    int rd = lt >= 0 ? nt_new_node(nt, "LocalVariableReadNode") : -1;
-    if (rd < 0) continue;
-    nt_node_set_str(nt, lt, "name", nm);
-    nt_node_set_str(nt, rd, "name", nm);
-    int w;
-    NodeKind ik = nt_kind(nt, idx);
-    if (ik == NK_MultiTargetNode) {
-      w = nt_new_node(nt, "MultiWriteNode");
-      if (w < 0 || !bdp_fill_targets(nt, idx, w)) continue;
-      nt_node_set_ref(nt, w, "value", rd);
-      nt_node_set_int(nt, F, "for_packed", 1);
-    }
-    else w = dfi_single_write(nt, idx, rd);
-    if (w < 0) continue;
-    int body = nt_ref(nt, F, "statements");
-    int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
-    int *bb = malloc(sizeof(int) * (on + 1));
-    if (!bb) continue;
-    bb[0] = w;
-    for (int i = 0; i < on; i++) bb[i + 1] = ob[i];
-    if (body < 0) {
-      body = nt_new_node(nt, "StatementsNode");
-      if (body < 0) { free(bb); continue; }
-      nt_node_set_ref(nt, F, "statements", body);
-    }
-    nt_node_set_arr(nt, body, "body", bb, on + 1);
-    free(bb);
-    nt_node_set_ref(nt, F, "index", lt);
-    changed = 1;
+  int idx = nt_ref(nt, id, "index");
+  return idx >= 0 && !dfi_local_index(nt, idx);
+}
+int desugar_for_nonlocal_index_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int F = id;
+  if (!desugar_for_nonlocal_index_left(c, lc, id)) return 0;
+  int idx = nt_ref(nt, F, "index");
+  char nm[48]; snprintf(nm, sizeof nm, "__for_%s", comp_node_tag(c, F));
+  int lt = nt_new_node(nt, "LocalVariableTargetNode");
+  int rd = lt >= 0 ? nt_new_node(nt, "LocalVariableReadNode") : -1;
+  if (rd < 0) return 0;
+  nt_node_set_str(nt, lt, "name", nm);
+  nt_node_set_str(nt, rd, "name", nm);
+  int w;
+  NodeKind ik = nt_kind(nt, idx);
+  if (ik == NK_MultiTargetNode) {
+    w = nt_new_node(nt, "MultiWriteNode");
+    if (w < 0 || !bdp_fill_targets(nt, idx, w)) return 0;
+    nt_node_set_ref(nt, w, "value", rd);
+    nt_node_set_int(nt, F, "for_packed", 1);
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  else w = dfi_single_write(nt, idx, rd);
+  if (w < 0) return 0;
+  int body = nt_ref(nt, F, "statements");
+  int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
+  int *bb = malloc(sizeof(int) * (on + 1));
+  if (!bb) return 0;
+  bb[0] = w;
+  for (int i = 0; i < on; i++) bb[i + 1] = ob[i];
+  if (body < 0) {
+    body = nt_new_node(nt, "StatementsNode");
+    if (body < 0) { free(bb); return 0; }
+    nt_node_set_ref(nt, F, "statements", body);
+  }
+  nt_node_set_arr(nt, body, "body", bb, on + 1);
+  free(bb);
+  nt_node_set_ref(nt, F, "index", lt);
+  return 1;
 }
 
 /* A block parameter no write site in its scope assigns. Its type comes from

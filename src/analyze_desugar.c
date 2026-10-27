@@ -584,37 +584,42 @@ static int bpw_walk(NodeTable *nt, int node, const char *bp, const char *rename)
   }
   return hits;
 }
-int desugar_blk_param_writes(Compiler *c) {
+/* def d's `&blk` parameter, when it has a name and the body is a StatementsNode: the name and the body */
+static int blk_param_site(const NodeTable *nt, int d, const char **bp, int *body) {
+  int pn = nt_ref(nt, d, "parameters");
+  if (pn < 0) return 0;
+  int bpn = nt_ref(nt, pn, "block");
+  if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) return 0;
+  *bp = nt_str(nt, bpn, "name");
+  if (!*bp || !(*bp)[0]) return 0;
+  *body = nt_ref(nt, d, "body");
+  return *body >= 0 && nt_kind(nt, *body) == NK_StatementsNode;
+}
+int desugar_blk_param_writes_left(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_DefNode) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) continue;
-    int bpn = nt_ref(nt, pn, "block");
-    if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
-    const char *bp = nt_str(nt, bpn, "name");
-    if (!bp || !bp[0]) continue;
-    int body = nt_ref(nt, id, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    if (bpw_walk(nt, body, bp, NULL) == 0) continue;
-    char nn[300]; snprintf(nn, sizeof nn, "__bpv_%s", bp);
-    bpw_walk(nt, body, bp, nn);
-    int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) continue;
-    nt_node_set_str(nt, rd, "name", bp);
-    int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) continue;
-    nt_node_set_str(nt, wr, "name", nn);
-    nt_node_set_ref(nt, wr, "value", rd);
-    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-    int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
-    if (!nb) continue;
-    nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
-    nt_node_set_arr(nt, body, "body", nb, bn + 1);
-    free(nb);
-    comp_grow_node_arrays(c);
-    changed = 1;
-  }
-  return changed;
+  const char *bp; int body;
+  return blk_param_site(nt, id, &bp, &body) && bpw_walk(nt, body, bp, NULL) != 0;
+}
+int desugar_blk_param_writes_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *bp; int body;
+  if (!blk_param_site(nt, id, &bp, &body)) return 0;
+  if (bpw_walk(nt, body, bp, NULL) == 0) return 0;
+  char nn[300]; snprintf(nn, sizeof nn, "__bpv_%s", bp);
+  bpw_walk(nt, body, bp, nn);
+  int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return 0;
+  nt_node_set_str(nt, rd, "name", bp);
+  int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) return 0;
+  nt_node_set_str(nt, wr, "name", nn);
+  nt_node_set_ref(nt, wr, "value", rd);
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+  if (!nb) return 0;
+  nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
+  nt_node_set_arr(nt, body, "body", nb, bn + 1);
+  free(nb);
+  comp_grow_node_arrays(c);
+  return 1;
 }
 
 /* A `*rest` parameter the body assigns (`args = args.first`, the usual
@@ -624,71 +629,75 @@ int desugar_blk_param_writes(Compiler *c) {
    did not build (#6227). As a &blk parameter's writes do above, the body's
    reads and writes move to a fresh local copied from the parameter first,
    and the parameter stays the Array the callers pack. */
-int desugar_rest_param_writes(Compiler *c) {
+/* def d's `*rest` parameter, when it has a name and the body is a StatementsNode: the name and the body */
+static int rest_param_site(const NodeTable *nt, int d, const char **rp, int *body) {
+  int pn = nt_ref(nt, d, "parameters");
+  if (pn < 0) return 0;
+  int rpn = nt_ref(nt, pn, "rest");
+  if (rpn < 0 || nt_kind(nt, rpn) != NK_RestParameterNode) return 0;
+  *rp = nt_str(nt, rpn, "name");
+  if (!*rp || !(*rp)[0]) return 0;
+  *body = nt_ref(nt, d, "body");
+  return *body >= 0 && nt_kind(nt, *body) == NK_StatementsNode;
+}
+int desugar_rest_param_writes_left(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_DefNode) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) continue;
-    int rpn = nt_ref(nt, pn, "rest");
-    if (rpn < 0 || nt_kind(nt, rpn) != NK_RestParameterNode) continue;
-    const char *rp = nt_str(nt, rpn, "name");
-    if (!rp || !rp[0]) continue;
-    int body = nt_ref(nt, id, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    if (bpw_walk(nt, body, rp, NULL) == 0) continue;
-    char nn[300]; snprintf(nn, sizeof nn, "__rpv_%s", rp);
-    /* The usual shape writes it once, as a statement of the body itself
-       (`args = args.first`), with no write before it: the statements before
-       read the parameter, the write's own value reads it too, and from the
-       write on the name is the copy. Renaming in place adds no statement:
-       a prepended copy is a node numbered after the whole body, and the
-       write-type fold, which visits writes in node order, then took the
-       copy's write after the reads it feeds and alternated between two
-       answers until the round cap (#6491). */
-    { int bn0 = 0; const int *bb0 = nt_arr(nt, body, "body", &bn0);
-      int k = -1;
-      for (int j = 0; j < bn0 && k < 0; j++) {
-        if (nt_kind(nt, bb0[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb0[j], "name") &&
-            sp_streq(nt_str(nt, bb0[j], "name"), rp) &&
-            bpw_walk(nt, nt_ref(nt, bb0[j], "value"), rp, NULL) == 0)
-          k = j;
-        else if (bpw_walk(nt, bb0[j], rp, NULL) > 0) break;   /* a write elsewhere first */
-      }
-      if (k >= 0) {
-        nt_node_set_str(nt, bb0[k], "name", nn);
-        for (int j = k + 1; j < bn0; j++) bpw_walk(nt, bb0[j], rp, nn);
-        changed = 1;
-        continue;
-      } }
-    bpw_walk(nt, body, rp, nn);
-    int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) continue;
-    nt_node_set_str(nt, rd, "name", rp);
-    int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) continue;
-    nt_node_set_str(nt, wr, "name", nn);
-    nt_node_set_ref(nt, wr, "value", rd);
-    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-    int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
-    if (!nb) continue;
-    nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
-    /* The copy goes ahead of the body in node order too: numbered after it,
-       the write-type fold (ascending ids) took the body's `args = args.first`
-       read of the copy before the copy's own write re-typed it each round,
-       and alternated between two answers until the round cap (#6491). The
-       copy takes the first statement's number, and that statement the
-       copy's. */
-    if (bn > 0 && bb[0] < wr) {
-      int first = bb[0];
-      nt_swap_nodes(nt, first, wr);
-      nb[0] = first; nb[1] = wr;
+  const char *rp; int body;
+  return rest_param_site(nt, id, &rp, &body) && bpw_walk(nt, body, rp, NULL) != 0;
+}
+int desugar_rest_param_writes_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *rp; int body;
+  if (!rest_param_site(nt, id, &rp, &body)) return 0;
+  if (bpw_walk(nt, body, rp, NULL) == 0) return 0;
+  char nn[300]; snprintf(nn, sizeof nn, "__rpv_%s", rp);
+  /* The usual shape writes it once, as a statement of the body itself
+     (`args = args.first`), with no write before it: the statements before
+     read the parameter, the write's own value reads it too, and from the
+     write on the name is the copy. Renaming in place adds no statement:
+     a prepended copy is a node numbered after the whole body, and the
+     write-type fold, which visits writes in node order, then took the
+     copy's write after the reads it feeds and alternated between two
+     answers until the round cap (#6491). */
+  { int bn0 = 0; const int *bb0 = nt_arr(nt, body, "body", &bn0);
+    int k = -1;
+    for (int j = 0; j < bn0 && k < 0; j++) {
+      if (nt_kind(nt, bb0[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb0[j], "name") &&
+          sp_streq(nt_str(nt, bb0[j], "name"), rp) &&
+          bpw_walk(nt, nt_ref(nt, bb0[j], "value"), rp, NULL) == 0)
+        k = j;
+      else if (bpw_walk(nt, bb0[j], rp, NULL) > 0) break;   /* a write elsewhere first */
     }
-    nt_node_set_arr(nt, body, "body", nb, bn + 1);
-    free(nb);
-    comp_grow_node_arrays(c);
-    changed = 1;
+    if (k >= 0) {
+      nt_node_set_str(nt, bb0[k], "name", nn);
+      for (int j = k + 1; j < bn0; j++) bpw_walk(nt, bb0[j], rp, nn);
+      return 1;
+    } }
+  bpw_walk(nt, body, rp, nn);
+  int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return 0;
+  nt_node_set_str(nt, rd, "name", rp);
+  int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) return 0;
+  nt_node_set_str(nt, wr, "name", nn);
+  nt_node_set_ref(nt, wr, "value", rd);
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+  if (!nb) return 0;
+  nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
+  /* The copy goes ahead of the body in node order too: numbered after it,
+     the write-type fold (ascending ids) took the body's `args = args.first`
+     read of the copy before the copy's own write re-typed it each round,
+     and alternated between two answers until the round cap (#6491). The
+     copy takes the first statement's number, and that statement the
+     copy's. */
+  if (bn > 0 && bb[0] < wr) {
+    int first = bb[0];
+    nt_swap_nodes(nt, first, wr);
+    nb[0] = first; nb[1] = wr;
   }
-  return changed;
+  nt_node_set_arr(nt, body, "body", nb, bn + 1);
+  free(nb);
+  comp_grow_node_arrays(c);
+  return 1;
 }
 
 /* ---- `yield` inside a proc / lambda literal ----------------------------
@@ -750,32 +759,31 @@ static int yic_walk(NodeTable *nt, int node, int in_closure, const char *bp) {
   }
   return hits;
 }
-int desugar_yield_in_closure(Compiler *c) {
+int desugar_yield_in_closure_left(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_DefNode) continue;
-    int body = nt_ref(nt, id, "body");
-    if (body < 0) continue;
-    if (yic_walk(nt, body, 0, NULL) == 0) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) {
-      pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) continue;
-      nt_node_set_ref(nt, id, "parameters", pn);
-    }
-    int bpn = nt_ref(nt, pn, "block");
-    const char *bp = (bpn >= 0 && nt_kind(nt, bpn) == NK_BlockParameterNode) ? nt_str(nt, bpn, "name") : NULL;
-    if (!bp || !bp[0]) {
-      if (bpn < 0) { bpn = nt_new_node(nt, "BlockParameterNode"); if (bpn < 0) continue; nt_node_set_ref(nt, pn, "block", bpn); }
-      nt_node_set_str(nt, bpn, "name", "__blk");
-      bp = "__blk";
-    }
-    char bpc[300]; snprintf(bpc, sizeof bpc, "%s", bp);
-    yic_walk(nt, body, 0, bpc);
-    comp_grow_node_arrays(c);
-    changed = 1;
+  int body = nt_ref(nt, id, "body");
+  return body >= 0 && yic_walk(nt, body, 0, NULL) != 0;
+}
+int desugar_yield_in_closure_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (!desugar_yield_in_closure_left(c, lc, id)) return 0;
+  int body = nt_ref(nt, id, "body");
+  int pn = nt_ref(nt, id, "parameters");
+  if (pn < 0) {
+    pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) return 0;
+    nt_node_set_ref(nt, id, "parameters", pn);
   }
-  return changed;
+  int bpn = nt_ref(nt, pn, "block");
+  const char *bp = (bpn >= 0 && nt_kind(nt, bpn) == NK_BlockParameterNode) ? nt_str(nt, bpn, "name") : NULL;
+  if (!bp || !bp[0]) {
+    if (bpn < 0) { bpn = nt_new_node(nt, "BlockParameterNode"); if (bpn < 0) return 0; nt_node_set_ref(nt, pn, "block", bpn); }
+    nt_node_set_str(nt, bpn, "name", "__blk");
+    bp = "__blk";
+  }
+  char bpc[300]; snprintf(bpc, sizeof bpc, "%s", bp);
+  yic_walk(nt, body, 0, bpc);
+  comp_grow_node_arrays(c);
+  return 1;
 }
 
 /* ---- `X.module_eval do ... end` on the body's own class ---------------------
@@ -4568,31 +4576,28 @@ int desugar_public_send_recv(Compiler *c) {
    in an object slot was deconstructed, and a typed hash value refused the
    build. The case form's emitter checks every pattern kind and answers
    NoMatchingPatternError on a miss. */
-int desugar_rightward_pattern(Compiler *c) {
+int desugar_rightward_pattern_left(Compiler *c, LowerCtx *lc, int id) {
+  return nt_ref(c->nt, id, "value") >= 0 && nt_ref(c->nt, id, "pattern") >= 0;
+}
+int desugar_rightward_pattern_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_MatchRequiredNode) continue;
-    int value = nt_ref(nt, id, "value");
-    int pattern = nt_ref(nt, id, "pattern");
-    if (value < 0 || pattern < 0) continue;
-    int inn = nt_new_node(nt, "InNode");
-    int st = nt_new_node(nt, "StatementsNode");
-    if (inn < 0 || st < 0) continue;
-    nt_node_set_ref(nt, inn, "pattern", pattern);
-    nt_node_set_arr(nt, st, "body", NULL, 0);
-    nt_node_set_ref(nt, inn, "statements", st);
-    nt_node_set_type(nt, id, "CaseMatchNode");
-    nt_node_set_ref(nt, id, "predicate", value);
-    nt_node_set_arr(nt, id, "conditions", &inn, 1);
-    nt_node_set_ref(nt, id, "else_clause", -1);
-    comp_grow_node_arrays(c);
-    c->nscope[inn] = c->nscope[id];
-    c->nscope[st] = c->nscope[id];
-    changed = 1;
-  }
-  return changed;
+  if (!desugar_rightward_pattern_left(c, lc, id)) return 0;
+  int value = nt_ref(nt, id, "value");
+  int pattern = nt_ref(nt, id, "pattern");
+  int inn = nt_new_node(nt, "InNode");
+  int st = nt_new_node(nt, "StatementsNode");
+  if (inn < 0 || st < 0) return 0;
+  nt_node_set_ref(nt, inn, "pattern", pattern);
+  nt_node_set_arr(nt, st, "body", NULL, 0);
+  nt_node_set_ref(nt, inn, "statements", st);
+  nt_node_set_type(nt, id, "CaseMatchNode");
+  nt_node_set_ref(nt, id, "predicate", value);
+  nt_node_set_arr(nt, id, "conditions", &inn, 1);
+  nt_node_set_ref(nt, id, "else_clause", -1);
+  comp_grow_node_arrays(c);
+  c->nscope[inn] = c->nscope[id];
+  c->nscope[st] = c->nscope[id];
+  return 1;
 }
 
 /* `expr in pattern` is the one-arm `case expr; in pattern then true; else
@@ -4600,37 +4605,34 @@ int desugar_rightward_pattern(Compiler *c) {
    is: the predicate had a condition emitter of its own that read a subset
    of the patterns (a qualified array or hash pattern, `v in Pt[1, _]`, was
    refused), and it bound nothing, where CRuby binds the pattern's names. */
-int desugar_match_predicate(Compiler *c) {
+int desugar_match_predicate_left(Compiler *c, LowerCtx *lc, int id) {
+  return nt_ref(c->nt, id, "value") >= 0 && nt_ref(c->nt, id, "pattern") >= 0;
+}
+int desugar_match_predicate_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_MatchPredicateNode) continue;
-    int value = nt_ref(nt, id, "value");
-    int pattern = nt_ref(nt, id, "pattern");
-    if (value < 0 || pattern < 0) continue;
-    int inn = nt_new_node(nt, "InNode");
-    int st = nt_new_node(nt, "StatementsNode");
-    int tn = nt_new_node(nt, "TrueNode");
-    int els = nt_new_node(nt, "ElseNode");
-    int est = nt_new_node(nt, "StatementsNode");
-    int fn = nt_new_node(nt, "FalseNode");
-    if (inn < 0 || st < 0 || tn < 0 || els < 0 || est < 0 || fn < 0) continue;
-    nt_node_set_ref(nt, inn, "pattern", pattern);
-    nt_node_set_arr(nt, st, "body", &tn, 1);
-    nt_node_set_ref(nt, inn, "statements", st);
-    nt_node_set_arr(nt, est, "body", &fn, 1);
-    nt_node_set_ref(nt, els, "statements", est);
-    nt_node_set_type(nt, id, "CaseMatchNode");
-    nt_node_set_ref(nt, id, "predicate", value);
-    nt_node_set_arr(nt, id, "conditions", &inn, 1);
-    nt_node_set_ref(nt, id, "else_clause", els);
-    comp_grow_node_arrays(c);
-    int made[] = { inn, st, tn, els, est, fn };
-    for (int k = 0; k < 6; k++) c->nscope[made[k]] = c->nscope[id];
-    changed = 1;
-  }
-  return changed;
+  if (!desugar_match_predicate_left(c, lc, id)) return 0;
+  int value = nt_ref(nt, id, "value");
+  int pattern = nt_ref(nt, id, "pattern");
+  int inn = nt_new_node(nt, "InNode");
+  int st = nt_new_node(nt, "StatementsNode");
+  int tn = nt_new_node(nt, "TrueNode");
+  int els = nt_new_node(nt, "ElseNode");
+  int est = nt_new_node(nt, "StatementsNode");
+  int fn = nt_new_node(nt, "FalseNode");
+  if (inn < 0 || st < 0 || tn < 0 || els < 0 || est < 0 || fn < 0) return 0;
+  nt_node_set_ref(nt, inn, "pattern", pattern);
+  nt_node_set_arr(nt, st, "body", &tn, 1);
+  nt_node_set_ref(nt, inn, "statements", st);
+  nt_node_set_arr(nt, est, "body", &fn, 1);
+  nt_node_set_ref(nt, els, "statements", est);
+  nt_node_set_type(nt, id, "CaseMatchNode");
+  nt_node_set_ref(nt, id, "predicate", value);
+  nt_node_set_arr(nt, id, "conditions", &inn, 1);
+  nt_node_set_ref(nt, id, "else_clause", els);
+  comp_grow_node_arrays(c);
+  int made[] = { inn, st, tn, els, est, fn };
+  for (int k = 0; k < 6; k++) c->nscope[made[k]] = c->nscope[id];
+  return 1;
 }
 
 static int step_kw_tmp(NodeTable *nt, Scope *sc, const char *nm, int value) {
@@ -5370,24 +5372,30 @@ static int engine_splice_list(NodeTable *nt, int body) {
    method's value was the parentheses' rather than its last statement's, so
    a yield there was typed once for every call site, and a call whose block
    answers another kind stored the value in the first site's carrier. */
-int desugar_paren_def_body(Compiler *c) {
+/* the statements of the parenthesized body of def d (`def m = (a; b)`), 2 or more: n of them */
+static const int *paren_def_stmts(const NodeTable *nt, int d, int *n) {
+  int body = nt_ref(nt, d, "body"), bn = 0;
+  const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bb[0]) != NK_ParenthesesNode) return NULL;
+  int pb = nt_ref(nt, bb[0], "body");
+  const int *pd = pb >= 0 && nt_kind(nt, pb) == NK_StatementsNode ? nt_arr(nt, pb, "body", n) : NULL;
+  return *n < 2 ? NULL : pd;
+}
+int desugar_paren_def_body_left(Compiler *c, LowerCtx *lc, int id) {
+  int n = 0;
+  return paren_def_stmts(c->nt, id, &n) != NULL;
+}
+int desugar_paren_def_body_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  NT_FOREACH_KIND(nt, NK_DefNode, d) {
-    int body = nt_ref(nt, d, "body"), bn = 0;
-    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn != 1 || nt_kind(nt, bb[0]) != NK_ParenthesesNode) continue;
-    int pb = nt_ref(nt, bb[0], "body"), pn = 0;
-    const int *pd = pb >= 0 && nt_kind(nt, pb) == NK_StatementsNode ? nt_arr(nt, pb, "body", &pn) : NULL;
-    if (pn < 2) continue;
-    int *cp = malloc(sizeof(int) * (size_t)pn);
-    if (!cp) continue;
-    memcpy(cp, pd, sizeof(int) * (size_t)pn);
-    nt_node_set_arr(nt, body, "body", cp, pn);
-    free(cp);
-    changed = 1;
-  }
-  return changed;
+  int pn = 0;
+  const int *pd = paren_def_stmts(nt, id, &pn);
+  if (!pd) return 0;
+  int *cp = malloc(sizeof(int) * (size_t)pn);
+  if (!cp) return 0;
+  memcpy(cp, pd, sizeof(int) * (size_t)pn);
+  nt_node_set_arr(nt, nt_ref(nt, id, "body"), "body", cp, pn);
+  free(cp);
+  return 1;
 }
 
 /* The truth of a condition fixed by its literals, or -1: true, false, nil,
@@ -9693,42 +9701,48 @@ int desugar_block_implicit_rest(Compiler *c) {
    `yield a, *b` and `blk.call(a, *b)` become `yield(*[a, *b])`, which the
    block binder already spreads; it bound each argument to one parameter,
    the splat's whole array included. */
-int desugar_multi_value_jump(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    int is_call = k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 &&
-                  nt_ref(nt, id, "block") < 0 && sp_streq(nt_str(nt, id, "name"), "call");
-    if (k != NK_ReturnNode && k != NK_BreakNode && k != NK_NextNode && k != NK_YieldNode && !is_call) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int n = 0; const int *a = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
-    if (!a || n < 2) continue;
-    int splat = 0, other = 0;
-    for (int j = 0; j < n; j++) {
-      NodeKind ak = nt_kind(nt, a[j]);
-      if (ak == NK_SplatNode && nt_ref(nt, a[j], "expression") < 0) other = 1;
-      else if (ak == NK_SplatNode) splat = 1;
-      else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
-    }
-    if (other || (!splat && k != NK_NextNode && k != NK_BreakNode)) continue;
-    int arr = nt_new_node(nt, "ArrayNode");
-    int wrap = (k == NK_YieldNode || is_call) ? nt_new_node(nt, "SplatNode") : arr;
-    if (arr < 0 || wrap < 0) continue;
-    int lk[2] = { arr, wrap };
-    for (int j = 0; j < 2; j++) {
-      nt_node_set_int(nt, lk[j], "node_line", nt_int(nt, id, "node_line", 0));
-      nt_node_set_int(nt, lk[j], "node_file", nt_int(nt, id, "node_file", 0));
-      nt_node_set_int(nt, lk[j], "node_col", nt_int(nt, id, "node_col", 0));
-    }
-    nt_node_set_arr(nt, arr, "elements", a, n);
-    if (wrap != arr) nt_node_set_ref(nt, wrap, "expression", arr);
-    nt_node_set_arr(nt, args, "arguments", &wrap, 1);
-    comp_grow_node_arrays(c);
-    changed = 1;
+/* Does the return, break, next, yield or `receiver.call` at id hand out
+   several values that need an array? */
+static int mvj_site(const NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  int is_call = k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 &&
+                nt_ref(nt, id, "block") < 0 && sp_streq(nt_str(nt, id, "name"), "call");
+  if (k != NK_ReturnNode && k != NK_BreakNode && k != NK_NextNode && k != NK_YieldNode && !is_call) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int n = 0; const int *a = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  if (!a || n < 2) return 0;
+  int splat = 0, other = 0;
+  for (int j = 0; j < n; j++) {
+    NodeKind ak = nt_kind(nt, a[j]);
+    if (ak == NK_SplatNode && nt_ref(nt, a[j], "expression") < 0) other = 1;
+    else if (ak == NK_SplatNode) splat = 1;
+    else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
   }
-  return changed;
+  return !(other || (!splat && k != NK_NextNode && k != NK_BreakNode));
+}
+int desugar_multi_value_jump_left(Compiler *c, LowerCtx *lc, int id) {
+  return mvj_site(c->nt, id);
+}
+int desugar_multi_value_jump_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (!mvj_site(nt, id)) return 0;
+  NodeKind k = nt_kind(nt, id);
+  int args = nt_ref(nt, id, "arguments");
+  int n = 0; const int *a = nt_arr(nt, args, "arguments", &n);
+  int arr = nt_new_node(nt, "ArrayNode");
+  int wrap = (k == NK_YieldNode || k == NK_CallNode) ? nt_new_node(nt, "SplatNode") : arr;
+  if (arr < 0 || wrap < 0) return 0;
+  int lk[2] = { arr, wrap };
+  for (int j = 0; j < 2; j++) {
+    nt_node_set_int(nt, lk[j], "node_line", nt_int(nt, id, "node_line", 0));
+    nt_node_set_int(nt, lk[j], "node_file", nt_int(nt, id, "node_file", 0));
+    nt_node_set_int(nt, lk[j], "node_col", nt_int(nt, id, "node_col", 0));
+  }
+  nt_node_set_arr(nt, arr, "elements", a, n);
+  if (wrap != arr) nt_node_set_ref(nt, wrap, "expression", arr);
+  nt_node_set_arr(nt, args, "arguments", &wrap, 1);
+  comp_grow_node_arrays(c);
+  return 1;
 }
 
 static const char *sym_or_str_literal(const NodeTable *nt, int node);
@@ -9782,33 +9796,35 @@ static int rsc_shadowed(char **names, int nn, const char *nm) {
    constant for the earlier class, so they are one class -- equal, rescued by
    either name, named the first way (errno_canonical_name). Renaming the path
    once, before anything reads it, gives every later stage one spelling. */
-int desugar_errno_aliases(Compiler *c) {
+int desugar_errno_aliases_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int par = nt_ref(nt, id, "parent");
+  const char *leaf = nt_str(nt, id, "name");
+  if (par < 0 || !leaf || nt_kind(nt, par) != NK_ConstantReadNode) return 0;
+  const char *pn = nt_str(nt, par, "name");
+  /* IO::EWOULDBLOCKWaitReadable / Writable are IO::EAGAINWait* where
+     Errno::EWOULDBLOCK is Errno::EAGAIN: CRuby defines them from the
+     errno classes, so the pair folds with them */
+  if (pn && sp_streq(pn, "IO") &&
+      (sp_streq(leaf, "EWOULDBLOCKWaitReadable") || sp_streq(leaf, "EWOULDBLOCKWaitWritable")))
+    return strcmp(errno_canonical_name("Errno::EWOULDBLOCK"), "Errno::EAGAIN") == 0;
+  if (!pn || !sp_streq(pn, "Errno")) return 0;
+  char q[96];
+  snprintf(q, sizeof q, "Errno::%s", leaf);
+  return errno_canonical_name(q) != q;
+}
+int desugar_errno_aliases_at(Compiler *c, LowerCtx *lc, int id) {
+  if (!desugar_errno_aliases_left(c, lc, id)) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  NT_FOREACH_KIND(nt, NK_ConstantPathNode, id) {
-    int par = nt_ref(nt, id, "parent");
-    const char *leaf = nt_str(nt, id, "name");
-    if (par < 0 || !leaf || nt_kind(nt, par) != NK_ConstantReadNode) continue;
-    const char *pn = nt_str(nt, par, "name");
-    /* IO::EWOULDBLOCKWaitReadable / Writable are IO::EAGAINWait* where
-       Errno::EWOULDBLOCK is Errno::EAGAIN: CRuby defines them from the
-       errno classes, so the pair folds with them */
-    if (pn && sp_streq(pn, "IO") &&
-        (sp_streq(leaf, "EWOULDBLOCKWaitReadable") || sp_streq(leaf, "EWOULDBLOCKWaitWritable"))) {
-      if (strcmp(errno_canonical_name("Errno::EWOULDBLOCK"), "Errno::EAGAIN") != 0) continue;
-      nt_node_set_str(nt, id, "name", sp_streq(leaf, "EWOULDBLOCKWaitReadable") ? "EAGAINWaitReadable" : "EAGAINWaitWritable");
-      changed = 1;
-      continue;
-    }
-    if (!pn || !sp_streq(pn, "Errno")) continue;
-    char q[96];
-    snprintf(q, sizeof q, "Errno::%s", leaf);
-    const char *cn = errno_canonical_name(q);
-    if (cn == q) continue;
-    nt_node_set_str(nt, id, "name", cn + 7);
-    changed = 1;
+  const char *leaf = nt_str(nt, id, "name");
+  if (sp_streq(nt_str(nt, nt_ref(nt, id, "parent"), "name"), "IO")) {
+    nt_node_set_str(nt, id, "name", sp_streq(leaf, "EWOULDBLOCKWaitReadable") ? "EAGAINWaitReadable" : "EAGAINWaitWritable");
+    return 1;
   }
-  return changed;
+  char q[96];
+  snprintf(q, sizeof q, "Errno::%s", leaf);
+  nt_node_set_str(nt, id, "name", errno_canonical_name(q) + 7);
+  return 1;
 }
 
 int desugar_root_scoped_constants(Compiler *c) {
@@ -9872,131 +9888,132 @@ int desugar_root_scoped_constants(Compiler *c) {
   return changed;
 }
 
-int desugar_sort_by_with_index(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "with_index")) continue;
-    /* with_index(offset) shifts every index; the pair map below applies it */
-    int wi_off = -1;
-    {
-      int wa = nt_ref(nt, id, "arguments");
-      if (wa >= 0) {
-        int wn = 0; const int *wv = nt_arr(nt, wa, "arguments", &wn);
-        if (wn != 1 || !wv) continue;
-        wi_off = wv[0];
-      }
-    }
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
-    const char *rnm = nt_str(nt, recv, "name");
-    if (!rnm || !sp_streq(rnm, "sort_by")) continue;
-    if (nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0) continue;
-    int src = nt_ref(nt, recv, "receiver");
-    if (src < 0) continue;
-
-    int base = nt->count;
-    /* src.each_with_index */
-    int ewi = nt_new_node(nt, "CallNode");
-    nt_node_set_ref(nt, ewi, "receiver", src);
-    nt_node_set_str(nt, ewi, "name", "each_with_index");
-    nt_node_set_ref(nt, ewi, "arguments", -1);
-    nt_node_set_ref(nt, ewi, "block", -1);
-    /* with_index(off): shift the pair indexes before the key block reads them,
-       `ewi.map { |v, i| [v, i + off] }` (#3763) */
-    int pairs = ewi;
-    if (wi_off >= 0) {
-      char vn[48], inm[48];
-      snprintf(vn, sizeof vn, "__wi_v_%s", comp_node_tag(c, id));
-      snprintf(inm, sizeof inm, "__wi_i_%s", comp_node_tag(c, id));
-      int vreq = nt_new_node(nt, "RequiredParameterNode");
-      nt_node_set_str(nt, vreq, "name", vn);
-      int ireq = nt_new_node(nt, "RequiredParameterNode");
-      nt_node_set_str(nt, ireq, "name", inm);
-      int oreqs[2] = { vreq, ireq };
-      int oparams = nt_new_node(nt, "ParametersNode");
-      nt_node_set_arr(nt, oparams, "requireds", oreqs, 2);
-      int obp = nt_new_node(nt, "BlockParametersNode");
-      nt_node_set_ref(nt, obp, "parameters", oparams);
-      int vread = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, vread, "name", vn);
-      int iread = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, iread, "name", inm);
-      int offargs = nt_new_node(nt, "ArgumentsNode");
-      nt_node_set_arr(nt, offargs, "arguments", &wi_off, 1);
-      int shifted = nt_new_node(nt, "CallNode");
-      nt_node_set_ref(nt, shifted, "receiver", iread);
-      nt_node_set_str(nt, shifted, "name", "+");
-      nt_node_set_ref(nt, shifted, "arguments", offargs);
-      nt_node_set_ref(nt, shifted, "block", -1);
-      int pair[2] = { vread, shifted };
-      int parr = nt_new_node(nt, "ArrayNode");
-      nt_node_set_arr(nt, parr, "elements", pair, 2);
-      int obody = nt_new_node(nt, "StatementsNode");
-      nt_node_set_arr(nt, obody, "body", &parr, 1);
-      int oblk = nt_new_node(nt, "BlockNode");
-      nt_node_set_ref(nt, oblk, "parameters", obp);
-      nt_node_set_ref(nt, oblk, "body", obody);
-      pairs = nt_new_node(nt, "CallNode");
-      nt_node_set_ref(nt, pairs, "receiver", ewi);
-      nt_node_set_str(nt, pairs, "name", "map");
-      nt_node_set_ref(nt, pairs, "arguments", -1);
-      nt_node_set_ref(nt, pairs, "block", oblk);
-      if (pairs < 0) continue;
-    }
-    /* .sort_by { |v, i| key } -- the with_index block, moved across */
-    int sb = nt_new_node(nt, "CallNode");
-    nt_node_set_ref(nt, sb, "receiver", pairs);
-    nt_node_set_str(nt, sb, "name", "sort_by");
-    nt_node_set_ref(nt, sb, "arguments", -1);
-    nt_node_set_ref(nt, sb, "block", blk);
-    /* .map { |p| p[0] } */
-    char pn[48]; snprintf(pn, sizeof pn, "__wi_pair_%s", comp_node_tag(c, id));
-    int preq = nt_new_node(nt, "RequiredParameterNode");
-    nt_node_set_str(nt, preq, "name", pn);
-    int params = nt_new_node(nt, "ParametersNode");
-    nt_node_set_arr(nt, params, "requireds", &preq, 1);
-    int bparams = nt_new_node(nt, "BlockParametersNode");
-    nt_node_set_ref(nt, bparams, "parameters", params);
-    int pread = nt_new_node(nt, "LocalVariableReadNode");
-    nt_node_set_str(nt, pread, "name", pn);
-    int zero = nt_new_node(nt, "IntegerNode");
-    nt_node_set_int(nt, zero, "value", 0);
-    int idxargs = nt_new_node(nt, "ArgumentsNode");
-    nt_node_set_arr(nt, idxargs, "arguments", &zero, 1);
-    int idx = nt_new_node(nt, "CallNode");
-    nt_node_set_ref(nt, idx, "receiver", pread);
-    nt_node_set_str(nt, idx, "name", "[]");
-    nt_node_set_ref(nt, idx, "arguments", idxargs);
-    nt_node_set_ref(nt, idx, "block", -1);
-    int mbody = nt_new_node(nt, "StatementsNode");
-    nt_node_set_arr(nt, mbody, "body", &idx, 1);
-    int mblk = nt_new_node(nt, "BlockNode");
-    if (ewi < 0 || sb < 0 || preq < 0 || params < 0 || bparams < 0 || pread < 0 ||
-        zero < 0 || idxargs < 0 || idx < 0 || mbody < 0 || mblk < 0) continue;
-    nt_node_set_ref(nt, mblk, "parameters", bparams);
-    nt_node_set_ref(nt, mblk, "body", mbody);
-
-    /* the with_index call BECOMES the map, so the parent link stays put */
-    int line = (int)nt_int(nt, id, "node_line", 0);
-    int file = (int)nt_int(nt, id, "node_file", 0);
-    nt_node_reset(nt, id, "CallNode");
-    nt_node_set_ref(nt, id, "receiver", sb);
-    nt_node_set_str(nt, id, "name", "map");
-    nt_node_set_ref(nt, id, "arguments", -1);
-    nt_node_set_ref(nt, id, "block", mblk);
-    if (line) nt_node_set_int(nt, id, "node_line", line);
-    if (file) nt_node_set_int(nt, id, "node_file", file);
-    comp_grow_node_arrays(c);
-    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
-    changed = 1;
+/* A `src.sort_by.with_index { }` call at id: src, the with_index block and
+   its offset argument (-1: none); -1 when the call is not that shape. */
+static int sbwi_site(const NodeTable *nt, int id, int *blk, int *wi_off) {
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "with_index")) return -1;
+  /* with_index(offset) shifts every index; the pair map below applies it */
+  *wi_off = -1;
+  int wa = nt_ref(nt, id, "arguments");
+  if (wa >= 0) {
+    int wn = 0; const int *wv = nt_arr(nt, wa, "arguments", &wn);
+    if (wn != 1 || !wv) return -1;
+    *wi_off = wv[0];
   }
-  return changed;
+  *blk = nt_ref(nt, id, "block");
+  if (*blk < 0 || nt_kind(nt, *blk) != NK_BlockNode) return -1;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  const char *rnm = nt_str(nt, recv, "name");
+  if (!rnm || !sp_streq(rnm, "sort_by")) return -1;
+  if (nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0) return -1;
+  return nt_ref(nt, recv, "receiver");
+}
+int desugar_sort_by_with_index_left(Compiler *c, LowerCtx *lc, int id) {
+  int blk, wi_off;
+  return sbwi_site(c->nt, id, &blk, &wi_off) >= 0;
+}
+int desugar_sort_by_with_index_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int blk, wi_off;
+  int src = sbwi_site(nt, id, &blk, &wi_off);
+  if (src < 0) return 0;
+  int base = nt->count;
+  /* src.each_with_index */
+  int ewi = nt_new_node(nt, "CallNode");
+  nt_node_set_ref(nt, ewi, "receiver", src);
+  nt_node_set_str(nt, ewi, "name", "each_with_index");
+  nt_node_set_ref(nt, ewi, "arguments", -1);
+  nt_node_set_ref(nt, ewi, "block", -1);
+  /* with_index(off): shift the pair indexes before the key block reads them,
+     `ewi.map { |v, i| [v, i + off] }` (#3763) */
+  int pairs = ewi;
+  if (wi_off >= 0) {
+    char vn[48], inm[48];
+    snprintf(vn, sizeof vn, "__wi_v_%s", comp_node_tag(c, id));
+    snprintf(inm, sizeof inm, "__wi_i_%s", comp_node_tag(c, id));
+    int vreq = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, vreq, "name", vn);
+    int ireq = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, ireq, "name", inm);
+    int oreqs[2] = { vreq, ireq };
+    int oparams = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, oparams, "requireds", oreqs, 2);
+    int obp = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, obp, "parameters", oparams);
+    int vread = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, vread, "name", vn);
+    int iread = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, iread, "name", inm);
+    int offargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, offargs, "arguments", &wi_off, 1);
+    int shifted = nt_new_node(nt, "CallNode");
+    nt_node_set_ref(nt, shifted, "receiver", iread);
+    nt_node_set_str(nt, shifted, "name", "+");
+    nt_node_set_ref(nt, shifted, "arguments", offargs);
+    nt_node_set_ref(nt, shifted, "block", -1);
+    int pair[2] = { vread, shifted };
+    int parr = nt_new_node(nt, "ArrayNode");
+    nt_node_set_arr(nt, parr, "elements", pair, 2);
+    int obody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, obody, "body", &parr, 1);
+    int oblk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, oblk, "parameters", obp);
+    nt_node_set_ref(nt, oblk, "body", obody);
+    pairs = nt_new_node(nt, "CallNode");
+    nt_node_set_ref(nt, pairs, "receiver", ewi);
+    nt_node_set_str(nt, pairs, "name", "map");
+    nt_node_set_ref(nt, pairs, "arguments", -1);
+    nt_node_set_ref(nt, pairs, "block", oblk);
+    if (pairs < 0) return 0;
+  }
+  /* .sort_by { |v, i| key } -- the with_index block, moved across */
+  int sb = nt_new_node(nt, "CallNode");
+  nt_node_set_ref(nt, sb, "receiver", pairs);
+  nt_node_set_str(nt, sb, "name", "sort_by");
+  nt_node_set_ref(nt, sb, "arguments", -1);
+  nt_node_set_ref(nt, sb, "block", blk);
+  /* .map { |p| p[0] } */
+  char pn[48]; snprintf(pn, sizeof pn, "__wi_pair_%s", comp_node_tag(c, id));
+  int preq = nt_new_node(nt, "RequiredParameterNode");
+  nt_node_set_str(nt, preq, "name", pn);
+  int params = nt_new_node(nt, "ParametersNode");
+  nt_node_set_arr(nt, params, "requireds", &preq, 1);
+  int bparams = nt_new_node(nt, "BlockParametersNode");
+  nt_node_set_ref(nt, bparams, "parameters", params);
+  int pread = nt_new_node(nt, "LocalVariableReadNode");
+  nt_node_set_str(nt, pread, "name", pn);
+  int zero = nt_new_node(nt, "IntegerNode");
+  nt_node_set_int(nt, zero, "value", 0);
+  int idxargs = nt_new_node(nt, "ArgumentsNode");
+  nt_node_set_arr(nt, idxargs, "arguments", &zero, 1);
+  int idx = nt_new_node(nt, "CallNode");
+  nt_node_set_ref(nt, idx, "receiver", pread);
+  nt_node_set_str(nt, idx, "name", "[]");
+  nt_node_set_ref(nt, idx, "arguments", idxargs);
+  nt_node_set_ref(nt, idx, "block", -1);
+  int mbody = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, mbody, "body", &idx, 1);
+  int mblk = nt_new_node(nt, "BlockNode");
+  if (ewi < 0 || sb < 0 || preq < 0 || params < 0 || bparams < 0 || pread < 0 ||
+      zero < 0 || idxargs < 0 || idx < 0 || mbody < 0 || mblk < 0) return 0;
+  nt_node_set_ref(nt, mblk, "parameters", bparams);
+  nt_node_set_ref(nt, mblk, "body", mbody);
+
+  /* the with_index call BECOMES the map, so the parent link stays put */
+  int line = (int)nt_int(nt, id, "node_line", 0);
+  int file = (int)nt_int(nt, id, "node_file", 0);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_ref(nt, id, "receiver", sb);
+  nt_node_set_str(nt, id, "name", "map");
+  nt_node_set_ref(nt, id, "arguments", -1);
+  nt_node_set_ref(nt, id, "block", mblk);
+  if (line) nt_node_set_int(nt, id, "node_line", line);
+  if (file) nt_node_set_int(nt, id, "node_file", file);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+  return 1;
 }
 
 /* 1 = route whatever the call's shape; 2 = only with a block, because the
@@ -10917,28 +10934,26 @@ int desugar_body_local_scopes(Compiler *c) {
    the same empty hash, and the hash the later key writes type is the one
    `Hash.new` hands on; the empty literal keeps the String-keyed default it
    has with no key of its own (#9171). */
-int desugar_empty_hash_compare_by_identity(Compiler *c) {
+int desugar_empty_hash_compare_by_identity_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  if (!is_compare_by_identity_name(nt_str(nt, id, "name")) || r < 0 || nt_kind(nt, r) != NK_HashNode) return 0;
+  int en = 0; nt_arr(nt, r, "elements", &en);
+  return en == 0;
+}
+int desugar_empty_hash_compare_by_identity_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0, n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    int r = nt_ref(nt, id, "receiver");
-    if (!is_compare_by_identity_name(nm) || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
-    int en = 0; nt_arr(nt, r, "elements", &en);
-    if (en != 0) continue;
-    int k = nt_new_node(nt, "ConstantReadNode");
-    if (k < 0) continue;
-    nt_node_set_str(nt, k, "name", "Hash");
-    nt_node_reset(nt, r, "CallNode");
-    nt_node_set_str(nt, r, "name", "new");
-    nt_node_set_ref(nt, r, "receiver", k);
-    nt_node_set_ref(nt, r, "arguments", -1);
-    nt_node_set_ref(nt, r, "block", -1);
-    changed = 1;
-  }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (!desugar_empty_hash_compare_by_identity_left(c, lc, id)) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  int k = nt_new_node(nt, "ConstantReadNode");
+  if (k < 0) return 0;
+  nt_node_set_str(nt, k, "name", "Hash");
+  nt_node_reset(nt, r, "CallNode");
+  nt_node_set_str(nt, r, "name", "new");
+  nt_node_set_ref(nt, r, "receiver", k);
+  nt_node_set_ref(nt, r, "arguments", -1);
+  nt_node_set_ref(nt, r, "block", -1);
+  return 1;
 }
 
 int desugar_singleton_class_define_method(Compiler *c) {
@@ -11432,33 +11447,38 @@ int desugar_define_method_keywords(Compiler *c) {
   return changed;
 }
 
-int desugar_anon_block_param(Compiler *c) {
+/* The anonymous parameters of parameter list pn (bit 0 the block, 1 the
+   rest, 2 the keyword rest); with `name`, each is given its name. */
+static unsigned anon_params_of(NodeTable *nt, int pn, int name) {
   static const struct { const char *field, *kind, *name; } anon_params[] = {
     { "block", "BlockParameterNode", "__anon_block" },
     { "rest", "RestParameterNode", "__anon_rest" },
     { "keyword_rest", "KeywordRestParameterNode", "__anon_kwrest" },
   };
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_DefNode) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) continue;
-    unsigned anon = 0;
-    for (unsigned a = 0; a < 3; a++) {
-      int p = nt_ref(nt, pn, anon_params[a].field);
-      const char *pty = p >= 0 ? nt_type(nt, p) : NULL;
-      const char *bn = p >= 0 ? nt_str(nt, p, "name") : NULL;
-      if (!pty || !sp_streq(pty, anon_params[a].kind) || (bn && bn[0])) continue;
-      nt_node_set_str(nt, p, "name", anon_params[a].name);
-      anon |= 1u << a;
-    }
-    if (!anon) continue;
-    anon_fwd_rewrite(c, nt_ref(nt, id, "body"), id, anon);
-    changed = 1;
+  unsigned anon = 0;
+  for (unsigned a = 0; a < 3; a++) {
+    int p = nt_ref(nt, pn, anon_params[a].field);
+    const char *pty = p >= 0 ? nt_type(nt, p) : NULL;
+    const char *bn = p >= 0 ? nt_str(nt, p, "name") : NULL;
+    if (!pty || !sp_streq(pty, anon_params[a].kind) || (bn && bn[0])) continue;
+    if (name) nt_node_set_str(nt, p, "name", anon_params[a].name);
+    anon |= 1u << a;
   }
-  return changed;
+  return anon;
+}
+int desugar_anon_block_param_left(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int pn = nt_ref(nt, id, "parameters");
+  return pn >= 0 && anon_params_of(nt, pn, 0) != 0;
+}
+int desugar_anon_block_param_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int pn = nt_ref(nt, id, "parameters");
+  if (pn < 0) return 0;
+  unsigned anon = anon_params_of(nt, pn, 1);
+  if (!anon) return 0;
+  anon_fwd_rewrite(c, nt_ref(nt, id, "body"), id, anon);
+  return 1;
 }
 
 /* does any call of `name` pass keywords (a trailing `k: v` / `**h`)? */
@@ -15258,33 +15278,33 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
    sym_proc_block (a user's own block spelled the same is not one). The
    block is marked with m before a desugar rewrites the call (`_spx.first`
    -> `_spx[0]`), for the shapes below that pass it a second value. */
-void mark_sym_proc_blocks(Compiler *c) {
+int mark_sym_proc_blocks_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  NT_FOREACH_KIND(nt, NK_BlockNode, blk) {
-    if (!nt_int(nt, blk, "sym_proc_block", 0)) continue;
-    int bp = nt_ref(nt, blk, "parameters");
-    int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
-    if (pn < 0) continue;
-    int P = 0, O = 0, Q = 0, kn = 0;
-    const int *pre = nt_arr(nt, pn, "requireds", &P);
-    nt_arr(nt, pn, "optionals", &O); nt_arr(nt, pn, "posts", &Q); nt_arr(nt, pn, "keywords", &kn);
-    if (P != 1 || O || Q || kn || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 ||
-        nt_ref(nt, pn, "block") >= 0) continue;
-    const char *pnm = nt_str(nt, pre[0], "name");
-    if (nt_kind(nt, pre[0]) != NK_RequiredParameterNode || !pnm) continue;
-    int body = nt_ref(nt, blk, "body");
-    int bn = 0;
-    const int *bv = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn != 1 || nt_kind(nt, bv[0]) != NK_CallNode || nt_ref(nt, bv[0], "block") >= 0) continue;
-    int r = nt_ref(nt, bv[0], "receiver");
-    const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
-    const char *mn = nt_str(nt, bv[0], "name");
-    int an = 0; int a = nt_ref(nt, bv[0], "arguments");
-    if (a >= 0) nt_arr(nt, a, "arguments", &an);
-    if (!rn || !sp_streq(rn, pnm) || an || !mn || !(mn[0] == '_' || isalpha((unsigned char)mn[0])))
-      continue;
-    nt_node_set_str(nt, blk, "sym_proc", mn);
-  }
+  int blk = id;
+  if (!nt_int(nt, blk, "sym_proc_block", 0)) return 0;
+  int bp = nt_ref(nt, blk, "parameters");
+  int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  if (pn < 0) return 0;
+  int P = 0, O = 0, Q = 0, kn = 0;
+  const int *pre = nt_arr(nt, pn, "requireds", &P);
+  nt_arr(nt, pn, "optionals", &O); nt_arr(nt, pn, "posts", &Q); nt_arr(nt, pn, "keywords", &kn);
+  if (P != 1 || O || Q || kn || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 ||
+      nt_ref(nt, pn, "block") >= 0) return 0;
+  const char *pnm = nt_str(nt, pre[0], "name");
+  if (nt_kind(nt, pre[0]) != NK_RequiredParameterNode || !pnm) return 0;
+  int body = nt_ref(nt, blk, "body");
+  int bn = 0;
+  const int *bv = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bv[0]) != NK_CallNode || nt_ref(nt, bv[0], "block") >= 0) return 0;
+  int r = nt_ref(nt, bv[0], "receiver");
+  const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+  const char *mn = nt_str(nt, bv[0], "name");
+  int an = 0; int a = nt_ref(nt, bv[0], "arguments");
+  if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  if (!rn || !sp_streq(rn, pnm) || an || !mn || !(mn[0] == '_' || isalpha((unsigned char)mn[0])))
+    return 0;
+  nt_node_set_str(nt, blk, "sym_proc", mn);
+  return 0;   /* a mark: nothing is rewritten */
 }
 
 /* The method a still one-parameter `&:m` block calls, or NULL. */
@@ -15771,55 +15791,58 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
    slice! or byteslice is marked with its call (index_of): on an Array or a
    String its ends must be Integers, so it keeps the Integer representation
    when its ends are boxed (infer_type's RangeNode arm). */
-void mark_match_ranges(Compiler *c) {
+int mark_match_ranges_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  for (int w = 0; w < nt->count; w++) {
-    NodeKind wk = nt_kind(nt, w);
-    int n = 0, rcv = -1; const int *conds = NULL;
-    if (wk == NK_WhenNode) conds = nt_arr(nt, w, "conditions", &n);
-    else if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name")) {
-      const char *mn = nt_str(nt, w, "name");
-      int args = nt_ref(nt, w, "arguments"), an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an >= 1 && is_seq_index_call(mn)) {
-        int ix = nt_paren_single(c->nt, av[0]);
-        if (nt_kind(nt, ix) == NK_RangeNode) nt_node_set_int(nt, ix, "index_of", w + 1);
-      }
-      /* `(x..).size`: an endless Integer Range's size is Infinity, which the
-         Integer representation answers and a boxed one cannot */
-      if (an == 0 && is_size_or_count(mn)) {
-        int rr = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
-        if (rr >= 0 && nt_kind(nt, rr) == NK_RangeNode) nt_node_set_int(nt, rr, "size_recv", 1);
-      }
-      if (an != 1) continue;
-      if (!(sp_streq(mn, "===") || sp_streq(mn, "include?") || sp_streq(mn, "member?") ||
-            (sp_streq(mn, "cover?") && nt_kind(nt, nt_paren_single(c->nt, av[0])) != NK_RangeNode))) continue;
-      rcv = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
-      conds = &rcv; n = 1;
+  int w = id;
+  NodeKind wk = nt_kind(nt, w);
+  int n = 0, rcv = -1; const int *conds = NULL;
+  if (wk == NK_WhenNode) conds = nt_arr(nt, w, "conditions", &n);
+  else if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name")) {
+    const char *mn = nt_str(nt, w, "name");
+    int args = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an >= 1 && is_seq_index_call(mn)) {
+      int ix = nt_paren_single(c->nt, av[0]);
+      if (nt_kind(nt, ix) == NK_RangeNode) nt_node_set_int(nt, ix, "index_of", w + 1);
     }
-    for (int i = 0; i < n; i++)
-      if (nt_kind(nt, conds[i]) == NK_RangeNode) nt_node_set_int(nt, conds[i], "match_only", 1);
+    /* `(x..).size`: an endless Integer Range's size is Infinity, which the
+       Integer representation answers and a boxed one cannot */
+    if (an == 0 && is_size_or_count(mn)) {
+      int rr = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
+      if (rr >= 0 && nt_kind(nt, rr) == NK_RangeNode) nt_node_set_int(nt, rr, "size_recv", 1);
+    }
+    if (an != 1) return 0;
+    if (!(sp_streq(mn, "===") || sp_streq(mn, "include?") || sp_streq(mn, "member?") ||
+          (sp_streq(mn, "cover?") && nt_kind(nt, nt_paren_single(c->nt, av[0])) != NK_RangeNode))) return 0;
+    rcv = nt_paren_single(c->nt, nt_ref(nt, w, "receiver"));
+    conds = &rcv; n = 1;
   }
-  /* A range literal assigned to a local that indexes in the same scope
-     (`r = x..y; a[r]`) is marked with that call too. The writes of range
-     literals are few; each is checked against the index calls once. */
-  for (int w = 0; w < nt->count; w++) {
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    int v = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
-    const char *nm = nt_str(nt, w, "name");
-    if (v < 0 || !nm || nt_kind(nt, v) != NK_RangeNode || nt_int(nt, v, "index_of", 0)) continue;
-    for (int u = 0; u < nt->count; u++) {
-      if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") && is_seq_index_call(nt_str(nt, u, "name"))) continue;
-      int args = nt_ref(nt, u, "arguments"), an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      int ix = an >= 1 ? nt_paren_single(c->nt, av[0]) : -1;
-      if (ix >= 0 && nt_kind(nt, ix) == NK_LocalVariableReadNode && c->nscope[ix] == c->nscope[w] &&
-          sp_streq(nt_str(nt, ix, "name"), nm)) {
-        nt_node_set_int(nt, v, "index_of", u + 1);
-        break;
-      }
+  for (int i = 0; i < n; i++)
+    if (nt_kind(nt, conds[i]) == NK_RangeNode) nt_node_set_int(nt, conds[i], "match_only", 1);
+  return 0;   /* marks: nothing is rewritten */
+}
+/* A range literal assigned to a local that indexes in the same scope
+   (`r = x..y; a[r]`) is marked with that call too. The writes of range
+   literals are few; each is checked against the index calls once. After
+   mark_match_ranges_at has marked the ranges an index call takes directly. */
+int mark_range_locals_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int w = id;
+  int v = nt_paren_single(c->nt, nt_ref(nt, w, "value"));
+  const char *nm = nt_str(nt, w, "name");
+  if (v < 0 || !nm || nt_kind(nt, v) != NK_RangeNode || nt_int(nt, v, "index_of", 0)) return 0;
+  for (int u = 0; u < nt->count; u++) {
+    if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") && is_seq_index_call(nt_str(nt, u, "name"))) continue;
+    int args = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int ix = an >= 1 ? nt_paren_single(c->nt, av[0]) : -1;
+    if (ix >= 0 && nt_kind(nt, ix) == NK_LocalVariableReadNode && c->nscope[ix] == c->nscope[w] &&
+        sp_streq(nt_str(nt, ix, "name"), nm)) {
+      nt_node_set_int(nt, v, "index_of", u + 1);
+      break;
     }
   }
+  return 0;   /* marks: nothing is rewritten */
 }
 
 /* `|_, _, offset|` / `def m(_, *_)`: Ruby lets an underscore-prefixed name
@@ -15899,48 +15922,68 @@ static int rename_repeated_param(Compiler *c, NodeTable *nt, int owner, int p, c
   return 1;
 }
 
-int desugar_duplicate_underscore_params(Compiler *c) {
+/* the ParametersNode of a def, block or lambda, or -1 */
+static int dup_params_of(const NodeTable *nt, int owner) {
+  int pn = nt_ref(nt, owner, "parameters");
+  if (pn >= 0 && nt_kind(nt, pn) == NK_BlockParametersNode) pn = nt_ref(nt, pn, "parameters");
+  return pn >= 0 && nt_kind(nt, pn) == NK_ParametersNode ? pn : -1;
+}
+
+int desugar_duplicate_underscore_params_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  static const char *const lists[] = { "requireds", "optionals", "posts" };
+  static const char *const refs[] = { "rest", "keyword_rest", "block" };
+  int pn = dup_params_of(nt, id);
+  if (pn < 0) return 0;
+  for (int li = 0; li < 3; li++) {
+    int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
+    for (int k = 0; k < n; k++)
+      if (nt_str(nt, ids[k], "name") && nt_param_repeated(nt, ids[k])) return 1;
+  }
+  for (int r = 0; r < 3; r++) {
+    int x = nt_ref(nt, pn, refs[r]);
+    if (x >= 0 && nt_str(nt, x, "name") && nt_param_repeated(nt, x)) return 1;
+  }
+  return 0;
+}
+
+int desugar_duplicate_underscore_params_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0, serial = 0, n0 = nt->count;
+  int changed = 0, owner = id;
   static const char *const lists[] = { "requireds", "optionals", "posts", "keywords" };
   static const char *const refs[] = { "rest", "keyword_rest", "block" };
-  for (int owner = 0; owner < n0; owner++) {
-    NodeKind ok = nt_kind(nt, owner);
-    if (ok != NK_DefNode && ok != NK_BlockNode && ok != NK_LambdaNode) continue;
-    int pn = nt_ref(nt, owner, "parameters");
-    if (pn >= 0 && nt_kind(nt, pn) == NK_BlockParametersNode) pn = nt_ref(nt, pn, "parameters");
-    if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) continue;
-    /* every name the list binds, so a generated one is fresh */
-    int cap = 8, na = 0;
-    char **names = malloc(sizeof(char *) * (size_t)cap);
-    for (int li = 0; li < 4; li++) {
-      int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
-      for (int k = 0; k < n; k++) {
-        const char *nm = nt_str(nt, ids[k], "name");
-        if (!nm) continue;
-        if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
-        names[na++] = strdup(nm);
-      }
-    }
-    for (int r = 0; r < 3; r++) {
-      int x = nt_ref(nt, pn, refs[r]);
-      const char *nm = x >= 0 ? nt_str(nt, x, "name") : NULL;
+  if (!desugar_duplicate_underscore_params_left(c, lc, id)) return 0;
+  int pn = dup_params_of(nt, owner);
+  /* every name the list binds, so a generated one is fresh */
+  int cap = 8, na = 0;
+  char **names = malloc(sizeof(char *) * (size_t)cap);
+  for (int li = 0; li < 4; li++) {
+    int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
+    for (int k = 0; k < n; k++) {
+      const char *nm = nt_str(nt, ids[k], "name");
       if (!nm) continue;
       if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
       names[na++] = strdup(nm);
     }
-    for (int li = 0; li < 3; li++) {
-      int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
-      for (int k = 0; k < n; k++)
-        changed |= rename_repeated_param(c, nt, owner, ids[k], &names, &na, &cap, &serial);
-    }
-    for (int r = 0; r < 3; r++) {
-      int x = nt_ref(nt, pn, refs[r]);
-      if (x >= 0) changed |= rename_repeated_param(c, nt, owner, x, &names, &na, &cap, &serial);
-    }
-    for (int q = 0; q < na; q++) free(names[q]);
-    free(names);
   }
+  for (int r = 0; r < 3; r++) {
+    int x = nt_ref(nt, pn, refs[r]);
+    const char *nm = x >= 0 ? nt_str(nt, x, "name") : NULL;
+    if (!nm) continue;
+    if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
+    names[na++] = strdup(nm);
+  }
+  for (int li = 0; li < 3; li++) {
+    int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
+    for (int k = 0; k < n; k++)
+      changed |= rename_repeated_param(c, nt, owner, ids[k], &names, &na, &cap, &lc->serial);
+  }
+  for (int r = 0; r < 3; r++) {
+    int x = nt_ref(nt, pn, refs[r]);
+    if (x >= 0) changed |= rename_repeated_param(c, nt, owner, x, &names, &na, &cap, &lc->serial);
+  }
+  for (int q = 0; q < na; q++) free(names[q]);
+  free(names);
   return changed;
 }
 
@@ -15972,64 +16015,69 @@ static int enc_const(NodeTable *nt, int like, const char *cname) {
   return cp;
 }
 
-int desugar_encoding_queries(Compiler *c) {
+enum { ENC_NONE, ENC_NIL, ENC_UTF8, ENC_ASSIGN, ENC_FIND };
+
+/* Which query of Encoding the call at id is: default_internal (nil),
+   default_external (UTF-8), a setter (its value), find("utf-8") (the constant
+   it names, *cn). */
+static int enc_query(const NodeTable *nt, int id, const char **cn) {
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return ENC_NONE;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) return ENC_NONE;
+  const char *rn = nt_str(nt, recv, "name");
+  if (!rn || !sp_streq(rn, "Encoding")) return ENC_NONE;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return ENC_NONE;
+  int an = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (sp_streq(nm, "default_internal") && ac == 0) return ENC_NIL;
+  if (sp_streq(nm, "default_external") && ac == 0) return ENC_UTF8;
+  if ((sp_streq(nm, "default_internal=") || sp_streq(nm, "default_external=")) && ac == 1) return ENC_ASSIGN;
+  if (!sp_streq(nm, "find") || ac != 1) return ENC_NONE;
+  /* a literal name only: the constant it names */
+  const char *lit = sym_or_str_literal(nt, av[0]);
+  if (!lit) return ENC_NONE;
+  if (!strcasecmp(lit, "utf-8") || !strcasecmp(lit, "utf8")) *cn = "UTF_8";
+  else if (!strcasecmp(lit, "binary") || !strcasecmp(lit, "ascii-8bit")) *cn = "ASCII_8BIT";
+  else if (!strcasecmp(lit, "us-ascii") || !strcasecmp(lit, "ascii")) *cn = "US_ASCII";
+  else return ENC_NONE;
+  return ENC_FIND;
+}
+
+int desugar_encoding_queries_left(Compiler *c, LowerCtx *lc, int id) {
+  const char *cn = NULL;
+  return enc_query(c->nt, id, &cn) != ENC_NONE;
+}
+
+int desugar_encoding_queries_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0) continue;
-    NodeKind rk = nt_kind(nt, recv);
-    if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn || !sp_streq(rn, "Encoding")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
-    int an = nt_ref(nt, id, "arguments");
-    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    if (sp_streq(nm, "default_internal") && ac == 0) {
-      nt_node_reset(nt, id, "NilNode");
-      changed = 1;
-    }
-    else if (sp_streq(nm, "default_external") && ac == 0) {
-      int k = enc_const(nt, id, "UTF_8");
-      if (k < 0) continue;
-      /* retype the call node in place as that constant path */
-      int par = nt_ref(nt, k, "parent");
-      nt_node_reset(nt, id, "ConstantPathNode");
-      nt_node_set_ref(nt, id, "parent", par);
-      nt_node_set_str(nt, id, "name", "UTF_8");
-      changed = 1;
-    }
-    else if ((sp_streq(nm, "default_internal=") || sp_streq(nm, "default_external=")) && ac == 1) {
-      /* the assigned value is the expression's value */
-      int v = av[0];
-      nt_node_set_ref(nt, id, "receiver", -1);
-      nt_node_set_str(nt, id, "name", "itself");
-      nt_node_set_ref(nt, id, "arguments", -1);
-      nt_node_set_ref(nt, id, "receiver", v);
-      changed = 1;
-    }
-    else if (sp_streq(nm, "find") && ac == 1) {
-      /* a literal name only: the constant it names */
-      const char *lit = sym_or_str_literal(nt, av[0]);
-      if (!lit) continue;
-      const char *cn = NULL;
-      if (!strcasecmp(lit, "utf-8") || !strcasecmp(lit, "utf8")) cn = "UTF_8";
-      else if (!strcasecmp(lit, "binary") || !strcasecmp(lit, "ascii-8bit")) cn = "ASCII_8BIT";
-      else if (!strcasecmp(lit, "us-ascii") || !strcasecmp(lit, "ascii")) cn = "US_ASCII";
-      if (!cn) continue;
-      int k = enc_const(nt, id, cn);
-      if (k < 0) continue;
-      int par = nt_ref(nt, k, "parent");
-      nt_node_reset(nt, id, "ConstantPathNode");
-      nt_node_set_ref(nt, id, "parent", par);
-      nt_node_set_str(nt, id, "name", cn);
-      changed = 1;
-    }
+  const char *cn = NULL;
+  int q = enc_query(nt, id, &cn);
+  if (q == ENC_NONE) return 0;
+  if (q == ENC_NIL) {
+    nt_node_reset(nt, id, "NilNode");
+    return 1;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (q == ENC_ASSIGN) {
+    /* the assigned value is the expression's value */
+    int ac = 0;
+    int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac)[0];
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "receiver", v);
+    return 1;
+  }
+  if (q == ENC_UTF8) cn = "UTF_8";
+  int k = enc_const(nt, id, cn);
+  if (k < 0) return 0;
+  /* retype the call node in place as that constant path */
+  int par = nt_ref(nt, k, "parent");
+  nt_node_reset(nt, id, "ConstantPathNode");
+  nt_node_set_ref(nt, id, "parent", par);
+  nt_node_set_str(nt, id, "name", cn);
+  return 1;
 }
 
 /* ---- an alias of an inherited method ----
@@ -16049,26 +16097,32 @@ int desugar_encoding_queries(Compiler *c) {
 /* `alias_method "k", "y"`: a String name is the Symbol of its text. Every
    pass that reads alias_method reads Symbol arguments, so the literal
    becomes one. */
-int desugar_alias_method_string_names(Compiler *c) {
+int desugar_alias_method_string_names_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "alias_method")) return 0;
+  int an = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac && i < 2; i++)
+    if (nt_kind(nt, av[i]) == NK_StringNode && sym_or_str_literal(nt, av[i])) return 1;
+  return 0;
+}
+int desugar_alias_method_string_names_at(Compiler *c, LowerCtx *lc, int id) {
+  if (!desugar_alias_method_string_names_left(c, lc, id)) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
+  int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "alias_method")) continue;
-    int an = nt_ref(nt, id, "arguments");
-    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    for (int i = 0; i < ac && i < 2; i++) {
-      if (nt_kind(nt, av[i]) != NK_StringNode) continue;
-      const char *s = sym_or_str_literal(nt, av[i]);
-      if (!s) continue;
-      char *name = strdup(s);
-      nt_node_reset(nt, av[i], "SymbolNode");
-      nt_node_set_str(nt, av[i], "value", name);
-      comp_sym_intern(c, name);
-      free(name);
-      changed = 1;
-    }
+  for (int i = 0; i < ac && i < 2; i++) {
+    if (nt_kind(nt, av[i]) != NK_StringNode) continue;
+    const char *s = sym_or_str_literal(nt, av[i]);
+    if (!s) continue;
+    char *name = strdup(s);
+    nt_node_reset(nt, av[i], "SymbolNode");
+    nt_node_set_str(nt, av[i], "value", name);
+    comp_sym_intern(c, name);
+    free(name);
+    changed = 1;
   }
   return changed;
 }
@@ -16705,29 +16759,26 @@ size_t reassigned_param_written_len(const char *name) {
 
 /* True when the program itself uses `name`. Only a name with `__bpin` in it
    can clash with a slot's, so those are collected once. */
-static int rbp_program_uses(const NodeTable *nt, int n0, const char *name) {
-  static const NodeTable *seen;
-  static char **used;
-  static int nused;
-  if (seen != nt) {
-    seen = nt;
-    for (int id = 0; id < n0; id++) {
+static int rbp_program_uses(const NodeTable *nt, LowerCtx *lc, const char *name) {
+  if (!lc->used_built) {
+    lc->used_built = 1;
+    for (int id = 0; id < lc->n0; id++) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm || !strstr(nm, "__bpin") || reassigned_param_written_len(nm) != strlen(nm)) continue;
-      used = realloc(used, sizeof(char *) * (size_t)(nused + 1));
-      used[nused++] = strdup(nm);
+      lc->used = realloc(lc->used, sizeof(char *) * (size_t)(lc->nused + 1));
+      lc->used[lc->nused++] = strdup(nm);
     }
   }
-  for (int i = 0; i < nused; i++) if (sp_streq(used[i], name)) return 1;
+  for (int i = 0; i < lc->nused; i++) if (sp_streq(lc->used[i], name)) return 1;
   return 0;
 }
 
-static char *rbp_slot_name(const NodeTable *nt, int n0, const char *orig) {
+static char *rbp_slot_name(const NodeTable *nt, LowerCtx *lc, const char *orig) {
   size_t n = strlen(orig) + 32;   /* "__bpin_<k>" */
   char *buf = malloc(n);
   if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__bpin", orig);
-  for (int k = 1; rbp_program_uses(nt, n0, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
+  for (int k = 1; rbp_program_uses(nt, lc, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
   if (reassigned_param_written_len(buf) != strlen(buf)) return buf;
   rbp_slots.name = realloc(rbp_slots.name, sizeof(char *) * (size_t)(rbp_slots.n + 1));
   rbp_slots.len = realloc(rbp_slots.len, sizeof(size_t) * (size_t)(rbp_slots.n + 1));
@@ -16736,57 +16787,73 @@ static char *rbp_slot_name(const NodeTable *nt, int n0, const char *orig) {
   return buf;
 }
 
-int desugar_reassigned_block_params(Compiler *c) {
+/* block b's parameter list and body, when it has both (a StatementsNode body) */
+static int rbp_block(const NodeTable *nt, int b, int *ps, int *body) {
+  int bps = nt_ref(nt, b, "parameters");
+  if (bps < 0 || nt_kind(nt, bps) != NK_BlockParametersNode) return 0;
+  *ps = nt_ref(nt, bps, "parameters");
+  if (*ps < 0) return 0;
+  *body = nt_ref(nt, b, "body");
+  return *body >= 0 && nt_kind(nt, *body) == NK_StatementsNode;
+}
+
+/* Is p, a required parameter of a block with this body, one the body assigns
+   and no nested block or lambda captures? */
+static int rbp_reassigned(const NodeTable *nt, int body, int p) {
+  if (nt_kind(nt, p) != NK_RequiredParameterNode) return 0;
+  const char *pn = nt_str(nt, p, "name");
+  if (!pn || pn[0] == '_' || !rbp_writes(nt, body, pn, 0)) return 0;
+  /* a parameter a nested block or lambda captures keeps its one cell per
+     iteration, which only a block parameter has */
+  return !rbp_captured(nt, body, pn, 0);
+}
+
+int desugar_reassigned_block_params_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int ps, body, rn = 0;
+  if (!rbp_block(nt, id, &ps, &body)) return 0;
+  const int *rq = nt_arr(nt, ps, "requireds", &rn);
+  for (int i = 0; i < rn; i++) if (rbp_reassigned(nt, body, rq[i])) return 1;
+  return 0;
+}
+
+int desugar_reassigned_block_params_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int b = 0; b < n0; b++) {
-    if (nt_kind(nt, b) != NK_BlockNode) continue;
-    int bps = nt_ref(nt, b, "parameters");
-    if (bps < 0 || nt_kind(nt, bps) != NK_BlockParametersNode) continue;
-    int ps = nt_ref(nt, bps, "parameters");
-    if (ps < 0) continue;
-    int body = nt_ref(nt, b, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int rn = 0; const int *rq = nt_arr(nt, ps, "requireds", &rn);
-    int *pre = NULL; int npre = 0;
-    for (int i = 0; i < rn; i++) {
-      if (nt_kind(nt, rq[i]) != NK_RequiredParameterNode) continue;
-      const char *pn = nt_str(nt, rq[i], "name");
-      if (!pn || pn[0] == '_' || !rbp_writes(nt, body, pn, 0)) continue;
-      /* a parameter a nested block or lambda captures keeps its one cell per
-         iteration, which only a block parameter has */
-      if (rbp_captured(nt, body, pn, 0)) continue;
-      char *orig = strdup(pn);   /* copy: nt_set_str frees pn's storage */
-      if (!orig) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      char *renamed = rbp_slot_name(nt, n0, orig);
-      nt_set_str(nt, rq[i], "name", renamed);
-      int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
-      nt_node_set_str(nt, w, "name", orig);
-      nt_node_set_int(nt, w, "depth", 0);
-      int rd = fwd_new_node_like(nt, rq[i], "LocalVariableReadNode");
-      nt_node_set_str(nt, rd, "name", renamed);
-      nt_node_set_int(nt, rd, "depth", 0);
-      free(orig); free(renamed);
-      nt_node_set_ref(nt, w, "value", rd);
-      /* the iteration's setup, which a redo does not re-run
-         (block_param_rebind_len) */
-      nt_node_set_int(nt, w, "bp_rebind", 1);
-      pre = realloc(pre, sizeof(int) * (size_t)(npre + 1));
-      pre[npre++] = w;
-    }
-    if (npre > 0) {
-      int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
-      int *out = malloc(sizeof(int) * (size_t)(bn + npre));
-      memcpy(out, pre, sizeof(int) * (size_t)npre);
-      memcpy(out + npre, bs, sizeof(int) * (size_t)bn);
-      nt_node_set_arr(nt, body, "body", out, bn + npre);
-      free(out);
-      changed = 1;
-    }
-    free(pre);
+  int ps, body, rn = 0;
+  if (!rbp_block(nt, id, &ps, &body)) return 0;
+  const int *rq = nt_arr(nt, ps, "requireds", &rn);
+  int *pre = NULL; int npre = 0;
+  for (int i = 0; i < rn; i++) {
+    if (!rbp_reassigned(nt, body, rq[i])) continue;
+    const char *pn = nt_str(nt, rq[i], "name");
+    char *orig = strdup(pn);   /* copy: nt_set_str frees pn's storage */
+    if (!orig) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    char *renamed = rbp_slot_name(nt, lc, orig);
+    nt_set_str(nt, rq[i], "name", renamed);
+    int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
+    nt_node_set_str(nt, w, "name", orig);
+    nt_node_set_int(nt, w, "depth", 0);
+    int rd = fwd_new_node_like(nt, rq[i], "LocalVariableReadNode");
+    nt_node_set_str(nt, rd, "name", renamed);
+    nt_node_set_int(nt, rd, "depth", 0);
+    free(orig); free(renamed);
+    nt_node_set_ref(nt, w, "value", rd);
+    /* the iteration's setup, which a redo does not re-run
+       (block_param_rebind_len) */
+    nt_node_set_int(nt, w, "bp_rebind", 1);
+    pre = realloc(pre, sizeof(int) * (size_t)(npre + 1));
+    pre[npre++] = w;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (npre > 0) {
+    int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+    int *out = malloc(sizeof(int) * (size_t)(bn + npre));
+    memcpy(out, pre, sizeof(int) * (size_t)npre);
+    memcpy(out + npre, bs, sizeof(int) * (size_t)bn);
+    nt_node_set_arr(nt, body, "body", out, bn + npre);
+    free(out);
+  }
+  free(pre);
+  return npre > 0;
 }
 
 /* ---- Class.new / Module.new with a block ----
@@ -21753,61 +21820,55 @@ static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n
     for (int k2 = 0; k2 < nd->a[j].n; k2++) if (pdl_body_reads(nt, nd->a[j].ids[k2], names, n)) return 1;
   return 0;
 }
-int desugar_param_default_assigns_local(Compiler *c) {
+int desugar_param_default_assigns_local_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int def = 0; def < n0; def++) {
-    if (!fwd_node_is(nt, def, "DefNode")) continue;
-    int ps[256]; int np = rd_params(nt, def, ps, 256);
-    int pro[64]; int npro = 0;
-    for (int i = 0; i < np && npro < 60; i++) {
-      if (!fwd_node_is(nt, ps[i], "OptionalParameterNode") &&
-          !fwd_node_is(nt, ps[i], "OptionalKeywordParameterNode")) continue;
-      int v = nt_ref(nt, ps[i], "value");
-      const char *pname = nt_str(nt, ps[i], "name");
-      if (v < 0 || !pname) continue;
-      const char *names[32]; int nn = 0;
-      pdl_collect_writes(nt, v, names, 32, &nn);
-      if (!nn || !pdl_body_reads(nt, nt_ref(nt, def, "body"), names, nn)) continue;
-      BsB b = { nt, 1 };
-      long long line = nt_int(nt, ps[i], "node_line", 0);
-      for (int k = 0; k < nn && npro < 60; k++) {
-        /* a parameter the default writes (`v = (n += 1)`) is bound already:
-           declaring it nil threw away the argument (#8320) */
-        int is_param = 0;
-        for (int j = 0; j < np && !is_param; j++) {
-          const char *pj = nt_str(nt, ps[j], "name");
-          is_param = pj && sp_streq(pj, names[k]);
-        }
-        if (is_param) continue;
-        int w = bs_write(&b, names[k], bs_new(&b, "NilNode"));
-        if (w >= 0) nt_node_set_int(nt, w, "node_line", line);
-        pro[npro++] = w;
-      }
-      int sym = bs_new(&b, "SymbolNode");
-      if (sym >= 0) nt_node_set_str(nt, sym, "value", "__sp_absent");
-      int sym2 = bs_new(&b, "SymbolNode");
-      if (sym2 >= 0) nt_node_set_str(nt, sym2, "value", "__sp_absent");
-      int pred = bs_call(&b, bs_read(&b, pname), "==", &sym2, 1);
-      int bind = bs_write(&b, pname, v);
-      int guard = bs_if(&b, pred, &bind, 1, NULL, 0);
-      if (!b.ok || sym < 0 || pred < 0 || bind < 0 || guard < 0) continue;
-      nt_node_set_int(nt, pred, "node_line", line);
-      nt_node_set_int(nt, bind, "node_line", line);
-      nt_node_set_int(nt, guard, "node_line", line);
-      pro[npro++] = guard;
-      nt_node_set_ref(nt, ps[i], "value", sym);
-    }
-    if (!npro) continue;
+  int def = id;
+  int ps[256]; int np = rd_params(nt, def, ps, 256);
+  int pro[64]; int npro = 0;
+  for (int i = 0; i < np && npro < 60; i++) {
+    if (!fwd_node_is(nt, ps[i], "OptionalParameterNode") &&
+        !fwd_node_is(nt, ps[i], "OptionalKeywordParameterNode")) continue;
+    int v = nt_ref(nt, ps[i], "value");
+    const char *pname = nt_str(nt, ps[i], "name");
+    if (v < 0 || !pname) continue;
+    const char *names[32]; int nn = 0;
+    pdl_collect_writes(nt, v, names, 32, &nn);
+    if (!nn || !pdl_body_reads(nt, nt_ref(nt, def, "body"), names, nn)) continue;
     BsB b = { nt, 1 };
-    int nbody = bs_prepend(&b, def, pro, npro);
-    if (nbody < 0 || !b.ok) continue;
-    nt_node_set_ref(nt, def, "body", nbody);
-    changed = 1;
+    long long line = nt_int(nt, ps[i], "node_line", 0);
+    for (int k = 0; k < nn && npro < 60; k++) {
+      /* a parameter the default writes (`v = (n += 1)`) is bound already:
+         declaring it nil threw away the argument (#8320) */
+      int is_param = 0;
+      for (int j = 0; j < np && !is_param; j++) {
+        const char *pj = nt_str(nt, ps[j], "name");
+        is_param = pj && sp_streq(pj, names[k]);
+      }
+      if (is_param) continue;
+      int w = bs_write(&b, names[k], bs_new(&b, "NilNode"));
+      if (w >= 0) nt_node_set_int(nt, w, "node_line", line);
+      pro[npro++] = w;
+    }
+    int sym = bs_new(&b, "SymbolNode");
+    if (sym >= 0) nt_node_set_str(nt, sym, "value", "__sp_absent");
+    int sym2 = bs_new(&b, "SymbolNode");
+    if (sym2 >= 0) nt_node_set_str(nt, sym2, "value", "__sp_absent");
+    int pred = bs_call(&b, bs_read(&b, pname), "==", &sym2, 1);
+    int bind = bs_write(&b, pname, v);
+    int guard = bs_if(&b, pred, &bind, 1, NULL, 0);
+    if (!b.ok || sym < 0 || pred < 0 || bind < 0 || guard < 0) continue;
+    nt_node_set_int(nt, pred, "node_line", line);
+    nt_node_set_int(nt, bind, "node_line", line);
+    nt_node_set_int(nt, guard, "node_line", line);
+    pro[npro++] = guard;
+    nt_node_set_ref(nt, ps[i], "value", sym);
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (!npro) return 0;
+  BsB b = { nt, 1 };
+  int nbody = bs_prepend(&b, def, pro, npro);
+  if (nbody < 0 || !b.ok) return 0;
+  nt_node_set_ref(nt, def, "body", nbody);
+  return 1;
 }
 
 /* ---- `r[k] ||= v` / `r[k] &&= v` / `r[k] op= v` on a USER-class receiver ----
@@ -22304,116 +22365,115 @@ static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg, int 
    with the receiver evaluated once, as CRuby does. The `if` stands where
    the op-write stood, so a statement stays a statement and its write is
    emitted as one. */
-int desugar_safe_nav_attr_write(Compiler *c) {
+int desugar_safe_nav_attr_write_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  return nt_safe_nav(nt, id) && nt_ref(nt, id, "receiver") >= 0 && nt_str(nt, id, "name") &&
+         nt_ref(nt, id, "value") >= 0;
+}
+int desugar_safe_nav_attr_write_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    const char *ty = nt_type(nt, id);
-    NodeKind ty_k = nt_kind(nt, id);
-    if (!ty || !(ty_k == NK_CallOperatorWriteNode || ty_k == NK_CallOrWriteNode ||
-                 ty_k == NK_CallAndWriteNode)) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    const char *rn = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    if (!nt_safe_nav(nt, id) || recv < 0 || !rn || v < 0) continue;
-    const char *bop = nt_str(nt, id, "binary_operator");
-    char tyb[32], bopb[16];
-    snprintf(tyb, sizeof tyb, "%s", ty);
-    snprintf(bopb, sizeof bopb, "%s", bop ? bop : "");
-    char rnb[256]; snprintf(rnb, sizeof rnb, "%s", rn);
-    char tname[48]; snprintf(tname, sizeof tname, "__snw_%s", comp_node_tag(c, id));
-    int w = nt_new_node(nt, "LocalVariableWriteNode");
-    int pw = nt_new_node(nt, "ParenthesesNode");
-    int pws = nt_new_node(nt, "StatementsNode");
-    int r2 = nt_new_node(nt, "LocalVariableReadNode");
-    int nq = nt_new_node(nt, "CallNode");
-    int nil_n = nt_new_node(nt, "NilNode");
-    int ts = nt_new_node(nt, "StatementsNode");
-    int op = nt_new_node(nt, tyb);
-    int es = nt_new_node(nt, "StatementsNode");
-    int eln = nt_new_node(nt, "ElseNode");
-    if (w < 0 || pw < 0 || pws < 0 || r2 < 0 || nq < 0 || nil_n < 0 || ts < 0 || op < 0 || es < 0 ||
-        eln < 0) break;
-    nt_node_set_str(nt, w, "name", tname); nt_node_set_int(nt, w, "depth", 0);
-    nt_node_set_ref(nt, w, "value", recv);
-    nt_node_set_arr(nt, pws, "body", &w, 1);
-    nt_node_set_ref(nt, pw, "body", pws);
-    nt_node_set_str(nt, r2, "name", tname); nt_node_set_int(nt, r2, "depth", 0);
-    nt_node_set_str(nt, nq, "name", "nil?");
-    nt_node_set_ref(nt, nq, "receiver", pw);
-    nt_node_set_ref(nt, nq, "arguments", -1); nt_node_set_ref(nt, nq, "block", -1);
-    nt_node_set_arr(nt, ts, "body", &nil_n, 1);
-    /* the op-write itself, on the bound receiver, with a plain `.` */
-    nt_node_set_ref(nt, op, "receiver", r2);
-    nt_set_ignore_visibility(nt, op, nt_ignore_visibility(nt, id));
-    nt_node_set_str(nt, op, "name", rnb);
-    if (bopb[0]) nt_node_set_str(nt, op, "binary_operator", bopb);
-    nt_node_set_ref(nt, op, "value", v);
-    /* the source position of the op-write, which a refusal of the rewritten
-       one (a receiver that is always nil, a value position) reports */
-    long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
-    {
-      int pos[3] = { op, w, nq };
-      for (int k = 0; k < 3 && ln > 0; k++) {
-        nt_node_set_int(nt, pos[k], "node_line", ln);
-        nt_node_set_int(nt, pos[k], "node_file", fl);
-      }
+  if (!desugar_safe_nav_attr_write_left(c, lc, id)) return 0;
+  const char *ty = nt_type(nt, id);
+  int recv = nt_ref(nt, id, "receiver");
+  const char *rn = nt_str(nt, id, "name");
+  int v = nt_ref(nt, id, "value");
+  const char *bop = nt_str(nt, id, "binary_operator");
+  char tyb[32], bopb[16];
+  snprintf(tyb, sizeof tyb, "%s", ty);
+  snprintf(bopb, sizeof bopb, "%s", bop ? bop : "");
+  char rnb[256]; snprintf(rnb, sizeof rnb, "%s", rn);
+  char tname[48]; snprintf(tname, sizeof tname, "__snw_%s", comp_node_tag(c, id));
+  int w = nt_new_node(nt, "LocalVariableWriteNode");
+  int pw = nt_new_node(nt, "ParenthesesNode");
+  int pws = nt_new_node(nt, "StatementsNode");
+  int r2 = nt_new_node(nt, "LocalVariableReadNode");
+  int nq = nt_new_node(nt, "CallNode");
+  int nil_n = nt_new_node(nt, "NilNode");
+  int ts = nt_new_node(nt, "StatementsNode");
+  int op = nt_new_node(nt, tyb);
+  int es = nt_new_node(nt, "StatementsNode");
+  int eln = nt_new_node(nt, "ElseNode");
+  if (w < 0 || pw < 0 || pws < 0 || r2 < 0 || nq < 0 || nil_n < 0 || ts < 0 || op < 0 || es < 0 ||
+      eln < 0) return 0;
+  nt_node_set_str(nt, w, "name", tname); nt_node_set_int(nt, w, "depth", 0);
+  nt_node_set_ref(nt, w, "value", recv);
+  nt_node_set_arr(nt, pws, "body", &w, 1);
+  nt_node_set_ref(nt, pw, "body", pws);
+  nt_node_set_str(nt, r2, "name", tname); nt_node_set_int(nt, r2, "depth", 0);
+  nt_node_set_str(nt, nq, "name", "nil?");
+  nt_node_set_ref(nt, nq, "receiver", pw);
+  nt_node_set_ref(nt, nq, "arguments", -1); nt_node_set_ref(nt, nq, "block", -1);
+  nt_node_set_arr(nt, ts, "body", &nil_n, 1);
+  /* the op-write itself, on the bound receiver, with a plain `.` */
+  nt_node_set_ref(nt, op, "receiver", r2);
+  nt_set_ignore_visibility(nt, op, nt_ignore_visibility(nt, id));
+  nt_node_set_str(nt, op, "name", rnb);
+  if (bopb[0]) nt_node_set_str(nt, op, "binary_operator", bopb);
+  nt_node_set_ref(nt, op, "value", v);
+  /* the source position of the op-write, which a refusal of the rewritten
+     one (a receiver that is always nil, a value position) reports */
+  long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+  {
+    int pos[3] = { op, w, nq };
+    for (int k = 0; k < 3 && ln > 0; k++) {
+      nt_node_set_int(nt, pos[k], "node_line", ln);
+      nt_node_set_int(nt, pos[k], "node_file", fl);
     }
-    nt_node_set_arr(nt, es, "body", &op, 1);
-    nt_node_set_ref(nt, eln, "statements", es);
-    nt_node_reset(nt, id, "IfNode");
-    if (ln > 0) { nt_node_set_int(nt, id, "node_line", ln); nt_node_set_int(nt, id, "node_file", fl); }
-    nt_node_set_ref(nt, id, "predicate", nq);
-    nt_node_set_ref(nt, id, "statements", ts);
-    nt_node_set_ref(nt, id, "subsequent", eln);
-    changed = 1;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  nt_node_set_arr(nt, es, "body", &op, 1);
+  nt_node_set_ref(nt, eln, "statements", es);
+  nt_node_reset(nt, id, "IfNode");
+  if (ln > 0) { nt_node_set_int(nt, id, "node_line", ln); nt_node_set_int(nt, id, "node_file", fl); }
+  nt_node_set_ref(nt, id, "predicate", nq);
+  nt_node_set_ref(nt, id, "statements", ts);
+  nt_node_set_ref(nt, id, "subsequent", eln);
+  return 1;
 }
 
-int desugar_const_attr_op_assign(Compiler *c) {
+int desugar_const_attr_op_assign_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) return 0;
+  /* the dumper spells the attribute once, as `name`; the writer is name= */
+  const char *rn = nt_str(nt, id, "name");
+  if (!rn || !rn[0] || nt_ref(nt, id, "value") < 0 || nt_ref(nt, id, "arguments") >= 0) return 0;
+  return nt_kind(nt, id) != NK_CallOperatorWriteNode || nt_str(nt, id, "binary_operator") != NULL;
+}
+int desugar_const_attr_op_assign_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  char *wn = NULL;   /* this round's copy, freed by the next */
-  for (int id = 0; id < n0; id++) {
-    const char *ty = nt_type(nt, id);
-    NodeKind k = nt_kind(nt, id);
-    if (!ty) continue;
-    int is_op = k == NK_CallOperatorWriteNode, is_or = k == NK_CallOrWriteNode, is_and = k == NK_CallAndWriteNode;
-    if (!is_op && !is_or && !is_and) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
-    /* the dumper spells the attribute once, as `name`; the writer is name= */
-    const char *rn = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    if (!rn || !rn[0] || v < 0 || nt_ref(nt, id, "arguments") >= 0) continue;
-    free(wn);
-    wn = setter_name_of(rn);
-    const char *op = is_op ? nt_str(nt, id, "binary_operator") : NULL;
-    if (is_op && !op) continue;
-    int recv2 = nt_clone_subtree(nt, recv); if (recv2 < 0) continue;
-    int read = ca_attr_call(nt, recv, rn, -1, nt_ignore_visibility(nt, id)); if (read < 0) continue;
-    if (op) {
-      int opc = ca_attr_call(nt, read, op, v, 0); if (opc < 0) continue;
-      int store = ca_attr_call(nt, recv2, wn, opc, nt_ignore_visibility(nt, id)); if (store < 0) continue;
+  if (!desugar_const_attr_op_assign_left(c, lc, id)) return 0;
+  NodeKind k = nt_kind(nt, id);
+  int is_op = k == NK_CallOperatorWriteNode, is_or = k == NK_CallOrWriteNode;
+  int recv = nt_ref(nt, id, "receiver"), v = nt_ref(nt, id, "value");
+  const char *rn = nt_str(nt, id, "name");
+  const char *op = is_op ? nt_str(nt, id, "binary_operator") : NULL;
+  char *wn = setter_name_of(rn);   /* this rewrite's copy, freed on every way out */
+  int done = 0;
+  int recv2 = nt_clone_subtree(nt, recv);
+  int read = recv2 >= 0 ? ca_attr_call(nt, recv, rn, -1, nt_ignore_visibility(nt, id)) : -1;
+  if (read >= 0 && op) {
+    int opc = ca_attr_call(nt, read, op, v, 0);
+    int store = opc >= 0 ? ca_attr_call(nt, recv2, wn, opc, nt_ignore_visibility(nt, id)) : -1;
+    if (store >= 0) {
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, id, "CallNode");
       nt_set_ignore_visibility(nt, id, nt_ignore_visibility(nt, store));
       nt_node_set_ref(nt, id, "receiver", recv2); nt_node_set_str(nt, id, "name", wn);
       nt_set_attr_write(nt, id, 1);
       nt_node_set_ref(nt, id, "arguments", na); nt_node_set_ref(nt, id, "block", -1);
+      done = 1;
     }
-    else {
-      int store = ca_attr_call(nt, recv2, wn, v, nt_ignore_visibility(nt, id)); if (store < 0) continue;
+  }
+  else if (read >= 0) {
+    int store = ca_attr_call(nt, recv2, wn, v, nt_ignore_visibility(nt, id));
+    if (store >= 0) {
       nt_node_reset(nt, id, is_or ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, id, "left", read); nt_node_set_ref(nt, id, "right", store);
+      done = 1;
     }
-    changed = 1;
   }
   free(wn);
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  return done;
 }
 
 /* ---- `t op= x` whose operator a program reopened ----
@@ -24243,16 +24303,17 @@ static int sce_bare_visibility(const NodeTable *nt, int st) {
    every pass, so the call is read as it is written without one.
    Not for super: `super(&nil)` passes no block where a bare `super(...)`
    hands the caller's own block on, so there the &nil is meaningful. */
-void desugar_nil_block_arg(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
-    int ex = nt_ref(nt, blk, "expression");
-    if (ex >= 0 && nt_kind(nt, ex) == NK_NilNode) nt_node_set_ref(nt, id, "block", -1);
-  }
+int desugar_nil_block_arg_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) return 0;
+  int ex = nt_ref(nt, blk, "expression");
+  return ex >= 0 && nt_kind(nt, ex) == NK_NilNode;
+}
+int desugar_nil_block_arg_at(Compiler *c, LowerCtx *lc, int id) {
+  if (!desugar_nil_block_arg_left(c, lc, id)) return 0;
+  nt_node_set_ref((NodeTable *)c->nt, id, "block", -1);
+  return 1;
 }
 
 int desugar_static_class_eval(Compiler *c) {
