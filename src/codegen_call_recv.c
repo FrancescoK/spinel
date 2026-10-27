@@ -16574,10 +16574,11 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
      dispatch, which emits its arm beside the builtin ones, as the one-argument
      form below does: the slice read answered nil for a Grid (#5522). */
   int has_user_aref2 = 0;
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm)
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
-          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref2 = 1; break; }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm) {
+    has_user_aref2 = cls_value_owns_name(c, id, "[]");
+    for (int k = 0; k < c->nclasses && !has_user_aref2; k++)
+      if (comp_poly_arm_defines_n(c, k, "[]", argc)) has_user_aref2 = 1;
+  }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !has_user_aref2) {
     /* The runtime dispatches on the receiver's tag: a string/array does a
        two-arg slice, a bound Method (optcarrot's poke handlers) is called with
@@ -16611,13 +16612,14 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* Only use the fast single-call path when no user class defines [].
        If any user class has its own [] method, fall through to the per-class
        poly dispatch (line ~4640) which generates both user and builtin arms. */
-    int has_user_aref = 0;
-    /* a class's own `self.[]` counts too: a Class value in the slot is
-       served by the class-method dispatch, which re-emits this read for the
-       values that are not a Class (g_cls_tag_skip) (#5545) */
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
-          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref = 1; break; }
+    /* a class's own `self.[]` counts too when the receiver can hold its
+       Class value (cls_value_owns_name): the class-method dispatch serves
+       that value and re-emits this read for the values that are not a Class
+       (g_cls_tag_skip) (#5545). A receiver that holds none takes no such
+       dispatch, and this read is the builtin's. */
+    int has_user_aref = cls_value_owns_name(c, id, "[]");
+    for (int k = 0; k < c->nclasses && !has_user_aref; k++)
+      if (comp_poly_arm_defines_n(c, k, "[]", argc)) has_user_aref = 1;
     if (!has_user_aref) {
       if (at == TY_SYMBOL) {
         buf_puts(b, "sp_poly_get_sym("); emit_expr(c, recv, b);
