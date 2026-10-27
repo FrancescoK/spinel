@@ -379,8 +379,9 @@ static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *
    nothing; but a load that is emitted as an expression (anywhere but as a
    statement whose value nothing reads) answers whether it ran the file, once,
    so the file has its loaded flag and an empty function for that load to
-   call. */
-void prog_file_tops(Compiler *c, unsigned char *has) {
+   call. A load of a native library
+   that stands that way as well has no file: native(ud, load) for each. */
+void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, int load), void *ud) {
   const NodeTable *nt = c->nt;
   int n = nt_nroots(nt);
   for (int i = 0; i < n; i++) has[i] = i > 0 && !prog_defines_only(c, i);
@@ -390,9 +391,11 @@ void prog_file_tops(Compiler *c, unsigned char *has) {
   const int *parent = comp_parent_map(c);
   NT_FOREACH_KIND(nt, NK_LoadNode, id) {
     int f = (int)nt_int(nt, id, "target_file", -1);
-    if (f <= 0 || f >= n || has[f] || !seen[id]) continue;
+    if (!seen[id] || (f > 0 && f < n && has[f]) || (f <= 0 && !native)) continue;
     int stmt = parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_StatementsNode;
-    if (!stmt || !an_node_dropped(c, id)) has[f] = 1;
+    if (stmt && an_node_dropped(c, id)) continue;
+    if (f > 0 && f < n) has[f] = 1;
+    else if (is_load_how_native(nt_str(nt, id, "how"))) native(ud, id);
   }
   free(seen); free(live);
 }

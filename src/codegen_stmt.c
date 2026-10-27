@@ -15698,15 +15698,19 @@ void emit_synth_line_marker(Buf *b) {
    first time and answers whether it did. One that names no file raises
    LoadError for the feature it was given, wherever it stands. One of a
    core capability, which CRuby has loaded before the program runs, runs
-   nothing and answers false. */
+   nothing and answers false. One of a native library runs nothing either,
+   but answers true the first time, as CRuby's does, from a flag of its
+   feature's (native_load_flag, declared with the files'); false for one
+   CRuby has loaded at boot. */
 void emit_load_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *how = nt_str(nt, id, "how");
   int f = (int)nt_int(nt, id, "target_file", -1);
-  if (is_load_how_core(how)) { buf_puts(b, "0"); return; }
+  if (is_load_how_core(how) || (is_load_how_native(how) && is_native_lib_at_boot(nt_str(nt, id, "path")))) { buf_puts(b, "0"); return; }
   if (is_load_how_native(how)) {
-    unsupported_feature(c, id, "--load-model=graph: a native library's require standing as a value, for now");
-    buf_puts(b, "0");
+    char fl[96];
+    native_load_flag(nt, id, fl, sizeof fl);
+    buf_printf(b, "(%s ? 0 : (%s = 1))", fl, fl);
     return;
   }
   buf_printf(b, "sp_Kernel_%s(", mc(nt_str(nt, id, "method")));
@@ -15715,6 +15719,16 @@ void emit_load_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ", NULL, NULL)");
   }
   else buf_printf(b, "NULL, &sp_loaded_%d, sp_file_%d_top)", f, f);
+}
+/* The C name of the loaded flag of the native library a require names:
+   its path, with the `.rb` it may carry off and every other character that
+   is no letter or digit an underscore ("io/console": sp_loaded_native_io_console) */
+void native_load_flag(const NodeTable *nt, int id, char *buf, size_t n) {
+  const char *path = nt_str(nt, id, "path");
+  size_t len = path ? strlen(path) : 0, k = (size_t)snprintf(buf, n, "sp_loaded_native_");
+  if (len > 3 && !strcmp(path + len - 3, ".rb")) len -= 3;
+  for (size_t i = 0; i < len && k + 1 < n; i++) buf[k++] = isalnum((unsigned char)path[i]) ? path[i] : '_';
+  buf[k < n ? k : n - 1] = '\0';
 }
 /* ... standing as a statement. A file that only defines things has nothing
    to run, and its load, whose value is unused, is nothing; nor is a require
