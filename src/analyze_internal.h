@@ -29,6 +29,8 @@ extern const char *const g_sid_refusal_msg;
 int ie_class_of(Compiler *c, int node);
 int attr_reader_ty(Compiler *c, int cid, const char *name, TyKind *out);
 int ie_poly_classes_at(Compiler *c, int node, int *out, int max);
+/* an empty row a nested seed built at its kind (narrow_object_arrays) */
+int oa_seed_row_literal(int lit);
 /* Does the program make a bare Object (`Object.new`)? (analyze_infer.c) */
 int an_program_news_object(Compiler *c);
 int ie_kernel_global(const char *n);

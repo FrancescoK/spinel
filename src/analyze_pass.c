@@ -6358,6 +6358,8 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       /* (a String fits an Array of Strings, a String handle's value too) */
       if (lt == TY_STR_ARRAY && (vt == TY_STRING || vt == TY_STRBUF)) continue;
       if (!c->arr_want || l >= c->node_cap || c->arr_want[l] == TY_POLY_ARRAY) continue;
+      /* a row a nested seed built is the seed's kind (oa_seed_row_literal) */
+      if (oa_seed_row_literal(l)) continue;
       comp_set_arr_want(c, l, TY_POLY_ARRAY);
       changed = 1;
     }

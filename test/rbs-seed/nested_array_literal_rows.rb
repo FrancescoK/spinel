@@ -52,3 +52,25 @@ end
 n = NilRows.new
 n.fill(ARGV.size > 5 ? "s" : 3)
 n.report
+
+# An Integer pushed into a Float row is kept as a Float, as a row of
+# `Array.new(n) { [] }` keeps it: the rows are still built at the seed's kind.
+class MixedFloatRows
+  def initialize
+    @rows = [[], []]
+  end
+
+  def fill
+    @rows[0] << 1.5
+    @rows[0] << 2
+    @rows[1] << 3
+  end
+
+  def report
+    p @rows[0].length, @rows[0][1] + 0.5, @rows[1].length, @rows[1][0] * 0.5
+  end
+end
+
+m = MixedFloatRows.new
+m.fill
+m.report
