@@ -1245,11 +1245,10 @@ int scope_def_line(Compiler *c, Scope *s);
 const char *scope_def_file(Compiler *c, Scope *s);
 int display_method_scope(Compiler *c, int cid, int want_inspect, int *defcls);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
-const char *obj_str_mname(Compiler *c, int cid, int want_inspect);
+const char *obj_str_fn(Compiler *c, int cid, int want_inspect);
 const char *obj_str_blockarg(Compiler *c, int cid, int want_inspect);
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
-void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_stmt(Compiler *c, int id, Buf *b, int indent);
 /* A require under --load-model=graph, as its value (codegen_stmt.c) */
 void emit_load_call(Compiler *c, int id, Buf *b);
@@ -1971,6 +1970,8 @@ void mc_resolve_clashes(Compiler *c);   /* before any method is named (codegen_p
    function of that exact spelling (sp_String_length). */
 const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname);
 const char *mc_top(Compiler *c, const char *name);
+/* A method's C function, spelled from the method (codegen_util.c) */
+const char *mc_method(Compiler *c, const Scope *s);
 /* The scope a #deconstruct call on class cid runs, through an alias
    (codegen.c) */
 int comp_deconstruct_method(Compiler *c, int cid, int *defcls);
@@ -2948,7 +2949,6 @@ void emit_local_ctype(Compiler *c, TyKind ty, int vol, Buf *b);
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b);
 void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends);
 int method_is_void(Scope *s);
-void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b);
 void emit_poly_iter_obj_reject(Compiler *c, int call, int tv, const char *name, Buf *b);
 void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *name, const char *shown, Buf *b);
@@ -2978,7 +2978,6 @@ int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
 const char *class_ruby_name(Compiler *c, int ci);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
-const char *obj_str_mname(Compiler *c, int cid, int want_inspect);
 const char *obj_str_blockarg(Compiler *c, int cid, int want_inspect);
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);

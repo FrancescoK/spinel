@@ -6763,14 +6763,23 @@ static int mc_name_fixed(const char *nm) {
   for (int i = 0; mc_fixed_names[i]; i++) if (sp_streq(nm, mc_fixed_names[i])) return 1;
   return 0;
 }
-static void mc_compose(Compiler *c, const Scope *s, char *out, size_t n) {
-  if (s->class_id < 0) snprintf(out, n, "sp_%s", mc_top(c, s->name));
+/* The C function of method s: sp_<c_name> for one given a C symbol of its
+   own, sp_<name> for a top-level method (mc_top), sp_<Class>_s_<name> for a
+   class method, sp_<stem>_<name> for an instance method (mc_reopen_cls's
+   stem). Every site that names a method's function spells it here, from
+   the method, never from a name: two methods of one name are two
+   functions. The answer stays valid for the next seven spellings. */
+const char *mc_method(Compiler *c, const Scope *s) {
+  char *out = c->mc_ring[c->mc_ring_next++ & 7], stem[256];
+  size_t n = sizeof c->mc_ring[0];
+  if (s->c_name) snprintf(out, n, "sp_%s", s->c_name);
+  else if (s->class_id < 0) snprintf(out, n, "sp_%s", mc_top(c, s->name));
   else if (s->is_cmethod) snprintf(out, n, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
   else {
-    char stem[256];
     snprintf(stem, sizeof stem, "%s", mc_reopen_cls(c, s->class_id, s->name));
     snprintf(out, n, "sp_%s_%s", stem, mc(s->name));
   }
+  return out;
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
   return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
@@ -6789,7 +6798,7 @@ static int mc_find_clash(Compiler *c, int *first, int *later) {
     char nm[600];
     if (s) {
       if (!s->name || s->c_name) continue;
-      mc_compose(c, s, nm, sizeof nm);
+      snprintf(nm, sizeof nm, "%s", mc_method(c, s));
     } else {
       const ClassInfo *ci = &c->classes[(-i - 1) / 3];
       if (ci->is_builtin_const || !ci->c_name) continue;

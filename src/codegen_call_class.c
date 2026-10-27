@@ -2295,7 +2295,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         nd_callee(c, id, mi, defcls, 0);
         int w0 = node_is_oint(c, id);
         cm_ret_open(&c->scopes[mi], w0, b);
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
+        buf_printf(b, "%s(", mc_method(c, &c->scopes[mi]));
         const char *lead0 = emit_cmethod_self_cls_arg(c, mi, fold_ci, b);
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), lead0, b);
         emit_cmethod_block_arg(c, id, &c->scopes[mi], -1, b);
@@ -2350,7 +2350,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             int defcls = -1;
             int mi = call_target(c, id, cand[k], name, CT_CMETHOD, &defcls);
             if (mi < 0) continue;
-            buf_printf(b, "if (_t%d == %d) sp_%s_s_%s(", tcid, cand[k], c->classes[defcls].c_name, mc(c->scopes[mi].name));
+            buf_printf(b, "if (_t%d == %d) %s(", tcid, cand[k], mc_method(c, &c->scopes[mi]));
             { const char *leadv = emit_cmethod_self_cls_arg(c, mi, cand[k], b);
               emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), leadv, b); }
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
@@ -2370,7 +2370,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "if (_t%d == %d) _t%d_r = ", tcid, cand[k], tcid);
           if (rr.kind == RK_BOXED && c->scopes[mi].ret != TY_POLY) {
             Buf cb; memset(&cb, 0, sizeof cb);
-            buf_printf(&cb, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
+            buf_printf(&cb, "%s(", mc_method(c, &c->scopes[mi]));
             { const char *leadb = emit_cmethod_self_cls_arg(c, mi, cand[k], &cb);
               emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), leadb, &cb); }
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, &cb);
@@ -2380,7 +2380,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           }
           else {
             cm_ret_open(&c->scopes[mi], wr, b);
-            buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
+            buf_printf(b, "%s(", mc_method(c, &c->scopes[mi]));
             { const char *leadc = emit_cmethod_self_cls_arg(c, mi, cand[k], b);
               emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), leadc, b); }
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
@@ -2440,7 +2440,7 @@ int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         nd_callee(c, id, mi, defcls, 0);
         int w1 = node_is_oint(c, id);
         cm_ret_open(&c->scopes[mi], w1, b);
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
+        buf_printf(b, "%s(", mc_method(c, &c->scopes[mi]));
         const char *lead1 = emit_cmethod_self_cls_arg(c, mi, ci, b);
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), lead1, b);
         /* Pass &block as sp_Proc * when the class method keeps a real &blk
@@ -3126,7 +3126,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
       if (ucnew >= 0) {
         /* user-defined def self.new: call it as a regular class method */
-        emit_method_cname(c, &c->scopes[ucnew], b);
+        buf_puts(b, mc_method(c, &c->scopes[ucnew]));
         buf_puts(b, "(");
         const char *ld = emit_cmethod_self_cls_arg(c, ucnew, ci, b);   /* #4217 */
         emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), ld, b);
@@ -4441,7 +4441,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             }
             TyKind kr = (TyKind)c->scopes[kmi].ret;
             Buf cb9; memset(&cb9, 0, sizeof cb9);
-            emit_method_cname(c, &c->scopes[kmi], &cb9);
+            buf_puts(&cb9, mc_method(c, &c->scopes[kmi]));
             buf_printf(&cb9, "(");
             /* A class method whose body reads the receiving class (a class
                with descendants, `def self.find; name; end`) is compiled with a
@@ -4663,7 +4663,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         Scope *ms = &c->scopes[smi];
         if (g_plan_check) ucall_observe(c, id, smi, encl->class_id, 0);
         Buf cb; memset(&cb, 0, sizeof cb);
-        emit_method_cname(c, ms, &cb);
+        buf_puts(&cb, mc_method(c, ms));
         buf_puts(&cb, "(");
         /* a sibling call keeps the receiving class: forward ours when this
            body has one, else the class it is emitted for. A yielding body
@@ -4729,7 +4729,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (smi >= 0) {
       Scope *ms = &c->scopes[smi];
       if (g_plan_check) ucall_observe(c, id, smi, g_class_body_id, 0);
-      emit_method_cname(c, ms, b);
+      buf_puts(b, mc_method(c, ms));
       buf_puts(b, "(");
       const char *lead3 = emit_cmethod_self_cls_arg(c, smi, g_class_body_id, b);
       emit_args_filled(c, smi, nt_ref(nt, id, "arguments"), lead3, b);
@@ -4766,7 +4766,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           return 1;
         }
         lead = ms->nparams > 0 ? ", " : "";
-        emit_method_cname(c, ms, b);
+        buf_puts(b, mc_method(c, ms));
         buf_puts(b, "(NULL");
         emit_args_filled(c, imi, nt_ref(nt, id, "arguments"), lead, b);
         /* The declared &block is a parameter like any other: without this the
@@ -4784,7 +4784,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         buf_puts(b, ")");
         return 1;
       }
-      emit_method_cname(c, ms, b);
+      buf_puts(b, mc_method(c, ms));
       buf_puts(b, "(");
       emit_args_filled(c, imi, nt_ref(nt, id, "arguments"), lead, b);
       buf_puts(b, ")");
@@ -4864,7 +4864,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
              sp_RbVal local (#4182). */
           Buf dcb; memset(&dcb, 0, sizeof dcb);
           if (g_plan_check) ucall_observe(c, id, defmi, cid, 0);
-          emit_method_cname(c, &c->scopes[defmi], &dcb);
+          buf_puts(&dcb, mc_method(c, &c->scopes[defmi]));
           buf_puts(&dcb, "(");
           /* The one implementation still runs with self = the receiver's
              runtime class: `self.class.label` from a Base method on a Child
@@ -4936,7 +4936,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             buf_printf(b, " case %d: ", k);
             if (unified == TY_POLY && method_is_void(&c->scopes[kmi])) {
               /* void-return (raises): call then fall through with nil */
-              emit_method_cname(c, &c->scopes[kmi], b);
+              buf_puts(b, mc_method(c, &c->scopes[kmi]));
               buf_puts(b, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, kmi, k, b);
                 emit_args_filled(c, kmi, nt_ref(nt, id, "arguments"), ld, b); }
@@ -4949,7 +4949,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
                  object) assigned its raw value to the sp_RbVal result, which
                  does not compile (#4053). */
               Buf ab; memset(&ab, 0, sizeof ab);
-              emit_method_cname(c, &c->scopes[kmi], &ab);
+              buf_puts(&ab, mc_method(c, &c->scopes[kmi]));
               buf_puts(&ab, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, kmi, k, &ab);
                 emit_args_filled(c, kmi, nt_ref(nt, id, "arguments"), ld, &ab); }
@@ -4969,7 +4969,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           {
             TyKind dr = (TyKind)c->scopes[defmi].ret;
             if (unified == TY_POLY && method_is_void(&c->scopes[defmi])) {
-              emit_method_cname(c, &c->scopes[defmi], b);
+              buf_puts(b, mc_method(c, &c->scopes[defmi]));
               buf_puts(b, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, defmi, cid, b);
                 emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, b); }
@@ -4978,7 +4978,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             }
             else {
               Buf db; memset(&db, 0, sizeof db);
-              emit_method_cname(c, &c->scopes[defmi], &db);
+              buf_puts(&db, mc_method(c, &c->scopes[defmi]));
               buf_puts(&db, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, defmi, cid, &db);
                 emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, &db); }
@@ -5083,7 +5083,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (emit_reopen_block_call(c, id, recv, mi, NULL, b)) return 1;
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
         size_t at = b->len;
-        emit_method_cname(c, &c->scopes[mi], b);
+        buf_puts(b, mc_method(c, &c->scopes[mi]));
         buf_puts(b, "(");
         int open = emit_reopen_recv_args(c, id, mi, recv, 0, NULL, at, b);
         emit_trailing_blk_arg(c, &c->scopes[mi], id, -1, b);
@@ -5119,8 +5119,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           size_t at = b->len;
           /* the method's own name: an alias's call names the method it
              resolved to */
-          const char *mn = c->scopes[oc_mi].name;
-          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, mn), mc(mn));
+          buf_printf(b, "%s(", mc_method(c, &c->scopes[oc_mi]));
           int open = emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, at, b);
           /* a method taking `&block` takes the call's block, or NULL (#7200) */
           emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
@@ -5137,7 +5136,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (hc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, hc_mi, hc_ci, 0);
         size_t at = b->len;
-        buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
+        buf_printf(b, "%s(", mc_method(c, &c->scopes[hc_mi]));
         int open = emit_reopen_recv_args(c, id, hc_mi, recv, 1, NULL, at, b);
         emit_trailing_blk_arg(c, &c->scopes[hc_mi], id, -1, b);
         buf_puts(b, open ? "); })" : ")");
@@ -5152,7 +5151,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (nc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, nc_mi, nc_ci, 0);
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
-        buf_printf(b, "), sp_NilClass_%s(0", mc(name));
+        buf_printf(b, "), %s(0", mc_method(c, &c->scopes[nc_mi]));
         emit_args_filled(c, nc_mi, nt_ref(nt, id, "arguments"), ", ", b);
         buf_puts(b, "))");
         return 1;
@@ -5167,7 +5166,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (nm_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, nm_mi, nm_ci, 0);
         size_t at = b->len;
-        buf_printf(b, "sp_Numeric_%s(", mc(c->scopes[nm_mi].name));
+        buf_printf(b, "%s(", mc_method(c, &c->scopes[nm_mi]));
         int open = emit_reopen_recv_in_order(c, id, nm_mi, recv, 1, NULL, at, b);
         buf_puts(b, open ? "); })" : ")");
         return 1;
@@ -5184,7 +5183,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                                (rt == TY_FLOAT_ARRAY) ? "sp_box_float_array" : "sp_box_poly_array";
           if (emit_reopen_block_call(c, id, recv, oc_mi2, box_fn, b)) return 1;
           size_t at = b->len;
-          buf_printf(b, "sp_Array_%s(", mc(c->scopes[oc_mi2].name));
+          buf_printf(b, "%s(", mc_method(c, &c->scopes[oc_mi2]));
           int open = emit_reopen_recv_args(c, id, oc_mi2, recv, 1, box_fn, at, b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi2], id, -1, b);
           buf_puts(b, open ? "); })" : ")");
@@ -5220,7 +5219,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
           if (void3) buf_puts(b, "(");
           Buf call = {0};
-          buf_printf(&call, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
+          buf_printf(&call, "%s(", mc_method(c, &c->scopes[oc_mi3]));
           int open = emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, 0, &call);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, &call);
           buf_puts(&call, open ? "); })" : ")");
@@ -5299,7 +5298,7 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                    !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
           if (st != TY_UNKNOWN) {
             if (g_plan_check) ucall_observe(c, id, omi, oc, 0);
-            buf_printf(b, "sp_Object_%s(", mc(c->scopes[omi].name));
+            buf_printf(b, "%s(", mc_method(c, &c->scopes[omi]));
             if (ty_is_object(st)) { buf_printf(b, "sp_box_obj(%s, ", g_self); arysub_box_id(c, st, b); buf_puts(b, ")"); }
             else emit_boxed_text(c, st, g_self, b);
             emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);

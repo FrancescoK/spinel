@@ -476,8 +476,7 @@ static void emit_values_at_boxed(const char *an, const char *vs, const char *vg,
    the compiled #to_ary / #to_hash of the defining class on the operand. */
 static void emit_obj_conv_call(Compiler *c, int def, const char *conv, int by_value, const char *recv, Buf *b) {
   int mi = comp_method_in_chain(c, def, conv, NULL);
-  if (mi >= 0 && !sp_streq(c->scopes[mi].name, conv)) { emit_method_cname(c, &c->scopes[mi], b); buf_puts(b, "("); }
-  else buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
+  buf_printf(b, "%s(", mc_method(c, &c->scopes[mi]));
   if (!by_value) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
   buf_printf(b, "(%s)", recv);
   if (mi >= 0) emit_conv_dflt_args(c, mi, b);
@@ -10951,7 +10950,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* #inspect / #to_s -> the generated (or user-overridden) struct/data stringifier */
   if ((is_text_conversion(name)) && argc == 0) {
     const char *cn = obj_str_cname(c, ty_object_class(rt), sp_streq(name, "inspect"));
-    if (cn) { buf_printf(b, "sp_%s_%s((sp_%s *)", cn, obj_str_mname(c, ty_object_class(rt), sp_streq(name, "inspect")), cn); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
+    if (cn) { buf_printf(b, "%s((sp_%s *)", obj_str_fn(c, ty_object_class(rt), sp_streq(name, "inspect")), cn); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
   }
   int is_to_a = (sp_streq(name, "to_a") || sp_streq(name, "values") || sp_streq(name, "deconstruct"));
   /* CRuby's Data has neither #to_a nor #values (Struct has both); only

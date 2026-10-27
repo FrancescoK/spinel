@@ -535,9 +535,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         /* a value-type object (single-ivar) has a by-VALUE to_s signature;
            casting its receiver to a pointer is a C type error (#2357) */
         if (!part_nil && (comp_ty_value_obj(c, t) || (!vexpr[0] && !iv_pre && expr_is_held_ref(c, expr)))) {
-          const char *tsm = obj_str_mname(c, ty_object_class(t), 0);
-          if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_%s(", cn, tsm);
-          else buf_printf(&conv, "sp_%s_%s((sp_%s *)", cn, tsm, cn);
+          const char *tsf = obj_str_fn(c, ty_object_class(t), 0);
+          if (comp_ty_value_obj(c, t)) buf_printf(&conv, "%s(", tsf);
+          else buf_printf(&conv, "%s((sp_%s *)", tsf, cn);
           EMIT_IV(); buf_printf(&conv, "%s)", obj_str_blockarg(c, ty_object_class(t), 0));
         }
         else {
@@ -548,7 +548,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           EMIT_IV();
           buf_printf(&conv, "); SP_GC_ROOT(_t%d); ", to);
           if (part_nil) buf_printf(&conv, "_t%d ? ", to);
-          buf_printf(&conv, "sp_%s_%s(_t%d%s)%s; })", cn, obj_str_mname(c, ty_object_class(t), 0), to,
+          buf_printf(&conv, "%s(_t%d%s)%s; })", obj_str_fn(c, ty_object_class(t), 0), to,
                      obj_str_blockarg(c, ty_object_class(t), 0), part_nil ? " : sp_str_empty" : "");
         }
         if (ret_poly) buf_puts(&conv, ")");
@@ -1766,7 +1766,7 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
   buf_printf(b, " _t%d = ", tv);
   if (rk == SP_MEMBER_METHOD) {
     Buf rb; memset(&rb, 0, sizeof rb);
-    emit_method_cname(c, &c->scopes[rmi], &rb);
+    buf_puts(&rb, mc_method(c, &c->scopes[rmi]));
     buf_printf(&rb, "((sp_%s *)_t%d)", rcn, tr);
     TyKind got = (TyKind)c->scopes[rmi].ret;
     if (got == TY_UNKNOWN || got == TY_VOID) got = rdt;
@@ -1842,7 +1842,7 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     emit_orw_vis_raise(c, wvis, wn, cid, rt, rv, b);
   }
   else if (wk == SP_MEMBER_METHOD) {
-    emit_method_cname(c, &c->scopes[wmi], b);
+    buf_puts(b, mc_method(c, &c->scopes[wmi]));
     buf_printf(b, "((sp_%s *)_t%d, ", wcn, tr);
     { Scope *ws = &c->scopes[wmi];
       LocalVar *pv = (ws->nparams > 0 && ws->pnames[0]) ? scope_local(ws, ws->pnames[0]) : NULL;

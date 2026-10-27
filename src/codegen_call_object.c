@@ -297,9 +297,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(g_pre, " _t%d = ", thi);
         buf_puts(g_pre, hb.p ? hb.p : ""); buf_puts(g_pre, ";\n"); free(hb.p);
         emit_pre_root(c, arg_poly ? TY_POLY : rt, thi);
-        buf_printf(b, "(sp_%s_%s((sp_%s *)_t%d, _t%d) >= 0 && sp_%s_%s((sp_%s *)_t%d, _t%d) <= 0)",
-                   cname, mc("<=>"), cname, ts, tlo,
-                   cname, mc("<=>"), cname, ts, thi);
+        const char *cmp_fn = mc_method(c, cmp_sc);
+        buf_printf(b, "(%s((sp_%s *)_t%d, _t%d) >= 0 && %s((sp_%s *)_t%d, _t%d) <= 0)",
+                   cmp_fn, cname, ts, tlo,
+                   cmp_fn, cname, ts, thi);
         return 1;
       }
     }
@@ -1478,7 +1479,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         Buf rest; memset(&rest, 0, sizeof rest);
         if (emit_init_copy_rest_args(c, id, &c->scopes[ic], copyself, a0.p, &rest)) {
           buf_printf(b, "if (_t%d) ", d);
-          emit_method_cname(c, &c->scopes[ic], b);
+          buf_puts(b, mc_method(c, &c->scopes[ic]));
           buf_printf(b, "(%s, %s%s%s); ", copyself, a0.p, rest.p ? rest.p : "", nb);
         }
         free(rest.p); free(a0.p);
@@ -1546,7 +1547,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            the param's class. TY_POLY -> box it. */
         if (ic >= 0 && (ty_is_object(ictp) || ictp == TY_POLY)) {
           const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] && !c->scopes[ic].yields ? ", NULL" : "";
-          emit_method_cname(c, &c->scopes[ic], b); buf_puts(b, "(");
+          buf_puts(b, mc_method(c, &c->scopes[ic])); buf_puts(b, "(");
           if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].c_name);
           char copyself[64];
           snprintf(copyself, sizeof copyself, "((sp_%s *)_t%d)", c->classes[defcls].c_name, td);
@@ -2679,7 +2680,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           emit_expr(c, nr2, b);
           buf_printf(b, "); SP_GC_ROOT(_t%d); ", nht);
         }
-        buf_printf(b, "sp_%s_%s(", c->classes[ndef].c_name, mc(nn2));
+        buf_printf(b, "%s(", mc_method(c, nm2));
         if (!nval) buf_printf(b, "(sp_%s *)", c->classes[ndef].c_name);
         buf_puts(b, "(");
         if (nht) buf_printf(b, "_t%d", nht); else emit_expr(c, nr2, b);

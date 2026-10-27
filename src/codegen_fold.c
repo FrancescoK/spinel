@@ -240,7 +240,8 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   /* a top-level alias resolves to the target's scope: emit ITS symbol, since
      the alias has no function of its own (#3730) */
   if (m) nd_callee(c, id, mi, -1, 0);
-  buf_printf(b, "sp_%s(", mc_top(c, m && m->name ? m->name : name));
+  if (m) buf_printf(b, "%s(", mc_method(c, m));
+  else buf_printf(b, "sp_%s(", mc_top(c, name));
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   /* pass &block as sp_Proc * when the callee has a blk_param and isn't inlined */
   if (m && m->blk_param && m->blk_param[0] && !m->yields) {
@@ -12615,7 +12616,7 @@ static void emit_dispatch_arm_text(Compiler *c, int kd, int kmi, const char *sel
   snprintf(arm_self, sizeof arm_self, "((sp_%s *)%s)", cn, selfptr);
   g_pre = apre; g_indent = 0;
   g_arm_self = arm_self; g_arm_scope = s; g_arm_depth = g_expr_depth;
-  buf_printf(call, "sp_%s_%s((sp_%s *)%s", cn, mc(s->name), cn, selfptr);
+  buf_printf(call, "%s((sp_%s *)%s", mc_method(c, s), cn, selfptr);
   emit_args_filled(c, kmi, argsNode, ", ", call);
   g_pre = sv_pre; g_indent = sv_ind;
   g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
@@ -13618,9 +13619,6 @@ else {
     }
   }
 
-  /* The aliased name may differ from the defining method's real name. */
-  const char *mname = m ? m->name : name;
-
   if (!virtual) {
     /* a value-type receiver is passed by value (no pointer cast); so is
        the self of an Object / Array / Hash / Numeric reopening, which its
@@ -13630,10 +13628,10 @@ else {
          (g_self_deref "->"): its methods take the object */
       int vptr = comp_ty_value_obj(c, ty_object(cid)) && g_self && sp_streq(selfptr, g_self) &&
                  g_self_deref && sp_streq(g_self_deref, "->");
-      buf_printf(b, vptr ? "sp_%s_%s((*%s)" : "sp_%s_%s(%s", c->classes[defcls].c_name, mc(mname), selfptr);
+      buf_printf(b, vptr ? "%s((*%s)" : "%s(%s", mc_method(c, m), selfptr);
     }
     else
-      buf_printf(b, "sp_%s_%s((sp_%s *)%s", mc_reopen_cls(c, defcls, mname), mc(mname), c->classes[defcls].c_name, selfptr);
+      buf_printf(b, "%s((sp_%s *)%s", mc_method(c, m), c->classes[defcls].c_name, selfptr);
     for (int k = 0; k < np; k++) {
       /* a temp the call ran first keeps its own form: the parameter's */
       if (m && atmp_o[k] && atmp_ty[k] != TY_POLY) emit_arm_arg(c, m, k, atmp[k], atmp_ty[k], 1, b);
@@ -13668,10 +13666,8 @@ else {
        loops in codegen_call.c (issue #1583). */
     if (!scope_has_callable_symbol(c, kmi)) continue;
     nd_callee(c, g_nd_call_id, kmi, kd, 1);
-    const char *kfn = mc(c->scopes[kmi].name);
     Buf _ac; memset(&_ac, 0, sizeof _ac);
-    buf_printf(&_ac, "sp_%s_%s((sp_%s *)%s",
-               c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
+    buf_printf(&_ac, "%s((sp_%s *)%s", mc_method(c, &c->scopes[kmi]), c->classes[kd].c_name, selfptr);
     for (int a = 0; a < np; a++) emit_arm_arg(c, &c->scopes[kmi], a, atmp[a], atmp_ty[a], atmp_o[a], &_ac);
     buf_puts(&_ac, ")");
     at = arm_text_next(at, &nat, &cat, k);
@@ -13696,8 +13692,7 @@ else {
   /* default arm uses the base-class (defcls) implementation */
   {
     Buf _dc; memset(&_dc, 0, sizeof _dc);
-    buf_printf(&_dc, "sp_%s_%s((sp_%s *)%s",
-               mc_reopen_cls(c, defcls, mname), mc(mname), c->classes[defcls].c_name, selfptr);
+    buf_printf(&_dc, "%s((sp_%s *)%s", mc_method(c, m), c->classes[defcls].c_name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(&_dc, ", _t%d", atmp[a]);
     buf_puts(&_dc, ")");
     buf_puts(b, " default: { ");
