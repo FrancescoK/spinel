@@ -43,7 +43,8 @@ end
 
 allow = {}
 files = []
-read.("tools/route_audit.allow").to_s.each_line do |l|
+list = read.("tools/route_audit.allow") or abort "route-audit: tools/route_audit.allow is not in the source read"
+list.each_line do |l|
   l = l.sub(/#.*/, "").strip
   next if l.empty?
   if l.start_with?("files:") then files.concat(l.split[1..])
