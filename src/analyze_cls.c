@@ -3424,6 +3424,17 @@ static void cf_call(CF *f, int v) {
      builtin: not the method the class defines of the name after it, whose
      answer is not the receiver */
   if (nt_int(nt, v, "builtin_only", 0)) {
+    /* a native_func's twin (desugar_native_func_defs) calls into C, which
+       answers a builtin value (cf_native_class_answer), not the module or
+       what it was handed: every call of the function reaches the one twin,
+       so what one call hands it was every other call's answer (#10303) */
+    int nx = r >= 0 ? cf_is_class_const(f, r) : -1;
+    if (nx >= 0 && comp_native_find(c, nt_str(nt, r, "name"), nm) >= 0) {
+      if (f->rvis >= 0) for (int i = 0; i < argc; i++) cf_edge(f, argv[i], f->rvis);
+      cf_native_class_answer(f, v, nx, nm, argc);
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+      return;
+    }
     int recv_el = r < 0 ? cf_self_recv(f, v, cf_scope_of(f, v), nm) : r;
     cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
     return;

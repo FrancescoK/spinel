@@ -4522,6 +4522,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  ! grep -q 'sp_RbVal sp_Regs__lb_rb(' "$$tmp/riu.c" || { echo "infer-test: FAIL (a Range on a receiver of no known class boxed every [] method's element read)"; ok=0; }; \
 	  $(SPINEL) $$flags test/class_value_new_builtin_part.rb -c --no-line-map -o "$$tmp/cvn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_value_new_builtin_part: -c)"; ok=0; }; \
 	  ! awk '/^static.*sp_setting\(.*\) \{/,/^}/' "$$tmp/cvn.c" | grep -q 'sp_Money_to_i' || { echo "infer-test: FAIL (new on a builtin part made every class, and a parsed setting's to_i dispatched to Money, #10303)"; ok=0; }; \
+	  $(SPINEL) $$flags test/native_func_answer_own.rb -c --no-line-map -o "$$tmp/nfa.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (native_func_answer_own: -c)"; ok=0; }; \
+	  ! awk '/^static.*sp_setting\(.*\) \{/,/^}/' "$$tmp/nfa.c" | grep -q 'sp_Money_to_i' || { echo "infer-test: FAIL (a native_func's twin answered what another call handed it, and a parsed setting's to_i dispatched to Money, #10303)"; ok=0; }; \
 	  $(SPINEL) $$flags test/range_index_anything_receiver.rb -c --no-line-map -o "$$tmp/ria.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (range_index_anything_receiver: -c)"; ok=0; }; \
 	  ! grep -q 'sp_RbVal sp_Regs__lb_rb(' "$$tmp/ria.c" || { echo "infer-test: FAIL (a Range on a value from anywhere boxed every [] method's element read)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_reader_box_key.rb -c --no-line-map -o "$$tmp/prk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_reader_box_key: -c)"; ok=0; }; \
