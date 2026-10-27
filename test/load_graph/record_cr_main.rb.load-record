@@ -32,17 +32,17 @@ class B__Kind: body#10
 class C: body#12 include B#13 include A#13 include A__Kind#15
 class D: body#16
 const Foo: write#1
-Foo#bar: def#3
+Foo#bar: def#3 end=yes
 const A: write#4
-A#who: def#5
+A#who: def#5 end=yes
 const A::Kind: write#6
-A__Kind#kind: def#7
+A__Kind#kind: def#7 end=yes
 const B: write#8
-B#who: def#9
+B#who: def#9 end=yes
 const B::Kind: write#10
-B__Kind#kind: def#11
+B__Kind#kind: def#11 end=yes
 const C: write#12
-C#first_who: alias#14 (who: def#5)
+C#first_who: alias#14 (who: def#5) end=yes
 const D: write#16
-D#maybe: define_method#18 may
-D#sure: def#19
+D#maybe: define_method#18 may end=unknown
+D#sure: def#19 end=yes

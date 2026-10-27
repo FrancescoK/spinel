@@ -742,18 +742,17 @@ enum { LR_STOP = 3 };
 /* The last entry of history h before p (late: of the load phase), in *out
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
-   one. skip_vis passes over the visibility versions of a method. */
+   one -- at the load phase's end too, as elab_written_before answers.
+   skip_vis passes over the visibility versions of a method. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if (skip_vis && v->kind == LR_VIS) continue;
-    if (!late) {
-      int o = elab_cmp(elab_point_of(c, v->node), p);
-      if (o == PROG_UNKNOWN) { unsure = 1; continue; }
-      if (o != PROG_BEFORE) continue;
-      if (v->may) { unsure = 1; continue; }
-    }
+    int o = late ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
+    if (o == PROG_UNKNOWN) { unsure = 1; continue; }
+    if (o != PROG_BEFORE) continue;
+    if (v->may) { unsure = 1; continue; }
     if (out) *out = v;
     return unsure ? ELAB_UNKNOWN : ELAB_YES;
   }
@@ -780,10 +779,10 @@ static int lr_super(Compiler *c, int cls) {
   return d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? LR_UNKNOWN_CLASS : LR_MAIN;
 }
 
-/* Did mixin m of a class happen before p? ELAB_YES / NO / UNKNOWN */
+/* Did mixin m of a class happen before p (late: in the load phase)?
+   ELAB_YES / NO / UNKNOWN */
 static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late, int may) {
-  if (late) return ELAB_YES;
-  int o = elab_cmp(elab_point_of(c, m->node), p);
+  int o = late ? (elab_point_of(c, m->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, m->node), p);
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
@@ -1101,6 +1100,8 @@ void elab_dump(Compiler *c, FILE *out) {
       if (h->a == LR_KEY_VIS) fprintf(out, " %s", v->vis < 5 ? words[v->vis] : "?");
       else if (v->kind != LR_WRITE && v->kind != LR_OPAQUE && v->vis != SP_VIS_PUBLIC) fprintf(out, " %s", v->vis == SP_VIS_PRIVATE ? "private" : "protected");
     }
+    if (h->a >= LR_MAIN)   /* what a query from a method body gets: as of the load phase's end */
+      fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
     fputc('\n', out);
   }
 }
