@@ -195,7 +195,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       (is_freeze_family(name))) {
     Scope *s = comp_scope_of(c, id);
     int scid = s ? s->class_id : -1;
-    if (scid >= 0 && comp_method_in_chain(c, scid, name, NULL) < 0) {
+    if (scid >= 0 && call_target(c, id, scid, name, 0, NULL) < 0) {
       if (!s->is_cmethod && !c->classes[scid].is_value_type) {
         if (sp_streq(name, "freeze"))
           buf_printf(b, "((sp_%s *)sp_gc_freeze((void *)%s))",
@@ -271,7 +271,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      `module_function; def format(...)` beside a sibling that calls it
      bare lost to Kernel#format (#4592). Same ownership test every
      other Kernel arm here makes. */
-  int kconv = (recv < 0 && (nt_int(nt, id, "builtin_only", 0) || comp_method_index(c, name) < 0) &&
+  int kconv = (recv < 0 && (nt_int(nt, id, "builtin_only", 0) || call_target(c, id, -1, name, CT_TOP, NULL) < 0) &&
                !bare_call_class_owned(c, id));
   if (!kconv && recv >= 0) {
     TyKind krt = comp_ntype(c, recv);
@@ -285,13 +285,13 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         sp_streq(name, "Rational") || sp_streq(name, "Complex");
     if (krecv_ok && kname_ok) {
       if (ty_is_object(krt) &&
-          comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0)
+          call_target(c, id, ty_object_class(krt), name, 0, NULL) < 0)
         kconv = 1;
       /* a nil/poly/untyped receiver (e.g. an unassigned @object in specs)
          still reaches Kernel in CRuby; require that NO user class defines the
          name so a real method can never be shadowed. */
       else if ((krt == TY_NIL || krt == TY_POLY || krt == TY_UNKNOWN) &&
-               comp_method_index(c, name) < 0)
+               call_target(c, id, -1, name, CT_TOP, NULL) < 0)
         kconv = 1;
     }
   }
@@ -872,7 +872,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     Scope *xsc = comp_scope_of(c, id);
     int xcls = xsc ? xsc->class_id : -1;
     if (xcls >= 0 && (comp_reader_in_chain(c, xcls, name, NULL) ||
-                      comp_method_in_chain(c, xcls, name, NULL) >= 0)) {
+                      call_target(c, id, xcls, name, 0, NULL) >= 0)) {
       /* not Kernel#exit: leave it to the reader/method dispatch below */
     }
     else {

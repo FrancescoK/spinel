@@ -1612,7 +1612,7 @@ int a_is_fiber_or_gen_create(Compiler *c, int id) {
 
 /* every arm counts: the dispatch makes one proc for all of them, so the resolved method ignoring the block proves nothing */
 static int a_dispatch_arm_takes_block(Compiler *c, int cls, const char *name) {
-  if (dispatch_impl_count(c, cls, name) < 2) return 0;
+  if (dispatch_impl_count(c, -1, cls, name) < 2) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cls)) continue;
     int mk = comp_method_in_chain(c, k, name, NULL);
@@ -35473,22 +35473,22 @@ static int poly_dispatch_nullable(Compiler *c, int v, const char *cn) {
   return 0;
 }
 
-/* A call on class `cid` dispatches over the method `name` resolves to there
-   and every descendant's override, which is how inference typed it
+/* Call `call` on class `cid` dispatches over the method `name` resolves to
+   there and every descendant's override, which is how inference typed it
    (dispatch_ret_over): a nil-answering target among them rides in the call's
    scalar slot as its nil. Only the method the name resolved to was
    asked, and only for a scalar return, so a nil method beside an Integer one
    (`def nop = nil` in C, `def nop = 7` in D, or `c ? z : 1` over `def z =
    nil`) left the value unmarked, and nil's own methods (`to_a`, `to_h`,
    `=~`) raised Integer's NoMethodError. */
-static int dispatch_answers_nil(Compiler *c, int cid, const char *name, int cmeth) {
+static int dispatch_answers_nil(Compiler *c, int call, int cid, const char *name, int cmeth) {
   if (cid < 0 || !name) return 0;
-  int mi = cmeth ? comp_cmethod_in_chain(c, cid, name, NULL) : comp_method_in_chain(c, cid, name, NULL);
+  int mi = call_target(c, call, cid, name, cmeth ? CT_CMETHOD : 0, NULL);
   if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
   int nd = 0;
   const int *ds = comp_descendants(c, cid, &nd);
   for (int i = 0; i < nd; i++) {
-    int kmi = cmeth ? comp_cmethod_in_chain(c, ds[i], name, NULL) : comp_method_in_chain(c, ds[i], name, NULL);
+    int kmi = call_target(c, call, ds[i], name, cmeth ? CT_CMETHOD : 0, NULL);
     if (kmi >= 0 && kmi != mi && method_answers_nil(&c->scopes[kmi])) return 1;
   }
   return 0;
@@ -38594,19 +38594,19 @@ int nullable_int_value(Compiler *c, int v) {
       if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
       Scope *ss = comp_scope_of(c, v);
       return ss && ss->class_id >= 0 &&
-             dispatch_answers_nil(c, ss->class_id, cn, ss->is_cmethod && mi >= 0 && c->scopes[mi].is_cmethod);
+             dispatch_answers_nil(c, v, ss->class_id, cn, ss->is_cmethod && mi >= 0 && c->scopes[mi].is_cmethod);
     }
     TyKind rt = infer_type(c, rcv);
-    if (ty_is_object(rt)) return dispatch_answers_nil(c, ty_object_class(rt), cn, 0);
+    if (ty_is_object(rt)) return dispatch_answers_nil(c, v, ty_object_class(rt), cn, 0);
     if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode)
-      return dispatch_answers_nil(c, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
+      return dispatch_answers_nil(c, v, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
     /* `self.class.m` in an instance method: the class methods of self's
        class and of every class below it (codegen's dispatch switch) */
     if (nt_kind(nt, rcv) == NK_CallNode && sp_streq(nt_str(nt, rcv, "name"), "class") &&
         nt_ref(nt, rcv, "arguments") < 0) {
       int x = nt_ref(nt, rcv, "receiver");
       Scope *ss = x < 0 || nt_kind(nt, x) == NK_SelfNode ? comp_scope_of(c, v) : NULL;
-      if (ss && !ss->is_cmethod && ss->class_id >= 0) return dispatch_answers_nil(c, ss->class_id, cn, 1);
+      if (ss && !ss->is_cmethod && ss->class_id >= 0) return dispatch_answers_nil(c, v, ss->class_id, cn, 1);
     }
     return 0;
   }

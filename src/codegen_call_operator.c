@@ -618,7 +618,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tp);
     }
     buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
-    emit_poly_iter_obj_reject(c, ta, name, b);
+    emit_poly_iter_obj_reject(c, id, ta, name, b);
     /* the same receiver check the each emitter makes: nil is no collection,
        and a zero-length loop answered `nil.any?` false and `nil.all?` true
        (#4485) */
@@ -1144,7 +1144,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        Set#< aliased to proper_subset?): dispatch to the user method. */
     if (ty_is_object(rt)) {
       int cid5 = ty_object_class(rt);
-      if (comp_method_in_chain(c, cid5, name, NULL) >= 0) {
+      if (call_target(c, id, cid5, name, 0, NULL) >= 0) {
         Buf selfb = emit_cmp_self(c, recv, rt);
         emit_dispatch(c, cid5, name, selfb.p, nt_ref(nt, id, "arguments"), -1, b);
         free(selfb.p);
@@ -1156,7 +1156,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        has no method */
     if (ty_is_object(rt)) {
       int cid4 = ty_object_class(rt);
-      if (comp_method_in_chain(c, cid4, name, NULL) < 0 &&
+      if (call_target(c, id, cid4, name, 0, NULL) < 0 &&
           comp_method_in_chain(c, cid4, "<=>", NULL) >= 0 && class_is_comparable(c, cid4)) {
         if (user_cmp_invalid_ret(c, cid4) != TY_UNKNOWN)
           unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
@@ -1178,7 +1178,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* an object whose class has no such method and no Comparable to supply
        it (a `<=>` alone gives none): CRuby's NoMethodError, raised once the
        argument has run */
-    if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
+    if (ty_is_object(rt) && call_target(c, id, ty_object_class(rt), name, 0, NULL) < 0) {
       int tv = hoist_boxed_rooted(c, recv);
       buf_puts(b, "({ (void)(");
       emit_expr(c, argv[0], b);
@@ -1459,7 +1459,7 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
   for (int i = 0; i < 2; i++) {
     int k = comp_class_index(c, cn[i]);
     if (k < 0 || !class_is_prim_reopen(c, k)) continue;
-    int def = -1, mi = comp_method_in_chain(c, k, name, &def);
+    int def = -1, mi = call_target(c, id, k, name, 0, &def);
     if (mi < 0 || def != k || c->scopes[mi].nparams != 1 || c->scopes[mi].rest_idx >= 0) continue;
     mis[i] = mi;
   }
@@ -1932,7 +1932,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
              included: activesupport's `alias_method :+, :plus_with_duration`
              in Date dispatches to plus_with_duration) */
           int dc = -1;
-          int kmi = comp_method_in_chain(c, k, name, &dc);
+          int kmi = call_target(c, id, k, name, 0, &dc);
           if (kmi >= 0 && dc == k) ucall_observe(c, id, kmi, k, 1);
         }
       Buf pcall; memset(&pcall, 0, sizeof pcall);

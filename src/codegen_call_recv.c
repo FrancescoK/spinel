@@ -6347,7 +6347,7 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   /* the receiver is a builtin Hash: only a reopening of Hash owns the name
      over it, not a program class of its own with a merge! */
   int hc_ci = comp_class_index(c, "Hash");
-  if (hc_ci >= 0 && comp_method_in_chain(c, hc_ci, name, NULL) >= 0) return 0;
+  if (hc_ci >= 0 && call_target(c, id, hc_ci, name, 0, NULL) >= 0) return 0;
   int bad = -1, boxed = 0;
   for (int i = 0; i < argc && bad < 0; i++) {
     if (nt_kind(nt, argv[i]) == NK_HashNode) continue;
@@ -11683,7 +11683,7 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (recv >= 0 && !repr_of(c, recv).nil_tested && ty_is_object(rt) && argc == 1 &&
       !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode &&
       is_kind_query(name) &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+      call_target(c, id, ty_object_class(rt), name, 0, NULL) < 0 &&
       g_n_argov < MAX_ARG_OVERRIDE) {
     const char *ncn = isa_const_name(nt, argv[0]);
     int dyn = !ncn && (comp_ntype(c, argv[0]) == TY_CLASS ||
@@ -12141,7 +12141,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   }
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
       (is_eql_or_equal(name)) &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+      call_target(c, id, ty_object_class(rt), name, 0, NULL) < 0 &&
       comp_method_in_chain(c, ty_object_class(rt), "eql?", NULL) < 0) {
     TyKind a0 = comp_ntype(c, argv[0]);
     if (!c->classes[ty_object_class(rt)].is_value_type) {
@@ -12160,7 +12160,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      is what reflection-driven code observes. */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (is_freeze_family(name)) &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+      call_target(c, id, ty_object_class(rt), name, 0, NULL) < 0 &&
       /* a generated reader of the name owns it, as in CRuby (#4190) */
       comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_ATTR) {
     if (comp_ty_value_obj(c, rt)) {
@@ -12189,7 +12189,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
       is_kind_query(name) &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
+      call_target(c, id, ty_object_class(rt), name, 0, NULL) < 0) {
     const char *cn = isa_const_name(nt, argv[0]);
     if (cn) {
       int cid = ty_object_class(rt);
@@ -12727,7 +12727,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                    tG, defcG, tG, iv_c(ivnG + 1));
         /* before the def, the parent's own method answered: a reader of a
            String slot hands out that slot, as it would without the def */
-        int pmG = comp_method_in_chain(c, c->classes[defcG].parent, name, NULL);
+        int pmG = call_target(c, id, c->classes[defcG].parent, name, 0, NULL);
         const char *pivn = NULL;
         if (pmG >= 0 && c->scopes[pmG].nparams == 0 && c->scopes[pmG].class_id >= 0) {
           int lastP = scope_body_last(c, pmG);
@@ -13597,7 +13597,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
        dispatch, which boxes the receiver -- a nil $~ included -- instead of
        refusing it as a MatchData method this table lacks */
     else if (comp_class_index(c, "Object") >= 0 &&
-             comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) {
+             call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) {
       free(rs.p);
       return 0;
     }
@@ -15927,7 +15927,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)
       if (comp_poly_arm_defines_n(c, kk, name, argc) ||
           (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
-          comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+          call_target(c, id, kk, name, CT_CMETHOD, NULL) >= 0) has_user = 1;
     if (!has_user && sp_streq(name, "polar")) {
       buf_puts(b, "sp_poly_polar("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
     }
@@ -16012,7 +16012,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       for (int kk = 0; kk < c->nclasses && !has_user; kk++) {
         if (comp_poly_arm_defines_n(c, kk, name, argc) ||
             (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
-        if (nf && comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_cm = 1;
+        if (nf && call_target(c, id, kk, name, CT_CMETHOD, NULL) >= 0) has_cm = 1;
       }
       /* A class method of next_float / prev_float is a boxed Class's: the
          class-tag dispatch (#3215) takes that receiver, and its not-a-Class
@@ -18766,12 +18766,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
        (argc == 0 && comp_ntype(c, id) == TY_ENUMERATOR))) {
     int oci = comp_class_index(c, "Object");
-    int has_user = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
+    int has_user = oci >= 0 && call_target(c, id, oci, name, 0, NULL) >= 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)
       if (comp_poly_arm_defines_n(c, kk, name, argc) ||
           (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
-          comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+          call_target(c, id, kk, name, CT_CMETHOD, NULL) >= 0) has_user = 1;
     if (!has_user && argc == 0) {
       buf_puts(b, "sp_poly_cycle("); emit_boxed(c, recv, b); buf_puts(b, ")");
       return 1;

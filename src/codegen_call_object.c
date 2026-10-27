@@ -859,7 +859,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     TyKind rtype = ie_self_cls >= 0 ? ty_object(ie_self_cls) : comp_ntype(c, recv);
     if (blk >= 0 && ty_is_object(rtype) &&
-        (ie_tramp || comp_method_in_chain(c, ty_object_class(rtype), name, NULL) < 0)) {
+        (ie_tramp || call_target(c, id, ty_object_class(rtype), name, 0, NULL) < 0)) {
       int blk_body = nt_ref(nt, blk, "body");
       int ie_bn = 0; const int *ie_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &ie_bn) : NULL;
       int cls_id = ty_object_class(rtype);
@@ -1758,7 +1758,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      here */
   if (recv >= 0 && (is_then_alias(name)) &&
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) >= 0) &&
+        call_target(c, id, ty_object_class(comp_ntype(c, recv)), name, 0, NULL) >= 0) &&
       !(comp_ntype(c, recv) == TY_POLY && !g_poly_builtin_arm && user_defines_or_reads(c, name))) {
     int blk = nt_ref(nt, id, "block");
     /* with NO block, an enumerator of one element -- the receiver (#4028),
@@ -1992,7 +1992,7 @@ static int sn_runs_no_code(Compiler *c, int n, NodeKind rk, const char *nm, int 
                     nt_kind(nt, recv) == NK_GlobalVariableReadNode || nt_kind(nt, recv) == NK_ConstantReadNode) &&
                    !any_class_defines(c, "[]") && !prog_has_hash_default_block(c));
       if (!plain && (!cn || recv < 0 || sn_reflective_name(cn) || !ty_runs_no_code(comp_ntype(c, recv)) ||
-                     comp_method_index(c, cn) >= 0 || sn_builtin_reopened_defines(c, cn)))
+                     call_target(c, n, -1, cn, CT_TOP, NULL) >= 0 || sn_builtin_reopened_defines(c, cn)))
         return 0;
       int a = nt_ref(nt, n, "arguments"), ac = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -2656,7 +2656,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (nr2 >= 0 && nn2 && (sp_streq(nn2, "!") || sp_streq(nn2, "!=")) &&
         ty_is_object(comp_ntype(c, nr2))) {
       int nd = ty_object_class(comp_ntype(c, nr2)), ndef = nd;
-      int nmi2 = comp_method_in_chain(c, nd, nn2, &ndef);
+      int nmi2 = call_target(c, id, nd, nn2, 0, &ndef);
       /* The arguments go straight into the parameters only when there is
          one plain parameter per argument; any other layout (a rest, an
          optional, a keyword) or count binds them as every call does
@@ -2837,11 +2837,11 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (bsnm && ty_is_object(bsrt)) {
       int bsci = ty_object_class(bsrt);
       if (bsci >= 0 && class_is_blank_slate(c, bsci) && nt_int(nt, id, "defined_ask", 0) &&
-          comp_method_in_chain(c, bsci, bsnm, NULL) < 0)
+          call_target(c, id, bsci, bsnm, 0, NULL) < 0)
         return emit_blank_slate_defined_ask(c, id, bsrecv, bsci, b);
       if (bsci >= 0 && class_is_blank_slate(c, bsci) &&
           !basicobject_own_method(bsnm) &&
-          comp_method_in_chain(c, bsci, bsnm, NULL) < 0 &&
+          call_target(c, id, bsci, bsnm, 0, NULL) < 0 &&
           !comp_reader_in_chain(c, bsci, bsnm, NULL) &&
           !comp_writer_in_chain(c, bsci, bsnm, NULL)) {
         const char *bscn = class_ruby_name(c, bsci) ? class_ruby_name(c, bsci) : c->classes[bsci].name;

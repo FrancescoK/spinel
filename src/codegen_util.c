@@ -221,7 +221,7 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
     const PolyCand *pcs = pnm ? comp_poly_candidates(c, pnm, &npc) : NULL;
     for (int k = 0; k < npc; k++)
       if (pcs[k].mi == mi ||
-          (pcs[k].mi < 0 && comp_method_in_chain(c, pcs[k].cls, pnm, NULL) == mi)) {
+          (pcs[k].mi < 0 && call_target(c, id, pcs[k].cls, pnm, 0, NULL) == mi)) {
         o->flags |= UO_MATCH | UO_ARM; return;
       }
     const PolyCand *ccs = pnm ? comp_cmethod_candidates(c, pnm, &ncc) : NULL;
@@ -245,7 +245,7 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
     if (yv < 0) ccls = g_ie_class_id >= 0 ? g_ie_class_id : g_emitting_class_id;
     else if (sp_yield_site_type(c, yv, &sk) && ty_is_object(sk)) ccls = ty_object_class(sk);
     const char *cnm = nt_str(c->nt, id, "name");
-    if (ccls >= 0 && cnm && comp_method_in_chain(c, ccls, cnm, NULL) == mi) {
+    if (ccls >= 0 && cnm && call_target(c, id, ccls, cnm, 0, NULL) == mi) {
       o->flags |= UO_MATCH; return;
     }
   }
@@ -809,8 +809,8 @@ int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int dep
     int recv = nt_ref(nt, id, "receiver");
     const char *nm = nt_str(nt, id, "name");
     if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) return 1;
-    int mi = cls >= 0 && nm && depth < 3 ? comp_method_in_chain(c, cls, nm, NULL) : -1;
-    if (mi < 0 || c->scopes[mi].def_node < 0 || dispatch_impl_count(c, cls, nm) != 1) return 1;
+    int mi = cls >= 0 && nm && depth < 3 ? call_target(c, id, cls, nm, 0, NULL) : -1;
+    if (mi < 0 || c->scopes[mi].def_node < 0 || dispatch_impl_count(c, id, cls, nm) != 1) return 1;
     if (subtree_may_write_ivar(c, nt_ref(nt, c->scopes[mi].def_node, "body"), iv, cls, depth + 1)) return 1;
   }
   int nr = nt_num_refs(nt, id);
@@ -2417,15 +2417,15 @@ static int ivs_body_may_observe(Compiler *c, int mi, int lvl) {
   c->pres_obs[mi] = r ? IVO_MAY : IVO_NO;
   return r;
 }
-/* ... a call named nm on self in a method of class cid: the method cid
-   resolves, or an override in a class below it, which a parent's
+/* ... call `call`, named nm, on self in a method of class cid: the method
+   cid resolves, or an override in a class below it, which a parent's
    initialize calling a hook runs for a subclass's instance */
-static int ivs_self_call_may_observe(Compiler *c, int cid, const char *nm, int lvl) {
-  int mi = comp_method_in_chain(c, cid, nm, NULL);
+static int ivs_self_call_may_observe(Compiler *c, int call, int cid, const char *nm, int lvl) {
+  int mi = call_target(c, call, cid, nm, 0, NULL);
   if (ivs_body_may_observe(c, mi, lvl)) return 1;
   for (int d = 0; d < c->nclasses; d++) {
     if (d == cid || !is_descendant(c, d, cid)) continue;
-    int md = comp_method_in_chain(c, d, nm, NULL);
+    int md = call_target(c, call, d, nm, 0, NULL);
     if (md >= 0 && md != mi && ivs_body_may_observe(c, md, lvl)) return 1;
   }
   return 0;
@@ -2453,7 +2453,7 @@ static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl) {
       const char *nm = nt_str(nt, n, "name");
       int r = nt_ref(nt, n, "receiver");
       if (!nm) return 1;
-      if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && ivs_self_call_may_observe(c, cid, nm, lvl)) return 1;
+      if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && ivs_self_call_may_observe(c, n, cid, nm, lvl)) return 1;
       if (is_ivar_presence_read(nm) && !is_inspect_print(nm)) return 1;
       if (is_inspect_print(nm) && r < 0) {
         int a = nt_ref(nt, n, "arguments"), ac = 0;
@@ -4436,7 +4436,7 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
            program's NoMethodError: that refusal is a spinel gap, and saying
            "undefined method 'send'" pointed at the wrong thing (#4850) */
         if (cid >= 0 && cid < c->nclasses && !c->classes[cid].is_native_class &&
-            comp_method_in_chain(c, cid, mname, NULL) < 0 &&
+            call_target(c, id, cid, mname, 0, NULL) < 0 &&
             !builtin_object_method_known(mname)) {
           const char *cn = class_ruby_name(c, cid);
           snprintf(msg, cap, "undefined method '%s' for an instance of %s (NoMethodError)", mname, cn ? cn : "Object");
@@ -5416,7 +5416,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
       const char *cn = rk == TY_STRING ? "String" : ty_is_array(rk) ? "Array" : ty_is_hash(rk) ? "Hash" : NULL;
       if (!cn) return 0;
       int ci = comp_class_index(c, cn);
-      return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
+      return ci < 0 || call_target(c, n, ci, nm, 0, NULL) < 0;
     }
     /* under promote the receiver of an Integer ~ is boxed, and ~ still
        answers a number */
@@ -5424,7 +5424,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
         !(g_promote_mode && argc == 0 && !strcmp(nm, "~") && comp_ntype(c, n) == TY_INT)) return 0;
     if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
       int ci = comp_class_index(c, "Integer");
-      if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return 0;
+      if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       /* ~ of any word is a number; + and - hand a nil operand's word on
          (+nil raises in CRuby, and in a C int is the identity), so they
          are plain when their operand is */
@@ -5435,7 +5435,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
     if (argc == 0 && (!strcmp(nm, "to_i") || !strcmp(nm, "to_int") || !strcmp(nm, "abs") ||
                       !strcmp(nm, "succ") || !strcmp(nm, "pred"))) {
       int ci = comp_class_index(c, "Integer");
-      if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return 0;
+      if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       return nm[0] == 't' ? plain_expr(c, recv, depth + 1) : 1;
     }
     return plain_int_op(c, nm) && argc == 1 && comp_ntype(c, argv[0]) == TY_INT;
@@ -5704,14 +5704,14 @@ int call_never_returns(Compiler *c, int id) {
   else {
     Repr rr = repr_of(c, recv);
     TyKind rt = rr.as_ty;
-    if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+    if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), nm, 0, NULL);
     else if (rr.kind == RK_BOXED) {
       /* a boxed receiver dispatches to whichever class defines the name;
          every one of them must raise (a builtin answering it would have
          given the call that builtin's type, not void) */
       int any = 0;
       for (int ci = 0; ci < c->nclasses; ci++) {
-        int dc = -1, m = comp_method_in_chain(c, ci, nm, &dc);
+        int dc = -1, m = call_target(c, id, ci, nm, 0, &dc);
         if (m < 0 || dc != ci) continue;
         if (c->scopes[m].ret != TY_VOID) return 0;
         any = 1;
@@ -8106,11 +8106,12 @@ TyKind cg_natural_type(Compiler *c, int id) {
   return t;
 }
 /* Whether class `cid` or a class below it answers nil from its class method
-   `nm`: one with no value, or an Integer one that can be nil. */
-int cmethod_sibling_answers_nil(Compiler *c, int cid, const char *nm) {
+   `nm`, the name of call `call`: one with no value, or an Integer one that
+   can be nil. */
+int cmethod_sibling_answers_nil(Compiler *c, int call, int cid, const char *nm) {
   for (int k = 0; k < c->nclasses; k++) {
     if (k != cid && !is_descendant(c, k, cid)) continue;
-    int smi = comp_cmethod_in_chain(c, k, nm, NULL);
+    int smi = call_target(c, call, k, nm, CT_CMETHOD, NULL);
     if (smi < 0) continue;
     Scope *ss = &c->scopes[smi];
     if (method_is_void(ss) || ss->ret == TY_NIL || method_ret_is_oint(ss)) return 1;

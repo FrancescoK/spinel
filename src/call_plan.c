@@ -22,11 +22,11 @@ int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
   return comp_method_overridden(c, cid, name, cmeth);
 }
 
-int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
+int cplan_dispatch_form(Compiler *c, int call, int cid, const char *name, int has_base) {
   if (cid < 0 || !name) return has_base ? CP_DIRECT : CP_NONE;
-  int n = dispatch_impl_count(c, cid, name);
+  int n = dispatch_impl_count(c, call, cid, name);
   if (!(n > 1 || (!has_base && n >= 1))) return has_base ? CP_DIRECT : CP_NONE;
-  return dispatch_arms_disagree(c, cid, name) ? CP_PER_ARM : CP_SWITCH;
+  return dispatch_arms_disagree(c, call, cid, name) ? CP_PER_ARM : CP_SWITCH;
 }
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
@@ -203,7 +203,7 @@ static void cplan_descendant_call(Compiler *c, int call, int cid, const char *na
     int mi = call_target(c, call, ds[i], name, reader ? 0 : CT_OWN | (cmeth ? CT_CMETHOD : 0), NULL);
     if (mi < 0) continue;
     cplan_set(p, mi, cid, cmeth ? UC_CMETH : UC_INST,
-              cmeth || reader ? CP_SWITCH : cplan_dispatch_form(c, cid, name, 0));
+              cmeth || reader ? CP_SWITCH : cplan_dispatch_form(c, call, cid, name, 0));
     return;
   }
 }
@@ -287,7 +287,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       Scope *self = comp_scope_of(c, id);
       int scls = self ? self->class_id : m->class_id;
       int form = m->is_cmethod ? (scls >= 0 && cplan_overridden(c, scls, name, 1) ? CP_SWITCH : CP_DIRECT)
-               : scls >= 0 ? cplan_dispatch_form(c, scls, name, 1) : CP_DIRECT;
+               : scls >= 0 ? cplan_dispatch_form(c, id, scls, name, 1) : CP_DIRECT;
       cplan_set(p, mi, scls, m->is_cmethod ? UC_CMETH : UC_INST, form);
       /* an instance method comp_self_call_mi took from the self class's chain */
       p->chain = !m->is_cmethod && self && self->class_id >= 0;
@@ -340,7 +340,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int cid = ty_object_class(rt);
     int mi = call_target(c, id, cid, name, 0, NULL);
     if (mi >= 0) {
-      cplan_set(p, mi, cid, UC_INST, cplan_dispatch_form(c, cid, name, 1));
+      cplan_set(p, mi, cid, UC_INST, cplan_dispatch_form(c, id, cid, name, 1));
       p->chain = 1;
       return;
     }
@@ -357,7 +357,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       dmi = via_op ? call_target(c, id, cid, via_op, 0, NULL) : -1;
     }
     if (dmi >= 0) {
-      cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
+      cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, id, cid, via_op, 1));
       p->delegate = via_op;
       return;
     }
@@ -629,7 +629,7 @@ CallPlan cplan_send_arm(Compiler *c, int id) {
 CallPlan cplan_conversion(Compiler *c, int ci, const char *name) {
   CallPlan p;
   int mi = comp_method_in_chain(c, ci, name, NULL);
-  cplan_set(&p, mi, ci, UC_INST, cplan_dispatch_form(c, ci, name, mi >= 0));
+  cplan_set(&p, mi, ci, UC_INST, cplan_dispatch_form(c, -1, ci, name, mi >= 0));
   p.chain = 1;
   p.delegate = name;
   return p;
@@ -697,7 +697,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   const char *name = flags & CPX_TARGET ? view_call_name(c, id) : nt_str(c->nt, id, "name");
   int mi = name ? call_target(c, id, self_ci, name, 0, NULL) : -1;
   if (mi >= 0) {
-    int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, self_ci, name, 1);
+    int form = flags & CPX_TARGET ? CP_DIRECT : cplan_dispatch_form(c, id, self_ci, name, 1);
     cplan_set(&ctx, mi, self_ci, UC_INST, form);
     ctx.chain = 1;
     return cplan_dep(&ctx);
@@ -706,7 +706,7 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   /* a miss is no method, but a dispatch on the class still has a form: a
      method only descendants define takes the switch */
   if (!(flags & CPX_IE) && name) {
-    cplan_set(&ctx, -1, self_ci, UC_INST, cplan_dispatch_form(c, self_ci, name, 0));
+    cplan_set(&ctx, -1, self_ci, UC_INST, cplan_dispatch_form(c, id, self_ci, name, 0));
     ctx.chain = 1;
     return &ctx;
   }
@@ -2205,8 +2205,8 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
   if (kw_ds) atmp_ty[pos_argc] = kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
   else if (kwh >= 0 && sp_streq(name, "fetch") && argc == 2) atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
-  p->flags = PPF_ROOT | (poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
-             (poly_key_prim(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
+  p->flags = PPF_ROOT | (poly_key_cls0(c, id, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
+             (poly_key_prim(c, id, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
   PolyKw kw = { kwh, 0, kw_ds ? 0 : -1, NULL, NULL, NULL, kwall_any };
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
@@ -2490,8 +2490,8 @@ static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, Pol
   int deref = (ps.lengthlike || ps.empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
               !sp_str_mutator(name, SP_MUT_LOCAL);
   p->flags = (root ? PPF_ROOT : 0) | (deref ? PPF_DEREF : 0) |
-             (poly_key_cls0(c, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
-             (poly_key_prim(c, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
+             (poly_key_cls0(c, id, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
+             (poly_key_prim(c, id, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
 }
 
@@ -2709,7 +2709,7 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   int argc = 0;
   call_args(c->nt, id, &argc);
   for (int k = 0; k < c->nclasses; k++) {
-    if (cls_sg_accessor_first(c, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
+    if (cls_sg_accessor_first(c, id, k, name, argc) || !cplan_cmethod_visible(c, id, k, name)) continue;
     int pf = -1;
     int mi = cplan_cmethod_arm(c, id, k, name, NULL, &pf);
     if (mi < 0) continue;

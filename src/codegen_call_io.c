@@ -950,7 +950,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         if (comp_native_method_find(c, k, name, argc, 0) >= 0) iocand = 1;
         continue;
       }
-      if (comp_method_in_chain(c, k, name, NULL) >= 0 ||
+      if (call_target(c, id, k, name, 0, NULL) >= 0 ||
           comp_reader_in_chain(c, k, name, NULL))
         iocand = 1;
       /* an attr writer answers `x.sync = v` as a reader answers `x.sync` */

@@ -1688,7 +1688,7 @@ void nd_stamp(int id, int kind);
 extern char **g_ndtarget;
 extern int g_ndtarget_cap;
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add);
-int cmethod_sibling_answers_nil(Compiler *c, int cid, const char *nm);
+int cmethod_sibling_answers_nil(Compiler *c, int call, int cid, const char *nm);
 /* --plan-check: a user-method binding codegen made at node id (nd_callee
    reports every one; the splices and super, which stamp nothing for
    --emit-types, call it directly), and the end-of-compile report comparing
@@ -2335,10 +2335,10 @@ const char *class_builtin_superclass_name(Compiler *c, int i);   /* codegen.c */
 int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
-int dispatch_impl_count(Compiler *c, int cid, const char *name);
+int dispatch_impl_count(Compiler *c, int call, int cid, const char *name);
 /* do a dispatch switch's arms bind the call's arguments differently (each
    arm then lays them out itself)? the plan's CP_PER_ARM */
-int dispatch_arms_disagree(Compiler *c, int cid, const char *name);
+int dispatch_arms_disagree(Compiler *c, int call, int cid, const char *name);
 /* Do `given` positionals not fit method `m`? Answers 1 with CRuby's
    ArgumentError message in `msg`; 0 when they fit, or when the method's
    arity is not judged (arity_unjudged). The one count rule of the direct
@@ -2945,8 +2945,8 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends);
 int method_is_void(Scope *s);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b);
-void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b);
-void emit_poly_iter_obj_reject_as(Compiler *c, int tv, const char *name, const char *shown, Buf *b);
+void emit_poly_iter_obj_reject(Compiler *c, int call, int tv, const char *name, Buf *b);
+void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *name, const char *shown, Buf *b);
 void emit_method_signature(Compiler *c, Scope *s, Buf *b);
 void emit_method(Compiler *c, Scope *s, Buf *b);
 int is_nested_block(const char *ty);
@@ -3070,7 +3070,7 @@ int cvar_is_oint(Compiler *c, int cid, int idx);
    oint, a nil literal, a conditional with a nullable arm. */
 int node_is_oint(Compiler *c, int node);
 /* `obj.class.name`'s dispatch switch has an arm answering an sp_oint / sp_ofloat */
-int class_switch_arm_oint(Compiler *c, int cid, const char *name);
+int class_switch_arm_oint(Compiler *c, int call, int cid, const char *name);
 /* node_is_oint, or a leaf read of a slot that is an oint (a nil guard may
    have narrowed the read): emit_oint_expr yields the bare oint for it, and
    its box reads the nil */
