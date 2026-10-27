@@ -13367,6 +13367,12 @@ static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
    stamps again only the rows of a component that still narrows. Only its own
    -- other producers stamp empty `[]` literals too. */
 static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
+/* its bits: this pass stamped the row; a seed built it (oa_mark_seed_row);
+   a seed built it before this round cleared its stamp, so the round that
+   builds it again marks it the seed's again */
+#define OA_MINE 1
+#define OA_SEED_ROW 2
+#define OA_SEED_ROW_WAS 4
 static void oa_mark_empty_mine(int lit) {
   if (lit >= g_oa_empt_mine_cap) {
     int nc = g_oa_empt_mine_cap ? g_oa_empt_mine_cap : 256;
@@ -13376,14 +13382,14 @@ static void oa_mark_empty_mine(int lit) {
     memset(g_oa_empt_mine + g_oa_empt_mine_cap, 0, (size_t)(nc - g_oa_empt_mine_cap));
     g_oa_empt_mine_cap = nc;
   }
-  g_oa_empt_mine[lit] |= 1;
+  g_oa_empt_mine[lit] |= OA_MINE;
 }
 /* An empty row a seed built at its kind (oa_seeded_literal_rows) carries a
    second mark: the seed is trusted, so widen_nested_literals leaves it to
    the seed's kind as it leaves the rows of `Array.new(n) { [] }`, and the
    push into it converts its value or is refused, as a push into those does */
-static void oa_mark_seed_row(int lit) { oa_mark_empty_mine(lit); g_oa_empt_mine[lit] |= 2; }
-int oa_seed_row_literal(int lit) { return lit >= 0 && lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & 2); }
+static void oa_mark_seed_row(int lit) { oa_mark_empty_mine(lit); g_oa_empt_mine[lit] |= OA_SEED_ROW; }
+int oa_seed_row_literal(int lit) { return lit >= 0 && lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & OA_SEED_ROW); }
 /* Nodes whose own emitted type has to follow the slot they feed: a
    `idx.map { |k| cols[k] }` builds the table in place, so narrowing the slot
    without retyping the map leaves the emitter building a poly array and
@@ -14757,7 +14763,11 @@ static int narrow_object_arrays(Compiler *c) {
   if (c->arr_want) {
     for (int id = 0; id < c->nt->count && id < c->node_cap; id++) {
       if (id < g_oa_empt_mine_cap && g_oa_empt_mine[id]) {
-        g_oa_empt_mine[id] = 0;
+        unsigned char m = g_oa_empt_mine[id];
+        /* a row a seed built is the seed's again when this round builds it
+           (OA_SEED_ROW_WAS, below) */
+        g_oa_empt_mine[id] = m & OA_SEED_ROW ? OA_SEED_ROW_WAS : 0;
+        if (!(m & (OA_MINE | OA_SEED_ROW))) continue;
         if (c->arr_want[id] != TY_INT_ARRAY && c->arr_want[id] != TY_FLOAT_ARRAY) continue;
       }
       else {
@@ -15650,7 +15660,8 @@ static int narrow_object_arrays(Compiler *c) {
         int lit = g_oa_empt_node[e];
         if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN) {
           comp_set_arr_want(c, lit, sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY);
-          oa_mark_empty_mine(lit);
+          if (lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & OA_SEED_ROW_WAS)) oa_mark_seed_row(lit);
+          else oa_mark_empty_mine(lit);
         }
       }
     }
