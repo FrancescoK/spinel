@@ -1019,6 +1019,9 @@ SP_TLS long sp_polyarr_pool_count = 0;
 #define SP_POLYARR_POOL_KEEP_CAP 64   /* don't retain unusually large buffers */
 void sp_PolyArray_pool_recycle(sp_gc_hdr *h) {
   sp_PolyArray *a = (sp_PolyArray *)((char *)h + sizeof(sp_gc_hdr));
+  /* the slots a shift stepped past are the buffer's again (a reused array
+     starts empty, so no element moves) */
+  a->len = 0; SP_ARR_REBASE(a);
   if (sp_polyarr_pool_count >= SP_POLYARR_POOL_MAX || a->cap > SP_POLYARR_POOL_KEEP_CAP) {
     if (a->data != a->inl) sp_pl_free(a->data);
     sp_slab_free(h);

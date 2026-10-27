@@ -1009,11 +1009,14 @@ sp_RbVal sp_main_self(void);
    SP_POLYARR_INLINE elements live in the object itself: an array that never
    outgrows them has no payload, so no finalizer, so the sweep never touches
    it dead (lib/sp_slab.c) -- and most arrays never do. Growing past them
-   moves the elements to a payload and installs the finalizer that frees it. */
+   moves the elements to a payload and installs the finalizer that frees it.
+   A shift steps `data` past the first element (head, SP_ARR_BUF in
+   sp_types.h); the next growth takes the slots back. frozen is a flag; head
+   shares its word, so the array keeps its size. */
 #define SP_POLYARR_INLINE 8
-typedef struct { sp_RbVal *data; sp_int len; sp_int cap; sp_int frozen; sp_RbVal inl[SP_POLYARR_INLINE]; } sp_PolyArray;
+typedef struct { sp_RbVal *data; sp_int len; sp_int cap; int32_t frozen; int32_t head; sp_RbVal inl[SP_POLYARR_INLINE]; } sp_PolyArray;
 static inline void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (sp_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
-static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; if (a->data == a->inl) return; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes_sub(sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; sp_pl_free(a->data); }
+static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; if (SP_ARR_BUF(a) == a->inl) return; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes_sub(sizeof(sp_RbVal) * SP_ARR_BUF_CAP(a)); h->size -= sizeof(sp_RbVal) * SP_ARR_BUF_CAP(a); sp_pl_free(SP_ARR_BUF(a)); }
 /* Free-list pool for PolyArray, header AND data buffer kept together. The
    allocation-heaviest programs (per-point tuple building: BabyStark's
    constraint evaluation) churn millions of short-lived PolyArrays; recycling
@@ -1063,6 +1066,11 @@ static inline sp_PolyArray *sp_PolyArray_new(void) {
    gives the object the finalizer that will free it; later growths resize */
 static SP_NOINLINE void sp_PolyArray_grow(sp_PolyArray *a) {
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr));
+  /* a queue's shifts free the room its pushes need. Moving the elements back
+     costs no more than the shifts that freed the room did when they are no
+     more than the freed slots; with fewer freed slots the array grows as
+     well, or each push would move them all again for a slot or two */
+  if (a->head > 0) { int room = a->head >= a->len; SP_ARR_REBASE(a); if (room) return; }
   sp_int nc = (a->cap * 2) + 1;
   if (a->data == a->inl) {
     sp_RbVal *nd = (sp_RbVal *)sp_pl_alloc(sizeof(sp_RbVal) * (size_t)nc);
