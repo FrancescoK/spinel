@@ -5824,6 +5824,29 @@ int ffi_find_reader(Compiler *c, const char *mod, const char *name) {
   return -1;
 }
 
+/* The nodes that store into a hash at a key: the three index op-writes and
+   the calls named `[]=` or `store`, from their chains (each in node order)
+   merged into the order a walk of the whole table meets them. The walks
+   below asked every node of the table, for each slot an empty hash gives a
+   type, each round. idx_store_begin fills the five cursors;
+   idx_store_next answers the next node, -1 past the last. */
+static void idx_store_begin(Compiler *c, int cur[5]) {
+  cur[0] = comp_kind_first(c, NK_IndexOrWriteNode);
+  cur[1] = comp_kind_first(c, NK_IndexAndWriteNode);
+  cur[2] = comp_kind_first(c, NK_IndexOperatorWriteNode);
+  cur[3] = an_calls_named_first(c, "[]=");
+  cur[4] = an_calls_named_first(c, "store");
+}
+static int idx_store_next(Compiler *c, int cur[5]) {
+  int q = -1;
+  for (int i = 0; i < 5; i++)
+    if (cur[i] >= 0 && (q < 0 || cur[i] < cur[q])) q = i;
+  if (q < 0) return -1;
+  int w = cur[q];
+  cur[q] = q < 3 ? comp_kind_next(c, w) : an_calls_named_next(w);
+  return w;
+}
+
 /* `$g = {}` / `$g = Hash.new` followed by `$g[k] = v` elsewhere: an empty hash
    producer has no key/value type of its own, so the global's inferred type
    stays UNKNOWN and it gets no file-scope slot at all -- every reference then
@@ -5839,7 +5862,8 @@ static TyKind slot_hash_variant_from_writes(Compiler *c, NodeKind rk, const char
   const NodeTable *nt = c->nt;
   TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
   int saw = 0;
-  for (int w = 0; w < nt->count; w++) {
+  int cur[5]; idx_store_begin(c, cur);
+  for (int w; (w = idx_store_next(c, cur)) >= 0; ) {
     NodeKind wk = nt_kind(nt, w);
     /* `$g[k] += v`, `||=` and `&&=` key the same slot `[]=` does and count for
        the KEY, as the local scan counts them (#3397). Their value lives in a
@@ -9532,7 +9556,8 @@ static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname, int
   const NodeTable *nt = c->nt;
   TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
   int saw = 0;
-  for (int w = 0; w < nt->count; w++) {
+  int cur[5]; idx_store_begin(c, cur);
+  for (int w; (w = idx_store_next(c, cur)) >= 0; ) {
     NodeKind wk = nt_kind(nt, w);
     /* `h[k] ||= v` / `h[k] &&= v` / `h[k] op= v` store `v` at `k` too */
     int opw = wk == NK_IndexOrWriteNode || wk == NK_IndexAndWriteNode ||
