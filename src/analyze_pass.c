@@ -3133,6 +3133,38 @@ static int push_escape_widen(Compiler *c, int id, int recv, int is_push, TyKind 
 }
 
 static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth);
+static int value_node_or_self(const NodeTable *nt, int n);
+/* Sets the Hash literals value `v` hands over to `want`. A chain of locals
+   (`a = {...}; b = a; H = b`) is followed to its end, each write once, so
+   no depth bound leaves a literal behind it at its own variant; the rest
+   is container_literals', which also takes each one's own literals. */
+static void widen_value_hash_literals(Compiler *c, int v, TyKind want) {
+  const NodeTable *nt = c->nt;
+  int cap = 16, n = 0, done = 0;
+  int *work = (int *)malloc(sizeof(int) * (size_t)cap);
+  work[n++] = v;
+  while (done < n) {
+    int x = value_node_or_self(nt, work[done++]);
+    Scope *sc = x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode ? comp_scope_of(c, x) : NULL;
+    const char *nm = sc ? nt_str(nt, x, "name") : NULL;
+    /* a local's own literals too: a parameter's are its callers' arguments */
+    int lits[32], nl = container_literals(c, x, lits, 0, 32, 0);
+    for (int q = 0; q < nl; q++)
+      if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
+        comp_set_hash_want(c, lits[q], want);
+    if (!nm) continue;
+    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r), wv = nt_ref(nt, w, "value"), seen = 0;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc ||
+          !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      for (int q = 0; q < n && !seen; q++) seen = work[q] == wv;
+      if (seen) continue;
+      if (n == cap) { cap *= 2; work = (int *)realloc(work, sizeof(int) * (size_t)cap); }
+      work[n++] = wv;
+    }
+  }
+  free(work);
+}
 /* The Hash literals constant or global `recv` is assigned, directly or
    through a local or a plain `begin` that hands one over (`T = begin h =
    {"" => ""}; h.delete(""); h end`), are built as the Hash `want` its
@@ -3154,10 +3186,7 @@ static void widen_named_hash_literals(Compiler *c, int recv, TyKind want) {
     if (!wn || !sp_streq(gv ? comp_resolve_gvar(c, wn + 1) : wn, gv ? gn : nm)) continue;
     int v = nt_ref(nt, w, "value"), one;
     if (vp_one(nt, v, VPS_BEGIN_PLAIN, &one) == VP1_NODE) v = one;
-    int lits[32], nl = container_literals(c, v, lits, 0, 32, 0);
-    for (int q = 0; q < nl; q++)
-      if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
-        comp_set_hash_want(c, lits[q], want);
+    widen_value_hash_literals(c, v, want);
   }
 }
 
