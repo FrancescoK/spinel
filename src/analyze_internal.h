@@ -640,15 +640,11 @@ int fold_static_is_a(Compiler *c);
 int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
 int an_class_includes_enumerable(Compiler *c, int ci);
-int desugar_block_implicit_rest(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
-int desugar_singleton_class_define_method(Compiler *c);
-int desugar_define_method_proc_arg(Compiler *c);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
 int desugar_define_method_captures(Compiler *c);
 int desugar_body_local_scopes(Compiler *c);
-int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
 int desugar_enumerable_via_to_a(Compiler *c);
@@ -702,15 +698,19 @@ int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 /* the rows, in the order the stage runs them */
 enum {
   LW_NIL_BLOCK_ARG, LW_THREAD_START, LW_MARSHAL_RESTORE, LW_SOCKET_OPEN, LW_SYSTEM_OPTIONS, LW_IO_POPEN_BLOCK,
-  LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_STRUCT_SUBCLASS_NEW_WRITE,
+  LW_LITERAL_UNDEF_METHOD, LW_NOARG_DISPLAY_WRAPPERS,
+  LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_SELF_SUPERCLASS, LW_STRUCT_SUBCLASS_NEW_WRITE,
   LW_REFUSE_SUPERCLASS_EXPRS, LW_RESCUE_BLOCK_BODIES,
   LW_MARK_SYM_PROC_BLOCKS, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES, LW_MARK_RANGE_LOCALS,
-  LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES, LW_REASSIGNED_BLOCK_PARAMS,
+  LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES, LW_ALIAS_METHOD_VALUES,
+  LW_REASSIGNED_BLOCK_PARAMS,
   LW_ITSELF_RECEIVER, LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE,
-  LW_SAFE_NAV_ATTR_WRITE, LW_CONST_ATTR_OP_ASSIGN, LW_STORED_ENUM_EACH, LW_EMPTY_HASH_COMPARE_BY_IDENTITY,
-  LW_NAME_ANON_BLOCK_KWREST, LW_SYM_TO_PROC_CALL, LW_BUILTIN_KWSPLAT, LW_RIGHTWARD_PATTERN,
-  LW_MATCH_PREDICATE, LW_SORT_BY_WITH_INDEX, LW_ANON_BLOCK_PARAM, LW_MULTI_VALUE_JUMP, LW_BLOCK_DESTRUCTURE_PARAMS,
-  LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS, LW_ENUMERATOR_PRODUCE, LW_PARAM_DEFAULT_ASSIGNS_LOCAL,
+  LW_SAFE_NAV_ATTR_WRITE, LW_CONST_ATTR_OP_ASSIGN, LW_STORED_ENUM_EACH, LW_SINGLETON_CLASS_DEFINE_METHOD,
+  LW_EMPTY_HASH_COMPARE_BY_IDENTITY, LW_DEFINE_METHOD_PROC_ARG, LW_DEFINE_METHOD_KEYWORDS,
+  LW_NAME_ANON_BLOCK_KWREST, LW_SYM_TO_PROC_CALL, LW_ENUM_CHAIN_SHAPES, LW_BUILTIN_KWSPLAT, LW_RIGHTWARD_PATTERN,
+  LW_MATCH_PREDICATE, LW_SORT_BY_WITH_INDEX, LW_ANON_BLOCK_PARAM, LW_BLOCK_IMPLICIT_REST, LW_MULTI_VALUE_JUMP,
+  LW_BLOCK_DESTRUCTURE_PARAMS, LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS, LW_ENUMERATOR_PRODUCE,
+  LW_PARAM_DEFAULT_ASSIGNS_LOCAL,
   LW__COUNT
 };
 
@@ -719,6 +719,7 @@ typedef struct LowerCtx {
   int findings;             /* what the check reported */
   int rewrote[LW__COUNT];   /* per row, the nodes it rewrote (the check's report) */
   int n0;                   /* the node count at the running row's entry */
+  int owner, body;          /* LF_STMT: the body owner being visited and its StatementsNode */
   /* scratch of the running row, zero at each run */
   int serial;               /* the fresh-name counter of a run */
   char **used;              /* names the program wrote that a row's invented ones must step past */
@@ -726,12 +727,20 @@ typedef struct LowerCtx {
   int used_built;
   int *ids;                 /* node ids a row's gate collected for its visits */
   int nids;
+  /* the parent map (lower_parents), valid for the table it was made of */
+  int *parent;
+  int parent_n, parent_live;
+  unsigned parent_version;
+  unsigned long parent_edits;
+  int prog_memo[3];         /* answers of the whole program a row asks for as needed: -1 until asked */
 } LowerCtx;
 
 typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);
 /* a row's question of the whole program, asked once at the start of a run: 0 skips the run */
 typedef int LowerGate(Compiler *c, LowerCtx *lc);
 
+int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt);   /* the place of stmt in lc->body (LF_STMT rows) */
+const int *lower_parents(Compiler *c, LowerCtx *lc);   /* every node's parent, made at a row's first ask in a run */
 void lower_begin(Compiler *c, LowerCtx *lc);
 int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
 int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
@@ -751,6 +760,14 @@ LowerFn desugar_itself_receiver_at, desugar_itself_receiver_left;
 LowerFn desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left;
 LowerFn refuse_superclass_exprs_at, desugar_sym_to_proc_call_at, desugar_builtin_kwsplat_at;
 LowerFn desugar_stored_enum_each_at;                                         /* analyze_desugar.c */
+LowerFn desugar_literal_undef_method_at, desugar_literal_undef_method_left;
+LowerFn desugar_alias_method_values_at, desugar_alias_method_values_left;
+LowerFn desugar_singleton_class_define_method_at, desugar_singleton_class_define_method_left;
+LowerFn desugar_define_method_proc_arg_at, desugar_define_method_keywords_at;
+LowerFn desugar_block_implicit_rest_at, desugar_block_implicit_rest_left;
+LowerFn desugar_noarg_display_wrappers_at, desugar_noarg_display_wrappers_left;   /* analyze.c */
+LowerFn desugar_self_superclass_at, desugar_self_superclass_left;
+LowerFn desugar_enum_chain_shapes_at;
 LowerFn desugar_paren_block_arg_at, desugar_paren_block_arg_left;           /* analyze.c */
 LowerFn desugar_paren_operands_at, desugar_paren_operands_left;
 LowerFn desugar_send_class_makers_at, desugar_send_class_makers_left;
@@ -841,9 +858,7 @@ int desugar_object_method_builtin_overrides(Compiler *c);
 int desugar_body_ivars(Compiler *c);
 int desugar_const_ivar_access(Compiler *c);
 int desugar_class_eval_ivars(Compiler *c);
-int desugar_literal_undef_method(Compiler *c);
 int desugar_builtin_ivars(Compiler *c);
-int desugar_alias_method_values(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
 int desugar_builtin_alias_calls(Compiler *c);
 int desugar_reader_aliases_before_redef(Compiler *c);
