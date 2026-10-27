@@ -8657,7 +8657,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, con
   comp_grow_node_arrays(c);
   /* a copy a later top-level reopening makes hands the call to the class's
      own method until that statement has run (mixin_guard_body) */
-  if (guard && new_body >= 0) {
+  if (guard) {   /* an empty method's copy too, whose body is the guard */
     new_body = mixin_guard_body(nt, new_body, guard, (int)nt_int(nt, c->scopes[mi].def_node, "node_line", 0));
     comp_grow_node_arrays(c);
   }
@@ -9151,7 +9151,9 @@ static int prepend_late_stmt(Compiler *c, int ci, int body) {
    the reopening's statement has run and set the flag, a call reaches the
    method the class had then, as in CRuby. Spinel has one method chain per
    class, the last, so the call reaches this copy either way, and the
-   copy's super is the class's own method, renamed by the prepend. */
+   copy's super is the class's own method, renamed by the prepend. An
+   empty body (-1) becomes the guard alone, which answers nil once the
+   flag is set. */
 static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line) {
   int rd = nt_new_node(nt, "GlobalVariableReadNode");
   nt_node_set_str(nt, rd, "name", flag);
@@ -9167,7 +9169,7 @@ static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line)
   nt_node_set_ref(nt, un, "statements", then);
   int made[] = { rd, sup, args, ret, then, un };
   for (int i = 0; i < 6; i++) nt_node_set_int(nt, made[i], "node_line", line);
-  if (nt_kind(nt, body) == NK_StatementsNode) {
+  if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) {
     int bn = 0;
     const int *bb = nt_arr(nt, body, "body", &bn);
     int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
@@ -9180,7 +9182,7 @@ static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line)
   }
   int seq = nt_new_node(nt, "StatementsNode");
   int two[] = { un, body };
-  nt_node_set_arr(nt, seq, "body", two, 2);
+  nt_node_set_arr(nt, seq, "body", two, body >= 0 ? 2 : 1);
   nt_node_set_int(nt, seq, "node_line", line);
   return seq;
 }

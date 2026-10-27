@@ -3,13 +3,19 @@
 # reopening after `singleton_class.prepend M` or `class << self; prepend M;
 # end` reaches M's method, and one between two such prepends reaches the
 # first only. Each prepend's copies are guarded by a flag of their own,
-# set right after it; the one flag was set after the whole reopening.
+# set right after it; the one flag was set after the whole reopening. An
+# empty method of the module is guarded too: ahead of the prepend a call
+# reaches the method the class had, not the empty copy.
 module A
   def speak = "A " + super
 end
 
 module B
   def speak = "B " + super
+end
+
+module Quiet
+  def speak; end
 end
 
 class Animal
@@ -23,8 +29,12 @@ class Kit
   def self.speak = "mew"
 end
 
+class Pup < Animal
+end
+
 puts Puppy.speak
 puts Kit.speak
+p Pup.speak
 
 class Puppy
   singleton_class.prepend A
@@ -40,6 +50,13 @@ class Kit
   puts Kit.speak
 end
 
+class Pup
+  class << self
+    prepend Quiet
+  end
+end
+
 puts Puppy.speak
 puts Kit.speak
+p Pup.speak
 puts Animal.speak
