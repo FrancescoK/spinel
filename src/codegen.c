@@ -21156,9 +21156,10 @@ static void emit_file_tops(Compiler *c, Buf *body) {
   for (int f = 1; f < n; f++) {
     if (prog_defines_only(c, f)) continue;
     Scope *s = &c->scopes[c->file_scope[f]];
-    char tag[32];
+    char tag[32], group[UNIT_TAG_MAX + 8];
     snprintf(tag, sizeof tag, "file_%d", f);
-    unit_begin_in(body, tag, tag);   /* (--incremental: each file its own group) */
+    /* --incremental: with the file's top-level methods (class_unit_group) */
+    unit_begin_in(body, tag, class_unit_group(c, -1, nt_root(c->nt, f), group, sizeof group));
     buf_printf(body, "static void sp_file_%d_top(void) {\n    SP_GC_SAVE();\n", f);
     size_t frame_ins = body->len;
     emit_scope_decls(c, s, body);
