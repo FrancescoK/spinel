@@ -1607,11 +1607,6 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
-  /* the calls version_redefined_reopen_defs marked for an earlier
-     definition, which desugar_redef_version_calls resolves once their
-     receivers are typed (-1 once resolved) */
-  int *redef_calls;
-  int nredef_calls;
   /* the flags of the later prepends that guard their copies
      (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
   int n_mixin_flags;

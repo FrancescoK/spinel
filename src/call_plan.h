@@ -92,6 +92,12 @@ const CallPlan *cplan_user(Compiler *c, int id);
    defined, which classes answer it) and a method the language calls by a
    fixed name (`initialize`, `<=>`) ask the tables directly. */
 enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4 };
+/* The names call node id itself calls, into out: a call's or an attribute
+   target's name, a `recv.m op= v`'s reader and writer; how many (0 for any
+   other node). call_target binds a call of one of them to the method
+   version it runs; a method the language calls for the node keeps the
+   last version. */
+int call_node_names(const NodeTable *nt, int id, const char *out[2]);
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);

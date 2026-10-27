@@ -519,7 +519,6 @@ void comp_free(Compiler *c) {
   c->pres_rank = NULL; c->pres_rank_n = 0;
   for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
-  free(c->redef_calls); c->redef_calls = NULL; c->nredef_calls = 0;
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
   for (int i = 0; i < c->nrbp_slots; i++) free(c->rbp_slot_names[i]);
   free(c->rbp_slot_names); free(c->rbp_slot_lens); c->rbp_slot_names = NULL; c->rbp_slot_lens = NULL; c->nrbp_slots = 0;
@@ -4615,11 +4614,7 @@ const char *comp_scope_def_name(Compiler *c, const Scope *s) {
   if (!nm || s->def_node < 0 || nt_kind(c->nt, s->def_node) != NK_DefNode) return nm;
   const char *dn = nt_str(c->nt, s->def_node, "name");
   if (!dn) return nm;
-  /* a def a reopening redefined keeps its earlier body under `m#redef<n>`
-     (version_redefined_reopen_defs), its def renamed too: the name is m */
   size_t dl = strlen(dn);
-  const char *rd = strstr(dn, "#redef");
-  if (rd && rd[6] >= '0' && rd[6] <= '9' && strspn(rd + 6, "0123456789") == strlen(rd + 6)) dl = (size_t)(rd - dn);
   const char *u = comp_prep_user_name(nm);
   size_t n = strlen(u);
   int pf = n > 3 && strcmp(u + n - 3, "#pf") == 0;
