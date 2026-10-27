@@ -1214,9 +1214,9 @@ int infer_arysub_call(Compiler *c, int id, TyKind *out) {
   if (!c->has_arysub) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
   /* Kernel#Array hands an Array back as it is, an Array subclass instance
-     included */
+     included; a Hash or String subclass instance is not one */
   int an = comp_arysub_kernel_array(c, id);
-  if (an >= 0 && comp_ty_ary_root(c, infer_type(c, an)) >= 0) { *out = infer_type(c, an); return 1; }
+  if (an >= 0 && comp_ty_arysub_array(c, infer_type(c, an))) { *out = infer_type(c, an); return 1; }
   /* already re-inferring this receiver as its builtin: face_of reads the
      newest pin and the codegen face, so ask every pin of the inference */
   if (recv < 0 || face_of(recv) != TY_UNKNOWN || an_face_pinned(recv)) return 0;

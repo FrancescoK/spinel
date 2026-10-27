@@ -1996,6 +1996,7 @@ int        send_family_program_owns(Compiler *c, const char *name);
 int        comp_ary_root(Compiler *c, int cid);
 int        comp_implicit_to_ary_mi(Compiler *c, int cid);
 int        comp_ty_ary_root(Compiler *c, TyKind t);
+int        comp_ty_arysub_array(Compiler *c, TyKind t);
 TyKind     comp_ary_kind(Compiler *c, int cid);
 /* Whether Array answers a call named n on an instance of Array subclass
    cid: no method, reader or writer of the class chain takes the name, it
