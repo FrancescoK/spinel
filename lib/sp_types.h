@@ -289,8 +289,23 @@ typedef struct sp_str_hdr { struct sp_str_hdr *next; uint32_t size; uint32_t len
 /* frozen is a flag (32 bits); nil_lo shares its word: the lowest physical
    slot that can hold a nil while nilbits is set (SP_NILBITS_NEW_A, sp_array.h) */
 typedef struct{sp_int*data;sp_int start;sp_int len;sp_int cap;int32_t frozen;uint32_t nil_lo;uint64_t*nilbits;}sp_IntArray;
-typedef struct{sp_float*data;sp_int len;sp_int cap;int32_t frozen;uint32_t nil_lo;uint64_t*nilbits;}sp_FloatArray;
-_Static_assert(sizeof(void *) != 8 || (sizeof(sp_IntArray) == 48 && sizeof(sp_FloatArray) == 40),
+/* A shift on a Poly, Ptr, Str or Float array steps `data` past the first
+   element instead of moving the rest down, and counts the slots it stepped
+   past in `head` (sp_PtrArray_shift, sp_array.h). The element buffer then
+   starts at data - head and holds cap + head slots. Every site that frees,
+   reallocs or reuses the buffer takes its start and size from SP_ARR_BUF /
+   SP_ARR_BUF_CAP, never from data and cap; SP_ARR_REBASE moves the elements
+   back to the start, which gives the slots stepped past back to cap. A new
+   array comes zeroed, so its head is 0. */
+#define SP_ARR_BUF(a)     ((a)->data - (a)->head)
+#define SP_ARR_BUF_CAP(a) ((a)->cap + (a)->head)
+#define SP_ARR_REBASE(a)  do { memmove(SP_ARR_BUF(a), (a)->data, sizeof *(a)->data * (size_t)(a)->len); \
+                               (a)->data = SP_ARR_BUF(a); (a)->cap = SP_ARR_BUF_CAP(a); (a)->head = 0; } while (0)
+/* FloatArray's head (SP_ARR_BUF): its word is full, and a FloatArray block
+   is in the same slab class at 48 bytes as at 40. nilbits count from data,
+   not from the buffer. */
+typedef struct{sp_float*data;sp_int len;sp_int cap;int32_t frozen;uint32_t nil_lo;uint64_t*nilbits;int32_t head;}sp_FloatArray;
+_Static_assert(sizeof(void *) != 8 || (sizeof(sp_IntArray) == 48 && sizeof(sp_FloatArray) == 48),
                "the Int / Float array blocks keep their slab class");
 /* the array may hold a nil (the fast whole-array test; exact bits are read
    per element through sp_IntArray_elem_nil / sp_FloatArray_elem_nil) */
@@ -302,7 +317,9 @@ _Static_assert(sizeof(void *) != 8 || (sizeof(sp_IntArray) == 48 && sizeof(sp_Fl
 /* elem_kind/elem_cls: what the pointers are, stamped when the array is boxed by
    reference (the one cls_id for pointer arrays is type-erased, #4486). 0 until
    then; a stamp never changes since a typed array holds one kind. */
-typedef struct{void**data;sp_int len;sp_int cap;void(*scan_elem)(void*);sp_int frozen;int elem_kind;int elem_cls;}sp_PtrArray;
+/* head: the slots a shift stepped past (SP_ARR_BUF, above); it shares
+   frozen's word, as sp_PolyArray's does */
+typedef struct{void**data;sp_int len;sp_int cap;void(*scan_elem)(void*);int32_t frozen;int32_t head;int elem_kind;int elem_cls;}sp_PtrArray;
 #define SP_PTR_ELEM_UNKNOWN  0
 #define SP_PTR_ELEM_OBJ      1   /* user objects, elem_cls = the static class (-1: read each object's own) */
 #define SP_PTR_ELEM_INT_ROWS 2   /* sp_IntArray rows (Array[Array[Integer]]) */
@@ -318,7 +335,8 @@ typedef struct sp_String_s *sp_strelem;
 #else
 typedef const char *sp_strelem;
 #endif
-typedef struct{sp_strelem*data;sp_int len;sp_int cap;sp_int frozen;sp_strelem inline_data[SP_STRARR_INLINE];}sp_StrArray;
+/* head: the slots a shift stepped past (SP_ARR_BUF, above) */
+typedef struct{sp_strelem*data;sp_int len;sp_int cap;int32_t frozen;int32_t head;sp_strelem inline_data[SP_STRARR_INLINE];}sp_StrArray;
 /* One representation (SP_ONE_STRING, string-one-repr-design.md): an element
    of a String container -- an Array's, a Hash's value -- is the String handle,
    so a change through any name shows in the container. Without the mode it
