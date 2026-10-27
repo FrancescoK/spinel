@@ -481,8 +481,11 @@ static int node_is_oint_asked(Compiler *c, int node) {
     if (r >= 0 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)) {
       /* an Integer / Float array's element answers: nil when empty or missing */
       if (an2 == 0 && blk < 0 &&
-          (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample") ||
-           sp_streq(nm, "min") || sp_streq(nm, "max"))) return 1;
+          (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))) return 1;
+      /* ... and so does its extreme, except on a literal that is never
+         empty, where only an element can be nil */
+      if (an2 == 0 && blk < 0 && is_minmax_query(nm))
+        return !array_literal_filled(nt, r) || nullable_int_value(c, node);
       if (sp_streq(nm, "slice!") && an2 == 1) return 1;
       if (sp_streq(nm, "find_index")) return 1;
       /* a seedless fold, a comparator min / max: nil over an empty receiver */

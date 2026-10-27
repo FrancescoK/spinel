@@ -501,6 +501,8 @@ int masgn_const_elem_in_range(Compiler *c, int value, long long pos);
 int scalar_nil_only_call(Compiler *c, int id, TyKind rt);
 int nullable_scalar_nil_only_call(Compiler *c, int id);
 int nullable_int_elem_array(Compiler *c, int node);
+/* an Array literal with an element and no splat: it is never empty */
+int array_literal_filled(const NodeTable *nt, int v);
 int elem_nil_reach_expr(Compiler *c, int v);
 TyKind tuple_elem_read_type(Compiler *c, int node);
 TyKind tuple_elem_read_unboxed(Compiler *c, int node);

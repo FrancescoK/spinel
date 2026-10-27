@@ -395,6 +395,51 @@ static int array_literal_plain(Compiler *c, int recv) {
   return en > 0 && !all_static;
 }
 
+/* `[a, b, c].min` on a literal of Integers or of Floats that cannot be nil:
+   the extreme of the values, compared in place, with no array built. The
+   array was a fresh allocation per call, and in a hot loop (an edit
+   distance's `[ins, del, sub].min`) its garbage grew the heap to twice what
+   the program kept. Each element runs once, in order. The first of equal
+   values wins, as in CRuby. A NaN raises the ArgumentError that CRuby
+   raises, and the message names the extreme so far. */
+static int emit_literal_minmax(Compiler *c, int id, const char *name, int recv, TyKind rt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if ((rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) || nt_kind(nt, recv) != NK_ArrayNode ||
+      nt_ref(nt, id, "block") >= 0)
+    return 0;
+  TyKind et = ty_array_elem(rt);
+  int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+  if (en < 1 || en > 8) return 0;
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_SplatNode || comp_ntype(c, el[e]) != et || nullable_int_value(c, el[e]))
+      return 0;
+  int flo = et == TY_FLOAT;
+  const char *ct = flo ? "sp_float" : "sp_int";
+  int base = g_tmp + 1; g_tmp += en + 1;
+  buf_puts(b, "({");
+  for (int e = 0; e < en; e++) {
+    buf_printf(b, " %s _t%d = ", ct, base + e);
+    if (flo) emit_float_expr(c, el[e], b);
+    else emit_int_expr(c, el[e], b);
+    buf_puts(b, ";");
+  }
+  int m = base + en;
+  buf_printf(b, " %s _t%d = _t%d;", ct, m, base);
+  /* `!(v >= m)` is `v < m` once a NaN raised. Apple clang 21 at -O1 and up
+     turns a chain of `if (v < m) m = v;` into fminnm, which takes -0.0 over
+     an earlier 0.0. The negated test keeps the first of the two zeros. */
+  for (int e = 1; e < en; e++) {
+    if (flo) buf_printf(b, " if (SP_UNLIKELY(isunordered(_t%d, _t%d))) sp_raise_float_cmp(_t%d);", base + e, m, m);
+    buf_printf(b, " if (!(_t%d %s _t%d)) _t%d = _t%d;", base + e, sp_streq(name, "min") ? ">=" : "<=", m, m, base + e);
+  }
+  /* the extreme of values that are never nil is still answered through the
+     oint form where the call's consumer asks for one (min can answer nil on
+     other receivers) */
+  if (node_is_oint(c, id)) buf_printf(b, " %s(_t%d); })", oint_of(et), m);
+  else buf_printf(b, " _t%d; })", m);
+  return 1;
+}
+
 /* value_kind_misses for a needle searched for in the array `recv`: nil is no
    miss where the array can hold nil. */
 static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
@@ -2923,37 +2968,8 @@ else {
     emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b);
     { *out = 1; return 1; }
   }
-  /* `[a, b, c].min` on a literal of Integers that cannot be nil: the
-     extreme of the values, compared in place, with no array built. The
-     array was a fresh allocation per call, and in a hot loop (an edit
-     distance's `[ins, del, sub].min`) its garbage grew the heap to twice
-     what the program kept. Each element runs once, in order. */
-  if ((is_minmax_query(name)) && argc == 0 &&
-      rt == TY_INT_ARRAY && nt_kind(nt, recv) == NK_ArrayNode &&
-      nt_ref(nt, id, "block") < 0) {
-    int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
-    int plain = en > 0 && en <= 8;
-    for (int e = 0; plain && e < en; e++)
-      if (nt_kind(nt, el[e]) == NK_SplatNode || comp_ntype(c, el[e]) != TY_INT ||
-          nullable_int_value(c, el[e])) plain = 0;
-    if (plain) {
-      int base = g_tmp + 1; g_tmp += en + 1;
-      buf_puts(b, "({");
-      for (int e = 0; e < en; e++) {
-        buf_printf(b, " sp_int _t%d = ", base + e); emit_int_expr(c, el[e], b); buf_puts(b, ";");
-      }
-      int m = base + en;
-      buf_printf(b, " sp_int _t%d = _t%d;", m, base);
-      for (int e = 1; e < en; e++)
-        buf_printf(b, " if (_t%d %s _t%d) _t%d = _t%d;", base + e, sp_streq(name, "min") ? "<" : ">", m, m, base + e);
-      /* the extreme of values that are never nil is still answered through
-         the oint form where the call's consumer asks for one (min can
-         answer nil on other receivers) */
-      if (node_is_oint(c, id)) buf_printf(b, " sp_oint_of(_t%d); })", m);
-      else buf_printf(b, " _t%d; })", m);
-      { *out = 1; return 1; }
-    }
-  }
+  if (is_minmax_query(name) && argc == 0 && emit_literal_minmax(c, id, name, recv, rt, b))
+    { *out = 1; return 1; }
   /* A literal's min and max compare each new element with the extreme
      so far, as CRuby's VM does for them (sp_PolyArray_minmax_lit): the
      nil check and a boxed literal's comparisons name the pair that
