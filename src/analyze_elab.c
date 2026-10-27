@@ -87,6 +87,9 @@ struct LoadRecord {
   int tail[3];               /* Class, Module and Object, past the singletons (lr_runs); -1 for one the program has not */
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
+  /* the method histories by name (lr_vers_index), as of nentries entries */
+  long nentries, indexed;
+  struct LrVers *vers; int nvers, cvers, *vers_head;
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -445,7 +448,9 @@ long long elab_sort_key(Compiler *c, int node) {
    runs them, in seq order, in the frame its statement's body opens: the
    class (or singleton class) a class body, `class << x` or class_eval
    block runs in, main's at a file's top level. */
-typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next; } LrHist;   /* a: class, or -2 - ElabVar; b: singleton */
+/* a: class, or -2 - ElabVar; b: singleton; nlink: the next method history
+   of the same name (lr_vers_index) */
+typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink; } LrHist;
 /* sup: the superclass the first header naming one names, as resolved
    there (has_sup); LR_UNKNOWN_CLASS when it is not a class the record knows */
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup; unsigned char has_sup; } LrClass;
@@ -479,7 +484,7 @@ static LrHist *lr_hist(LoadRecord *r, int a, int b, const char *name, int make) 
   if (!make) return NULL;
   r->hist = lr_grow(r->hist, &r->chist, r->nhist, sizeof *r->hist);
   LrHist *x = &r->hist[r->nhist];
-  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h] };
+  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h], -1 };
   if (!x->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   r->hhead[h] = r->nhist++;
   return x;
@@ -491,6 +496,7 @@ static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
   if (d.target && !(d.target = strdup(d.target))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   x->v = lr_grow(x->v, &x->cap, x->n, sizeof *x->v);
   x->v[x->n++] = d;
+  r->nentries++;
 }
 
 /* cls's history (LR_MAIN: main's, Object's), NULL past the record's classes */
@@ -885,6 +891,56 @@ void elab_program(Compiler *c) {
   r->recorded = 1;
   sp_timing_end(t0, "an_elab_record", "");
   if (r->check) elab_check_record(c);
+}
+
+/* ---- by name ----
+   The method histories of one name across the classes, chained through
+   LrHist.nlink from the name's entry; nver counts the versions they hold.
+   A version is an entry that gives or takes the method (a def, a
+   define_method, an attr, an alias, a module_function copy, an undef or
+   remove), not a visibility change. lr_vers_index indexes the histories as
+   they stand, again once more entries have been recorded. */
+typedef struct LrVers { const char *name; int first, nver, next; } LrVers;
+
+static int lr_is_version(const LrDef *v) { return v->kind <= LR_REMOVE; }
+
+static void lr_vers_index(LoadRecord *r) {
+  if (r->vers_head && r->indexed == r->nentries) return;
+  if (!r->vers_head && !(r->vers_head = malloc(sizeof(int) * LR_BUCKETS))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < LR_BUCKETS; b++) r->vers_head[b] = -1;
+  r->nvers = 0;
+  for (int i = 0; i < r->nhist; i++) {
+    LrHist *h = &r->hist[i];
+    h->nlink = -1;
+    if (h->a < LR_MAIN) continue;
+    unsigned b = lr_hash(0, 0, h->name);
+    int k = r->vers_head[b];
+    while (k >= 0 && !sp_streq(r->vers[k].name, h->name)) k = r->vers[k].next;
+    if (k < 0) {
+      r->vers = lr_grow(r->vers, &r->cvers, r->nvers, sizeof *r->vers);
+      k = r->nvers++;
+      r->vers[k] = (LrVers){ h->name, -1, 0, r->vers_head[b] };
+      r->vers_head[b] = k;
+    }
+    h->nlink = r->vers[k].first;
+    r->vers[k].first = i;
+    for (int j = 0; j < h->n; j++) r->vers[k].nver += lr_is_version(&h->v[j]);
+  }
+  r->indexed = r->nentries;
+}
+
+static const LrVers *lr_vers(LoadRecord *r, const char *name) {
+  if (!name) return NULL;
+  lr_vers_index(r);
+  for (int k = r->vers_head[lr_hash(0, 0, name)]; k >= 0; k = r->vers[k].next)
+    if (sp_streq(r->vers[k].name, name)) return &r->vers[k];
+  return NULL;
+}
+
+int elab_method_versions(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
+  return x ? x->nver : 0;
 }
 
 /* ---- the queries ---- */
@@ -1358,7 +1414,7 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   free(r->names);
-  free(r->hist); free(r->hhead); free(r->cls);
+  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }

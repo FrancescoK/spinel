@@ -191,6 +191,10 @@ void elab_program(Compiler *c);
    hook (`inherited`, `included`, `method_added`, ...) is asked as the
    singleton method it is: sg = 1. */
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
+/* the versions of method `name` the record holds, in every class's and
+   module's histories: defs, define_methods, attrs, aliases, module_function
+   copies, undefs and removes (not visibility changes) */
+int elab_method_versions(Compiler *c, const char *name);
 /* is module mod in the ancestors of cls (of its singleton when sg) at p? */
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
 /* was a non-nil value written to the variable before p: a write that
