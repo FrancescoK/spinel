@@ -779,34 +779,6 @@ const char *object_fallback_class_of_type(TyKind t) {
   return builtin_class_of_type(t);
 }
 
-/* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
-   `CONST = <expr>.class`), return the underlying class name so `class CONST`
-   reopens that class. Returns NULL if `cname` is a plain new class name. */
-/* Index of every ConstantWriteNode id, cached per node table. resolve_class_alias
-   is called once per class/module definition during walk_scope; scanning all
-   nodes each time made it O(class_defs * nodes) on a flattened runtime. Which
-   nodes are ConstantWriteNodes is stable across the pass (only their names may
-   have been rewritten earlier, and we re-read those fresh), so the id list can
-   be built once and reused. Rebuilt if the node table (pointer or count)
-   changes, e.g. a second compile in the same process. */
-static const NodeTable *rca_nt = NULL;
-static int *rca_ids = NULL;
-static int rca_n = 0, rca_ntcount = -1;
-static void rca_index(const NodeTable *nt) {
-  if (rca_nt != nt || rca_ntcount != nt->count) {
-    free(rca_ids);
-    rca_ids = malloc((size_t)nt->count * sizeof(int));
-    rca_n = 0;
-    if (rca_ids) {
-      for (int id = 0; id < nt->count; id++) {
-        NodeKind k = nt_kind(nt, id);
-        if (k == NK_ConstantWriteNode) rca_ids[rca_n++] = id;
-      }
-    }
-    rca_nt = nt;
-    rca_ntcount = nt->count;
-  }
-}
 /* The class constant local read `v` holds when every write of that local
    in the program assigns that one constant (`q = Module.new do ... end`, by
    now a read of the module the call defines); NULL otherwise. */
@@ -828,11 +800,12 @@ static const char *local_holds_class(Compiler *c, int v) {
   return held;
 }
 
+/* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
+   `CONST = <expr>.class`), return the underlying class name so `class CONST`
+   reopens that class. Returns NULL if `cname` is a plain new class name. */
 const char *resolve_class_alias(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
-  rca_index(nt);
-  for (int ii = 0; ii < rca_n; ii++) {
-    int id = rca_ids[ii];
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
     const char *n = nt_str(nt, id, "name");
     if (!n || !sp_streq(n, cname)) continue;
     int v = nt_ref(nt, id, "value");
@@ -859,9 +832,7 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
    knows, does not follow. NULL otherwise. */
 const char *const_alias_source(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
-  rca_index(nt);
-  for (int ii = 0; ii < rca_n; ii++) {
-    int id = rca_ids[ii];
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
     const char *n = nt_str(nt, id, "name");
     if (!n || !sp_streq(n, cname)) continue;
     int v = nt_ref(nt, id, "value");
