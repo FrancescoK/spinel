@@ -1,0 +1,37 @@
+load record: 21 points, 1 regions
+r0 #0 f0 ProgramNode line 9
+r0 #1 f0 ModuleNode M line 9
+  r0 #2 f0 DefNode hi line 10
+r0 #3 f0 ModuleNode P line 13
+  r0 #4 f0 DefNode name line 14
+r0 #5 f0 ModuleNode N line 17
+  r0 #6 f0 DefNode ho line 18
+r0 #7 f0 ClassNode C line 21
+  r0 #8 f0 DefNode name line 22
+r0 #9 f0 CallNode instance_eval line 25
+  r0 #10 f0 CallNode include line 26
+  r0 #11 f0 CallNode prepend line 27
+  r0 #12 f0 CallNode attr_accessor line 28
+r0 #13 f0 CallNode class_eval line 31
+  r0 #14 f0 DefNode made line 32
+r0 #15 f0 ClassNode C line 35
+  r0 #16 f0 CallNode extend line 36
+  r0 #17 f0 SingletonClassNode line 35
+r0 #18 f0 LocalVariableWriteNode c line 39
+r0 #19 f0 CallNode x= line 40
+r0 #20 f0 CallNode p line 41
+class M: body#1
+class P: body#3
+class N: body#5
+class C: body#7 body#15 include M#10 prepend P#11 extend N#16
+const M: write#1
+M#hi: def#2 end=yes
+const P: write#3
+P#name: def#4 end=yes
+const N: write#5
+N#ho: def#6 end=yes
+const C: write#7
+C#name: def#8 end=yes
+C#x: reader#12 end=yes
+C#x=: writer#12 end=yes
+C.made: def#14 end=yes
