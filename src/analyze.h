@@ -182,7 +182,7 @@ typedef struct {
   const char *target;   /* an alias's or a copy's original name */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
-typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND } LrMixKind;
+typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
 typedef struct { int node, kind, mod; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know */
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
@@ -233,6 +233,7 @@ const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
    module, in the order they run: `include A, B` as `include B` then
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
+int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
 /* what constant `name`, read at node, resolves to there: its lexical scopes'
    own constants, innermost first, then the innermost one's ancestors and
    Object's; *out the write or class definition found */

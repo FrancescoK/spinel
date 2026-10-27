@@ -715,6 +715,19 @@ static void lr_names_take(Compiler *c) {
   if (r->nnames > 1) qsort(r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp);
 }
 
+int elab_mix_on_singleton(int kind) { return kind == LR_EXTEND || kind == LR_SG_PREPEND; }
+
+/* The kind of mixin call node (named nm) in a frame that is a singleton class's
+   (sg) or not. A singleton's include is an extend, and its prepend goes in
+   front of its own methods; so does the `extend` that
+   desugar_singleton_class_mixin makes of one (singleton_class.prepend M,
+   class << K; prepend M), whichever frame it now stands in. */
+static LrMixKind lr_mix_kind(const NodeTable *nt, int node, const char *nm, int sg) {
+  int marked = (int)nt_int(nt, node, "sclass_prepend", 0), pre = is_prepend_name(nm) || marked;
+  if (sg || marked) return pre ? LR_SG_PREPEND : LR_EXTEND;
+  return is_include_name(nm) ? LR_INCLUDE : pre ? LR_PREPEND : LR_EXTEND;
+}
+
 /* A call statement's definitions: attrs, aliases, visibility, mixins,
    define_method, undef_method / remove_method, on the class its receiver
    names. vs is the frame's visibility state. */
@@ -756,7 +769,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       opaque |= mod < 0;
       if (!k) continue;
       k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
-      k->mix[k->nmix++] = (LrMixin){ node, is_include_name(nm) ? LR_INCLUDE : is_prepend_name(nm) ? LR_PREPEND : LR_EXTEND, mod };
+      k->mix[k->nmix++] = (LrMixin){ node, lr_mix_kind(nt, node, nm, sg), mod };
     }
     else if (is_undef_method_name(nm) || is_remove_method_name(nm))
       lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
@@ -1017,8 +1030,8 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
     }
     for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
       const LrMixin *m = &k->mix[i];
-      int want = sg ? LR_EXTEND : pass == 0 ? LR_PREPEND : LR_INCLUDE;
-      if (m->kind != want || (sg && pass == 0)) continue;
+      int want = sg ? (pass == 0 ? LR_SG_PREPEND : LR_EXTEND) : pass == 0 ? LR_PREPEND : LR_INCLUDE;
+      if (m->kind != want) continue;
       int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
       if (b == ELAB_NO) continue;
       int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
@@ -1241,7 +1254,7 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
   const LrClass *k = lr_class(r, cls);
   for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
     const LrMixin *m = &k->mix[i];
-    int b = m->kind == LR_EXTEND ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
+    int b = elab_mix_on_singleton(m->kind) ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
     if (b == ELAB_NO) continue;
     int mo = m->mod < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, top, out, depth + 1);
     if (mo == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
@@ -1429,7 +1442,7 @@ void elab_dump(Compiler *c, FILE *out) {
   if (!r->recorded) return;
   static const char *const kinds[] = { "def", "define_method", "reader", "writer", "alias", "copy", "undef", "remove", "vis", "write", "opaque" };
   static const char *const words[] = { "", "module_function", "public", "private", "protected" };
-  static const char *const mixes[] = { "include", "extend", "prepend" };
+  static const char *const mixes[] = { "include", "extend", "prepend", "singleton_prepend" };
   static const char *const vars[] = { "$", "main ", "const " };
   for (int ci = LR_MAIN; ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
@@ -1518,7 +1531,7 @@ static void elab_check_visibility(Compiler *c) {
   for (int ci = 0; ci < c->nclasses && ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
     for (int j = 0; j < k->nmix; j++) {
-      if (k->mix[j].mod < 0 || k->mix[j].kind == LR_EXTEND) continue;
+      if (k->mix[j].mod < 0 || elab_mix_on_singleton(k->mix[j].kind)) continue;
       for (int i = 0; i < r->nhist; i++) {
         const LrHist *h = &r->hist[i];
         if (h->a != k->mix[j].mod || h->b || lr_hist(r, ci, 0, h->name, 0)) continue;
