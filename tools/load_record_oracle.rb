@@ -142,7 +142,8 @@ def cruby_events(prog, timeout)
         Process.kill("KILL", pid); Process.wait(pid)
         false
       end
-      ev = File.readlines(out.path, chomp: true).map { |l| l.split("\t", -1) }
+      # as bytes, like spinel's record, so a name past ASCII compares equal
+      ev = File.readlines(out.path, chomp: true, mode: "rb").map { |l| l.split("\t", -1) }
                .select { |e| e[2] == "load" && e[5] != "-" && !(e[3] =~ /\A[\w:]+[#.](\S+)\z/ && !FORMS.include?($1)) }
                .map { |p, l, _, _, *rest| [p, l.to_i, *rest] }
       [ev, ok]
@@ -150,8 +151,11 @@ def cruby_events(prog, timeout)
   end
 end
 
+# spinel's output as bytes: a name or path in it need not be valid in the
+# locale's encoding (under LANG=C, any byte past ASCII), and the regexps
+# below would raise on it
 def run(*cmd)
-  out = IO.popen(cmd, err: [:child, :out], &:read)
+  out = IO.popen(cmd, "rb", err: [:child, :out], &:read)
   [$?.success?, out]
 end
 
@@ -181,12 +185,14 @@ def spinel_events(spinel, prog, inline)
   end
   files = {}
   if inline
-    files[0] = File.expand_path(prog)
+    files[0] = File.expand_path(prog).b
   else
-    _, graph = run(spinel, "--load-model=graph", "--dump-load-graph", prog)
+    ok, graph = run(spinel, "--load-model=graph", "--dump-load-graph", prog)
+    # without the graph no entry has a file, and every one would be dropped
+    return [nil, graph.lines.last.to_s.strip.then { |l| l.empty? ? $?.to_s : l }, false] unless ok
     graph.scan(/^file (\d+) (.*)$/) { files[$1.to_i] = $2 }
   end
-  own = %w[builtins packages].map { |d| File.join(File.dirname(File.expand_path(spinel)), d, "") }
+  own = %w[builtins packages].map { |d| File.join(File.dirname(File.expand_path(spinel)), d, "").b }
   st = {}
   ev = []
   opaque = []
