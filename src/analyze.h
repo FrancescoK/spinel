@@ -119,7 +119,7 @@ void an_const_presence(Compiler *c);
    their top-level scopes and roots, and what the model refuses for now. */
 void prog_file_scopes(Compiler *c);
 void prog_refuse_loads(Compiler *c);
-void prog_drop_dead_files(Compiler *c);
+void prog_settle_files(Compiler *c);
 void prog_refuse_order(Compiler *c);
 int prog_is_top_scope(const Compiler *c, const Scope *s);
 int prog_is_root(const Compiler *c, int id);
@@ -128,6 +128,7 @@ int prog_root_stmts(const Compiler *c, int i);
 int prog_defines_only(const Compiler *c, int i);
 void prog_file_tops(Compiler *c, unsigned char *has);
 int prog_ordered_load(const Compiler *c, int id);
+int prog_site_places(const Compiler *c, int id);
 void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
 int *prog_top_seq(const Compiler *c, int *n, int **file);
 void prog_visit_files(const Compiler *c, void (*fn)(void *ud, int node, int file), void *ud);

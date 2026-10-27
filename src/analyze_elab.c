@@ -108,7 +108,7 @@ static LoadRecord *lr_get(Compiler *c) {
 
 /* reg: the scope walk registers each statement as the record reaches it
    (elab_program); otherwise the record alone is rebuilt (elab_fresh) */
-typedef struct ElabWalk { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank, reg; } ElabWalk;
+typedef struct ElabWalk { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank, reg, share; } ElabWalk;
 
 /* The map covers nodes [0, n): the ones made since join unplaced */
 static void lr_fit(LoadRecord *r, int n) {
@@ -183,11 +183,11 @@ static ElabPos elab_body_pos(const NodeTable *nt, int b, ElabPos q) {
   return q;
 }
 
-/* A written value on the statement's path: a call's (its block), or the
-   parts of `x rescue y` */
+/* A written value on the statement's path: a call's (its block), a
+   require's (its file), or the parts of `x rescue y` */
 static ElabPos elab_value_pos(const NodeTable *nt, int v, ElabPos q) {
   NodeKind k = nt_kind(nt, v);
-  if (k == NK_CallNode || k == NK_RescueModifierNode) q.kind = EP_SPINE;
+  if (k == NK_CallNode || k == NK_RescueModifierNode || k == NK_LoadNode) q.kind = EP_SPINE;
   return q;
 }
 
@@ -196,8 +196,8 @@ static ElabPos elab_value_pos(const NodeTable *nt, int v, ElabPos q) {
    it as one (class_eval and kin, a class builder), is a frame of its own,
    which the statement opened; a branch, a loop's body and a rescue clause
    may not run, and the next arm of an elsif ladder or a rescue chain is
-   on the path; a value written under `||=` / `&&=`, or after `rescue`, may
-   not run; a block run at once by a call the record does not know (a
+   on the path; a value written under `||=` / `&&=`, after `rescue`, or the right side of `&&` and `||`, may
+   not run, as the right side of `&&` and `||` does; a block run at once by a call the record does not know (a
    program method may yield to it, or keep it) may not run, and an
    iterator's may run partly (zero times, or several). */
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
@@ -239,6 +239,9 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
     case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode:
       if (spine && ch == nt_ref(nt, p, "value")) return elab_value_pos(nt, ch, q);
+      break;
+    case NK_AndNode: case NK_OrNode:   /* the right side runs only if the left decides so: a lone expression, which may not run */
+      if (spine && ch == nt_ref(nt, p, "right")) { q.may = 1; return elab_body_pos(nt, ch, q); }
       break;
     case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
     case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
@@ -284,6 +287,25 @@ static int lr_place(LoadRecord *r, int id, const ElabPos *pos) {
   return pos->kind != EP_NODE;
 }
 
+static void elab_file(ElabWalk *w, int f, const ElabPos *site);
+
+/* The file a require at `id`, standing at pos, places (prog_site_places),
+   entered where the walk is: its statements follow the require's and share
+   the rank of the top-level statement holding it. */
+static void elab_site_file(ElabWalk *w, int id, const ElabPos *pos) {
+  int t = prog_site_places(w->c, id);
+  if (t < 0 || w->entered[t]) return;
+  int share = w->share;
+  w->share = 1;
+  elab_file(w, t, pos);
+  w->share = share;
+}
+/* ...as the scope walk reaches it, in the registration's walk */
+void elab_walk_site(Compiler *c, int id, const ElabPos *pos) {
+  LoadRecord *r = c->lrec;
+  if (r && r->walk && pos->kind != EP_NODE) elab_site_file(r->walk, id, pos);
+}
+
 /* The statements at node id, which stands at pos, in the order they run:
    id itself when pos makes it one (a subtree two lists share joins once),
    then those its parts lead to (elab_child) */
@@ -313,6 +335,7 @@ static void elab_walk(ElabWalk *w, int id, ElabPos pos) {
       }
     }
   }
+  if (!w->reg && nt_kind(nt, id) == NK_LoadNode && pos.kind != EP_NODE) elab_site_file(w, id, &pos);
   if (e >= 0) w->r->st[e].last = w->r->nst - 1;
 }
 
@@ -346,11 +369,39 @@ void elab_walk_rest(Compiler *c, int id, ElabPos pos) {
   elab_walk(r->walk, id, pos);
 }
 
+/* The requires under `id` (a top-level statement, or the tree of one), and
+   whether the load phase's walk reaches each where it stands -- not in a
+   method, a lambda or a block kept to run later, and not in a part it does
+   not enter (an argument, an operand): fn(ud, load, in_place). The same
+   elab_child the walk asks, from a position made up for the statement. */
+static void elab_sites_in(const NodeTable *nt, int id, ElabPos pos, void (*fn)(void *, int, int), void *ud) {
+  if (id < 0) return;
+  if (pos.kind == EP_NEW) pos.kind = EP_SPINE;
+  if (nt_kind(nt, id) == NK_LoadNode) fn(ud, id, pos.kind != EP_NODE && !(pos.bits & LR_LATE));
+  for (int i = 0; i < nt_num_refs(nt, id); i++) {
+    int ch = nt_ref_at(nt, id, i);
+    elab_sites_in(nt, ch, elab_child(nt, id, ch, &pos), fn, ud);
+  }
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int m = 0;
+    const int *v = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) elab_sites_in(nt, v[j], elab_child(nt, id, v[j], &pos), fn, ud);
+  }
+}
+void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud) {
+  ElabPos at = { .e = 0, .top = -1, .frame = -1, .kind = EP_NEW };
+  elab_sites_in(c->nt, stmt, at, fn, ud);
+}
+
 /* File f's top level, entered at its load: its root, its BEGIN blocks (run
    first, when the file loads), then its statements, each placed file right
    after the statement that loads it. Under the registration's walk, the
-   scope walk enters each statement in the file's scope, as it runs. */
-static void elab_file(ElabWalk *w, int f) {
+   scope walk enters each statement in the file's scope, as it runs. A file
+   a nested require places (prog_site_places) is entered where the walk
+   reaches that require, in the region it stands in: its statements share
+   the rank of the top-level statement holding the require (w->share), and
+   run as the require does (`site`: it may not run, or run partly). */
+static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
   Compiler *c = w->c;
   const NodeTable *nt = c->nt;
   int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0, sc = c->file_scope[f];
@@ -361,9 +412,10 @@ static void elab_file(ElabWalk *w, int f) {
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
   ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .kind = EP_NEW }, rp = at;
+  if (site) { at.may = rp.may = site->may; at.partial = rp.partial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
-  w->r->st[e].rank = w->region == 0 ? w->rank++ : -1;
+  w->r->st[e].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
   if (st >= 0) w->r->at[st] = e;
   const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
@@ -380,9 +432,9 @@ static void elab_file(ElabWalk *w, int f) {
       if (!w->reg) elab_walk(w, v[k], at);
     }
     int s = w->r->at[v[k]];
-    if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? w->rank++ : -1;
+    if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
     int t = prog_ordered_load(c, v[k]);
-    if (t >= 0 && !w->entered[t]) elab_file(w, t);
+    if (t >= 0 && !w->entered[t]) elab_file(w, t, site);
   }
 }
 
@@ -400,14 +452,14 @@ static void elab_points_walk(Compiler *c, int reg) {
   LoadRecord *r = lr_get(c);
   const NodeTable *nt = c->nt;
   int nroots = nt_nroots(nt);
-  ElabWalk w = { c, r, calloc((size_t)nroots, 1), 0, 0, reg };
+  ElabWalk w = { c, r, calloc((size_t)nroots, 1), 0, 0, reg, 0 };
   if (!w.entered) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   r->n = 0; r->nst = 0; r->nregion = 1;
   lr_fit(r, nt->count);
   if (reg) r->walk = &w;
-  elab_file(&w, 0);
+  elab_file(&w, 0, NULL);
   for (int f = 1; f < nroots; f++)   /* the files no load places, a region each */
-    if (!w.entered[f] && nt_root(nt, f) >= 0) { w.region = r->nregion++; elab_file(&w, f); }
+    if (!w.entered[f] && nt_root(nt, f) >= 0) { w.region = r->nregion++; elab_file(&w, f, NULL); }
   r->walk = NULL;
   if (reg) t0 = sp_timing_now();   /* the walk is the registration's; the map's own cost from here */
   lr_fit(r, nt->count);
@@ -1308,6 +1360,10 @@ int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, L
   while (h && i < h->n && !(h->v[i].node == node && lr_is_version(&h->v[i]))) i++;
   LoadPoint p = elab_point_of(c, node);
   if (!h || i == h->n || p.region < 0) return ELAB_UNKNOWN;
+  /* a version in another region runs at a time the record does not know: it
+     may fall inside the interval, and the history lists it after region 0 */
+  for (int j = 0; j < h->n; j++)
+    if (j != i && lr_is_version(&h->v[j]) && elab_point_of(c, h->v[j].node).region != p.region) return ELAB_UNKNOWN;
   for (int j = i + 1; j < h->n; j++) {
     const LrDef *v = &h->v[j];
     if (!lr_is_version(v)) continue;

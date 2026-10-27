@@ -1469,6 +1469,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   NodeKind ty_k = nt_kind(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
+  if (ty_k == NK_LoadNode) elab_walk_site(c, id, &w.pos);   /* a require that places its file runs it here */
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
   if (ty_k == NK_SingletonClassNode) {
@@ -9140,8 +9141,12 @@ static int prepend_late_stmt(Compiler *c, int ci, int body) {
     if (nt_kind(nt, s) != NK_ClassNode || nt_ref(nt, s, "body") != body) continue;
     int cp = nt_ref(nt, s, "constant_path");
     elab_top_place(c, s, &f, &rank);
+    /* the guard answers unless the header is known to come first: another
+       region's runs at a time the record does not fix */
+    LoadPoint p0 = elab_point_of(c, ob[0].node), p1 = elab_point_of(c, s);
+    int o = elab_cmp(p0, p1);
     if (cp >= 0 && (nt_kind(nt, cp) == NK_ConstantReadNode || nt_kind(nt, cp) == NK_ConstantPathNode) && f >= 0 && comp_parent_map(c)[s] == prog_root_stmts(c, f) &&
-        elab_cmp(elab_point_of(c, ob[0].node), elab_point_of(c, s)) == PROG_BEFORE) return s;
+        (o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0))) return s;
     return -1;
   }
   return -1;
