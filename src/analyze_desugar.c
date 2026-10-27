@@ -16747,24 +16747,22 @@ static int rbp_captured(const NodeTable *nt, int node, const char *name, int lev
    no name the program wrote is taken for a slot. The shadow rename runs
    later, so a slot may carry its suffix too; any other name is its whole
    self. */
-static struct { char **name; size_t *len; int n; } rbp_slots;
-
-size_t reassigned_param_written_len(const char *name) {
+size_t reassigned_param_written_len(const Compiler *c, const char *name) {
   if (!name) return 0;
   size_t n = block_param_written_len(name);
-  for (int i = 0; i < rbp_slots.n; i++)
-    if (strlen(rbp_slots.name[i]) == n && !memcmp(rbp_slots.name[i], name, n)) return rbp_slots.len[i];
+  for (int i = 0; i < c->nrbp_slots; i++)
+    if (strlen(c->rbp_slot_names[i]) == n && !memcmp(c->rbp_slot_names[i], name, n)) return c->rbp_slot_lens[i];
   return strlen(name);
 }
 
 /* True when the program itself uses `name`. Only a name with `__bpin` in it
    can clash with a slot's, so those are collected once. */
-static int rbp_program_uses(const NodeTable *nt, LowerCtx *lc, const char *name) {
+static int rbp_program_uses(Compiler *c, LowerCtx *lc, const char *name) {
   if (!lc->used_built) {
     lc->used_built = 1;
     for (int id = 0; id < lc->n0; id++) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm || !strstr(nm, "__bpin") || reassigned_param_written_len(nm) != strlen(nm)) continue;
+      const char *nm = nt_str(c->nt, id, "name");
+      if (!nm || !strstr(nm, "__bpin") || reassigned_param_written_len(c, nm) != strlen(nm)) continue;
       lc->used = realloc(lc->used, sizeof(char *) * (size_t)(lc->nused + 1));
       lc->used[lc->nused++] = strdup(nm);
     }
@@ -16773,17 +16771,17 @@ static int rbp_program_uses(const NodeTable *nt, LowerCtx *lc, const char *name)
   return 0;
 }
 
-static char *rbp_slot_name(const NodeTable *nt, LowerCtx *lc, const char *orig) {
+static char *rbp_slot_name(Compiler *c, LowerCtx *lc, const char *orig) {
   size_t n = strlen(orig) + 32;   /* "__bpin_<k>" */
   char *buf = malloc(n);
   if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__bpin", orig);
-  for (int k = 1; rbp_program_uses(nt, lc, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
-  if (reassigned_param_written_len(buf) != strlen(buf)) return buf;
-  rbp_slots.name = realloc(rbp_slots.name, sizeof(char *) * (size_t)(rbp_slots.n + 1));
-  rbp_slots.len = realloc(rbp_slots.len, sizeof(size_t) * (size_t)(rbp_slots.n + 1));
-  rbp_slots.name[rbp_slots.n] = strdup(buf);
-  rbp_slots.len[rbp_slots.n++] = strlen(orig);
+  for (int k = 1; rbp_program_uses(c, lc, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
+  if (reassigned_param_written_len(c, buf) != strlen(buf)) return buf;
+  c->rbp_slot_names = realloc(c->rbp_slot_names, sizeof(char *) * (size_t)(c->nrbp_slots + 1));
+  c->rbp_slot_lens = realloc(c->rbp_slot_lens, sizeof(size_t) * (size_t)(c->nrbp_slots + 1));
+  c->rbp_slot_names[c->nrbp_slots] = strdup(buf);
+  c->rbp_slot_lens[c->nrbp_slots++] = strlen(orig);
   return buf;
 }
 
@@ -16828,7 +16826,7 @@ int desugar_reassigned_block_params_at(Compiler *c, LowerCtx *lc, int id) {
     const char *pn = nt_str(nt, rq[i], "name");
     char *orig = strdup(pn);   /* copy: nt_set_str frees pn's storage */
     if (!orig) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    char *renamed = rbp_slot_name(nt, lc, orig);
+    char *renamed = rbp_slot_name(c, lc, orig);
     nt_set_str(nt, rq[i], "name", renamed);
     int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
     nt_node_set_str(nt, w, "name", orig);

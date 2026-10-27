@@ -5782,7 +5782,7 @@ void rename_shadowing_block_params(Compiler *c) {
          it at emit time came too late and it rendered as the empty symbol
          (#4045). Put it in the table here, while the table is still open: the
          name written, when `oldn` is the slot of a parameter the body assigns. */
-      comp_sym_intern_n(c, oldn, reassigned_param_written_len(oldn));
+      comp_sym_intern_n(c, oldn, reassigned_param_written_len(c, oldn));
       nt_set_str((NodeTable *)nt, pnode, "name", newn);
       blkp_rewrite_refs(c, body, oldn, newn);
       /* an optional's default expression can reference a renamed sibling
@@ -49224,7 +49224,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
       continue;
     }
     int rn = 0; const int *reqs = nt_arr(c->nt, pn, "requireds", &rn);
-    for (int k = 0; k < rn; k++) { const char *nm = nt_str(c->nt, reqs[k], "name"); if (nm) comp_sym_intern_n(c, nm, reassigned_param_written_len(nm)); }
+    for (int k = 0; k < rn; k++) { const char *nm = nt_str(c->nt, reqs[k], "name"); if (nm) comp_sym_intern_n(c, nm, reassigned_param_written_len(c, nm)); }
     int on = 0; const int *opts = nt_arr(c->nt, pn, "optionals", &on);
     for (int k = 0; k < on; k++) { const char *nm = nt_str(c->nt, opts[k], "name"); if (nm) comp_sym_intern(c, nm); }
     int psn = 0; const int *posts = nt_arr(c->nt, pn, "posts", &psn);
