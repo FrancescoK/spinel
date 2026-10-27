@@ -129,10 +129,16 @@ fi
 # file, and the load below it `Kernel#require` / `Kernel#require_relative` at
 # the requiring line, through two levels: in caller(0) at a file's top
 # level, in an uncaught raise's report, and in the report of the LoadError
-# of a require that names no file. (Lines where the platform reads them.)
-# frames WANT GOT: each line of GOT, from the last `/` on, matches WANT's
+# of a require that names no file. The runtime reads a frame's line with
+# addr2line (Linux) or atos (macOS); without it a frame has no line, and a
+# frame in the runtime's C cannot take its caller's file either, so then
+# only the frames' names are checked.
+# frames WANT GOT: each line of GOT, from the last `/` on (from `in ` on,
+# names only), matches WANT's
 frames() {
-  sed 's|^.*/||' "$2" | paste "$1" - | while IFS='	' read -r w g; do
+  if [ -n "$names_only" ]; then cut='s|^.*:in |in |'; else cut='s|^.*/||'; fi
+  sed "$cut" "$1" > "$1.cut"; sed "$cut" "$2" > "$2.cut"
+  paste "$1.cut" "$2.cut" | while IFS='	' read -r w g; do
     printf '%s\n' "$g" | grep -q "^$w\$" || echo "want $w, got $g"; done
 }
 mkdir "$tmp/frames"
@@ -143,7 +149,13 @@ if "$SPINEL" --load-model=graph --debug --no-inline-hot -I "$tmp/frames" "$tmp/f
   "$tmp/frames/bin" > "$tmp/frames/out" 2>"$tmp/frames/err"
   "$tmp/frames/bin" x >/dev/null 2>"$tmp/frames/lerr"
   n='\([0-9]*:\)\{0,1\}'; n2=$n n4=$n n6=$n n7=$n
-  case "$(uname -s)" in Linux|Darwin) n2=2: n4=4: n6=6: n7=7:;; esac
+  case "$(uname -s)" in Linux) sym=addr2line;; Darwin) sym=atos;; *) sym=;; esac
+  names_only=
+  if [ -n "$sym" ] && command -v "$sym" >/dev/null 2>&1; then n2=2: n4=4: n6=6: n7=7:
+  elif [ -n "$sym" ]; then
+    names_only=1 n2= n4= n6= n7=
+    echo "load-graph-test: no $sym here, so the --debug frames' lines and files go unchecked (only their names)"
+  fi
   below="a.rb:${n2}in .Kernel#require'
 a.rb:${n2}in .<top (required)>'
 main.rb:${n2}in .Kernel#require_relative'
