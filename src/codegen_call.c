@@ -14116,7 +14116,15 @@ static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
   TyKind at = ar.as_ty;
   if (array_new_copies(at)) {
     buf_printf(b, "sp_%sArray_dup(", ar.elem == TY_POLY ? "Poly" : array_kind(at));
-    emit_expr(c, arg, b);
+    if (an_ary_viewed(c, arg)) {
+      /* an Array subclass instance viewed as its Array is a pointer that
+         holds nil as NULL (`t = c ? T.new : nil`), which is no size */
+      int t = ++g_tmp;
+      buf_printf(b, "({ %s _t%d = ", c_type_name(at), t);
+      emit_expr(c, arg, b);
+      buf_printf(b, "; if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion from nil to integer\"); _t%d; })", t, t);
+    }
+    else emit_expr(c, arg, b);
     buf_puts(b, ")");
     return 1;
   }

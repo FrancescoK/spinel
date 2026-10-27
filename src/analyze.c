@@ -44716,11 +44716,14 @@ static int arysub_node(Compiler *c, const char *type, int at) {
 static void arysub_set_call(Compiler *c, int id, int recv, const char *name, int args, int blk) {
   NodeTable *nt = (NodeTable *)c->nt;
   long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+  /* (where the value is read as an Array stays with the node: `[*X.new(a)]`) */
+  long long op = nt_int(nt, id, "ary_operand", 0);
   char *nm = strdup(name);
   int may_private = nt_ignore_visibility(nt, id) || recv < 0;
   nt_node_reset(nt, id, "CallNode");
   if (ln) nt_node_set_int(nt, id, "node_line", ln);
   if (fl) nt_node_set_int(nt, id, "node_file", fl);
+  if (op) nt_node_set_int(nt, id, "ary_operand", op);
   nt_node_set_ref(nt, id, "receiver", recv);
   nt_set_ignore_visibility(nt, id, may_private);
   nt_node_set_str(nt, id, "name", nm);
@@ -45039,6 +45042,22 @@ static void rewrite_array_subclass_calls(Compiler *c) {
       opnd = nt_ref(nt, id, "receiver");
     if (opnd >= 0 && nt_kind(nt, opnd) != NK_ArrayNode)
       nt_node_set_int((NodeTable *)nt, opnd, "ary_operand", 1);
+    /* ... and the argument of `Array.new(x)`, which copies an Array x (3:
+       an Array subclass instance only; a Hash or String one is a size).
+       Only self, a plain read or a call with no block: the view of a value an
+       inlined block, a yield, a begin or a case answers declares its
+       temporary as the Array and stores the subclass pointer in it */
+    if (k == NK_CallNode && nt_ref(nt, id, "block") < 0) {
+      int r = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), argc = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+      NodeKind ak = argc == 1 ? nt_kind(nt, av[0]) : NK_SplatNode;
+      if (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode &&
+          is_array_new(nt_str(nt, r, "name"), nt_str(nt, id, "name")) &&
+          (ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode || ak == NK_SelfNode ||
+           ak == NK_ClassVariableReadNode || ak == NK_GlobalVariableReadNode ||
+           (ak == NK_CallNode && nt_ref(nt, av[0], "block") < 0)))
+        nt_node_set_int((NodeTable *)nt, av[0], "ary_operand", 3);
+    }
     /* ... and the receiver of an element write that is no call -- `a[i] += v`,
        `a[i] ||= v`, `a[i], b = ...` -- unless the class reads and writes its
        elements itself (2: infer_type asks) */
