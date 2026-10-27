@@ -3599,6 +3599,14 @@ static void cf_call(CF *f, int v) {
       cf_construct(f, v, x, argv, argc, blk, nm);
       return;
     }
+    /* JSON.parse(s, object_class: OpenStruct) makes every object of the
+       document an OpenStruct (json_parse_ostruct_opts): the answer is one,
+       and so is what it holds; a member read answers its receiver's values
+       (the builtin rule), which reaches the nested ones */
+    if (argc == 2 && sp_streq(nm, "parse") && k->name && sp_streq(k->name, "JSON") && json_parse_ostruct_opts(c, argv[1])) {
+      cf_add_set(f, v, cf_os_set(f));
+      if (f->directed) { int o = cf_el_obj(f, v); if (o >= 0) cf_add_set(f, f->obj_cont[o], cf_os_set(f)); }
+    }
     int cm = call_target(c, v, x, nm, CT_CMETHOD, NULL);
     if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) return;
     if (cm < 0 && cf_sg_access(f, v, x, nm, argv, argc)) return;

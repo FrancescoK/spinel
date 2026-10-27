@@ -1536,10 +1536,10 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
                    !is_lengthlike && !is_empty && !is_pred &&
                    !poly_builtin_zero_arg_name(name) &&
                    sp_feature_required("ostruct");
-  /* size, length, count and empty?, which an OpenStruct does not define,
-     read its member too where one can reach the receiver
-     (cls_fact_may_ostruct): the containers' arms read 0 for it, and a
-     class's own size took the rest */
+  /* the builtins' names an OpenStruct reads as a member
+     (ostruct_member_name: size, first, max, ...) read it too where one can
+     reach the receiver (cls_fact_may_ostruct): the containers' arms read 0,
+     nil or NoMethodError for it, and a class's own method took the rest */
   if (argc == 0 && nt_ref(nt, id, "block") < 0 && ostruct_member_name(name) &&
       cls_fact_may_ostruct(c, nt_ref(nt, id, "receiver")))
     is_ostruct = 1;

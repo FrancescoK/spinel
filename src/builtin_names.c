@@ -1652,9 +1652,6 @@ int is_intersect_name(const char *n) { return n && sp_streq(n, "intersect?"); }
 
 int is_compare_by_identity_name(const char *n) { return n && sp_streq(n, "compare_by_identity"); }
 
-int ostruct_member_name(const char *n) {
-  return n && (sp_streq(n, "size") || sp_streq(n, "length") || sp_streq(n, "count") || sp_streq(n, "empty?"));
-}
 
 /* File::Stat's predicates, which the TY_IO arms answer for the handle a stat
    is carried in: the mode predicates by their slot in sp_stat_pred (zero?,

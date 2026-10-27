@@ -15708,6 +15708,7 @@ static void emit_poly_str_array_call(Compiler *c, int id, int recv, const char *
 /* A zero-argument call on a boxed receiver (emit_poly_call's arms, in their order) */
 static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   if (!(recv >= 0 && rt == TY_POLY && argc == 0)) return 0;
+  if (poly_ostruct_member_call(c, id, name, recv, argc)) return 0;
   /* Skip when a user class defines nil? so its method wins the dispatch --
      the same reason the to_a arm below gives. A Null Object answering true
      was folded to the tag test and its guard silently never fired. */

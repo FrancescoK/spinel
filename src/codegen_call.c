@@ -2428,6 +2428,18 @@ int recv_user_defines(Compiler *c, const char *name) {
    as if the name were unowned -- the switch's own case labels keep the user
    receivers out (#3459). */
 
+/* An OpenStruct can reach boxed call `id`, which reads `name` as its member
+   (ostruct_member_name, cls_fact_may_ostruct): the poly dispatch reads the
+   member ahead of its builtin arms (codegen_poly_plan.c), so a shortcut that
+   answers with one builtin helper steps aside for it. Not inside a builtin
+   arm of that dispatch, where the value is a container (g_poly_builtin_arm),
+   and not for count, whose answer the Range and Enumerable rows type an
+   Integer ahead of the member (it keeps the containers' arm). */
+int poly_ostruct_member_call(Compiler *c, int id, const char *name, int recv, int argc) {
+  return !g_poly_builtin_arm && argc == 0 && recv >= 0 && nt_ref(c->nt, id, "block") < 0 &&
+         ostruct_member_name(name) && !sp_streq(name, "count") && cls_fact_may_ostruct(c, recv);
+}
+
 int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
   if (g_poly_builtin_arm) return 0;
   for (int k = 0; k < c->nclasses; k++)

@@ -1554,6 +1554,19 @@ int emit_cmethod_setter_assign(Compiler *c, int id, Buf *b) {
   return emit_setter_assign_value(c, id, argv, b);
 }
 
+/* JSON.parse's options hash `kwh` asks for `object_class: OpenStruct`, with
+   ostruct required: every object of the document is then an OpenStruct,
+   deep, as CRuby's parser makes it (sp_json_ostructify). Another
+   object_class is not read. The class facts take the answer from here too
+   (analyze_cls.c). */
+int json_parse_ostruct_opts(Compiler *c, int kwh) {
+  const NodeTable *nt = c->nt;
+  if (kwh < 0 || (nt_kind(nt, kwh) != NK_KeywordHashNode && nt_kind(nt, kwh) != NK_HashNode)) return 0;
+  int ocv = kwh_lookup(nt, kwh, "object_class");
+  return ocv >= 0 && nt_kind(nt, ocv) == NK_ConstantReadNode && nt_str(nt, ocv, "name") &&
+         sp_streq(nt_str(nt, ocv, "name"), "OpenStruct") && sp_feature_required("ostruct");
+}
+
 /* a call on a module or a class: native and FFI functions, singleton accessors, a writer in an instance_eval block, class methods */
 int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* native binding dispatch (Path B): Module.func(...) where Module declared
@@ -1594,13 +1607,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             nt_type(nt, argv[1]) &&
             (nt_kind(nt, argv[1]) == NK_KeywordHashNode ||
              nt_kind(nt, argv[1]) == NK_HashNode)) {
-          /* object_class: OpenStruct (with ostruct required) makes every
-             parsed object an OpenStruct, deep, as CRuby's parser does;
+          /* object_class: OpenStruct (json_parse_ostruct_opts);
              symbolize_names then changes nothing, the members are symbols
-             either way. Another object_class is still not read. */
-          int ocv = struct_kwarg_value(c, argv[1], "object_class");
-          if (ocv >= 0 && nt_kind(nt, ocv) == NK_ConstantReadNode && nt_str(nt, ocv, "name") &&
-              sp_streq(nt_str(nt, ocv, "name"), "OpenStruct") && sp_feature_required("ostruct")) {
+             either way */
+          if (json_parse_ostruct_opts(c, argv[1])) {
             buf_printf(b, "sp_json_ostructify(%s(", nf->csym); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
             return 1;
           }

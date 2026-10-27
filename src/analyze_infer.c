@@ -2367,6 +2367,19 @@ int poly_builtin_zero_arg_name(const char *m) {
     "succ", "next", "abs", "round", "floor", "ceil", "arity", "call", NULL };
   return str_in(m, B);
 }
+/* A builtin's name an OpenStruct with a member of the name reads as that
+   member, where one can reach a boxed receiver (cls_fact_may_ostruct): the
+   containers' arms would answer it for the OpenStruct (size 0, first nil,
+   max NoMethodError). These are the names whose builtin arms the poly
+   dispatch answers boxed, beside the member; an OpenStruct answers to_s,
+   inspect, to_h, dup, clone and freeze itself. */
+int ostruct_member_name(const char *n) {
+  static const char *const M[] = {
+    "size", "length", "count", "empty?", "first", "last", "min", "max", "sum",
+    "reverse", "compact", "to_sym", "strip", "chomp", "chop", "upcase", "downcase",
+    "capitalize", "swapcase", "succ", "next", "abs", "round", "floor", "ceil", NULL };
+  return n && str_in(n, M);
+}
 /* A user class a poly value can be: one whose construction the census
    (compute_instantiated) found in reachable code, or a reopened builtin
    (Object, Integer, IO, an exception...), whose instances the runtime
@@ -3315,14 +3328,22 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          served by re-entering the emission, whose answer is a raw `const
          char *` for half these names and a boxed value for the other half
          (#4816). */
+      /* An OpenStruct that can reach the receiver reads the name as its
+         member (ostruct_member_name): the dispatch reads the member ahead of
+         its builtin arms, so the call holds either, and those arms take
+         their shape from the builtin answer recorded here, as for a name a
+         class owns. */
+      int os_member = recv >= 0 && !an_builtin_only && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+                      ostruct_member_name(name) && !sp_streq(name, "count") && cls_fact_may_ostruct(c, recv);
       if (recv >= 0 && !an_builtin_only && !an_pure_reads &&
           (poly_container_read_p(name) || poly_string_read_p(name)) &&
           nt_ref(nt, id, "block") < 0 && c->poly_builtin_ty &&
           id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
-          an_user_defines_or_reads(c, name)) {
+          (an_user_defines_or_reads(c, name) || os_member)) {
         TyKind bt = an_builtin_answer(c, id);
         comp_set_poly_builtin_ty(c, id, bt);
       }
+      if (os_member) { *out = TY_POLY; return 1; }
       if (is_text_conversion(name)) { *out = an_poly_concrete(c, id, name, TY_STRING); return 1; }
       if ((is_substitution(name)) && argc == 2) { *out = an_poly_concrete(c, id, name, TY_STRING); return 1; }
       /* a numeric argument makes it Thread#join(limit), whose answer is the
