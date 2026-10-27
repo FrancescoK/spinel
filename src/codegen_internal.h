@@ -1972,6 +1972,9 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname);
 const char *mc_top(Compiler *c, const char *name);
 /* A method's C function, spelled from the method (codegen_util.c) */
 const char *mc_method(Compiler *c, const Scope *s);
+/* The next of the eight names mc_method's answers live in, set to the
+   formatted text: valid for the next seven spellings */
+const char *mc_ring_setf(Compiler *c, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 /* The scope a #deconstruct call on class cid runs, through an alias
    (codegen.c) */
 int comp_deconstruct_method(Compiler *c, int cid, int *defcls);

@@ -6771,16 +6771,32 @@ static int mc_name_fixed(const char *nm) {
    the method, never from a name: two methods of one name are two
    functions. The answer stays valid for the next seven spellings. */
 const char *mc_method(Compiler *c, const Scope *s) {
-  char *out = c->mc_ring[c->mc_ring_next++ & 7], stem[256];
-  size_t n = sizeof c->mc_ring[0];
-  if (s->c_name) snprintf(out, n, "sp_%s", s->c_name);
-  else if (s->class_id < 0) snprintf(out, n, "sp_%s", mc_top(c, s->name));
-  else if (s->is_cmethod) snprintf(out, n, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
-  else {
-    snprintf(stem, sizeof stem, "%s", mc_reopen_cls(c, s->class_id, s->name));
-    snprintf(out, n, "sp_%s_%s", stem, mc(s->name));
+  if (s->c_name) return mc_ring_setf(c, "sp_%s", s->c_name);
+  if (s->class_id < 0) return mc_ring_setf(c, "sp_%s", mc_top(c, s->name));
+  if (s->is_cmethod) return mc_ring_setf(c, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
+  return mc_ring_setf(c, "sp_%s_%s", mc_reopen_cls(c, s->class_id, s->name), mc(s->name));
+}
+/* mc_method's answers live in eight slots, each grown to the name set in
+   it: a name is as long as its class's, and a fixed slot cut a long
+   class's methods short of the constructor's sp_<Class>_initialize, so
+   the C did not build. */
+const char *mc_ring_setf(Compiler *c, const char *fmt, ...) {
+  int k = c->mc_ring_next++ & 7;
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(NULL, 0, fmt, ap);
+  va_end(ap);
+  if (n < 0) n = 0;
+  if ((size_t)n + 1 > c->mc_ring_cap[k]) {
+    char *p = realloc(c->mc_ring[k], (size_t)n + 1);
+    if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->mc_ring[k] = p;
+    c->mc_ring_cap[k] = (size_t)n + 1;
   }
-  return out;
+  va_start(ap, fmt);
+  vsnprintf(c->mc_ring[k], (size_t)n + 1, fmt, ap);
+  va_end(ap);
+  return c->mc_ring[k];
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
   return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
@@ -6796,14 +6812,14 @@ static int mc_find_clash(Compiler *c, int *first, int *later) {
   int found = 0;
   for (int i = -3 * c->nclasses; i < c->nscopes && !found; i++) {
     const Scope *s = i >= 0 ? &c->scopes[i] : NULL;
-    char nm[600];
+    const char *nm;
     if (s) {
       if (!s->name || s->c_name) continue;
-      snprintf(nm, sizeof nm, "%s", mc_method(c, s));
+      nm = mc_method(c, s);
     } else {
       const ClassInfo *ci = &c->classes[(-i - 1) / 3];
       if (ci->is_builtin_const || !ci->c_name) continue;
-      snprintf(nm, sizeof nm, "sp_%s_%s", ci->c_name, mc_class_helpers[(-i - 1) % 3]);
+      nm = mc_ring_setf(c, "sp_%s_%s", ci->c_name, mc_class_helpers[(-i - 1) % 3]);
     }
     unsigned h = 2166136261u;
     for (const char *q = nm; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
