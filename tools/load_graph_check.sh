@@ -239,4 +239,42 @@ else
   fail "lean did not compile"
 fi
 
+# g_require_unread (spinel_parse.c): may the program load a file the compiler
+# did not read? The load, autoload and load-path nodes of the trees set it, a
+# require that names no file does, and the word in a comment or a String
+# sets nothing. A multiple assignment into an Array holds its new Strings as
+# their handles only where the flag is clear, so the C says which way a
+# program was read: with it clear the second new String is held too (a line
+# makes a String and holds it), with it set one is. Both load models answer
+# alike. An alias of the load path or of the loaded features
+# (`alias $lp $LOAD_PATH`, either way round) sets the flag the same way, but
+# is refused before any C is made, so no case can show it.
+held() { "$SPINEL" $2 "$1" -S --no-line-map 2>/dev/null | grep -c 'sp_String_new_shared(.*SP_GC_ENTRY_PTR'; }
+unread_flag() {   # FILE HELD WHAT
+  for m in inline graph; do
+    got=$(held "$1" --load-model=$m)
+    [ "$got" = "$2" ] || fail "$3, --load-model=$m: $got Strings held, expected $2"
+  done
+}
+unread_flag test/load_word_in_text.rb 2 "load in a comment and in a String"
+unread_flag test/load_word_called.rb 1 "a call of load and the load path"
+core='r = [+"q"]\nr[0], r[1] = +"ab", +"cd"\np r\n'
+unread_form() {   # NAME HELD SOURCE-BEFORE-THE-CORE
+  printf '%b%b' "$3" "$core" > "$tmp/unread_$1.rb"
+  unread_flag "$tmp/unread_$1.rb" "$2" "$1"
+}
+unread_form plain 2 ''
+unread_form comment 2 '# autoload :X, "x"; $LOAD_PATH << "d"; $:; $"\n'
+unread_form string 2 'p "load $LOAD_PATH #$0 autoload $-I"\n'
+unread_form defname 2 'def reload_all = 1\ndef loader = 2\n'
+unread_form call 1 'def load(x) = x\nload "x"\n'
+unread_form method_call 1 'class K; def self.autoload(x) = x; end\nK.autoload "x"\n'
+unread_form load_path 1 '$LOAD_PATH << "d"\n'
+unread_form colon 1 'p $:.size\n'
+unread_form dash_i 1 'p $-I.size\n'
+unread_form features 1 'p $LOADED_FEATURES.size\n'
+unread_form quote 1 'p $".size\n'
+unread_form interpolated 1 'p "#$:"\n'
+unread_form missing_require 1 'begin; require "no_such_file_for_load_bit"; rescue LoadError; end\n'
+
 [ $ok -eq 1 ] && echo "load-graph-test: pass" || exit 1

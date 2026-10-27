@@ -1,0 +1,4 @@
+[4, 8, 10, 2, 3, 16, 2]
+load 'x' 7 autoload
+$LOAD_PATH << "dir" and load("y")
+["abz", "cd!"]
