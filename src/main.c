@@ -557,6 +557,12 @@ static int analysis_dump_flag(const char *a) {
   if (sp_streq(a, "--dump-repr")) return g_dump_repr = 1;
   return sp_streq(a, "--dump-load-record") ? (g_dump_load_record = 1) : 0;
 }
+/* --rbs: the seed file the extractor wrote, removed however the compile
+   ends -- a return from main, or a dump flag's exit from inside the
+   analysis (--dump-load-record, --dump-traits, --dump-repr) */
+static void rbs_seed_remove(void) {
+  if (g_opt_rbs_seed) remove(g_opt_rbs_seed);
+}
 static int run_table_mode(const NodeTable *nt, int mode) {
   /* the lowering rows the graph matched on each call's parse, against the
      node's (analyze_util.c); a report on stderr */
@@ -1126,6 +1132,7 @@ int main(int argc, char **argv) {
       free(cmd.p);
       if (rc == 0 && file_exists(seed_path)) {
         g_opt_rbs_seed = strdup(seed_path);
+        atexit(rbs_seed_remove);
       }
       else {
         remove(seed_path);
@@ -1246,11 +1253,10 @@ int main(int argc, char **argv) {
   if (!nt) {
     /* an inline RBS error has been reported at the annotation */
     if (!sp_inline_rbs_failed && !sp_parse_reported) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
-    if (seed_path[0]) remove(seed_path);
     return 1;
   }
 
-  if (dump_ast) { int rc = run_table_mode(nt, dump_ast); nt_free(nt); if (seed_path[0]) remove(seed_path); return rc; }
+  if (dump_ast) { int rc = run_table_mode(nt, dump_ast); nt_free(nt); return rc; }
   sp_timing_end(tm_front, "frontend", "");
 
   /* the CRuby shim's feature name (Init_<feature>, the require name) derives
@@ -1272,7 +1278,6 @@ int main(int argc, char **argv) {
   sp_timing_end(tm_cg, "codegen_program", "");
   nt_free(nt);
   decide_write_log();
-  if (seed_path[0]) remove(seed_path);
   if (!csrc) { fprintf(stderr, "spinel: codegen failed\n"); return 1; }
 
   /* Emit modes already wrote their file; codegen returned empty C, unless

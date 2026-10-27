@@ -102,7 +102,8 @@ done
 # those points (--dump-load-record, analyze_elab.c) ----
 for e in test/load_graph/*.rb.load-record; do
   t=${e%.load-record}
-  "$SPINEL" --load-model=graph --dump-load-record "$t" >"$tmp/record" 2>&1 || fail "$t: no load record"
+  "$SPINEL" --load-model=graph --dump-load-record "$t" >"$tmp/record" 2>"$tmp/record.err" ||
+    { fail "$t: no load record"; sed -n 1,5p "$tmp/record.err"; }
   cmp -s "$tmp/record" "$e" || { fail "$t's load record is not its .load-record"; diff "$e" "$tmp/record" | sed -n 1,10p; }
 done
 
