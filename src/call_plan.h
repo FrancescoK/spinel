@@ -177,14 +177,15 @@ int cplan_plain_ctx(void);
 void cplan_served(const char *site);
 void cplan_served_report(void);
 
-/* The form a dispatch of instance method `name` on class cid takes:
-   CP_DIRECT for one implementation, CP_SWITCH when cid's subtree has more
-   than one (or any, without a base method: has_base 0), CP_PER_ARM for a
-   switch whose arms disagree on the argument layout; CP_NONE for neither
-   a base method nor a descendant's. */
+/* The form call `call`'s dispatch of instance method `name` on class cid
+   takes (call -1: a dispatch no call makes): CP_DIRECT for one
+   implementation, CP_SWITCH when cid's subtree has more than one (or any,
+   without a base method: has_base 0), CP_PER_ARM for a switch whose arms
+   disagree on the argument layout; CP_NONE for neither a base method nor a
+   descendant's. */
 /* Whether a descendant defines its own method of this name. */
 int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth);
-int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base);
+int cplan_dispatch_form(Compiler *c, int call, int cid, const char *name, int has_base);
 
 /* whether mi is the plan's method or, for a switch, one of its arms */
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi);

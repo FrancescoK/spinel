@@ -348,7 +348,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
                  : g_emitting_class_id >= 0 ? g_emitting_class_id
                  : cs->class_id;
         if (cn && dcid >= 0) {
-          int mi = comp_method_in_chain(c, dcid, cn, NULL);
+          int mi = call_target(c, expr, dcid, cn, 0, NULL);
           if (mi >= 0) t = c->scopes[mi].ret;
         }
       }
@@ -3985,11 +3985,11 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     else if (vk == NK_CallNode && nt_ref(nt, v, "receiver") < 0) {
       const char *cn = nt_str(nt, v, "name");
-      if (cn && comp_method_index(c, cn) >= 0) res = "method";
+      if (cn && call_target(c, v, -1, cn, CT_TOP, NULL) >= 0) res = "method";
       /* an implicit-self call inside a class resolves through the
          enclosing class's method chain (readers included) */
       else if (cn && comp_scope_of(c, id) && comp_scope_of(c, id)->class_id >= 0 &&
-               (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
+               (call_target(c, v, comp_scope_of(c, id)->class_id, cn, 0, NULL) >= 0 ||
                 comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
         res = "method";
       else if (cn && defined_bare_builtin(c, id, cn)) res = "method";

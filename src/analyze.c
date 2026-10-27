@@ -1612,7 +1612,7 @@ int a_is_fiber_or_gen_create(Compiler *c, int id) {
 
 /* every arm counts: the dispatch makes one proc for all of them, so the resolved method ignoring the block proves nothing */
 static int a_dispatch_arm_takes_block(Compiler *c, int cls, const char *name) {
-  if (dispatch_impl_count(c, cls, name) < 2) return 0;
+  if (dispatch_impl_count(c, -1, cls, name) < 2) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cls)) continue;
     int mk = comp_method_in_chain(c, k, name, NULL);

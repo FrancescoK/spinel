@@ -292,7 +292,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
       if (nullable_int_value(c, node)) return 1;
       if (ty_is_object(xt) && call_target(c, node, ty_object_class(xt), nm, CT_CMETHOD, NULL) >= 0)
-        return class_switch_arm_oint(c, ty_object_class(xt), nm);
+        return class_switch_arm_oint(c, node, ty_object_class(xt), nm);
     }
     /* a class or module value only the run time knows: the switch over the
        classes with a class method of the name (#8985) */
@@ -318,7 +318,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
        Sub) makes the site's Integer nil there */
     if (r < 0 && oint_kind(comp_ntype(c, node))) {
       Scope *self = comp_scope_of(c, node);
-      if (self && self->is_cmethod && self->class_id >= 0 && cmethod_sibling_answers_nil(c, self->class_id, nm)) return 1;
+      if (self && self->is_cmethod && self->class_id >= 0 && cmethod_sibling_answers_nil(c, node, self->class_id, nm)) return 1;
     }
     if (mi >= 0) return method_ret_is_oint(&c->scopes[mi]);
     /* `<=>` answers nil for an incomparable operand: the analysis's answer

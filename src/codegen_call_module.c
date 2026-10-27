@@ -1718,7 +1718,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       } }
     if (tcn && (sp_streq(tcn, "IO") || sp_streq(tcn, "File")) && sp_streq(name, "popen")) {
       int ioc = comp_class_index(c, tcn);
-      if (ioc < 0 || comp_cmethod_in_chain(c, ioc, name, NULL) < 0) {
+      if (ioc < 0 || call_target(c, id, ioc, name, CT_CMETHOD, NULL) < 0) {
         unsupported_feature(c, id, "IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)");
         buf_puts(b, "sp_box_nil()");
         return 1;
@@ -1760,7 +1760,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (tcn && sp_feature_required("socket") && sp_streq(name, "getaddress") && argc == 1 &&
         (sp_streq(tcn, "IPSocket") || sp_streq(tcn, "TCPSocket") || sp_streq(tcn, "UDPSocket"))) {
       int skc = comp_class_index(c, tcn);
-      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+      if (skc < 0 || call_target(c, id, skc, name, CT_CMETHOD, NULL) < 0) {
         buf_puts(b, "sp_sock_getaddress(");
         emit_str_expr(c, argv[0], b);
         buf_puts(b, ")");
@@ -1774,7 +1774,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         ((sp_streq(name, "do_not_reverse_lookup") && argc == 0) ||
          (sp_streq(name, "do_not_reverse_lookup=") && argc == 1))) {
       int skc = comp_class_index(c, tcn);
-      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+      if (skc < 0 || call_target(c, id, skc, name, CT_CMETHOD, NULL) < 0) {
         if (argc == 0) { buf_puts(b, "sp_sock_dnrl_default"); return 1; }
         int tv = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tv);
@@ -1790,7 +1790,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (tcn && sp_feature_required("socket") && io_family_name(tcn) && !is_io_class_name(tcn) &&
         sp_streq(name, "for_fd") && argc == 1) {
       int skc = comp_class_index(c, tcn);
-      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+      if (skc < 0 || call_target(c, id, skc, name, CT_CMETHOD, NULL) < 0) {
         int kind = sp_streq(tcn, "TCPServer") ? 1 : sp_streq(tcn, "TCPSocket") ? 2 :
                    sp_streq(tcn, "UDPSocket") ? 3 : sp_streq(tcn, "UNIXServer") ? 4 :
                    sp_streq(tcn, "UNIXSocket") ? 5 : 0;

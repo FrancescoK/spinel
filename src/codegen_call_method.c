@@ -2027,7 +2027,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        dispatch's class-value arm answers) */
     int has_user_arity = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_arity; _k++)
-      if (comp_resolve_member(c, _k, name, 0, NULL, NULL) || comp_cmethod_in_chain(c, _k, name, NULL) >= 0)
+      if (comp_resolve_member(c, _k, name, 0, NULL, NULL) || call_target(c, id, _k, name, CT_CMETHOD, NULL) >= 0)
         has_user_arity = 1;
     if (!has_user_arity) {
       /* the site may be typed boxed (a C extension's stub answers a box):
@@ -2063,7 +2063,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       repr_of(c, recv).kind == RK_BOXED) {
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
-      int umi = comp_method_in_class(c, _k, name);
+      int umi = call_target(c, id, _k, name, CT_OWN, NULL);
       if ((umi >= 0 && argc >= c->scopes[umi].nrequired) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
         has_user_call = 1;
     }

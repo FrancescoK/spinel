@@ -2107,16 +2107,16 @@ int call_answers_no_value(Compiler *c, int node) {
   }
   else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, nm, NULL);
+    if (ci >= 0) mi = call_target(c, node, ci, nm, CT_CMETHOD, NULL);
   }
   else if (ty_is_object(comp_ntype(c, recv))) {
     cid = ty_object_class(comp_ntype(c, recv));
-    mi = comp_method_in_chain(c, cid, nm, NULL);
+    mi = call_target(c, node, cid, nm, 0, NULL);
   }
   if (mi < 0 || c->scopes[mi].yields || !method_is_void(&c->scopes[mi])) return 0;
   for (int k = 0; cid >= 0 && k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
-    int kmi = comp_method_in_chain(c, k, nm, NULL);
+    int kmi = call_target(c, node, k, nm, 0, NULL);
     if (kmi >= 0 && (c->scopes[kmi].yields || !method_is_void(&c->scopes[kmi]))) return 0;
   }
   return 1;
@@ -4017,7 +4017,7 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
         /* a bare call to a class method that reads its receiving class
            hands it this one's (a cycle answers no until it is settled) */
         else if (nm) {
-          int cmi = comp_cmethod_in_chain(c, s->class_id, nm, NULL);
+          int cmi = call_target(c, nid, s->class_id, nm, CT_CMETHOD, NULL);
           if (cmi >= 0 && cmi != si) {
             g_cm_selfcls[si] = 0;
             if (cmethod_takes_self_cls(c, cmi)) ans = 1;
@@ -4185,16 +4185,16 @@ static void emit_iter_recv(Compiler *c, int k, int mi, int tv, Buf *b) {
     buf_printf(b, "(sp_%s *)_t%d.v.p", cn, tv);
 }
 
-/* A boxed user object reaching the builtin iteration of `name` (each, map,
-   any?, ...) whose class answers neither #each nor #to_a nor the name
-   itself: CRuby raises NoMethodError, where the walk read it as an empty
-   container and the block never ran. */
-void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b) {
-  emit_poly_iter_obj_reject_as(c, tv, name, name, b);
+/* A boxed user object reaching call `call`'s builtin iteration of `name`
+   (each, map, any?, ...) whose class answers neither #each nor #to_a nor
+   the name itself: CRuby raises NoMethodError, where the walk read it as an
+   empty container and the block never ran. */
+void emit_poly_iter_obj_reject(Compiler *c, int call, int tv, const char *name, Buf *b) {
+  emit_poly_iter_obj_reject_as(c, call, tv, name, name, b);
 }
 /* ... the same, its NoMethodError naming `shown` (the method a builtin
    definition's walk serves, enum_walk_name) */
-void emit_poly_iter_obj_reject_as(Compiler *c, int tv, const char *name, const char *shown, Buf *b) {
+void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *name, const char *shown, Buf *b) {
   Buf arms; memset(&arms, 0, sizeof arms);
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
@@ -4203,7 +4203,7 @@ void emit_poly_iter_obj_reject_as(Compiler *c, int tv, const char *name, const c
     if (bp != -116 && bp != -117 && bp != -146) continue;
     if (comp_method_in_chain(c, k, "each", NULL) >= 0 ||
         comp_method_in_chain(c, k, "to_a", NULL) >= 0 ||
-        comp_method_in_chain(c, k, name, NULL) >= 0 ||
+        call_target(c, call, k, name, 0, NULL) >= 0 ||
         comp_method_in_chain(c, k, "method_missing", NULL) >= 0) continue;
     buf_printf(&arms, " case %d:", k);
   }
@@ -4478,13 +4478,13 @@ static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max
     Scope *m = &c->scopes[si];
     if (!m->name || !sp_streq(m->name, nm)) continue;
     if (cid >= 0 && m->class_id != cid &&
-        comp_method_in_chain(c, cid, nm, NULL) != si) continue;
+        call_target(c, callnode, cid, nm, 0, NULL) != si) continue;
     out[(*n)++] = si;
   }
   fi_alias_index(c);
   for (int a = 0; a < g_fi_nal && *n < max; a++) {
     if (!sp_streq(g_fi_al_nm[a], nm)) continue;
-    int si = comp_method_in_chain(c, cid >= 0 ? cid : g_fi_al_cls[a], nm, NULL);
+    int si = call_target(c, callnode, cid >= 0 ? cid : g_fi_al_cls[a], nm, 0, NULL);
     if (si < 0) continue;
     int dup = 0;
     for (int q = 0; q < *n && !dup; q++) dup = out[q] == si;
@@ -7845,7 +7845,7 @@ int conv_reads_shared_storage(Compiler *c, int node) {
   if (recv >= 0) {
     TyKind rt = comp_ntype(c, recv);
     if (ty_is_object(rt))
-      return scope_body_is_ivar_read(c, comp_method_in_chain(c, ty_object_class(rt), nm, NULL));
+      return scope_body_is_ivar_read(c, call_target(c, node, ty_object_class(rt), nm, 0, NULL));
     if (rt != TY_UNKNOWN && rt != TY_POLY) return 0;
   }
   for (int i = 1; i < c->nscopes; i++) {
@@ -9071,7 +9071,7 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   if (ty_k == NK_SuperNode || ty_k == NK_ForwardingSuperNode) return 1;
   if (ty_k == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0) {
     const char *nm = nt_str(c->nt, id, "name");
-    if (nm && comp_method_in_chain(c, class_id, nm, NULL) >= 0) return 1;
+    if (nm && call_target(c, id, class_id, nm, 0, NULL) >= 0) return 1;
     /* an attr_reader is not a method in the chain -- it reads the ivar
        directly off self, which the body needs captured all the same (#3750) */
     if (nm && comp_reader_in_chain(c, class_id, nm, NULL)) return 1;
@@ -9938,12 +9938,12 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       int orecv = nt_ref(nt, owner, "receiver");
       int mi = -1;
       if (orecv < 0 && onm) {
-        mi = comp_method_index(c, onm);
-        if (mi < 0) { Scope *osc = comp_scope_of(c, owner); if (osc && osc->class_id >= 0) mi = comp_method_in_chain(c, osc->class_id, onm, NULL); }
+        mi = call_target(c, owner, -1, onm, CT_TOP, NULL);
+        if (mi < 0) { Scope *osc = comp_scope_of(c, owner); if (osc && osc->class_id >= 0) mi = call_target(c, owner, osc->class_id, onm, 0, NULL); }
       }
 else if (orecv >= 0 && onm) {
         TyKind ort = comp_ntype(c, orecv);
-        if (ty_is_object(ort)) mi = comp_method_in_chain(c, ty_object_class(ort), onm, NULL);
+        if (ty_is_object(ort)) mi = call_target(c, owner, ty_object_class(ort), onm, 0, NULL);
       }
       /* Force the poly ABI when the owner method stores its &block into an ivar
          (`@x = blk`): the block becomes a type-erased sp_Proc* called later via
@@ -18639,7 +18639,7 @@ static void reject_range_reopen_nonint(Compiler *c) {
     if (!name || nt_int(nt, id, "builtin_only", 0)) continue;
     Scope *sc = comp_scope_of(c, id);
     if (sc && !sc->reachable) continue;
-    int dc = -1, mi = comp_method_in_chain(c, rci, name, &dc);
+    int dc = -1, mi = call_target(c, id, rci, name, 0, &dc);
     if (mi < 0) continue;
     /* (the builtin's own method stays in front of an included module's) */
     if (!c->scopes[mi].is_prepend_copy && dc != rci && builtin_method_known("Range", name)) continue;
@@ -18716,7 +18716,7 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   const char *rn = nt_str(c->nt, recv, "name");
   if (!rn || !sp_streq(rn, "Time")) return 0;
   int time_ci = comp_class_index(c, "Time");
-  if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) return 0;
+  if (time_ci >= 0 && call_target(c, id, time_ci, name, CT_CMETHOD, NULL) >= 0) return 0;
   if (!sp_feature_required("time"))
     snprintf(msg, cap,
              "Time.%s is not supported without `require \"time\"`, which defines "

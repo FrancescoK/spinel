@@ -73,8 +73,8 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
-  int t = comp_method_index(c, tn);
-  if (t < 0 && m->class_id >= 0) t = comp_method_in_chain(c, m->class_id, tn, NULL);
+  int t = call_target(c, call, -1, tn, CT_TOP, NULL);
+  if (t < 0 && m->class_id >= 0) t = call_target(c, call, m->class_id, tn, 0, NULL);
   return pure_forwarding_target(c, t, depth + 1);
 }
 
@@ -490,11 +490,11 @@ static int inline_param_yielded_mutated(Compiler *c, int mi, const char *name, i
   return 0;
 }
 
-/* Does a `name` call to yielding method `mi` on a `disp_cls` receiver go
-   through the cls_id switch rather than being spliced? */
-static int takes_class_dispatch(Compiler *c, int mi, int disp_cls, const char *name) {
+/* Does `name` call `call` to yielding method `mi` on a `disp_cls` receiver
+   go through the cls_id switch rather than being spliced? */
+static int takes_class_dispatch(Compiler *c, int call, int mi, int disp_cls, const char *name) {
   return disp_cls >= 0 && !c->scopes[mi].is_cmethod && scope_proc_form_of(c, mi) >= 0 &&
-         dispatch_impl_count(c, disp_cls, name) > 1;
+         dispatch_impl_count(c, call, disp_cls, name) > 1;
 }
 
 /* A block-driving call emit_inline_call_x leaves to the cls_id switch: the
@@ -516,8 +516,8 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
     if (!ty_is_object(rt)) return 0;
     cls = ty_object_class(rt);
   }
-  int mi = comp_method_in_chain(c, cls, name, NULL);
-  return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, mi, cls, name);
+  int mi = call_target(c, id, cls, name, 0, NULL);
+  return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, id, mi, cls, name);
 }
 
 /* Is `a` a read of a local that is the shared String handle? */
@@ -961,23 +961,23 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
        because every other site inlined it (#4500). */
     Scope *encl = comp_scope_of(c, id);
     /* inside an instance_eval/exec splice self is the rebound receiver */
-    if (g_ie_class_id >= 0 && (t->mi = comp_method_in_chain(c, g_ie_class_id, name, NULL)) >= 0)
+    if (g_ie_class_id >= 0 && (t->mi = call_target(c, id, g_ie_class_id, name, 0, NULL)) >= 0)
       t->recv_class = g_ie_class_id;
     else if (encl && encl->class_id >= 0) {
-      if (encl->is_cmethod) t->mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
+      if (encl->is_cmethod) t->mi = call_target(c, id, encl->class_id, name, CT_CMETHOD, NULL);
       /* a class's class method has the class as self: its instance methods
          are out of reach (a bare `new` is Class#new, not a yielding
          instance `new` beside it) */
       if (t->mi < 0 && !cmethod_of_class(c, encl)) {
-        t->mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+        t->mi = call_target(c, id, encl->class_id, name, 0, NULL);
         if (t->mi >= 0) t->implicit_self = 1;
       }
     }
     else if (g_class_body_id >= 0) {
-      t->mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
+      t->mi = call_target(c, id, g_class_body_id, name, CT_CMETHOD, NULL);
       if (t->mi >= 0) t->cm_class = g_class_body_id;
     }
-    if (t->mi < 0) t->mi = comp_method_index(c, name);   /* free function */
+    if (t->mi < 0) t->mi = call_target(c, id, -1, name, CT_TOP, NULL);   /* free function */
     /* A method of a module included at the top level is callable bare, like
        a free function. A yielding one exists only inlined, so a call left to
        the top-level-include arm in emit_call named a function that was never
@@ -1008,7 +1008,7 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
     }
     else if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
-      t->mi = comp_cmethod_in_chain(c, ci, name, NULL);
+      t->mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
       t->cm_class = ci;
     }
     else if (ty_is_object(rt)) {
@@ -1016,13 +1016,13 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
          (e.g. `S = Set.new(...); S.each { }`), which is not a class name so
          falls through here rather than the class-method lookup above. */
       t->recv_class = ty_object_class(rt);
-      t->mi = comp_method_in_chain(c, t->recv_class, name, NULL);
+      t->mi = call_target(c, id, t->recv_class, name, 0, NULL);
     }
     else if (g_inline_recv_expr && g_inline_recv_class >= 0) {
       /* poly-receiver dispatch arm (#2448): self is pre-bound to a cast of the
          boxed receiver, and the concrete class is supplied out of band */
       t->recv_class = g_inline_recv_class;
-      t->mi = comp_method_in_chain(c, t->recv_class, name, NULL);
+      t->mi = call_target(c, id, t->recv_class, name, 0, NULL);
     }
   }
 }
@@ -1176,7 +1176,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* A subclass overriding the method takes its own arm of the cls_id switch;
      splicing this body answered for every class with the base's method. The
      switch reaches this one through its proc-form clone. */
-  if (takes_class_dispatch(c, mi, implicit_self ? comp_scope_of(c, id)->class_id : recv_class,
+  if (takes_class_dispatch(c, id, mi, implicit_self ? comp_scope_of(c, id)->class_id : recv_class,
                            name))
     return 0;
   /* a private or protected method refuses an outside receiver before its body
@@ -3797,7 +3797,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   int nc = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
-    int km = comp_method_in_chain(c, k, name, NULL);
+    int km = call_target(c, id, k, name, 0, NULL);
     if (km < 0) continue;
     Scope *ks = &c->scopes[km];
     int consumes = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
@@ -3912,7 +3912,7 @@ static int emit_poly_recv_block_dispatch_x(Compiler *c, int id, Buf *b, int inde
     emit_indent(&sw, indent); buf_puts(&sw, "}\n");
     if (g_plan_check) {
       pa_resume(pa_frame);
-      pa_observe(PA_USER, k, comp_method_in_chain(c, k, name, NULL), TY_UNKNOWN, PC_VOID);
+      pa_observe(PA_USER, k, call_target(c, id, k, name, 0, NULL), TY_UNKNOWN, PC_VOID);
     }
   }
   int emitted_default = 0;
@@ -4164,14 +4164,14 @@ static int call_targets_yielding_method(Compiler *c, int id) {
        call of a function a yielding method never has; and in a class method
        the instance chain was asked before the class methods. */
     Scope *encl = comp_scope_of(c, id);
-    if (g_ie_class_id >= 0) mi = comp_method_in_chain(c, g_ie_class_id, name, NULL);
+    if (g_ie_class_id >= 0) mi = call_target(c, id, g_ie_class_id, name, 0, NULL);
     if (mi < 0 && encl && encl->class_id >= 0) {
-      if (encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
-      if (mi < 0 && !cmethod_of_class(c, encl)) mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+      if (encl->is_cmethod) mi = call_target(c, id, encl->class_id, name, CT_CMETHOD, NULL);
+      if (mi < 0 && !cmethod_of_class(c, encl)) mi = call_target(c, id, encl->class_id, name, 0, NULL);
     }
     else if (mi < 0 && g_class_body_id >= 0)
-      mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
-    if (mi < 0) mi = comp_method_index(c, name);
+      mi = call_target(c, id, g_class_body_id, name, CT_CMETHOD, NULL);
+    if (mi < 0) mi = call_target(c, id, -1, name, CT_TOP, NULL);
     /* A bare call to a method of a module included at the top level, which
        emit_inline_call_x splices under the same condition. Missed here, a
        block whose tail is such a call took the statement form, and the
@@ -4189,8 +4189,8 @@ static int call_targets_yielding_method(Compiler *c, int id) {
     const char *cn = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
                      ? nt_str(nt, recv, "name") : NULL;
     int ci = cn ? comp_class_index(c, cn) : -1;
-    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
-    else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    if (ci >= 0) mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
+    else if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
   }
   if (served && it.mi != mi)
     fprintf(stderr, "plan-check: cplan-conflict: yielding-target node %d %s: plan %d, lookup %d\n",
@@ -4535,7 +4535,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (recv < 0) return 0;
   TyKind et = repr_of(c, recv).as_ty;
   /* an object whose class writes its own tap / then is called */
-  if (ty_is_object(et) && comp_method_in_chain(c, ty_object_class(et), name, NULL) >= 0) return 0;
+  if (ty_is_object(et) && call_target(c, id, ty_object_class(et), name, 0, NULL) >= 0) return 0;
   /* An empty array literal receiver (`[].tap { |a| a << x }.join`) has no
      element type of its own, so comp_ntype leaves it unknown. Adopt the block
      param's container type (it was typed from the pushes) and materialize a
@@ -7165,7 +7165,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     /* inside an Enumerable definition the walk of its own receiver reports
        the method called (enum_walk_name) */
     const char *wn = enum_walk_name(c, id, recv, name);
-    emit_indent(b, indent); emit_poly_iter_obj_reject_as(c, ta, name, wn, b);
+    emit_indent(b, indent); emit_poly_iter_obj_reject_as(c, id, ta, name, wn, b);
     emit_walk_arity_raise(c, id, recv, name, ta, indent, b);
     /* a boxed Dir walks its entries under `each` (sp_poly_block_iter_check);
        only a program that names Dir can hold one, so any other keeps the

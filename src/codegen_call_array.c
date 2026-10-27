@@ -1957,7 +1957,7 @@ int emit_op_array_pred_class(Compiler *c, const BopCtx *x, Buf *b) {
   buf_puts(b, "({ "); ta = hold_operand(c, x->recv, TY_POLY, 1, ta, 1, " ", b);
   buf_printf(b, "sp_Class _t%d = ", tc2); emit_expr(c, argv[0], b);
   buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
-  emit_poly_iter_obj_reject(c, ta, name, b);
+  emit_poly_iter_obj_reject(c, x->id, ta, name, b);
   buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
   buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
                 " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
@@ -2660,7 +2660,7 @@ int frange_index_view(Compiler *c, int id) {
   for (int i = 0; i < n; i++) any |= comp_ntype(c, argv[i]) == TY_FLOAT_RANGE;
   if (!any) return -1;
   int ci = comp_class_index(c, str ? "String" : "Array");
-  if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return -1;
+  if (ci >= 0 && call_target(c, id, ci, nm, 0, NULL) >= 0) return -1;
   int mark = view_mark();
   int held = subtree_is_pure_read(c, recv), done = 0;
   for (int i = 0; i < n; i++) {

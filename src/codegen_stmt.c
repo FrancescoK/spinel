@@ -900,7 +900,7 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   /* a user method shadows the builtin: the enclosing class's own chain first
      (it sits above Kernel), then the top-level table (Object) */
   if (bare_call_class_owned(c, id)) return 0;
-  if (!nt_int(c->nt, id, "builtin_only", 0) && comp_method_index(c, name) >= 0) return 0;
+  if (!nt_int(c->nt, id, "builtin_only", 0) && call_target(c, id, -1, name, CT_TOP, NULL) >= 0) return 0;
   refuse_unredirected_output(c, id);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
@@ -1672,7 +1672,7 @@ int kernel_string_operand(Compiler *c, int v) {
   v = nt_paren_single(c->nt, v);
   const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
   if (!nm || !is_string_class_name(nm) || nt_ref(nt, v, "receiver") >= 0 || nt_ref(nt, v, "block") >= 0 ||
-      call_plain_argc(c, v) != 1 || comp_method_index(c, nm) >= 0 || bare_call_class_owned(c, v)) return -1;
+      call_plain_argc(c, v) != 1 || call_target(c, v, -1, nm, CT_TOP, NULL) >= 0 || bare_call_class_owned(c, v)) return -1;
   int na = 0;
   return call_args(nt, v, &na)[0];
 }
@@ -4196,7 +4196,7 @@ int strbuf_poly_to_s(Compiler *c, int v) {
 static int var_conversion_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
-  if (!nm || nt_ref(nt, v, "block") >= 0 || comp_method_index(c, nm) >= 0) return -1;
+  if (!nm || nt_ref(nt, v, "block") >= 0 || call_target(c, v, -1, nm, CT_TOP, NULL) >= 0) return -1;
   int r = nt_ref(nt, v, "receiver"), argc = 0, targets[CPT_MAX];
   const int *av = call_args(nt, v, &argc);
   if (cplan_targets(c, v, targets, CPT_MAX) != 0) return -1;
@@ -6601,7 +6601,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
   if (ty_is_object(t)) {
     int defcls2 = -1;
     int cid2 = ty_object_class(t);
-    int mi2 = comp_method_in_chain(c, cid2, op, &defcls2);
+    int mi2 = call_target(c, id, cid2, op, 0, &defcls2);
     if (mi2 >= 0) {
       Scope *ms2 = &c->scopes[mi2];
       LocalVar *p2 = ms2->nparams >= 1 ? scope_local(ms2, ms2->pnames[0]) : NULL;
@@ -13773,7 +13773,7 @@ static int self_call_only_void(Compiler *c, int node, const char *nm) {
     int a = k;
     while (a >= 0 && a != cid) a = c->classes[a].parent;
     if (a != cid) continue;
-    int mi = comp_method_in_chain(c, k, nm, NULL);
+    int mi = call_target(c, node, k, nm, 0, NULL);
     if (mi < 0 || c->scopes[mi].def_node < 0 || !method_is_void(&c->scopes[mi])) return 0;
     any = 1;
   }
@@ -16373,7 +16373,7 @@ static int masgn_writer_takes_nil(Compiler *c, int tgt) {
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   if (!ty_is_object(rt)) return 1;
   int crc = ty_object_class(rt), cdef = -1;
-  int wmi = comp_method_in_chain(c, crc, nm, &cdef);
+  int wmi = call_target(c, tgt, crc, nm, 0, &cdef);
   if (wmi >= 0) {
     const LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
     return !wp || slot_is_oint(wp) || wp->type == TY_POLY;
@@ -16505,7 +16505,7 @@ static int masgn_store_runs_user_code(Compiler *c, int tgt) {
     const char *nm = nt_str(c->nt, tgt, "name");
     int dc = -1;
     return rt == TY_POLY || rt == TY_UNKNOWN ||
-           (nm && ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), nm, &dc) >= 0 && dc >= 0);
+           (nm && ty_is_object(rt) && call_target(c, tgt, ty_object_class(rt), nm, 0, &dc) >= 0 && dc >= 0);
   }
   return k >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN ||
                     (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0));
@@ -16898,7 +16898,7 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     if (!ty_is_object(crt)) { unsupported(c, id, "multiple assignment call target non-object"); return 1; }
     int crc = ty_object_class(crt);
     int cdef = -1;
-    int wmi = comp_method_in_chain(c, crc, nm, &cdef);
+    int wmi = call_target(c, tgt, crc, nm, 0, &cdef);
     masgn_recv_guard(c, crecv, recv_tmp, nm, indent, b);
     emit_indent(b, indent);
     /* a writer a native class binds (`native_method :x=, [:float], ...`):
@@ -17247,7 +17247,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
         "srand", "loop", "catch", NULL };
       int is_output = 0;
       for (int q = 0; cn && kernel_acts[q] && !is_output; q++) is_output = sp_streq(cn, kernel_acts[q]);
-      int is_user = cn && comp_method_index(c, cn) >= 0;
+      int is_user = cn && call_target(c, stmts[k], -1, cn, CT_TOP, NULL) >= 0;
       /* a class_eval family call given a `&blk` runs it: not the reopen a
          literal block of defs is */
       int blk_arg = cn && is_eval_exec_family(cn) &&
@@ -17258,7 +17258,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
          `validates :name`). Skipping it left the state it establishes unset
          and nothing said so (#4051). */
       if (!is_user && cn && g_class_body_id >= 0)
-        is_user = comp_cmethod_in_chain(c, g_class_body_id, cn, NULL) >= 0;
+        is_user = call_target(c, stmts[k], g_class_body_id, cn, CT_CMETHOD, NULL) >= 0;
       /* A name nothing defines -- no method of any class or module in the
          program, no Module or Object method, no declaration the analysis
          reads -- is CRuby's NoMethodError at that point of the body, not a
@@ -18642,7 +18642,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
            runs as a call, and so does an attr writer a descendant defines
            its own `x=` for */
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        if (!wr2 && comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
+        if (!wr2 && call_target(c, lefts[i], rc2, setnm, 0, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
           unsupported(c, id, "multiple assignment call target no writer");
         else masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
@@ -19107,7 +19107,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       TyKind yrt = comp_ntype(c, yrecv);
       if (ty_is_object(yrt)) {
         int ycid = ty_object_class(yrt);
-        int ymi = ycid >= 0 ? comp_method_in_chain(c, ycid, ycn, NULL) : -1;
+        int ymi = ycid >= 0 ? call_target(c, id, ycid, ycn, 0, NULL) : -1;
         if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id))
           unsupported_feature(c, id,
             "a block-driving call to a method that yields could not be inlined "
@@ -19213,7 +19213,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
              the subclass arms below read a cls_id its C struct may not
              carry (a StringScanner's `@s.pos = n` with a user class's
              `attr_accessor :pos` in the program) */
-          else if (comp_method_in_chain(c, ty_object_class(rt), nm, NULL) < 0 &&
+          else if (call_target(c, id, ty_object_class(rt), nm, 0, NULL) < 0 &&
                    !(nk >= 0 && comp_native_method_find(c, nk, nm, 1, 0) >= 0)) {
             /* writer not in chain and no explicit method: try subclass dispatch via cls_id */
             int ncand = 0;
@@ -19857,7 +19857,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     else if (op && ty_is_object(vt)) {
       int idefcls = -1;
       int icid = ty_object_class(vt);
-      int imi = comp_method_in_chain(c, icid, op, &idefcls);
+      int imi = call_target(c, id, icid, op, 0, &idefcls);
       if (imi >= 0) {
         Scope *ims = &c->scopes[imi];
         LocalVar *ip = ims->nparams >= 1 ? scope_local(ims, ims->pnames[0]) : NULL;
@@ -19891,7 +19891,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       int poly_defcls = -1, poly_mi = -1;
       for (int _ci = 0; _ci < c->nclasses; _ci++) {
         int _di = -1;
-        int _mi2 = comp_method_in_chain(c, _ci, op, &_di);
+        int _mi2 = call_target(c, id, _ci, op, 0, &_di);
         if (_mi2 >= 0) { poly_mi = _mi2; poly_defcls = _di; break; }
       }
       if (poly_mi >= 0 && poly_defcls >= 0) {

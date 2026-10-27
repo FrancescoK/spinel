@@ -868,9 +868,9 @@ int exc_subclass_defines(Compiler *c, const char *name);
 int exc_user_method_name(Compiler *c, const char *name, int argc);
 /* Defined in codegen_fold.c; 1 if class `k` is `anc` or a descendant of it. */
 int is_descendant(Compiler *c, int k, int anc);
-/* Defined in codegen_fold.c; distinct implementations of `name` across cid's
-   subtree. */
-int dispatch_impl_count(Compiler *c, int cid, const char *name);
+/* Defined in codegen_fold.c; distinct implementations of call `call`'s
+   `name` across cid's subtree. */
+int dispatch_impl_count(Compiler *c, int call, int cid, const char *name);
 /* Defined in codegen_util.c; the proc-form clone of scope `s`, or -1. */
 int scope_proc_form_of(Compiler *c, int s);
 int reopen_yields_known_container(Compiler *c, Scope *m);

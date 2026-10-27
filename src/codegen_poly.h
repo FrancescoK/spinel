@@ -167,8 +167,8 @@ int  emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const 
                          TyKind ret, int tv, int tr, int obj_default_done, Buf *b);
 int  poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const PolyArgs *A, int diag,
                           int *ccls8, int *cmi8, char (*cexp8)[600], int *wants_blk);
-int  poly_key_cls0(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a);
-int  poly_key_prim(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a);
+int  poly_key_cls0(Compiler *c, int call, const char *name, int argc, int kwh, int pos_argc, int splat_a);
+int  poly_key_prim(Compiler *c, int call, const char *name, int argc, int kwh, int pos_argc, int splat_a);
 int  emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
                             int *blk_tmp0, Buf *b);
 
