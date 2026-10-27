@@ -6067,12 +6067,11 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     if (ci >= 0 && sg_accessor_type(c, ci, name, &sgt)) { *out = sgt; return 1; }
   }
   /* self.singleton_writer= / self.singleton_reader: inside a class method
-     or directly in a class/module body (g_cbody_class_id). */
+     or directly in a class/module body (node_cbody). */
   if ((recv >= 0 && nt_kind(nt, recv) == NK_SelfNode) ||
       (recv < 0 && argc == 0)) {
     Scope *_self = comp_scope_of(c, id);
-    int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
-                  ? _self->class_id : g_cbody_class_id;
+    int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0) ? _self->class_id : -1;
     if (_sg_cid < 0 && _self && _self->class_id < 0) _sg_cid = c->node_cbody[id];
     TyKind sgt;
     if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) { *out = sgt; return 1; }
@@ -6260,14 +6259,11 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   }
 
   /* bare call inside a module/class body -> class method of that module/class.
-     Use the per-node enclosing-cbody: g_cbody_class_id is only set during the
-     scope pass, not the inference fixpoint, so relying on it leaves a bare
-     module-body cmethod call (e.g. `take(mk)` where mk is `def self.mk`) typed
-     void. The scope pass records the enclosing cbody per node in node_cbody[id]
-     (cf. analyze_scope.c, analyze.c which already read it during inference). */
+     The scope walk records the enclosing class body per node in node_cbody[id]
+     (a bare module-body cmethod call, e.g. `take(mk)` where mk is
+     `def self.mk`). */
   if (recv < 0) {
     int cbody = c->node_cbody[id];
-    if (cbody < 0) cbody = g_cbody_class_id;
     if (cbody >= 0) {
       int smi = call_target(c, id, cbody, name, CT_CMETHOD, NULL);
       if (smi >= 0) { *out = an_user_call(c, id, smi, UC_CMETH, cbody); return 1; }

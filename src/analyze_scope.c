@@ -541,7 +541,31 @@ void expand_struct_forwarding_super(Compiler *c) {
 }
 
 
-void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
+/* Where the scope walk is: the scope and class a node is walked in, the
+   proc it is under (-1 outside one) and whether it is in an arm that never
+   runs; the class whose body encloses it (cbody, which node_cbody keeps)
+   and the one whose body it is directly in (direct, where `self` is the
+   class: -1 inside a method or a block, mirroring codegen's
+   g_class_body_id so a self/bare `class_eval` reopen is recognized
+   identically by analyze and codegen); whether it is directly in the block
+   of `Name = Struct.new(...) do ... end`, whose class register_structs
+   makes only after the walk (fix_struct_block_scopes); and whether it is a
+   define_method of a `class << X` body, which defines a class method. */
+typedef struct {
+  int scope, cls, proc, dead;
+  int cbody, direct, struct_direct, dm_sclass;
+} WalkCtx;
+
+static void walk_scope_in(Compiler *c, int id, WalkCtx w);
+
+/* A walk of a node the walk reaches apart from its tree walk (a statement
+   of a `class << X` body, an unrolled define_method's body), in `scope` and
+   `cls`: it is under no proc and in no dead arm, and keeps the class
+   bodies of `w`, where it is reached. */
+static void walk_scope_from(Compiler *c, int id, const WalkCtx *w, int scope, int cls, int dm_sclass) {
+  walk_scope_in(c, id, (WalkCtx){ .scope = scope, .cls = cls, .proc = -1, .cbody = w->cbody,
+                                  .direct = w->direct, .struct_direct = w->struct_direct, .dm_sclass = dm_sclass });
+}
 
 /* String form of an int/string/symbol literal node, for compile-time
    `define_method` name interpolation. Returns malloc'd, or NULL. */
@@ -620,12 +644,13 @@ TyKind dm_lit_type(Compiler *c, int lit) {
    class body and synthesize one method scope per literal element, each with
    a compile-time substitution of `v`. In a Struct.new block class_id is
    still -1; fix_struct_block_scopes homes the scopes. The loop itself still
-   runs in scope_idx, binding `v` to each element there, so `v` is a local
-   of that scope too: a class body's is the program's, but a method's (a
-   class method that defines them when called) had no such local. Returns 1
-   if handled. */
-int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx) {
+   runs in the walk's scope, binding `v` to each element there, so `v` is a
+   local of that scope too: a class body's is the program's, but a method's
+   (a class method that defines them when called) had no such local. Returns
+   1 if handled. */
+static int collect_dm_each_unroll(Compiler *c, int id, const WalkCtx *w) {
   const NodeTable *nt = c->nt;
+  int class_id = w->cls, scope_idx = w->scope;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "each")) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -712,7 +737,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx) {
     lv_set_type(lv, dm_lit_type(c, elems[k]));
     lv->is_param = 1;  /* not a real C param, but keeps it out of decls */
     int ms_idx = c->nscopes - 1;
-    if (kbody >= 0) walk_scope(c, kbody, ms_idx, class_id);
+    if (kbody >= 0) walk_scope_from(c, kbody, w, ms_idx, class_id, 0);
     /* the body is a method's: its `next` is a `return` */
     method_body_next_to_return((NodeTable *)nt, kbody);
   }
@@ -982,8 +1007,8 @@ static const char *dm_registerable_name(const NodeTable *nt, int id) {
 
    The receiver may be a constant (`Klass` / `M::Klass`), resolved by short name;
    or `self`/absent, which reopens `enclosing_class` -- the class whose body we are
-   directly in (analyze passes g_cbody_direct, codegen passes g_class_body_id, both
-   -1 inside method bodies). Restricting to definition-only blocks keeps a
+   directly in (analyze passes its walk's direct class, codegen g_class_body_id,
+   both -1 inside method bodies). Restricting to definition-only blocks keeps a
    class_eval that runs other code falling through to the normal (unsupported) path
    instead of being silently dropped. Used by both analyze (to register the methods
    on the target) and codegen (to emit the call as a no-op). */
@@ -1128,19 +1153,15 @@ static void singleton_reopen_mark(Compiler *c, int def, int recv, int class_id) 
    if cond; def m; end; else; def m; end; end`, as Loofah defines its entry
    points, #5358). A define_method there is a class method too. Anything
    else is walked as usual. */
-static int g_dm_sclass;
-/* Directly in the block of `Name = Struct.new(...) do ... end`, whose class
-   register_structs makes only after walk_scope (fix_struct_block_scopes). */
-static int g_struct_direct;
-static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class, int depth, int reopen_recv, int reopen_class) {
+static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_class, int depth, int reopen_recv, int reopen_class) {
   const NodeTable *nt = c->nt;
+  int scope_idx = w->scope;
   if (s < 0 || s >= nt->count) return;
   NodeKind k = nt_kind(nt, s);
   if (k == NK_CallNode && dm_registerable_name(nt, s)) {
     if (reopen_recv >= 0 && nt_ref(nt, s, "receiver") < 0)
       singleton_reopen_mark(c, s, reopen_recv, reopen_class);
-    g_dm_sclass = 1;
-    walk_scope(c, s, scope_idx, target_class);
+    walk_scope_from(c, s, w, scope_idx, target_class, 1);
     return;
   }
   /* `private def m` / `protected def m` / `public def m`: the def is the
@@ -1152,10 +1173,10 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     if (vn && visibility_of_name(vn) > BVIS_MODULE_FUNCTION &&
         vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0) {
       c->nscope[s] = scope_idx;
-      c->node_cbody[s] = g_cbody_class_id;
+      c->node_cbody[s] = w->cbody;
       c->nscope[va] = scope_idx;
-      c->node_cbody[va] = g_cbody_class_id;
-      sclass_walk_stmt(c, vv[0], scope_idx, target_class, depth + 1, reopen_recv, reopen_class);
+      c->node_cbody[va] = w->cbody;
+      sclass_walk_stmt(c, vv[0], w, target_class, depth + 1, reopen_recv, reopen_class);
       return;
     }
   }
@@ -1171,31 +1192,31 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     collect_def_params(c, s, sc);
     /* Assign scope to the def node and its body */
     c->nscope[s] = new_idx;
-    c->node_cbody[s] = g_cbody_class_id;
+    c->node_cbody[s] = w->cbody;
     /* the parameters too, as the generic def walk does: a default value
        (`def open(path = default_path)`) is evaluated in the method, whose self
        is the class -- unwalked, its receiverless call resolved in the caller's
        self and raised NameError there */
     int pn = nt_ref(nt, s, "parameters");
-    if (pn >= 0) walk_scope(c, pn, new_idx, target_class);
-    if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
+    if (pn >= 0) walk_scope_from(c, pn, w, new_idx, target_class, 0);
+    if (sc->body >= 0) walk_scope_from(c, sc->body, w, new_idx, target_class, 0);
     return;
   }
   NodeKind ty_k = nt_kind(nt, s);
   int cond = k == NK_IfNode || k == NK_UnlessNode || k == NK_StatementsNode ||
              (ty_k == NK_ElseNode);
-  if (!cond || depth > 64) { walk_scope(c, s, scope_idx, target_class); return; }
+  if (!cond || depth > 64) { walk_scope_from(c, s, w, scope_idx, target_class, 0); return; }
   c->nscope[s] = scope_idx;
-  c->node_cbody[s] = g_cbody_class_id;
+  c->node_cbody[s] = w->cbody;
   if (k == NK_StatementsNode) {
     int n = 0; const int *b = nt_arr(nt, s, "body", &n);
-    for (int i = 0; i < n; i++) sclass_walk_stmt(c, b[i], scope_idx, target_class, depth + 1, reopen_recv, reopen_class);
+    for (int i = 0; i < n; i++) sclass_walk_stmt(c, b[i], w, target_class, depth + 1, reopen_recv, reopen_class);
     return;
   }
-  walk_scope(c, nt_ref(nt, s, "predicate"), scope_idx, target_class);
-  sclass_walk_stmt(c, nt_ref(nt, s, "statements"), scope_idx, target_class, depth + 1, reopen_recv, reopen_class);
-  sclass_walk_stmt(c, nt_ref(nt, s, "subsequent"), scope_idx, target_class, depth + 1, reopen_recv, reopen_class);
-  sclass_walk_stmt(c, nt_ref(nt, s, "else_clause"), scope_idx, target_class, depth + 1, reopen_recv, reopen_class);
+  walk_scope_from(c, nt_ref(nt, s, "predicate"), w, scope_idx, target_class, 0);
+  sclass_walk_stmt(c, nt_ref(nt, s, "statements"), w, target_class, depth + 1, reopen_recv, reopen_class);
+  sclass_walk_stmt(c, nt_ref(nt, s, "subsequent"), w, target_class, depth + 1, reopen_recv, reopen_class);
+  sclass_walk_stmt(c, nt_ref(nt, s, "else_clause"), w, target_class, depth + 1, reopen_recv, reopen_class);
 }
 
 /* The four builtin classes that also live under Thread (`Thread::Mutex`). */
@@ -1432,10 +1453,11 @@ static int sg_def_receiver(const NodeTable *nt, int recv) {
   return nt_paren_single(nt, recv);
 }
 
-static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
+static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   if (id < 0 || id >= c->nt->count) return;
+  int scope_idx = w.scope, class_id = w.cls, proc = w.proc, dead = w.dead;
   c->nscope[id] = scope_idx;
-  c->node_cbody[id] = g_cbody_class_id;
+  c->node_cbody[id] = w.cbody;
   if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
       (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
        is_ivar_access(nt_str(c->nt, id, "name"))))
@@ -1449,8 +1471,6 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   NodeKind ty_k = nt_kind(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
-  int dm_sclass = g_dm_sclass;
-  g_dm_sclass = 0;
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
   if (ty_k == NK_SingletonClassNode) {
@@ -1485,7 +1505,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
           int s = stmts[k];
           const char *sty = nt_type(c->nt, s);
           if (!sty) continue;
-          sclass_walk_stmt(c, s, scope_idx, target_class, 0, native_reopen ? sexpr : -1, class_id);
+          sclass_walk_stmt(c, s, &w, target_class, 0, native_reopen ? sexpr : -1, class_id);
         }
         c->nscope[id] = scope_idx;
         c->nscope[sbody] = scope_idx;
@@ -1621,15 +1641,16 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        become instance methods on it, exactly like a `class Klass ... end` reopen.
        Set child_class to the target so the generic recursion below registers them
        there (and register_locals interns any ivars first assigned inside those
-       methods). g_cbody_direct gives the enclosing class for bare/self receivers. */
+       methods). The walk's direct class gives the enclosing class for bare/self
+       receivers. */
     {
-      int ce_ci = class_eval_reopen_class(c, id, g_cbody_direct);
+      int ce_ci = class_eval_reopen_class(c, id, w.direct);
       if (ce_ci >= 0) child_class = ce_ci;
     }
     /* [lits].each { |v| define_method("m_#{v}") { body } } -- unroll into one
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
-    if ((class_id >= 0 || g_struct_direct) && collect_dm_each_unroll(c, id, class_id, scope_idx)) return;
+    if ((class_id >= 0 || w.struct_direct) && collect_dm_each_unroll(c, id, &w)) return;
     /* compiler_state_int/str/sa/ia :fields -- declare ivars + synthesize the
        init/dump/set methods (the metaprogramming is native, not define_method). */
     if (class_id >= 0 && cs_macro_kind(nt_str(c->nt, id, "name"))) {
@@ -1641,7 +1662,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        function (class_id stays -1), matching `def`. */
     const char *dm_cn = nt_str(c->nt, id, "name");
     int dm_recv = nt_ref(c->nt, id, "receiver");
-    if (is_define_method_name(dm_cn) && (scope_idx > 0 || g_cbody_direct >= 0 || g_struct_direct) &&
+    if (is_define_method_name(dm_cn) && (scope_idx > 0 || w.direct >= 0 || w.struct_direct) &&
         (dm_recv < 0 || nt_kind(c->nt, dm_recv) == NK_SelfNode)) {
       int an = nt_ref(c->nt, id, "arguments"), ac = 0;
       const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
@@ -1671,7 +1692,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        a class constant receiver, `self` in a class body, or no receiver (the
        enclosing class). An arbitrary-instance singleton has no compile-time
        class, so it is not registered (the later call rejects). */
-    int dm_cmethod = dm_is_dm && dm_sclass, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
+    int dm_cmethod = dm_is_dm && w.dm_sclass, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
     if (dm_is_dsm) {
       dm_cmethod = 1;
       NodeKind dsm_rk = nt_kind(c->nt, dm_recv);
@@ -1762,21 +1783,20 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
     }
   }
 
-  int saved_cbody = g_cbody_class_id;
-  int saved_direct = g_cbody_direct;
-  int saved_struct = g_struct_direct;
+  WalkCtx cw = { .scope = child, .cls = child_class, .proc = proc, .dead = dead,
+                 .cbody = w.cbody, .direct = w.direct, .struct_direct = w.struct_direct };
   NodeKind wk = nt_kind(c->nt, id);
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
-    g_struct_direct = 0;
+    cw.struct_direct = 0;
   else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c, id) >= 0)
-    g_struct_direct = 1;
-  if (child_class >= 0) g_cbody_class_id = child_class;
-  /* g_cbody_direct tracks the class whose body we are *directly* in (where `self`
-     is the class). A method/block scope is entered exactly when `child` was
+    cw.struct_direct = 1;
+  if (child_class >= 0) cw.cbody = child_class;
+  /* direct is the class whose body we are *directly* in (where `self` is the
+     class). A method/block scope is entered exactly when `child` was
      reassigned (DefNode/define_method/block); there `self` is no longer the class,
      so clear it. ClassNode/ModuleNode leave child == scope_idx. */
-  if (child != scope_idx) g_cbody_direct = -1;
-  else if (child_class >= 0) g_cbody_direct = child_class;
+  if (child != scope_idx) cw.direct = -1;
+  else if (child_class >= 0) cw.direct = child_class;
 
   int pred = -1, then_body = -1, else_body = -1;
   NodeKind kind = nt_kind(c->nt, id);
@@ -1789,23 +1809,22 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int r = nt_ref_at(c->nt, id, i);
-    int arm_dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
-    if (r >= 0) walk_scope_in(c, r, child, child_class, proc, arm_dead);
+    WalkCtx rw = cw;
+    rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
+    if (r >= 0) walk_scope_in(c, r, rw);
   }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope_in(c, ids[j], child, child_class, proc, dead);
+      if (ids[j] >= 0) walk_scope_in(c, ids[j], cw);
   }
-  g_cbody_class_id = saved_cbody;
-  g_cbody_direct = saved_direct;
-  g_struct_direct = saved_struct;
 }
 
+/* A walk of `id` from outside any class body */
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
-  walk_scope_in(c, id, scope_idx, class_id, -1, 0);
+  walk_scope_in(c, id, (WalkCtx){ .scope = scope_idx, .cls = class_id, .proc = -1, .cbody = -1, .direct = -1 });
 }
 
 static void mf_mark(Compiler *c, int mi) {

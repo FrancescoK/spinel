@@ -1846,8 +1846,6 @@ int g_yvt_depth = 0;
    (rather than take the first concrete one) for divergence detection */
 int g_yvt_unify_all = 0;
 int an_ie_class_id = -1;
-int g_cbody_class_id = -1;
-int g_cbody_direct = -1;
 TyKind scan_break_type(Compiler *c, int id, int depth) {
   if (id < 0 || depth > 32) return TY_UNKNOWN;
   const NodeTable *nt = c->nt;

@@ -7777,7 +7777,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         return;
       }
       /* Bare call inside a class/module body: analyze may not have resolved the
-         type because g_cbody_class_id is not set during fixpoint. Look it up now. */
+         type. Look it up now. */
       if (at == TY_UNKNOWN && g_class_body_id >= 0) {
         const char *ptn = nt_type(c->nt, provided);
         if (ptn && sp_streq(ptn, "CallNode") && nt_ref(c->nt, provided, "receiver") < 0) {
