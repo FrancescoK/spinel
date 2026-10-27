@@ -8,9 +8,10 @@ p $?.to_i >> 8
 # for the child in the kernel on its OS worker. A worker in a syscall never
 # reaches a safepoint, so main's next collection waited for the child too
 # (#4528). Main collects many times while the children run; the threads are
-# still alive when it is done.
-slow = Thread.new { `sleep 1; echo slow` }
-sys = Thread.new { system("sleep 1") }
+# still alive when it is done. The children sleep 2 s: a busy runner took
+# about 1 s for main's part, and a 1 s child had already exited.
+slow = Thread.new { `sleep 2; echo slow` }
+sys = Thread.new { system("sleep 2") }
 sleep 0.1
 20.times { garbage = Array.new(100) { |i| "s#{i}" }; GC.start }
 p slow.alive?, sys.alive?
