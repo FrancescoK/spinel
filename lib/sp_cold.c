@@ -6422,6 +6422,12 @@ SP_NORETURN void sp_raise_nil_cmp(int left_nil, const char *op, const char *cls)
   sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with nil failed", cls));
 }
 
+/* A comparison of two Floats where one is NaN: CRuby's Float#<=> answers
+   nil, and the caller (min, max) reports the Float it compared with. */
+SP_NORETURN void sp_raise_float_cmp(sp_float with) {
+  sp_raise_cls("ArgumentError", sp_sprintf("comparison of Float with %s failed", sp_float_to_s(with)));
+}
+
 /* A nil that reached a strict Integer argument slot through an `Integer?`
    variable. The literal `s[nil]` already raised this from the emitter; the
    slot's nil is the same nil, so it gets the same message (#4896). CRuby

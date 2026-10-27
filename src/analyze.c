@@ -36643,6 +36643,15 @@ static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
   return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS, masgn_leaf_may_nil, &m);
 }
 
+/* An Array literal with an element and no splat: it is never empty. */
+int array_literal_filled(const NodeTable *nt, int v) {
+  if (nt_kind(nt, v) != NK_ArrayNode) return 0;
+  int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_SplatNode) return 0;
+  return en > 0;
+}
+
 /* A call that answers one element of its receiver, or nil when there is none
    (`a[i]`, `h[k]`, `[].max`, `a.find { }`), plus `Integer(s, exception: false)`. */
 static int elem_miss_call(Compiler *c, int v) {
@@ -36690,7 +36699,9 @@ static int elem_miss_call(Compiler *c, int v) {
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (is_element_pick(nm))
     return argc == 0 && blk < 0;
-  if (is_minmax_query(nm)) return argc == 0;
+  /* a literal with an element and no splat always has an extreme. The
+     nil of an element is a separate question (nullable_int_elem_expr). */
+  if (is_minmax_query(nm)) return argc == 0 && !(blk < 0 && array_literal_filled(nt, recv));
   if (is_find_alias(nm)) return blk >= 0;
   /* a fold without an initial value answers nil on an empty receiver:
      `inject(:+)` and `inject { |s, x| ... }`, not `inject(0) { ... }` */

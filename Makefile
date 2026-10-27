@@ -4749,6 +4749,12 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	for v in arrows pts; do \
 	  grep -q "sp_PtrArray \\* iv_$$v;" "$$tmp/onb.c" || { echo "infer-test: FAIL (obj_array_nested_block: a block in a walk's block left @$$v boxed)"; ok=0; }; \
 	done; \
+	$(SPINEL) test/array_literal_minmax_float.rb -c --no-line-map -o "$$tmp/amf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_literal_minmax_float: -c)"; ok=0; }; \
+	for f in sp_rb_box_distance2 sp_Air_refill sp_Air_spend sp_floor_at_zero sp_Count_add; do \
+	  body=$$(awk "/^static.* $$f\\(.*\\{\$$/,/^}/" "$$tmp/amf.c"); \
+	  [ -n "$$body" ] || { echo "infer-test: FAIL (array_literal_minmax_float: no $$f)"; ok=0; }; \
+	  ! echo "$$body" | grep -q -e 'Array_new' -e 'sp_ofloat' -e 'sp_oint' || { echo "infer-test: FAIL (array_literal_minmax_float: $$f builds an array or a nilable Float or Integer)"; ok=0; }; \
+	done; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' '$(STR_SLOT_C) iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

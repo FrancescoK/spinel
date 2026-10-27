@@ -1,0 +1,58 @@
+1.5
+[3.5, 1.5, 2.5]
+3.5
+[3.5, 1.5, 2.5]
+5.5
+5.5
+-1.5
+7.5
+0.0
+-0.0
+0.0
+-0.0
+0.0
+-0.0
+0.0
+-0.0
+NaN
+NaN
+ArgumentError
+ArgumentError
+ArgumentError
+ArgumentError
+"comparison of Float with 2.0 failed"
+"comparison of Float with NaN failed"
+0.0
+25.0
+240.0
+0.0
+300.0
+44975.0
+4
+0
+4
+10
+2.5
+3
+1
+2.5
+1.5
+ArgumentError
+["0", "Integer"]
+1.0e-05
+["2.0", "Float"]
+4.0
+1099511627776
+["-4", "Integer"]
+-2
+["1.0e+20", "Float"]
+2.0e+20
+-0.0
+-0.0
+["-Infinity", "Float"]
+-Infinity
+0.0
+4
+-Infinity
+["1099511627776", "Integer"]
+1099511627776
