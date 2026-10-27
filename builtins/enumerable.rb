@@ -500,7 +500,7 @@ module Enumerable
       end
       out
     else
-      each
+      __take_while_enum
     end
   end
 
@@ -514,7 +514,35 @@ module Enumerable
       end
       out
     else
-      each
+      __drop_while_enum
+    end
+  end
+
+  # The blockless take_while / drop_while answer an Enumerator that runs the
+  # method with its consumer's block: to_a's answers nil, so take_while stops
+  # and drop_while stops dropping at the first element.
+  def __take_while_enum
+    recv = self
+    Enumerator.new do |y|
+      kept = []
+      recv.each do |v|
+        break unless y.yield(v)
+        kept << v
+      end
+      kept
+    end
+  end
+
+  def __drop_while_enum
+    recv = self
+    Enumerator.new do |y|
+      rest = []
+      skip = true
+      recv.each do |v|
+        skip = false if skip && !y.yield(v)
+        rest << v unless skip
+      end
+      rest
     end
   end
 
