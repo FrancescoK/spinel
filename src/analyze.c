@@ -14687,6 +14687,10 @@ static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
         seeded = sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE;
       }
     if (!seeded || !c->arr_want) continue;
+    /* only a table that narrows builds rows: one the pass keeps boxed (dead,
+       or a remove, a comparison or a boxed row, as narrow_object_arrays
+       checks) keeps its rows boxed */
+    if (!sl[i].alive || sl[i].needs_cmp || sl[i].removes || sl[i].poly_elem) continue;
     TyKind rk = sl[i].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
     for (int e = 0; e < g_oa_empt_n && sl[i].cls != -1; e++) {
       if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
