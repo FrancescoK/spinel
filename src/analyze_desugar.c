@@ -161,8 +161,7 @@ static int bare_call_reaches_own(Compiler *c, int id, const char *name) {
   if (call_target(c, id, -1, name, CT_TOP, NULL) >= 0) return 1;
   Scope *sc = comp_scope_of(c, id);
   if (!sc || sc->class_id < 0) return 0;
-  return (sc->is_cmethod ? call_target(c, id, sc->class_id, name, CT_CMETHOD, NULL)
-                         : call_target(c, id, sc->class_id, name, 0, NULL)) >= 0;
+  return call_target(c, id, sc->class_id, name, sc->is_cmethod ? CT_CMETHOD : 0, NULL) >= 0;
 }
 
 /* Kernel#spawn and Kernel#exec are Process.spawn and Process.exec: a
@@ -4349,7 +4348,7 @@ int send_def_just_supers(Compiler *c, int mi) {
 static int send_own_in_chain(Compiler *c, int call, int cid, const char *name, int cm) {
   while (cid >= 0) {
     int dc = -1;
-    int mi = cm ? call_target(c, call, cid, name, CT_CMETHOD, &dc) : call_target(c, call, cid, name, 0, &dc);
+    int mi = call_target(c, call, cid, name, cm ? CT_CMETHOD : 0, &dc);
     if (mi < 0) return 0;
     if (!send_def_just_supers(c, mi)) return 1;
     cid = dc >= 0 ? c->classes[dc].parent : -1;
@@ -21871,7 +21870,7 @@ static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int 
    ivar themselves would make the two differ, and keep the call as written. */
 static const char *rdw_reader_ivar(Compiler *c, int call, int cls, int cmeth, const char *mname) {
   const NodeTable *nt = c->nt;
-  int mi = cmeth ? call_target(c, call, cls, mname, CT_CMETHOD, NULL) : call_target(c, call, cls, mname, 0, NULL);
+  int mi = call_target(c, call, cls, mname, cmeth ? CT_CMETHOD : 0, NULL);
   if (mi < 0) {
     if (cmeth) return NULL;
     int def_cls = -1, mix = -1;
@@ -21887,7 +21886,7 @@ static const char *rdw_reader_ivar(Compiler *c, int call, int cls, int cmeth, co
   /* no class below this one answers the name otherwise */
   for (int k = 0; k < c->nclasses; k++) {
     if (k == m->class_id || !is_descendant(c, k, m->class_id)) continue;
-    if (call_target(c, call, k, mname, cmeth ? CT_OWN | CT_CMETHOD : CT_OWN, NULL) >= 0) return NULL;
+    if (call_target(c, call, k, mname, CT_OWN | (cmeth ? CT_CMETHOD : 0), NULL) >= 0) return NULL;
   }
   int n = 0; const int *st = nt_arr(nt, m->body, "body", &n);
   if (n != 1 || !st) return NULL;

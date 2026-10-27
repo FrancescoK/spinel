@@ -7632,8 +7632,7 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
     for (int i = 0; i < cls->naliases; i++) {
       if (!cls->alias_new[i] || !cls->alias_old[i] || !sp_streq(cls->alias_new[i], nm)) continue;
       int from = cls->alias_cls && cls->alias_cls[i] >= 0 ? cls->alias_cls[i] : k;
-      int am = cls->alias_sg && cls->alias_sg[i] ? call_target(c, v, from, cls->alias_old[i], CT_CMETHOD, NULL)
-                                                 : call_target(c, v, from, cls->alias_old[i], 0, NULL);
+      int am = call_target(c, v, from, cls->alias_old[i], cls->alias_sg && cls->alias_sg[i] ? CT_CMETHOD : 0, NULL);
       if (am >= 0) ch |= widen_method_value_sources(c, v, am, elem, depth, 1);
     }
   }

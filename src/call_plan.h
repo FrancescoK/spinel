@@ -136,7 +136,7 @@ TyKind cplan_poly_operator_ret(Compiler *c, int id);
 int cplan_target_binds(Compiler *c, int id, int mi);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */
-int cplan_exc_object_method(Compiler *c, const char *name);
+int cplan_exc_object_method(Compiler *c, int call, const char *name);
 
 /* ---- CP_REFUSE: a call the compiler refuses ----
    Whether codegen refuses the call node id, and in which words, decided
@@ -360,7 +360,7 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */
-int cplan_cmethod_arm(Compiler *c, int k, const char *nm, int *dc, int *pfk);
+int cplan_cmethod_arm(Compiler *c, int call, int k, const char *nm, int *dc, int *pfk);
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
 int cplan_visibility_class(Compiler *c, int id, int ci);
 int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod);

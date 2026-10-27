@@ -2386,7 +2386,7 @@ int cls_value_owns_name(Compiler *c, int id, const char *name) {
      whose class method answers, and the builtin keeps the call */
   if (!cplan_boxed_cmethod(c, id, name)) return 0;
   for (int k = 0; k < c->nclasses; k++)
-    if (cplan_cmethod_arm(c, k, name, NULL, NULL) >= 0) return 1;
+    if (cplan_cmethod_arm(c, id, k, name, NULL, NULL) >= 0) return 1;
   return 0;
 }
 
@@ -22282,7 +22282,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         for (int k = 0; k < c->nclasses; k++) {
           if (cls_sg_accessor_first(c, k, nm, argc)) { nsg++; continue; }
           int dc = -1, pfk = -1;
-          int mi = cplan_cmethod_arm(c, k, nm, &dc, &pfk);
+          int mi = cplan_cmethod_arm(c, id, k, nm, &dc, &pfk);
           if (mi < 0) continue;
           /* A class method that cannot take this call's arguments is still
              the one a value of its class calls: CRuby raises its

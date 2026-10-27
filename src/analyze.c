@@ -17312,8 +17312,7 @@ static int ekh_memo_literal(Compiler *c, int n, int depth) {
     const char *nm = nt_str(nt, n, "name");
     Scope *s = comp_scope_of(c, n);
     if (!nm || !s || s->class_id < 0) return -1;
-    int mi = s->is_cmethod ? call_target(c, n, s->class_id, nm, CT_CMETHOD, NULL)
-                           : call_target(c, n, s->class_id, nm, 0, NULL);
+    int mi = call_target(c, n, s->class_id, nm, s->is_cmethod ? CT_CMETHOD : 0, NULL);
     if (mi < 0 || mi >= c->nscopes || c->scopes[mi].nparams != 0) return -1;
     int body = c->scopes[mi].body;
     return body >= 0 ? ekh_memo_literal(c, body, depth + 1) : -1;
@@ -30074,8 +30073,7 @@ static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int 
   if (ur < 0 || nt_kind(nt, ur) == NK_SelfNode) {
     Scope *encl = comp_scope_of(c, call);
     if (encl && encl->class_id >= 0)
-      mi = encl->is_cmethod ? call_target(c, call, encl->class_id, un, CT_CMETHOD, NULL)
-                            : call_target(c, call, encl->class_id, un, 0, NULL);
+      mi = call_target(c, call, encl->class_id, un, encl->is_cmethod ? CT_CMETHOD : 0, NULL);
   }
   else {
     NodeKind rk = nt_kind(nt, ur);
@@ -48282,8 +48280,7 @@ static void an_phase_block_inline(Compiler *c) {
         fmi = call_target(c, p, -1, fn, CT_TOP, NULL);
         Scope *fs = comp_scope_of(c, p);
         if (fmi < 0 && fs && fs->class_id >= 0)
-          fmi = fs->is_cmethod ? call_target(c, p, fs->class_id, fn, CT_CMETHOD, NULL)
-                               : call_target(c, p, fs->class_id, fn, 0, NULL);
+          fmi = call_target(c, p, fs->class_id, fn, fs->is_cmethod ? CT_CMETHOD : 0, NULL);
       }
       else {
         /* `h.store(&b)`: an object receiver resolves through its class, and a

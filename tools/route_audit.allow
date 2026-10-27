@@ -5,7 +5,7 @@
 # lookups whose name argument is NAME.
 files: src/analyze.c src/analyze_cls.c src/analyze_desugar.c src/analyze_infer.c
 files: src/analyze_infer_recv.c src/analyze_nil.c src/analyze_pass.c
-files: src/analyze_scope.c src/analyze_util.c src/compiler.c src/repr.c
+files: src/analyze_scope.c src/analyze_util.c src/call_plan.c src/compiler.c src/repr.c
 
 # which classes answer a name, over every class: a poly receiver's arms
 src/analyze.c a_dispatch_arm_takes_block which classes answer the name
@@ -34,6 +34,7 @@ src/analyze_scope.c cm_call_names which classes answer the name
 src/analyze_scope.c poly_recv_defines which classes answer the name
 src/analyze_util.c send_blind_recv_owns comp_name_responders which classes answer the name
 src/compiler.c cc_build which classes answer the name
+src/compiler.c comp_strsub_own_classes which String subclasses answer the name
 src/compiler.c comp_method_overridden which subclasses override the name
 src/compiler.c comp_native_answer_class which classes answer the name
 src/compiler.c comp_native_binding_class which classes answer the name
@@ -84,6 +85,7 @@ src/analyze_cls.c cf_scal_build Enumerable's iterator names
 src/analyze_desugar.c class_answers_own to_ary / to_a
 src/analyze_desugar.c desugar_enum_walk_calls the lowering table's helper name
 src/analyze_infer.c kconv_integer_kind to_int / to_i
+src/call_plan.c cplan_conversion the conversion protocol's names
 
 # a scope's own name, super from its def's name
 src/analyze.c a_block_forwarded_to_proc =u super, by its def's name
@@ -114,6 +116,9 @@ src/analyze_scope.c specialize_cmethod_for =c->scopes[mi].name a scope's own nam
 src/analyze_scope.c specialize_inherited_cls_new =mname a scope's own name
 src/analyze_scope.c specialize_super_cmethod super, by its def's name
 src/analyze_scope.c super_lands_on_attr super, by its def's name
+src/call_plan.c cplan_define_method_early a defined method's own name
+src/call_plan.c cplan_resolve_super super, by its def's name
+src/call_plan.c cplan_super_chain_mi super, by its def's name
 src/compiler.c comp_super_name super, by its def's name
 src/compiler.c comp_super_shadow super, by its def's name
 
@@ -159,6 +164,10 @@ src/compiler.c comp_arysub_name_is_array a class's method of the name
 src/compiler.c comp_builtin_kind_reopen_mi a class's method of the name
 src/compiler.c comp_resolve_member a class's method of the name
 src/compiler.c comp_trampoline_kind a class's method of the name
+
+# the plan check: an independent check of resolution, so it asks the tables
+# by name what resolution should have found rather than asking call_target
+src/call_plan.c cplan_check_missing the independent check of resolution
 
 # a helper the compiler synthesizes, by its own name
 src/analyze.c desugar_to_enum a synthesized helper's name
