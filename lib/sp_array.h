@@ -141,7 +141,12 @@ static void sp_IntArray_init_embedded(sp_IntArray*a){a->cap=16;a->data=(sp_int*)
 /* The one place `cap` changes: the data buffer is reallocated and
    re-counted, and the nil bitmap (when there is one) follows it. */
 static SP_NOINLINE void sp_IntArray_set_cap(sp_IntArray*a,sp_int nc){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_int oc=a->cap;if((uintmax_t)nc>SIZE_MAX/sizeof(sp_int))sp_oom_die();sp_gc_bytes_sub(sizeof(sp_int)*oc);h->size-=sizeof(sp_int)*oc;void*nd=sp_pl_realloc(a->data,sizeof(sp_int)*nc);if(!nd)sp_oom_die();a->data=(sp_int*)nd;a->cap=nc;h->size+=sizeof(sp_int)*nc;sp_gc_bytes_add(sizeof(sp_int)*nc);if(SP_UNLIKELY(a->nilbits))a->nilbits=sp_nilbits_resize(a,a->nilbits,oc,nc);}
-static SP_NOINLINE void sp_IntArray_push_grow(sp_IntArray*a){if(a->start>0){memmove(a->data,a->data+a->start,sizeof(sp_int)*a->len);if(SP_UNLIKELY(a->nilbits))SP_NILBITS_MOVE_A(a, a->cap, a->start, 0, a->len);a->start=0;if(a->len<a->cap)return;}sp_IntArray_set_cap(a,a->cap*2+1);}
+/* A push into a full buffer slides the elements past a shifted-off head
+   home, and grows the buffer as well unless that freed at least as many
+   slots as there are elements (cap - len once slid, the buffer being full):
+   a queue held at its capacity would otherwise copy every element on every
+   push. */
+static SP_NOINLINE void sp_IntArray_push_grow(sp_IntArray*a){if(a->start>0){memmove(a->data,a->data+a->start,sizeof(sp_int)*a->len);if(SP_UNLIKELY(a->nilbits))SP_NILBITS_MOVE_A(a, a->cap, a->start, 0, a->len);a->start=0;if(a->cap-a->len>=a->len)return;}sp_IntArray_set_cap(a,a->cap*2+1);}
 static inline void sp_IntArray_push(sp_IntArray*a,sp_int v){if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(a->start+a->len>=a->cap)sp_IntArray_push_grow(a);a->data[a->start+a->len]=v;a->len++;}
 /* Array.new(n, v): the buffer is allocated at its final size and filled in
    place, where n pushes grew it from 16 by doubling -- a realloc and a copy
