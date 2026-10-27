@@ -202,6 +202,21 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */
 int elab_method_versions(Compiler *c, const char *name);
+/* may a call of `name` reach a replaced version: does some class's (or
+   main's) history of it hold more than one version, or an alias, which
+   names the version it captured? */
+int elab_method_replaced(Compiler *c, const char *name);
+/* Sets each method scope's version facts (Scope.versioned, .replaced) from
+   the record: as it is made, and again once the passes after it have
+   copied (mixins), renamed (prepend shadows, alias captures) and made
+   their methods, ahead of the inference. */
+void elab_mark_versions(Compiler *c);
+/* does node run whenever the body of def node `def` runs: is it inside that
+   body with no lambda, nested def or deferred block between? */
+int elab_runs_with(Compiler *c, int node, int def);
+/* the def node whose body holds node, with no class body or other def
+   between; -1 for none */
+int elab_body_def(Compiler *c, int node);
 /* where the version recorded at def node `node` in cls's history of `name`
    (singleton when sg) is replaced: ELAB_YES with *end the next version's
    point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN

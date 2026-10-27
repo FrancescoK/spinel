@@ -1291,6 +1291,7 @@ void elab_program(Compiler *c) {
   }
   r->rec = NULL;
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
+  elab_mark_versions(c);
   sp_timing_end(t0, "an_elab_record", "");
 }
 
@@ -1395,7 +1396,7 @@ static void lr_settle_regions(Compiler *c) {
    define_method, an attr, an alias, a module_function copy, an undef or
    remove), not a visibility change. lr_vers_index indexes the histories as
    they stand, again once more entries have been recorded. */
-typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes */
+typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured, replaced; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes; replaced: one history holds two versions, or an alias */
 
 static int lr_is_version(const LrDef *v) { return v->kind <= LR_REMOVE; }
 
@@ -1419,7 +1420,13 @@ static void lr_vers_index(LoadRecord *r) {
     }
     h->nlink = r->vers[k].first;
     r->vers[k].first = i;
-    for (int j = 0; j < h->n; j++) r->vers[k].nver += lr_is_version(&h->v[j]);
+    int nh = 0;
+    for (int j = 0; j < h->n; j++) {
+      nh += lr_is_version(&h->v[j]);
+      if (h->v[j].kind == LR_ALIAS) r->vers[k].replaced = 1;
+    }
+    r->vers[k].nver += nh;
+    if (nh > 1) r->vers[k].replaced = 1;
   }
   r->indexed = r->nentries;
 }
@@ -1436,6 +1443,80 @@ int elab_method_versions(Compiler *c, const char *name) {
   LoadRecord *r = c->lrec;
   const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
   return x ? x->nver : 0;
+}
+
+int elab_method_replaced(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
+  return x && x->replaced;
+}
+
+/* Each method scope's version facts (analyze.h):
+   Scope.versioned when the record holds more than one version of its name;
+   Scope.replaced when it is a def's scope that a later scope of the same
+   class, side and name takes the method table's place of (a top-level
+   method: a later def's), so that the tables answer the later one. */
+typedef struct { const char *name; int cls, cm, s; } LrScopeKey;   /* s: -1 - s for a scope no def made */
+static int lr_scope_key_cmp(const void *a, const void *b) {
+  const LrScopeKey *x = a, *y = b;
+  int d = strcmp(x->name, y->name);
+  if (d) return d;
+  if (x->cls != y->cls) return x->cls < y->cls ? -1 : 1;
+  if (x->cm != y->cm) return x->cm - y->cm;
+  int xs = x->s < 0 ? -1 - x->s : x->s, ys = y->s < 0 ? -1 - y->s : y->s;
+  return xs - ys;
+}
+void elab_mark_versions(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  LrScopeKey *keys = NULL;
+  int nk = 0;
+  if (!r || !r->recorded) return;
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->versioned || sc->replaced) { sc->versioned = sc->replaced = 0; comp_touch_scope(sc->idx); }
+    const LrVers *x = sc->name && sc->def_node >= 0 ? lr_vers(r, sc->name) : NULL;
+    if (!x || x->nver < 2) continue;
+    { sc->versioned = 1; comp_touch_scope(sc->idx); }
+    int def = nt_kind(c->nt, sc->def_node) == NK_DefNode;
+    if (!x->replaced || (sc->class_id < 0 && !def)) continue;
+    if (!(nk & (nk - 1)) && !(keys = realloc(keys, sizeof *keys * (size_t)(nk ? 2 * nk : 1)))) {
+      fprintf(stderr, "spinel: out of memory\n"); exit(1);
+    }
+    keys[nk++] = (LrScopeKey){ sc->name, sc->class_id < 0 ? -1 : sc->class_id, sc->class_id < 0 ? 0 : sc->is_cmethod, def ? s : -1 - s };
+  }
+  if (nk > 1) qsort(keys, (size_t)nk, sizeof *keys, lr_scope_key_cmp);
+  for (int i = 0; i + 1 < nk; i++)
+    if (keys[i].s >= 0 && keys[i].cls == keys[i + 1].cls && keys[i].cm == keys[i + 1].cm && sp_streq(keys[i].name, keys[i + 1].name)) {
+      Scope *sc = &c->scopes[keys[i].s];
+      sc->replaced = 1;
+      comp_touch_scope(sc->idx);
+    }
+  free(keys);
+}
+
+/* The def node whose body holds node, with no class body or other def
+   between; -1 for none. */
+int elab_body_def(Compiler *c, int node) {
+  const int *par = comp_parent_map(c);
+  int n = c->nt->count;
+  for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
+    NodeKind k = nt_kind(c->nt, p);
+    if (k == NK_DefNode) return p;
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return -1;
+  }
+  return -1;
+}
+
+/* Does node run whenever the body of def node `def` runs: is it in that
+   body with no lambda, nested def or block kept to run later between? */
+int elab_runs_with(Compiler *c, int node, int def) {
+  const int *par = comp_parent_map(c);
+  int n = c->nt->count;
+  for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
+    if (p == def) return 1;
+    if (lr_defers(c->nt, par, p)) return 0;
+  }
+  return 0;
 }
 
 /* ---- the queries ---- */
@@ -1500,6 +1581,9 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
   const LrClass *k = lr_class(r, cls);
+  /* a class made after the record (an object's singleton class, which
+     its extends and defs fill) holds methods the record never saw */
+  if (!k) return ELAB_UNKNOWN;
   int unsure = 0;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
@@ -1657,7 +1741,7 @@ int elab_version_captured(Compiler *c, const char *name) {
     const NodeTable *nt = c->nt;
     int hit = c->names_by_value || elab_runs_unseen(c), n = 0;
     const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
-    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
+    for (int i = 0; !hit && i < n; i++) { const char *sv = nt_str(nt, v[i], "value"); hit = sv && sp_streq(sv, name); }
     v = nt_nodes_of_kind(nt, NK_StringNode, &n);
     for (int i = 0; !hit && i < n; i++) {
       const char *s = nt_str(nt, v[i], "content");   /* a StringNode's text */

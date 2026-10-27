@@ -1488,6 +1488,53 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   return mi;
 }
 
+/* the scope of (class_id, is_cm; top level when class_id < 0) named name
+   whose def node is def_node, or -1 */
+static int sm_version(Compiler *c, int class_id, const char *name, int is_cm, int def_node) {
+  if (!name || def_node < 0) return -1;
+  int top = class_id < 0;
+  if (!sm_frozen) {
+    for (int s = c->nscopes - 1; s >= 0; s--)
+      if (c->scopes[s].def_node == def_node && (top ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm)) &&
+          c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+    return -1;
+  }
+  if (sm_nscopes != c->nscopes) sm_build(c);
+  if (!sm_buckets) return -1;
+  unsigned b = sm_hash(top ? -1 : class_id, name, top ? 0 : is_cm) % (unsigned)sm_buckets;
+  for (int s = top ? tm_head[b] : sm_head[b]; s >= 0; s = top ? tm_next[s] : sm_next[s])
+    if (c->scopes[s].def_node == def_node && (top ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm)) &&
+        c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+  return -1;
+}
+
+/* the scope of (class_id, is_cm; top level when class_id < 0) whose def
+   node is def_node, under whatever name an alias that captured the def gave
+   it (alias_capture_earlier_def), or -1; not a body a mixin's copy shadows
+   (`__prep_<n>_m`), which a call reaches through the copy */
+static int sm_version_renamed(Compiler *c, int class_id, int is_cm, int def_node) {
+  for (int s = c->nscopes - 1; s >= 0; s--)
+    if (c->scopes[s].def_node == def_node && c->scopes[s].name && !c->scopes[s].is_proc_form &&
+        comp_prep_user_name(c->scopes[s].name) == c->scopes[s].name &&
+        (class_id < 0 ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm))) return s;
+  return -1;
+}
+
+int comp_method_version(Compiler *c, int class_id, const char *name, int is_cm, int def_node, int *def_class) {
+  int mi = -1, dc = class_id;
+  if (class_id < 0) mi = sm_version(c, -1, name, 0, def_node);
+  else for (; dc >= 0; dc = c->classes[dc].parent)
+    if ((mi = sm_version(c, dc, name, is_cm, def_node)) >= 0) break;
+  if (mi < 0) {
+    dc = class_id;
+    if (class_id < 0) mi = sm_version_renamed(c, -1, 0, def_node);
+    else for (; dc >= 0; dc = c->classes[dc].parent)
+      if ((mi = sm_version_renamed(c, dc, is_cm, def_node)) >= 0) break;
+  }
+  if (mi >= 0) { IMEMO_DEP_SCOPE(mi); if (def_class) *def_class = dc; }
+  return mi;
+}
+
 /* See compiler.h. Built on the first ask from the memo's slot, which the
    walk fills for every class, and kept with it. The walk can move the slot:
    a chain lookup inserts names (this one, an alias it resolves), and an

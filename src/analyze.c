@@ -49702,6 +49702,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      the method-lookup index can be used; it is rebuilt if the scope count ever
      grows. This is where comp_method_in_class / comp_cmethod_in_class are
      hottest (called per node, every fixpoint iteration). */
+  elab_mark_versions(c);
   comp_scope_index_set_frozen(1);
 
   /* The classes that can exist, before any type is derived from them (see

@@ -456,6 +456,14 @@ typedef struct {
   int class_id;     /* owning class index, or -1 for free functions */
   int yields;       /* body contains a YieldNode (inlined at call sites) */
   int reachable;    /* method name is referenced somewhere (else dead code) */
+  /* a method's versions (#9898), from the load record once it is made:
+     versioned, the record holds more than one version of the name (in any
+     class), so call_target binds a call of it to the version it runs;
+     replaced, a later version replaces this one in its class's history, so
+     only the calls bound to it reach it; version_n, codegen's number for a
+     replaced version in its C name (mc_method), 0 for none */
+  unsigned char versioned, replaced;
+  int version_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
                                (analyze_pass.c): what its parameters hold is
@@ -2008,6 +2016,13 @@ const char *io_super_name(const char *k);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* The method version recorded at def node def_node: the scope of that def
+   named name on class_id's superclass chain (class side when is_cm; a
+   top-level method when class_id < 0), the nearest class's when copies
+   share the node, under another name when an alias that captured the def
+   renamed its scope; *def_class (when asked) the class that holds it. -1
+   when no scope there has that def node. */
+int        comp_method_version(Compiler *c, int class_id, const char *name, int is_cm, int def_node, int *def_class);
 /* The classes whose chain answers (name, is_cm) -- comp_method_in_chain's
    or comp_cmethod_in_chain's -- ascending, two ints per class (the class,
    the scope its chain finds), *n their count. NULL with *n -1 while the
