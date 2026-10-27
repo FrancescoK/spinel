@@ -1,0 +1,4 @@
+class Table
+  @ints: Array[Array[Integer]]
+  @floats: Array[Array[Float]]
+end

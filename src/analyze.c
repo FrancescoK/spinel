@@ -14650,6 +14650,37 @@ static char *oa_walk_disc(Compiler *c, int nc) {
   return walk_disc;
 }
 
+/* A table an `Array[Array[Integer]]` / `Array[Array[Float]]` seed decided
+   builds its empty rows at the seed's kind (narrow_object_arrays, #4484),
+   but an element of a `[[], []]` literal may already want a poly array:
+   widen_nested_literals takes it boxed when a push into the row comes
+   before the row has a kind. The seed is that kind: where the pushes into
+   its rows (oa_row_use) are of no other kind, the literal is built at it.
+   A row held in a local or passed on is the seed's to type, as the empty
+   rows of `Array.new(n) { [] }` are. Otherwise the table stays the poly
+   array its rows are, instead of reading boxed rows back as typed ones. */
+static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
+  for (int i = 0; i < n; i++) {
+    if (oa_uf_find(sl, i) != i || !OA_CLS_IS_NESTED(sl[i].cls)) continue;
+    int seeded = 0;
+    for (int j = 0; j < n && !seeded; j++)
+      if (oa_uf_find(sl, j) == i && sl[j].ici >= 0) {
+        int sd = c->classes[sl[j].ici].ivar_oa_seed[sl[j].iiv];
+        seeded = sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE;
+      }
+    if (!seeded || !c->arr_want) continue;
+    TyKind rk = sl[i].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
+    int fits = sl[i].row_cls == -1 || sl[i].row_cls == sl[i].cls;
+    for (int e = 0; e < g_oa_empt_n && sl[i].cls != -1; e++) {
+      if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
+      int lit = g_oa_empt_node[e];
+      if (lit >= c->node_cap || c->arr_want[lit] == TY_UNKNOWN || c->arr_want[lit] == rk) continue;
+      if (fits && c->arr_want[lit] == TY_POLY_ARRAY) { comp_set_arr_want(c, lit, rk); oa_mark_empty_mine(lit); }
+      else sl[i].cls = -1;
+    }
+  }
+}
+
 static int narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -15526,6 +15557,7 @@ static int narrow_object_arrays(Compiler *c) {
     }
     if (rows && !unbuilt) sl[i].cls = sl[i].row_cls;
   }
+  oa_seeded_literal_rows(c, sl, n);
   for (int i = 0; i < n; i++) {
     int r = oa_uf_find(sl, i);
     /* A component that reaches no decision this round drops any stamp an
