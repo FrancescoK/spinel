@@ -21225,12 +21225,24 @@ static const char *file_top_storage(void) { return g_debug ? "" : "static "; }
 /* Every file's flag and function are declared ahead of every body, since a
    load may stand in any of them -- a method, a proc, another file's top
    level -- and may name any file. */
+/* ...and the flag of each native library whose require stands as a value
+   (native_load_flag), once. */
+typedef struct { Compiler *c; Buf *b; } NativeFlags;
+static void emit_native_flag(void *ud, int load) {
+  NativeFlags *q = ud;
+  char fl[96], decl[128];
+  if (is_native_lib_at_boot(nt_str(q->c->nt, load, "path"))) return;
+  native_load_flag(q->c->nt, load, fl, sizeof fl);
+  snprintf(decl, sizeof decl, "static int %s;\n", fl);
+  if (!q->b->p || !strstr(q->b->p, decl)) buf_puts(q->b, decl);
+}
 static void emit_file_top_decls(Compiler *c, Buf *b) {
   int n = nt_nroots(c->nt);
-  if (n < 2) return;
+  if (!prog_has_files(c)) return;
   unsigned char *has = calloc((size_t)n, 1);
   if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  prog_file_tops(c, has);
+  NativeFlags nf = { c, b };
+  prog_file_tops(c, has, emit_native_flag, &nf);
   for (int f = 1; f < n; f++)
     if (has[f]) buf_printf(b, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, file_top_storage(), f);
   free(has);
@@ -21241,7 +21253,7 @@ static void emit_file_tops(Compiler *c, Buf *body) {
   const char *stor = file_top_storage();
   unsigned char *has = calloc((size_t)n, 1);
   if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  prog_file_tops(c, has);
+  prog_file_tops(c, has, NULL, NULL);
   /* a void function: a top-level `return` ends the file's load, as a void
      method's return ends the method, not the program's main body */
   int sv_cv = g_c_ret_void;

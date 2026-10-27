@@ -1313,6 +1313,10 @@ int is_load_how_computed(const char *how) { return how && sp_streq(how, "run-tim
    library (io/console, time, socket, ostruct, monitor). */
 int is_load_how_core(const char *how) { return how && sp_streq(how, "core"); }
 int is_load_how_native(const char *how) { return how && sp_streq(how, "native"); }
+/* ...and a native library CRuby has loaded before the program runs
+   (`monitor`, which rubygems requires), whose require answers false the
+   first time as a core capability's does; the others answer true once. */
+int is_native_lib_at_boot(const char *path) { return path && sp_streq(path, "monitor"); }
 
 int is_enumerable_module_name(const char *n) {
   return n && sp_streq(n, "Enumerable");

@@ -92,6 +92,7 @@ struct LoadRecord {
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
   /* the method histories by name (lr_vers_index), as of nentries entries */
   long nentries, indexed;
+  struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   struct LrVers *vers; int nvers, cvers, *vers_head;
 };
@@ -606,6 +607,17 @@ long long elab_sort_key(Compiler *c, int node) {
    runs them, in seq order, in the frame its statement's body opens: the
    class (or singleton class) a class body, `class << x` or class_eval
    block runs in, main's at a file's top level. */
+/* An answer the record stores as it records a statement, from the
+   histories as they stand there, which a file in a later region may change
+   (lr_settle_regions): a form's "runs program code" (SET_RUNS), whether a
+   call runs code the record cannot follow (SET_OPAQUE), an alias's
+   visibility taken from its target's (SET_ALIAS: name, the visibility
+   without one in vis0). cls and sg: the frame the statement runs in. */
+enum { SET_RUNS, SET_OPAQUE, SET_ALIAS };
+typedef struct LrSettle { int fam, node, cls, sg, may, vis0; const char *name; } LrSettle;
+static void lr_settle_add(LoadRecord *r, int fam, int node, int cls, int sg, int may, int vis0, const char *name);
+static void lr_settle_regions(Compiler *c);
+static int lr_form_answer(Compiler *c, int node, int cls, int sg);
 /* a: class, or -2 - ElabVar; b: singleton; nlink: the next method history
    of the same name (lr_vers_index) */
 typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink; } LrHist;
@@ -834,6 +846,7 @@ static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, L
   if (cls < LR_MAIN || !name) return;
   int vis = sg ? SP_VIS_PUBLIC : lr_vis(bvis), ov = kind == LR_ALIAS && target ? lr_vis_at(x->c, cls, target, sg, elab_point_of(x->c, node)) : -1;
   if (!sg && (kind == LR_DEF || kind == LR_DEFINE_METHOD) && is_implicitly_private_name(name)) vis = SP_VIS_PRIVATE;
+  if (kind == LR_ALIAS && target) lr_settle_add(x->r, SET_ALIAS, node, cls, sg, may, vis, name);
   if (ov >= 0) vis = ov;
   lr_version(x->r, cls, sg, name, (LrDef){ node, (unsigned char)kind, (unsigned char)vis, (unsigned char)may, 0, target });
   if (!sg && bvis == BVIS_MODULE_FUNCTION)
@@ -866,7 +879,7 @@ static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, i
   lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL });
 }
 
-static void lr_form_runs(ElabRec *x, int node, int cls, const char *nm, const int *av, int ac, int sg, int may);
+static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may);
 
 static int lr_name_cmp(const void *a, const void *b) {
   return strcmp(*(const char *const *)a, *(const char *const *)b);
@@ -951,13 +964,27 @@ static void lr_reopens_take(Compiler *c) {
 /* A call statement's definitions: attrs, aliases, visibility, mixins,
    define_method, undef_method / remove_method, on the class its receiver
    names. vs is the frame's visibility state. */
+/* Does call `node` on class cls (in its singleton when sg) run code the
+   record cannot follow: a send, an eval of a String, or a method of the
+   program called on the class (its singleton method, from its body or
+   through its constant) or from its body (a top-level one)? */
+static int lr_opaque_call(Compiler *c, int node, int cls, int sg) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, node, "name");
+  int recv = nt_ref(nt, node, "receiver");
+  LoadPoint p = elab_point_of(c, node);
+  int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
+  return is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
+         (!sg && lr_search(c, cls, 1, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO) ||
+         (bare && lr_search(c, LR_MAIN, 0, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO);
+}
 static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int fnode, int may) {
   const NodeTable *nt = x->c->nt;
   const char *nm = nt_str(nt, node, "name");
   int sg, recv = nt_ref(nt, node, "receiver"), cls = lr_receiver(x, recv, fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   int bvis = visibility_of_name(nm), opaque = 0;
-  if (nm && (bvis || is_method_naming_call(nm) || is_mixin_call(nm))) lr_form_runs(x, node, cls, nm, av, ac, sg, may);
+  if (nm && (bvis || is_method_naming_call(nm) || is_mixin_call(nm))) lr_form_runs(x, node, cls, sg, may);
   if (bvis && !ac && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) {
     /* the frame's visibility from here on: kept by the frame's node, so
        also in a body whose class the record does not know */
@@ -1003,11 +1030,8 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
      method, from its body or through its constant) or from its body (a
      top-level one) */
   if (!naming && !mix) {
-    LoadPoint p = elab_point_of(x->c, node);
-    int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
-    opaque = is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
-             (!sg && lr_search(x->c, cls, 1, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO) ||
-             (bare && lr_search(x->c, LR_MAIN, 0, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO);
+    opaque = lr_opaque_call(x->c, node, cls, sg);
+    lr_settle_add(x->r, SET_OPAQUE, node, cls, sg, may, 0, NULL);
   }
   if (opaque && cls >= 0)
     lr_version(x->r, LR_KEY_OPAQUE, lr_const_owner(cls), "", (LrDef){ node, LR_OPAQUE, 0, (unsigned char)may, 0, NULL });
@@ -1134,7 +1158,7 @@ static void lr_record_drop(LoadRecord *r) {
   for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
   if (r->cls) memset(r->cls, 0, sizeof *r->cls * (size_t)r->ncls);
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
-  r->nhist = 0; r->frontier = 0;
+  r->nhist = 0; r->frontier = 0; r->nset = 0;
   r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
 }
 
@@ -1176,6 +1200,7 @@ void elab_program(Compiler *c) {
   elab_points_walk(c, 1);
   double t0 = sp_timing_now();   /* the record's own cost after the walk (the map's is an_elab_points) */
   lr_record_upto(r, r->nst);
+  lr_settle_regions(c);
   lr_later_settle(c);
   r->recorded = 1;
   if (r->check) {   /* the same record made after the walk, as a check */
@@ -1184,6 +1209,7 @@ void elab_program(Compiler *c) {
     lr_record_drop(r);
     for (int f = 0; f < nroots; f++) x.vmain[f] = BVIS_PRIVATE;
     lr_record_upto(r, r->nst);
+    lr_settle_regions(c);
     lr_later_settle(c);
     r->recorded = 1;
     lr_check_walked(c, walked);
@@ -1193,6 +1219,63 @@ void elab_program(Compiler *c) {
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
   sp_timing_end(t0, "an_elab_record", "");
   if (r->check) elab_check_record(c);
+}
+
+static void lr_settle_add(LoadRecord *r, int fam, int node, int cls, int sg, int may, int vis0, const char *name) {
+  r->set = lr_grow(r->set, &r->cset, r->nset, sizeof *r->set);
+  r->set[r->nset++] = (LrSettle){ fam, node, cls, sg, may, vis0, name };
+}
+
+/* The answers stored as the record was made (LrSettle), made again once all
+   of it is. They were asked of the histories as the walk had made them, and
+   a file in a region after region 0 is walked after everything the entry
+   does, so they are blind to it: a method it defines would have changed a
+   "runs no program code", a module it defines a mixin's, a method it makes
+   private an alias's visibility. Asked again of the whole histories the
+   same questions answer UNKNOWN across regions, and are the same where no
+   other region matters. In the order the answers depend on one another:
+   the classes a mixin and a superclass name, then the forms, the calls and
+   the aliases. An answer that can only be taken back by a later region is
+   all that changes: a mixin whose module the record no longer knows makes
+   its call opaque, as an unknown module does at the time. */
+static void lr_settle_regions(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (r->nregion < 2) return;
+  for (int i = 0; i < r->ncls; i++) {
+    LrClass *k = &r->cls[i];
+    for (int j = 0; j < k->nmix; j++) {
+      int mod = lr_class_ref(c, k->mix[j].ref), was = k->mix[j].mod;
+      k->mix[j].mod = mod;
+      if (mod < 0 && mod != LR_LATER && !(was < 0 && was != LR_LATER) && i >= 1)
+        lr_version(r, LR_KEY_OPAQUE, lr_const_owner(i - 1), "", (LrDef){ k->mix[j].node, LR_OPAQUE, 0, (unsigned char)elab_point_may(c, k->mix[j].node), 0, NULL });
+    }
+    if (k->has_sup) k->sup = lr_class_ref(c, k->sup_ref);
+  }
+  for (int i = 0; i < r->nset; i++) {
+    const LrSettle *t = &r->set[i];
+    LrHist *h;
+    if (t->fam == SET_RUNS) {
+      h = lr_hist(r, LR_KEY_RUNS, t->node, "", 0);
+      if (h && h->n) h->v[h->n - 1].vis = (unsigned char)lr_form_answer(c, t->node, t->cls, t->sg);
+    }
+    else if (t->fam == SET_OPAQUE) {
+      h = lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(t->cls), "", 0);
+      int seen = 0;
+      for (int j = 0; h && j < h->n; j++) seen |= h->v[j].node == t->node;
+      if (!seen && t->cls >= 0 && lr_opaque_call(c, t->node, t->cls, t->sg))
+        lr_version(r, LR_KEY_OPAQUE, lr_const_owner(t->cls), "", (LrDef){ t->node, LR_OPAQUE, 0, (unsigned char)t->may, 0, NULL });
+    }
+    else {
+      h = lr_hist(r, t->cls, t->sg, t->name, 0);
+      const char *tg = NULL;
+      for (int j = 0; h && j < h->n; j++)
+        if (h->v[j].node == t->node && h->v[j].kind == LR_ALIAS) {
+          tg = h->v[j].target;
+          int ov = tg ? lr_vis_at(c, t->cls, tg, t->sg, elab_point_of(c, t->node)) : -1;
+          h->v[j].vis = (unsigned char)(ov >= 0 ? ov : t->vis0);
+        }
+    }
+  }
 }
 
 /* ---- by name ----
@@ -1533,9 +1616,12 @@ static int lr_runs(Compiler *c, int cls, const char *name, LoadPoint p) {
 /* Does definition form `nm` at node, on class cls (sg: in its singleton),
    run code of the program's: a method of the form's own name the call
    finds, or a hook the form fires (definition_form_hooks) on the class it
-   receives, or for a mixin on the module? Kept for elab_form_runs. */
-static void lr_form_runs(ElabRec *x, int node, int cls, const char *nm, const int *av, int ac, int sg, int may) {
-  Compiler *c = x->c;
+   receives, or for a mixin on the module? */
+static int lr_form_answer(Compiler *c, int node, int cls, int sg) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, node, "name");
+  int an = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   LoadPoint p = elab_point_of(c, node);
   const char *hook[2];
   int nh = ac ? definition_form_hooks(nm, sg, hook) : 0, mix = is_mixin_call(nm);
@@ -1543,7 +1629,12 @@ static void lr_form_runs(ElabRec *x, int node, int cls, const char *nm, const in
   for (int i = 0; i < nh; i++)
     for (int j = 0; j < (mix ? ac : 1); j++)
       o = lr_either(o, lr_runs(c, mix ? lr_class_ref(c, av[j]) : cls, hook[i], p));
-  lr_version(x->r, LR_KEY_RUNS, node, "", (LrDef){ node, LR_OPAQUE, (unsigned char)o, (unsigned char)may, 0, NULL });
+  return o;
+}
+/* ...kept for elab_form_runs */
+static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may) {
+  lr_version(x->r, LR_KEY_RUNS, node, "", (LrDef){ node, LR_OPAQUE, (unsigned char)lr_form_answer(x->c, node, cls, sg), (unsigned char)may, 0, NULL });
+  lr_settle_add(x->r, SET_RUNS, node, cls, sg, may, 0, NULL);
 }
 
 int elab_form_runs(Compiler *c, int node) {
@@ -1947,7 +2038,7 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
   free(r->names); free(r->reopens);
-  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head);
+  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head); free(r->set);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }

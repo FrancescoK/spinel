@@ -18,9 +18,8 @@
      - the program's top-level statements in load order (prog_top_stmts):
        a load at the top level runs its file's top level there, once; and
        with them the files no load there places (prog_visit_files);
-     - what the program refuses for now: a require that is not a top-level
-       statement, one that resolves to no file at compile time, an autoload
-       (prog_refuse_loads), and the statements the readers of the top level
+     - what the program refuses for now: a require that resolves to no file
+       at compile time, an autoload (prog_refuse_loads), and the statements the readers of the top level
        in order would have to place across a load (prog_refuse_order). */
 
 #include "analyze_internal.h"
@@ -397,8 +396,9 @@ static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *
    nothing; but a load that is emitted as an expression (anywhere but as a
    statement whose value nothing reads) answers whether it ran the file, once,
    so the file has its loaded flag and an empty function for that load to
-   call. */
-void prog_file_tops(Compiler *c, unsigned char *has) {
+   call. A load of a native library
+   that stands that way as well has no file: native(ud, load) for each. */
+void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, int load), void *ud) {
   const NodeTable *nt = c->nt;
   int n = nt_nroots(nt);
   for (int i = 0; i < n; i++) has[i] = i > 0 && !prog_defines_only(c, i);
@@ -408,17 +408,17 @@ void prog_file_tops(Compiler *c, unsigned char *has) {
   const int *parent = comp_parent_map(c);
   NT_FOREACH_KIND(nt, NK_LoadNode, id) {
     int f = (int)nt_int(nt, id, "target_file", -1);
-    if (f <= 0 || f >= n || has[f] || !seen[id]) continue;
+    if (!seen[id] || (f > 0 && f < n && has[f]) || (f <= 0 && !native)) continue;
     int stmt = parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_StatementsNode;
-    if (!stmt || !an_node_dropped(c, id)) has[f] = 1;
+    if (stmt && an_node_dropped(c, id)) continue;
+    if (f > 0 && f < n) has[f] = 1;
+    else if (is_load_how_native(nt_str(nt, id, "how"))) native(ud, id);
   }
   free(seen); free(live);
 }
 
 /* What --load-model=graph does not load yet, refused by name (#9898), asked
    once the load sites are known, ahead of the desugaring:
-     - a require that is not a statement of a file's top level: its file
-       loads when that code runs (part 3c);
      - a require of the program's own entry file, which CRuby runs again as
        a new file since `$0` is not a loaded feature;
      - one whose path is computed when it runs: its file is chosen among
@@ -445,8 +445,6 @@ void prog_refuse_loads(Compiler *c) {
       /* (one that names no file runs no file's top level: it raises
          LoadError wherever it stands) */
       const char *how = nt_str(nt, id, "how");
-      if (!nt_int(nt, id, "boot", 0) && !is_load_how_missing(how) && !prog_is_root_stmts(c, parent[id]))
-        unsupported_feature(c, id, "--load-model=graph loads only a require that is a statement of a file's top level, for now");
       if (nt_int(nt, id, "target_file", -1) == 0)
         unsupported_feature(c, id, "--load-model=graph does not load the program's own entry file again, for now");
       if (is_load_how_computed(how))

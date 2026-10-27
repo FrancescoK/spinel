@@ -325,6 +325,7 @@ int is_load_how_missing(const char *how);
 int is_load_how_computed(const char *how);
 int is_load_how_core(const char *how);
 int is_load_how_native(const char *how);
+int is_native_lib_at_boot(const char *path);
 int is_comparable_module_name(const char *n);
 int is_enumerable_module_name(const char *n);
 int is_comparable_builtin_name(const char *n);
