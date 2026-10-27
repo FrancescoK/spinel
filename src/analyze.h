@@ -267,6 +267,9 @@ int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out);
    be, *miss then the name that names nothing (ref's or a parent's) and
    *owner the class it was looked up in (-1: Object's, the top level) */
 int elab_const_ref_at(Compiler *c, int ref, int site, const char **miss, int *owner);
+/* the superclass the first header of cls naming one names, as the record
+   resolved it there; -1 when it names none or one the record does not know */
+int elab_class_super(Compiler *c, int cls);
 /* the visibility a `def` at node would take from its body: the last bare
    `public` / `private` / `protected` / `module_function` before it in the
    same body (BVIS_*), a class body's public and a file's top level's

@@ -1995,6 +1995,13 @@ int elab_const_ref_at(Compiler *c, int ref, int site, const char **miss, int *ow
   return c->lrec && lr_ready(c, elab_point_of(c, site)) ? lr_ref_at(c, ref, site, &cls, miss, owner) : ELAB_UNKNOWN;
 }
 
+/* The superclass the first header of cls naming one names, as the record
+   resolved it there; -1 when it names none or one the record does not know */
+int elab_class_super(Compiler *c, int cls) {
+  const LrClass *k = c->lrec && c->lrec->recorded ? lr_class(c->lrec, cls) : NULL;
+  return k && k->has_sup && k->sup >= 0 ? k->sup : -1;
+}
+
 int elab_body_visibility_at(Compiler *c, int node) {
   LoadRecord *r = c->lrec;
   if (!r || !lr_ready(c, elab_point_of(c, node))) return 0;

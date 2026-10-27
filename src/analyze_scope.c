@@ -6849,12 +6849,14 @@ void resolve_parents(Compiler *c) {
     }
     if (sc < 0) continue;
     NodeKind sk = nt_kind(nt, sc);
-    /* A module-qualified superclass (`class Child < M::Handler`) is a
-       ConstantPathNode whose `name` is the last segment ("Handler").
-       Classes are registered under that bare last name, so resolve it the
-       same way as an unqualified ConstantReadNode superclass. */
+    /* A superclass constant (`class Child < Handler`, `class Child <
+       M::Handler`) is the class the load record resolved it to where the
+       header stands. Where the record does not know, it is the class
+       registered under the constant's last name ("Handler"), as classes
+       are registered under their bare last name. */
     if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) {
-      int p = comp_class_index(c, nt_str(nt, sc, "name"));
+      int p = elab_class_super(c, i);
+      if (p < 0) p = comp_class_index(c, nt_str(nt, sc, "name"));
       /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
          is that class; one whose class only the run time picks is refused,
          where the parent was left unset with no word */
