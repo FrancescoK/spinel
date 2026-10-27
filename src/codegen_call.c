@@ -21416,7 +21416,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   if (plain && nt_kind(nt, vrecv) == NK_SelfNode && cplan_has_method_missing(c, id, vcid, 0)) return 0;
   int top_priv = (stamped || (plain && self_is_main(c, id) && nt_kind(nt, vrecv) == NK_SelfNode)) && vnm && comp_method_index(c, vnm) >= 0 && !name_is_synth_method(c, vnm) &&
                  strncmp(vnm, "__enum_", 7) != 0 &&
-                 (vrecv < 0 ? self_is_main(c, id) : !send_blind_recv_owns(c, vrecv, comp_ntype(c, vrecv), vnm));
+                 (vrecv < 0 ? self_is_main(c, id) : !send_blind_recv_owns(c, id, vrecv, comp_ntype(c, vrecv), vnm));
   int at_main = top_priv && (vrecv < 0 || plain);
   if (vnm && vcid < 0 && vrecv >= 0 && !at_main) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, b);
   if (!vnm || (vcid < 0 && !at_main)) return 0;
@@ -27791,7 +27791,7 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
     Scope *es = comp_scope_of(c, id);
     if (!in_name && cn && sp_streq(cn, "name") && ca < 0 && nt_ref(c->nt, id, "block") < 0 &&
         comp_ntype(c, id) == TY_STRING &&
-        ((r >= 0 && comp_ntype(c, r) == TY_CLASS && class_recv_user_cmethod(c, r, cn) < 0) ||
+        ((r >= 0 && comp_ntype(c, r) == TY_CLASS && class_recv_user_cmethod(c, id, r, cn) < 0) ||
          (r < 0 && es && es->is_cmethod && es->class_id >= 0))) {
       in_name = 1;
       buf_puts(b, "sp_str_frozen_name(");
