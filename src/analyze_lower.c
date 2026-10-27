@@ -35,6 +35,7 @@ typedef struct {
   LowerFn *visit;                   /* rewrites the shape at id: 1 when it did */
   LowerFn *left;                    /* the shape is at id; NULL: only a second run is checked */
   const char *shape;                /* the shape it eliminates, for the check's report */
+  LowerGate *gate;                  /* NULL: none. Asked once at the start of a run; 0 skips it. */
 } Lowering;
 
 /* In the order the stage runs the rows; a row run twice (nil_block_arg) is
@@ -43,6 +44,16 @@ typedef struct {
 static const Lowering lowerings[LW__COUNT] = {
   [LW_NIL_BLOCK_ARG] = { "desugar_nil_block_arg", 0, { NK_CallNode },
     desugar_nil_block_arg_at, desugar_nil_block_arg_left, "`m(&nil)`" },
+  [LW_THREAD_START] = { "desugar_thread_start", 0, { NK_CallNode },
+    desugar_thread_start_at, desugar_thread_start_left, "`Thread.start`, `Thread.fork`", desugar_thread_start_gate },
+  [LW_MARSHAL_RESTORE] = { "desugar_marshal_restore", 0, { NK_CallNode },
+    desugar_marshal_restore_at, desugar_marshal_restore_left, "`Marshal.restore`", desugar_marshal_restore_gate },
+  [LW_SOCKET_OPEN] = { "desugar_socket_open", 0, { NK_CallNode },
+    desugar_socket_open_at, desugar_socket_open_left, "a blockless `TCPSocket.open` and the other socket classes'", desugar_socket_open_gate },
+  [LW_SYSTEM_OPTIONS] = { "desugar_system_options", 0, { NK_CallNode },
+    desugar_system_options_at, desugar_system_options_left, "`system(cmd, out: ..)`", desugar_system_options_gate },
+  [LW_IO_POPEN_BLOCK] = { "desugar_io_popen_block", 0, { NK_CallNode },
+    desugar_io_popen_block_at, desugar_io_popen_block_left, "`IO.popen(cmd) { }` in read mode", desugar_io_popen_block_gate },
   [LW_PAREN_BLOCK_ARG] = { "desugar_paren_block_arg", 0, { NK_BlockArgumentNode },
     desugar_paren_block_arg_at, desugar_paren_block_arg_left, "`&(e)`: a block argument in parentheses" },
   [LW_PAREN_OPERANDS] = { "desugar_paren_operands", 0,
@@ -50,6 +61,10 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_paren_operands_at, desugar_paren_operands_left, "`(e).m`, `x = (e)`: a receiver or value in parentheses" },
   [LW_SEND_CLASS_MAKERS] = { "desugar_send_class_makers", 0, { NK_CallNode },
     desugar_send_class_makers_at, desugar_send_class_makers_left, "`Struct.send(:new, ..)`, `Data.send(:define, ..)`" },
+  [LW_STRUCT_SUBCLASS_NEW_WRITE] = { "desugar_struct_subclass_new_write", 0, { NK_ConstantWriteNode },
+    desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left, "`X = K.new(..)` where K < Struct" },
+  [LW_REFUSE_SUPERCLASS_EXPRS] = { "refuse_superclass_exprs", 0, { NK_ClassNode },
+    refuse_superclass_exprs_at, NULL, "a superclass that is not a constant" },
   [LW_RESCUE_BLOCK_BODIES] = { "desugar_rescue_block_bodies", 0, { NK_BlockNode },
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
@@ -71,6 +86,8 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_alias_method_string_names_at, desugar_alias_method_string_names_left, "`alias_method \"a\", \"b\"`" },
   [LW_REASSIGNED_BLOCK_PARAMS] = { "desugar_reassigned_block_params", 0, { NK_BlockNode },
     desugar_reassigned_block_params_at, desugar_reassigned_block_params_left, "a block parameter the body assigns" },
+  [LW_ITSELF_RECEIVER] = { "desugar_itself_receiver", 0, { NK_CallNode },
+    desugar_itself_receiver_at, desugar_itself_receiver_left, "`x.itself` on a variable", desugar_itself_receiver_gate },
   [LW_TAP_VALUE_WRITE] = { "desugar_tap_value_write", 0, { NK_LocalVariableWriteNode },
     desugar_tap_value_write_at, NULL, "`x = e.tap { }`" },
   [LW_BLK_PARAM_WRITES] = { "desugar_blk_param_writes", 0, { NK_DefNode },
@@ -85,10 +102,16 @@ static const Lowering lowerings[LW__COUNT] = {
   [LW_CONST_ATTR_OP_ASSIGN] = { "desugar_const_attr_op_assign", 0,
     { NK_CallOperatorWriteNode, NK_CallOrWriteNode, NK_CallAndWriteNode },
     desugar_const_attr_op_assign_at, desugar_const_attr_op_assign_left, "`Klass.a op= v`" },
+  [LW_STORED_ENUM_EACH] = { "desugar_stored_enum_each", 0, { NK_CallNode },
+    desugar_stored_enum_each_at, NULL, "`e.each { }` on a stored enumerator" },
   [LW_EMPTY_HASH_COMPARE_BY_IDENTITY] = { "desugar_empty_hash_compare_by_identity", 0, { NK_CallNode },
     desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left, "`{}.compare_by_identity`" },
   [LW_NAME_ANON_BLOCK_KWREST] = { "name_anon_block_kwrest", 0, { NK_BlockNode, NK_LambdaNode },
     name_anon_block_kwrest_at, name_anon_block_kwrest_left, "an anonymous `**` block parameter" },
+  [LW_SYM_TO_PROC_CALL] = { "desugar_sym_to_proc_call", 0, { NK_CallNode },
+    desugar_sym_to_proc_call_at, NULL, "`:m.to_proc.call(r, a)`" },
+  [LW_BUILTIN_KWSPLAT] = { "desugar_builtin_kwsplat", 0, { NK_CallNode },
+    desugar_builtin_kwsplat_at, NULL, "`**h` into step, sample and the other keyword builtins", desugar_builtin_kwsplat_gate },
   [LW_RIGHTWARD_PATTERN] = { "desugar_rightward_pattern", 0, { NK_MatchRequiredNode },
     desugar_rightward_pattern_at, desugar_rightward_pattern_left, "`x => pattern`" },
   [LW_MATCH_PREDICATE] = { "desugar_match_predicate", 0, { NK_MatchPredicateNode },
@@ -134,6 +157,9 @@ static void lower_scratch_reset(LowerCtx *lc) {
   lc->used = NULL;
   lc->nused = 0;
   lc->used_built = 0;
+  free(lc->ids);
+  lc->ids = NULL;
+  lc->nids = 0;
 }
 
 /* One run of a row over the program: the rows below its count at entry that
@@ -144,6 +170,7 @@ static int lower_pass(Compiler *c, LowerCtx *lc, const Lowering *w) {
   KindSet set = kind_set_of(w);
   lc->n0 = nt->count;
   lower_scratch_reset(lc);
+  if (w->gate && !w->gate(c, lc)) return 0;
   int rewrote = 0;
   for (int id = 0; id < lc->n0; id++) {
     if (!kind_set_has(&set, nt_kind(nt, id))) continue;
@@ -176,6 +203,8 @@ static void lower_check_left(Compiler *c, LowerCtx *lc, int row, const char *whe
   const NodeTable *nt = c->nt;
   KindSet set = kind_set_of(w);
   lc->n0 = nt->count;
+  lower_scratch_reset(lc);
+  if (w->gate && !w->gate(c, lc)) return;   /* the row does not apply to this program */
   int n = 0, first = -1;
   for (int id = 0; id < nt->count; id++) {
     if (!kind_set_has(&set, nt_kind(nt, id))) continue;
@@ -211,16 +240,27 @@ void lower_begin(Compiler *c, LowerCtx *lc) {
   lc->check = e && *e && *e != '0';
 }
 
-void lower_run(Compiler *c, LowerCtx *lc, int row) {
+int lower_run(Compiler *c, LowerCtx *lc, int row) {
   NodeTable *nt = (NodeTable *)c->nt;
   const Lowering *w = &lowerings[row];
   const char *was = nt_set_pass(nt, w->name);
-  lc->rewrote[row] += lower_pass(c, lc, w);
+  int rewrote = lower_pass(c, lc, w);
+  lc->rewrote[row] += rewrote;
   if (lc->check) {
     lower_check_left(c, lc, row, "after its run");
     lower_check_again(c, lc, row);
   }
   nt_set_pass(nt, was);
+  return rewrote;
+}
+
+int lower_row_once(Compiler *c, int row) {
+  LowerCtx lc;
+  lower_begin(c, &lc);
+  lc.check = 0;   /* the check is of the stage's run */
+  int rewrote = lower_run(c, &lc, row);
+  lower_scratch_reset(&lc);
+  return rewrote;
 }
 
 /* The end of the stage: every row's shape, then the rows once more in the

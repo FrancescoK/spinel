@@ -624,7 +624,6 @@ int is_class_const(const NodeTable *nt, int id);   /* a `Class` constant read */
 int desugar_def_unless_method_defined(Compiler *c);
 int desugar_class_body_self_calls(Compiler *c);
 int desugar_builtins(Compiler *c);
-void desugar_stored_enum_each(Compiler *c);
 int desugar_enum_walk_calls(Compiler *c);
 int desugar_index_op_write_user(Compiler *c);
 int desugar_main_self_call(Compiler *c);
@@ -702,11 +701,14 @@ int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 
 /* the rows, in the order the stage runs them */
 enum {
-  LW_NIL_BLOCK_ARG, LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_RESCUE_BLOCK_BODIES,
+  LW_NIL_BLOCK_ARG, LW_THREAD_START, LW_MARSHAL_RESTORE, LW_SOCKET_OPEN, LW_SYSTEM_OPTIONS, LW_IO_POPEN_BLOCK,
+  LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_STRUCT_SUBCLASS_NEW_WRITE,
+  LW_REFUSE_SUPERCLASS_EXPRS, LW_RESCUE_BLOCK_BODIES,
   LW_MARK_SYM_PROC_BLOCKS, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES, LW_MARK_RANGE_LOCALS,
   LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES, LW_REASSIGNED_BLOCK_PARAMS,
-  LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE, LW_SAFE_NAV_ATTR_WRITE,
-  LW_CONST_ATTR_OP_ASSIGN, LW_EMPTY_HASH_COMPARE_BY_IDENTITY, LW_NAME_ANON_BLOCK_KWREST, LW_RIGHTWARD_PATTERN,
+  LW_ITSELF_RECEIVER, LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE,
+  LW_SAFE_NAV_ATTR_WRITE, LW_CONST_ATTR_OP_ASSIGN, LW_STORED_ENUM_EACH, LW_EMPTY_HASH_COMPARE_BY_IDENTITY,
+  LW_NAME_ANON_BLOCK_KWREST, LW_SYM_TO_PROC_CALL, LW_BUILTIN_KWSPLAT, LW_RIGHTWARD_PATTERN,
   LW_MATCH_PREDICATE, LW_SORT_BY_WITH_INDEX, LW_ANON_BLOCK_PARAM, LW_MULTI_VALUE_JUMP, LW_BLOCK_DESTRUCTURE_PARAMS,
   LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS, LW_ENUMERATOR_PRODUCE, LW_PARAM_DEFAULT_ASSIGNS_LOCAL,
   LW__COUNT
@@ -722,16 +724,33 @@ typedef struct LowerCtx {
   char **used;              /* names the program wrote that a row's invented ones must step past */
   int nused;
   int used_built;
+  int *ids;                 /* node ids a row's gate collected for its visits */
+  int nids;
 } LowerCtx;
 
 typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);
+/* a row's question of the whole program, asked once at the start of a run: 0 skips the run */
+typedef int LowerGate(Compiler *c, LowerCtx *lc);
 
 void lower_begin(Compiler *c, LowerCtx *lc);
-void lower_run(Compiler *c, LowerCtx *lc, int row);
+int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
+int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
 /* the rows' functions, in the files that own the rewrites */
 LowerFn desugar_nil_block_arg_at, desugar_nil_block_arg_left;               /* analyze_desugar.c */
+LowerGate desugar_thread_start_gate, desugar_marshal_restore_gate, desugar_socket_open_gate;   /* analyze.c */
+LowerGate desugar_system_options_gate, desugar_io_popen_block_gate;
+LowerFn desugar_thread_start_at, desugar_thread_start_left;
+LowerFn desugar_marshal_restore_at, desugar_marshal_restore_left;
+LowerFn desugar_socket_open_at, desugar_socket_open_left;
+LowerFn desugar_system_options_at, desugar_system_options_left;
+LowerFn desugar_io_popen_block_at, desugar_io_popen_block_left;
+LowerGate desugar_itself_receiver_gate, desugar_builtin_kwsplat_gate;
+LowerFn desugar_itself_receiver_at, desugar_itself_receiver_left;
+LowerFn desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left;
+LowerFn refuse_superclass_exprs_at, desugar_sym_to_proc_call_at, desugar_builtin_kwsplat_at;
+LowerFn desugar_stored_enum_each_at;                                         /* analyze_desugar.c */
 LowerFn desugar_paren_block_arg_at, desugar_paren_block_arg_left;           /* analyze.c */
 LowerFn desugar_paren_operands_at, desugar_paren_operands_left;
 LowerFn desugar_send_class_makers_at, desugar_send_class_makers_left;
