@@ -2170,10 +2170,12 @@ void emit_args_off_self(Compiler *c, const int *argv, int argc, Buf *b);
    binding reading the values -- a block's defaults -- and so can change what
    a read among them reads. */
 void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b);
-/* emit_args_before, where a Range literal argument runs its ends into
-   temps and stays a literal over them, for the arms that read a literal's
-   ends: a `&.` call's value arm. Elsewhere the Range is built where it
-   stands, ahead of later arguments and an arity raise. */
+/* emit_args_before, where a lone Range literal argument runs its ends
+   into temps and stays a literal over them, for the arms that read a
+   literal's ends: a `&.` call's value arm. Elsewhere, and beside other
+   arguments, the Range is built where it stands, ahead of later arguments
+   and an arity raise: `s&.slice(at(1)..at("a"), at(4))` raises before
+   at(4) runs. */
 void emit_args_before_range_ends(Compiler *c, const int *argv, int argc, Buf *b);
 /* Would a binding that renders each value in place, in parameter order,
    read one out of CRuby's order? Two values with an effect -- one's setup

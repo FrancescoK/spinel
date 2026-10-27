@@ -56,3 +56,13 @@ rescue ArgumentError => e
 end
 k = 1
 two(k..(k = 3), at(4))
+begin
+  p s&.slice(at(1)..at("a"), at(4))
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  p a&.slice(at(1)..at("a"), at(4))
+rescue ArgumentError => e
+  p e.message
+end
