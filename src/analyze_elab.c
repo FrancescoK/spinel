@@ -105,13 +105,9 @@ static LoadRecord *lr_get(Compiler *c) {
 
 typedef struct { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank; } ElabWalk;
 
-/* Where the walk stands: the file, the top-level statement holding it,
-   the statement whose body opened the class frame it is in (-1: main's),
-   whether it may not run, its nesting for the dump, and whether it may run
-   partly (LrStmt.partial). */
-typedef struct { int file, top, frame, may, depth, partial; } ElabAt;
-
-static int lr_add(ElabWalk *w, int node, ElabAt at) {
+/* Statement `node` joins the record where the walk stands, *pos; pos then
+   stands on its path (EP_SPINE), as statement e */
+static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
   LoadRecord *r = w->r;
   if (r->nst == r->cst) {
     r->cst = r->cst ? r->cst * 2 : 256;
@@ -119,31 +115,10 @@ static int lr_add(ElabWalk *w, int node, ElabAt at) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, at.file, w->region, at.top < 0 ? k : at.top, -1, at.depth, at.frame, k, (unsigned char)at.may,
-                       (unsigned char)at.partial };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, k, pos->may, pos->partial };
   r->at[node] = k;
+  pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
-}
-
-static void elab_inner(ElabWalk *w, int s, int e, ElabAt at);
-
-/* The statements of a body that runs here: a statement list, or a body
-   with rescue clauses (a BeginNode), whose parts elab_inner walks. e is
-   the statement whose body it is. */
-static void elab_body(ElabWalk *w, int body, int e, ElabAt at) {
-  const NodeTable *nt = w->c->nt;
-  if (body < 0) return;
-  at.depth++;
-  if (nt_kind(nt, body) == NK_BeginNode) { at.depth--; elab_inner(w, body, e, at); return; }
-  int n = 1;
-  const int *v = &body;   /* a body of one expression is its one statement */
-  if (nt_kind(nt, body) == NK_StatementsNode) v = nt_arr(nt, body, "body", &n);
-  for (int k = 0; k < n; k++) {
-    if (v[k] < 0 || w->r->at[v[k]] != -2) continue;   /* a subtree two lists share: once */
-    int s = lr_add(w, v[k], at);
-    elab_inner(w, v[k], s, at);
-    w->r->st[s].last = w->r->nst - 1;
-  }
 }
 
 /* When the block of `call` runs: 1 before the call answers (class_eval
@@ -170,96 +145,138 @@ static int elab_opens_frame(const NodeTable *nt, int call) {
   return nm && (is_eval_exec_family(nm) || is_class_builder(rn, nm));
 }
 
-/* A written value's blocks: a call's, or the parts of `x rescue y` */
-static void elab_value(ElabWalk *w, int v, int e, ElabAt at) {
-  NodeKind k = v >= 0 ? nt_kind(w->c->nt, v) : NK_NilNode;
-  if (k == NK_CallNode || k == NK_RescueModifierNode) elab_inner(w, v, e, at);
+/* A body that runs where it stands, at q: a statement list, a lone
+   expression, which is a statement, or a body with rescue clauses (a
+   BeginNode), whose parts are on the statement's path */
+static ElabPos elab_body_pos(const NodeTable *nt, int b, ElabPos q) {
+  NodeKind k = nt_kind(nt, b);
+  if (k == NK_BeginNode) { q.kind = EP_SPINE; return q; }
+  q.depth++;
+  q.kind = k == NK_StatementsNode ? EP_LIST : EP_NEW;
+  return q;
 }
 
-/* A body under a condition: its statements may not run */
-static void elab_maybe(ElabWalk *w, int body, int e, ElabAt at) {
-  at.may = 1;
-  elab_body(w, body, e, at);
+/* A written value on the statement's path: a call's (its block), or the
+   parts of `x rescue y` */
+static ElabPos elab_value_pos(const NodeTable *nt, int v, ElabPos q) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_CallNode || k == NK_RescueModifierNode) q.kind = EP_SPINE;
+  return q;
 }
 
-/* The bodies inside statement e's node s that run while it does. A class
-   body, and the block of a call that runs it as one (class_eval and kin,
-   a class builder), is a frame of its own: e opened it. */
-static void elab_inner(ElabWalk *w, int s, int e, ElabAt at) {
-  const NodeTable *nt = w->c->nt;
-  if (s < 0) return;
-  ElabAt in = at;
-  in.frame = e;
-  switch (nt_kind(nt, s)) {
+/* Where the load phase stands at child ch of node p, which stands at pp.
+   On a statement's path: a class body, and the block of a call that runs
+   it as one (class_eval and kin, a class builder), is a frame of its own,
+   which the statement opened; a branch, a loop's body and a rescue clause
+   may not run, and the next arm of an elsif ladder or a rescue chain is
+   on the path; a value written under `||=` / `&&=`, or after `rescue`, may
+   not run; a block run at once by a call the record does not know (a
+   program method may yield to it, or keep it) may not run, and an
+   iterator's may run partly (zero times, or several). */
+ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
+  ElabPos q = *pp;
+  NodeKind k = nt_kind(nt, p);
+  q.kind = EP_NODE; q.defer = 0;
+  if (pp->e < 0 || ch < 0) return q;
+  if (k == NK_DefNode) q.bits |= LR_LATE | LR_BODY;
+  else if (k == NK_LambdaNode || (k == NK_BlockNode && pp->defer)) q.bits |= LR_LATE;
+  if (pp->kind == EP_LIST) { q.kind = EP_NEW; return q; }
+  int spine = pp->kind == EP_SPINE;
+  switch (k) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      elab_body(w, nt_ref(nt, s, "body"), e, in);
+      if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; return elab_body_pos(nt, ch, q); }
       break;
-    case NK_PreExecutionNode:
-      elab_body(w, nt_ref(nt, s, "statements"), e, at);
+    case NK_PreExecutionNode: case NK_EnsureNode:
+      if (spine && ch == nt_ref(nt, p, "statements")) return elab_body_pos(nt, ch, q);
       break;
-    case NK_ParenthesesNode:
-      elab_body(w, nt_ref(nt, s, "body"), e, at);
+    case NK_ParenthesesNode: case NK_BlockNode:
+      if (spine && ch == nt_ref(nt, p, "body")) return elab_body_pos(nt, ch, q);
       break;
-    case NK_IfNode: case NK_UnlessNode: {   /* an elsif ladder as a loop */
-      int b = s;
-      while (b >= 0 && (nt_kind(nt, b) == NK_IfNode || nt_kind(nt, b) == NK_UnlessNode)) {
-        elab_maybe(w, nt_ref(nt, b, "statements"), e, at);
-        b = nt_kind(nt, b) == NK_IfNode ? nt_ref(nt, b, "subsequent") : nt_ref(nt, b, "else_clause");
-      }
-      if (b >= 0) elab_maybe(w, nt_ref(nt, b, "statements"), e, at);
-      break;
-    }
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int n = 0;
-      const int *v = nt_arr(nt, s, "conditions", &n);
-      for (int k = 0; k < n; k++) elab_maybe(w, nt_ref(nt, v[k], "statements"), e, at);
-      int el = nt_ref(nt, s, "else_clause");
-      if (el >= 0) elab_maybe(w, nt_ref(nt, el, "statements"), e, at);
-      break;
-    }
+    case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhenNode: case NK_InNode: case NK_RescueNode:
     case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
-      elab_maybe(w, nt_ref(nt, s, "statements"), e, at);
+      if (spine && ch == nt_ref(nt, p, "statements")) { q.may = 1; return elab_body_pos(nt, ch, q); }
+      if (spine && (((k == NK_IfNode || k == NK_RescueNode) && ch == nt_ref(nt, p, "subsequent")) ||
+                    (k == NK_UnlessNode && ch == nt_ref(nt, p, "else_clause"))))
+        q.kind = EP_SPINE;
       break;
-    case NK_BeginNode: {
-      ElabAt body = at;
-      body.partial |= nt_ref(nt, s, "rescue_clause") >= 0;
-      elab_body(w, nt_ref(nt, s, "statements"), e, body);
-      for (int r = nt_ref(nt, s, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
-        elab_maybe(w, nt_ref(nt, r, "statements"), e, at);
-      int el = nt_ref(nt, s, "else_clause"), en = nt_ref(nt, s, "ensure_clause");
-      if (el >= 0) elab_maybe(w, nt_ref(nt, el, "statements"), e, at);
-      if (en >= 0) elab_body(w, nt_ref(nt, en, "statements"), e, at);
+    case NK_CaseNode: case NK_CaseMatchNode:   /* its branches and its else */
+      if (spine && ch != nt_ref(nt, p, "predicate")) q.kind = EP_SPINE;
       break;
-    }
-    /* `X = Class.new(B) do ... end`; under `||=` / `&&=` the value may not run */
+    case NK_BeginNode:
+      if (spine && ch == nt_ref(nt, p, "statements")) {
+        q.partial |= nt_ref(nt, p, "rescue_clause") >= 0;
+        return elab_body_pos(nt, ch, q);
+      }
+      if (spine) q.kind = EP_SPINE;   /* its rescue clauses, else and ensure */
+      break;
     case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
     case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode:
-      elab_value(w, nt_ref(nt, s, "value"), e, at);
+      if (spine && ch == nt_ref(nt, p, "value")) return elab_value_pos(nt, ch, q);
       break;
     case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
     case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
     case NK_ConstantAndWriteNode: case NK_ConstantPathAndWriteNode: case NK_LocalVariableAndWriteNode:
     case NK_InstanceVariableAndWriteNode: case NK_GlobalVariableAndWriteNode: case NK_ClassVariableAndWriteNode:
-      at.may = 1;
-      elab_value(w, nt_ref(nt, s, "value"), e, at);
+      if (spine && ch == nt_ref(nt, p, "value")) { q.may = 1; return elab_value_pos(nt, ch, q); }
       break;
-    case NK_RescueModifierNode: {   /* `x rescue y`: y may not run */
-      elab_value(w, nt_ref(nt, s, "expression"), e, at);
-      at.may = 1;
-      elab_value(w, nt_ref(nt, s, "rescue_expression"), e, at);
-      break;
-    }
+    case NK_RescueModifierNode:
+      if (!spine) break;
+      if (ch == nt_ref(nt, p, "rescue_expression")) q.may = 1;
+      return elab_value_pos(nt, ch, q);
     case NK_CallNode: {
-      int b = nt_ref(nt, s, "block"), runs = elab_block_runs(nt, s);
-      if (b < 0 || nt_kind(nt, b) != NK_BlockNode || runs < 0) break;
-      if (runs == 0) at.may = 1;
-      in.may = at.may;
-      if (!elab_opens_frame(nt, s)) at.partial = 1;   /* an iterator's: zero times, or several */
-      elab_body(w, nt_ref(nt, b, "body"), e, elab_opens_frame(nt, s) ? in : at);
+      if (ch != nt_ref(nt, p, "block") || nt_kind(nt, ch) != NK_BlockNode) break;
+      int runs = elab_block_runs(nt, p);
+      if (runs < 0) { q.defer = 1; break; }
+      if (!spine) break;
+      q.kind = EP_SPINE;
+      if (runs == 0) q.may = 1;
+      if (elab_opens_frame(nt, p)) q.frame = pp->e;
+      else q.partial = 1;
       break;
     }
     default: break;
   }
+  return q;
+}
+
+/* Does ref `ref` of node id run after the node's arrays: a case's else,
+   after its branches, and a begin's ensure, after its else? (The bridge
+   keeps Prism's field order, which lists them earlier.) */
+int elab_ref_last(const NodeTable *nt, int id, int ref) {
+  NodeKind k = nt_kind(nt, id);
+  return ref >= 0 && (((k == NK_CaseNode || k == NK_CaseMatchNode) && ref == nt_ref(nt, id, "else_clause")) ||
+                      (k == NK_BeginNode && ref == nt_ref(nt, id, "ensure_clause")));
+}
+
+/* The statements at node id, which stands at pos, in the order they run:
+   id itself when pos makes it one (a subtree two lists share joins once),
+   then those its parts lead to (elab_child) */
+static void elab_walk(ElabWalk *w, int id, ElabPos pos) {
+  const NodeTable *nt = w->c->nt;
+  int e = -1;
+  if (id < 0) return;
+  if (pos.kind == EP_NEW) {
+    if (w->r->at[id] != -2) return;
+    e = lr_add(w, id, &pos);
+  }
+  int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+  for (int pass = 0; pass < 3; pass++) {   /* the refs, the arrays, the refs that run last */
+    for (int i = 0; pass != 1 && i < nr; i++) {
+      int ch = nt_ref_at(nt, id, i);
+      if (elab_ref_last(nt, id, ch) != (pass == 2)) continue;
+      ElabPos q = elab_child(nt, id, ch, &pos);
+      if (q.kind != EP_NODE) elab_walk(w, ch, q);
+    }
+    for (int i = 0; pass == 1 && i < na; i++) {
+      int m = 0;
+      const int *v = nt_arr_at(nt, id, i, &m);
+      for (int j = 0; j < m; j++) {
+        ElabPos q = elab_child(nt, id, v[j], &pos);
+        if (q.kind != EP_NODE) elab_walk(w, v[j], q);
+      }
+    }
+  }
+  if (e >= 0) w->r->st[e].last = w->r->nst - 1;
 }
 
 /* File f's top level, entered at its load: its root, its BEGIN blocks (run
@@ -271,28 +288,20 @@ static void elab_file(ElabWalk *w, int f) {
   int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0;
   w->entered[f] = 1;
   if (root < 0 || w->r->at[root] != -2) return;
-  ElabAt at = { f, -1, -1, 0, 0, 0 };
-  int e = lr_add(w, root, at);
+  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .kind = EP_NEW }, rp = at;
+  int e = lr_add(w, root, &rp);
   w->r->st[e].rank = w->region == 0 ? w->rank++ : -1;
   if (st >= 0) w->r->at[st] = e;
   const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
   for (int k = 0; k < n; k++)
-    if (v[k] >= 0 && nt_kind(nt, v[k]) == NK_PreExecutionNode && w->r->at[v[k]] == -2) {
-      int b = lr_add(w, v[k], at);
-      ElabAt in = at; in.top = b;
-      elab_inner(w, v[k], b, in);
-      w->r->st[b].last = w->r->nst - 1;
-    }
+    if (v[k] >= 0 && nt_kind(nt, v[k]) == NK_PreExecutionNode) elab_walk(w, v[k], at);
   for (int k = 0; k < n; k++) {
     if (v[k] < 0) continue;
-    int s = w->r->at[v[k]];
     if (nt_kind(nt, v[k]) != NK_PreExecutionNode) {
-      if (s != -2) continue;
-      s = lr_add(w, v[k], at);
-      ElabAt in = at; in.top = s;
-      elab_inner(w, v[k], s, in);
-      w->r->st[s].last = w->r->nst - 1;
+      if (w->r->at[v[k]] != -2) continue;
+      elab_walk(w, v[k], at);
     }
+    int s = w->r->at[v[k]];
     if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? w->rank++ : -1;
     int t = prog_ordered_load(c, v[k]);
     if (t >= 0 && !w->entered[t]) elab_file(w, t);
