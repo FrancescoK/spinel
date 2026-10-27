@@ -33,7 +33,7 @@ const M: write#3
 const V: write#5
 V#f: def#6 vis#7 private end=yes
 const C: write#8
-C#g: alias#10 (f: def#6) end=yes
+C#g: alias#10 (f: def#6) private end=yes
 C#call_g: def#11 end=yes
 const Pt: write#12
 visibility in #12: vis#13 private vis#15 public

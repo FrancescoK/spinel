@@ -462,7 +462,7 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
 /* The class a constant's write or definition holds: a class or module
    header's (the scope walk's decision), a class builder's; else none known */
 static int lr_cref(Compiler *c, int e);
-static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, const LrDef **out, int depth);
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 
 static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
@@ -644,8 +644,8 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     LoadPoint p = elab_point_of(x->c, node);
     int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
     opaque = is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
-             (!sg && lr_search(x->c, cls, 1, nm, -1, p, 0, NULL, 0) != ELAB_NO) ||
-             (bare && lr_search(x->c, LR_MAIN, 0, nm, -1, p, 0, NULL, 0) != ELAB_NO);
+             (!sg && lr_search(x->c, cls, 1, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO) ||
+             (bare && lr_search(x->c, LR_MAIN, 0, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO);
   }
   if (opaque && cls >= 0)
     lr_version(x->r, LR_KEY_OPAQUE, lr_const_owner(cls), "", (LrDef){ node, LR_OPAQUE, 0, (unsigned char)may, 0, NULL });
@@ -761,10 +761,11 @@ static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, i
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
 }
 
-/* ...of a method: an undef stops the search (LR_STOP), a removal passes it on */
-static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, const LrDef **out) {
+/* ...of a method: an undef stops the search (LR_STOP), a removal passes it
+   on; a visibility change (`private :m`) counts only when vis asks for it */
+static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, int vis, const LrDef **out) {
   const LrDef *v = NULL;
-  int o = lr_last_before(c, h, p, late, 1, &v);
+  int o = lr_last_before(c, h, p, late, !vis, &v);
   if (out && v) *out = v;
   return o != ELAB_YES ? o : v->kind == LR_UNDEF ? LR_STOP : v->kind == LR_REMOVE ? ELAB_NO : ELAB_YES;
 }
@@ -791,8 +792,9 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
 /* The search of `name` (or, with name NULL, of module `mod`) along cls's
    ancestors at p: its prepends (the last first), cls, its includes (the
    last first), then its superclass; a singleton's own methods, its extends,
-   then the superclass's singleton. */
-static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, const LrDef **out, int depth) {
+   then the superclass's singleton. With vis, an ancestor's visibility
+   change of the name is found as well, for the visibility it gives. */
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
@@ -800,7 +802,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   int unsure = 0;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
-      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, out) : ELAB_NO;
+      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, vis, out) : ELAB_NO;
       if (o == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o == LR_STOP) return unsure ? ELAB_UNKNOWN : ELAB_NO;
       if (o == ELAB_UNKNOWN) unsure = 1;
@@ -812,7 +814,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
       if (m->kind != want || (sg && pass == 0)) continue;
       int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
       if (b == ELAB_NO) continue;
-      int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, out, depth + 1);
+      int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o != ELAB_NO) unsure = 1;
     }
@@ -821,20 +823,20 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
      (main's own singleton is not Object's) */
   int sup = lr_super(c, cls);
   if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
-  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, out, depth + 1) : ELAB_NO;
+  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, vis, out, depth + 1) : ELAB_NO;
   return o == ELAB_NO ? (unsure ? ELAB_UNKNOWN : ELAB_NO) : unsure ? ELAB_UNKNOWN : o;
 }
 
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
   if (!c->lrec || !c->lrec->recorded || !name) return ELAB_UNKNOWN;
-  int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, out, 0);
+  int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, 0, out, 0);
   return o == LR_STOP ? ELAB_NO : o;
 }
 
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded || mod < 0) return ELAB_UNKNOWN;
-  return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, NULL, 0);
+  return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);
 }
 
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p) {
@@ -930,15 +932,11 @@ int elab_body_visibility_at(Compiler *c, int node) {
 }
 
 /* elab_method_vis_at's answer, also while the record is being made: the
-   last version or visibility change of the class's own before p, else the
-   version its ancestors give */
+   last version or visibility change of the name along the class's
+   ancestors before p */
 static int lr_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p) {
   const LrDef *d = NULL;
-  int o = lr_last_before(c, lr_hist(c->lrec, cls, sg, name, 0), p, p.region < 0, 0, &d);
-  if (o == ELAB_UNKNOWN || (o == ELAB_YES && d->kind == LR_UNDEF)) return -1;
-  if (o == ELAB_YES && d->kind != LR_REMOVE) return d->vis;
-  d = NULL;
-  return lr_search(c, cls, sg, name, -1, p, p.region < 0, &d, 0) == ELAB_YES && d ? d->vis : -1;
+  return lr_search(c, cls, sg, name, -1, p, p.region < 0, 1, &d, 0) == ELAB_YES && d ? d->vis : -1;
 }
 int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p) {
   return c->lrec && c->lrec->recorded ? lr_vis_at(c, cls, name, sg, p) : -1;
@@ -1131,6 +1129,27 @@ static void elab_check_visibility(Compiler *c) {
     f->differ++;
     if (r->shown++ < LR_CHECK_SHOW)
       fprintf(stderr, "spinel-elab-check: visibility %s#%s now=%d record=%d\n", c->classes[h->a].name, h->name, now, rec);
+  }
+  /* ...and of each method a class has only from a module it includes,
+     against the visibility the class table finds up the class's chain */
+  for (int ci = 0; ci < c->nclasses && ci + 1 < r->ncls; ci++) {
+    const LrClass *k = lr_class(r, ci);
+    for (int j = 0; j < k->nmix; j++) {
+      if (k->mix[j].mod < 0 || k->mix[j].kind == LR_EXTEND) continue;
+      for (int i = 0; i < r->nhist; i++) {
+        const LrHist *h = &r->hist[i];
+        if (h->a != k->mix[j].mod || h->b || lr_hist(r, ci, 0, h->name, 0)) continue;
+        int rec = elab_method_vis_at(c, ci, h->name, 0, (LoadPoint){ -1, -1 }), now = comp_method_vis_in_chain(c, ci, h->name);
+        if (rec < 0) continue;
+        LrCheck *f = lr_family(r, "method visibility through a mixin");
+        f->asked++;
+        if (rec == now) continue;
+        f->differ++;
+        if (r->shown++ < LR_CHECK_SHOW)
+          fprintf(stderr, "spinel-elab-check: visibility %s#%s (from %s) now=%d record=%d\n", c->classes[ci].name, h->name,
+                  c->classes[h->a].name, now, rec);
+      }
+    }
   }
 }
 
