@@ -12361,6 +12361,32 @@ static void bi_mark_subtree(const NodeTable *nt, int id, unsigned char *mark, in
     for (int k = 0; k < nd->a[j].n; k++) bi_mark_subtree(nt, nd->a[j].ids[k], mark, n);
 }
 
+static void bi_flag_calls(NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return;
+  if (nt_kind(nt, id) == NK_CallNode) nt_node_set_int(nt, id, "enum_dead_arm", 1);
+  int nr = nt_num_refs(nt, id);
+  for (int j = 0; j < nr; j++) bi_flag_calls(nt, nt_ref_at(nt, id, j));
+  int na = nt_num_arrs(nt, id);
+  for (int j = 0; j < na; j++) {
+    int m = 0; const int *ids = nt_arr_at(nt, id, j, &m);
+    for (int k = 0; k < m; k++) bi_flag_calls(nt, ids[k]);
+  }
+}
+
+/* The calls in the `else` of the copy `copy`'s closing `if block_given?`,
+   flagged enum_dead_arm: the copy serves a call with a literal block and
+   no definition in enumerable.rb calls itself, so that arm never runs. */
+static void bi_flag_dead_else(NodeTable *nt, int copy) {
+  int body = nt_ref(nt, copy, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  int last = bn > 0 ? bb[bn - 1] : -1;
+  int pred = last >= 0 && nt_kind(nt, last) == NK_IfNode ? nt_ref(nt, last, "predicate") : -1;
+  const char *pn = pred >= 0 && nt_kind(nt, pred) == NK_CallNode && nt_ref(nt, pred, "receiver") < 0
+                   ? nt_str(nt, pred, "name") : NULL;
+  int els = pn && sp_streq(pn, "block_given?") ? nt_ref(nt, last, "subsequent") : -1;
+  if (els >= 0 && nt_kind(nt, els) == NK_ElseNode) bi_flag_calls(nt, els);
+}
+
 int desugar_builtins(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -12492,7 +12518,9 @@ int desugar_builtins(Compiler *c) {
      One shared among the copies would carry every site's types at once. A
      call back to a method its copy sits in (a recursion) calls that copy.
      The generics' own calls are left alone: only the copies run, and a copy
-     made for a call in a generic was a method nothing calls. */
+     made for a call in a generic was a method nothing calls. So are the
+     calls in the blockless arm of a builtin's copy made for a call with a
+     literal block, an arm that never runs (bi_flag_dead_else). */
   unsigned char *in_generic = (unsigned char *)calloc((size_t)n0 + 1, 1);
   if (!in_generic) { free(gdef); free(nb); return 0; }
   for (int i = 0; i < sp_builtin_enum_names_n; i++)
@@ -12500,7 +12528,7 @@ int desugar_builtins(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     if (id == own_lo) id = n0;
     if (id >= nt->count) break;
-    if (nt_kind(nt, id) != NK_CallNode || (id < n0 && in_generic[id])) continue;
+    if (nt_kind(nt, id) != NK_CallNode || (id < n0 && in_generic[id]) || nt_int(nt, id, "enum_dead_arm", 0)) continue;
     const char *cn0 = nt_str(nt, id, "name");
     /* `enum.with_object(memo)` is renamed to each_with_object by the
        Enumerator desugar inside the fixpoint, after this pass: give it its
@@ -12561,6 +12589,8 @@ int desugar_builtins(Compiler *c) {
     nt_node_set_int(nt, copy, "enum_in_copy", in_copy);
     for (int j = cbase; j < nt->count; j++)
       if (j != copy && nt_kind(nt, j) == NK_CallNode) nt_node_set_int(nt, j, "enum_in_copy", copy);
+    { int sb = nt_ref(nt, id, "block");
+      if (bi < nbuiltin && sb >= 0 && nt_kind(nt, sb) == NK_BlockNode) bi_flag_dead_else(nt, copy); }
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
     nb[nbn++] = copy;
   }
