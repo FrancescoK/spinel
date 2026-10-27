@@ -76,15 +76,6 @@ extern int g_yvt_depth;
    -1 = no override; set to the receiver's class_id while inferring
    the block body so that InstanceVariableReadNode uses the right class. */
 extern int an_ie_class_id;
-/* Class index of the class/module body currently being analyzed (set around
-   ClassNode/ModuleNode body traversal). -1 outside any class body. */
-extern int g_cbody_class_id;
-/* Like g_cbody_class_id, but cleared when descending into a method/block scope:
-   the class index only while walking a class/module body's *direct* statements,
-   where `self` is the class object. -1 inside method bodies and at top level.
-   Mirrors codegen's g_class_body_id so a self/bare `class_eval` reopen is
-   recognized identically by analyze and codegen. */
-extern int g_cbody_direct;
 
 
 /* method(:sym) helpers (defined in analyze_util.c, shared with codegen) */
@@ -369,7 +360,6 @@ void collect_def_params(Compiler *c, int def_id, Scope *s);
 char *dm_lit_str(Compiler *c, int lit);
 char *dm_eval_name(Compiler *c, int node, const char *bv, int lit);
 TyKind dm_lit_type(Compiler *c, int lit);
-int collect_dm_each_unroll(Compiler *c, int id, int class_id, int scope_idx);
 const char *builtin_class_of_type(TyKind t);
 const char *object_fallback_class_of_type(TyKind t);
 /* Whether method `m` can take call `call_id`'s arguments (analyze_pass.c) */

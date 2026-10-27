@@ -399,7 +399,8 @@ int nt_clone_subtree(NodeTable *nt, int root) {
 
 /* ---- synthetic node construction ---- */
 
-static void nki_retyped(const NodeTable *nt, int id, NodeKind was);
+static void nki_retyped(NodeTable *nt, int id, NodeKind was);
+static void nki_drop(NodeTable *nt);
 
 /* Retype an existing node in place. A desugar that rewrites one construct
    into another (a CallOperatorWriteNode into the writer CallNode Ruby means)
@@ -585,6 +586,10 @@ void nt_free(NodeTable *nt) {
     free(nd->s); free(nd->i); free(nd->r); free(nd->a);
   }
   free(nt->nodes);
+  nki_drop(nt);
+  for (int i = 0; i < nt->nkind_retired; i++) free(nt->kind_retired[i]);
+  free(nt->kind_retired);
+  free(nt->kind_moved);
   free(nt->source_file);
   for (int k = 0; k < nt->nfiles; k++) free(nt->files[k]);
   free(nt->files);
@@ -658,68 +663,158 @@ NodeKind nt_kind_resolve(const NodeTable *nt, int id) {
   return k;
 }
 
-/* Node ids grouped by kind (CSR), cached per node table. The analyze passes
-   each scan the whole table filtering by node kind, dozens of times per fixpoint
-   iteration; this lets a pass walk only the nodes of the kind it cares about.
-   Ids within a kind are in ascending order (matching a forward `for id` scan).
-   Rebuilt when the table pointer or count changes (desugar passes append nodes),
-   or when a node is retyped in place into another kind (nki_retyped).
-   nt_kind is O(1) (cached per node), so a rebuild is a single linear pass. */
-static const NodeTable *nki_nt = NULL;
-static int nki_ntc = -1;
-static int *nki_ids = NULL;   /* all ids, grouped by kind */
-static int *nki_off = NULL;   /* size NK__COUNT+1; kind k spans [off[k], off[k+1]) */
-/* Id arrays superseded while an NT_FOREACH_KIND loop was open (its body
-   appended nodes and something rebuilt the cache): kept until the last open
-   iterator closes, since the loop is still reading its own. */
-static int nki_live = 0;
-static int **nki_retired = NULL;
-static int nki_nretired = 0, nki_cretired = 0;
-static void nki_retire(int *p) {
+/* The node ids of each kind, ascending (matching a forward `for id` scan),
+   kept in the table (kind_ids): the analyze passes each scan the whole
+   table filtering by node kind, dozens of times per fixpoint iteration, and
+   this lets a pass walk only the nodes of the kind it cares about. Changes
+   reach the index at the next ask, as one pass each:
+   - a node appended since the last ask joins its kind's ids after the rest
+     (desugar passes, the scope walk's clones), so they stay ascending;
+   - a node retyped in place (nki_retyped) is noted, and the ask moves every
+     noted node at once: each kind they leave or join is merged anew, so a
+     pass that retypes nodes while it loops over a kind costs one merge per
+     ask, not one per node;
+   - a swap or a renumbering, which moves ids between kinds wholesale, and a
+     table cut back below the nodes indexed rebuild the index.
+   An id array an open NT_FOREACH_KIND loop may be reading is retired, not
+   freed, until the table's last open loop closes: the loop reads the ids it
+   began with. nt_kind is O(1) (cached per node). */
+/* n ids copied or merged, as the scale test counts work (NT_WORK): a
+   change that moved a kind's ids per retyped node shows as a ratio far
+   above the program's growth */
+static void nki_work(int n) {
+#ifdef SP_WORK_COUNT
+  g_nt_work += (unsigned long long)n;
+#else
+  (void)n;
+#endif
+}
+static void nki_release(NodeTable *nt, int *p) {
   if (!p) return;
-  if (nki_nretired == nki_cretired) {
-    int nc = nki_cretired ? nki_cretired * 2 : 8;
-    int **np = (int **)realloc(nki_retired, (size_t)nc * sizeof(int *));
+  if (nt->kind_live == 0) { free(p); return; }
+  if (nt->nkind_retired == nt->ckind_retired) {
+    int nc = nt->ckind_retired ? nt->ckind_retired * 2 : 8;
+    int **np = (int **)realloc(nt->kind_retired, (size_t)nc * sizeof(int *));
     if (!np) return;   /* kept alive by the leak rather than freed under a reader */
-    nki_retired = np; nki_cretired = nc;
+    nt->kind_retired = np; nt->ckind_retired = nc;
   }
-  nki_retired[nki_nretired++] = p;
+  nt->kind_retired[nt->nkind_retired++] = p;
 }
-void nt_kind_iter_open(void) { nki_live++; }
+void nt_kind_iter_open(const NodeTable *nt) { ((NodeTable *)nt)->kind_live++; }
 void nt_kind_iter_close(NtKindIter *it) {
-  (void)it;
-  if (--nki_live > 0) return;
-  for (int i = 0; i < nki_nretired; i++) free(nki_retired[i]);
-  nki_nretired = 0;
+  NodeTable *nt = (NodeTable *)it->nt;
+  if (--nt->kind_live > 0) return;
+  for (int i = 0; i < nt->nkind_retired; i++) free(nt->kind_retired[i]);
+  nt->nkind_retired = 0;
 }
-/* Node id was retyped in place (nt_node_set_type, nt_node_reset) and is of
-   another kind now. The index still lists it under the kind it had and not
-   under its new one, and the node count, which is what tells a rebuild is
-   due, did not change: a desugar that folds `RUBY_ENGINE == "spinel"` into
-   a TrueNode appends nothing, so a later walk of the CallNodes was handed
-   the TrueNode and read its absent name. Drop the index; the next ask
-   rebuilds it, once however many nodes changed kind meanwhile. */
-static void nki_retyped(const NodeTable *nt, int id, NodeKind was) {
-  if (nki_nt == nt && nt_kind(nt, id) != was) nki_nt = NULL;
+static void nki_drop(NodeTable *nt) {
+  nt->nkind_moved = 0;
+  if (!nt->kind_ids) return;
+  for (int k = 0; k < NK__COUNT; k++) nki_release(nt, nt->kind_ids[k]);
+  free(nt->kind_ids); free(nt->kind_n); free(nt->kind_cap);
+  nt->kind_ids = NULL; nt->kind_n = nt->kind_cap = NULL;
+  nt->kind_count = 0;
 }
-static void nki_build(const NodeTable *nt) {
-  int n = nt->count;
-  if (nki_live > 0) nki_retire(nki_ids); else free(nki_ids);
-  free(nki_off);
-  nki_off = (int *)calloc((size_t)NK__COUNT + 1, sizeof(int));
-  if (!nki_off) nt_oom();
-  nki_ids = nt_alloc((size_t)n * sizeof(int));
-  nki_nt = nt; nki_ntc = n;
-  for (int id = 0; id < n; id++) nki_off[(int)nt_kind(nt, id) + 1]++;
-  for (int k = 1; k <= NK__COUNT; k++) nki_off[k] += nki_off[k - 1];
-  /* nki_off[k] is now the start of kind k; fill, advancing a local cursor */
-  int *cur = nt_alloc((size_t)NK__COUNT * sizeof(int));
-  for (int k = 0; k < NK__COUNT; k++) cur[k] = nki_off[k];
-  for (int id = 0; id < n; id++) { int k = (int)nt_kind(nt, id); nki_ids[cur[k]++] = id; }
-  free(cur);
+/* Room for `need` of kind k's ids. A grown array is a copy: an open loop
+   reads the old one, and an append in place is no harm to it, as it reads
+   only the ids it began with. */
+static void nki_grow(NodeTable *nt, int k, int need) {
+  if (need <= nt->kind_cap[k]) return;
+  int nc = nt->kind_cap[k] ? nt->kind_cap[k] : 8;
+  while (nc < need) nc *= 2;
+  int *p = nt_alloc(sizeof(int) * (size_t)nc);
+  if (nt->kind_n[k]) memcpy(p, nt->kind_ids[k], sizeof(int) * (size_t)nt->kind_n[k]);
+  nki_work(nt->kind_n[k]);
+  nki_release(nt, nt->kind_ids[k]);
+  nt->kind_ids[k] = p;
+  nt->kind_cap[k] = nc;
 }
-/* Return the ids of nodes of kind `k` (ascending), writing the count to *count.
-   The returned pointer is valid until the next call with a changed node table. */
+/* Node id was retyped in place (nt_node_set_type, nt_node_reset) and may
+   be of another kind now. The node count, which is what tells an ask that
+   nodes were added, did not change: a desugar that folds
+   `RUBY_ENGINE == "spinel"` into a TrueNode appends nothing, and left
+   listed as a CallNode, a later walk of the CallNodes was handed the
+   TrueNode and read its absent name. Noted with the kind it had; the next
+   ask moves it. */
+static void nki_retyped(NodeTable *nt, int id, NodeKind was) {
+  if (!nt->kind_ids || id >= nt->kind_count || nt_kind(nt, id) == was) return;
+  if (nt->nkind_moved + 2 > nt->ckind_moved) {
+    int nc = nt->ckind_moved ? nt->ckind_moved * 2 : 64;
+    int *np = (int *)realloc(nt->kind_moved, (size_t)nc * sizeof(int));
+    if (!np) nt_oom();
+    nt->kind_moved = np; nt->ckind_moved = nc;
+  }
+  nt->kind_moved[nt->nkind_moved++] = id;
+  nt->kind_moved[nt->nkind_moved++] = (int)was;
+}
+/* One noted retype: the node, the kind it is listed under, the kind it has
+   now, and its place in the notes (a node retyped twice is listed under the
+   kind its first note names) */
+typedef struct { int id, was, now, seq; } NkiMove;
+static int nki_move_cmp(const void *a, const void *b) {
+  const NkiMove *x = a, *y = b;
+  if (x->id != y->id) return x->id < y->id ? -1 : 1;
+  return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+/* Every noted node from the kind it is listed under to the one it has:
+   each kind a node leaves or joins is merged into a new array, its ids and
+   the joiners in order, the leavers left out */
+static void nki_apply_moves(NodeTable *nt) {
+  int m = nt->nkind_moved / 2;
+  nt->nkind_moved = 0;
+  NkiMove *mv = nt_alloc(sizeof(NkiMove) * (size_t)m);
+  for (int i = 0; i < m; i++)
+    mv[i] = (NkiMove){ nt->kind_moved[2 * i], nt->kind_moved[2 * i + 1], NK_NONE, i };
+  qsort(mv, (size_t)m, sizeof(NkiMove), nki_move_cmp);
+  unsigned char *hit = calloc((size_t)NK__COUNT, 1);
+  if (!hit) nt_oom();
+  int u = 0, last = -1;
+  for (int i = 0; i < m; i++) {
+    if (mv[i].id == last) continue;   /* a later note of the same node */
+    last = mv[i].id;
+    mv[i].now = (int)nt_kind(nt, mv[i].id);
+    if (mv[i].now == mv[i].was) continue;              /* retyped back */
+    hit[mv[i].was] = hit[mv[i].now] = 1;
+    mv[u++] = mv[i];
+  }
+  for (int k = 0; k < NK__COUNT; k++) {
+    if (!hit[k]) continue;
+    int *old = nt->kind_ids[k], on = nt->kind_n[k], i = 0, n = 0, cap = on + u > 8 ? on + u : 8;
+    int *p = nt_alloc(sizeof(int) * (size_t)cap);
+    for (int j = 0; j < u; j++) {
+      if (mv[j].was != k && mv[j].now != k) continue;
+      while (i < on && old[i] < mv[j].id) p[n++] = old[i++];
+      if (mv[j].was == k) { if (i < on && old[i] == mv[j].id) i++; }
+      else p[n++] = mv[j].id;
+    }
+    while (i < on) p[n++] = old[i++];
+    nki_work(n);
+    nki_release(nt, old);
+    nt->kind_ids[k] = p; nt->kind_n[k] = n; nt->kind_cap[k] = cap;
+  }
+  free(hit);
+  free(mv);
+}
+/* The index brought up to the table: built afresh when there is none or
+   the table was cut back, the noted retypes moved, the nodes not indexed
+   yet added to their kinds' ids */
+static void nki_refresh(NodeTable *nt) {
+  if (nt->kind_ids && nt->kind_count > nt->count) nki_drop(nt);
+  if (!nt->kind_ids) {
+    nt->kind_ids = (int **)calloc((size_t)NK__COUNT, sizeof(int *));
+    nt->kind_n = (int *)calloc((size_t)NK__COUNT, sizeof(int));
+    nt->kind_cap = (int *)calloc((size_t)NK__COUNT, sizeof(int));
+    if (!nt->kind_ids || !nt->kind_n || !nt->kind_cap) nt_oom();
+    nt->kind_count = 0;
+  }
+  if (nt->nkind_moved) nki_apply_moves(nt);
+  for (int id = nt->kind_count; id < nt->count; id++) {
+    int k = (int)nt_kind(nt, id);
+    nki_grow(nt, k, nt->kind_n[k] + 1);
+    nt->kind_ids[k][nt->kind_n[k]++] = id;
+  }
+  nt->kind_count = nt->count;
+}
 /* Exchange the contents of nodes a and b: what was node a is now numbered b,
    and the reverse. A desugar that must put a new node AHEAD of an existing
    one in node order (passes that fold by ascending id read it first) builds
@@ -731,14 +826,18 @@ void nt_swap_nodes(NodeTable *nt, int a, int b) {
   nt->nodes[a] = nt->nodes[b];
   nt->nodes[b] = t;
   nt->version++; nt->edits++;
-  nki_nt = NULL;   /* the kind index lists ids by kind: rebuild it */
+  nki_drop(nt);   /* the kind index lists ids by kind: rebuild it */
 }
 
+/* Return the ids of nodes of kind `k` (ascending), writing the count to *count.
+   The returned pointer is valid until the table next changes, and while an
+   NT_FOREACH_KIND loop is open. */
 const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count) {
-  if (nki_nt != nt || nki_ntc != nt->count) nki_build(nt);
-  if (!nki_off || !nki_ids || k < 0 || k >= NK__COUNT) { *count = 0; return NULL; }
-  *count = nki_off[k + 1] - nki_off[k];
-  return nki_ids + nki_off[k];
+  if (k < 0 || k >= NK__COUNT) { *count = 0; return NULL; }
+  NodeTable *w = (NodeTable *)nt;   /* the index is the table's cache */
+  if (!w->kind_ids || w->kind_count != w->count || w->nkind_moved) nki_refresh(w);
+  *count = w->kind_n[k];
+  return w->kind_ids[k];
 }
 
 
@@ -772,7 +871,7 @@ void nt_renumber(NodeTable *nt, const int *order) {
     if (nt->file_roots[f] >= 0 && nt->file_roots[f] < n) nt->file_roots[f] = perm[nt->file_roots[f]];
   free(perm);
   nt->version++; nt->edits++;
-  nki_nt = NULL;   /* the ids of each kind moved */
+  nki_drop(nt);   /* the ids of each kind moved */
   free(nt->aux); nt->aux = NULL; nt->aux_cap = 0;   /* and so did each one's entry */
 }
 

@@ -5557,6 +5557,12 @@ CALL_SHAPES_LIMIT ?= 4.5
 # ratio read 16.04x until an answer could outlive its query (#8852); 4.38x
 # since. The limit sits about 5% above.
 STR_CHAIN_LIMIT ?= 4.6
+# Engine checks a desugar folds by id (test/scale/engine_folds.sh), at 4,000
+# and 8,000 checks, each fold retyping nodes in place. The kind index counts
+# the ids it copies and merges: moving a retyped node's id by shifting its
+# kind's ids, once per node, read 2.50x here; one merge per kind at the next
+# ask reads 2.00x.
+ENGINE_FOLDS_LIMIT ?= 2.2
 # A chain of forty bangs over a String a method answers, compiled to C with
 # --share-strings under a CPU-time limit, as the hash-literal fan-out is:
 # strbuf_bang_self_local asked each link once per path that reaches it,
@@ -5607,13 +5613,16 @@ scale-test: $(SPINEL_WORK)
 	sh test/scale/str_chain.sh 100 > "$$tmp/k1.rb"; sh test/scale/str_chain.sh 400 > "$$tmp/k4.rb"; \
 	ka=$$(sw --emit-rbs -o "$$tmp/k1.rbs" "$$tmp/k1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	kb=$$(sw --emit-rbs -o "$$tmp/k4.rbs" "$$tmp/k4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	sh test/scale/engine_folds.sh 4000 > "$$tmp/e4.rb"; sh test/scale/engine_folds.sh 8000 > "$$tmp/e8.rb"; \
+	ea=$$(sw -c -o "$$tmp/e4.c" "$$tmp/e4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	eb=$$(sw -c -o "$$tmp/e8.c" "$$tmp/e8.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
 	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ] || \
-	   [ -z "$$ka" ] || [ -z "$$kb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	   [ -z "$$ka" ] || [ -z "$$kb" ] || [ -z "$$ea" ] || [ -z "$$eb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
 	  { echo "scale-test: FAIL (a boxed Hash store rescanned unrelated method bodies)"; exit 1; }; \
@@ -5634,7 +5643,10 @@ scale-test: $(SPINEL_WORK)
 	  { echo "scale-test: FAIL (a binding or block-typing pass grew superlinearly: it rescans per call site or argument, see test/scale/call_shapes.sh)"; exit 1; }; \
 	awk -v a="$$ka" -v b="$$kb" -v lim="$(STR_CHAIN_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: the analysis of a String chain at 4x the links is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
-	  { echo "scale-test: FAIL (the analysis grew superlinearly in the length of a chain: infer_type re-inferred the chain per node, see infer_memo_boundary and SPINEL_IMEMO=shadow, #8852)"; exit 1; }
+	  { echo "scale-test: FAIL (the analysis grew superlinearly in the length of a chain: infer_type re-inferred the chain per node, see infer_memo_boundary and SPINEL_IMEMO=shadow, #8852)"; exit 1; }; \
+	awk -v a="$$ea" -v b="$$eb" -v lim="$(ENGINE_FOLDS_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: engine-check folds at 2x the checks are %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (retyping nodes grew superlinearly: the kind index moved ids per retyped node, see nki_apply_moves)"; exit 1; }
 
 .PHONY: bisect-test
 # `spinel bisect`, end to end. The search has its own corpus test
