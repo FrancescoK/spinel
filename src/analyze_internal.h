@@ -368,6 +368,29 @@ const char *resolve_class_alias(Compiler *c, const char *cname);
 const char *resolve_class_alias_chain(Compiler *c, const char *cname);
 const char *const_alias_source(Compiler *c, const char *cname);
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
+/* Where the load phase stands at a node (analyze_elab.c): the statement it
+   is in (e, its seq; -1 where no record is made) and how that statement
+   runs -- its file, the top-level statement holding it, the statement whose
+   body opened its class frame (-1: main's), its nesting for the dump,
+   whether it may not run or may run partly (may, partial) -- and what the
+   node is to it (kind, EP_*). A statement's node and the nodes on its path
+   to the bodies it runs (EP_SPINE: a branch, a rescue clause, a written
+   value's call, a block run at once) lead to those bodies: a statement
+   list (EP_LIST), whose elements are statements, or a lone expression
+   (EP_NEW), which is one. Any other node is one of the statement's
+   (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
+   keeps it to run later, so that its nodes are late. */
+typedef struct {
+  int e, file, top, frame, depth;
+  unsigned char may, partial, kind, bits, defer;
+} ElabPos;
+enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
+ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);
+int elab_ref_last(const NodeTable *nt, int id, int ref);
+int elab_walk_enter(Compiler *c, int ch, ElabPos *pos);
+void elab_walk_leave(Compiler *c, int e);
+void elab_walk_rest(Compiler *c, int id, ElabPos pos);
+void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos);
 int scope_own_defaults(Compiler *c, int di);
 void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);

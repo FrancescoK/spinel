@@ -550,23 +550,32 @@ void expand_struct_forwarding_super(Compiler *c) {
    identically by analyze and codegen); whether it is directly in the block
    of `Name = Struct.new(...) do ... end`, whose class register_structs
    makes only after the walk (fix_struct_block_scopes); and whether it is a
-   define_method of a `class << X` body, which defines a class method; and
-   whether it is a file's top level (the root's statements), whose BEGIN
-   blocks run first. */
+   define_method of a `class << X` body, which defines a class method. pos:
+   where the load phase stands there (analyze_elab.c), as the load record's
+   walk, which this walk is, enters it; e -1 in a walk after it. */
 typedef struct {
   int scope, cls, proc, dead;
-  int cbody, direct, struct_direct, dm_sclass, top;
+  int cbody, direct, struct_direct, dm_sclass;
+  ElabPos pos;
 } WalkCtx;
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w);
 
+/* A child the walk enters at w.pos: a statement of the load phase when
+   that makes it one, which the record places as the walk reaches it */
+static void walk_child(Compiler *c, int ch, WalkCtx w) {
+  int e = elab_walk_enter(c, ch, &w.pos);
+  walk_scope_in(c, ch, w);
+  elab_walk_leave(c, e);
+}
+
 /* A walk of a node the walk reaches apart from its tree walk (a statement
-   of a `class << X` body, an unrolled define_method's body), in `scope` and
-   `cls`: it is under no proc and in no dead arm, and keeps the class
-   bodies of `w`, where it is reached. */
-static void walk_scope_from(Compiler *c, int id, const WalkCtx *w, int scope, int cls, int dm_sclass) {
-  walk_scope_in(c, id, (WalkCtx){ .scope = scope, .cls = cls, .proc = -1, .cbody = w->cbody,
-                                  .direct = w->direct, .struct_direct = w->struct_direct, .dm_sclass = dm_sclass });
+   of a `class << X` body, an unrolled define_method's body), at pos, in
+   `scope` and `cls`: it is under no proc and in no dead arm, and keeps the
+   class bodies of `w`, where it is reached. */
+static void walk_scope_from(Compiler *c, int id, const WalkCtx *w, ElabPos pos, int scope, int cls, int dm_sclass) {
+  walk_child(c, id, (WalkCtx){ .scope = scope, .cls = cls, .proc = -1, .cbody = w->cbody,
+                               .direct = w->direct, .struct_direct = w->struct_direct, .dm_sclass = dm_sclass, .pos = pos });
 }
 
 /* String form of an int/string/symbol literal node, for compile-time
@@ -739,7 +748,7 @@ static int collect_dm_each_unroll(Compiler *c, int id, const WalkCtx *w) {
     lv_set_type(lv, dm_lit_type(c, elems[k]));
     lv->is_param = 1;  /* not a real C param, but keeps it out of decls */
     int ms_idx = c->nscopes - 1;
-    if (kbody >= 0) walk_scope_from(c, kbody, w, ms_idx, class_id, 0);
+    if (kbody >= 0) walk_scope_from(c, kbody, w, (ElabPos){ .e = -1 }, ms_idx, class_id, 0);
     /* the body is a method's: its `next` is a `return` */
     method_body_next_to_return((NodeTable *)nt, kbody);
   }
@@ -1126,6 +1135,19 @@ static void singleton_reopen_mark(Compiler *c, int def, int recv, int class_id) 
    if cond; def m; end; else; def m; end; end`, as Loofah defines its entry
    points, #5358). A define_method there is a class method too. Anything
    else is walked as usual. */
+static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_class, int depth, int reopen_recv, int reopen_class);
+
+/* Child ch of node p (whose context is w) as a statement of a `class <<
+   self` body is walked: placed in the load record as walk_child places one */
+static void sclass_walk_child(Compiler *c, int p, int ch, const WalkCtx *w, int target_class, int depth, int reopen_recv, int reopen_class) {
+  if (ch < 0) return;
+  WalkCtx cw = *w;
+  cw.pos = elab_child(c->nt, p, ch, &w->pos);
+  int e = elab_walk_enter(c, ch, &cw.pos);
+  sclass_walk_stmt(c, ch, &cw, target_class, depth, reopen_recv, reopen_class);
+  elab_walk_leave(c, e);
+}
+
 static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_class, int depth, int reopen_recv, int reopen_class) {
   const NodeTable *nt = c->nt;
   int scope_idx = w->scope;
@@ -1134,7 +1156,7 @@ static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_cl
   if (k == NK_CallNode && dm_registerable_name(nt, s)) {
     if (reopen_recv >= 0 && nt_ref(nt, s, "receiver") < 0)
       singleton_reopen_mark(c, s, reopen_recv, reopen_class);
-    walk_scope_from(c, s, w, scope_idx, target_class, 1);
+    walk_scope_from(c, s, w, w->pos, scope_idx, target_class, 1);
     return;
   }
   /* `private def m` / `protected def m` / `public def m`: the def is the
@@ -1149,7 +1171,9 @@ static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_cl
       c->node_cbody[s] = w->cbody;
       c->nscope[va] = scope_idx;
       c->node_cbody[va] = w->cbody;
-      sclass_walk_stmt(c, vv[0], w, target_class, depth + 1, reopen_recv, reopen_class);
+      WalkCtx aw = *w;
+      aw.pos = elab_child(nt, s, va, &w->pos);
+      sclass_walk_child(c, va, vv[0], &aw, target_class, depth + 1, reopen_recv, reopen_class);
       return;
     }
   }
@@ -1171,25 +1195,26 @@ static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_cl
        is the class -- unwalked, its receiverless call resolved in the caller's
        self and raised NameError there */
     int pn = nt_ref(nt, s, "parameters");
-    if (pn >= 0) walk_scope_from(c, pn, w, new_idx, target_class, 0);
-    if (sc->body >= 0) walk_scope_from(c, sc->body, w, new_idx, target_class, 0);
+    if (pn >= 0) walk_scope_from(c, pn, w, elab_child(nt, s, pn, &w->pos), new_idx, target_class, 0);
+    if (sc->body >= 0) walk_scope_from(c, sc->body, w, elab_child(nt, s, sc->body, &w->pos), new_idx, target_class, 0);
     return;
   }
   NodeKind ty_k = nt_kind(nt, s);
   int cond = k == NK_IfNode || k == NK_UnlessNode || k == NK_StatementsNode ||
              (ty_k == NK_ElseNode);
-  if (!cond || depth > 64) { walk_scope_from(c, s, w, scope_idx, target_class, 0); return; }
+  if (!cond || depth > 64) { walk_scope_from(c, s, w, w->pos, scope_idx, target_class, 0); return; }
   c->nscope[s] = scope_idx;
   c->node_cbody[s] = w->cbody;
   if (k == NK_StatementsNode) {
     int n = 0; const int *b = nt_arr(nt, s, "body", &n);
-    for (int i = 0; i < n; i++) sclass_walk_stmt(c, b[i], w, target_class, depth + 1, reopen_recv, reopen_class);
+    for (int i = 0; i < n; i++) sclass_walk_child(c, s, b[i], w, target_class, depth + 1, reopen_recv, reopen_class);
     return;
   }
-  walk_scope_from(c, nt_ref(nt, s, "predicate"), w, scope_idx, target_class, 0);
-  sclass_walk_stmt(c, nt_ref(nt, s, "statements"), w, target_class, depth + 1, reopen_recv, reopen_class);
-  sclass_walk_stmt(c, nt_ref(nt, s, "subsequent"), w, target_class, depth + 1, reopen_recv, reopen_class);
-  sclass_walk_stmt(c, nt_ref(nt, s, "else_clause"), w, target_class, depth + 1, reopen_recv, reopen_class);
+  int pr = nt_ref(nt, s, "predicate");
+  if (pr >= 0) walk_scope_from(c, pr, w, elab_child(nt, s, pr, &w->pos), scope_idx, target_class, 0);
+  sclass_walk_child(c, s, nt_ref(nt, s, "statements"), w, target_class, depth + 1, reopen_recv, reopen_class);
+  sclass_walk_child(c, s, nt_ref(nt, s, "subsequent"), w, target_class, depth + 1, reopen_recv, reopen_class);
+  sclass_walk_child(c, s, nt_ref(nt, s, "else_clause"), w, target_class, depth + 1, reopen_recv, reopen_class);
 }
 
 /* The four builtin classes that also live under Thread (`Thread::Mutex`). */
@@ -1469,16 +1494,23 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       }
     }
     if (supported) {
+      /* the load record still places the receiver, which this walk does
+         not enter, and a body with rescue clauses, whose statements it
+         does not register */
+      elab_walk_rest(c, sexpr, elab_child(c->nt, id, sexpr, &w.pos));
       int sbody = nt_ref(c->nt, id, "body");
       if (sbody >= 0) {
         nt_node_set_int((NodeTable *)c->nt, sbody, "singleton_body", 1);
+        WalkCtx bw = w;
+        bw.pos = elab_child(c->nt, id, sbody, &w.pos);
+        if (nt_kind(c->nt, sbody) != NK_StatementsNode) elab_walk_rest(c, sbody, bw.pos);
         int n = 0;
         const int *stmts = nt_arr(c->nt, sbody, "body", &n);
         for (int k = 0; k < n; k++) {
           int s = stmts[k];
           const char *sty = nt_type(c->nt, s);
           if (!sty) continue;
-          sclass_walk_stmt(c, s, &w, target_class, 0, native_reopen ? sexpr : -1, class_id);
+          sclass_walk_child(c, sbody, s, &bw, target_class, 0, native_reopen ? sexpr : -1, class_id);
         }
         c->nscope[id] = scope_idx;
         c->nscope[sbody] = scope_idx;
@@ -1623,11 +1655,12 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     /* [lits].each { |v| define_method("m_#{v}") { body } } -- unroll into one
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
-    if ((class_id >= 0 || w.struct_direct) && collect_dm_each_unroll(c, id, &w)) return;
+    if ((class_id >= 0 || w.struct_direct) && collect_dm_each_unroll(c, id, &w)) { elab_walk_rest(c, id, w.pos); return; }
     /* compiler_state_int/str/sa/ia :fields -- declare ivars + synthesize the
        init/dump/set methods (the metaprogramming is native, not define_method). */
     if (class_id >= 0 && cs_macro_kind(nt_str(c->nt, id, "name"))) {
       collect_compiler_state(c, id, class_id);
+      elab_walk_rest(c, id, w.pos);
       return;
     }
     /* define_method(:literal_name) { ... }: register as a method scope.
@@ -1759,7 +1792,6 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   WalkCtx cw = { .scope = child, .cls = child_class, .proc = proc, .dead = dead,
                  .cbody = w.cbody, .direct = w.direct, .struct_direct = w.struct_direct };
   NodeKind wk = nt_kind(c->nt, id);
-  cw.top = wk == NK_ProgramNode;
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
     cw.struct_direct = 0;
   else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c, id) >= 0)
@@ -1780,27 +1812,41 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     then_body = nt_ref(c->nt, id, "statements");
     else_body = nt_ref(c->nt, id, kind == NK_UnlessNode ? "else_clause" : "subsequent");
   }
-  int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) {
-    int r = nt_ref_at(c->nt, id, i);
-    WalkCtx rw = cw;
-    rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
-    if (r >= 0) walk_scope_in(c, r, rw);
-  }
-  /* a file's BEGIN blocks first, as they run (pass 0), then the rest */
-  int na = nt_num_arrs(c->nt, id), begins = w.top && kind == NK_StatementsNode;
-  for (int pass = !begins; pass < 2; pass++)
-    for (int i = 0; i < na; i++) {
+  /* the parts in the order they run: the refs, the arrays, then the refs
+     that run after them, a case's else and a begin's ensure (elab_ref_last),
+     each where the load phase stands there (elab_child) */
+  int nr = nt_num_refs(c->nt, id), na = nt_num_arrs(c->nt, id);
+  for (int pass = 0; pass < 3; pass++) {
+    for (int i = 0; pass != 1 && i < nr; i++) {
+      int r = nt_ref_at(c->nt, id, i);
+      if (r < 0 || elab_ref_last(c->nt, id, r) != (pass == 2)) continue;
+      WalkCtx rw = cw;
+      rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
+      rw.pos = elab_child(c->nt, id, r, &w.pos);
+      walk_child(c, r, rw);
+    }
+    for (int i = 0; pass == 1 && i < na; i++) {
       int n = 0;
       const int *ids = nt_arr_at(c->nt, id, i, &n);
-      for (int j = 0; j < n; j++)
-        if (ids[j] >= 0 && (!begins || (nt_kind(c->nt, ids[j]) == NK_PreExecutionNode) == !pass)) walk_scope_in(c, ids[j], cw);
+      for (int j = 0; j < n; j++) {
+        if (ids[j] < 0) continue;
+        WalkCtx aw = cw;
+        aw.pos = elab_child(c->nt, id, ids[j], &w.pos);
+        walk_child(c, ids[j], aw);
+      }
     }
+  }
 }
 
 /* A walk of `id` from outside any class body */
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
-  walk_scope_in(c, id, (WalkCtx){ .scope = scope_idx, .cls = class_id, .proc = -1, .cbody = -1, .direct = -1 });
+  walk_scope_in(c, id, (WalkCtx){ .scope = scope_idx, .cls = class_id, .proc = -1, .cbody = -1, .direct = -1, .pos = { .e = -1 } });
+}
+
+/* A statement of a file's top level, entered by the load record's walk at
+   pos (analyze_elab.c): in the file's scope, outside any class body */
+void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos) {
+  walk_child(c, stmt, (WalkCtx){ .scope = scope_idx, .cls = -1, .proc = -1, .cbody = -1, .direct = -1, .pos = pos });
 }
 
 static void mf_mark(Compiler *c, int mi) {

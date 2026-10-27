@@ -118,7 +118,6 @@ void an_const_presence(Compiler *c);
 /* The program's files under --load-model=graph (analyze_program.c, #9898):
    their top-level scopes and roots, and what the model refuses for now. */
 void prog_file_scopes(Compiler *c);
-void prog_walk_files(Compiler *c);
 void prog_refuse_loads(Compiler *c);
 void prog_refuse_order(Compiler *c);
 int prog_is_top_scope(const Compiler *c, const Scope *s);
@@ -183,7 +182,7 @@ typedef struct {
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
-typedef struct { int node, kind, mod; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know */
+typedef struct { int node, kind, mod, ref; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know; ref: the argument naming it */
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the version of cls's method `name` (singleton when sg) live at p, through
