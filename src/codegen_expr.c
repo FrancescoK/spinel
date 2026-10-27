@@ -5279,6 +5279,31 @@ static int emit_range_boxed_ends(Compiler *c, int id, int left, int right, int e
   buf_printf(b, ", %d); })", excl);
   return 1;
 }
+
+/* A literal end reads the same whenever it runs: the other end's order
+   against it does not show. */
+static int range_end_literal(const NodeTable *nt, int n) {
+  switch (nt_kind(nt, n)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_NilNode: case NK_TrueNode:
+    case NK_FalseNode: case NK_SymbolNode: case NK_StringNode:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* fn(lo, hi, excl), the Range's builder over its two ends' C. in_order: the
+   ends go to temps first, the begin before the end, as Ruby runs them. */
+static void emit_range_build(Buf *b, const char *fn, Buf *lo, Buf *hi, int excl, int in_order) {
+  if (in_order) {
+    int tl = ++g_tmp, th = ++g_tmp;
+    buf_printf(b, "({ __typeof__(%s) _t%d = %s; __typeof__(%s) _t%d = %s; %s(_t%d, _t%d, %d); })",
+               lo->p, tl, lo->p, hi->p, th, hi->p, fn, tl, th, excl);
+  }
+  else buf_printf(b, "%s(%s, %s, %d)", fn, lo->p, hi->p, excl);
+  free(lo->p); free(hi->p);
+}
+
 /* A Range literal in value position (a..b, a...b, endless and beginless) */
 static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) {
   int left = nt_ref(nt, id, "left");
@@ -5512,18 +5537,27 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
      each bound as an sp_oint. A bound known present is the plain one. */
   int lo_o = left_unbounded || (left >= 0 && (repr_of(c, left).kind == RK_BOXED || (comp_ntype(c, left) == TY_INT && node_has_oint_form(c, left))));
   int hi_o = right_unbounded || (right >= 0 && !fend && !pend && comp_ntype(c, right) == TY_INT && node_has_oint_form(c, right));
+  /* Ruby runs the begin before the end; C does not order a call's
+     arguments (gcc ran `at(3)` before `at(1)` in `x&.slice(at(1)..at(3))`
+     on a boxed x). Where an end can do something, the two go to temps in
+     their order first. */
+  int in_order = !left_unbounded && !right_unbounded &&
+                 ((subtree_has_side_effect(c, left) && !range_end_literal(nt, right)) ||
+                  (subtree_has_side_effect(c, right) && !range_end_literal(nt, left)));
+  Buf lo, hi;
+  memset(&lo, 0, sizeof lo); memset(&hi, 0, sizeof hi);
+  const char *fn;
   if (!fend && !pend && (lo_o || hi_o)) {
-    buf_puts(b, "sp_range_new_o(");
-    if (left_unbounded) buf_puts(b, "sp_oint_nil()");
-    else if (repr_of(c, left).kind == RK_BOXED) { buf_puts(b, "sp_range_lo_bound("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else emit_oint_expr(c, left, TY_INT, b);
-    buf_puts(b, ", ");
-    if (right_unbounded) buf_puts(b, "sp_oint_nil()");
-    else emit_oint_expr(c, right, TY_INT, b);
-    buf_printf(b, ", %d)", excl);
+    fn = "sp_range_new_o";
+    if (left_unbounded) buf_puts(&lo, "sp_oint_nil()");
+    else if (repr_of(c, left).kind == RK_BOXED) { buf_puts(&lo, "sp_range_lo_bound("); emit_expr(c, left, &lo); buf_puts(&lo, ")"); }
+    else emit_oint_expr(c, left, TY_INT, &lo);
+    if (right_unbounded) buf_puts(&hi, "sp_oint_nil()");
+    else emit_oint_expr(c, right, TY_INT, &hi);
+    emit_range_build(b, fn, &lo, &hi, excl, in_order);
     return 1;
   }
-  buf_puts(b, fend ? "sp_range_new_fend(" : pend ? "sp_range_new_pend(" : "sp_range_new(");
+  fn = fend ? "sp_range_new_fend" : pend ? "sp_range_new_pend" : "sp_range_new";
   /* a nil that arrives at run time -- boxed, or an Integer slot's nil --
      is the absent bound too; read as a number, `lo..x` with x nil was the
      empty `lo..0` */
@@ -5532,22 +5566,21 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
      answer for `..2` where CRuby has `..2.5`. Say so at run time. */
   if (!left_unbounded && !right_unbounded && repr_of(c, left).kind == RK_BOXED &&
       comp_ntype(c, right) == TY_FLOAT) {
-    buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
+    buf_puts(&lo, "sp_range_lo_float_end("); emit_expr(c, left, &lo); buf_puts(&lo, ")");
   }
   /* a boxed begin holding a Float cannot be an Integer range's: it says so
      (sp_range_lo_bound), where the conversion truncated it */
   else if (!left_unbounded && repr_of(c, left).kind == RK_BOXED) {
-    buf_puts(b, "sp_range_lo_bound("); emit_expr(c, left, b); buf_puts(b, ")");
+    buf_puts(&lo, "sp_range_lo_bound("); emit_expr(c, left, &lo); buf_puts(&lo, ")");
   }
   /* (a Float or boxed end: the begin as an sp_oint, nil for an open one) */
-  else if (left_unbounded) buf_puts(b, pend ? "sp_oint_nil()" : "SP_RANGE_NO_BEGIN");
-  else if (pend) emit_oint_expr(c, left, TY_INT, b);
-  else emit_int_expr(c, left, b);
-  buf_puts(b, ", ");
-  if (fend) emit_float_expr(c, right, b);
-  else if (pend) emit_expr(c, right, b);
-  else emit_int_expr(c, right, b);
-  buf_printf(b, ", %d)", excl);
+  else if (left_unbounded) buf_puts(&lo, pend ? "sp_oint_nil()" : "SP_RANGE_NO_BEGIN");
+  else if (pend) emit_oint_expr(c, left, TY_INT, &lo);
+  else emit_int_expr(c, left, &lo);
+  if (fend) emit_float_expr(c, right, &hi);
+  else if (pend) emit_expr(c, right, &hi);
+  else emit_int_expr(c, right, &hi);
+  emit_range_build(b, fn, &lo, &hi, excl, in_order);
   return 1;
   return 0;
 }
