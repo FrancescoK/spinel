@@ -1040,6 +1040,28 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
   return o == LR_STOP ? ELAB_NO : o;
 }
 
+/* Where the version recorded at node in cls's history of `name` (its
+   singleton's when sg) stops being that history's live entry: the next
+   version's point. */
+int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end) {
+  *end = (LoadPoint){ -1, -1 };
+  LoadRecord *r = c->lrec;
+  const LrHist *h = r && r->recorded ? lr_hist(r, cls, sg, name, 0) : NULL;
+  int i = 0;
+  while (h && i < h->n && !(h->v[i].node == node && lr_is_version(&h->v[i]))) i++;
+  LoadPoint p = elab_point_of(c, node);
+  if (!h || i == h->n || p.region < 0) return ELAB_UNKNOWN;
+  for (int j = i + 1; j < h->n; j++) {
+    const LrDef *v = &h->v[j];
+    if (!lr_is_version(v)) continue;
+    LoadPoint q = elab_point_of(c, v->node);
+    if (v->may || elab_cmp(p, q) != PROG_BEFORE) return ELAB_UNKNOWN;
+    *end = q;
+    return ELAB_YES;
+  }
+  return ELAB_NO;
+}
+
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded || mod < 0) return ELAB_UNKNOWN;
   return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);

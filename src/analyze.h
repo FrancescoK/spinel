@@ -195,6 +195,12 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */
 int elab_method_versions(Compiler *c, const char *name);
+/* where the version recorded at def node `node` in cls's history of `name`
+   (singleton when sg) is replaced: ELAB_YES with *end the next version's
+   point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN
+   when node is no version there or has no point, or the next version may
+   not run or runs in another region */
+int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end);
 /* is module mod in the ancestors of cls (of its singleton when sg) at p? */
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
 /* was a non-nil value written to the variable before p: a write that
