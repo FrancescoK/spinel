@@ -1944,6 +1944,8 @@ static void cf_bind_block(CF *f, int mi, int blk) {
     int om = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? cf_owner_def(f, e, 1, NULL) : -1;
     const char *en = e >= 0 ? nt_str(nt, e, "name") : NULL;
     if (om >= 0 && f->blk_local[om] && en && sp_streq(en, c->scopes[om].blk_param)) {
+      /* om answers its yields' value too, so its callers' blocks reach it */
+      cf_proc_value_ready(f, e);
       for (int y = 0; y < CF_YARGS; y++) cf_flow(f, f->yarg_el[mi][y], f->yarg_el[om][y]);
       cf_flow(f, f->yval_el[om], f->yval_el[mi]);
       return;

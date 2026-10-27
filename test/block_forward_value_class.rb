@@ -43,3 +43,12 @@ p Db.with { |c| [c] }
 puts "yes" if Db.with { |c| true }
 puts "no" unless Db.with { |c| c > 1 }
 puts Never.name
+
+# a block forwarded to a receiverless method of the same class
+class Wrapper
+  def run = yield
+  def forward(&block) = run(&block)
+end
+w = Wrapper.new
+p w.forward { 1 }
+p w.forward { R.new }.ok?
