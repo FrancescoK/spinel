@@ -1,0 +1,12 @@
+load record: 7 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ClassNode Box line 7
+  r0 #2 f0 DefNode get line 8
+  r0 #3 f0 DefNode get line 9
+r0 #4 f0 IfNode line 11
+  r0 #5 may f0 CallNode autoload line 11
+r0 #6 f0 CallNode p line 12
+class Box: body#1
+const Box: write#1
+Box#get: def#2 def#3 end=yes
+versions Box#get: def#2..#3 over=def#2, def#3..end; 2 of the name, named

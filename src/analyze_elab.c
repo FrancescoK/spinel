@@ -1350,7 +1350,10 @@ int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p
    whose target it could not resolve: under --load-model=graph a LoadNode
    whose path is computed when it runs, inline a require, require_relative,
    load or autoload the parse left in the tree (one it resolved it spliced
-   away). Read from the tree, once. */
+   away). A require or a load is Kernel's on no receiver or on Object or
+   Kernel (`YAML.load` reads no file); an autoload on any receiver is one
+   (`Mod.autoload(:X, path)`, which the parse leaves). Read from the tree,
+   once. */
 int elab_runs_unseen(Compiler *c) {
   LoadRecord *r = lr_get(c);
   if (!r->unseen) {
@@ -1361,8 +1364,9 @@ int elab_runs_unseen(Compiler *c) {
     v = nt_nodes_of_kind(nt, NK_CallNode, &n);
     for (int i = 0; !hit && i < n; i++) {
       int recv = nt_ref(nt, v[i], "receiver");
-      hit = is_file_load_name(nt_str(nt, v[i], "name")) &&
-            (recv < 0 || (nt_kind(nt, recv) == NK_ConstantReadNode && is_object_root(nt_str(nt, recv, "name"))));
+      const char *nm = nt_str(nt, v[i], "name");
+      hit = is_file_load_name(nm) &&
+            (recv < 0 || is_autoload_name(nm) || (nt_kind(nt, recv) == NK_ConstantReadNode && is_object_root(nt_str(nt, recv, "name"))));
     }
     r->unseen = hit ? 2 : 1;
   }
@@ -1384,7 +1388,10 @@ int elab_version_captured(Compiler *c, const char *name) {
     const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
     for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
     v = nt_nodes_of_kind(nt, NK_StringNode, &n);
-    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "unescaped"), name);
+    for (int i = 0; !hit && i < n; i++) {
+      const char *s = nt_str(nt, v[i], "content");   /* a StringNode's text */
+      hit = s && sp_streq(s, name);
+    }
     x->captured = hit ? 2 : 1;
   }
   return x->captured == 2;
@@ -1405,6 +1412,10 @@ static int lr_either(int a, int b) {
 static int lr_named(Compiler *c, const char *name) {
   const LoadRecord *r = c->lrec;
   return r->names_any || bsearch(&name, r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp) != NULL;
+}
+int elab_names_method(Compiler *c, const char *name) {
+  const LoadRecord *r = c->lrec;
+  return !r || (!r->recorded && !r->walk) || lr_named(c, name);
 }
 
 /* The Object/Class/Module tail lr_runs searches, as registered so far: the

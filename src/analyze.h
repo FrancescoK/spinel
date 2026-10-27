@@ -226,6 +226,11 @@ void elab_record_write(Compiler *c, int stmt);
    run code of the program's: a method of its own name, or a hook it fires
    (included, method_added, ...) on the class receiving it, there? */
 int elab_form_runs(Compiler *c, int node);
+/* does the program define a method `name` anywhere: by a def, an alias, an
+   attr form, a define_method or an alias_method, or by a name the record
+   cannot read (a computed one, a send of a definition form, an eval of a
+   String)? Yes too while the record is not being made. */
+int elab_names_method(Compiler *c, const char *name);
 /* the bodies cls runs, in the order they run; *n their number */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
 /* the mixins run on cls (-1: main's, at a file's top level), one per
