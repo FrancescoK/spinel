@@ -358,6 +358,45 @@ static void lower_check_again(Compiler *c, LowerCtx *lc, int row) {
   lower_say(lc, w->name, what);
 }
 
+/* A row is about to blank the subtree at `root`, which it has taken out of the
+   tree. Report a node of it that a root still reaches. */
+void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int root) {
+  const NodeTable *nt = c->nt;
+  int cap = 64, top = 0;
+  int *st = malloc(sizeof(int) * (size_t)cap);
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1);
+  if (!st || !seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int pass = 0; pass < 2; pass++) {
+    /* pass 0 marks what the roots reach, pass 1 walks the subtree and asks */
+    if (pass == 0) for (int r = 0; r < nt_nroots(nt); r++) st[top++ ] = nt_root(nt, r);
+    else st[top++] = root;
+    while (top > 0) {
+      int id = st[--top];
+      if (id < 0 || id >= nt->count) continue;
+      if (pass == 0) { if (seen[id]) continue; seen[id] = 1; }
+      else if (seen[id]) {
+        char what[120];
+        snprintf(what, sizeof what, "a node (%d) of the subtree it blanked at %d is still in the tree", id, root);
+        lower_say(lc, row, what);
+        break;
+      }
+      int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+      for (int i = 0; i < nr + na; i++) {
+        int n = 1, one = 0;
+        const int *ch = &one;
+        if (i < nr) one = nt_ref_at(nt, id, i); else ch = nt_arr_at(nt, id, i - nr, &n);
+        for (int e = 0; e < n; e++) {
+          if (top == cap) { cap *= 2; st = realloc(st, sizeof(int) * (size_t)cap); if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); } }
+          st[top++] = ch[e];
+        }
+      }
+    }
+    top = 0;
+  }
+  free(st);
+  free(seen);
+}
+
 void lower_begin(Compiler *c, LowerCtx *lc) {
   (void)c;
   memset(lc, 0, sizeof *lc);

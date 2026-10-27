@@ -42069,17 +42069,20 @@ static int kwb_unknown_literal(NodeTable *nt, int row, int kh) {
   nt_node_set_arr(nt, h, "elements", el, en);
   return h;
 }
-static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
+/* Split `call` (`x.clone(freeze: v)`) into the sequence that checks the keyword. The sequence is
+   built of clones and new nodes and swapped into the call's place; the call itself, with every node
+   under it, is at the id this answers (-1: not split). */
+static int kwb_clone_split(Compiler *c, int call, Scope *sc) {
   NodeTable *nt = (NodeTable *)c->nt;
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-  if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return;
+  if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return -1;
   const int *el = nt_arr(nt, av[0], "elements", &en);
-  if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) return;
+  if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) return -1;
   int key = nt_ref(nt, el[0], "key"), v = nt_ref(nt, el[0], "value");
   NodeKind vk = nt_kind(nt, v);
-  if (nt_kind(nt, key) != NK_SymbolNode || !kwb_is(nt_str(nt, key, "value"), "freeze")) return;
-  if (vk == NK_TrueNode || vk == NK_FalseNode || vk == NK_NilNode) return;
+  if (nt_kind(nt, key) != NK_SymbolNode || !kwb_is(nt_str(nt, key, "value"), "freeze")) return -1;
+  if (vk == NK_TrueNode || vk == NK_FalseNode || vk == NK_NilNode) return -1;
   char rn[32], vn[32];
   snprintf(rn, sizeof rn, "__kwcr%d", nt->count);
   snprintf(vn, sizeof vn, "__kwcv%d", nt->count);
@@ -42116,7 +42119,9 @@ static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
     ch = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, rn, -1), NULL, 0), nt_new_node(nt, "NilNode"), kwb_seq(nt, g, 2));
   }
   st[ns++] = ch;
-  nt_swap_nodes(nt, call, kwb_seq(nt, st, ns));
+  int seq = kwb_seq(nt, st, ns);
+  nt_swap_nodes(nt, call, seq);
+  return seq;
 }
 static const char *const kwo_rows[][3] = {
   { "step", "by", "to" }, { "sample", "random", NULL }, { "shuffle", "random", NULL },
@@ -42151,13 +42156,14 @@ static int kwo_tree(NodeTable *nt, int call, int row, int i, int mask, const cha
   else nt_node_set_ref(nt, cl, "arguments", -1);
   return cl;
 }
-static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
+/* The same for `x.step(1, **h)` and the builtins that take `by:`, `to:` or `random:`. */
+static int kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-  if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return;
+  if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return -1;
   const int *el = nt_arr(nt, av[n - 1], "elements", &en);
   int h = en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode ? nt_ref(nt, el[0], "value") : -1;
-  if (h < 0) return;
+  if (h < 0) return -1;
   char hn[32], vn[32], xn[32], rn[32];
   snprintf(hn, sizeof hn, "__kwoh%d", nt->count);
   snprintf(vn, sizeof vn, "__kwov%d", nt->count);
@@ -42181,6 +42187,7 @@ static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
     seq = kwb_seq(nt, g, 2);
   }
   nt_swap_nodes(nt, call, seq);
+  return seq;
 }
 static int kwo_leaves(NodeTable *nt, int call) {
   int an = nt_ref(nt, call, "arguments"), n = 0, r = nt_ref(nt, call, "receiver");
@@ -42199,11 +42206,22 @@ int desugar_builtin_kwsplat_gate(Compiler *c, LowerCtx *lc) {
   for (int i = 0; i < nd && lc->nids < 4096; i++) lc->ids[lc->nids++] = defs[i];
   return 1;
 }
+/* The call a split replaced is at `orphan` now, no tree's. Nothing under it is
+   in the tree either: kwb_clone_split builds the sequence from clones of the
+   call (kwb_clone_split's bare and arm calls, the receiver and the value it
+   binds) and new nodes, and kwb_optional_split from a clone of the hash, of the
+   receiver and, in kwo_tree, of the call; nothing is moved. SPINEL_LOWER_CHECK
+   asserts it before the subtree is blanked. */
+static void kwb_drop_orphan(Compiler *c, LowerCtx *lc, int orphan) {
+  if (orphan < 0) return;
+  if (lc->check) lower_check_unreachable(c, lc, "desugar_builtin_kwsplat", orphan);
+  nt_subtree_blank((NodeTable *)c->nt, orphan);
+}
 int desugar_builtin_kwsplat_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int orow = nt_kind(nt, id) == NK_CallNode ? kwo_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; orow >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwo_rows[orow][0])) orow = -1;
-  if (orow >= 0 && kwo_leaves(nt, id)) kwb_optional_split(nt, id, orow, NULL);
+  if (orow >= 0 && kwo_leaves(nt, id)) kwb_drop_orphan(c, lc, kwb_optional_split(nt, id, orow, NULL));
   int row = nt_kind(nt, id) == NK_CallNode ? kwb_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; row >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwb_rows[row][0])) row = -1;
   int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
@@ -42220,7 +42238,7 @@ int desugar_builtin_kwsplat_at(Compiler *c, LowerCtx *lc, int id) {
     args[n - 1] = kwb_explicit(nt, row, lit, NULL);
     nt_node_set_arr(nt, an, "arguments", args, n);
   }
-  kwb_clone_split(c, id, NULL);
+  kwb_drop_orphan(c, lc, kwb_clone_split(c, id, NULL));
   return 1;
 }
 

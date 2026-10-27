@@ -741,6 +741,7 @@ typedef int LowerGate(Compiler *c, LowerCtx *lc);
 int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt);   /* the place of stmt in lc->body (LF_STMT rows) */
 const int *lower_parents(Compiler *c, LowerCtx *lc);   /* every node's parent, made at a row's first ask in a run */
 void lower_begin(Compiler *c, LowerCtx *lc);
+void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int root);   /* SPINEL_LOWER_CHECK: no root reaches the subtree at root */
 int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
 int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
