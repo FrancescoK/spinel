@@ -63,3 +63,10 @@ DEEP = f
 def deep(k, v) = (DEEP[k] = v)
 deep("y", "s")
 p DEEP
+
+# a global given a parameter, through a chain of locals in its method
+def reg_init(h); a = h; b = a; $reg = b; end
+reg_init({ "x" => 1 })
+def reg_put(k, v) = ($reg[k] = v)
+reg_put("y", "s")
+p $reg

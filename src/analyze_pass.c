@@ -3137,7 +3137,7 @@ static int value_node_or_self(const NodeTable *nt, int n);
 /* Sets the Hash literals value `v` hands over to `want`. A chain of locals
    (`a = {...}; b = a; H = b`) is followed to its end, each write once, so
    no depth bound leaves a literal behind it at its own variant; the rest
-   is container_literals'. */
+   is container_literals', which also takes each one's own literals. */
 static void widen_value_hash_literals(Compiler *c, int v, TyKind want) {
   const NodeTable *nt = c->nt;
   int cap = 16, n = 0, done = 0;
@@ -3147,13 +3147,12 @@ static void widen_value_hash_literals(Compiler *c, int v, TyKind want) {
     int x = value_node_or_self(nt, work[done++]);
     Scope *sc = x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode ? comp_scope_of(c, x) : NULL;
     const char *nm = sc ? nt_str(nt, x, "name") : NULL;
-    if (!nm) {
-      int lits[32], nl = container_literals(c, x, lits, 0, 32, 0);
-      for (int q = 0; q < nl; q++)
-        if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
-          comp_set_hash_want(c, lits[q], want);
-      continue;
-    }
+    /* a local's own literals too: a parameter's are its callers' arguments */
+    int lits[32], nl = container_literals(c, x, lits, 0, 32, 0);
+    for (int q = 0; q < nl; q++)
+      if (nt_kind(nt, lits[q]) == NK_HashNode && lits[q] < c->node_cap && c->hash_want[lits[q]] != want)
+        comp_set_hash_want(c, lits[q], want);
+    if (!nm) continue;
     for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
       int w = lw_shared_node(r), wv = nt_ref(nt, w, "value"), seen = 0;
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc ||
