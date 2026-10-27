@@ -2075,6 +2075,9 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   const NodeTable *nt = c->nt;
   if (cid < 0 || cid >= c->nclasses || class_is_exc_subclass(c, cid)) return 0;
   if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
+  /* nor where it answers the name with a reader of its own: a Struct member
+     or an attr named `methods` (#10345) */
+  if (comp_resolve_member(c, cid, name, 0, NULL, NULL) != SP_MEMBER_NONE) return 0;
   for (int k = cid, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
     if (c->classes[k].is_native_class) return 0;
     if (c->classes[k].parent < 0 && !c->classes[k].is_struct) {

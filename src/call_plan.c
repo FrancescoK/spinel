@@ -1293,6 +1293,15 @@ int cplan_define_method_early(Compiler *c, int id) {
   return 0;
 }
 
+/* Does call id's receiver, an object of a class of the program's, answer
+   `name` with a member or method of its class's own (a Struct member named
+   `methods`), so that the call is no list of methods? */
+static int cplan_recv_own_member(Compiler *c, int id, const char *name) {
+  int r = nt_ref(c->nt, id, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  return ty_is_object(rt) && comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE;
+}
+
 /* the limit the call's shape names, and in *lx how a user method exempts it */
 static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *buf, size_t cap) {
   *stop = 1;
@@ -1312,7 +1321,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     return "a def under a condition only the run time decides, of a name another method answers "
            "(a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did "
            "not run is not known at compile time; see docs/limitations.md";
-  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_reflect", 0) && cplan_reachable(c, id))
+  if ((nt_int(nt, id, "cond_def_reflect", 0) ||
+       (nt_int(nt, id, "cond_def_reflect_list", 0) && !cplan_recv_own_member(c, id, name))) &&
+      cplan_reachable(c, id))
     return "a method defined under a condition only the run time decides is not answered for by "
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
            "the branch had run); see docs/limitations.md";

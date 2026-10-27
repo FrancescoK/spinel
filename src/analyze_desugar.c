@@ -11972,7 +11972,12 @@ static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int n
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int hit = 0;
-    for (int i = 0; nm && lists[i] && !hit; i++) hit = sp_streq(nm, lists[i]);
+    /* a list is refused once the receiver is known (feature_limit): one
+       whose class answers the name with a reader of its own, a Struct member
+       `methods`, lists nothing (#10345) */
+    int list = 0;
+    for (int i = 0; nm && lists[i] && !list; i++) list = sp_streq(nm, lists[i]);
+    if (list) { nt_node_set_int(nt, id, "cond_def_reflect_list", 1); continue; }
     for (int i = 0; nm && by_name[i] && !hit; i++) {
       if (!sp_streq(nm, by_name[i])) continue;
       int args = nt_ref(nt, id, "arguments"), ac = 0;
