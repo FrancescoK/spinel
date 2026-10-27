@@ -5306,27 +5306,31 @@ static int sg_delegate_scope(Compiler *c, Scope *s) {
   return pm;
 }
 
-/* --debug: the file each user method was written in, by its C symbol, for the
-   frames of Exception#backtrace. Only a method of a required file is listed;
-   the entry script is every other frame's default (sp_bt_srcfile). */
+/* --debug: the file each user function was written in, by its C symbol, for
+   the frames of Exception#backtrace: a method of a required file, and under
+   --load-model=graph a required file's top level (emit_file_tops). The
+   entry script is every other frame's default (sp_bt_srcfile). Takes sym,
+   malloc'd. */
 static char **g_bt_files = NULL;
 static int g_bt_files_n = 0, g_bt_files_cap = 0;
-static void note_method_file(Compiler *c, Scope *s) {
-  if (!g_debug || s->def_node < 0) return;
-  int fid = (int)nt_int(c->nt, s->def_node, "node_file", 0);
-  const char *path = fid > 0 ? nt_file_path(c->nt, fid) : NULL;
-  if (!path || !*path) return;
-  Buf sym; memset(&sym, 0, sizeof sym);
-  emit_method_cname(c, s, &sym);
-  if (!sym.p) return;
+static void note_frame_file(char *sym, int fid, const NodeTable *nt) {
+  const char *path = fid > 0 ? nt_file_path(nt, fid) : NULL;
+  if (!sym || !path || !*path) { free(sym); return; }
   for (int i = 0; i < g_bt_files_n; i += 2)
-    if (sp_streq(g_bt_files[i], sym.p)) { free(sym.p); return; }
+    if (sp_streq(g_bt_files[i], sym)) { free(sym); return; }
   if (g_bt_files_n + 2 > g_bt_files_cap) {
     g_bt_files_cap = g_bt_files_cap ? g_bt_files_cap * 2 : 16;
     g_bt_files = (char **)realloc(g_bt_files, sizeof(char *) * (size_t)g_bt_files_cap);
+    if (!g_bt_files) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  g_bt_files[g_bt_files_n++] = sym.p;
+  g_bt_files[g_bt_files_n++] = sym;
   g_bt_files[g_bt_files_n++] = strdup(path);
+}
+static void note_method_file(Compiler *c, Scope *s) {
+  if (!g_debug || s->def_node < 0) return;
+  Buf sym; memset(&sym, 0, sizeof sym);
+  emit_method_cname(c, s, &sym);
+  note_frame_file(sym.p, (int)nt_int(c->nt, s->def_node, "node_file", 0), c->nt);
 }
 
 /* --debug: the table a backtrace names a frame inside a block by. Each
@@ -21146,8 +21150,12 @@ static double cg_phase(double t0, const char *phase) {
    since a load in one file may name any other. */
 static void emit_file_tops(Compiler *c, Buf *body) {
   int n = nt_nroots(c->nt);
+  /* --debug: external, as a method is (emit_method_signature), so its frame
+     has a symbol in an ELF backtrace, which names it `<top (required)>`
+     in its own file (lib/sp_cold.c, sp_bt_symbol) */
+  const char *stor = g_debug ? "" : "static ";
   for (int f = 1; f < n; f++)
-    if (!prog_defines_only(c, f)) buf_printf(body, "static int sp_loaded_%d;\nstatic void sp_file_%d_top(void);\n", f, f);
+    if (!prog_defines_only(c, f)) buf_printf(body, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, stor, f);
   /* a void function: a top-level `return` ends the file's load, as a void
      method's return ends the method, not the program's main body */
   int sv_cv = g_c_ret_void;
@@ -21160,7 +21168,13 @@ static void emit_file_tops(Compiler *c, Buf *body) {
     snprintf(tag, sizeof tag, "file_%d", f);
     /* --incremental: with the file's top-level methods (class_unit_group) */
     unit_begin_in(body, tag, class_unit_group(c, -1, nt_root(c->nt, f), group, sizeof group));
-    buf_printf(body, "static void sp_file_%d_top(void) {\n    SP_GC_SAVE();\n", f);
+    buf_printf(body, "%svoid sp_file_%d_top(void) {\n    SP_GC_SAVE();\n", stor, f);
+    if (g_debug) {
+      char *sym = malloc(32);
+      if (!sym) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      snprintf(sym, 32, "sp_file_%d_top", f);
+      note_frame_file(sym, (int)nt_int(c->nt, nt_root(c->nt, f), "node_file", 0), c->nt);
+    }
     size_t frame_ins = body->len;
     emit_scope_decls(c, s, body);
     int sn = 0;

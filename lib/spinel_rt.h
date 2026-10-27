@@ -20882,6 +20882,10 @@ static sp_mutex *sp_poly_mutex_recv(sp_RbVal v) {
    it again, as CRuby drops a feature whose load failed. A require that names
    no file (top NULL) raises CRuby's LoadError for the feature it was given.
    Answers whether this call ran the file. */
+#ifdef SPINEL_EXT_HOST
+int sp_Kernel_require(const char *feature, int *loaded, void (*top)(void));
+int sp_Kernel_require_relative(const char *feature, int *loaded, void (*top)(void));
+#else
 static int sp_load_file(const char *feature, int *loaded, void (*top)(void)) {
   if (!top) sp_raise_load_error(feature);
   if (*loaded) return 0;
@@ -20906,6 +20910,18 @@ static int sp_load_file(const char *feature, int *loaded, void (*top)(void)) {
   sp_raise_cls(ecls, emsg);
   return 1;
 }
+/* The two methods by their Ruby names, so a backtrace (lib/sp_cold.c,
+   sp_bt_format) names the frame of each load `Kernel#require` or
+   `Kernel#require_relative`, as CRuby does. External, as the frames of
+   methods are in a --debug build: a static function has no symbol in an ELF
+   backtrace. A release link drops them from a program that loads no file. */
+int sp_Kernel_require(const char *feature, int *loaded, void (*top)(void)) {
+  return sp_load_file(feature, loaded, top);
+}
+int sp_Kernel_require_relative(const char *feature, int *loaded, void (*top)(void)) {
+  return sp_load_file(feature, loaded, top);
+}
+#endif
 static sp_RbVal sp_Mutex_synchronize_proc(sp_mutex *m, sp_Proc *blk) {
   SP_GC_ROOT(m); SP_GC_ROOT(blk);
   sp_RbVal r = sp_box_nil();

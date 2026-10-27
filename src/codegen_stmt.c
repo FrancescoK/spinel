@@ -15675,15 +15675,16 @@ void emit_synth_line_marker(Buf *b) {
   g_lm_last_depth = 0;
 }
 
-/* A require under --load-model=graph (#9898), as the runtime's load
-   (sp_load_file, lib/spinel_rt.h): it runs the file's top level
-   (sp_file_N_top, emit_file_tops) the first time and answers whether it
-   did. One that names no file raises LoadError for the feature it was
-   given, wherever it stands. */
+/* A require under --load-model=graph (#9898), as the runtime's
+   Kernel#require or Kernel#require_relative (lib/spinel_rt.h), named for
+   the method the call makes so a backtrace shows the load's frame as CRuby
+   does: it runs the file's top level (sp_file_N_top, emit_file_tops) the
+   first time and answers whether it did. One that names no file raises
+   LoadError for the feature it was given, wherever it stands. */
 void emit_load_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int f = (int)nt_int(nt, id, "target_file", -1);
-  buf_puts(b, "sp_load_file(");
+  buf_printf(b, "sp_Kernel_%s(", mc(nt_str(nt, id, "method")));
   if (is_load_how_missing(nt_str(nt, id, "how"))) {
     emit_str_literal(b, nt_str(nt, id, "feature"));
     buf_puts(b, ", NULL, NULL)");
