@@ -6536,7 +6536,7 @@ static int emit_merge_block_same_variant(Compiler *c, int id, int recv, int arg,
   int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, tc = ++g_tmp, tj = ++g_tmp;
   buf_printf(b, "({ %s _t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", c_type_name(rt), tr, hn, tr);
   /* copy the receiver into the fresh result */
-  buf_printf(b, " %s _t%d = ", c_type_name(rt), tc); emit_expr(c, recv, b); buf_puts(b, ";");
+  buf_printf(b, " %s _t%d = ", c_type_name(rt), tc); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tc);
   buf_printf(b, " _t%d->default_v = _t%d->default_v;", tr, tc);
   if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH)
     buf_printf(b, " _t%d->default_nil = _t%d->default_nil;", tr, tc);
@@ -6545,7 +6545,7 @@ static int emit_merge_block_same_variant(Compiler *c, int id, int recv, int arg,
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                 " sp_%sHash_%s(_t%d, _t%d->order[_t%d], sp_%sHash_%s(_t%d, _t%d->order[_t%d]));",
              tj, tj, tc, tj, hn, mset, tr, tc, tj, hn, mget, tc, tc, tj);
-  buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, arg, b); buf_puts(b, ";");
+  buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, arg, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", to);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
   buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
   buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) {", hn, tr, tk);
@@ -7320,9 +7320,9 @@ else {
           char akey[32], aval[128];
           snprintf(akey, sizeof akey, "_t%d", tk);
           snprintf(aval, sizeof aval, "sp_%sHash_get(_t%d, _t%d)", ahn, to, tk);
-          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
           buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
-          buf_printf(b, " %s _t%d = ", c_type_name(at), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
+          buf_printf(b, " %s _t%d = ", c_type_name(at), to); emit_expr(c, argv[0], b); buf_printf(b, "; SP_GC_ROOT(_t%d);", to);
           buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
           buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(akt), tk, to, ti);
           buf_printf(b, " %s _t%d = ", c_type_name(kt), trk);
@@ -7364,8 +7364,10 @@ else {
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
         int tob = at != rt ? ++g_tmp : 0, byv = repr_of(c, argv[0]).kind == RK_VOBJ;
         char ob[32]; snprintf(ob, sizeof ob, "_t%d", tob);
+        /* both held across the block, which can allocate */
+        buf_printf(b, " SP_GC_ROOT(_t%d);", tr);
         if (at != rt) {
-          buf_printf(b, " SP_GC_ROOT(_t%d); ", tr); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tob);
+          buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tob);
           emit_expr(c, argv[0], b); buf_puts(b, ";");
           if (!byv) buf_printf(b, " SP_GC_ROOT(_t%d);", tob);
         }
@@ -7377,7 +7379,7 @@ else {
           buf_printf(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %%s to Hash (%%s#to_hash gives NilClass)\", _cn%d, _cn%d)); }"
                         " SP_GC_ROOT(_t%d)", to, to, to);
         }
-        else emit_expr(c, argv[0], b);
+        else { emit_expr(c, argv[0], b); buf_printf(b, "; SP_GC_ROOT(_t%d)", to); }
         buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
         /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
@@ -7425,13 +7427,13 @@ else {
         int tr = ++g_tmp, tc = ++g_tmp, tj = ++g_tmp, to = ++g_tmp,
             tn = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
         buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", tr, tr);
-        buf_printf(b, " sp_PolyPolyHash *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " sp_PolyPolyHash *_t%d = ", tc); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tc);
         buf_printf(b, " _t%d->default_v = _t%d->default_v; _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", tr, tc, tr, tc, tr, tc);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {"
                       " sp_int _ix = _t%d->order[_t%d];"
                       " sp_PolyPolyHash_set(_t%d, _t%d->keys[_ix], _t%d->vals[_ix]); }",
                    tj, tj, tc, tj, tc, tj, tr, tc, tc);
-        buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, argv[0], b); buf_puts(b, ";");
+        buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, argv[0], b); buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", to);
         if (bp0) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp0));
         if (bp1) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp1));
         if (bp2) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp2));
