@@ -2824,9 +2824,13 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      instance method `new` (a Thor command named `new` is one): an
      instance's `new` is that method, not a constructor. Such a box is told
      apart by its tag, the instance taking the ordinary dispatch (this branch
-     declined for the second emission). */
+     declined for the second emission). Under g_poly_new_only the caller has
+     tested the box for a Class of those ids (emit_boxed_class_aref): no
+     instance reaches here, and the instance's dispatch, which constructs
+     through every class's `new`, would be dead code the size of the
+     program's classes at each such call (#10325). */
   static int g_poly_new_instance_pass = 0;
-  if (!g_poly_new_instance_pass && recv >= 0 && sp_streq(name, "new") &&
+  if (!g_poly_new_instance_pass && !g_poly_new_only && recv >= 0 && sp_streq(name, "new") &&
       repr_of(c, recv).kind == RK_BOXED && repr_of(c, id).kind == RK_BOXED &&
       !subtree_has_side_effect(c, recv)) {
     int inst_new = 0;

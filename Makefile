@@ -4520,6 +4520,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  ! grep -q 'sp_RbVal lv_line\b' "$$tmp/iru.c" || { echo "infer-test: FAIL (an index read guessed a settling local a Hash and boxed a block parameter)"; ok=0; }; \
 	  $(SPINEL) $$flags test/range_index_unbounded_receiver.rb -c --no-line-map -o "$$tmp/riu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (range_index_unbounded_receiver: -c)"; ok=0; }; \
 	  ! grep -q 'sp_RbVal sp_Regs__lb_rb(' "$$tmp/riu.c" || { echo "infer-test: FAIL (a Range on a receiver of no known class boxed every [] method's element read)"; ok=0; }; \
+	  $(SPINEL) $$flags test/poly_aref_struct_class_beside_instance_new.rb -c --no-line-map -o "$$tmp/pas.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_aref_struct_class_beside_instance_new: -c)"; ok=0; }; \
+	  ! awk '/^static.*sp_get2\(.*\) \{/,/^}/' "$$tmp/pas.c" | grep -q 'expected 0)' || { echo "infer-test: FAIL (a boxed x[a, b] that may be a Data class kept the instance dispatch of new under its class test, every class's constructor in dead code, #10325)"; ok=0; }; \
 	  $(SPINEL) $$flags test/class_value_new_builtin_part.rb -c --no-line-map -o "$$tmp/cvn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_value_new_builtin_part: -c)"; ok=0; }; \
 	  ! awk '/^static.*sp_setting\(.*\) \{/,/^}/' "$$tmp/cvn.c" | grep -q 'sp_Money_to_i' || { echo "infer-test: FAIL (new on a builtin part made every class, and a parsed setting's to_i dispatched to Money, #10303)"; ok=0; }; \
 	  $(SPINEL) $$flags test/native_func_answer_own.rb -c --no-line-map -o "$$tmp/nfa.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (native_func_answer_own: -c)"; ok=0; }; \
