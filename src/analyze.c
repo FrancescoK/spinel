@@ -2675,89 +2675,81 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
 }
 
 /* The names the shadow rename invents (`k__bp12` for a keyword `k`), each with
-   the length of the name the program wrote. Only a name recorded here is an
+   the length of the name the program wrote, in the Compiler's open-addressed
+   table (bp_name, bp_len, bp_mask, nbp). Only a name recorded there is an
    invented one: a program can write `k__bp12` itself, and that name is its
    own. */
-static struct { char **name; size_t *len; unsigned mask; int n; } bp_renames;
-static const NodeTable *bp_user_nt;
-static char **bp_user_names;
-static int bp_user_n;
-
-static int bp_rename_slot(const char *name) {
-  if (!bp_renames.name || !name) return -1;
-  unsigned i = sp_strhash(name) & bp_renames.mask;
-  while (bp_renames.name[i]) {
-    if (sp_streq(bp_renames.name[i], name)) return (int)i;
-    i = (i + 1) & bp_renames.mask;
+static int bp_rename_slot(const Compiler *c, const char *name) {
+  if (!c->bp_name || !name) return -1;
+  unsigned i = sp_strhash(name) & c->bp_mask;
+  while (c->bp_name[i]) {
+    if (sp_streq(c->bp_name[i], name)) return (int)i;
+    i = (i + 1) & c->bp_mask;
   }
   return -1;
 }
 
-static void bp_rename_insert(char *name, size_t len) {
-  unsigned i = sp_strhash(name) & bp_renames.mask;
-  while (bp_renames.name[i]) i = (i + 1) & bp_renames.mask;
-  bp_renames.name[i] = name;
-  bp_renames.len[i] = len;
+static void bp_rename_insert(Compiler *c, char *name, size_t len) {
+  unsigned i = sp_strhash(name) & c->bp_mask;
+  while (c->bp_name[i]) i = (i + 1) & c->bp_mask;
+  c->bp_name[i] = name;
+  c->bp_len[i] = len;
 }
 
-static void bp_rename_record(const char *name, size_t len) {
-  int s = bp_rename_slot(name);
-  if (s >= 0) { bp_renames.len[s] = len; return; }
-  unsigned ocap = bp_renames.name ? bp_renames.mask + 1 : 0;
-  if ((unsigned)(bp_renames.n + 1) * 2 > ocap) {
-    char **on = bp_renames.name;
-    size_t *ol = bp_renames.len;
+static void bp_rename_record(Compiler *c, const char *name, size_t len) {
+  int s = bp_rename_slot(c, name);
+  if (s >= 0) { c->bp_len[s] = len; return; }
+  unsigned ocap = c->bp_name ? c->bp_mask + 1 : 0;
+  if ((unsigned)(c->nbp + 1) * 2 > ocap) {
+    char **on = c->bp_name;
+    size_t *ol = c->bp_len;
     unsigned cap = ocap ? ocap * 2 : 64;
-    bp_renames.name = calloc(cap, sizeof(char *));
-    bp_renames.len = calloc(cap, sizeof(size_t));
-    bp_renames.mask = cap - 1;
-    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(on[i], ol[i]);
+    c->bp_name = calloc(cap, sizeof(char *));
+    c->bp_len = calloc(cap, sizeof(size_t));
+    c->bp_mask = cap - 1;
+    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i]);
     free(on);
     free(ol);
   }
-  bp_rename_insert(strdup(name), len);
-  bp_renames.n++;
+  bp_rename_insert(c, strdup(name), len);
+  c->nbp++;
 }
 
-int block_param_is_renamed(const char *name) {
-  return bp_rename_slot(name) >= 0;
+int block_param_is_renamed(const Compiler *c, const char *name) {
+  return bp_rename_slot(c, name) >= 0;
 }
 
 /* The length of the name a block parameter was written with: an invented
    `k__bp12` is still the keyword `k`; any other name is its whole self. */
-size_t block_param_written_len(const char *name) {
-  int s = bp_rename_slot(name);
-  return s >= 0 ? bp_renames.len[s] : strlen(name);
+size_t block_param_written_len(const Compiler *c, const char *name) {
+  int s = bp_rename_slot(c, name);
+  return s >= 0 ? c->bp_len[s] : strlen(name);
 }
 
 /* True when the program itself uses `name`. Only a name with `__bp` or `__bq`
    in it can clash with an invented one, so those are collected once. */
-static int bp_user_uses(const NodeTable *nt, const char *name) {
-  if (bp_user_nt != nt) {
-    bp_user_nt = nt;
-    for (int i = 0; i < bp_user_n; i++) free(bp_user_names[i]);
-    free(bp_user_names);
-    bp_user_names = NULL;
-    bp_user_n = 0;
+static int bp_user_uses(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (!c->bp_user_built) {
+    c->bp_user_built = 1;
     int cap = 0;
     for (int id = 0; id < nt->count; id++) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!strstr(nm, "__bp") && !strstr(nm, "__bq")) || block_param_is_renamed(nm)) continue;
-      if (bp_user_n == cap) {
+      if (!nm || (!strstr(nm, "__bp") && !strstr(nm, "__bq")) || block_param_is_renamed(c, nm)) continue;
+      if (c->nbp_user == cap) {
         cap = cap ? cap * 2 : 8;
-        bp_user_names = realloc(bp_user_names, (size_t)cap * sizeof(char *));
+        c->bp_user = realloc(c->bp_user, (size_t)cap * sizeof(char *));
       }
-      bp_user_names[bp_user_n++] = strdup(nm);
+      c->bp_user[c->nbp_user++] = strdup(nm);
     }
   }
-  for (int i = 0; i < bp_user_n; i++) if (sp_streq(bp_user_names[i], name)) return 1;
+  for (int i = 0; i < c->nbp_user; i++) if (sp_streq(c->bp_user[i], name)) return 1;
   return 0;
 }
 
 /* Invent the slot name for the parameter `written` of block `blk` and record
    it, stepping past a name the program already uses. The caller frees it. */
 char *block_param_invent_name(Compiler *c, const char *written, int blk) {
-  const NodeTable *nt = c->nt;
   /* `x__bp12` for a program block, `x__bqmin_by_12` for a builtin's */
   const char *tag = comp_node_tag(c, blk);
   const char *p = tag[0] == 'q' || tag[0] == 'p' ? "" : "p";
@@ -2765,9 +2757,9 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
   char *buf = malloc(n);
   if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__b%s%s", written, p, tag);
-  for (int k = 1; bp_user_uses(nt, buf); k++)
+  for (int k = 1; bp_user_uses(c, buf); k++)
     snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
-  bp_rename_record(buf, strlen(written));
+  bp_rename_record(c, buf, strlen(written));
   return buf;
 }
 
@@ -2777,7 +2769,7 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   const NodeTable *nt = c->nt;
   if (kwhash < 0 || !name) return -1;
-  size_t nlen = block_param_written_len(name);
+  size_t nlen = block_param_written_len(c, name);
   int en = 0, v = -1; const int *els = nt_arr(nt, kwhash, "elements", &en);
   for (int i = 0; i < en; i++) {
     NodeKind ek = nt_kind(nt, els[i]);
@@ -5097,7 +5089,7 @@ void qualify_colliding_classes(Compiler *c) {
    37k-line compile. Bucketing by name makes each check touch only the nodes
    that actually carry it. A rename during the pass changes node names, so the
    index is rebuilt lazily when that happens (renames are the exception). */
-typedef struct { const int *wp; int wpn; int *head; int *next; unsigned mask; } BlkpIdx;
+typedef struct { const Compiler *c; const int *wp; int wpn; int *head; int *next; unsigned mask; } BlkpIdx;
 
 static void blkp_idx_build(BlkpIdx *ix, const NodeTable *nt) {
   for (unsigned b = 0; b <= ix->mask; b++) ix->head[b] = -1;
@@ -5109,10 +5101,11 @@ static void blkp_idx_build(BlkpIdx *ix, const NodeTable *nt) {
     ix->head[b] = i;
   }
 }
-static int blkp_idx_init(BlkpIdx *ix, const NodeTable *nt, const int *wp, int wpn) {
+static int blkp_idx_init(BlkpIdx *ix, const Compiler *c, const int *wp, int wpn) {
+  const NodeTable *nt = c->nt;
   unsigned nb = 16;
   while (nb < (unsigned)wpn * 2u && nb < (1u << 22)) nb <<= 1;
-  ix->wp = wp; ix->wpn = wpn; ix->mask = nb - 1;
+  ix->c = c; ix->wp = wp; ix->wpn = wpn; ix->mask = nb - 1;
   ix->head = malloc((size_t)nb * sizeof(int));
   ix->next = malloc((size_t)(wpn > 0 ? wpn : 1) * sizeof(int));
   if (!ix->head || !ix->next) { free(ix->head); free(ix->next); ix->head = ix->next = NULL; return 0; }
@@ -5130,7 +5123,7 @@ typedef struct { const BlkpIdx *ix; int all; int i; } BlkpScan;
 static BlkpScan blkp_scan(const BlkpIdx *ix, const char *name) {
   BlkpScan sc;
   sc.ix = ix;
-  sc.all = block_param_is_renamed(name);
+  sc.all = block_param_is_renamed(ix->c, name);
   sc.i = sc.all ? 0 : ix->head[sp_strhash(name) & ix->mask];
   return sc;
 }
@@ -5675,7 +5668,7 @@ void rename_shadowing_block_params(Compiler *c) {
     if (a_is_write_node(wty) || is_name_binding_param(wty)) wp[wpn++] = w;
   }
   BlkpIdx ix;
-  if (!blkp_idx_init(&ix, nt, wp, wpn)) { free(wp); free(inbody); free(owner); return; }
+  if (!blkp_idx_init(&ix, c, wp, wpn)) { free(wp); free(inbody); free(owner); return; }
   int gen = 0;
   for (int L = 0; L < n; L++) {
     const char *ty = nt_type(nt, L);
@@ -18760,12 +18753,12 @@ static int an_block_name_lent(Compiler *c, int blk, const char *bp) {
   return lent;
 }
 /* The same for the keyword parameter of `blk` that keyword `key` binds. */
-static int dyn_kw_name_is(const char *pn, const char *key);
+static int dyn_kw_name_is(const Compiler *c, const char *pn, const char *key);
 static const char *an_block_kw_param(Compiler *c, int blk, const char *key) {
   for (int i = 0; blk >= 0 && key; i++) {
     const char *kp = block_keyword_name(c, blk, i);
     if (!kp) break;
-    if (dyn_kw_name_is(kp, key)) return kp;
+    if (dyn_kw_name_is(c, kp, key)) return kp;
   }
   return NULL;
 }
@@ -30456,9 +30449,9 @@ static unsigned dyn_meth_bits(Compiler *c, int mi) {
    name: appended (bit 0) and read for more than its bytes (bit 1), 0 when
    the target has no such keyword. A block's keyword may carry the shadow
    rename's suffix (#3679); the key is the name the program wrote. */
-static int dyn_kw_name_is(const char *pn, const char *key) {
+static int dyn_kw_name_is(const Compiler *c, const char *pn, const char *key) {
   if (!pn || !key) return 0;
-  size_t n = block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn);
+  size_t n = block_param_is_renamed(c, pn) ? block_param_written_len(c, pn) : strlen(pn);
   return strlen(key) == n && !strncmp(pn, key, n);
 }
 static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
@@ -30467,7 +30460,7 @@ static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
   int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
   for (int i = 0; i < kn; i++) {
     const char *pn[1] = { nt_str(nt, kv[i], "name") };
-    if (!dyn_kw_name_is(pn[0], key)) continue;
+    if (!dyn_kw_name_is(c, pn[0], key)) continue;
     unsigned app = 0, kept = 0;
     int body = nt_kind(nt, lit) == NK_BlockNode ? nt_ref(nt, lit, "body") : a_proc_body(c, lit);
     dyn_body_scan(c, body, pn, 1, &app, &kept);
@@ -30504,7 +30497,7 @@ static int dyn_lit_kw_any(Compiler *c, int lit) {
   for (int i = 0; i < kn; i++) {
     const char *pn = nt_str(nt, kv[i], "name");
     char key[128];
-    size_t len = pn ? (block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn)) : 0;
+    size_t len = pn ? (block_param_is_renamed(c, pn) ? block_param_written_len(c, pn) : strlen(pn)) : 0;
     if (!pn || len >= sizeof key) continue;
     memcpy(key, pn, len); key[len] = 0;
     if (dyn_lit_kw_bits(c, lit, key) & 1u) return 1;
@@ -36973,7 +36966,7 @@ static int nn_read_nonnil(Compiler *c, int id, const char *name) {
   if (!(id >= 0 && nn_fresh() && id < nn_cap && nn_nonnil[id])) return 0;
   if (!g_decide_on) return 1;
   char written[300];
-  snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(name), name);
+  snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(c, name), name);
   return decide_node(c->nt, id, "nn-read", written);
 }
 static int nn_index_inbounds(Compiler *c, int id) {

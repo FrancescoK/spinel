@@ -182,12 +182,12 @@ static int block_param_handed_to_appender(Compiler *c, int blk, const char *bp) 
   return 0;
 }
 /* Block `blk`'s keyword parameter that keyword `key` binds, or NULL. */
-static int block_kw_key_is(const char *kp, const char *key);
+static int block_kw_key_is(const Compiler *c, const char *kp, const char *key);
 static const char *block_kw_param_named(Compiler *c, int blk, const char *key) {
   for (int ki = 0; key; ki++) {
     const char *kp = block_keyword_name(c, blk, ki);
     if (!kp) break;
-    if (block_kw_key_is(kp, key)) return kp;
+    if (block_kw_key_is(c, kp, key)) return kp;
   }
   return NULL;
 }
@@ -1810,13 +1810,13 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
 /* The keyword a block keyword param answers to: its name without the
    `__bp<N>` suffix a block-param rename recorded for it, which is the first
    block_kw_key_len bytes of the name. block_kw_key copies it into `b`. */
-static int block_kw_key_len(const char *kp) { return (int)block_param_written_len(kp); }
-static int block_kw_key_is(const char *kp, const char *key) {
-  size_t n = block_param_written_len(kp);
+static int block_kw_key_len(const Compiler *c, const char *kp) { return (int)block_param_written_len(c, kp); }
+static int block_kw_key_is(const Compiler *c, const char *kp, const char *key) {
+  size_t n = block_param_written_len(c, kp);
   return strlen(key) == n && !memcmp(kp, key, n);
 }
-static const char *block_kw_key(const char *kp, Buf *b) {
-  buf_setf(b, "%.*s", block_kw_key_len(kp), kp);
+static const char *block_kw_key(const Compiler *c, const char *kp, Buf *b) {
+  buf_setf(b, "%.*s", block_kw_key_len(c, kp), kp);
   return b->p;
 }
 
@@ -1835,7 +1835,7 @@ static int ykw_out_of_order(Compiler *c, int blk, int ykw) {
     const char *kn = nt_str(nt, key, "value");
     int at = nkw;
     for (int ki = 0; ki < nkw; ki++)
-      if (block_kw_key_is(block_keyword_name(c, blk, ki), kn)) { at = ki; break; }
+      if (block_kw_key_is(c, block_keyword_name(c, blk, ki), kn)) { at = ki; break; }
     if (at < last || (at == last && at < nkw)) return 1;
     last = at;
   }
@@ -2124,7 +2124,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     int lit_n = 0; const int *lit_els = ykw >= 0 && !ykw_splat ? nt_arr(nt, ykw, "elements", &lit_n) : NULL;
     Buf knb; memset(&knb, 0, sizeof knb);
     for (int ki = 0; ki < nkw && !kw_bad; ki++) {
-      const char *kn = block_kw_key(block_keyword_name(c, blk, ki), &knb);
+      const char *kn = block_kw_key(c, block_keyword_name(c, blk, ki), &knb);
       if (block_keyword_default(c, blk, ki) < 0 && (ykw < 0 || ie_kwhash_value(c, ykw, kn) < 0)) kw_bad = 1;
     }
     free(knb.p);
@@ -2133,7 +2133,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       const char *ks = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
       int known = 0;
       for (int ki = 0; ks && ki < nkw; ki++)
-        if (block_kw_key_is(block_keyword_name(c, blk, ki), ks)) known = 1;
+        if (block_kw_key_is(c, block_keyword_name(c, blk, ki), ks)) known = 1;
       if (!known) kw_bad = 1;
     }
     if (kw_bad) {
@@ -2142,13 +2142,13 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       buf_printf(b, "static const char *const _kw%d[] = {", chk);
       for (int ki = 0; ki < nkw; ki++) {
         const char *kp = block_keyword_name(c, blk, ki);
-        buf_printf(b, "\"%.*s\", ", block_kw_key_len(kp), kp);
+        buf_printf(b, "\"%.*s\", ", block_kw_key_len(c, kp), kp);
       }
       buf_printf(b, "0}, *const _kr%d[] = {", chk);
       for (int ki = 0; ki < nkw; ki++) {
         const char *kp = block_keyword_name(c, blk, ki);
         if (block_keyword_default(c, blk, ki) < 0)
-          buf_printf(b, "\"%.*s\", ", block_kw_key_len(kp), kp);
+          buf_printf(b, "\"%.*s\", ", block_kw_key_len(c, kp), kp);
       }
       buf_printf(b, "0}, *const _kl%d[] = {", chk);
       for (int e = 0; e < lit_n; e++) {
@@ -2171,7 +2171,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     buf_setf(&kprbuf, "%s", rename_local(kp));
     bi_method_side(bi);
     const char *kpr = kprbuf.p;
-    const char *kn = block_kw_key(kp, &knb);
+    const char *kn = block_kw_key(c, kp, &knb);
     LocalVar *kl = bsc ? scope_local(bsc, kp) : NULL;
     TyKind kt = kl ? kl->type : TY_UNKNOWN;
     int vn = ykw >= 0 && !ykw_splat ? ie_kwhash_value(c, ykw, kn) : -1;
@@ -2265,7 +2265,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
         const char *kp = block_keyword_name(c, blk, ki);
         if (!as_expr) emit_indent(b, indent);
         buf_printf(b, "sp_PolyPolyHash_delete(_t%d, sp_box_sym(sp_sym_intern(\"%.*s\")));%s", tkw,
-                   block_kw_key_len(kp), kp, as_expr ? " " : "\n");
+                   block_kw_key_len(c, kp), kp, as_expr ? " " : "\n");
       }
       if (ykw >= 0 && kwh_tmp < 0) {
         int en2 = 0; const int *els2 = nt_arr(nt, ykw, "elements", &en2);
@@ -2287,7 +2287,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
           for (int ki2 = 0; ksym; ki2++) {
             const char *kp2 = block_keyword_name(c, blk, ki2);
             if (!kp2) break;
-            if (block_kw_key_is(kp2, ksym)) { consumed = 1; break; }
+            if (block_kw_key_is(c, kp2, ksym)) { consumed = 1; break; }
           }
           if (consumed) continue;
           if (!as_expr) emit_indent(b, indent);
@@ -2366,7 +2366,7 @@ static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const cha
              "appends to: this yield hands the block a copy, so the append would not reach the caller's "
              "String (a String is not yet shared by reference through a `yield` into a post block "
              "parameter from a variable that is also shared with a proc or method). Return the String "
-             "from the block and assign it, or append to it in the caller.", block_kw_key_len(bp), bp);
+             "from the block and assign it, or append to it in the caller.", block_kw_key_len(c, bp), bp);
     unsupported_feature(c, yarg, msg);
     return 0;
   }
@@ -2978,7 +2978,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                "appends to: this yield hands the block a copy, so the append would not reach the caller's "
                "String (a String is not yet shared by reference through a `yield` into an optional block "
                "parameter from a variable that is also shared with a proc or method). Return the String "
-               "from the block and assign it, or append to it in the caller.", block_kw_key_len(op), op);
+               "from the block and assign it, or append to it in the caller.", block_kw_key_len(c, op), op);
       unsupported_feature(c, yargs[yi], msg);
     }
     if (opt_alias && comp_ntype(c, yargs[yi]) == TY_STRING && !local_is_handle(c, yargs[yi]) &&

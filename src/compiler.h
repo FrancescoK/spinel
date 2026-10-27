@@ -1613,6 +1613,17 @@ typedef struct {
   char **rbp_slot_names;
   size_t *rbp_slot_lens;
   int nrbp_slots;
+  /* the names the shadow rename invents for block parameters, each with the
+     length of the name the program wrote (block_param_written_len): an open
+     table of mask+1 slots, nbp used */
+  char **bp_name;
+  size_t *bp_len;
+  unsigned bp_mask;
+  int nbp;
+  /* the names the program wrote that hold `__bp` or `__bq`, collected when
+     the first invented name is made (bp_user_uses) */
+  char **bp_user;
+  int nbp_user, bp_user_built;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 

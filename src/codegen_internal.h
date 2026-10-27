@@ -1414,7 +1414,7 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv);
    check of a count only the run time knows (sp_raise_arity). */
 void arity_expected(char *out, size_t n, int min, int max);
 void arity_message(char *out, size_t n, int given, int min, int max, const char *kw);
-void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n);
+void arity_kw_suffix(const Compiler *c, int params, char *out, size_t n);
 void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n);
 void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw);
 int class_to_io_dispatched(Compiler *c, int k);
@@ -1562,7 +1562,7 @@ void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent);
 int sg_activates_ci(Compiler *c, int node);
 void emit_sg_recv(Compiler *c, int at, int recv, Buf *b);
 void emit_sg_frozen_check(Compiler *c, int ci, int at, int recv, Buf *b);
-int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);
+int subtree_has_param_named_pub(const Compiler *c, int id, const char *nm);
 const char *past_open_parens(const char *s);
 int text_diverges(const char *txt);
 int inlined_local_needs_volatile(Compiler *c, LocalVar *lv);

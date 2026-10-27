@@ -12214,7 +12214,7 @@ void check_block_rest_support(Compiler *c) {
           rt == TY_ENUMERATOR || rt == TY_STRING)) continue;
     {
       /* report the param as written, not the shadow rename's slot name */
-      char disp[128]; snprintf(disp, sizeof disp, "%.*s", (int)block_param_written_len(rn), rn);
+      char disp[128]; snprintf(disp, sizeof disp, "%.*s", (int)block_param_written_len(c, rn), rn);
       long long fid = nt_int(nt, id, "node_file", -1);
       const char *file = fid >= 0 ? nt_file_path(nt, (int)fid) : NULL;
       if (!file) file = nt->source_file ? nt->source_file : "source.rb";

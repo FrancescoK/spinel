@@ -14694,7 +14694,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
     const char *kname = nt_str(nt, kws[i], "name");
     if (!kname) return 0;
     mo += snprintf(names + mo, sizeof names - (size_t)mo, "%s:%.*s", missing ? ", " : "",
-                   (int)block_param_written_len(kname), kname);
+                   (int)block_param_written_len(c, kname), kname);
     if (mo >= (int)sizeof names) return 0;
     missing++;
   }
@@ -14735,7 +14735,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
      other scope's local of the same name */
   for (int i = 0; i < kn; i++) {
     const char *wn = nt_str(nt, kws[i], "name");
-    if (block_param_is_renamed(wn)) { scope_local_intern(bs, wn); continue; }
+    if (block_param_is_renamed(c, wn)) { scope_local_intern(bs, wn); continue; }
     char *kname = block_param_invent_name(c, wn, blk);
     blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
     numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
@@ -16708,7 +16708,7 @@ static int rbp_captured(const NodeTable *nt, int node, const char *name, int lev
    self. */
 size_t reassigned_param_written_len(const Compiler *c, const char *name) {
   if (!name) return 0;
-  size_t n = block_param_written_len(name);
+  size_t n = block_param_written_len(c, name);
   for (int i = 0; i < c->nrbp_slots; i++)
     if (strlen(c->rbp_slot_names[i]) == n && !memcmp(c->rbp_slot_names[i], name, n)) return c->rbp_slot_lens[i];
   return strlen(name);

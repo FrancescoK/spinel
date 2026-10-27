@@ -5823,7 +5823,7 @@ static void gc_roots_take_back(Compiler *c, Scope *s, Buf *b, size_t fn_off) {
     if (last && !gc_region_inert(body, last, lvname)) continue;
     if (g_decide_on) {
       char written[300];
-      snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(lv->name), lv->name);
+      snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(c, lv->name), lv->name);
       if (!decide_fn("root-elide", decide_method_site(c, s), written)) continue;
     }
     buf_erase(b, (size_t)(at - b->p), rl);
@@ -8409,7 +8409,8 @@ static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
    or a splatted `y.yield(*xs)` on its yielder `yname`? The
    fiber packs such a step as an Array, which the enumerator must then mark
    yields_pair so a `|*r|` block takes it spread and a `|x|` block its first. */
-static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
+static int gen_yields_multi(const Compiler *c, int id, const char *yname) {
+  const NodeTable *nt = c->nt;
   if (id < 0 || !yname) return 0;
   const char *ty = nt_type(nt, id);
   NodeKind ty_k = nt_kind(nt, id);
@@ -8420,7 +8421,7 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
   /* a nested block or lambda whose own parameter is named like the yielder
      yields to that parameter, not to this generator */
   if ((ty_k == NK_BlockNode || ty_k == NK_LambdaNode) &&
-      subtree_has_param_named_pub(nt, nt_ref(nt, id, "parameters"), yname))
+      subtree_has_param_named_pub(c, nt_ref(nt, id, "parameters"), yname))
     return 0;
   if (ty_k == NK_CallNode) {
     const char *nm = nt_str(nt, id, "name");
@@ -8435,11 +8436,11 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
     }
   }
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) if (gen_yields_multi(nt, nt_ref_at(nt, id, i), yname)) return 1;
+  for (int i = 0; i < nr; i++) if (gen_yields_multi(c, nt_ref_at(nt, id, i), yname)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int k = 0; k < n; k++) if (gen_yields_multi(nt, ids[k], yname)) return 1;
+    for (int k = 0; k < n; k++) if (gen_yields_multi(c, ids[k], yname)) return 1;
   }
   return 0;
 }
@@ -9003,7 +9004,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
      If there are captures, allocate a GC-managed capture struct, fill it,
      assign to fiber->user_data, then return the fiber.
      Without captures: just sp_Fiber_new(fname). */
-  int gen_multi = as_gen && gen_yields_multi(nt, body, bp0);
+  int gen_multi = as_gen && gen_yields_multi(c, body, bp0);
   if (ncap > 0 || cap_self || cap_cls) {
     int tc = ++g_tmp;
     /* For a generator the fiber is created lazily by the enumerator, so only the
@@ -9199,7 +9200,7 @@ static const char *param_public_name(const Compiler *c, const char *n) {
   /* the slot of a parameter the body assigns (desugar_reassigned_block_params)
      stands for the name written, with or without the shadow rename's suffix */
   size_t len = reassigned_param_written_len(c, n);
-  if (!n[len]) len = block_param_written_len(n);
+  if (!n[len]) len = block_param_written_len(c, n);
   if (!n[len]) return n;
   { static char *buf; static size_t cap;   /* a name of any length: nothing is cut */
     if (len + 1 > cap) { cap = len + 1; buf = (char *)realloc(buf, cap); }
@@ -9222,7 +9223,7 @@ static int proc_owns_local(Compiler *c, int create, const char *nm) {
     const char *e = strchr(p, ',');
     size_t l = e ? (size_t)(e - p) : strlen(p);
     if (l == nl && memcmp(p, nm, nl) == 0)
-      return !subtree_has_param_named_pub(c->nt, nt_ref(c->nt, create, "parameters"), nm);
+      return !subtree_has_param_named_pub(c, nt_ref(c->nt, create, "parameters"), nm);
     if (!e) break;
     p = e + 1;
   }
@@ -9283,7 +9284,7 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
            renamed spelling. */
         NodeKind pk = nt_kind(nt, pn);
         if (pk == NK_NumberedParametersNode || pk == NK_ItParametersNode) return 1;
-        if (!subtree_has_param_named_pub(nt, pn, nm)) return 1;
+        if (!subtree_has_param_named_pub(c, pn, nm)) return 1;
         break;
       }
       if (!e) break;
@@ -9656,7 +9657,7 @@ static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf 
 static void emit_lambda_arity_check(Compiler *c, int create, int lreq, int max, Buf *pb) {
   const NodeTable *nt = c->nt;
   char kw[256];
-  arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
+  arity_kw_suffix(c, proc_params_node(c, create), kw, sizeof kw);
   if (nt_int(nt, create, "stp_arity", 0) && lreq == 1)
     buf_puts(pb, "    if (argc == 0) sp_raise_cls(\"ArgumentError\", \"no receiver given\");\n");
   buf_puts(pb, "    ");
@@ -10499,7 +10500,7 @@ else if (orecv >= 0 && onm) {
       if (l && l < sizeof nbuf) {
         memcpy(nbuf, q, l); nbuf[l] = 0;
         LocalVar *lv = scope_local(bs, nbuf);
-        if (lv && lv->is_cell && !subtree_has_param_named_pub(nt, nt_ref(nt, create, "parameters"), nbuf)) {
+        if (lv && lv->is_cell && !subtree_has_param_named_pub(c, nt_ref(nt, create, "parameters"), nbuf)) {
           /* Allocate here, not just declare: the block-local reset that would
              otherwise fill it runs only where emit_stmts sees this body as a
              BlockNode, and a proc reached through the poly enumerator never
