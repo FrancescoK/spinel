@@ -1,3 +1,4 @@
+# spinel: int64 -- assumes a 64-bit Integer (values or arithmetic past 2^31); not run on a 32-bit target
 # `[a, b].min` / `.max` on a literal of Floats is the extreme of the
 # values, compared in place with no array built, and it is a Float, not
 # a Float that may be nil. Each element still runs once, in order.
