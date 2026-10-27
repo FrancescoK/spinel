@@ -229,7 +229,7 @@ int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt) {
 static void lower_scratch_reset(LowerCtx *lc) {
   lc->parent_live = 0;
   lc->serial = 0;
-  for (int i = 0; i < 3; i++) lc->prog_memo[i] = -1;
+  for (int i = 0; i < 4; i++) lc->prog_memo[i] = -1;
   for (int i = 0; i < lc->nused; i++) free(lc->used[i]);
   free(lc->used);
   lc->used = NULL;

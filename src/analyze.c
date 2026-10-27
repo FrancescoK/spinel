@@ -8346,6 +8346,142 @@ int desugar_hash_merge_fold(Compiler *c) {
   return changed;
 }
 
+/* The nodes from `base` on, made for call `id`: once the scopes are known
+   (`late`) they take the call's scope and line. */
+static void hash_brackets_adopt(Compiler *c, int id, int base, int late) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  comp_grow_node_arrays(c);
+  if (!late) return;
+  long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+  for (int j = base; j < nt->count; j++) {
+    c->nscope[j] = c->nscope[id];
+    c->node_cbody[j] = c->node_cbody[id];
+    if (ln) nt_node_set_int(nt, j, "node_line", ln);
+    if (fl) nt_node_set_int(nt, j, "node_file", fl);
+  }
+}
+
+/* Whether the program gives Hash its own class method `[]`: a `def
+   self.[]` or a `class << self` binding it in `class Hash`, or a
+   `def Hash.[]`. Hash[...] is then that method's call. */
+static int hash_cmethod_brackets_under(const NodeTable *nt, int root, int in_hash) {
+  if (root < 0 || root >= nt->count) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_DefNode) {
+    const char *dn = nt_str(nt, root, "name");
+    int r = nt_ref(nt, root, "receiver");
+    return dn && sp_streq(dn, "[]") && r >= 0 &&
+           (in_hash ? nt_kind(nt, r) == NK_SelfNode : is_hash_const(nt, r));
+  }
+  if (k == NK_SingletonClassNode && in_hash)
+    return binds_name_under(nt, nt_ref(nt, root, "body"), "[]");
+  if (k == NK_ClassNode) {
+    int cp = nt_ref(nt, root, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    in_hash = cn && sp_streq(cn, "Hash");
+  }
+  else if (k == NK_ModuleNode) in_hash = 0;
+  for (int j = 0; j < nt_num_refs(nt, root); j++)
+    if (hash_cmethod_brackets_under(nt, nt_ref_at(nt, root, j), in_hash)) return 1;
+  for (int j = 0; j < nt_num_arrs(nt, root); j++) {
+    int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
+    for (int i = 0; i < an; i++) if (hash_cmethod_brackets_under(nt, ids[i], in_hash)) return 1;
+  }
+  return 0;
+}
+
+static int hash_cmethod_brackets(const NodeTable *nt) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (hash_cmethod_brackets_under(nt, d, 0)) return 1;
+  NT_FOREACH_KIND(nt, NK_ClassNode, k)
+    if (hash_cmethod_brackets_under(nt, k, 0)) return 1;
+  return 0;
+}
+
+/* `Hash[...]` (call `id`, no block) as the to_h of its pairs, or for a
+   lone splat the runtime's reading of the list. `late`: asked after the
+   scopes are known (a Hash subclass's `H[...]`), so new nodes take the
+   call's scope. Answers 1 when it rewrote the call. */
+static int hash_brackets_desugar(Compiler *c, int id, int late) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int argsn = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+  if (an < 1) return 0;
+  if (an == 1 &&
+      nt_kind(nt, av0[0]) == NK_ArrayNode) {
+    /* Hash[[[k, v], ...]] == pairs.to_h */
+    nt_node_set_str(nt, id, "name", "to_h");
+    nt_node_set_ref(nt, id, "receiver", av0[0]);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    /* Hash[] is laxer about pair shape than Array#to_h: a one-element
+       sub-array gives a nil value rather than raising */
+    nt_node_set_int(nt, id, "hash_brackets", 1);
+    return 1;
+  }
+  /* Hash[*args]: the splatted list is the argument list, so whether it
+     is one Hash or pair list or alternating keys and values is known
+     only at run time -- reading it as the pairs (the rewrite below)
+     took the list itself for them */
+  if (an == 1 &&
+      nt_kind(nt, av0[0]) == NK_SplatNode &&
+      nt_ref(nt, av0[0], "expression") >= 0) {
+    nt_node_set_str(nt, id, "name", "__hash_brackets_splat");
+    nt_node_set_ref(nt, id, "receiver", nt_ref(nt, av0[0], "expression"));
+    nt_node_set_ref(nt, id, "arguments", -1);
+    return 1;
+  }
+  /* Hash[arg] with any single non-literal argument: the same pairs.to_h
+     rewrite (this desugar runs pre-type, so no array check is possible;
+     to_h itself raises on a non-convertible receiver, as Hash[] does). */
+  if (an == 1) {
+    nt_node_set_str(nt, id, "name", "to_h");
+    nt_node_set_ref(nt, id, "receiver", av0[0]);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_int(nt, id, "hash_brackets", 1);
+    return 1;
+  }
+  /* a splat among them (`Hash[*a, *b]`, `Hash[k, *rest]`) makes the count
+     known only at run time: the list below */
+  int splat = 0;
+  for (int j = 0; j < an; j++) splat |= nt_kind(nt, av0[j]) == NK_SplatNode;
+  if (an >= 2 && an % 2 == 0 && an <= 64 && !splat) {
+    /* Hash[k1, v1, k2, v2, ...] == [[k1, v1], [k2, v2], ...].to_h */
+    int base = nt->count;
+    int av[64];
+    memcpy(av, av0, (size_t)an * sizeof(int));
+    int pairs[32];
+    for (int j = 0; j < an / 2; j++) {
+      int pair = nt_new_node(nt, "ArrayNode");
+      if (pair < 0) return 0;
+      nt_node_set_arr(nt, pair, "elements", &av[j * 2], 2);
+      pairs[j] = pair;
+    }
+    int outer = nt_new_node(nt, "ArrayNode");
+    if (outer < 0) return 0;
+    nt_node_set_arr(nt, outer, "elements", pairs, an / 2);
+    nt_node_set_str(nt, id, "name", "to_h");
+    nt_node_set_ref(nt, id, "receiver", outer);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    hash_brackets_adopt(c, id, base, late);
+    return 1;
+  }
+  if (an >= 2) {
+    /* an odd count, a splat, or past 64: the runtime reads the list as
+       the arguments and raises Hash[]'s ArgumentError for an odd one */
+    int base = nt->count;
+    int list = nt_new_node(nt, "ArrayNode");
+    if (list < 0) return 0;
+    nt_node_set_arr(nt, list, "elements", av0, an);
+    nt_node_set_str(nt, id, "name", "__hash_brackets_splat");
+    nt_node_set_ref(nt, id, "receiver", list);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    hash_brackets_adopt(c, id, base, late);
+    return 1;
+  }
+  return 0;
+}
+
 static int enum_chain_kept(Compiler *c, LowerCtx *lc, int id) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "block") >= 0) return 0;
@@ -8630,67 +8766,9 @@ static void enum_chain_node(Compiler *c, LowerCtx *lc, int id) {
       nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_ref(nt, id, "block") < 0) {
     const char *cn = nt_str(nt, recv, "name");
-    int argsn = nt_ref(nt, id, "arguments");
-    int an = 0;
-    const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
-    if (cn && sp_streq(cn, "Hash") && an >= 1) {
-      if (an == 1 &&
-          nt_kind(nt, av0[0]) == NK_ArrayNode) {
-        /* Hash[[[k, v], ...]] == pairs.to_h */
-        nt_node_set_str(nt, id, "name", "to_h");
-        nt_node_set_ref(nt, id, "receiver", av0[0]);
-        nt_node_set_ref(nt, id, "arguments", -1);
-        /* Hash[] is laxer about pair shape than Array#to_h: a one-element
-           sub-array gives a nil value rather than raising */
-        nt_node_set_int(nt, id, "hash_brackets", 1);
-        return;
-      }
-      /* Hash[*args]: the splatted list is the argument list, so whether it
-         is one Hash or pair list or alternating keys and values is known
-         only at run time -- reading it as the pairs (the rewrite below)
-         took the list itself for them */
-      if (an == 1 &&
-          nt_kind(nt, av0[0]) == NK_SplatNode &&
-          nt_ref(nt, av0[0], "expression") >= 0) {
-        nt_node_set_str(nt, id, "name", "__hash_brackets_splat");
-        nt_node_set_ref(nt, id, "receiver", nt_ref(nt, av0[0], "expression"));
-        nt_node_set_ref(nt, id, "arguments", -1);
-        return;
-      }
-      /* Hash[arg] with any single non-literal argument: the same pairs.to_h
-         rewrite (this desugar runs pre-type, so no array check is possible;
-         to_h itself raises on a non-convertible receiver, as Hash[] does). */
-      if (an == 1) {
-        nt_node_set_str(nt, id, "name", "to_h");
-        nt_node_set_ref(nt, id, "receiver", av0[0]);
-        nt_node_set_ref(nt, id, "arguments", -1);
-        nt_node_set_int(nt, id, "hash_brackets", 1);
-        return;
-      }
-      if (an >= 2 && an % 2 == 0 && an <= 64) {
-        /* Hash[k1, v1, k2, v2, ...] == [[k1, v1], [k2, v2], ...].to_h */
-        int av[64];
-        memcpy(av, av0, (size_t)an * sizeof(int));
-        int pairs[32];
-        int ok = 1;
-        for (int j = 0; j < an / 2; j++) {
-          int pair = nt_new_node(nt, "ArrayNode");
-          if (pair < 0) { ok = 0; break; }
-          nt_node_set_arr(nt, pair, "elements", &av[j * 2], 2);
-          pairs[j] = pair;
-        }
-        if (ok) {
-          int outer = nt_new_node(nt, "ArrayNode");
-          if (outer >= 0) {
-            nt_node_set_arr(nt, outer, "elements", pairs, an / 2);
-            nt_node_set_str(nt, id, "name", "to_h");
-            nt_node_set_ref(nt, id, "receiver", outer);
-            nt_node_set_ref(nt, id, "arguments", -1);
-            comp_grow_node_arrays(c);
-          }
-        }
-        return;
-      }
+    if (cn && sp_streq(cn, "Hash")) {
+      if (lc->prog_memo[3] < 0) lc->prog_memo[3] = hash_cmethod_brackets(nt);
+      if (!lc->prog_memo[3] && hash_brackets_desugar(c, id, 0)) return;
     }
   }
   if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return;
@@ -45276,7 +45354,21 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   int alloc = arysub_new_call(c, id, recv, "allocate", -1, -1);
   int src = -1;
   int hash = comp_ary_is_hash(c, k);
-  if (brackets && hash) src = arysub_builtin_call(c, id, "Hash", "[]", args, -1);
+  if (brackets && hash) {
+    /* Hash[...] made into the pairs' to_h, as the early pass does to a
+       written one: Hash has no `[]` of its own at run time */
+    src = arysub_builtin_call(c, id, "Hash", "[]", args, -1);
+    if (src >= 0 && hash_brackets_desugar(c, src, 1) && nt_str(nt, src, "name") &&
+        sp_streq(nt_str(nt, src, "name"), "to_h")) {
+      /* one argument: H's own Hash of its pairs, not the argument itself
+         nor its default, and not through a to_h of the program's */
+      nt_node_set_int((NodeTable *)nt, src, "builtin_only", 1);
+      int empty = arysub_node(c, "HashNode", id);
+      int merged = empty >= 0 ? arysub_new_call(c, id, empty, "merge", arysub_args(c, id, &src, 1), -1) : -1;
+      if (merged >= 0) nt_node_set_int((NodeTable *)nt, merged, "builtin_only", 1);
+      src = merged;
+    }
+  }
   else if (brackets) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     src = arysub_node(c, "ArrayNode", id);

@@ -748,7 +748,7 @@ typedef struct LowerCtx {
   int parent_n, parent_live;
   unsigned parent_version;
   unsigned long parent_edits;
-  int prog_memo[3];         /* answers of the whole program a row asks for as needed: -1 until asked */
+  int prog_memo[4];         /* answers of the whole program a row asks for as needed: -1 until asked */
 } LowerCtx;
 
 typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);

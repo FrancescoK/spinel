@@ -1,0 +1,43 @@
+{}
+H
+{"s" => 1, "t" => 2}
+H
+["s", "t"]
+{"s" => 1, "t" => 2}
+H
+false
+{1 => "x", y: 2.5}
+{w: 4}
+H
+{b: 2}
+H
+"own 2"
+{q: [1]}
+H
+2
+{1 => 2, 3 => 4}
+H
+{k: :v}
+H
+"odd number of arguments for Hash"
+"odd number of arguments for Hash"
+{a: 1}
+nil
+nil
+false
+nil
+true
+{a: 1}
+J
+false
+true
+H
+[1, 2]
+A
+{1 => 2, 3 => 4}
+{1 => 2, 3 => 4}
+H
+{k: :v}
+H
+{}
+H
