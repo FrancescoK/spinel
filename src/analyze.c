@@ -13367,6 +13367,9 @@ static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
    stamps again only the rows of a component that still narrows. Only its own
    -- other producers stamp empty `[]` literals too. */
 static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
+/* its bits: this pass stamped the row; a seed built it (oa_mark_seed_row) */
+#define OA_MINE 1
+#define OA_SEED_ROW 2
 static void oa_mark_empty_mine(int lit) {
   if (lit >= g_oa_empt_mine_cap) {
     int nc = g_oa_empt_mine_cap ? g_oa_empt_mine_cap : 256;
@@ -13376,14 +13379,14 @@ static void oa_mark_empty_mine(int lit) {
     memset(g_oa_empt_mine + g_oa_empt_mine_cap, 0, (size_t)(nc - g_oa_empt_mine_cap));
     g_oa_empt_mine_cap = nc;
   }
-  g_oa_empt_mine[lit] |= 1;
+  g_oa_empt_mine[lit] |= OA_MINE;
 }
 /* An empty row a seed built at its kind (oa_seeded_literal_rows) carries a
    second mark: the seed is trusted, so widen_nested_literals leaves it to
    the seed's kind as it leaves the rows of `Array.new(n) { [] }`, and the
    push into it converts its value or is refused, as a push into those does */
-static void oa_mark_seed_row(int lit) { oa_mark_empty_mine(lit); g_oa_empt_mine[lit] |= 2; }
-int oa_seed_row_literal(int lit) { return lit >= 0 && lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & 2); }
+static void oa_mark_seed_row(int lit) { oa_mark_empty_mine(lit); g_oa_empt_mine[lit] |= OA_SEED_ROW; }
+int oa_seed_row_literal(int lit) { return lit >= 0 && lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & OA_SEED_ROW); }
 /* Nodes whose own emitted type has to follow the slot they feed: a
    `idx.map { |k| cols[k] }` builds the table in place, so narrowing the slot
    without retyping the map leaves the emitter building a poly array and
@@ -14671,16 +14674,24 @@ static char *oa_walk_disc(Compiler *c, int nc) {
    A row another producer gave a typed kind of its own keeps the table the
    poly array its rows are, before any row is built, instead of reading a
    row of one kind back as the other. */
+/* Is component r an ivar's an `Array[Array[Integer]]` / `Array[Array[Float]]`
+   seed decided? */
+static int oa_component_seeded(Compiler *c, OAS *sl, int n, int r) {
+  for (int j = 0; j < n; j++)
+    if (oa_uf_find(sl, j) == r && sl[j].ici >= 0) {
+      int sd = c->classes[sl[j].ici].ivar_oa_seed[sl[j].iiv];
+      if (sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE) return 1;
+    }
+  return 0;
+}
 static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
   for (int i = 0; i < n; i++) {
     if (oa_uf_find(sl, i) != i || !OA_CLS_IS_NESTED(sl[i].cls)) continue;
-    int seeded = 0;
-    for (int j = 0; j < n && !seeded; j++)
-      if (oa_uf_find(sl, j) == i && sl[j].ici >= 0) {
-        int sd = c->classes[sl[j].ici].ivar_oa_seed[sl[j].iiv];
-        seeded = sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE;
-      }
-    if (!seeded || !c->arr_want) continue;
+    if (!c->arr_want || !oa_component_seeded(c, sl, n, i)) continue;
+    /* only a table that narrows builds rows: one the pass keeps boxed (dead,
+       or a remove, a comparison or a boxed row, as narrow_object_arrays
+       checks) keeps its rows boxed */
+    if (!sl[i].alive || sl[i].needs_cmp || sl[i].removes || sl[i].poly_elem) continue;
     TyKind rk = sl[i].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
     for (int e = 0; e < g_oa_empt_n && sl[i].cls != -1; e++) {
       if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
@@ -15644,13 +15655,15 @@ static int narrow_object_arrays(Compiler *c) {
       }
       nty = sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY_ARRAY : TY_FLOAT_ARRAY_ARRAY;
       /* every empty `[]` that flowed into this component is a row: build it
-         at the row kind (see oa_note_empty) */
+         at the row kind (see oa_note_empty), a seeded table's as the seed's */
+      int seeded = oa_component_seeded(c, sl, n, r);
       for (int e = 0; e < g_oa_empt_n; e++) {
         if (oa_uf_find(sl, g_oa_empt_slot[e]) != r) continue;
         int lit = g_oa_empt_node[e];
         if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN) {
           comp_set_arr_want(c, lit, sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY);
-          oa_mark_empty_mine(lit);
+          if (seeded) oa_mark_seed_row(lit);
+          else oa_mark_empty_mine(lit);
         }
       }
     }
