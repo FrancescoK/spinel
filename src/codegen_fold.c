@@ -9752,7 +9752,7 @@ void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, 
 /* See codegen_internal.h. */
 void emit_args_before_range_ends(Compiler *c, const int *argv, int argc, Buf *b) {
   int sv = g_arg_range_ends;
-  g_arg_range_ends = 1;
+  g_arg_range_ends = argc == 1;
   emit_args_before(c, argv, argc, NULL, 0, b);
   g_arg_range_ends = sv;
 }

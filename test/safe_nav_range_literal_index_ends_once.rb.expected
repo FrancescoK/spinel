@@ -45,3 +45,9 @@ at a
 "bad value for range"
 at 4
 [1..3, 4]
+at 1
+at a
+"bad value for range"
+at 1
+at a
+"bad value for range"
