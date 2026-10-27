@@ -182,7 +182,7 @@ typedef struct {
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND } LrMixKind;
-typedef struct { int node, kind, mod; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know */
+typedef struct { int node, kind, mod, ref; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know; ref: the argument naming it */
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the version of cls's method `name` (singleton when sg) live at p, through
