@@ -8092,6 +8092,12 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       if (!reached) { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       src = &c->scopes[ms];
     }
+    else if (prepend && flag && c->classes[ci].parent >= 0 &&
+             comp_cmethod_in_chain(c, c->classes[ci].parent, src->name, NULL) >= 0)
+      /* no class method of the class's own, but one it inherits: until the
+         reopening's statement has run, a call reaches that one, which the
+         copy's super reaches */
+      guard = mixin_flag_name(c, flag);
     /* Always a clone re-walked against `ci`, as include does: a shared
        body kept the module's attribution, so `self`, the block and the
        parameter types resolved against the module, not the class.
