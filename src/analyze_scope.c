@@ -561,6 +561,27 @@ typedef struct {
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w);
 
+/* Make call node rc `raise NameError, msg`, its nodes at line ln of file fl
+   (0: none given); 0 when a node could not be made */
+static int name_error_raise(NodeTable *nt, int rc, const char *msg, long long ln, long long fl) {
+  int ra = nt_new_node(nt, "ArgumentsNode");
+  int ne = nt_new_node(nt, "ConstantReadNode"), sn = nt_new_node(nt, "StringNode");
+  if (ra < 0 || ne < 0 || sn < 0) return 0;
+  nt_node_set_str(nt, ne, "name", "NameError");
+  nt_node_set_str(nt, sn, "content", msg);
+  nt_node_set_str(nt, sn, "unescaped", msg);
+  int av[2] = { ne, sn };
+  nt_node_set_arr(nt, ra, "arguments", av, 2);
+  nt_node_set_str(nt, rc, "name", "raise");
+  nt_node_set_ref(nt, rc, "arguments", ra);
+  int all[4] = { rc, ra, ne, sn };
+  for (int k = 0; k < 4; k++) {
+    if (ln) nt_node_set_int(nt, all[k], "node_line", ln);
+    if (fl) nt_node_set_int(nt, all[k], "node_file", fl);
+  }
+  return 1;
+}
+
 /* A child the walk enters at w.pos: a statement of the load phase when
    that makes it one, which the record places as the walk reaches it */
 static void walk_child(Compiler *c, int ch, WalkCtx w) {
@@ -1451,6 +1472,33 @@ static int sg_def_receiver(const NodeTable *nt, int recv) {
   return nt_paren_single(nt, recv);
 }
 
+/* `class C < S` where the constant S names nothing where the header
+   stands (elab_const_ref_at): CRuby raises NameError there, before the
+   class exists or its body runs. The header becomes that raise, and its
+   parts become nil nodes, as a replaced subtree does. */
+static int class_superclass_missing(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int sc = nt_ref(nt, id, "superclass"), owner = -1;
+  NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NilNode;
+  const char *miss = NULL;
+  if ((sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) ||
+      elab_const_ref_at(c, sc, id, &miss, &owner) != ELAB_NO) return 0;
+  char msg[600];
+  const char *in = owner >= 0 ? class_ruby_name(c, owner) : NULL;
+  if (in) snprintf(msg, sizeof msg, "uninitialized constant %s::%s", in, miss);
+  else snprintf(msg, sizeof msg, "uninitialized constant %s", miss);
+  long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  nt_subtree_blank(nt, nt_ref(nt, id, "constant_path"));
+  nt_subtree_blank(nt, sc);
+  nt_subtree_blank(nt, nt_ref(nt, id, "body"));
+  nt_node_reset(nt, id, "CallNode");
+  if (col) nt_node_set_int(nt, id, "node_col", col);
+  int made = name_error_raise(nt, id, msg, ln, fl);
+  comp_grow_node_arrays(c);
+  return made;
+}
+
 static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   if (id < 0 || id >= c->nt->count) return;
   int scope_idx = w.scope, class_id = w.cls, proc = w.proc, dead = w.dead;
@@ -1521,6 +1569,10 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     /* Unsupported receiver: fall through to the generic walk below. */
   }
 
+  if (ty_k == NK_ClassNode && class_superclass_missing(c, id)) {
+    walk_scope_in(c, id, w);   /* the raise the header became */
+    return;
+  }
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
@@ -12128,21 +12180,14 @@ static void bc_check(Bc *b, int id, int in_defined) {
     if (*top) snprintf(nmsg, sizeof nmsg, "uninitialized constant %s::%s", top, n);
     else snprintf(nmsg, sizeof nmsg, "uninitialized constant %s", n);
     long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
-    int rc = nt_new_node(wnt, "CallNode"), ra = nt_new_node(wnt, "ArgumentsNode");
-    int ne = nt_new_node(wnt, "ConstantReadNode"), sn = nt_new_node(wnt, "StringNode");
+    int rc = nt_new_node(wnt, "CallNode");
+    if (rc < 0 || !name_error_raise(wnt, rc, nmsg, ln, fl)) return;
     int nl = nt_new_node(wnt, "NilNode"), st = nt_new_node(wnt, "StatementsNode");
-    if (rc < 0 || ra < 0 || ne < 0 || sn < 0 || nl < 0 || st < 0) return;
-    nt_node_set_str(wnt, ne, "name", "NameError");
-    nt_node_set_str(wnt, sn, "content", nmsg);
-    nt_node_set_str(wnt, sn, "unescaped", nmsg);
-    int av[2] = { ne, sn };
-    nt_node_set_arr(wnt, ra, "arguments", av, 2);
-    nt_node_set_str(wnt, rc, "name", "raise");
-    nt_node_set_ref(wnt, rc, "arguments", ra);
+    if (nl < 0 || st < 0) return;
     int body[2] = { rc, nl };
     nt_node_set_arr(wnt, st, "body", body, 2);
-    int all[6] = { rc, ra, ne, sn, nl, st };
-    for (int k = 0; k < 6; k++) {
+    int all[2] = { nl, st };
+    for (int k = 0; k < 2; k++) {
       if (ln) nt_node_set_int(wnt, all[k], "node_line", ln);
       if (fl) nt_node_set_int(wnt, all[k], "node_file", fl);
     }
@@ -12251,7 +12296,9 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
       }
       int sc = is_mod ? -1 : nt_ref(nt, id, "superclass");
       if (sc >= 0) {
-        bc_walk(b, sc, self, mode);
+        /* a superclass constant is resolved where the header runs, by the
+           load record (class_superclass_missing), not checked here */
+        if (mode != 2 || !bc_is_const_node(nt, sc)) bc_walk(b, sc, self, mode);
         if (mode == 1 && *full) {
           BcMod *m = bc_mod(b, full, 1);
           char *s = NULL;
