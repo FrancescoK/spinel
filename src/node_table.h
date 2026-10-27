@@ -105,7 +105,32 @@ typedef struct {
   int *kind_moved, nkind_moved, ckind_moved;
   int kind_live;
   int **kind_retired, nkind_retired, ckind_retired;
+  /* the class or module body that holds each node (fwd_lex_parent), made as
+     far as its questions need; NULL until the first */
+  struct NtHolders *holders;
 } NodeTable;
+
+/* An index of the tree kept on the table it was made of: for each node, the
+   class or module whose body holds it as a statement (or as the def a
+   visibility call wraps), the first such in node order before it. It stays
+   valid while the table's count, version and edits are the ones it saw
+   (ver, edits, cnt), and an entry counts when it carries the stamp `cur`, so
+   an edit clears nothing. The holders are entered in node order, statement by
+   statement, only as far as a question needs: the holders before `hi`, and
+   the first `k` statements of that one's body `bv`, of `bn` statements (-1:
+   not read yet). Freed with the table. */
+struct NtHolders {
+  int *par;
+  unsigned *stamp;
+  int cap;
+  unsigned cur;
+  int hi, k;
+  const int *bv;
+  int bn;
+  unsigned ver;
+  unsigned long edits;
+  int cnt;
+};
 
 /* The roots of the program's files, entry first (see file_roots). */
 static inline int nt_nroots(const NodeTable *nt) { return nt->nfile_roots ? nt->nfile_roots : 1; }

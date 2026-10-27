@@ -2085,11 +2085,12 @@ void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b) {
              c->classes[cid].name, nm + 2);
 }
 
-static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm);
-int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm) {
-  return subtree_has_param_named(nt, id, nm);
+static int subtree_has_param_named(const Compiler *c, int id, const char *nm);
+int subtree_has_param_named_pub(const Compiler *c, int id, const char *nm) {
+  return subtree_has_param_named(c, id, nm);
 }
-static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) {
+static int subtree_has_param_named(const Compiler *c, int id, const char *nm) {
+  const NodeTable *nt = c->nt;
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   NodeKind k = nt_kind(nt, id);
@@ -2110,18 +2111,18 @@ static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) 
     if (pn) {
       size_t nl = strlen(nm);
       if (sp_streq(pn, nm)) return 1;
-      if (block_param_written_len(pn) == nl && !strncmp(pn, nm, nl)) return 1;
+      if (block_param_written_len(c, pn) == nl && !strncmp(pn, nm, nl)) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
-    if (subtree_has_param_named(nt, nt_ref_at(nt, id, i), nm)) return 1;
+    if (subtree_has_param_named(c, nt_ref_at(nt, id, i), nm)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (subtree_has_param_named(nt, ids[j], nm)) return 1;
+      if (subtree_has_param_named(c, ids[j], nm)) return 1;
   }
   return 0;
 }
@@ -2226,7 +2227,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
          destructured, optional, rest, and shadow (`; x`) declarations --
          collected straight from the parameters subtree, since
          block_param_name only covers plain leading params. */
-      int is_param = subtree_has_param_named(c->nt, nt_ref(c->nt, blk, "parameters"), tmpn);
+      int is_param = subtree_has_param_named(c, nt_ref(c->nt, blk, "parameters"), tmpn);
 
       if (is_param) {
         /* A cell_shadow param is bound by the loop emitters WRITING THE PLAIN C
@@ -7716,7 +7717,8 @@ static int param_is_required_kw(const NodeTable *nt, int p) {
 }
 /* The required-keyword suffix of a parameter list: a def's ParametersNode or
    a block's BlockParametersNode. "" when it has none. */
-void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n) {
+void arity_kw_suffix(const Compiler *c, int params, char *out, size_t n) {
+  const NodeTable *nt = c->nt;
   out[0] = 0;
   if (params >= 0 && nt_kind(nt, params) == NK_BlockParametersNode)
     params = nt_ref(nt, params, "parameters");
@@ -7731,7 +7733,7 @@ void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n) {
     /* a block parameter's rename suffix (`k__bp3`) is ours, not the name */
     const char *kn = nt_str(nt, kws[i], "name");
     if (!kn) kn = "?";
-    int kl = block_param_is_renamed(kn) ? (int)block_param_written_len(kn) : (int)strlen(kn);
+    int kl = block_param_is_renamed(c, kn) ? (int)block_param_written_len(c, kn) : (int)strlen(kn);
     off += (size_t)snprintf(out + off, n - off, "%s%.*s", first ? "" : ", ", kl, kn);
     first = 0;
   }
@@ -7740,7 +7742,7 @@ void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n) {
 void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n) {
   out[0] = 0;
   if (!m || m->def_node < 0) return;
-  arity_kw_suffix(c->nt, nt_ref(c->nt, m->def_node, "parameters"), out, n);
+  arity_kw_suffix(c, nt_ref(c->nt, m->def_node, "parameters"), out, n);
 }
 /* The raise of a count only the run time knows, the C expression `given`,
    as one statement. */

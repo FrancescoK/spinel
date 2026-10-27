@@ -2675,89 +2675,81 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
 }
 
 /* The names the shadow rename invents (`k__bp12` for a keyword `k`), each with
-   the length of the name the program wrote. Only a name recorded here is an
+   the length of the name the program wrote, in the Compiler's open-addressed
+   table (bp_name, bp_len, bp_mask, nbp). Only a name recorded there is an
    invented one: a program can write `k__bp12` itself, and that name is its
    own. */
-static struct { char **name; size_t *len; unsigned mask; int n; } bp_renames;
-static const NodeTable *bp_user_nt;
-static char **bp_user_names;
-static int bp_user_n;
-
-static int bp_rename_slot(const char *name) {
-  if (!bp_renames.name || !name) return -1;
-  unsigned i = sp_strhash(name) & bp_renames.mask;
-  while (bp_renames.name[i]) {
-    if (sp_streq(bp_renames.name[i], name)) return (int)i;
-    i = (i + 1) & bp_renames.mask;
+static int bp_rename_slot(const Compiler *c, const char *name) {
+  if (!c->bp_name || !name) return -1;
+  unsigned i = sp_strhash(name) & c->bp_mask;
+  while (c->bp_name[i]) {
+    if (sp_streq(c->bp_name[i], name)) return (int)i;
+    i = (i + 1) & c->bp_mask;
   }
   return -1;
 }
 
-static void bp_rename_insert(char *name, size_t len) {
-  unsigned i = sp_strhash(name) & bp_renames.mask;
-  while (bp_renames.name[i]) i = (i + 1) & bp_renames.mask;
-  bp_renames.name[i] = name;
-  bp_renames.len[i] = len;
+static void bp_rename_insert(Compiler *c, char *name, size_t len) {
+  unsigned i = sp_strhash(name) & c->bp_mask;
+  while (c->bp_name[i]) i = (i + 1) & c->bp_mask;
+  c->bp_name[i] = name;
+  c->bp_len[i] = len;
 }
 
-static void bp_rename_record(const char *name, size_t len) {
-  int s = bp_rename_slot(name);
-  if (s >= 0) { bp_renames.len[s] = len; return; }
-  unsigned ocap = bp_renames.name ? bp_renames.mask + 1 : 0;
-  if ((unsigned)(bp_renames.n + 1) * 2 > ocap) {
-    char **on = bp_renames.name;
-    size_t *ol = bp_renames.len;
+static void bp_rename_record(Compiler *c, const char *name, size_t len) {
+  int s = bp_rename_slot(c, name);
+  if (s >= 0) { c->bp_len[s] = len; return; }
+  unsigned ocap = c->bp_name ? c->bp_mask + 1 : 0;
+  if ((unsigned)(c->nbp + 1) * 2 > ocap) {
+    char **on = c->bp_name;
+    size_t *ol = c->bp_len;
     unsigned cap = ocap ? ocap * 2 : 64;
-    bp_renames.name = calloc(cap, sizeof(char *));
-    bp_renames.len = calloc(cap, sizeof(size_t));
-    bp_renames.mask = cap - 1;
-    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(on[i], ol[i]);
+    c->bp_name = calloc(cap, sizeof(char *));
+    c->bp_len = calloc(cap, sizeof(size_t));
+    c->bp_mask = cap - 1;
+    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i]);
     free(on);
     free(ol);
   }
-  bp_rename_insert(strdup(name), len);
-  bp_renames.n++;
+  bp_rename_insert(c, strdup(name), len);
+  c->nbp++;
 }
 
-int block_param_is_renamed(const char *name) {
-  return bp_rename_slot(name) >= 0;
+int block_param_is_renamed(const Compiler *c, const char *name) {
+  return bp_rename_slot(c, name) >= 0;
 }
 
 /* The length of the name a block parameter was written with: an invented
    `k__bp12` is still the keyword `k`; any other name is its whole self. */
-size_t block_param_written_len(const char *name) {
-  int s = bp_rename_slot(name);
-  return s >= 0 ? bp_renames.len[s] : strlen(name);
+size_t block_param_written_len(const Compiler *c, const char *name) {
+  int s = bp_rename_slot(c, name);
+  return s >= 0 ? c->bp_len[s] : strlen(name);
 }
 
 /* True when the program itself uses `name`. Only a name with `__bp` or `__bq`
    in it can clash with an invented one, so those are collected once. */
-static int bp_user_uses(const NodeTable *nt, const char *name) {
-  if (bp_user_nt != nt) {
-    bp_user_nt = nt;
-    for (int i = 0; i < bp_user_n; i++) free(bp_user_names[i]);
-    free(bp_user_names);
-    bp_user_names = NULL;
-    bp_user_n = 0;
+static int bp_user_uses(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (!c->bp_user_built) {
+    c->bp_user_built = 1;
     int cap = 0;
     for (int id = 0; id < nt->count; id++) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!strstr(nm, "__bp") && !strstr(nm, "__bq")) || block_param_is_renamed(nm)) continue;
-      if (bp_user_n == cap) {
+      if (!nm || (!strstr(nm, "__bp") && !strstr(nm, "__bq")) || block_param_is_renamed(c, nm)) continue;
+      if (c->nbp_user == cap) {
         cap = cap ? cap * 2 : 8;
-        bp_user_names = realloc(bp_user_names, (size_t)cap * sizeof(char *));
+        c->bp_user = realloc(c->bp_user, (size_t)cap * sizeof(char *));
       }
-      bp_user_names[bp_user_n++] = strdup(nm);
+      c->bp_user[c->nbp_user++] = strdup(nm);
     }
   }
-  for (int i = 0; i < bp_user_n; i++) if (sp_streq(bp_user_names[i], name)) return 1;
+  for (int i = 0; i < c->nbp_user; i++) if (sp_streq(c->bp_user[i], name)) return 1;
   return 0;
 }
 
 /* Invent the slot name for the parameter `written` of block `blk` and record
    it, stepping past a name the program already uses. The caller frees it. */
 char *block_param_invent_name(Compiler *c, const char *written, int blk) {
-  const NodeTable *nt = c->nt;
   /* `x__bp12` for a program block, `x__bqmin_by_12` for a builtin's */
   const char *tag = comp_node_tag(c, blk);
   const char *p = tag[0] == 'q' || tag[0] == 'p' ? "" : "p";
@@ -2765,9 +2757,9 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
   char *buf = malloc(n);
   if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__b%s%s", written, p, tag);
-  for (int k = 1; bp_user_uses(nt, buf); k++)
+  for (int k = 1; bp_user_uses(c, buf); k++)
     snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
-  bp_rename_record(buf, strlen(written));
+  bp_rename_record(c, buf, strlen(written));
   return buf;
 }
 
@@ -2777,7 +2769,7 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   const NodeTable *nt = c->nt;
   if (kwhash < 0 || !name) return -1;
-  size_t nlen = block_param_written_len(name);
+  size_t nlen = block_param_written_len(c, name);
   int en = 0, v = -1; const int *els = nt_arr(nt, kwhash, "elements", &en);
   for (int i = 0; i < en; i++) {
     NodeKind ek = nt_kind(nt, els[i]);
@@ -5096,7 +5088,7 @@ void qualify_colliding_classes(Compiler *c) {
    37k-line compile. Bucketing by name makes each check touch only the nodes
    that actually carry it. A rename during the pass changes node names, so the
    index is rebuilt lazily when that happens (renames are the exception). */
-typedef struct { const int *wp; int wpn; int *head; int *next; unsigned mask; } BlkpIdx;
+typedef struct { const Compiler *c; const int *wp; int wpn; int *head; int *next; unsigned mask; } BlkpIdx;
 
 static void blkp_idx_build(BlkpIdx *ix, const NodeTable *nt) {
   for (unsigned b = 0; b <= ix->mask; b++) ix->head[b] = -1;
@@ -5108,10 +5100,11 @@ static void blkp_idx_build(BlkpIdx *ix, const NodeTable *nt) {
     ix->head[b] = i;
   }
 }
-static int blkp_idx_init(BlkpIdx *ix, const NodeTable *nt, const int *wp, int wpn) {
+static int blkp_idx_init(BlkpIdx *ix, const Compiler *c, const int *wp, int wpn) {
+  const NodeTable *nt = c->nt;
   unsigned nb = 16;
   while (nb < (unsigned)wpn * 2u && nb < (1u << 22)) nb <<= 1;
-  ix->wp = wp; ix->wpn = wpn; ix->mask = nb - 1;
+  ix->c = c; ix->wp = wp; ix->wpn = wpn; ix->mask = nb - 1;
   ix->head = malloc((size_t)nb * sizeof(int));
   ix->next = malloc((size_t)(wpn > 0 ? wpn : 1) * sizeof(int));
   if (!ix->head || !ix->next) { free(ix->head); free(ix->next); ix->head = ix->next = NULL; return 0; }
@@ -5129,7 +5122,7 @@ typedef struct { const BlkpIdx *ix; int all; int i; } BlkpScan;
 static BlkpScan blkp_scan(const BlkpIdx *ix, const char *name) {
   BlkpScan sc;
   sc.ix = ix;
-  sc.all = block_param_is_renamed(name);
+  sc.all = block_param_is_renamed(ix->c, name);
   sc.i = sc.all ? 0 : ix->head[sp_strhash(name) & ix->mask];
   return sc;
 }
@@ -5547,12 +5540,12 @@ void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const ch
   free(out);
 }
 
-static void scope_numbered_block_params(Compiler *c) {
+int scope_numbered_block_params_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   /* how many numbered-param blocks each scope holds */
   int *per_scope = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
-  if (!per_scope) return;
+  if (!per_scope) return 0;
   for (int L = 0; L < n0; L++) {
     if (numbered_params_node_of(c, L) < 0) continue;
     int sc = c->nscope[L];
@@ -5578,7 +5571,7 @@ static void scope_numbered_block_params(Compiler *c) {
       nt_node_set_str(nt, bp, key, to);
     }
   }
-  free(per_scope);
+  free(per_scope);  return 0;
 }
 
 /* Every parameter kind that binds a name: a block parameter or block-local
@@ -5645,7 +5638,7 @@ int name_anon_block_kwrest_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-void rename_shadowing_block_params(Compiler *c) {
+int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
   /* Reverse map block-node -> owning node (the node whose "block" ref is it),
@@ -5653,7 +5646,7 @@ void rename_shadowing_block_params(Compiler *c) {
      per block made this whole pass O(blocks*n) on large inputs (a flattened
      runtime is ~500k nodes). */
   int *owner = malloc((size_t)n * sizeof(int));
-  if (!owner) return;
+  if (!owner) return 0;
   for (int i = 0; i < n; i++) owner[i] = -1;
   for (int id = 0; id < n; id++) {
     int b = nt_ref(nt, id, "block");
@@ -5661,20 +5654,20 @@ void rename_shadowing_block_params(Compiler *c) {
   }
   /* inbody membership via generation stamp (avoids an O(n) memset per block). */
   int *inbody = calloc((size_t)n, sizeof(int));
-  if (!inbody) { free(owner); return; }
+  if (!inbody) { free(owner); return 0; }
   /* All local-variable-write and parameter nodes, collected once;
      the per-param collision scan iterates this set rather than all n nodes (it
      re-reads each name fresh, so a rename made earlier in this pass is still
      reflected). */
   int *wp = malloc((size_t)n * sizeof(int));
   int wpn = 0;
-  if (!wp) { free(owner); free(inbody); return; }
+  if (!wp) { free(owner); free(inbody); return 0; }
   for (int w = 0; w < n; w++) {
     const char *wty = nt_type(nt, w);
     if (a_is_write_node(wty) || is_name_binding_param(wty)) wp[wpn++] = w;
   }
   BlkpIdx ix;
-  if (!blkp_idx_init(&ix, nt, wp, wpn)) { free(wp); free(inbody); free(owner); return; }
+  if (!blkp_idx_init(&ix, c, wp, wpn)) { free(wp); free(inbody); free(owner); return 0; }
   int gen = 0;
   for (int L = 0; L < n; L++) {
     const char *ty = nt_type(nt, L);
@@ -5796,7 +5789,7 @@ void rename_shadowing_block_params(Compiler *c) {
   blkp_idx_free(&ix);
   free(wp);
   free(inbody);
-  free(owner);
+  free(owner);  return 0;
 }
 
 /* ---- --rbs advisory type seeds ----
@@ -12409,59 +12402,56 @@ int desugar_system_options_at(Compiler *c, LowerCtx *lc, int id) {
    def. Where self does not reach it, the call still runs the command (the
    bare ` call, emit_kernel_call). Without such a def every literal stays
    as it is. */
-static int desugar_user_backtick(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
+int desugar_user_backtick_gate(Compiler *c, LowerCtx *lc) {
+  const NodeTable *nt = c->nt;
   /* a def of the name, or an alias, alias_method or define_method that
      names it (by a Symbol or a String), or a method named by a value the
      program computes */
   int own = an_prog_names_method("`");
   if (!own)
     NT_FOREACH_KIND(nt, NK_DefNode, d) own |= sp_streq(nt_str(nt, d, "name"), "`");
-  if (!own) return 0;
-  for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_XStringNode && k != NK_InterpolatedXStringNode) continue;
-    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
-              col = nt_int(nt, id, "node_col", 0);
-    int arg, args = nt_new_node(nt, "ArgumentsNode");
-    if (args < 0) continue;
-    if (k == NK_XStringNode) {
-      /* the command's bytes move to a String literal of their own,
-         frozen, as CRuby hands it */
-      arg = nt_clone_subtree(nt, id);
-      if (arg < 0) continue;
-      nt_node_set_type(nt, arg, "StringNode");
-      nt_node_set_int(nt, arg, "fzl", 1);
-    } else {
-      int pn = 0;
-      const int *pv = nt_arr(nt, id, "parts", &pn);
-      int *parts = malloc(sizeof(int) * (size_t)(pn > 0 ? pn : 1));
-      if (!parts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      if (pn > 0) memcpy(parts, pv, sizeof(int) * (size_t)pn);
-      arg = nt_new_node(nt, "InterpolatedStringNode");
-      if (arg >= 0) nt_node_set_arr(nt, arg, "parts", parts, pn);
-      free(parts);
-      if (arg < 0) continue;
-    }
-    nt_node_set_int(nt, arg, "node_line", line);
-    nt_node_set_int(nt, arg, "node_file", file);
-    nt_node_set_int(nt, arg, "node_col", col);
-    nt_node_set_arr(nt, args, "arguments", &arg, 1);
-    nt_node_reset(nt, id, "CallNode");
-    nt_node_set_str(nt, id, "name", "`");
-    nt_node_set_ref(nt, id, "receiver", -1);
-    nt_node_set_ref(nt, id, "arguments", args);
-    nt_node_set_ref(nt, id, "block", -1);
-    nt_set_ignore_visibility(nt, id, 1);
-    nt_node_set_int(nt, id, "xstr_call", 1);   /* defined? answers "expression" */
-    nt_node_set_int(nt, id, "node_line", line);
-    nt_node_set_int(nt, id, "node_file", file);
-    nt_node_set_int(nt, id, "node_col", col);
-    changed = 1;
+  return own;
+}
+int desugar_user_backtick_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  NodeKind k = nt_kind(nt, id);
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  int arg, args = nt_new_node(nt, "ArgumentsNode");
+  if (args < 0) return 0;
+  if (k == NK_XStringNode) {
+    /* the command's bytes move to a String literal of their own,
+       frozen, as CRuby hands it */
+    arg = nt_clone_subtree(nt, id);
+    if (arg < 0) return 0;
+    nt_node_set_type(nt, arg, "StringNode");
+    nt_node_set_int(nt, arg, "fzl", 1);
+  } else {
+    int pn = 0;
+    const int *pv = nt_arr(nt, id, "parts", &pn);
+    int *parts = malloc(sizeof(int) * (size_t)(pn > 0 ? pn : 1));
+    if (!parts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    if (pn > 0) memcpy(parts, pv, sizeof(int) * (size_t)pn);
+    arg = nt_new_node(nt, "InterpolatedStringNode");
+    if (arg >= 0) nt_node_set_arr(nt, arg, "parts", parts, pn);
+    free(parts);
+    if (arg < 0) return 0;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  nt_node_set_int(nt, arg, "node_line", line);
+  nt_node_set_int(nt, arg, "node_file", file);
+  nt_node_set_int(nt, arg, "node_col", col);
+  nt_node_set_arr(nt, args, "arguments", &arg, 1);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_str(nt, id, "name", "`");
+  nt_node_set_ref(nt, id, "receiver", -1);
+  nt_node_set_ref(nt, id, "arguments", args);
+  nt_node_set_ref(nt, id, "block", -1);
+  nt_set_ignore_visibility(nt, id, 1);
+  nt_node_set_int(nt, id, "xstr_call", 1);   /* defined? answers "expression" */
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+  return 1;
 }
 
 /* IO.popen(cmd, mode) { |io| ... } / IO.popen(cmd, &:read) ->
@@ -18773,12 +18763,12 @@ static int an_block_name_lent(Compiler *c, int blk, const char *bp) {
   return lent;
 }
 /* The same for the keyword parameter of `blk` that keyword `key` binds. */
-static int dyn_kw_name_is(const char *pn, const char *key);
+static int dyn_kw_name_is(const Compiler *c, const char *pn, const char *key);
 static const char *an_block_kw_param(Compiler *c, int blk, const char *key) {
   for (int i = 0; blk >= 0 && key; i++) {
     const char *kp = block_keyword_name(c, blk, i);
     if (!kp) break;
-    if (dyn_kw_name_is(kp, key)) return kp;
+    if (dyn_kw_name_is(c, kp, key)) return kp;
   }
   return NULL;
 }
@@ -30499,9 +30489,9 @@ static unsigned dyn_meth_bits(Compiler *c, int mi) {
    name: appended (bit 0) and read for more than its bytes (bit 1), 0 when
    the target has no such keyword. A block's keyword may carry the shadow
    rename's suffix (#3679); the key is the name the program wrote. */
-static int dyn_kw_name_is(const char *pn, const char *key) {
+static int dyn_kw_name_is(const Compiler *c, const char *pn, const char *key) {
   if (!pn || !key) return 0;
-  size_t n = block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn);
+  size_t n = block_param_is_renamed(c, pn) ? block_param_written_len(c, pn) : strlen(pn);
   return strlen(key) == n && !strncmp(pn, key, n);
 }
 static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
@@ -30510,7 +30500,7 @@ static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
   int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
   for (int i = 0; i < kn; i++) {
     const char *pn[1] = { nt_str(nt, kv[i], "name") };
-    if (!dyn_kw_name_is(pn[0], key)) continue;
+    if (!dyn_kw_name_is(c, pn[0], key)) continue;
     unsigned app = 0, kept = 0;
     int body = nt_kind(nt, lit) == NK_BlockNode ? nt_ref(nt, lit, "body") : a_proc_body(c, lit);
     dyn_body_scan(c, body, pn, 1, &app, &kept);
@@ -30547,7 +30537,7 @@ static int dyn_lit_kw_any(Compiler *c, int lit) {
   for (int i = 0; i < kn; i++) {
     const char *pn = nt_str(nt, kv[i], "name");
     char key[128];
-    size_t len = pn ? (block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn)) : 0;
+    size_t len = pn ? (block_param_is_renamed(c, pn) ? block_param_written_len(c, pn) : strlen(pn)) : 0;
     if (!pn || len >= sizeof key) continue;
     memcpy(key, pn, len); key[len] = 0;
     if (dyn_lit_kw_bits(c, lit, key) & 1u) return 1;
@@ -37027,7 +37017,7 @@ static int nn_read_nonnil(Compiler *c, int id, const char *name) {
   if (!(id >= 0 && nn_fresh() && id < nn_cap && nn_nonnil[id])) return 0;
   if (!g_decide_on) return 1;
   char written[300];
-  snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(name), name);
+  snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(c, name), name);
   return decide_node(c->nt, id, "nn-read", written);
 }
 static int nn_index_inbounds(Compiler *c, int id) {
@@ -47186,7 +47176,7 @@ static const char *reinit_leaf(const NodeTable *nt, int n) {
    finds that initialize. A body bound to being initialize (super, yield,
    block_given?) gets no copy, and refuse_reinit_mismatch refuses a call
    that would find another initialize's copy for it. */
-static void desugar_explicit_initialize_calls(Compiler *c) {
+int desugar_explicit_initialize_calls_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, hits = 0;
   ANameHash near = {0};   /* the classes and modules a renamed call may run on */
@@ -47240,7 +47230,7 @@ static void desugar_explicit_initialize_calls(Compiler *c) {
       }
     }
   }
-  if (!hits) { anh_free(&near); return; }
+  if (!hits) { anh_free(&near); return 0; }
   for (int cls = 0; cls < n0; cls++) {
     if (nt_kind(nt, cls) != NK_ClassNode && nt_kind(nt, cls) != NK_ModuleNode) continue;
     const char *cn = reinit_leaf(nt, nt_ref(nt, cls, "constant_path"));
@@ -47287,7 +47277,7 @@ static void desugar_explicit_initialize_calls(Compiler *c) {
     free(bb);
     free(bb0);
   }
-  anh_free(&near);
+  anh_free(&near);  return 0;
 }
 
 /* A class whose objects run a `__spinel_reinit` call
@@ -47853,9 +47843,9 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_SOCKET_OPEN);                /* TCPSocket.open(h, p) -> TCPSocket.new(h, p) */
   lower_run(c, &lc, LW_SYSTEM_OPTIONS);             /* system(..., out:) -> spawn + wait */
   lower_run(c, &lc, LW_IO_POPEN_BLOCK);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
-  AN_STEP_V("desugar_user_backtick", desugar_user_backtick(c));              /* `cmd` -> `("cmd") beside a def of ` */
+  lower_run(c, &lc, LW_USER_BACKTICK);              /* `cmd` -> `("cmd") beside a def of ` */
   lower_run(c, &lc, LW_LITERAL_UNDEF_METHOD);       /* undef_method :a in a body -> undef a */
-  AN_STEP_V("desugar_explicit_initialize_calls", desugar_explicit_initialize_calls(c));  /* initialize(x) in a method -> a copy of it as a method */
+  lower_run(c, &lc, LW_EXPLICIT_INITIALIZE_CALLS);  /* initialize(x) in a method -> a copy of it as a method */
   lower_run(c, &lc, LW_NOARG_DISPLAY_WRAPPERS);     /* def inspect(i = 0) -> + `__noarg inspect` = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
@@ -47873,7 +47863,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_RESCUE_BLOCK_BODIES);
   AN_STEP_V("desugar_cext_decls", desugar_cext_decls(c));
   lower_run(c, &lc, LW_MARK_SYM_PROC_BLOCKS);               /* { |_spx| _spx.m } is `&:m` */
-  desugar_body_local_scopes(c);          /* a class body local -> a name of its own */
+  lower_run(c, &lc, LW_BODY_LOCAL_SCOPES);          /* a class body local -> a name of its own */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   lower_run(c, &lc, LW_ERRNO_ALIASES);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
   desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
@@ -47959,15 +47949,15 @@ static void an_phase_desugar_register(Compiler *c) {
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
-  scope_numbered_block_params(c);
+  lower_run(c, &lc, LW_SCOPE_NUMBERED_BLOCK_PARAMS);
   lower_run(c, &lc, LW_SINGLETON_CLASS_DEFINE_METHOD); /* singleton_class.define_method -> define_singleton_method */
   lower_run(c, &lc, LW_EMPTY_HASH_COMPARE_BY_IDENTITY); /* {}.compare_by_identity -> Hash.new.compare_by_identity */
   lower_run(c, &lc, LW_DEFINE_METHOD_PROC_ARG);     /* define_method(:m, -> { }) -> define_method(:m) { } */
   AN_STEP_V("desugar_module_function_aliases", desugar_module_function_aliases(c));    /* alias_method :n, :x + module_function :n -> def n (x's body) */
-  desugar_define_method_captures(c);     /* class body local a define_method reads -> a global */
+  lower_run(c, &lc, LW_DEFINE_METHOD_CAPTURES);     /* class body local a define_method reads -> a global */
   lower_run(c, &lc, LW_DEFINE_METHOD_KEYWORDS);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
   lower_run(c, &lc, LW_NAME_ANON_BLOCK_KWREST);
-  rename_shadowing_block_params(c);
+  lower_run(c, &lc, LW_RENAME_SHADOWING_BLOCK_PARAMS);
   /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
      turns the receiver into a fixed-arity lambda (#3097). */
   lower_run(c, &lc, LW_SYM_TO_PROC_CALL);
@@ -47976,7 +47966,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_RIGHTWARD_PATTERN);          /* `x => pat` -> one-arm case/in */
   lower_run(c, &lc, LW_MATCH_PREDICATE);            /* `x in pat` -> case/in true/else false */
   lower_run(c, &lc, LW_SORT_BY_WITH_INDEX);         /* sort_by.with_index -> each_with_index.sort_by */
-  AN_STEP_V("desugar_forwarding_to_rest_callee", desugar_forwarding_to_rest_callee(c));  /* def m(...) = f(*a, **k) -> anon *, ** */
+  lower_run(c, &lc, LW_FORWARDING_TO_REST_CALLEE);  /* def m(...) = f(*a, **k) -> anon *, ** */
   lower_run(c, &lc, LW_ANON_BLOCK_PARAM);           /* def m(&) = f(&) -> &__anon_block */
   lower_run(c, &lc, LW_BLOCK_IMPLICIT_REST);        /* |x,| -> |x, __implicit_rest| (destructures) */
   lower_run(c, &lc, LW_MULTI_VALUE_JUMP);           /* return *a, b -> return [*a, b] */
@@ -47985,7 +47975,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_ENUM_FOR_WITH_ARGS);         /* return enum_for(__method__, a) unless block_given? -> Enumerator.new { m(a) { } } */
   lower_run(c, &lc, LW_ENUMERATOR_PRODUCE);         /* Enumerator.produce -> fiber generator */
   lower_run(c, &lc, LW_PARAM_DEFAULT_ASSIGNS_LOCAL); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
-  AN_STEP_V("desugar_recursive_param_defaults", desugar_recursive_param_defaults(c));   /* def m(x, y = m(..)) -> default helper method */
+  lower_run(c, &lc, LW_RECURSIVE_PARAM_DEFAULTS);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   lower_finish(c, &lc);   /* SPINEL_LOWER_CHECK: the report, and no C */

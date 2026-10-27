@@ -522,6 +522,10 @@ void comp_free(Compiler *c) {
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
   for (int i = 0; i < c->nrbp_slots; i++) free(c->rbp_slot_names[i]);
   free(c->rbp_slot_names); free(c->rbp_slot_lens); c->rbp_slot_names = NULL; c->rbp_slot_lens = NULL; c->nrbp_slots = 0;
+  if (c->bp_name) for (unsigned i = 0; i <= c->bp_mask; i++) free(c->bp_name[i]);
+  free(c->bp_name); free(c->bp_len); c->bp_name = NULL; c->bp_len = NULL; c->bp_mask = 0; c->nbp = 0;
+  for (int i = 0; i < c->nbp_user; i++) free(c->bp_user[i]);
+  free(c->bp_user); c->bp_user = NULL; c->nbp_user = 0; c->bp_user_built = 0;
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);

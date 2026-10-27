@@ -10268,62 +10268,60 @@ static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
    after an edit) is so walked at most once over all its questions, and
    never further than the scan went. An entry counts when it carries the
    tree's stamp, so an edit clears nothing. */
-static int *g_lex_par;
-static unsigned *g_lex_stamp;
-static int g_lex_cap;
-static unsigned g_lex_cur;
-static int g_lex_hi, g_lex_k;  /* entered: the holders before g_lex_hi, and
-                                  the first g_lex_k statements of its body */
-static const int *g_lex_bv;    /* that body, of g_lex_bn statements (-1: */
-static int g_lex_bn = -1;      /* not read yet) */
-static const NodeTable *g_lex_nt;
-static unsigned g_lex_ver;
-static unsigned long g_lex_edits;
-static int g_lex_cnt = -1;
-static void fwd_lex_restamp(const NodeTable *nt) {
-  if (nt->count > g_lex_cap) {
-    int cap = g_lex_cap > 0 ? g_lex_cap : 1024;
+static struct NtHolders *fwd_holders(const NodeTable *nt) {
+  NodeTable *m = (NodeTable *)nt;   /* the index is the table's own */
+  if (!m->holders) {
+    m->holders = calloc(1, sizeof *m->holders);
+    if (!m->holders) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    m->holders->bn = -1;
+    m->holders->cnt = -1;
+  }
+  return m->holders;
+}
+static void fwd_lex_restamp(const NodeTable *nt, struct NtHolders *h) {
+  if (nt->count > h->cap) {
+    int cap = h->cap > 0 ? h->cap : 1024;
     while (cap < nt->count) cap *= 2;
-    int *par = realloc(g_lex_par, sizeof(int) * (size_t)cap);
-    if (par) g_lex_par = par;
-    unsigned *st = par ? realloc(g_lex_stamp, sizeof(unsigned) * (size_t)cap) : NULL;
+    int *par = realloc(h->par, sizeof(int) * (size_t)cap);
+    if (par) h->par = par;
+    unsigned *st = par ? realloc(h->stamp, sizeof(unsigned) * (size_t)cap) : NULL;
     if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    g_lex_stamp = st;
-    memset(g_lex_stamp + g_lex_cap, 0, sizeof(unsigned) * (size_t)(cap - g_lex_cap));
-    g_lex_cap = cap;
+    h->stamp = st;
+    memset(h->stamp + h->cap, 0, sizeof(unsigned) * (size_t)(cap - h->cap));
+    h->cap = cap;
   }
-  if (++g_lex_cur == 0) {
-    memset(g_lex_stamp, 0, sizeof(unsigned) * (size_t)g_lex_cap);
-    g_lex_cur = 1;
+  if (++h->cur == 0) {
+    memset(h->stamp, 0, sizeof(unsigned) * (size_t)h->cap);
+    h->cur = 1;
   }
-  g_lex_hi = g_lex_k = 0;
-  g_lex_bn = -1;
-  g_lex_nt = nt; g_lex_ver = nt->version; g_lex_edits = (unsigned long)nt->edits; g_lex_cnt = nt->count;
+  h->hi = h->k = 0;
+  h->bn = -1;
+  h->ver = nt->version; h->edits = (unsigned long)nt->edits; h->cnt = nt->count;
 }
 static int fwd_lex_parent(const NodeTable *nt, int id) {
   if (id < 0 || id >= nt->count) return -1;
+  struct NtHolders *h = fwd_holders(nt);
   /* a body rewritten in place (nt_node_set_arr) counts an edit, not a
      version */
-  if (g_lex_nt != nt || g_lex_ver != nt->version || g_lex_edits != (unsigned long)nt->edits ||
-      g_lex_cnt != nt->count)
-    fwd_lex_restamp(nt);
-  while (g_lex_stamp[id] != g_lex_cur && g_lex_hi < id) {
-    int ct = g_lex_hi;
-    if (g_lex_bn < 0) {
-      g_lex_bn = 0;
-      g_lex_bv = fwd_node_is(nt, ct, "ClassNode") || fwd_node_is(nt, ct, "ModuleNode")
-                 ? nt_arr(nt, nt_ref(nt, ct, "body"), "body", &g_lex_bn) : NULL;
+  if (h->ver != nt->version || h->edits != (unsigned long)nt->edits || h->cnt != nt->count)
+    fwd_lex_restamp(nt, h);
+  while (h->stamp[id] != h->cur && h->hi < id) {
+    int ct = h->hi;
+    if (h->bn < 0) {
+      h->bn = 0;
+      h->bv = fwd_node_is(nt, ct, "ClassNode") || fwd_node_is(nt, ct, "ModuleNode")
+              ? nt_arr(nt, nt_ref(nt, ct, "body"), "body", &h->bn) : NULL;
     }
-    if (g_lex_k >= g_lex_bn) { g_lex_hi++; g_lex_k = 0; g_lex_bn = -1; continue; }
-    int st = g_lex_bv[g_lex_k++];
+    if (h->k >= h->bn) { h->hi++; h->k = 0; h->bn = -1; continue; }
+    int st = h->bv[h->k++];
     int held[2] = { st, fwd_body_def(nt, st) };
-    for (int h = 0; h < 2; h++)
-      if (held[h] > ct && held[h] < nt->count && g_lex_stamp[held[h]] != g_lex_cur) {
-        g_lex_par[held[h]] = ct;
-        g_lex_stamp[held[h]] = g_lex_cur;
+    for (int j = 0; j < 2; j++)
+      if (held[j] > ct && held[j] < nt->count && h->stamp[held[j]] != h->cur) {
+        h->par[held[j]] = ct;
+        h->stamp[held[j]] = h->cur;
       }
   }
-  return g_lex_stamp[id] == g_lex_cur ? g_lex_par[id] : -1;
+  return h->stamp[id] == h->cur ? h->par[id] : -1;
 }
 /* The lexical namespace a node sits in: its enclosing classes and modules. */
 static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
@@ -10908,20 +10906,13 @@ static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
    locals take a name private to the body. Runs before any pass turns a
    block into a class body (Class.new do..end), whose locals are the
    block's and may read the enclosing scope's. */
-int desugar_body_local_scopes(Compiler *c) {
+int desugar_body_local_scopes_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int cls = 0; cls < n0; cls++) {
-    NodeKind ck = nt_kind(nt, cls);
-    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
-    int body = nt_ref(nt, cls, "body");
-    if (body < 0) continue;
-    char tag[64]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, cls));
-    bls_walk(nt, body, 0, tag);
-    changed = 1;
-  }
-  return changed;
+  int body = nt_ref(nt, id, "body");
+  if (body < 0) return 0;
+  char tag[64]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, id));
+  bls_walk(nt, body, 0, tag);
+  return 1;
 }
 
 /* `singleton_class.define_method(:m) { }` (or `self.singleton_class.`) in a
@@ -11317,27 +11308,24 @@ int desugar_define_method_proc_arg_at(Compiler *c, LowerCtx *lc, int stmt) {
    or top-level body that a define_method block reads or writes becomes a
    global private to that body, in the body and in every block of it. The
    body runs once, so the global is the local's one binding. */
-int desugar_define_method_captures(Compiler *c) {
+int desugar_define_method_captures_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
+  NodeKind ck = nt_kind(nt, id);
+  int body = prog_is_root(c, id) ? nt_ref(nt, id, "statements")
+           : ck == NK_ClassNode || ck == NK_ModuleNode || ck == NK_SingletonClassNode
+           ? nt_ref(nt, id, "body") : -1;
+  if (body < 0) return 0;
   int changed = 0;
-  int n0 = nt->count;
-  for (int cls = 0; cls < n0; cls++) {
-    NodeKind ck = nt_kind(nt, cls);
-    int body = prog_is_root(c, cls) ? nt_ref(nt, cls, "statements")
-             : ck == NK_ClassNode || ck == NK_ModuleNode || ck == NK_SingletonClassNode
-             ? nt_ref(nt, cls, "body") : -1;
-    if (body < 0) continue;
-    DmcNames s = { 0 };
-    dmc_walk(nt, body, 0, 0, NULL, &s, 0);
-    if (s.n) {
-      /* the global carries the class's stable number, not its node id */
-      char ctag[64]; snprintf(ctag, sizeof ctag, "%s", comp_node_tag(c, cls));
-      dmc_walk(nt, body, 0, 0, ctag, &s, 1);
-      changed = 1;
-    }
-    for (int i = 0; i < s.n; i++) free(s.names[i]);
-    free(s.names);
+  DmcNames s = { 0 };
+  dmc_walk(nt, body, 0, 0, NULL, &s, 0);
+  if (s.n) {
+    /* the global carries the class's stable number, not its node id */
+    char ctag[64]; snprintf(ctag, sizeof ctag, "%s", comp_node_tag(c, id));
+    dmc_walk(nt, body, 0, 0, ctag, &s, 1);
+    changed = 1;
   }
+  for (int i = 0; i < s.n; i++) free(s.names[i]);
+  free(s.names);
   return changed;
 }
 
@@ -11722,7 +11710,7 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
    until no def of its target's name still takes `...`. What is left then
    waits on one that stays in the __fwd_N model (a cycle, a target that
    yields), and is read as before, from the defs that do say. */
-int desugar_forwarding_to_rest_callee(Compiler *c) {
+int desugar_forwarding_to_rest_callee_at(Compiler *c, LowerCtx *lc, int id) {
   int changed = 0;
   while (fwd_rest_callee_pass(c, 1)) changed = 1;
   while (fwd_rest_callee_pass(c, 0)) changed = 1;
@@ -14079,11 +14067,8 @@ typedef struct {
 } RdDefault;
 
 /* `alias` / `alias_method` pairs, new name then old, collected once per run */
-static const char **rd_alias = NULL;
-static int rd_nalias = 0;
-
-static void rd_collect_aliases(const NodeTable *nt) {
-  rd_nalias = 0;
+static void rd_collect_aliases(const NodeTable *nt, LowerCtx *lc) {
+  lc->naliases = 0;
   int cap = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *nn = NULL, *on = NULL;
@@ -14097,25 +14082,25 @@ static void rd_collect_aliases(const NodeTable *nt) {
       if (an == 2) { nn = nt_str(nt, av[0], "value"); on = nt_str(nt, av[1], "value"); }
     }
     if (!nn || !on) continue;
-    if (2 * rd_nalias + 2 > cap) {
+    if (2 * lc->naliases + 2 > cap) {
       cap = cap ? cap * 2 : 16;
-      const char **g = realloc(rd_alias, sizeof *rd_alias * (size_t)cap);
+      const char **g = realloc(lc->aliases, sizeof *lc->aliases * (size_t)cap);
       if (!g) return;
-      rd_alias = g;
+      lc->aliases = g;
     }
-    rd_alias[2 * rd_nalias] = nn;
-    rd_alias[2 * rd_nalias + 1] = on;
-    rd_nalias++;
+    lc->aliases[2 * lc->naliases] = nn;
+    lc->aliases[2 * lc->naliases + 1] = on;
+    lc->naliases++;
   }
 }
 
-static int rd_call_name_is(const char *nm, const char *want) {
+static int rd_call_name_is(const LowerCtx *lc, const char *nm, const char *want) {
   if (!nm || !want) return 0;
   for (int hop = 0; nm && hop < 8; hop++) {
     if (sp_streq(nm, want)) return 1;
     const char *old = NULL;
-    for (int k = 0; k < rd_nalias && !old; k++)
-      if (sp_streq(rd_alias[2 * k], nm)) old = rd_alias[2 * k + 1];
+    for (int k = 0; k < lc->naliases && !old; k++)
+      if (sp_streq(lc->aliases[2 * k], nm)) old = lc->aliases[2 * k + 1];
     nm = old;
   }
   return 0;
@@ -14152,7 +14137,7 @@ static int rd_new_reaches(const NodeTable *nt, const char *x, const char *cls, i
    initialize: rewriting those widened types, or made a helper whose call
    could not be emitted. A cycle through a call not followed here is
    refused at emit time instead. */
-static int rd_call_reaches(const NodeTable *nt, int call, const RdDefault *from,
+static int rd_call_reaches(const LowerCtx *lc, const NodeTable *nt, int call, const RdDefault *from,
                            const RdDefault *want) {
   const char *nm = nt_str(nt, call, "name");
   const char *wn = nt_str(nt, want->def, "name");
@@ -14162,18 +14147,18 @@ static int rd_call_reaches(const NodeTable *nt, int call, const RdDefault *from,
   if (r < 0 || fwd_node_is(nt, r, "SelfNode")) {
     if (sp_streq(nm, "new"))
       return init && from->singleton && from->cls && want->cls && sp_streq(from->cls, want->cls);
-    return rd_call_name_is(nm, wn);
+    return rd_call_name_is(lc, nm, wn);
   }
   if (!fwd_node_is(nt, r, "ConstantReadNode") && !fwd_node_is(nt, r, "ConstantPathNode")) return 0;
   const char *cn = nt_str(nt, r, "name");
   if (sp_streq(nm, "new")) return init && rd_new_reaches(nt, cn, want->cls, 0);
-  return want->singleton && cn && want->cls && sp_streq(cn, want->cls) && rd_call_name_is(nm, wn);
+  return want->singleton && cn && want->cls && sp_streq(cn, want->cls) && rd_call_name_is(lc, nm, wn);
 }
 
 /* Does the subtree at `id` call the method default `want` belongs to? `*bad`
    is set when it holds something that would mean another thing inside a
    method of its own: the caller's block, `super`, the method's name. */
-static int rd_subtree_calls(const NodeTable *nt, int id, const RdDefault *from,
+static int rd_subtree_calls(const LowerCtx *lc, const NodeTable *nt, int id, const RdDefault *from,
                             const RdDefault *want, int *bad) {
   if (id < 0 || id >= nt->count) return 0;
   const char *ty = nt_type(nt, id);
@@ -14187,14 +14172,14 @@ static int rd_subtree_calls(const NodeTable *nt, int id, const RdDefault *from,
       const char *nm = nt_str(nt, id, "name");
       if (nm && (sp_streq(nm, "block_given?") || sp_streq(nm, "__method__") ||
                  sp_streq(nm, "binding"))) *bad = 1;
-      if (want && rd_call_reaches(nt, id, from, want)) hit = 1;
+      if (want && rd_call_reaches(lc, nt, id, from, want)) hit = 1;
     }
   }
   const SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) hit |= rd_subtree_calls(nt, nd->r[j].ref, from, want, bad);
+  for (int j = 0; j < nd->nr; j++) hit |= rd_subtree_calls(lc, nt, nd->r[j].ref, from, want, bad);
   for (int j = 0; j < nd->na; j++)
     for (int k = 0; k < nd->a[j].n; k++)
-      hit |= rd_subtree_calls(nt, nd->a[j].ids[k], from, want, bad);
+      hit |= rd_subtree_calls(lc, nt, nd->a[j].ids[k], from, want, bad);
   return hit;
 }
 
@@ -14234,22 +14219,8 @@ static int rd_params(const NodeTable *nt, int def, int *out, int cap) {
   return n;
 }
 
-static void rd_mark_parents(const NodeTable *nt, int *parent, int n0) {
-  for (int id = 0; id < n0; id++) {
-    const SpNode *nd = &nt->nodes[id];
-    for (int j = 0; j < nd->nr; j++) {
-      int ch = nd->r[j].ref;
-      if (ch >= 0 && ch < n0) parent[ch] = id;
-    }
-    for (int j = 0; j < nd->na; j++)
-      for (int k = 0; k < nd->a[j].n; k++) {
-        int ch = nd->a[j].ids[k];
-        if (ch >= 0 && ch < n0) parent[ch] = id;
-      }
-  }
-}
 
-int desugar_recursive_param_defaults(Compiler *c) {
+int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int nd = 0, cap = 0;
@@ -14269,15 +14240,12 @@ int desugar_recursive_param_defaults(Compiler *c) {
         ds = g;
       }
       ds[nd].def = def; ds[nd].param = ps[i]; ds[nd].val = v; ds[nd].bad = 0;
-      rd_subtree_calls(nt, v, NULL, NULL, &ds[nd].bad);
+      rd_subtree_calls(lc, nt, v, NULL, NULL, &ds[nd].bad);
       nd++;
     }
   }
   if (nd == 0) { free(ds); return 0; }
-  int *parent = malloc(sizeof(int) * (size_t)n0);
-  if (!parent) { free(ds); return 0; }
-  for (int k = 0; k < n0; k++) parent[k] = -1;
-  rd_mark_parents(nt, parent, n0);
+  const int *parent = lower_parents(c, lc);
   for (int i = 0; i < nd; i++) {
     ds[i].cls = NULL;
     ds[i].singleton = fwd_node_is(nt, nt_ref(nt, ds[i].def, "receiver"), "SelfNode");
@@ -14289,20 +14257,20 @@ int desugar_recursive_param_defaults(Compiler *c) {
       }
     }
   }
-  rd_collect_aliases(nt);
+  rd_collect_aliases(nt, lc);
   /* edge i -> j: default i calls the method default j belongs to */
   unsigned char *edge = calloc((size_t)nd * (size_t)nd, 1);
   int *stack = malloc(sizeof(int) * (size_t)nd);
   unsigned char *seen = malloc((size_t)nd);
   if (!edge || !stack || !seen) {
-    free(edge); free(stack); free(seen); free(ds); free(parent);
+    free(edge); free(stack); free(seen); free(ds);
     return 0;
   }
   for (int i = 0; i < nd; i++)
     for (int j = 0; j < nd; j++) {
       int bad = 0;
       edge[(size_t)i * nd + j] =
-        (unsigned char)rd_subtree_calls(nt, ds[i].val, &ds[i], &ds[j], &bad);
+        (unsigned char)rd_subtree_calls(lc, nt, ds[i].val, &ds[i], &ds[j], &bad);
     }
   int changed = 0;
   for (int i = 0; i < nd; i++) {
@@ -14415,9 +14383,7 @@ int desugar_recursive_param_defaults(Compiler *c) {
     free(nb);
     changed = 1;
   }
-  if (changed) comp_grow_node_arrays(c);
-  free(parent); free(stack); free(seen); free(edge); free(ds);
-  free(rd_alias); rd_alias = NULL; rd_nalias = 0;
+  free(stack); free(seen); free(edge); free(ds);
   return changed;
 }
 
@@ -14696,7 +14662,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
     const char *kname = nt_str(nt, kws[i], "name");
     if (!kname) return 0;
     mo += snprintf(names + mo, sizeof names - (size_t)mo, "%s:%.*s", missing ? ", " : "",
-                   (int)block_param_written_len(kname), kname);
+                   (int)block_param_written_len(c, kname), kname);
     if (mo >= (int)sizeof names) return 0;
     missing++;
   }
@@ -14737,7 +14703,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
      other scope's local of the same name */
   for (int i = 0; i < kn; i++) {
     const char *wn = nt_str(nt, kws[i], "name");
-    if (block_param_is_renamed(wn)) { scope_local_intern(bs, wn); continue; }
+    if (block_param_is_renamed(c, wn)) { scope_local_intern(bs, wn); continue; }
     char *kname = block_param_invent_name(c, wn, blk);
     blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
     numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
@@ -16710,7 +16676,7 @@ static int rbp_captured(const NodeTable *nt, int node, const char *name, int lev
    self. */
 size_t reassigned_param_written_len(const Compiler *c, const char *name) {
   if (!name) return 0;
-  size_t n = block_param_written_len(name);
+  size_t n = block_param_written_len(c, name);
   for (int i = 0; i < c->nrbp_slots; i++)
     if (strlen(c->rbp_slot_names[i]) == n && !memcmp(c->rbp_slot_names[i], name, n)) return c->rbp_slot_lens[i];
   return strlen(name);

@@ -12289,7 +12289,7 @@ int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t
   }
   if (argc < req || (!rest && argc > req + opt)) {
     char kw[256];
-    arity_kw_suffix(nt, pn, kw, sizeof kw);
+    arity_kw_suffix(c, pn, kw, sizeof kw);
     arity_message(msg, n, argc, req, rest ? -1 : req + opt, kw);
     return 1;
   }
@@ -12824,7 +12824,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
       int pn = c->scopes[initm].def_node >= 0 ? nt_ref(nt, c->scopes[initm].def_node, "parameters") : -1;
       if (pn >= 0) { nt_arr(nt, pn, "requireds", &nreq); nt_arr(nt, pn, "optionals", &nopt); }
       char kw[256], am[512];
-      arity_kw_suffix(nt, pn, kw, sizeof kw);
+      arity_kw_suffix(c, pn, kw, sizeof kw);
       arity_message(am, sizeof am, npos + 1, nreq, nreq + nopt, kw);
       for (int a = 0; a < argc; a++) {
         if (nt_kind(nt, argv[a]) != NK_KeywordHashNode) continue;
@@ -14003,7 +14003,7 @@ static int array_new_block_needs_fresh_locals(Compiler *c, int blk) {
       memcpy(nm, p, l); nm[l] = 0;
       LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
       if (lv && lv->is_cell) return 1;
-      if (lv && lv->type != TY_UNKNOWN && !subtree_has_param_named_pub(nt, params, nm)) {
+      if (lv && lv->type != TY_UNKNOWN && !subtree_has_param_named_pub(c, params, nm)) {
         for (int j = 0; j < bn; j++) {
           if (nt_kind(nt, bb[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb[j], "name") &&
               sp_streq(nt_str(nt, bb[j], "name"), nm) &&
