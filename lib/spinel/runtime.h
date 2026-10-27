@@ -21,6 +21,8 @@
  *     sp_str_alloc, sp_str_alloc_raw, sp_str_set_len, sp_str_empty
  *     sp_int_to_s, sp_float_to_s
  *     sp_oom_die
+ *     sp_hash_key_from_bytes  (a frozen String key, which a Hash stores as
+ *                              is: a parser's object keys)
  *
  *   Float digits (sp_dtoa.h):
  *     sp_float_shortest  (the shortest round-trip digits and exponent, for a
