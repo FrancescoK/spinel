@@ -816,7 +816,7 @@ static void lr_name(LoadRecord *r, const char *name, const char *suffix) {
    computed one, a send of a definition form, an eval of a String) makes it
    answer for any name. Taken once, as the record is made: the passes after
    it rename methods (alias_capture_earlier_def) and add none of the
-   program's own. */
+   program's own, only the helpers they synthesize (elab_names_add). */
 static void lr_names_take(Compiler *c) {
   const NodeTable *nt = c->nt;
   LoadRecord *r = c->lrec;
@@ -1416,6 +1416,19 @@ static int lr_named(Compiler *c, const char *name) {
 int elab_names_method(Compiler *c, const char *name) {
   const LoadRecord *r = c->lrec;
   return !r || (!r->recorded && !r->walk) || lr_named(c, name);
+}
+/* A method the compiler makes for the program after the record took its
+   names (a synthesized helper a rewritten call names, such as
+   __enum_to_a, which calls the program's #each) joins the set, kept
+   sorted. */
+void elab_names_add(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  if (!r || !name || lr_named(c, name)) return;
+  lr_name(r, name, "");
+  char *d = r->names[r->nnames - 1];
+  int i = r->nnames - 1;
+  while (i > 0 && strcmp(r->names[i - 1], d) > 0) { r->names[i] = r->names[i - 1]; i--; }
+  r->names[i] = d;
 }
 
 /* The Object/Class/Module tail lr_runs searches, as registered so far: the

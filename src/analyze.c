@@ -7872,6 +7872,7 @@ static void synth_enum_to_a(Compiler *c) {
       nt_node_set_arr(nt, body, "body", stmts, 3);
 
       Scope *ms = comp_scope_new(c, raw ? "__enum_to_a_raw" : "__enum_to_a", eachdef[k]);
+      elab_names_add(c, ms->name);   /* a call of it runs the program's #each */
       { ms->class_id = cls[k]; comp_touch_scope(ms->idx); }
       { ms->body = body; comp_touch_scope(ms->idx); }
       int ms_idx = c->nscopes - 1;
@@ -8008,6 +8009,7 @@ static void synth_to_enum_generators(Compiler *c) {
     int mbody = te_stmts1(nt, enumnew);
 
     Scope *ms = comp_scope_new(c, hname, tdef[k]);
+    elab_names_add(c, hname);   /* a call of it runs the program's method m */
     { ms->class_id = ci; comp_touch_scope(ms->idx); }
     { ms->body = mbody; comp_touch_scope(ms->idx); }
     int ms_idx = c->nscopes - 1;
