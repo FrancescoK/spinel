@@ -35447,16 +35447,22 @@ static int poly_dispatch_nullable(Compiler *c, int v, const char *cn) {
   TyKind vt = infer_type(c, v);
   int nil_rides = vt == TY_INT || vt == TY_FLOAT || vt == TY_NIL;
   const PdnEnt *pe = pdn_lookup(c, cn);
+  /* only the methods the dispatch has arms for: a class the receiver's
+     class fact rules out is no target (share_target_armed), as inference
+     leaves it out of the call's type (comp_poly_candidates_at) */
   for (int k = 0; k < pe->nsc; k++) {
     int si = pe->sc[k];
-    if (nil_rides ? method_answers_nil(&c->scopes[si]) : c->scopes[si].ret_nullable_int) return 1;
+    if ((nil_rides ? method_answers_nil(&c->scopes[si]) : c->scopes[si].ret_nullable_int) &&
+        share_target_armed(c, v, si)) return 1;
   }
   /* an attr_reader over a scalar ivar: those slots start nil, their nil
      byte set (emit_ivar_nil_inits_from), so the read can answer nil like a
      `return nil` would -- the resolved-receiver twin of this lives in codegen's
      call_returns_nullable_int */
+  int rcv = nt_ref(c->nt, v, "receiver");
   for (int k = 0; k < pe->ncl; k++) {
     int ci = pe->cls[k];
+    if (cls_fact_excludes(c, rcv, ci)) continue;
     char ivb[300];
     snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, ci, cn));
     int iv = comp_ivar_index(&c->classes[ci], ivb);

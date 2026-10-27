@@ -4532,6 +4532,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  grep -q 'sp_StrArray \* sp_Restore_s_apply(sp_Table \* lv_table, sp_StrArray \* lv_names)' "$$tmp/pck.c" || { echo "infer-test: FAIL (a keyword-only call bound a keyword hash into a keyword method's positional parameter)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_receiver_cmethod_kwarg_name_unbound.rb -c --no-line-map -o "$$tmp/pcn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_receiver_cmethod_kwarg_name_unbound: -c)"; ok=0; }; \
 	  grep -q 'sp_IntArray \* sp_Restore_s_apply(sp_Table \* lv_table, sp_IntArray \* lv_names)' "$$tmp/pcn.c" || { echo "infer-test: FAIL (a call naming a keyword a method lacks bound its positional parameters)"; ok=0; }; \
+	  $(SPINEL) $$flags test/poly_dispatch_type_receiver_classes.rb -c --no-line-map -o "$$tmp/pdt.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_type_receiver_classes: -c)"; ok=0; }; \
+	  grep -q 'sp_int sp_as_int(sp_int lv_i) {' "$$tmp/pdt.c" && grep -q 'sp_oint sp_count(sp_int lv_i) {' "$$tmp/pdt.c" && grep -q 'sp_int sp_area_of(sp_int lv_i) {' "$$tmp/pdt.c" || { echo "infer-test: FAIL (a boxed call was typed from a class its receiver never holds)"; ok=0; }; \
 	  $(SPINEL) $$flags -e 'def run = 0' -e 'p run' -c --no-line-map -o "$$tmp/dfn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (a statement def: -c)"; ok=0; }; \
 	  grep -q 'SP_TU_NO_POLY_RENDER' "$$tmp/dfn.c" || { echo "infer-test: FAIL (a statement def made its name a Symbol of the program)"; ok=0; }; \
 	  $(SPINEL) $$flags test/no_poly_values_unrun_code.rb -c --no-line-map -o "$$tmp/npu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (no_poly_values_unrun_code: -c)"; ok=0; }; \
