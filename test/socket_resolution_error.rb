@@ -1,11 +1,11 @@
 # A name getaddrinfo cannot resolve raises Socket::ResolutionError, CRuby's
 # SocketError subclass carrying the resolver's EAI_* code as #error_code,
-# from every call that resolves a host. The ".invalid" TLD never resolves
-# (RFC 6761), so no lookup reaches the network. The resolver's own text
+# from every call that resolves a host. The empty label in "a..b" is invalid
+# DNS syntax, so the resolver rejects it before sending a query. Its own text
 # differs between platforms, so only the prefix CRuby puts on it is shown.
 require "socket"
 
-HOST = "nonexistent.invalid"
+HOST = "a..b"
 
 def show(label)
   yield
