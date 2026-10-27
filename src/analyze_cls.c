@@ -5728,13 +5728,30 @@ int cls_fact_idx(Compiler *c, int node) {
 
 /* See compiler.h. The closed world's value from anywhere (f->every): each
    class of the program's, each Class object and a builtin */
+/* The members such a set has, as words: each class but a module, and each
+   class's Class object. Kept per class count (it is asked at every poly
+   call, and member by member it searched the set's words twice a class). */
+static const Compiler *cfu_c; static unsigned long long *cfu_req; static int cfu_n, cfu_nw;
 int cls_fact_unbounded(Compiler *c, int node) {
   const ClsSet *s = cls_fact_node(c, node);
   if (!s || s->all) return 1;
   if (!s->bv || s->n < c->nclasses) return 0;
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!cls_set_has(s, k + c->nclasses)) return 0;
-    if (!cls_set_has(s, k) && !comp_class_is_module(c, &c->classes[k])) return 0;
+  int n = c->nclasses;
+  if (cfu_c != c || cfu_n != n) {
+    free(cfu_req);
+    cfu_nw = (2 * n + 63) / 64;
+    cfu_req = calloc((size_t)cfu_nw + 1, sizeof *cfu_req);
+    if (!cfu_req) cf_oom();
+    for (int k = 0; k < n; k++) {
+      if (!comp_class_is_module(c, &c->classes[k])) cfu_req[k >> 6] |= 1ULL << (k & 63);
+      cfu_req[(k + n) >> 6] |= 1ULL << ((k + n) & 63);
+    }
+    cfu_c = c; cfu_n = n;
+  }
+  for (int q = 0, p = 0; q < cfu_nw; q++) {
+    if (!cfu_req[q]) continue;
+    while (p < s->nw && s->wi[p] < q) p++;
+    if (p >= s->nw || s->wi[p] != q || (cfu_req[q] & ~s->w[p])) return 0;
   }
   return 1;
 }
