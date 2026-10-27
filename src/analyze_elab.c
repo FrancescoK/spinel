@@ -1062,6 +1062,55 @@ int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, L
   return ELAB_NO;
 }
 
+/* Is class or module k one of cls's ancestors (its singleton's when sg)
+   at p, or may it be: cls, a superclass, a module mixed into one of them? */
+static int lr_in_ancestry(Compiler *c, int cls, int sg, int k, LoadPoint p) {
+  for (int a = cls, d = 0; a >= LR_MAIN && d < 64; a = lr_super(c, a), d++)
+    if (a == k) return 1;
+  return k >= 0 && lr_search(c, cls, sg, NULL, k, p, 0, 0, NULL, 0) != ELAB_NO;
+}
+
+/* Does node's statement run strictly between p0 and p1, or is it not
+   known not to? */
+static int lr_inside(Compiler *c, int node, LoadPoint p0, LoadPoint p1) {
+  LoadPoint q = elab_point_of(c, node);
+  int a = elab_cmp(p0, q), b = elab_cmp(q, p1);
+  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE);
+}
+
+/* The version of cls's `name` live at every point from p0 up to p1: the
+   one live just before p1, when nothing that could change the answer was
+   recorded in between -- a version of the name in a history on cls's
+   chain, a mixin into a class on it of a module that has or may have the
+   name, code the record cannot follow run on one of them. */
+int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p0, LoadPoint p1, const LrDef **out) {
+  if (out) *out = NULL;
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded || !name || cls < LR_MAIN || p0.region < 0 || elab_cmp(p0, p1) != PROG_BEFORE) return ELAB_UNKNOWN;
+  const LrVers *x = lr_vers(r, name);
+  for (int i = x ? x->first : -1; i >= 0; i = r->hist[i].nlink) {
+    const LrHist *h = &r->hist[i];
+    if ((h->b != sg && !sg) || !lr_in_ancestry(c, cls, sg, h->a, p1)) continue;
+    for (int j = 0; j < h->n; j++)
+      if (lr_is_version(&h->v[j]) && lr_inside(c, h->v[j].node, p0, p1)) return ELAB_UNKNOWN;
+  }
+  for (int k = LR_MAIN; k + 1 < r->ncls; k++) {
+    const LrClass *kc = lr_class(r, k);
+    const LrHist *op = lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(k), "", 0);
+    if ((!kc || !kc->nmix) && !op) continue;
+    if (!lr_in_ancestry(c, cls, sg, k, p1)) continue;
+    for (int j = 0; kc && j < kc->nmix; j++) {
+      const LrMixin *m = &kc->mix[j];
+      if (lr_inside(c, m->node, p0, p1) &&
+          (m->mod < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
+    }
+    for (int j = 0; op && j < op->n; j++)
+      if (lr_inside(c, op->v[j].node, p0, p1)) return ELAB_UNKNOWN;
+  }
+  int o = lr_search(c, cls, sg, name, -1, p1, 0, 0, out, 0);
+  return o == LR_STOP ? ELAB_NO : o;
+}
+
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded || mod < 0) return ELAB_UNKNOWN;
   return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);
