@@ -5769,6 +5769,7 @@ static int gc_region_inert(const char *from, const char *to, const char *lvname)
    analyze proved array-or-nil is the same value under a different name. This
    is the destructuring shape -- `@io_addr, @lut = @attr_lut[i]` puts the pair
    in a temp and reads it twice. Answers that ivar, or NULL. */
+static int class_has_respelled_ivar(Compiler *c, int k);
 static const char *gc_temp_arr_or_nil_ivar(Compiler *c, Scope *s, const char *fn,
                                            const char *rootline, const char *tname) {
   if (s->class_id < 0 || s->class_id >= c->nclasses) return 0;
@@ -5776,8 +5777,12 @@ static const char *gc_temp_arr_or_nil_ivar(Compiler *c, Scope *s, const char *fn
   size_t off = (size_t)(rootline - fn);
   char decl[320];
   snprintf(decl, sizeof decl, "sp_RbVal %s = ", tname);
+  /* the last one before the root, found walking back from it: a scan from
+     the function's start for each root was N*N in a method of N of them */
   const char *d = NULL;
-  for (const char *q = strstr(fn, decl); q && (size_t)(q - fn) < off; q = strstr(q + 1, decl)) d = q;
+  size_t dl = strlen(decl);
+  for (const char *q = rootline; q-- > fn; )
+    if (*q == decl[0] && (size_t)(rootline - q) >= dl && !strncmp(q, decl, dl)) { d = q; break; }
   if (!d) return 0;
   const char *init = d + strlen(decl);
   static const char *const READ[] = { "sp_PolyArray_get(", "sp_poly_arr_get_hash(",
@@ -5792,7 +5797,17 @@ static const char *gc_temp_arr_or_nil_ivar(Compiler *c, Scope *s, const char *fn
   const char *fname = arg + strlen(SELF);
   size_t fn_len = 0;
   while (fname[fn_len] && (isalnum((unsigned char)fname[fn_len]) || fname[fn_len] == '_')) fn_len++;
+  /* the ivar of the field's name first; a field iv_c spelled otherwise (a
+     long name's hash, a synthesized ivar) is found among the class's ivars */
   ClassInfo *ci = &c->classes[s->class_id];
+  char ivn[300];
+  if (fn_len + 2 <= sizeof ivn) {
+    ivn[0] = '@'; memcpy(ivn + 1, fname, fn_len); ivn[fn_len + 1] = '\0';
+    int i = comp_ivar_index(ci, ivn);
+    if (i >= 0 && !strcmp(iv_c(ci->ivars[i] + 1), ivn + 1))
+      return ci->ivar_arr_elem_arr_or_nil[i] ? ci->ivars[i] : NULL;
+  }
+  if (!class_has_respelled_ivar(c, s->class_id)) return 0;
   for (int i = 0; i < ci->nivars; i++) {
     const char *m = iv_c(ci->ivars[i] + 1);
     if (strlen(m) == fn_len && !strncmp(m, fname, fn_len))
@@ -6426,16 +6441,52 @@ static int wb_class_by_cname(Compiler *c, const char *nm, size_t n) {
   return -1;
 }
 
+/* Has class k an ivar whose field iv_c spells otherwise than its name (a
+   long name's hash, a synthesized ivar)? Such a field is not found by the
+   name lookup below. Kept per class while its ivar list stays the same. */
+static int class_has_respelled_ivar(Compiler *c, int k) {
+  static int *seen_n; static char *const **seen_list; static char *ans; static int cap;
+  if (k >= cap) {
+    int nc = c->nclasses > k + 1 ? c->nclasses : k + 1;
+    seen_n = realloc(seen_n, sizeof(int) * (size_t)nc);
+    seen_list = realloc(seen_list, sizeof(*seen_list) * (size_t)nc);
+    ans = realloc(ans, (size_t)nc);
+    for (int i = cap; i < nc; i++) { seen_n[i] = -1; seen_list[i] = NULL; }
+    cap = nc;
+  }
+  ClassInfo *ci = &c->classes[k];
+  if (seen_n[k] != ci->nivars || seen_list[k] != (char *const *)ci->ivars) {
+    ans[k] = 0;
+    for (int i = 0; i < ci->nivars && !ans[k]; i++) ans[k] = strcmp(iv_c(ci->ivars[i] + 1), ci->ivars[i] + 1) != 0;
+    seen_n[k] = ci->nivars; seen_list[k] = (char *const *)ci->ivars;
+  }
+  return ans[k];
+}
+
 /* `only` >= 0 restricts the question to that class, which is what the holder's
    own C type gives us; -1 falls back to asking whether ANY class declares the
    name as a reference, which over-approximates in the safe direction. */
 static int wb_field_is_ref_in(Compiler *c, int only, const char *fld, size_t n) {
   if (n <= 3 || strncmp(fld, "iv_", 3)) return 0;
   fld += 3; n -= 3;
+  /* a field is first looked up as the ivar of its name, not compared with
+     every ivar of every class (N*N for N attributes); a field iv_c spelled
+     otherwise (a long name's hash, a synthesized ivar) is not found that
+     way, and the class's ivars are compared as before */
+  char ivn[200];
+  int plain = n + 2 <= sizeof ivn;
+  for (size_t j = 0; plain && j < n; j++) plain = isalnum((unsigned char)fld[j]) || fld[j] == '_';
+  if (plain) { ivn[0] = '@'; memcpy(ivn + 1, fld, n); ivn[n + 1] = '\0'; }
   for (int k = 0; k < c->nclasses; k++) {
     if (only >= 0 && k != only) continue;
     ClassInfo *ci = &c->classes[k];
-    for (int i = 0; i < ci->nivars; i++) {
+    int i0 = 0, i1 = ci->nivars;
+    if (plain) {
+      int hit = comp_ivar_index(ci, ivn);
+      if (hit >= 0) { i0 = hit; i1 = hit + 1; }
+      else if (!class_has_respelled_ivar(c, k)) continue;
+    }
+    for (int i = i0; i < i1; i++) {
       const char *m = iv_c(ci->ivars[i] + 1);
       if (strlen(m) != n || strncmp(m, fld, n)) continue;
       /* A value-type class lives inline and has no GC header of its own, so
