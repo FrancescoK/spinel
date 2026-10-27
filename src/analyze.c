@@ -2689,29 +2689,33 @@ static int bp_rename_slot(const Compiler *c, const char *name) {
   return -1;
 }
 
-static void bp_rename_insert(Compiler *c, char *name, size_t len) {
+static void bp_rename_insert(Compiler *c, char *name, size_t len, int blk) {
   unsigned i = sp_strhash(name) & c->bp_mask;
   while (c->bp_name[i]) i = (i + 1) & c->bp_mask;
   c->bp_name[i] = name;
   c->bp_len[i] = len;
+  c->bp_blk[i] = blk;
 }
 
-static void bp_rename_record(Compiler *c, const char *name, size_t len) {
+static void bp_rename_record(Compiler *c, const char *name, size_t len, int blk) {
   int s = bp_rename_slot(c, name);
-  if (s >= 0) { c->bp_len[s] = len; return; }
+  if (s >= 0) { c->bp_len[s] = len; c->bp_blk[s] = blk; return; }
   unsigned ocap = c->bp_name ? c->bp_mask + 1 : 0;
   if ((unsigned)(c->nbp + 1) * 2 > ocap) {
     char **on = c->bp_name;
     size_t *ol = c->bp_len;
+    int *ob = c->bp_blk;
     unsigned cap = ocap ? ocap * 2 : 64;
     c->bp_name = calloc(cap, sizeof(char *));
     c->bp_len = calloc(cap, sizeof(size_t));
+    c->bp_blk = calloc(cap, sizeof(int));
     c->bp_mask = cap - 1;
-    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i]);
+    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i], ob[i]);
     free(on);
     free(ol);
+    free(ob);
   }
-  bp_rename_insert(c, strdup(name), len);
+  bp_rename_insert(c, strdup(name), len, blk);
   c->nbp++;
 }
 
@@ -2747,6 +2751,13 @@ static int bp_user_uses(Compiler *c, const char *name) {
   return 0;
 }
 
+/* Is `name` one block_param_invent_name made for block `blk`? The record
+   says: it holds each invented name with its block. */
+int block_param_made_for(const Compiler *c, const char *name, int blk) {
+  int s = bp_rename_slot(c, name);
+  return s >= 0 && c->bp_blk[s] == blk;
+}
+
 /* Invent the slot name for the parameter `written` of block `blk` and record
    it, stepping past a name the program already uses. The caller frees it. */
 char *block_param_invent_name(Compiler *c, const char *written, int blk) {
@@ -2759,7 +2770,7 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
   snprintf(buf, n, "%s__b%s%s", written, p, tag);
   for (int k = 1; bp_user_uses(c, buf); k++)
     snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
-  bp_rename_record(c, buf, strlen(written));
+  bp_rename_record(c, buf, strlen(written), blk);
   return buf;
 }
 
@@ -5201,7 +5212,7 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
   for (char *tok = strtok_r(locs, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
     char *newn = NULL;
     const char *emit = tok;
-    if (!params_bind_name(nt, pn, tok) &&
+    if (!params_bind_name(nt, pn, tok) && !block_param_made_for(c, tok, L) &&
         name_written_outside(nt, tok, ix, inbody, gen)) {
       newn = block_param_invent_name(c, tok, L);
       blkp_rewrite_refs(c, body, tok, newn);
@@ -5743,6 +5754,8 @@ int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
       int pnode = ii < rn ? reqs[ii] : extras[ii - rn];
       const char *p = nt_str(nt, pnode, "name");
       if (!p) continue;
+      /* a parameter this block has already been given a slot name for keeps it */
+      if (block_param_made_for(c, p, L)) continue;
       /* collision: the name is used outside this block's body -- as a local
          write/read or as another block's parameter (param-vs-param, e.g. two
          inject folds sharing `|a, b|` with different element types). Both pollute
@@ -42110,17 +42123,20 @@ static int kwb_unknown_literal(NodeTable *nt, int row, int kh) {
   nt_node_set_arr(nt, h, "elements", el, en);
   return h;
 }
-static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
+/* Split `call` (`x.clone(freeze: v)`) into the sequence that checks the keyword. The sequence is
+   built of clones and new nodes and swapped into the call's place; the call itself, with every node
+   under it, is at the id this answers (-1: not split). */
+static int kwb_clone_split(Compiler *c, int call, Scope *sc) {
   NodeTable *nt = (NodeTable *)c->nt;
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-  if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return;
+  if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return -1;
   const int *el = nt_arr(nt, av[0], "elements", &en);
-  if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) return;
+  if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) return -1;
   int key = nt_ref(nt, el[0], "key"), v = nt_ref(nt, el[0], "value");
   NodeKind vk = nt_kind(nt, v);
-  if (nt_kind(nt, key) != NK_SymbolNode || !kwb_is(nt_str(nt, key, "value"), "freeze")) return;
-  if (vk == NK_TrueNode || vk == NK_FalseNode || vk == NK_NilNode) return;
+  if (nt_kind(nt, key) != NK_SymbolNode || !kwb_is(nt_str(nt, key, "value"), "freeze")) return -1;
+  if (vk == NK_TrueNode || vk == NK_FalseNode || vk == NK_NilNode) return -1;
   char rn[32], vn[32];
   snprintf(rn, sizeof rn, "__kwcr%d", nt->count);
   snprintf(vn, sizeof vn, "__kwcv%d", nt->count);
@@ -42157,7 +42173,9 @@ static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
     ch = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, rn, -1), NULL, 0), nt_new_node(nt, "NilNode"), kwb_seq(nt, g, 2));
   }
   st[ns++] = ch;
-  nt_swap_nodes(nt, call, kwb_seq(nt, st, ns));
+  int seq = kwb_seq(nt, st, ns);
+  nt_swap_nodes(nt, call, seq);
+  return seq;
 }
 static const char *const kwo_rows[][3] = {
   { "step", "by", "to" }, { "sample", "random", NULL }, { "shuffle", "random", NULL },
@@ -42192,13 +42210,14 @@ static int kwo_tree(NodeTable *nt, int call, int row, int i, int mask, const cha
   else nt_node_set_ref(nt, cl, "arguments", -1);
   return cl;
 }
-static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
+/* The same for `x.step(1, **h)` and the builtins that take `by:`, `to:` or `random:`. */
+static int kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-  if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return;
+  if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return -1;
   const int *el = nt_arr(nt, av[n - 1], "elements", &en);
   int h = en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode ? nt_ref(nt, el[0], "value") : -1;
-  if (h < 0) return;
+  if (h < 0) return -1;
   char hn[32], vn[32], xn[32], rn[32];
   snprintf(hn, sizeof hn, "__kwoh%d", nt->count);
   snprintf(vn, sizeof vn, "__kwov%d", nt->count);
@@ -42222,6 +42241,7 @@ static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
     seq = kwb_seq(nt, g, 2);
   }
   nt_swap_nodes(nt, call, seq);
+  return seq;
 }
 static int kwo_leaves(NodeTable *nt, int call) {
   int an = nt_ref(nt, call, "arguments"), n = 0, r = nt_ref(nt, call, "receiver");
@@ -42240,11 +42260,22 @@ int desugar_builtin_kwsplat_gate(Compiler *c, LowerCtx *lc) {
   for (int i = 0; i < nd && lc->nids < 4096; i++) lc->ids[lc->nids++] = defs[i];
   return 1;
 }
+/* The call a split replaced is at `orphan` now, no tree's. Nothing under it is
+   in the tree either: kwb_clone_split builds the sequence from clones of the
+   call (kwb_clone_split's bare and arm calls, the receiver and the value it
+   binds) and new nodes, and kwb_optional_split from a clone of the hash, of the
+   receiver and, in kwo_tree, of the call; nothing is moved. SPINEL_LOWER_CHECK
+   asserts it before the subtree is blanked. */
+static void kwb_drop_orphan(Compiler *c, LowerCtx *lc, int orphan) {
+  if (orphan < 0) return;
+  if (lc->check) lower_check_unreachable(c, lc, "desugar_builtin_kwsplat", orphan);
+  nt_subtree_blank((NodeTable *)c->nt, orphan);
+}
 int desugar_builtin_kwsplat_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int orow = nt_kind(nt, id) == NK_CallNode ? kwo_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; orow >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwo_rows[orow][0])) orow = -1;
-  if (orow >= 0 && kwo_leaves(nt, id)) kwb_optional_split(nt, id, orow, NULL);
+  if (orow >= 0 && kwo_leaves(nt, id)) kwb_drop_orphan(c, lc, kwb_optional_split(nt, id, orow, NULL));
   int row = nt_kind(nt, id) == NK_CallNode ? kwb_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; row >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwb_rows[row][0])) row = -1;
   int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
@@ -42261,7 +42292,7 @@ int desugar_builtin_kwsplat_at(Compiler *c, LowerCtx *lc, int id) {
     args[n - 1] = kwb_explicit(nt, row, lit, NULL);
     nt_node_set_arr(nt, an, "arguments", args, n);
   }
-  kwb_clone_split(c, id, NULL);
+  kwb_drop_orphan(c, lc, kwb_clone_split(c, id, NULL));
   return 1;
 }
 
@@ -47074,19 +47105,27 @@ static int def_params_all_optional(const NodeTable *nt, int pn) {
    `def` the program writes is taken for it. */
 /* Is the statement d a `def inspect(..)` / `def to_s(..)` that takes no argument
    it must be given, and has parameters to default? */
-static int noarg_display_def(const NodeTable *nt, int d) {
+static int noarg_display_def(const NodeTable *nt, const LowerCtx *lc, int d) {
   if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) return 0;
   const char *dn = nt_str(nt, d, "name");
   int pn = nt_ref(nt, d, "parameters");
-  return dn && (sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) && pn >= 0 && def_params_all_optional(nt, pn);
+  if (!(dn && (sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) && pn >= 0 && def_params_all_optional(nt, pn))) return 0;
+  /* the sibling already follows it: this def has been through */
+  int at = lower_stmt_at(nt, lc, d), bn = 0;
+  const int *bb = nt_arr(nt, lc->body, "body", &bn);
+  if (at + 1 < bn && nt_kind(nt, bb[at + 1]) == NK_DefNode && nt_ref(nt, bb[at + 1], "receiver") < 0) {
+    const char *sn = nt_str(nt, bb[at + 1], "name");
+    if (sn && !strncmp(sn, "__noarg ", 8) && sp_streq(sn + 8, dn)) return 0;
+  }
+  return 1;
 }
 int desugar_noarg_display_wrappers_left(Compiler *c, LowerCtx *lc, int id) {
-  return noarg_display_def(c->nt, id);
+  return noarg_display_def(c->nt, lc, id);
 }
 int desugar_noarg_display_wrappers_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int d = id;
-  if (!noarg_display_def(nt, d)) return 0;
+  if (!noarg_display_def(nt, lc, d)) return 0;
   int to_s = sp_streq(nt_str(nt, d, "name"), "to_s");
   long long line = nt_int(nt, d, "node_line", 0), file = nt_int(nt, d, "node_file", 0);
   int call = nt_new_node(nt, "CallNode");

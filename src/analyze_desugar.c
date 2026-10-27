@@ -10884,10 +10884,13 @@ static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode) return;
   const char *nm = dmc_local_kind(k) >= 0 ? nt_str(nt, id, "name") : NULL;
-  if (nm && nt_int(nt, id, "depth", 0) == lvl) {
+  /* a node this pass has renamed (cb_renamed) is not renamed again: its name
+     says nothing, a program can spell a local like the names made here */
+  if (nm && nt_int(nt, id, "depth", 0) == lvl && !nt_int(nt, id, "cb_renamed", 0)) {
     char buf[256];
     snprintf(buf, sizeof buf, "%s__cb%s", nm, tag);
     nt_node_set_str(nt, id, "name", buf);
+    nt_node_set_int(nt, id, "cb_renamed", 1);
   }
   if (k == NK_BlockNode || k == NK_LambdaNode) lvl++;
   int nr = nt_num_refs(nt, id);
@@ -15848,6 +15851,8 @@ static int rename_repeated_param(Compiler *c, NodeTable *nt, int owner, int p, c
     }
   }
   nt_set_str(nt, p, "name", nn);
+  /* the repeat is renamed: a second run finds no repeat */
+  nt_node_set_int(nt, p, "flags", nt_int(nt, p, "flags", 0) & ~NT_PARAM_REPEATED);
   return 1;
 }
 
