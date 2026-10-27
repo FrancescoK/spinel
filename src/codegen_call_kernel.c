@@ -17,6 +17,30 @@
    consumer takes the oint) and otherwise reads it as the plain scalar through
    sp_oint_arg (TypeError for nil) -- the same wrap the dispatcher applies to an
    oint producer, applied here because this emitter decides the form. */
+/* The C text of a new empty value of kind t, the answer of Kernel#String,
+   Array or Hash for nil. Answers 0 for a kind that has none here. */
+static int kconv_empty_c(TyKind t, char *out, size_t n) {
+  if (t == TY_STRING) snprintf(out, n, "sp_str_frozen_empty");
+  else if (ty_is_ptr_array(t)) snprintf(out, n, "%s", ptr_array_new_c(t));
+  else if (t == TY_POLY_ARRAY) snprintf(out, n, "sp_PolyArray_new()");
+  else if (ty_is_array(t) && array_kind(t)) snprintf(out, n, "sp_%sArray_new()", array_kind(t));
+  else if (ty_is_hash(t) && ty_hash_cname(t)) snprintf(out, n, "sp_%sHash_new()", ty_hash_cname(t));
+  else return 0;
+  return 1;
+}
+
+/* Kernel#Array / Kernel#Hash of a typed container that may be nil (a NULL
+   pointer, such as a parameter whose default is nil): the container itself,
+   or a new empty one of its kind for nil. Answers 0 when it emits nothing. */
+static int emit_kconv_nil_empty(Compiler *c, int arg, Buf *b) {
+  Repr ar = repr_of(c, arg);
+  char nil_c[64];
+  if (ar.kind == RK_BOXED || !kconv_empty_c(ar.as_ty, nil_c, sizeof nil_c)) return 0;
+  /* (the repr's may_nil misses a nil-default parameter) */
+  emit_null_guarded_call(c, arg, ar.as_ty, "", nil_c, b);
+  return 1;
+}
+
 static void oint_open(Compiler *c, int id, TyKind t, Buf *b) { if (!node_is_oint(c, id)) buf_printf(b, "%s(", oint_arg(t)); }
 static void oint_close(Compiler *c, int id, Buf *b) { if (!node_is_oint(c, id)) buf_puts(b, ")"); }
 
@@ -64,11 +88,7 @@ static int emit_kconv_obj_nil(Compiler *c, int arg, int ci, const char *m1, cons
   if (mi < 0 || !repr_of(c, arg).may_nil) return 0;
   TyKind rt = (TyKind)c->scopes[mi].ret;
   char nil_c[64];
-  if (rt == TY_STRING) snprintf(nil_c, sizeof nil_c, "sp_str_frozen_empty");
-  else if (rt == TY_POLY_ARRAY) snprintf(nil_c, sizeof nil_c, "sp_PolyArray_new()");
-  else if (array_kind(rt)) snprintf(nil_c, sizeof nil_c, "sp_%sArray_new()", array_kind(rt));
-  else if (ty_is_hash(rt) && ty_hash_cname(rt)) snprintf(nil_c, sizeof nil_c, "sp_%sHash_new()", ty_hash_cname(rt));
-  else return 0;
+  if (!kconv_empty_c(rt, nil_c, sizeof nil_c)) return 0;
   const char *cn = c->classes[d].c_name;
   int t = ++g_tmp;
   buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", cn, t, cn); emit_expr(c, arg, b);
@@ -564,7 +584,9 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          one-element array (matching the precise inference); everything else
          routes through the runtime coercion, which yields a poly array. */
       TyKind at = comp_ntype(c, av[0]);
-      if (ty_is_array(at)) emit_expr(c, av[0], b);
+      /* one that may be nil (a NULL pointer) answers a new [] of its kind */
+      if (ty_is_array(at) && emit_kconv_nil_empty(c, av[0], b)) {}
+      else if (ty_is_array(at)) emit_expr(c, av[0], b);
       else if (at == TY_RANGE) {
         /* Array(range) enumerates it */
         int tr6 = ++g_tmp;
@@ -643,7 +665,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int _hn = 0; nt_arr(nt, av[0], "elements", &_hn);
         if (_hn == 0) empty_arr_lit = 1;
       }
-      if (ty_is_hash(at)) { emit_expr(c, av[0], b); }
+      /* a Hash is itself; one that may be nil (a NULL pointer, such as a
+         parameter whose default is nil) answers a new {} of its kind */
+      if (ty_is_hash(at) && emit_kconv_nil_empty(c, av[0], b)) {}
+      else if (ty_is_hash(at)) { emit_expr(c, av[0], b); }
       /* a Hash subclass instance is itself (kconv_hash_kind types it poly);
          only a nil answers a new {} */
       else if (ty_is_object(at) && comp_ary_is_hash(c, ty_object_class(at))) {
