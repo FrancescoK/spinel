@@ -5150,6 +5150,29 @@ static int engine_method_absent(NodeTable *nt, const char *cls, const char *m, i
   return a;
 }
 
+/* Is node `id` inside guard `in` as the program runs it? In its subtree, or
+   (--load-model=graph) in a file every load of which stands inside `in`: the
+   inline model splices a file's text at its require, and a definition the
+   guard's require brings is one the guard's own code makes (a chain of
+   requires goes as deep as the loads do). A file also loaded from outside
+   the guard, or from two arms, is inside none: its definitions may be there
+   without the guard. */
+static int engine_inside(const NodeTable *nt, int in, int id, int depth) {
+  if (subtree_has(nt, in, id)) return 1;
+  if (nt_nroots(nt) < 2 || depth > 8) return 0;
+  for (int f = 1; f < nt_nroots(nt); f++) {
+    if (!subtree_has(nt, nt_root(nt, f), id)) continue;
+    int sites = 0;
+    NT_FOREACH_KIND(nt, NK_LoadNode, ld) {
+      if (nt_int(nt, ld, "target_file", -1) != f) continue;
+      sites++;
+      if (!engine_inside(nt, in, ld, depth + 1)) return 0;
+    }
+    return sites > 0;
+  }
+  return 0;
+}
+
 /* Does the program define library `h` from source (stdlib_name_from_source),
    as a class or module of that name? */
 static int engine_source_lib(NodeTable *nt, const char *h) {
@@ -5215,7 +5238,7 @@ static int engine_def_mixed_in_only(NodeTable *nt, int id, int in) {
         NodeKind ak = nt_kind(nt, av[a]);
         const char *n = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, av[a], "name") : NULL;
         if (!n || !sp_streq(n, leaf)) continue;
-        if (!subtree_has(nt, in, k)) return 0;
+        if (!engine_inside(nt, in, k, 0)) return 0;
         inside = 1;
       }
     }
@@ -5237,7 +5260,7 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     int a = !cls || !m ? -1 : builtin_object_method_known(m) ? 0 : engine_method_absent(nt, cls, m, in, 0);
     if (a > 0)
       for (int id = 0; id < nt->count; id++)
-        if (me_stmt_defines(nt, id, m) && !subtree_has(nt, in, id) && !engine_def_mixed_in_only(nt, id, in)) return -1;
+        if (me_stmt_defines(nt, id, m) && !engine_inside(nt, in, id, 0) && !engine_def_mixed_in_only(nt, id, in)) return -1;
     return a;
   }
   /* `L::X.instance_method(:m)` of a module the program defines with that
@@ -5295,7 +5318,7 @@ static int engine_absent(NodeTable *nt, int e, int in) {
       for (int id = 0; id < nt->count && !outside; id++) {
         const char *w = engine_written(nt, id);
         if (!w || !sp_streq(w, leaf)) continue;
-        if (subtree_has(nt, in, id)) inside = 1;
+        if (engine_inside(nt, in, id, 0)) inside = 1;
         else if (!engine_exclusive_arms(nt, in, id)) outside = 1;
       }
       if (inside && !outside) return 1;
@@ -5315,7 +5338,7 @@ static int engine_absent(NodeTable *nt, int e, int in) {
   int top = nt_kind(nt, e) == NK_DefinedNode && !engine_lexically_nested(nt, e) &&
             !engine_object_mixes_in(nt);
   for (int id = 0; id < nt->count; id++)
-    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id) &&
+    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !engine_inside(nt, in, id, 0) &&
         !(top && engine_writer_qualified(nt, id)) && !engine_exclusive_arms(nt, in, id)) return -1;
   return 1;
 }
