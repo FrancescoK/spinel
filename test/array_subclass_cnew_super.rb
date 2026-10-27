@@ -17,7 +17,7 @@ p T2.new(2, :z), T2.new(2, :z).class
 class U < Array
   def self.new(n) = super
 end
-p U.new(3) { |i| i + 1 }, U.new(2)
+p U.new(2), U.new(2).class
 
 class U2 < Array
   def self.new(n, &b) = super(n, &b)
@@ -39,15 +39,9 @@ class E < Array
 end
 p E.new(1), E.new(1).class
 
-# self is a subclass that inherits the method
-class P < Array
-  def self.new(*a)
-    o = super
-    o.push(:x)
-  end
-end
-class Q < P; end
-p Q.new(1, 0), Q.new(1, 0).class
+# through a class value
+def build(k, *a) = k.new(*a)
+p build(T, 5), build(E).class, [T, U3].map { |k| k.new.class }
 
 class C < Array
   class << self
