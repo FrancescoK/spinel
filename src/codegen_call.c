@@ -7678,8 +7678,8 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   }
   /* a shared-mutable string is a builtin OBJ box, not SP_TAG_STR, and is a
      string: sp_poly_recv_s takes both, so the guard has to as well */
-  buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { %s _t%d = %s; }\nelse ",
-             tv, tv, arm_pre ? arm_pre : "", tr, ib.p);
+  buf_puts(b, "if ("); emit_poly_str_guard(c, tv, name, b);
+  buf_printf(b, ") { %s _t%d = %s; }\nelse ", arm_pre ? arm_pre : "", tr, ib.p);
   free(ib.p); free(arm_pre);
   if (g_plan_check) pa_observe_at(id, PA_TRIAL, PA_KEY_TRIAL + PT_STR, -1, TY_UNKNOWN, 1);
   return 1;
@@ -9872,9 +9872,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       unsigned form = pform->flags & ~PPF_SEEN;
       if (g_plan_check) cplan_served("poly-form0");
       int root_recv = (form & PPF_ROOT) != 0, reads_value = (form & PPF_DEREF) != 0;
-      buf_printf(b, "({ sp_RbVal _t%d = %s", tv, reads_value ? "sp_poly_strbuf_deref(" : "");
-      emit_expr(c, recv, b);
-      buf_puts(b, reads_value ? "); " : "; ");
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      if (reads_value) emit_poly_recv_deref(c, recv, name, b); else emit_expr(c, recv, b);
+      buf_puts(b, "; ");
       if (root_recv) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
       emit_poly_vis_precheck(c, id, tv, b);
       size_t pd_from = b->len;   /* the region pd_hoist may move out of line */

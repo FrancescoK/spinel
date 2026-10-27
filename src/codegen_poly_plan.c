@@ -3142,7 +3142,7 @@ void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, c
   Buf st; memset(&st, 0, sizeof st);
   char rv[24]; snprintf(rv, sizeof rv, "_t%d", tv);
   str_aset_store_text(c, T, rv, &st);
-  buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { ", tv, tv);
+  buf_puts(b, "if ("); emit_poly_str_guard(c, tv, "[]=", b); buf_puts(b, ") { ");
   /* a plain String that is written back is stored after the dispatch */
   if (str_aset_writes_back(c, recv)) buf_printf(b, "if (_t%d.tag != SP_TAG_STR) ", tv);
   buf_printf(b, "%s;", st.p);
@@ -3350,19 +3350,21 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
      and a boxed one is checked at run time. */
   if (is_include) if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INCLUDE, -1, TY_UNKNOWN, PC_SAME);
   if (is_include && !sp_streq(name, "include?"))
-    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) sp_raise_poly_nomethod(\"%s\", _t%d);\nelse ",
-               tv, tv, name, tv);
+    { buf_puts(b, "if ("); emit_poly_str_guard(c, tv, name, b);
+      buf_printf(b, ") sp_raise_poly_nomethod(\"%s\", _t%d);\nelse ", name, tv); }
   else if (is_include && comp_ntype(c, argv[0]) == TY_STRING)
-    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), %s)%s; }\nelse ",
-               tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, strarg,
-               ret == TY_POLY ? ")" : "");
+    { buf_puts(b, "if ("); emit_poly_str_guard(c, tv, name, b);
+      buf_printf(b, ") { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), %s)%s; }\nelse ",
+                 tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, strarg,
+                 ret == TY_POLY ? ")" : ""); }
   else if (is_include) {
     Buf ab6; memset(&ab6, 0, sizeof ab6);
     char tn6[24]; snprintf(tn6, sizeof tn6, "_t%d", atmp[0]);
     if (atmp_ty[0] == TY_POLY) buf_puts(&ab6, tn6);
     else emit_boxed_text(c, atmp_ty[0], tn6, &ab6);
-    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), sp_poly_arg_str_chk(sp_poly_strbuf_deref(%s)))%s; }\nelse ",
-               tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab6.p ? ab6.p : "sp_box_nil()",
+    buf_puts(b, "if ("); emit_poly_str_guard(c, tv, name, b);
+    buf_printf(b, ") { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), sp_poly_arg_str_chk(sp_poly_strbuf_deref(%s)))%s; }\nelse ",
+               tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab6.p ? ab6.p : "sp_box_nil()",
                ret == TY_POLY ? ")" : "");
     free(ab6.p);
   }

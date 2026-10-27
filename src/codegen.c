@@ -11247,6 +11247,51 @@ int program_has_strsub(Compiler *c) {
   return 0;
 }
 
+/* Whether the boxed value `v` is an instance of a String subclass that
+   answers `name` itself (comp_strsub_own_classes), as a C test; 0 when no
+   class does. */
+static int emit_strsub_own_test(Compiler *c, const char *v, const char *name, Buf *b) {
+  int n = 0;
+  const int *ks = comp_strsub_own_classes(c, name, &n);
+  if (n == 0) return 0;
+  buf_printf(b, "({ int _bk = sp_bsub_cls_of(%s); ", v);
+  for (int i = 0; i < n; i++) buf_printf(b, "%s_bk == %d", i ? " || " : "", ks[i]);
+  buf_puts(b, "; })");
+  return 1;
+}
+
+/* The boxed receiver of a dispatch on `name`, read through
+   sp_poly_strbuf_deref so the String arms read its value. A String subclass
+   instance with a `name` of its own keeps its handle: the switch keys on its
+   class (sp_bsub_cls_of) and calls that method. */
+void emit_poly_recv_deref(Compiler *c, int recv, const char *name, Buf *b) {
+  int t = ++g_tmp;
+  char v[24]; snprintf(v, sizeof v, "_t%d", t);
+  Buf own; memset(&own, 0, sizeof own);
+  if (!emit_strsub_own_test(c, v, name, &own)) {
+    buf_puts(b, "sp_poly_strbuf_deref("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return;
+  }
+  buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+  buf_printf(b, "; %s ? _t%d : sp_poly_strbuf_deref(_t%d); })", own.p, t, t);
+  free(own.p);
+}
+
+/* The test a dispatch on `name` puts before its String arm: the boxed
+   _t<tv> is a String, a shared String's handle included, but not a String
+   subclass instance with a `name` of its own, which the class switch
+   after it serves. */
+void emit_poly_str_guard(Compiler *c, int tv, const char *name, Buf *b) {
+  char v[24]; snprintf(v, sizeof v, "_t%d", tv);
+  Buf own; memset(&own, 0, sizeof own);
+  if (!emit_strsub_own_test(c, v, name, &own)) {
+    buf_printf(b, "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))", tv, tv);
+    return;
+  }
+  buf_printf(b, "(_t%d.tag == SP_TAG_STR || (sp_poly_is_strbuf(_t%d) && !%s))", tv, tv, own.p);
+  free(own.p);
+}
+
 /* A boxed Array subclass instance is boxed as its Array (arysub_box_id);
    sp_bsub_cls_of reads its class back off the scan every such class has of
    its own (as sp_poly_is_pack tells a packed generator step from a plain

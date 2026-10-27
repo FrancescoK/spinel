@@ -1619,6 +1619,30 @@ int comp_arysub_reopen(Compiler *c, int cid) {
   int p = r >= 0 ? c->classes[r].parent : -1;
   return p >= 0 && p != r && p == comp_class_index(c, comp_arysub_builtin(c, cid)) ? p : -1;
 }
+/* The String subclasses whose instances answer `name` with a public method
+   or reader of their own, not the String reopen's: a boxed instance is its
+   String handle, and the dispatch on `name` keeps it for the class switch
+   (emit_poly_recv_deref, emit_poly_str_guard). Ascending; *n their count.
+   The list is kept until the next ask. */
+const int *comp_strsub_own_classes(Compiler *c, const char *name, int *n) {
+  static int *ks; static int cap;
+  int cnt = 0;
+  for (int k = 0; name && k < c->nclasses; k++) {
+    if (c->classes[k].ary_root <= 0 || !c->classes[k].ary_str) continue;
+    int dc = -1, ro = comp_arysub_reopen(c, k);
+    if (!((comp_method_in_chain(c, k, name, &dc) >= 0 && (ro < 0 || dc != ro)) ||
+          comp_reader_in_chain(c, k, name, NULL))) continue;
+    if (comp_method_vis_in_chain(c, k, name) != SP_VIS_PUBLIC) continue;
+    if (cnt == cap) {
+      cap = cap ? cap * 2 : 8;
+      ks = realloc(ks, sizeof(int) * (size_t)cap);
+      if (!ks) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    ks[cnt++] = k;
+  }
+  *n = cnt;
+  return ks;
+}
 /* Whether a call named n on an instance of Array subclass cid is Array's:
    no method, reader or writer of the class chain takes the name, it asks
    nothing about the object itself, and Array (or Enumerable, which Array
