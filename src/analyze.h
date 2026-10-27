@@ -137,6 +137,7 @@ int prog_order(Compiler *c, int a, int b);
 void prog_sort(Compiler *c, int *v, int n, const int *node_of);
 int prog_has_files(const Compiler *c);
 int prog_cmp(Compiler *c, int a, int b, int at, const char *reader);
+int prog_cmp_run(Compiler *c, int a, int b, int at, const char *reader);   /* prog_cmp in the record's run order: BEGIN first */
 /* The load-phase record (analyze_elab.c, #9898): where each statement of
    the load phase runs, as a point (region, seq). Region 0 is the load phase
    the load graph places, each other region one file it does not place;

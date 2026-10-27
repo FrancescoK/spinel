@@ -258,6 +258,24 @@ int prog_cmp(Compiler *c, int a, int b, int at, const char *reader) {
   return o;
 }
 
+/* prog_cmp in the order the load phase runs statements, read from the
+   record's points (elab_order) rather than from top-level ranks and node
+   ids: a file's BEGIN blocks run ahead of its other statements, and the
+   statements inside one top-level statement in the order they run. An
+   alias captures the definition in effect when it runs (#3737), so the
+   alias readers ask this one: a def in a BEGIN block is in effect ahead of
+   an alias the file's text holds earlier. An UNKNOWN is refused at `at`,
+   naming the reader, as prog_cmp does. */
+int prog_cmp_run(Compiler *c, int a, int b, int at, const char *reader) {
+  int o = elab_order(c, a, b);
+  if (o == PROG_UNKNOWN) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "--load-model=graph: %s reads the order of two files, one of them loaded at no fixed point, for now", reader);
+    unsupported_feature(c, at, msg);
+  }
+  return o;
+}
+
 /* Does root i only define things -- methods, aliases, and classes or modules
    whose bodies do no more -- so that loading it runs nothing? Asked of the
    program as it stands: codegen asks it of the desugared tree. */
