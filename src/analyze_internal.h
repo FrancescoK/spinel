@@ -845,6 +845,13 @@ int desugar_method_call_runtime_name(Compiler *c);
 int desugar_builtin_method_defined_conds(Compiler *c);
 int desugar_engine_branches(Compiler *c);
 int desugar_conditional_defs(Compiler *c);
+/* A dispatcher def over arms `<sel> == <val>` calling `callee` with the
+   def's parameters passed on, and an else arm (disp_def_build,
+   analyze_desugar.c); `raise NoMethodError, msg` for that arm */
+typedef struct { const char *sel; int val; const char *callee; } DispArm;
+int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
+                   const DispArm *arm, int narm, int els);
+int disp_raise_no_method(NodeTable *nt, const char *msg);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);
