@@ -1,20 +1,57 @@
 # tools/route_audit.rb: the files whose call targets go through call_target
 # (call_plan.c), and their by-name lookups that ask about a name rather than
-# one call, each with why. `FILE FUNCTION [LOOKUP] reason`: with LOOKUP only
-# that lookup of the function is by name.
-files: src/analyze_infer.c src/analyze_infer_recv.c src/analyze_util.c src/analyze_cls.c
+# one call, each with why. `FILE FUNCTION [LOOKUP | =NAME] reason`: with
+# LOOKUP only that lookup of the function is by name, with =NAME only the
+# lookups whose name argument is NAME.
+files: src/analyze.c src/analyze_cls.c src/analyze_desugar.c src/analyze_infer.c
+files: src/analyze_infer_recv.c src/analyze_nil.c src/analyze_pass.c
+files: src/analyze_scope.c src/analyze_util.c src/compiler.c src/repr.c
 
 # which classes answer a name, over every class: a poly receiver's arms
+src/analyze.c a_dispatch_arm_takes_block which classes answer the name
+src/analyze.c act_add_overrides which subclasses override the name
+src/analyze.c act_has_override which subclasses override the name
+src/analyze.c compute_reachable comp_method_in_chain a send's name, in every class
+src/analyze.c dispatch_answers_nil which classes answer the name
+src/analyze.c ie_class_answers which classes answer the name
+src/analyze.c ie_class_value_target which classes answer the name
+src/analyze.c ie_poly_self_classes which classes answer the name
+src/analyze.c mixin_call_guarded which classes answer the name
+src/analyze.c mixin_earlier_reaches which modules answer the name
+src/analyze.c refuse_mixin_after_calls which classes and modules answer the name
 src/analyze_cls.c cf_arms which classes answer the name
 src/analyze_cls.c cf_arms_list which classes answer the name
 src/analyze_cls.c cf_byname which classes answer the name
 src/analyze_cls.c cf_kpred_classes which classes answer the name
-src/analyze_infer.c infer_poly_operand_call comp_name_responders which classes answer the name
-src/analyze_util.c send_blind_recv_owns comp_name_responders which classes answer the name
+src/analyze_desugar.c dsend_name_is_helper which subclasses answer the name
+src/analyze_desugar.c user_block_method which classes answer the name
 src/analyze_infer.c an_user_read_ty the return of every class's method of the name
 src/analyze_infer.c an_user_ret_disagrees the return of every class's method of the name
+src/analyze_infer.c infer_poly_operand_call comp_name_responders which classes answer the name
+src/analyze_pass.c class_owns_getter which classes define the getter
+src/analyze_pass.c infer_block_params_call_arms comp_name_responders which classes answer the name
+src/analyze_scope.c cm_call_names which classes answer the name
+src/analyze_scope.c poly_recv_defines which classes answer the name
+src/analyze_util.c send_blind_recv_owns comp_name_responders which classes answer the name
+src/compiler.c cc_build which classes answer the name
+src/compiler.c comp_method_overridden which subclasses override the name
+src/compiler.c comp_native_answer_class which classes answer the name
+src/compiler.c comp_native_binding_class which classes answer the name
+src/compiler.c comp_poly_arm_defines which classes answer the name
+src/compiler.c comp_poly_arm_defines_n which classes answer the name
+src/compiler.c comp_subclass_answers which subclasses answer the name
+src/compiler.c mixin_answers_first which modules answer the name
+src/compiler.c mixin_level_answers which modules answer the name
+src/compiler.c mixin_level_walk which modules answer the name
+src/compiler.c pc_build which classes answer the name
+src/repr.c dispatch_answers_nil which classes answer the name
 
 # is a name defined (or listable) for a class, module or the program
+src/analyze.c ps_op_reopened an operator's presence
+src/analyze.c rd_builtin_string_method a name's presence
+src/analyze_desugar.c fwd_io_one_param_iter a name's presence in a File or IO reopening
+src/analyze_desugar.c iter_name_program_defined a name's presence in a reopened Array, Hash, Range or Enumerable
+src/analyze_desugar.c send_family_program_owns a name's presence
 src/analyze_infer.c an_any_class_cmethod a name's presence
 src/analyze_infer.c an_module_defines a name's presence
 src/analyze_infer.c an_module_methods_listable a name's presence
@@ -23,6 +60,7 @@ src/analyze_infer.c an_reopen_method a name's presence in a reopened builtin
 src/analyze_infer.c an_value_methods_class a name's presence
 src/analyze_infer.c kept_enum_reopen_defines a name's presence
 src/analyze_infer.c std_stream_foreign_writer a name's presence
+src/analyze_pass.c array_push_reopened a name's presence in a reopened Array
 src/analyze_util.c an_blank_slates_lacking a name's presence
 src/analyze_util.c an_user_defines_method a name's presence
 src/analyze_util.c an_user_recv_defines_method a name's presence
@@ -30,21 +68,111 @@ src/analyze_util.c an_zero_arg_builtin_shadowed a name's presence
 src/analyze_util.c io_reopen_class a name's presence in an IO reopening
 src/analyze_util.c io_reopen_defs a name's presence in an IO reopening
 src/analyze_util.c io_reopen_ret_mixed a name's presence in an IO reopening
+src/compiler.c comp_cmethod_vis_declared a name's declared visibility
+src/compiler.c comp_is_undeffed_in_chain a name's presence
+src/compiler.c comp_method_vis_declared a name's declared visibility
+src/compiler.c comp_toplevel_mod_defines a name's presence
+src/compiler.c toplevel_mod_method a name's presence in a module the top level includes
 
 # a method the language calls by a name from a fixed table
+src/analyze.c compute_reachable comp_cmethod_in_chain an --ext-entry name
+src/analyze.c nn_structure the names of raise, exit and the iterators
+src/analyze.c ur_iter_overridden the iterators' names
 src/analyze_cls.c cf_call comp_method_in_chain the conversion protocol's names
 src/analyze_cls.c cf_proto_ret_build the protocol methods' names
 src/analyze_cls.c cf_scal_build Enumerable's iterator names
+src/analyze_desugar.c class_answers_own to_ary / to_a
+src/analyze_desugar.c desugar_enum_walk_calls the lowering table's helper name
 src/analyze_infer.c kconv_integer_kind to_int / to_i
 
 # a scope's own name, super from its def's name
+src/analyze.c a_block_forwarded_to_proc =u super, by its def's name
+src/analyze.c a_super_target super, by its def's name
+src/analyze.c an_presence_observe a scope's own name
+src/analyze.c an_super_object_text super, by its def's name
+src/analyze.c check_seed_contradictions =sc->name a scope's own name
+src/analyze.c dyn_site_may_reach a scope's own name
+src/analyze.c dyn_site_misses a scope's own name
+src/analyze.c inline_replacing_def a scope's own name
+src/analyze.c iter_disc_self_targets =cur->name a scope's own name
+src/analyze.c mark_nullable_int_locals =sn super, by its def's name
+src/analyze.c pf_in_class_dispatch a scope's own name
+src/analyze.c pf_scope_named a scope's own name
+src/analyze.c pf_wanted a scope's own name
+src/analyze.c reinit_reaches a scope's own name
+src/analyze.c rewrite_array_subclass_super super, by its def's name
+src/analyze.c super_reach super, by its def's name
 src/analyze_cls.c cf_kdyn_method a scope's own name
 src/analyze_cls.c cf_node a scope's own name
 src/analyze_infer.c infer_uncached a scope's own shadow name
 src/analyze_infer.c super_reaches_exc_text super, by its def's name
+src/analyze_pass.c infer_param_types_ex =s->name super, by its def's name
+src/analyze_pass.c propagate_prep_params a prepended method's own name
+src/analyze_scope.c cmethod_reaches_class_ivar_walk =c->scopes[mi].name a scope's own name
+src/analyze_scope.c forwarding_target_scan =s->name a scope's own name
+src/analyze_scope.c specialize_cmethod_for =c->scopes[mi].name a scope's own name
+src/analyze_scope.c specialize_inherited_cls_new =mname a scope's own name
+src/analyze_scope.c specialize_super_cmethod super, by its def's name
+src/analyze_scope.c super_lands_on_attr super, by its def's name
+src/compiler.c comp_super_name super, by its def's name
+src/compiler.c comp_super_shadow super, by its def's name
 
 # a Symbol argument's method (method(:m), a send's), not the name a call is
 # written with: no call is versioned by it
+src/analyze_desugar.c desugar_dynamic_send_inner a dynamic send's candidate names
+src/analyze_desugar.c dsend_class_names a dynamic send's candidate names
+src/analyze_desugar.c dsend_receiver_names_uncached a dynamic send's candidate names
+src/analyze_scope.c pivs_callable_lit a Symbol argument's method
 src/analyze_util.c class_value_bind_call_gap a Symbol argument's method
 src/analyze_util.c class_value_bind_call_target a Symbol argument's method
 src/analyze_util.c method_obj_target_mi_raw a Method object's method
+
+src/analyze.c desugar_builtin_method_obj a Symbol argument's method, and its wrapper's name
+src/analyze.c desugar_kernel_method_block_arg a Symbol argument's method
+src/analyze.c dyn_method_prints a Symbol argument's method
+src/analyze.c dyn_reach_value a String argument's method
+
+# a method, alias, member or mixin being registered, by its own name (an
+# alias captures the method its original name has where it is defined)
+src/analyze_desugar.c desugar_builtin_alias_calls =od an alias's original name
+src/analyze_scope.c alias_def_in_effect an alias's original name
+src/analyze_scope.c alias_register an alias's original name
+src/analyze_scope.c extend_alias_refuse_own an alias's name
+src/analyze_scope.c extend_class_with an extended module's method's own name
+src/analyze_scope.c include_module_methods an included module's method's own name
+src/analyze_scope.c include_shadow_copy an included module's method's own name
+src/analyze_scope.c inherit_members a member's own name
+src/analyze_scope.c process_prepend_body a prepended module's method's own name
+src/analyze_scope.c register_include_attrs an alias's original name
+src/analyze_scope.c resolve_inherited_aliases an alias's original name
+src/analyze_scope.c resolve_parents a scope's own name
+src/analyze_scope.c settle_mixin_aliases an alias's name
+src/analyze_scope.c sg_transplant_module a transplanted method's own name
+src/compiler.c comp_name_is_sg_alias_only an alias's name
+src/compiler.c resolve_alias_side an alias's name
+
+# the tables' own queries: the chain walk call_target asks, and the facts a
+# class's method of a name has (a call asks them of the method it runs)
+src/compiler.c chain_lookup the chain walk itself
+src/compiler.c cls_user_display_mi a class's method of the name
+src/compiler.c comp_arysub_name_is_array a class's method of the name
+src/compiler.c comp_builtin_kind_reopen_mi a class's method of the name
+src/compiler.c comp_resolve_member a class's method of the name
+src/compiler.c comp_trampoline_kind a class's method of the name
+
+# a helper the compiler synthesizes, by its own name
+src/analyze.c desugar_to_enum a synthesized helper's name
+src/analyze.c synth_to_enum_generators a synthesized helper's name
+src/analyze_desugar.c desugar_builtin_enum_calls a synthesized helper's name
+src/analyze_desugar.c desugar_builtin_scalar_calls =gn a synthesized helper's name
+src/analyze_desugar.c fwd_bam_lambda_count a synthesized helper's name
+
+# the renaming of a redefined method's calls, which binding a call to a
+# version in call_target replaces
+src/analyze.c desugar_redef_version_calls the renaming of a redefined method's calls
+
+# the String sharing analysis, which is being removed (#9258)
+src/analyze.c promote_shared_stored_strings_pass the String sharing analysis
+src/analyze.c strbuf_block_forward_container the String sharing analysis
+src/analyze.c strbuf_container_source_walk_body the String sharing analysis
+src/analyze.c strbuf_demand_user_elem_call the String sharing analysis

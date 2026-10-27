@@ -1400,7 +1400,7 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
     if (recv < 0) tmi = comp_self_call_mi(c, nid, tn);
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, ty_object_class(rt), tn, NULL);
+      if (ty_is_object(rt)) tmi = call_target(c, nid, ty_object_class(rt), tn, 0, NULL);
       /* a boxed receiver is dispatched on its class at run time, and the
          dispatch hands the block on as a proc (`k.walk(&blk)` over a mixed
          Array): it is a block that does not stop here whichever class owns
@@ -1456,14 +1456,14 @@ int a_block_is_lifted(Compiler *c, int id) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Fiber")) return 1;
   int mi = -1;
   if (recv < 0) {
-    mi = comp_method_index(c, name);
+    mi = call_target(c, id, -1, name, CT_TOP, NULL);
     if (mi < 0) {
       Scope *self = comp_scope_of(c, id);
       if (self && self->class_id >= 0) {
-        mi = comp_method_in_chain(c, self->class_id, name, NULL);
+        mi = call_target(c, id, self->class_id, name, 0, NULL);
         /* an implicit-self call inside a class method resolves to a CLASS
            method; its literal block is lifted all the same (#2444) */
-        if (mi < 0) mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+        if (mi < 0) mi = call_target(c, id, self->class_id, name, CT_CMETHOD, NULL);
         /* and a bare `new` there runs the class's initialize */
         if (mi < 0 && self->is_cmethod && sp_streq(name, "new"))
           mi = comp_method_in_chain(c, self->class_id, "initialize", NULL);
@@ -1479,7 +1479,7 @@ int a_block_is_lifted(Compiler *c, int id) {
     if (sself && sself->class_id >= 0 && !sself->is_cmethod) {
       for (int k = 0; k < c->nclasses; k++) {
         if (k == sself->class_id || !is_descendant(c, k, sself->class_id)) continue;
-        int mk = comp_method_in_chain(c, k, name, NULL);
+        int mk = call_target(c, id, k, name, 0, NULL);
         if (mk < 0 || mk == mi) continue;
         if (c->scopes[mk].yields || (c->scopes[mk].blk_param && c->scopes[mk].blk_param[0])) return 1;
       }
@@ -1497,7 +1497,7 @@ else {
     if (const_recv) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
-        const_is_class = 1; mi = comp_cmethod_in_chain(c, ci, name, NULL);
+        const_is_class = 1; mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
         /* `Klass.new { }` with no `def self.new` hands the block to
            initialize, which lifts it like any method keeping a real &block */
         if (mi < 0 && sp_streq(name, "new")) mi = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -1516,12 +1516,12 @@ else {
        a block unlifted and its captures without storage. */
     if (!const_is_class) {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+      if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
       /* A Class value known only at run time dispatches on it to the class
          methods, which take the block as a real proc the same way */
       else if (rt == TY_CLASS && class_recv_is_dynamic(c, recv)) {
         for (int k = 0; k < c->nclasses; k++) {
-          int ck = comp_cmethod_in_chain(c, k, name, NULL);
+          int ck = call_target(c, id, k, name, CT_CMETHOD, NULL);
           if (ck >= 0 && (c->scopes[ck].yields || (c->scopes[ck].blk_param && c->scopes[ck].blk_param[0])))
             return 1;
         }
@@ -1532,8 +1532,8 @@ else {
          the block is a real proc, and its captures need cells. A spurious
          cell, where the method is spliced instead, is a missed optimization. */
       else if ((rt == TY_STRING || rt == TY_STRBUF) && comp_class_index(c, "String") >= 0 &&
-               comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL) >= 0 &&
-               c->scopes[comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)].yields)
+               call_target(c, id, comp_class_index(c, "String"), name, 0, NULL) >= 0 &&
+               c->scopes[call_target(c, id, comp_class_index(c, "String"), name, 0, NULL)].yields)
         return 1;
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for
@@ -1548,10 +1548,10 @@ else {
            a spurious cell is only a missed optimization */
         for (int k = 0; k < c->nclasses; k++) {
           /* a Class in the union reaches its class method the same way */
-          int ck = comp_cmethod_in_chain(c, k, name, NULL);
+          int ck = call_target(c, id, k, name, CT_CMETHOD, NULL);
           if (ck >= 0 && (c->scopes[ck].yields || (c->scopes[ck].blk_param && c->scopes[ck].blk_param[0])))
             return 1;
-          int ci2 = comp_method_in_chain(c, k, name, NULL);
+          int ci2 = call_target(c, id, k, name, 0, NULL);
           if (ci2 < 0) continue;
           Scope *cm2 = &c->scopes[ci2];
           if (cm2->yields || (cm2->blk_param && cm2->blk_param[0])) return 1;
@@ -1648,7 +1648,7 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
     }
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) tmi = comp_method_in_chain(c, cls = ty_object_class(rt), tn, NULL);
+      if (ty_is_object(rt)) tmi = call_target(c, nid, cls = ty_object_class(rt), tn, 0, NULL);
     }
     if (tmi < 0 || tmi == mi) continue;
     Scope *t = &c->scopes[tmi];
@@ -1778,15 +1778,15 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->class_id >= 0) {
-      mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      mi = call_target(c, id, self->class_id, name, 0, NULL);
       if (!self->is_cmethod) cls = self->class_id;
     }
     /* the class chain misses a top-level def, which a bare call still reaches */
-    if (mi < 0) mi = comp_method_index(c, name);
+    if (mi < 0) mi = call_target(c, id, -1, name, CT_TOP, NULL);
   }
   else {
     TyKind rt = infer_type(c, recv);
-    if (ty_is_object(rt)) mi = comp_method_in_chain(c, cls = ty_object_class(rt), name, NULL);
+    if (ty_is_object(rt)) mi = call_target(c, id, cls = ty_object_class(rt), name, 0, NULL);
   }
   if (mi < 0) return 0;
   /* a yielding method a subclass overrides is not spliced: the cls_id switch
@@ -2827,7 +2827,7 @@ static int ie_tramp_body_args(Compiler *c, int caller_id, const int **tav_out, S
   TyKind rt = infer_type(c, recv);
   if (!ty_is_object(rt)) return -1;
   const char *nm = nt_str(nt, caller_id, "name");
-  int mi = nm ? comp_method_in_chain(c, ty_object_class(rt), nm, NULL) : -1;
+  int mi = nm ? call_target(c, caller_id, ty_object_class(rt), nm, 0, NULL) : -1;
   if (mi < 0) return -1;
   Scope *ms = &c->scopes[mi];
   if (ms->body < 0) return -1;
@@ -2865,7 +2865,7 @@ int ie_tramp_effective_arg(Compiler *c, int caller_id, int p) {
   return arg;  /* ivar / literal / other: evaluated in the rebound-self context */
 }
 
-static int ie_forward_target(Compiler *c, int cls, int cm, const char *name, int receiverless);
+static int ie_forward_target(Compiler *c, int call, int cls, int cm, const char *name, int receiverless);
 static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk);
 static int ie_forward_hops;
 
@@ -2932,7 +2932,7 @@ static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, 
         }
         else if (ie_forward_hops < 8) {
           ie_forward_hops++;
-          int t = ie_forward_target(c, rcls, cm, cn, r < 0);
+          int t = ie_forward_target(c, node, rcls, cm, cn, r < 0);
           if (t < 0 && rt == TY_POLY) t = ie_class_value_target(c, node, r, rt, barg);
           ie_forward_hops--;
           if (t >= 0) return t;
@@ -2957,13 +2957,14 @@ static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, 
 }
 
 /* A method on `cls` that hands its own block to `X.instance_eval/exec(&blk)`
-   runs a call site's literal block with self = X: the class of X, or -1. */
-static int ie_forward_target(Compiler *c, int cls, int cm, const char *name, int receiverless) {
+   runs a call site's literal block with self = X: the class of X, or -1.
+   `name` is what call `call` runs on `cls`. */
+static int ie_forward_target(Compiler *c, int call, int cls, int cm, const char *name, int receiverless) {
   if (!name) return -1;
-  int mi = cls < 0 ? -1 : (cm ? comp_cmethod_in_chain : comp_method_in_chain)(c, cls, name, NULL);
+  int mi = cls < 0 ? -1 : call_target(c, call, cls, name, cm ? CT_CMETHOD : 0, NULL);
   if (mi < 0 && cm && cls >= 0 && sp_streq(name, "new")) mi = comp_method_in_chain(c, cls, "initialize", NULL);
   if (mi < 0 && receiverless) {
-    mi = comp_method_index(c, name);
+    mi = call_target(c, call, -1, name, CT_TOP, NULL);
     if (mi >= 0 && c->scopes[mi].class_id >= 0) mi = -1;
   }
   if (mi < 0) return -1;
@@ -3030,7 +3031,7 @@ static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int b
   const char *nm = nt_str(c->nt, id, "name");
   int arg = nt_kind(c->nt, blk) == NK_BlockArgumentNode, cls = -1;
   if (rt == TY_CLASS && is_instance_eval_family(nm)) return -2 - id;
-  if (rt == TY_CLASS) return ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0);
+  if (rt == TY_CLASS) return ie_forward_target(c, id, class_recv_static_ci(c, recv), 1, nm, 0);
   int may = rt == TY_POLY && ie_name_may_forward(c, nm);
   /* The classes whose chain answers the name, on each side, in place of
      every class on both: a class whose chain does not answer forwards
@@ -3049,13 +3050,13 @@ static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int b
     if (n > 0 && !ks) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int i = 0; i < n; i++) ks[i] = rs[2 * i];
     for (int i = 0; i < n && cls >= -1; i++) {
-      int t = ie_forward_target(c, ks[i], side, nm, 0);
+      int t = ie_forward_target(c, id, ks[i], side, nm, 0);
       if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
     }
     free(ks);
   }
   for (int k = 0; may && !listed && cls >= -1 && k < 2 * c->nclasses; k++) {
-    int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
+    int t = ie_forward_target(c, id, k / 2, k % 2, nm, 0);
     if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
   }
   const char *names[64];
@@ -3183,7 +3184,7 @@ static int ie_rself_cmethod_call(Compiler *c, int n) {
   if (r >= 0) return nt_int(nt, n, "self_call", 0) &&
                      (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode);
   const char *nm = nt_str(nt, n, "name");
-  if (!nm || is_kernel_module_function(nm) || comp_method_index(c, nm) >= 0) return 0;
+  if (!nm || is_kernel_module_function(nm) || call_target(c, n, -1, nm, CT_TOP, NULL) >= 0) return 0;
   for (int s = 0; s < c->nscopes; s++)
     if (c->scopes[s].name && c->scopes[s].class_id >= 0 && c->scopes[s].is_cmethod && sp_streq(c->scopes[s].name, nm)) return 1;
   return 0;
@@ -3336,8 +3337,8 @@ void build_ie_map(Compiler *c) {
     if (recv < 0) {
       /* receiverless instance_eval/exec inside an instance method: self. */
       cls = ie_implicit_self_class(c, id);
-      if (cls < 0) cls = ie_forward_target(c, ie_receiverless_self_class(c, id), 0, nm, 1);
-      if (cls < 0 && id < c->node_cap) cls = ie_forward_target(c, c->node_cbody[id], 1, nm, 0);
+      if (cls < 0) cls = ie_forward_target(c, id, ie_receiverless_self_class(c, id), 0, nm, 1);
+      if (cls < 0 && id < c->node_cap) cls = ie_forward_target(c, id, c->node_cbody[id], 1, nm, 0);
       if (cls < 0) continue;
     }
     else {
@@ -3360,7 +3361,7 @@ void build_ie_map(Compiler *c) {
       if (ty_is_object(rt) && !sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec")) {
         /* not a direct instance_eval/exec: maybe a trampoline method on `cls`? */
         if (!comp_trampoline_kind(c, cls, nm, NULL)) {
-          cls = ie_forward_target(c, cls, 0, nm, 0);
+          cls = ie_forward_target(c, id, cls, 0, nm, 0);
           if (cls < 0) continue;
         }
       }
@@ -5259,7 +5260,7 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
     /* and in a subclass of a native class, which answers with its bindings
        (#9269) */
     if (ocid >= c->nclasses || (!c->classes[ocid].is_native_class && c->classes[ocid].nsub_root <= 0)) continue;
-    if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;   /* the class's own Ruby method */
+    if (call_target(c, id, ocid, nm, 0, NULL) >= 0) continue;   /* the class's own Ruby method */
     int argc = 0;
     { int an = nt_ref(nt, id, "arguments");
       if (an >= 0) nt_arr(nt, an, "arguments", &argc); }
@@ -5301,7 +5302,7 @@ static int give_exception_self_calls_a_receiver(Compiler *c) {
     Scope *osc = comp_scope_of(c, id);
     int ocid = osc ? osc->class_id : -1;
     if (ocid < 0 || ocid >= c->nclasses || osc->is_cmethod || !class_is_exc_subclass(c, ocid)) continue;
-    if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
+    if (call_target(c, id, ocid, nm, 0, NULL) >= 0) continue;
     int selfn = nt_new_node(nt, "SelfNode");
     if (selfn < 0) continue;
     nt_set_self_receiver(nt, id, selfn);
@@ -5341,8 +5342,8 @@ static int give_object_methods_a_class_self(Compiler *c) {
     if (!nm || module_private_builtin(nm)) continue;
     Scope *osc = comp_scope_of(c, id);
     if (!osc || osc->class_id < 0 || osc->class_id == ob || !osc->is_cmethod) continue;
-    if (comp_cmethod_in_chain(c, osc->class_id, nm, NULL) >= 0) continue;
-    if (comp_method_in_class(c, ob, nm) < 0) continue;
+    if (call_target(c, id, osc->class_id, nm, CT_CMETHOD, NULL) >= 0) continue;
+    if (call_target(c, id, ob, nm, CT_OWN, NULL) < 0) continue;
     int selfn = nt_new_node(nt, "SelfNode");
     if (selfn < 0) continue;
     nt_set_self_receiver(nt, id, selfn);
@@ -5433,15 +5434,15 @@ static int give_self_predicates_a_receiver(Compiler *c) {
       /* or a module the top level includes */
       int inc = 0;
       for (int k = 0; k < c->ntoplevel_includes && !inc; k++)
-        inc = comp_method_in_chain(c, c->toplevel_includes[k], nm, NULL) >= 0;
+        inc = call_target(c, id, c->toplevel_includes[k], nm, 0, NULL) >= 0;
       if (inc) continue;
       /* main's ivars are not the slots an explicit receiver reaches */
       if (strncmp(nm, "instance_variable", 17) == 0) continue;
     } else {
       if (ocid < 0 || osc->is_cmethod) continue;
       if (ocid >= c->nclasses) continue;
-      if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
-      if (comp_method_index(c, nm) >= 0) continue;
+      if (call_target(c, id, ocid, nm, 0, NULL) >= 0) continue;
+      if (call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
     }
     int argc = 0;
     { int an = nt_ref(nt, id, "arguments");
@@ -9137,7 +9138,7 @@ static int pad_unsupplied_params(Compiler *c) {
     if (nt_ref(nt, id, "block") >= 0) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
-    int mi = comp_method_index(c, name);
+    int mi = call_target(c, id, -1, name, CT_TOP, NULL);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
     if (m->rest_idx >= 0 || m->kwrest_idx >= 0 || m->npost_rest > 0) continue;
@@ -9204,7 +9205,7 @@ static int expand_literal_splat_args(Compiler *c) {
       if (!lit) continue; }
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) {
-      if (comp_method_index(c, nm) >= 0 || comp_included_method_index(c, nm, id) >= 0)
+      if (call_target(c, id, -1, nm, CT_TOP, NULL) >= 0 || comp_included_method_index(c, nm, id) >= 0)
         continue;   /* a user method: native splat path */
     }
     else {
@@ -10270,14 +10271,14 @@ static int sbo_call(NodeTable *nt, int recv, const char *name, const int *argv, 
    than Kernel's: the enclosing class's, a top-level def, one on Kernel or
    Object, or one on an instance_eval block's receiver? */
 int std_stream_bare_call_own(Compiler *c, int id, const char *nm) {
-  if (an_bare_call_class_owned(c, id) || comp_method_index(c, nm) >= 0) return 1;
+  if (an_bare_call_class_owned(c, id) || call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) return 1;
   static const char *const roots[] = { "Kernel", "Object", "BasicObject" };
   for (int r = 0; r < 3; r++) {
     int rc = comp_class_index(c, roots[r]);
-    if (rc >= 0 && comp_method_in_chain(c, rc, nm, NULL) >= 0) return 1;
+    if (rc >= 0 && call_target(c, id, rc, nm, 0, NULL) >= 0) return 1;
   }
   int iec = ie_class_of(c, id);
-  return iec >= 0 && comp_method_in_chain(c, iec, nm, NULL) >= 0;
+  return iec >= 0 && call_target(c, id, iec, nm, 0, NULL) >= 0;
 }
 static int desugar_std_stream_bare_output(Compiler *c) {
   if (!std_stream_assigned(c, "$stdout")) return 0;
@@ -10965,7 +10966,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         !nt_int(nt, srecv, "ie_rself", 0)) {   /* a rebindable block's self is whatever instance_exec binds */
       Scope *ssc = comp_scope_of(c, id);
       if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
-          comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
+          call_target(c, id, ssc->class_id, nm, CT_CMETHOD, NULL) >= 0) {
         nt_node_set_ref(nt, id, "receiver", -1);
         *changed = 1;
         return 1;
@@ -11390,7 +11391,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         nt_kind(nt, mrc) == NK_ArrayNode) {
       int user_defines = 0;
       for (int uk = 0; uk < c->nclasses; uk++)
-        if (comp_method_in_chain(c, uk, nm, NULL) >= 0) { user_defines = 1; break; }
+        if (call_target(c, id, uk, nm, 0, NULL) >= 0) { user_defines = 1; break; }
       mrt_open = !user_defines;
     }
     if (sp_streq(nm, "member?") && man == 1 &&
@@ -11529,7 +11530,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
        array: a Struct that defines its own each_with_index or to_a answers
        through its own methods */
     int okc = pcid >= 0 && pcid < c->nclasses;
-    int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
+    int smi = wix && okc ? call_target(c, id, pcid, nm, 0, NULL) : -1;
     int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
     int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0 ||
               (okc && c->classes[pcid].is_struct && struct_has_member(&c->classes[pcid], nm));
@@ -12125,10 +12126,10 @@ static int desugar_method_block_arg(Compiler *c) {
     {
       const char *cn = nt_str(nt, cid, "name");
       if (!cn || nt_ref(nt, cid, "receiver") >= 0) continue;
-      int mi = comp_method_index(c, cn);
+      int mi = call_target(c, cid, -1, cn, CT_TOP, NULL);
       if (mi < 0) {
         Scope *sc = comp_scope_of(c, cid);
-        if (sc && sc->class_id >= 0) mi = comp_method_in_chain(c, sc->class_id, cn, NULL);
+        if (sc && sc->class_id >= 0) mi = call_target(c, cid, sc->class_id, cn, 0, NULL);
       }
       if (mi < 0 || !c->scopes[mi].blk_param || !c->scopes[mi].blk_param[0]) continue;
     }
@@ -12234,7 +12235,7 @@ static int desugar_module_function_call(Compiler *c) {
     if (!nm || anh_find(&mfn_names, nm) < 0) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
-    if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
+    if (call_target(c, id, sc->class_id, nm, CT_CMETHOD, NULL) >= 0) continue;
     /* a local of this name is a variable read, not a call */
     if (scope_local(sc, nm)) continue;
     /* the module whose module_function it is, included by the class or a
@@ -12246,7 +12247,7 @@ static int desugar_module_function_call(Compiler *c) {
     int mod = -1, own = 0;
     for (int k = sc->class_id; k >= 0 && mod < 0 && !own; k = c->classes[k].parent) {
       ClassInfo *cl = &c->classes[k];
-      if (comp_method_in_class(c, k, nm) >= 0 || comp_is_reader(cl, nm)) { own = 1; break; }
+      if (call_target(c, id, k, nm, CT_OWN, NULL) >= 0 || comp_is_reader(cl, nm)) { own = 1; break; }
       for (int j = cl->nincluded_mods - 1; j >= 0 && mod < 0; j--)
         mod = module_function_owner(c, cl->included_mods[j], nm, 0);
     }
@@ -13582,7 +13583,7 @@ static void oa_row_use(Compiler *c, OAS *sl, int S, int rd, const int *par, cons
    slot it is read into is already one. A reader is a method whose body is a
    bare ivar read, which is what both `attr_reader :a` and `def a; @a; end`
    come to. */
-static const char *an_reader_ivar_name(Compiler *c, const char *mname, int cls) {
+static const char *an_reader_ivar_name(Compiler *c, int call, const char *mname, int cls) {
   if (cls < 0 || !mname) return NULL;
   /* attr_reader is synthesized, so it has no scope to read a body out of:
      comp_resolve_member is what knows the name is an attribute, and its
@@ -13597,7 +13598,7 @@ static const char *an_reader_ivar_name(Compiler *c, const char *mname, int cls) 
       }
       return NULL;
     } }
-  int mi = comp_method_in_chain(c, cls, mname, NULL);
+  int mi = call_target(c, call, cls, mname, 0, NULL);
   if (mi < 0) return NULL;
   Scope *m = &c->scopes[mi];
   if (m->body < 0) return NULL;
@@ -13622,7 +13623,7 @@ static void widen_ivars_read_into_poly(Compiler *c) {
     const char *mname = nt_str(nt, v, "name");
     if (!mname) continue;
     int rcls = ty_object_class(rt);
-    const char *ivn = an_reader_ivar_name(c, mname, rcls);
+    const char *ivn = an_reader_ivar_name(c, v, mname, rcls);
     if (!ivn) continue;
     /* the slot being written must already be a poly array: that is what says
        the program puts something in it the ivar's element type cannot hold */
@@ -13656,7 +13657,7 @@ static void widen_ivars_read_into_poly(Compiler *c) {
     if (!ty_is_object(rt)) continue;
     int rcls = ty_object_class(rt);
     const char *rn = nt_str(nt, recv, "name");
-    const char *ivn = rn ? an_reader_ivar_name(c, rn, rcls) : NULL;
+    const char *ivn = rn ? an_reader_ivar_name(c, recv, rn, rcls) : NULL;
     if (!ivn) continue;
     int ivi = comp_ivar_index(&c->classes[rcls], ivn);
     if (ivi < 0) continue;
@@ -13698,7 +13699,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
     if (recv < 0) mi = comp_self_call_mi(c, id, name);
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+      if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
       /* `Held.add(@found)` / `W.new(@found)`: a singleton method (or the
          constructor) shares the ivar's backing storage with its parameter
          exactly like an instance method does, and was the one caller shape
@@ -13709,7 +13710,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
         int rci = comp_class_index(c, nt_str(nt, recv, "name"));
         if (rci >= 0)
           mi = sp_streq(name, "new") ? comp_method_in_chain(c, rci, "initialize", NULL)
-                                     : comp_cmethod_in_chain(c, rci, name, NULL);
+                                     : call_target(c, id, rci, name, CT_CMETHOD, NULL);
       }
     }
     if (mi < 0) continue;
@@ -14963,7 +14964,7 @@ static int narrow_object_arrays(Compiler *c) {
       int i = OA_IVSLOT(rci, ivn);
       /* the synthesized attr_reader only: an explicit `def x; @x; end` is a
          method with a return slot, reached through call_ret in step 4 */
-      if (i >= 0 && comp_method_in_chain(c, rci, nm, NULL) < 0) read_slot[id] = i;
+      if (i >= 0 && call_target(c, id, rci, nm, 0, NULL) < 0) read_slot[id] = i;
     }
   }
 
@@ -15217,7 +15218,7 @@ static int narrow_object_arrays(Compiler *c) {
                (nt_kind(nt, recv) == NK_ConstantReadNode ||
                 nt_kind(nt, recv) == NK_ConstantPathNode)) {
         int rci = comp_class_index(c, nt_str(nt, recv, "name"));
-        oa_tmi = rci >= 0 ? comp_cmethod_in_chain(c, rci, name, NULL) : -1;
+        oa_tmi = rci >= 0 ? call_target(c, id, rci, name, CT_CMETHOD, NULL) : -1;
         /* `T.new(cols)` names no class method -- `new` is implicit -- so the
            lookup above answered -1 and the argument loop below read that as
            "callee unattributable" and killed the caller's slot. The arguments
@@ -15232,7 +15233,7 @@ static int narrow_object_arrays(Compiler *c) {
       else {
         TyKind ort = infer_type(c, recv);
         if (ty_is_object(ort))
-          oa_tmi = comp_method_in_chain(c, ty_object_class(ort), name, NULL);
+          oa_tmi = call_target(c, id, ty_object_class(ort), name, 0, NULL);
         else if (ort == TY_POLY || ort == TY_UNKNOWN || ort == TY_NIL) {
           /* A dynamic receiver may dispatch to ANY same-named instance
              method at runtime (the poly dispatch arms), passing boxed
@@ -15823,7 +15824,7 @@ static void nrar_mark_calls(Compiler *c, int root, Scope *s, const char *nm,
     if (rk == NK_LocalVariableReadNode && mn) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, nm) && comp_scope_of(c, recv) == s &&
-          (comp_method_in_chain(c, cid, mn, NULL) >= 0 ||
+          (call_target(c, root, cid, mn, 0, NULL) >= 0 ||
            comp_reader_in_chain(c, cid, mn, NULL) >= 0))
         comp_set_nilnarrow(c, recv, t);
     }
@@ -16791,7 +16792,7 @@ static void mark_empty_literal_args(Compiler *c) {
        non-string key (`p[i]=v`), which #397 skips as array-ambiguous, leaving
        the param poly so a `[]=` widen drops the mutation on the caller's `{}`.
        A string-keyed direct-index wrapper stays with the precise mechanism. */
-    int mi = comp_method_index(c, nm);
+    int mi = call_target(c, id, -1, nm, CT_TOP, NULL);
     if (mi < 0) {
       unsigned long h = 5381;
       for (const char *p = nm; *p; p++) h = h * 33 + (unsigned char)*p;
@@ -17302,8 +17303,8 @@ static int ekh_memo_literal(Compiler *c, int n, int depth) {
     const char *nm = nt_str(nt, n, "name");
     Scope *s = comp_scope_of(c, n);
     if (!nm || !s || s->class_id < 0) return -1;
-    int mi = s->is_cmethod ? comp_cmethod_in_chain(c, s->class_id, nm, NULL)
-                           : comp_method_in_chain(c, s->class_id, nm, NULL);
+    int mi = s->is_cmethod ? call_target(c, n, s->class_id, nm, CT_CMETHOD, NULL)
+                           : call_target(c, n, s->class_id, nm, 0, NULL);
     if (mi < 0 || mi >= c->nscopes || c->scopes[mi].nparams != 0) return -1;
     int body = c->scopes[mi].body;
     return body >= 0 ? ekh_memo_literal(c, body, depth + 1) : -1;
@@ -18545,7 +18546,7 @@ static int an_call_target_mi(Compiler *c, int id) {
     return mi >= 0 ? mi : an_any_scope_by_name(c, nm);
   }
   TyKind rt = comp_ntype(c, recv);
-  return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), nm, NULL) : -1;
+  return ty_is_object(rt) ? call_target(c, id, ty_object_class(rt), nm, 0, NULL) : -1;
 }
 /* Does the code under `node` append to local `vn` in place, or hand it to a
    parameter that is lent? A spliced yielding method's parameter is lent
@@ -19683,11 +19684,11 @@ static int an_static_self(Compiler *c, int node) {
 /* The ivar a method of class `sc` (a class method when `cm`, else a
    top-level method) reads or memoizes (`def buf = (@buf ||= +"")`), owned
    by the class: the slot a call of it hands out. */
-static const char *an_static_reader_ivar(Compiler *c, int sc, int cm, const char *mn,
+static const char *an_static_reader_ivar(Compiler *c, int call, int sc, int cm, const char *mn,
                                          int *defc, char *buf, size_t cap) {
   if (sc < 0 || !mn) return NULL;
   int owner = sc;
-  int rmi = cm ? comp_cmethod_in_chain(c, sc, mn, &owner) : comp_method_index(c, mn);
+  int rmi = cm ? call_target(c, call, sc, mn, CT_CMETHOD, &owner) : call_target(c, call, -1, mn, CT_TOP, NULL);
   if (rmi < 0) return NULL;
   if (!c->scopes[rmi].is_cmethod && c->scopes[rmi].class_id >= 0) return NULL;
   const char *ivn = an_memo_reader_ivar(c, rmi);
@@ -19715,7 +19716,7 @@ static const char *an_ivar_get_ivar_of(Compiler *c, int node, int *defc, char *b
   TyKind rt = infer_type(c, recv);
   if (!sym || sym[0] != '@' || !ty_is_object(rt)) return NULL;
   int cid = ty_object_class(rt);
-  if (cid < 0 || cid >= c->nclasses || c->classes[cid].is_native_class || comp_method_in_chain(c, cid, nm, NULL) >= 0) return NULL;
+  if (cid < 0 || cid >= c->nclasses || c->classes[cid].is_native_class || call_target(c, node, cid, nm, 0, NULL) >= 0) return NULL;
   /* (a Struct's members are no ivars of CRuby's: a read answers nil) */
   int iv = comp_ivar_index(&c->classes[cid], sym);
   if (iv < 0 || (c->classes[cid].is_struct && iv < c->classes[cid].nmembers)) return NULL;
@@ -19745,14 +19746,14 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
     rcid = ie_receiverless_self_class(c, node);
     if (rcid < 0) {
       Scope *ns = comp_scope_of(c, node);
-      return an_static_reader_ivar(c, an_static_self(c, node), ns && ns->is_cmethod,
+      return an_static_reader_ivar(c, node, an_static_self(c, node), ns && ns->is_cmethod,
                                    nt_str(nt, node, "name"), defc, buf, cap);
     }
   }
   else {
     TyKind rrt = infer_type(c, rrecv);
     if (rrt == TY_CLASS)
-      return an_static_reader_ivar(c, class_recv_static_ci(c, rrecv), 1,
+      return an_static_reader_ivar(c, node, class_recv_static_ci(c, rrecv), 1,
                                    nt_str(nt, node, "name"), defc, buf, cap);
     if (!ty_is_object(rrt)) return NULL;
     rcid = ty_object_class(rrt);
@@ -19764,7 +19765,7 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
     snprintf(buf, cap, "@%s", comp_resolve_alias(c, rcid, mn));
     return buf;
   }
-  int rmi = comp_method_in_chain(c, rcid, mn, defc);
+  int rmi = call_target(c, node, rcid, mn, 0, defc);
   if (rmi < 0) return NULL;
   int last2 = scope_body_last(c, rmi);
   /* a memoizing `def m = (@iv ||= v)` hands out the slot too */
@@ -20038,7 +20039,7 @@ static int an_call_raises(Compiler *c, int node) {
   return node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_ref(nt, node, "receiver") < 0 &&
          nt_str(nt, node, "name") && is_raise_alias(nt_str(nt, node, "name")) &&
          !an_bare_call_class_owned(c, node) &&
-         comp_method_index(c, nt_str(nt, node, "name")) < 0;
+         call_target(c, node, -1, nt_str(nt, node, "name"), CT_TOP, NULL) < 0;
 }
 /* Is the last statement of statement list `st` a shared handle's slot
    (an_arg_is_shared_handle)? */
@@ -24116,7 +24117,7 @@ static int an_hash_src_mi(Compiler *c, int call) {
   if (recv < 0 || !nm || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode))
     return -1;
   int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-  return ci >= 0 ? comp_cmethod_in_chain(c, ci, nm, NULL) : -1;
+  return ci >= 0 ? call_target(c, call, ci, nm, CT_CMETHOD, NULL) : -1;
 }
 /* Each String stored into container hr (a Hash or Array literal, or a
    local's stores) that an appending block reaches: refused with msg at the
@@ -24822,7 +24823,7 @@ static int an_pickup_target(Compiler *c, int wv) {
   if (wr < 0) mi3 = an_unique_scope_by_name(c, mn);
   else {
     int ci = infer_type(c, wr) == TY_CLASS ? class_recv_static_ci(c, wr) : -1;
-    int defc = -1, m2 = ci >= 0 ? comp_cmethod_in_chain(c, ci, mn, &defc) : -1;
+    int defc = -1, m2 = ci >= 0 ? call_target(c, wv, ci, mn, CT_CMETHOD, &defc) : -1;
     mi3 = m2 > 0 && defc == ci && c->scopes[m2].is_cmethod && c->scopes[m2].class_id == ci ? m2 : -1;
   }
   /* (--share-strings: a method answering a box hands no String to pick up;
@@ -24955,7 +24956,7 @@ static int an_tail_recv_answer(Compiler *c, int n) {
   if (rt != TY_STRING && rt != TY_STRBUF) return 0;
   if (bop_share_named(TY_STRING, nm) != BSH_RECV) return 0;
   int si = comp_class_index(c, "String");
-  return si < 0 || comp_method_in_chain(c, si, nm, NULL) < 0;
+  return si < 0 || call_target(c, n, si, nm, 0, NULL) < 0;
 }
 /* Is tail n `x.tap { ... }` on a String no reopening gives a tap, Kernel's
    tap, whose literal block takes no parameter and leaves by no `break`? It
@@ -27263,9 +27264,9 @@ static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
   if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) return 0;
   const char *bc = rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
   int bci = bc ? comp_class_index(c, bc) : -1;
-  if (bci >= 0 && comp_method_in_chain(c, bci, un, NULL) >= 0) return 0;
+  if (bci >= 0 && call_target(c, u, bci, un, 0, NULL) >= 0) return 0;
   int oci = comp_class_index(c, "Object");
-  if (oci >= 0 && comp_method_in_chain(c, oci, un, NULL) >= 0) return 0;
+  if (oci >= 0 && call_target(c, u, oci, un, 0, NULL) >= 0) return 0;
   return 1;
 }
 
@@ -27285,7 +27286,7 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
     const char *cn = nt_str(nt, rc, "name");
     cci = cn ? comp_class_index(c, cn) : -1;
   }
-  if (cci >= 0) { act_add(t, comp_cmethod_in_chain(c, cci, un, NULL)); return; }
+  if (cci >= 0) { act_add(t, call_target(c, u, cci, un, CT_CMETHOD, NULL)); return; }
   /* (a constant that is not a class holds a value: typed below like any
      receiver, so `LAST[0] = s` on an Array constant reaches no user `[]=`
      and promotes none of its String ivars, #8564) */
@@ -27310,7 +27311,7 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
     TyKind rt = infer_type(c, rc);
     if (ty_is_object(rt)) {
       int cid = ty_object_class(rt);
-      act_add(t, comp_method_in_chain(c, cid, un, NULL));
+      act_add(t, call_target(c, u, cid, un, 0, NULL));
       act_add_overrides(c, t, cid, un, 0);
       return;
     }
@@ -27322,8 +27323,8 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
     for (int k = first; k >= 0 && t->want < 0; k = an_same_name_next(c, k)) act_add(t, k);
   /* and every method a class aliases under the name */
   for (int e = ae; e >= 0; e = al_next[e]) {
-    act_add(t, comp_method_in_chain(c, al_cls[e], un, NULL));
-    act_add(t, comp_cmethod_in_chain(c, al_cls[e], un, NULL));
+    act_add(t, call_target(c, u, al_cls[e], un, 0, NULL));
+    act_add(t, call_target(c, u, al_cls[e], un, CT_CMETHOD, NULL));
   }
 }
 
@@ -28423,10 +28424,10 @@ static int param_borrow_attr_read(Compiler *c, int n) {
   if (argc != 0 || recv < 0 || !name || !ty_is_object(c->ntype[recv])) return 0;
   int cid = ty_object_class(c->ntype[recv]), defc = cid;
   if (cid < 0 || cid >= c->nclasses || !comp_reader_in_chain(c, cid, name, &defc)) return 0;
-  if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
+  if (call_target(c, n, cid, name, 0, NULL) >= 0) return 0;
   int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
   for (int d = 0; d < nd && ds; d++)
-    if (comp_method_in_class(c, ds[d], name) >= 0) return 0;
+    if (call_target(c, n, ds[d], name, CT_OWN, NULL) >= 0) return 0;
   return 1;
 }
 
@@ -30064,16 +30065,16 @@ static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int 
   if (ur < 0 || nt_kind(nt, ur) == NK_SelfNode) {
     Scope *encl = comp_scope_of(c, call);
     if (encl && encl->class_id >= 0)
-      mi = encl->is_cmethod ? comp_cmethod_in_chain(c, encl->class_id, un, NULL)
-                            : comp_method_in_chain(c, encl->class_id, un, NULL);
+      mi = encl->is_cmethod ? call_target(c, call, encl->class_id, un, CT_CMETHOD, NULL)
+                            : call_target(c, call, encl->class_id, un, 0, NULL);
   }
   else {
     NodeKind rk = nt_kind(nt, ur);
     TyKind rt = comp_ntype(c, ur);
     int ci = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, ur, "name")
                ? comp_class_index(c, nt_str(nt, ur, "name")) : -1;
-    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, un, NULL);
-    else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), un, NULL);
+    if (ci >= 0) mi = call_target(c, call, ci, un, CT_CMETHOD, NULL);
+    else if (ty_is_object(rt)) mi = call_target(c, call, ty_object_class(rt), un, 0, NULL);
     else if (rt != TY_POLY && rt != TY_UNKNOWN) return 0;
   }
   if (mi >= 0) return dyn_scope_appends_arg(c, mi, call, arg);
@@ -31396,8 +31397,8 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
         int rcls = -1;
         if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) rcls = ty_object_class(comp_ntype(c, recv));
         else { Scope *encl = comp_scope_of(c, v); rcls = encl ? encl->class_id : -1; }
-        if (rcls >= 0 && comp_method_in_chain(c, rcls, nm, NULL) < 0) return 1;
-        if (rcls < 0 && comp_method_index(c, nm) < 0) return 1;
+        if (rcls >= 0 && call_target(c, v, rcls, nm, 0, NULL) < 0) return 1;
+        if (rcls < 0 && call_target(c, v, -1, nm, CT_TOP, NULL) < 0) return 1;
       }
       int any = 0;
       for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
@@ -33703,14 +33704,14 @@ static int fwd_call_target(Compiler *c, int u) {
     /* `new` in a class method builds the class */
     if (sp_streq(nm, "new") && es && es->is_cmethod && es->class_id >= 0)
       return comp_method_in_chain(c, es->class_id, "initialize", NULL);
-    int mi = es && es->class_id >= 0 && !es->is_cmethod ? comp_method_in_chain(c, es->class_id, nm, NULL) : -1;
+    int mi = es && es->class_id >= 0 && !es->is_cmethod ? call_target(c, u, es->class_id, nm, 0, NULL) : -1;
     return mi >= 0 ? mi : an_any_scope_by_name(c, nm);
   }
   TyKind rt = comp_ntype(c, recv);
-  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+  if (ty_is_object(rt)) return call_target(c, u, ty_object_class(rt), nm, 0, NULL);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
     int ci = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
-    return ci >= 0 ? comp_cmethod_in_chain(c, ci, nm, NULL) : -1;
+    return ci >= 0 ? call_target(c, u, ci, nm, CT_CMETHOD, NULL) : -1;
   }
   return -1;
 }
@@ -35079,18 +35080,18 @@ static void check_seed_contradictions(Compiler *c) {
     if (!name) continue;
     int recv = nt_ref(nt, id, "receiver");
     int mi = -1;
-    if (recv < 0) mi = comp_method_index(c, name);
+    if (recv < 0) mi = call_target(c, id, -1, name, CT_TOP, NULL);
     else if (nt_kind(nt, recv) == NK_ConstantReadNode) {
       const char *cn = nt_str(nt, recv, "name");
       int rc = cn ? comp_class_index(c, cn) : -1;
       /* `Mod.m` is a class (singleton) method, which is not in the instance
          chain; fall back to it before giving up. */
-      if (rc >= 0) mi = comp_cmethod_in_chain(c, rc, name, NULL);
-      if (rc >= 0 && mi < 0) mi = comp_method_in_chain(c, rc, name, NULL);
+      if (rc >= 0) mi = call_target(c, id, rc, name, CT_CMETHOD, NULL);
+      if (rc >= 0 && mi < 0) mi = call_target(c, id, rc, name, 0, NULL);
     }
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+      if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
     }
     if (mi < 0 || mi >= c->nscopes) continue;
     Scope *m = &c->scopes[mi];
@@ -35234,7 +35235,7 @@ int file_stat_nil_call(Compiler *c, int v) {
   /* a boxed receiver: only where no class of the program answers the name
      (its dispatch is the IO's) */
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return 0;
+    if (call_target(c, v, k, nm, 0, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return 0;
   return 1;
 }
 
@@ -35360,7 +35361,7 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
     if (rt == TY_POLY) return 1;
     if (ty_is_object(rt)) {
       int cid = ty_object_class(rt);
-      if (comp_method_in_chain(c, cid, nm, NULL) >= 0) return 0;
+      if (call_target(c, v, cid, nm, 0, NULL) >= 0) return 0;
       ClassInfo *ci = &c->classes[cid];
       int iv = comp_ivar_index(ci, sym);
       return iv >= 0 && (!ci->is_struct || iv >= ci->nmembers) &&
@@ -35581,7 +35582,7 @@ static int object_call_ivar(Compiler *c, int call, ClassInfo **out, int *mi) {
     if (cs && cs->class_id >= 0 && !cs->is_cmethod) cid = cs->class_id;
   }
   if (cid < 0) return -1;
-  *mi = comp_method_in_chain(c, cid, nm, NULL);
+  *mi = call_target(c, call, cid, nm, 0, NULL);
   if (*mi > 0) {
     int tail = scope_body_last(c, *mi);
     return tail >= 0 && nt_kind(nt, tail) == NK_InstanceVariableReadNode ?
@@ -36336,7 +36337,7 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     if (!obj_rc && elem_returning_call(nm)) return nested_elem_nilable(c, rc, depth + 1);
     /* a method returning such an array: its own tail decides */
     if (nm && rc < 0) {
-      int mi = comp_method_index(c, nm);
+      int mi = call_target(c, v, -1, nm, CT_TOP, NULL);
       if (mi > 0) return nullable_int_elem_expr(c, scope_body_last(c, mi), depth + 1);
     }
     /* the same through an object receiver (`k.arr`): the method the class
@@ -36671,7 +36672,7 @@ static int ivs_stmt_writes(Compiler *c, int k, int defcls, int w, const char *iv
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       for (int j = 0; av && j < an; j++) if (ivs_subtree_reads(nt, av[j], ivn, 0)) return -1;
       int mdef = -1;
-      int mi = comp_method_in_chain(c, k, nm, &mdef);
+      int mi = call_target(c, w, k, nm, 0, &mdef);
       if (mi >= 0 && !c->scopes[mi].is_cmethod && c->scopes[mi].body >= 0)
         return ivs_body_writes(c, k, mdef, c->scopes[mi].body, ivn, depth + 1);
     }
@@ -37292,7 +37293,7 @@ static int nn_pure_call(Compiler *c, int id) {
      its ivar and runs nothing */
   if (ty_is_object(rt) && nt_ref(nt, id, "arguments") < 0) {
     int k = ty_object_class(rt);
-    return comp_reader_in_chain(c, k, nm, NULL) && comp_method_in_chain(c, k, nm, NULL) < 0;
+    return comp_reader_in_chain(c, k, nm, NULL) && call_target(c, id, k, nm, 0, NULL) < 0;
   }
   return 0;
 }
@@ -38480,7 +38481,7 @@ int nullable_int_value(Compiler *c, int v) {
     int rcv = nt_ref(nt, v, "receiver");
     /* a receiverless call resolves as emission does: the class-method chain
        in a class method, then the instance chain, a top-level def last */
-    int mi = cn && rcv < 0 ? comp_self_call_mi(c, v, cn) : (cn ? comp_method_index(c, cn) : -1);
+    int mi = cn && rcv < 0 ? comp_self_call_mi(c, v, cn) : (cn ? call_target(c, v, -1, cn, CT_TOP, NULL) : -1);
     /* the builtin's own answer: no method of the program is a target */
     if (v == g_nn_builtin_call) return 0;
     if (mi < 0 && cn) {
@@ -38501,15 +38502,15 @@ int nullable_int_value(Compiler *c, int v) {
           if (ivt == TY_FLOAT && !ivar_assigned_in_initialize(c, k, ivb)) return 1;
         }
         /* ... and so does a Struct member's, which is no attr_reader */
-        else if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), cn, NULL) < 0) {
+        else if (ty_is_object(rt) && call_target(c, v, ty_object_class(rt), cn, 0, NULL) < 0) {
           ClassInfo *sci = NULL;
           int sm = struct_member_slot(c, ty_object_class(rt), cn, &sci);
           if (sm >= 0 && sci->ivar_nullable_int[sm]) return 1;
         }
-        if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), cn, NULL);
+        if (ty_is_object(rt)) mi = call_target(c, v, ty_object_class(rt), cn, 0, NULL);
         else if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode) {
           int rci = comp_class_index(c, nt_str(nt, rcv, "name"));
-          if (rci >= 0) mi = comp_cmethod_in_chain(c, rci, cn, NULL);
+          if (rci >= 0) mi = call_target(c, v, rci, cn, CT_CMETHOD, NULL);
         }
         /* the receiver stayed poly, so no single callee resolves -- fall back
            to the runtime dispatch set */
@@ -38520,7 +38521,7 @@ int nullable_int_value(Compiler *c, int v) {
         else if (rt == TY_CLASS) {
           for (int k = 0; k < c->nclasses; k++) {
             if (is_builtin_reopen(c->classes[k].name)) continue;
-            int kmi = comp_cmethod_in_chain(c, k, cn, NULL);
+            int kmi = call_target(c, v, k, cn, CT_CMETHOD, NULL);
             if (kmi >= 0 && c->scopes[kmi].ret_nullable_int) return 1;
           }
         }
@@ -39124,12 +39125,12 @@ static int ps_reached_plainly(Compiler *c, int mi) {
     if (r < 0) t = comp_self_call_mi(c, id, cn);
     else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
       int rc = comp_class_index(c, nt_str(nt, r, "name"));
-      t = rc >= 0 ? comp_cmethod_in_chain(c, rc, cn, NULL) : -1;
+      t = rc >= 0 ? call_target(c, id, rc, cn, CT_CMETHOD, NULL) : -1;
     }
     else {
       TyKind rt = infer_type(c, r);
       if (rt == TY_POLY || rt == TY_UNKNOWN) return 0;
-      if (ty_is_object(rt)) t = comp_method_in_chain(c, ty_object_class(rt), cn, NULL);
+      if (ty_is_object(rt)) t = call_target(c, id, ty_object_class(rt), cn, 0, NULL);
       else continue;   /* a builtin's own method of the name */
     }
     if (t < 0 && r >= 0 && ty_is_object(infer_type(c, r))) return 0;
@@ -39876,11 +39877,11 @@ static int wnh_call_target(Compiler *c, int call) {
   if (r < 0) return comp_self_call_mi(c, call, cn);
   if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
     int rc = comp_class_index(c, nt_str(nt, r, "name"));
-    return rc >= 0 ? comp_cmethod_in_chain(c, rc, cn, NULL) : -1;
+    return rc >= 0 ? call_target(c, call, rc, cn, CT_CMETHOD, NULL) : -1;
   }
   TyKind rt = infer_type(c, r);
   if (rt == TY_POLY || rt == TY_UNKNOWN) return -2;
-  return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), cn, NULL) : -1;
+  return ty_is_object(rt) ? call_target(c, call, ty_object_class(rt), cn, 0, NULL) : -1;
 }
 /* A value of a local the widening retypes is a call of method `mi` or an empty
    Hash literal (`h = first_seen(a) || {}`): the literal is built at the kind
@@ -40986,7 +40987,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           ci = &c->classes[defc >= 0 ? defc : cid];
           iv = comp_ivar_index(ci, ivb);
         }
-        else if (comp_method_in_chain(c, cid, wn, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
+        else if (call_target(c, id, cid, wn, 0, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
         if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
         if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
         { ci->ivar_nullable_int[iv] = 1; comp_touch_class(ci->idx); } changed = 1;
@@ -41195,7 +41196,7 @@ static void mark_nullable_int_locals(Compiler *c) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int recv = nt_ref(nt, id, "receiver");
       int mi = recv < 0 ? comp_self_call_mi(c, id, nt_str(nt, id, "name"))
-                        : comp_method_index(c, nt_str(nt, id, "name"));
+                        : call_target(c, id, -1, nt_str(nt, id, "name"), CT_TOP, NULL);
       /* a bare `new(...)` in a class method or a class body builds an
          instance of that class: initialize's parameters take the nil, as
          `W.new(k)`'s do below (#8572) */
@@ -41208,7 +41209,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (mi < 0 && recv >= 0) {
         TyKind rt = infer_type(c, recv);
         if (ty_is_object(rt))
-          mi = comp_method_in_chain(c, ty_object_class(rt), nt_str(nt, id, "name"), NULL);
+          mi = call_target(c, id, ty_object_class(rt), nt_str(nt, id, "name"), 0, NULL);
         /* a builtin-typed receiver calling a method the program adds to
            Object that no builtin row serves: codegen's Object fallback
            reaches it, so the nil its arguments carry marks it (`12.enc(nil)`) */
@@ -41216,7 +41217,7 @@ static void mark_nullable_int_locals(Compiler *c) {
                  nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode &&
                  nt_str(nt, id, "name")) {
           int oci = comp_class_index(c, "Object");
-          int omi = oci >= 0 ? comp_method_in_class(c, oci, nt_str(nt, id, "name")) : -1;
+          int omi = oci >= 0 ? call_target(c, id, oci, nt_str(nt, id, "name"), CT_OWN, NULL) : -1;
           int ba = nt_ref(nt, id, "arguments"); int bac = 0;
           if (ba >= 0) nt_arr(nt, ba, "arguments", &bac);
           if (omi >= 0 && !bop_find(rt, nt_str(nt, id, "name"), bac, nt_ref(nt, id, "block") >= 0)) mi = omi;
@@ -41226,7 +41227,7 @@ static void mark_nullable_int_locals(Compiler *c) {
              beside the value */
           const char *bcn = builtin_class_of_type(rt);
           int bci = bcn ? comp_class_index(c, bcn) : -1;
-          int bmi = bci >= 0 ? comp_method_in_class(c, bci, nt_str(nt, id, "name")) : -1;
+          int bmi = bci >= 0 ? call_target(c, id, bci, nt_str(nt, id, "name"), CT_OWN, NULL) : -1;
           if (bmi >= 0) mi = bmi;
         }
         /* `W.new(k)` binds initialize's parameters, and `W.build(k)` a class
@@ -41240,7 +41241,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           int rci = comp_class_index(c, nt_str(nt, recv, "name"));
           if (rci >= 0)
             mi = sp_streq(cnm, "new") ? comp_method_in_chain(c, rci, "initialize", NULL)
-                                      : comp_cmethod_in_chain(c, rci, cnm, NULL);
+                                      : call_target(c, id, rci, cnm, CT_CMETHOD, NULL);
         }
       }
       /* `m.call(v)` on a Method, or on the Proc its to_proc made, is the only
@@ -41269,7 +41270,7 @@ static void mark_nullable_int_locals(Compiler *c) {
          and the nil reached a parameter the call never binds (#9193) */
       if (recv < 0 && cn && nt_ref(nt, id, "arguments") >= 0 && self_is_main(c, id))
         for (int k = 0; k < c->ntoplevel_includes; k++) {
-          int tmi = comp_method_in_chain(c, c->toplevel_includes[k], cn, NULL);
+          int tmi = call_target(c, id, c->toplevel_includes[k], cn, 0, NULL);
           if (tmi >= 0 && tmi != mi) changed |= mark_nullable_params_of_call(c, id, tmi);
         }
       /* a class value, boxed or not (`[Q, R].each { |o| o.cm(k: nil) }`),
@@ -41277,7 +41278,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       else if (recv >= 0 && cn && nt_ref(nt, id, "arguments") >= 0 &&
                (infer_type(c, recv) == TY_CLASS || infer_type(c, recv) == TY_POLY)) {
         for (int k = 0; k < c->nclasses; k++) {
-          int cmi = comp_cmethod_in_class(c, k, cn);   /* an inherited one is its definer's */
+          int cmi = call_target(c, id, k, cn, CT_OWN | CT_CMETHOD, NULL);   /* an inherited one is its definer's */
           if (cmi >= 0) changed |= mark_nullable_params_of_call(c, id, cmi);
         }
       }
@@ -42335,7 +42336,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
        variadic names' NotImplementedError */
     if (urest) { mhi = hi; hi = 8; }
   }
-  int idx = (is_string_index(cnm)) && comp_method_index(c, cnm) < 0;
+  int idx = (is_string_index(cnm)) && call_target(c, id, -1, cnm, CT_TOP, NULL) < 0;
   for (int si = 0; idx && si < c->nscopes; si++)
     if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm)) idx = 0;
   int fixed = argc - 1;
@@ -42674,7 +42675,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
        expanding its splat to the builtin's arity handed it one element where
        the program passed none: `count(*[])` answered 1 (#4298). A call with a
        receiver still reaches the builtin, so only the bare form declines. */
-    if (nt_ref(nt, id, "receiver") < 0 && comp_method_index(c, cnm) >= 0) continue;
+    if (nt_ref(nt, id, "receiver") < 0 && call_target(c, id, -1, cnm, CT_TOP, NULL) >= 0) continue;
     /* Nor is `File.delete(*paths)` the listed `delete` (Hash#delete's): it
        takes any number of paths, and its File arm spreads a lone splat */
     if (argc == 1 && sp_streq(cnm, "delete")) {
@@ -44272,10 +44273,10 @@ static int ctor_graph_target(Compiler *c, int id) {
       if (t < 0 && ci >= 0) t = comp_method_in_chain(c, ci, "initialize", NULL);
     }
     else if (recv < 0 || rk == NK_SelfNode) t = comp_self_call_mi(c, id, name);
-    else if (ci >= 0) t = comp_cmethod_in_chain(c, ci, name, NULL);
+    else if (ci >= 0) t = call_target(c, id, ci, name, CT_CMETHOD, NULL);
     else {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) t = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+      if (ty_is_object(rt)) t = call_target(c, id, ty_object_class(rt), name, 0, NULL);
     }
   }
   else t = super_reach(c, &c->scopes[c->nscope[id]]);
@@ -44901,7 +44902,7 @@ static void rewrite_array_subclass_self_call(Compiler *c, int id) {
   int k = s->class_id;
   /* a method of the builtin's reopen is the builtin's, called on self boxed */
   int dc = -1, ro = comp_arysub_reopen(c, k);
-  if ((comp_method_in_chain(c, k, nm, &dc) >= 0 && (ro < 0 || dc != ro)) ||
+  if ((call_target(c, id, k, nm, 0, &dc) >= 0 && (ro < 0 || dc != ro)) ||
       comp_reader_in_chain(c, k, nm, NULL)) return;
   if (!comp_arysub_builtin_name(c, k, nm)) return;
   int self = arysub_node(c, "SelfNode", id);
@@ -44926,7 +44927,7 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
     Scope *s = comp_scope_of(c, id);
     if (s && s->is_cmethod) k = s->class_id;
   }
-  if (k < 0 || comp_ary_root(c, k) < 0 || comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return;
+  if (k < 0 || comp_ary_root(c, k) < 0 || call_target(c, id, k, nm, CT_CMETHOD, NULL) >= 0) return;
   int brackets = sp_streq(nm, "[]");
   /* String has no `[]` of its own class: X[...] is a NoMethodError */
   if (brackets && comp_ary_is_str(c, k)) return;
@@ -45008,7 +45009,7 @@ static void arysub_builtin_alias_recv_call(Compiler *c, int id) {
        Hash#empty?, which HashWithIndifferentAccess does not redefine) the
        alias by name is the builtin's */
     int dc = -1, ro = comp_arysub_reopen(c, k);
-    if (comp_method_in_chain(c, k, rn, &dc) < 0 || dc == ro) continue;
+    if (call_target(c, id, k, rn, 0, &dc) < 0 || dc == ro) continue;
     char msg[400];
     snprintf(msg, sizeof msg, "calling `%s`, an alias of %s#%s in %s, on a receiver is not supported "
              "yet (it would run the class's own `%s`); call it without a receiver inside the class",
@@ -45540,7 +45541,7 @@ static int iter_disc_self_targets(Compiler *c, int n, int *out, int cap) {
   for (int cid = 0; cid < c->nclasses; cid++) {
     if (!c->classes[cid].instantiated && !c->classes[cid].is_builtin_const) continue;
     if (comp_method_in_chain(c, cid, cur->name, NULL) != ci) continue;
-    int mi = comp_method_in_chain(c, cid, nm, NULL);
+    int mi = call_target(c, n, cid, nm, 0, NULL);
     /* (a class with none raises NoMethodError, unless method_missing answers) */
     if (mi < 0) {
       if (comp_method_in_chain(c, cid, "method_missing", NULL) >= 0) return -1;
@@ -48136,7 +48137,7 @@ static void an_phase_block_inline(Compiler *c) {
       char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
       if (comp_ivar_index(&c->classes[s->class_id], mn) >= 0) continue;
       /* a user method of that name is dispatched directly, not as self.builtin */
-      if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
+      if (call_target(c, id, s->class_id, nm, 0, NULL) >= 0) continue;
       int sid = nt_new_node(ntm, "SelfNode");
       nt_set_self_receiver(ntm, id, sid);
       if (npend == cap) { cap = cap ? cap * 2 : 8;
@@ -48244,11 +48245,11 @@ static void an_phase_block_inline(Compiler *c) {
       int fmi = -1;
       int frecv = nt_ref(c->nt, p, "receiver");
       if (frecv < 0) {
-        fmi = comp_method_index(c, fn);
+        fmi = call_target(c, p, -1, fn, CT_TOP, NULL);
         Scope *fs = comp_scope_of(c, p);
         if (fmi < 0 && fs && fs->class_id >= 0)
-          fmi = fs->is_cmethod ? comp_cmethod_in_chain(c, fs->class_id, fn, NULL)
-                               : comp_method_in_chain(c, fs->class_id, fn, NULL);
+          fmi = fs->is_cmethod ? call_target(c, p, fs->class_id, fn, CT_CMETHOD, NULL)
+                               : call_target(c, p, fs->class_id, fn, 0, NULL);
       }
       else {
         /* `h.store(&b)`: an object receiver resolves through its class, and a
@@ -48257,11 +48258,11 @@ static void an_phase_block_inline(Compiler *c) {
            harmless -- the block was inlined and its captures never celled
            (#3783). */
         TyKind frt = infer_type(c, frecv);
-        if (ty_is_object(frt)) fmi = comp_method_in_chain(c, ty_object_class(frt), fn, NULL);
+        if (ty_is_object(frt)) fmi = call_target(c, p, ty_object_class(frt), fn, 0, NULL);
         else if (nt_kind(c->nt, frecv) == NK_ConstantReadNode ||
                  nt_kind(c->nt, frecv) == NK_ConstantPathNode) {
           int fci = comp_class_index(c, nt_str(c->nt, frecv, "name"));
-          if (fci >= 0) fmi = comp_cmethod_in_chain(c, fci, fn, NULL);
+          if (fci >= 0) fmi = call_target(c, p, fci, fn, CT_CMETHOD, NULL);
           /* `Klass.new(&b)` with no `def self.new` hands the block to
              initialize, which may store it */
           if (fci >= 0 && fmi < 0 && sp_streq(fn, "new"))
@@ -52245,7 +52246,7 @@ static void an_phase_storage(Compiler *c) {
     if (cls2 < 0) continue;
     int is_ie2 = is_instance_eval_family(nm2);
     if (is_ie2) {
-      if (comp_method_in_chain(c, cls2, nm2, NULL) >= 0) continue;
+      if (call_target(c, id, cls2, nm2, 0, NULL) >= 0) continue;
     }
     else if (!comp_trampoline_kind(c, cls2, nm2, NULL)) continue;
     int bdy2 = nt_ref(c->nt, blk2, "body");
@@ -53437,7 +53438,7 @@ static void an_phase_reconcile_check(Compiler *c) {
          receiver being exactly this class: a subclass that inherits the method
          unchanged calls this very scope, and its call was left at the old type */
       if (!hits && ty_is_object(rt))
-        hits = comp_method_in_chain(c, ty_object_class(rt), cn, NULL) == s;
+        hits = call_target(c, cid, ty_object_class(rt), cn, 0, NULL) == s;
       /* `Klass.m` / `obj.class.m`: a class-method call reaching this scope. */
       if (!hits && rt == TY_CLASS && sc->is_cmethod) {
         int rci = -1;
@@ -53449,7 +53450,7 @@ static void an_phase_reconcile_check(Compiler *c) {
           TyKind rot = robj >= 0 ? c->ntype[robj] : TY_UNKNOWN;
           if (ty_is_object(rot)) rci = ty_object_class(rot);
         }
-        if (rci >= 0) hits = comp_cmethod_in_chain(c, rci, cn, NULL) == s;
+        if (rci >= 0) hits = call_target(c, cid, rci, cn, CT_CMETHOD, NULL) == s;
       }
       if (!hits) continue;
       if (c->ntype[cid] != TY_UNKNOWN && c->ntype[cid] != TY_VOID && c->ntype[cid] != TY_POLY) {

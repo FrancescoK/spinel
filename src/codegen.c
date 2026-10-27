@@ -3998,7 +3998,7 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
   }
   if (!g_cm_selfcls) return 0;
   if (g_cm_selfcls[si] >= 0) return g_cm_selfcls[si];
-  int ans = class_reopen_cmethod(c, -1, s->name) == si, has_desc = 0;
+  int ans = class_reopen_cmethod(c, -1, -1, s->name) == si, has_desc = 0;
   for (int k = 0; k < c->nclasses && !has_desc && !ans; k++)
     if (k != s->class_id && is_descendant(c, k, s->class_id)) has_desc = 1;
   if (has_desc) {
@@ -4044,7 +4044,7 @@ static char g_cls_tok[64];
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b) {
   if (!cmethod_takes_self_cls(c, mi)) return "";
   int rc = recv_cls >= 0 || recv_cls <= -100 ? recv_cls : c->scopes[mi].class_id;
-  if (rc == c->scopes[mi].class_id && class_reopen_cmethod(c, -1, c->scopes[mi].name) == mi) rc = builtin_class_id("Class");
+  if (rc == c->scopes[mi].class_id && class_reopen_cmethod(c, -1, -1, c->scopes[mi].name) == mi) rc = builtin_class_id("Class");
   buf_printf(b, "((sp_Class){%d, NULL})", rc);
   g_cls_tok_mi = mi;
   snprintf(g_cls_tok, sizeof g_cls_tok, "((sp_Class){%d, NULL})", rc);

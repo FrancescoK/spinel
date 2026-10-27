@@ -6441,7 +6441,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
         int mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
         if (mi >= 0) { *out = an_user_call(c, id, mi, UC_CMETH, ci); return 1; }
       }
-      int rmi = class_reopen_cmethod(c, recv, name);
+      int rmi = class_reopen_cmethod(c, id, recv, name);
       if (rmi >= 0) { *out = an_user_call(c, id, rmi, UC_CMETH, c->scopes[rmi].class_id); return 1; }
     }
     /* obj.class.cmeth(...) -> unify class method return types across hierarchy */

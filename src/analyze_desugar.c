@@ -158,11 +158,11 @@ int desugar_builtin_class_var_recv(Compiler *c) {
    bubbletea gem's `Bubbletea.exec(callable)` is its module's; a bare `exec`
    in another class is still Kernel#exec. */
 static int bare_call_reaches_own(Compiler *c, int id, const char *name) {
-  if (comp_method_index(c, name) >= 0) return 1;
+  if (call_target(c, id, -1, name, CT_TOP, NULL) >= 0) return 1;
   Scope *sc = comp_scope_of(c, id);
   if (!sc || sc->class_id < 0) return 0;
-  return (sc->is_cmethod ? comp_cmethod_in_chain(c, sc->class_id, name, NULL)
-                         : comp_method_in_chain(c, sc->class_id, name, NULL)) >= 0;
+  return (sc->is_cmethod ? call_target(c, id, sc->class_id, name, CT_CMETHOD, NULL)
+                         : call_target(c, id, sc->class_id, name, 0, NULL)) >= 0;
 }
 
 /* Kernel#spawn and Kernel#exec are Process.spawn and Process.exec: a
@@ -259,7 +259,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
       int argc = 0, an = nt_ref(nt, id, "arguments");
       if (an >= 0) nt_arr(nt, an, "arguments", &argc);
       if (!in_cmethod || argc != want || nt_ref(nt, id, "block") >= 0) continue;
-      if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0 || comp_method_index(c, nm) >= 0) continue;
+      if (call_target(c, id, sc->class_id, nm, CT_CMETHOD, NULL) >= 0 || call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
     }
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
@@ -300,9 +300,9 @@ int desugar_ie_bare_object_calls(Compiler *c) {
        round. A top-level def of the name is left alone, and so is a
        Hash subclass's store, which has no arm on self there (it stays
        refused). */
-    int builtin = !hit && comp_method_index(c, nm) < 0 && comp_arysub_name_is_array(c, cls, nm) &&
+    int builtin = !hit && call_target(c, id, -1, nm, CT_TOP, NULL) < 0 && comp_arysub_name_is_array(c, cls, nm) &&
                   !(ty_is_hash(comp_ary_kind(c, cls)) && is_store_alias(nm));
-    if (!builtin && (!hit || comp_method_in_chain(c, cls, nm, NULL) >= 0)) continue;
+    if (!builtin && (!hit || call_target(c, id, cls, nm, 0, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
@@ -330,7 +330,7 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (nt_ref(nt, id, "receiver") >= 0 || id >= c->node_cap) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || comp_method_in_class(c, obj, nm) < 0) continue;
+    if (!nm || call_target(c, id, obj, nm, CT_OWN, NULL) < 0) continue;
     /* in a class body self is the class, and in an instance_eval block
        the receiver */
     Scope *sc = comp_scope_of(c, id);
@@ -340,11 +340,11 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
     if (cls >= 0) {
       int dn = c->classes[cls].def_node;
       if (cls == obj || (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode)) continue;
-      if (comp_method_in_chain(c, cls, nm, NULL) >= 0) continue;
+      if (call_target(c, id, cls, nm, 0, NULL) >= 0) continue;
     }
     /* at the top level self is main, an Object; a top-level `def` of the
        name is the one the bare call means */
-    else if (comp_method_index(c, nm) >= 0) continue;
+    else if (call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
@@ -365,7 +365,7 @@ int desugar_descendant_reader_calls(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     Scope *sc = comp_scope_of(c, id);
     if (!nm || !sc || !sc->name || sc->is_cmethod || sc->class_id < 0) continue;
-    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0 || comp_reader_in_chain(c, sc->class_id, nm, NULL)) continue;
+    if (call_target(c, id, sc->class_id, nm, 0, NULL) >= 0 || comp_reader_in_chain(c, sc->class_id, nm, NULL)) continue;
     int nd = 0, hit = 0;
     const int *ds = comp_descendants(c, sc->class_id, &nd);
     for (int i = 0; i < nd && !hit; i++) hit = comp_reader_in_chain(c, ds[i], nm, NULL);
@@ -2886,8 +2886,8 @@ int desugar_reopen_implicit_self(Compiler *c) {
     if (!cn || !(boxed_any || is_range_or_time_class(cn) ||
                  io_family_class(c, sc->class_id) || sp_streq(cn, "Class") ||
                  sp_streq(cn, "Array") || sp_streq(cn, "Hash"))) continue;
-    if (!boxed_any && comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
-    if (comp_method_index(c, nm) >= 0) continue;                            /* a top-level def */
+    if (!boxed_any && call_target(c, id, sc->class_id, nm, 0, NULL) >= 0) continue;   /* the reopen's own */
+    if (call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;                            /* a top-level def */
     /* the `self` a call was tried on is kept on the call and tried again the
        next round: a new one each round grew the program every round, and
        --share-strings, waiting for the types to hold still, saw them move
@@ -2942,7 +2942,7 @@ int desugar_handle_reopen_self_recv(Compiler *c) {
     const char *cn = c->classes[s->class_id].name;
     if (!cn || (!sp_streq(cn, "Thread") && !sp_streq(cn, "Fiber") &&
                 !is_builtin_exception_name(cn))) continue;
-    if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
+    if (call_target(c, id, s->class_id, nm, 0, NULL) >= 0) continue;
     /* `Kernel.raise` written so, its receiver dropped (desugar_kernel_recv):
        Kernel's function, not the handle's method of the name */
     if (nt_int(nt, id, "kernel_recv", 0)) continue;
@@ -4344,11 +4344,12 @@ int send_def_just_supers(Compiler *c, int mi) {
 }
 
 /* Does the chain of class `cid` (its singleton chain when `cm`) reach a method
-   `name` of the program's own, past the ones that only call super? */
-static int send_own_in_chain(Compiler *c, int cid, const char *name, int cm) {
+   `name` of the program's own, past the ones that only call super, for call
+   `call`? */
+static int send_own_in_chain(Compiler *c, int call, int cid, const char *name, int cm) {
   while (cid >= 0) {
     int dc = -1;
-    int mi = cm ? comp_cmethod_in_chain(c, cid, name, &dc) : comp_method_in_chain(c, cid, name, &dc);
+    int mi = cm ? call_target(c, call, cid, name, CT_CMETHOD, &dc) : call_target(c, call, cid, name, 0, &dc);
     if (mi < 0) return 0;
     if (!send_def_just_supers(c, mi)) return 1;
     cid = dc >= 0 ? c->classes[dc].parent : -1;
@@ -4385,15 +4386,15 @@ static int send_family_user_answers(Compiler *c, int id, int recv, const char *n
   if (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode) {
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0) return 0;
-    return send_own_in_chain(c, sc->class_id, name, sc->is_cmethod);
+    return send_own_in_chain(c, id, sc->class_id, name, sc->is_cmethod);
   }
   TyKind rt = infer_type(c, recv);
-  if (ty_is_object(rt)) return send_own_in_chain(c, ty_object_class(rt), name, 0);
+  if (ty_is_object(rt)) return send_own_in_chain(c, id, ty_object_class(rt), name, 0);
   if (rt == TY_POLY || rt == TY_UNKNOWN) return 1;
   /* a builtin receiver: the program's only through a reopening of its class */
   const char *bcls = builtin_class_of_type(rt);
   int bci = bcls ? comp_class_index(c, bcls) : -1;
-  return bci >= 0 && send_own_in_chain(c, bci, name, 0);
+  return bci >= 0 && send_own_in_chain(c, id, bci, name, 0);
 }
 
 int desugar_implicit_send(Compiler *c) {
@@ -6269,7 +6270,7 @@ static int dsend_recv_local_ok(Compiler *c, const NodeTable *nt, int n, int *run
   case NK_CallNode: {
     const char *nm = nt_str(nt, n, "name");
     *runs = 1;
-    return nm && comp_method_index(c, nm) >= 0;
+    return nm && call_target(c, n, -1, nm, CT_TOP, NULL) >= 0;
   }
   case NK_ParenthesesNode: case NK_StatementsNode: {
     int body = nt_kind(nt, n) == NK_ParenthesesNode ? nt_ref(nt, n, "body") : n;
@@ -6345,7 +6346,7 @@ static int dsend_recv_unsettled(Compiler *c, int n, int depth) {
     const char *nm = nt_str(nt, n, "name");
     int r = nt_ref(nt, n, "receiver");
     if (nm && (sp_streq(nm, "[]") || sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample")) &&
-        r >= 0 && comp_method_index(c, nm) < 0)
+        r >= 0 && call_target(c, n, -1, nm, CT_TOP, NULL) < 0)
       return dsend_recv_unsettled(c, r, depth + 1);
     return infer_type(c, n) == TY_UNKNOWN;
   }
@@ -7570,7 +7571,7 @@ int desugar_unused_block_arg(Compiler *c) {
     if (!unused_block_read(rt, nm)) continue;
     const char *cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : "String";
     int ci = comp_class_index(c, cn);
-    int mi = ci >= 0 ? comp_method_in_chain(c, ci, nm, NULL) : -1;
+    int mi = ci >= 0 ? call_target(c, id, ci, nm, 0, NULL) : -1;
     if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
         !nt_int(nt, c->scopes[mi].def_node, "node_bi", 0)) continue;
     nt_node_set_ref(nt, id, "block", -1);
@@ -7658,7 +7659,7 @@ int cow_user_block_value(Compiler *c, const int *parent, int id) {
   const char *bn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   if (!bn) return 0;
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, bn, NULL) >= 0) return 1;
+    if (call_target(c, call, k, bn, 0, NULL) >= 0) return 1;
   return 0;
 }
 
@@ -7698,7 +7699,7 @@ int desugar_call_op_write(Compiler *c) {
     wname = setter_name_of(attr);
     int has_def_writer = 0;
     for (int k = 0; k < c->nclasses && !has_def_writer; k++)
-      if (comp_method_in_chain(c, k, wname, NULL) >= 0 || comp_method_in_chain(c, k, attr, NULL) >= 0) has_def_writer = 1;
+      if (call_target(c, id, k, wname, 0, NULL) >= 0 || call_target(c, id, k, attr, 0, NULL) >= 0) has_def_writer = 1;
     free(aname);
     aname = name_dup(attr);
     /* attr_writer: keep the store, unless something reads the op-assign's
@@ -7850,8 +7851,8 @@ int desugar_call_or_write_reopen(Compiler *c) {
     if (rt == TY_POLY || rt == TY_CLASS || native_pair) has_def_writer = has_def_reader = 1;
     for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
       if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
-      if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;
-      if (comp_method_in_chain(c, q, attr, NULL) >= 0) has_def_reader = 1;
+      if (call_target(c, id, q, wname, 0, NULL) >= 0) has_def_writer = 1;
+      if (call_target(c, id, q, attr, 0, NULL) >= 0) has_def_reader = 1;
     }
     if (!has_def_writer || !has_def_reader) continue;
     char tname[48]; snprintf(tname, sizeof tname, "__cow_%s", comp_node_tag(c, id));
@@ -7914,7 +7915,7 @@ int desugar_main_self_call(Compiler *c) {
        which the rebinding machinery serves; bare, it was refused */
     if (recv < 0 && nt_ref(nt, id, "block") >= 0 &&
         (is_instance_eval_family(name)) &&
-        comp_method_index(c, name) < 0 && self_is_main(c, id)) {
+        call_target(c, id, -1, name, CT_TOP, NULL) < 0 && self_is_main(c, id)) {
       int sn = nt_new_node(nt, "SelfNode");
       if (sn < 0) continue;
       nt_set_self_receiver(nt, id, sn);
@@ -7928,7 +7929,7 @@ int desugar_main_self_call(Compiler *c) {
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     if (nt_safe_nav(nt, id)) continue;
     if (!self_is_main(c, recv) || nt_int(nt, recv, "ie_self", 0)) continue;
-    if (comp_method_index(c, name) < 0) continue;   /* no top-level def */
+    if (call_target(c, id, -1, name, CT_TOP, NULL) < 0) continue;   /* no top-level def */
     if (!nt_ignore_visibility(nt, id) && !nt_str(nt, id, "send_blind") &&
         !nt_str(nt, id, "vis_enforce") && !cplan_has_method_missing(c, id, -1, 0)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -7961,7 +7962,7 @@ int desugar_cmethod_cvar_reflection(Compiler *c) {
     Scope *s = comp_scope_of(c, id);
     if (!s || !s->is_cmethod || s->class_id < 0 || ie_class_of(c, id) != -1) continue;
     int cid = s->class_id;
-    if (comp_cmethod_in_chain(c, cid, name, NULL) >= 0) continue;
+    if (call_target(c, id, cid, name, CT_CMETHOD, NULL) >= 0) continue;
     int inherited = 0;
     for (int k = 0; k < c->nclasses && !inherited; k++) inherited = c->classes[k].parent == cid;
     if (inherited) continue;
@@ -9279,11 +9280,11 @@ static int program_defines_object_method_named(Compiler *c, const char *name) {
   }
   return 0;
 }
-/* May a call of `name` on a receiver of type rt reach a method the program
-   defines? For a program object, its class's chain; for a builtin, the
+/* May call `call`, of `name` on a receiver of type rt, reach a method the
+   program defines? For a program object, its class's chain; for a builtin, the
    program's reopening of it; for either, a method every object answers.
    A receiver of no single class asks the whole program. */
-static int recv_may_reach_program_method(Compiler *c, TyKind rt, const char *name) {
+static int recv_may_reach_program_method(Compiler *c, int call, TyKind rt, const char *name) {
   int k = -1;
   if (ty_is_object(rt)) k = ty_object_class(rt);
   else {
@@ -9291,7 +9292,7 @@ static int recv_may_reach_program_method(Compiler *c, TyKind rt, const char *nam
     if (!bn) return program_defines_method_named(c, name);
     k = comp_class_index(c, bn);
   }
-  if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  if (k >= 0 && call_target(c, call, k, name, 0, NULL) >= 0) return 1;
   return program_defines_object_method_named(c, name);
 }
 
@@ -9446,7 +9447,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       pty[0] = TY_INT;
     }
     else if ((sp_streq(name, "tap") || sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
-             rt != TY_UNKNOWN && !recv_may_reach_program_method(c, rt, name)) {
+             rt != TY_UNKNOWN && !recv_may_reach_program_method(c, id, rt, name)) {
       /* Kernel#tap / #then hand the receiver itself to the block: any
          receiver, a program object's included. Left as `&b`, no arm took
          the forward and the call raised NoMethodError. Not where the
@@ -9455,7 +9456,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       pty[0] = rt;
     }
     else if (sp_streq(name, "synchronize") && (rt == TY_MUTEX || rt == TY_POLY) &&
-             !recv_may_reach_program_method(c, rt, name)) {
+             !recv_may_reach_program_method(c, id, rt, name)) {
       /* Mutex#synchronize and Monitor#synchronize yield nothing and answer
          the block's value. Their arm runs a literal block's body under the
          lock and has no proc form, so `m.synchronize(&block)` locked, ran
@@ -14033,7 +14034,7 @@ int desugar_builtin_scalar_calls(Compiler *c) {
     if (bx == SP_BX_COMPARABLE) {
       const char *concrete = rt == TY_FLOAT ? "Float" : "Integer";
       int cci = comp_class_index(c, concrete);
-      if (cci >= 0 && comp_method_in_chain(c, cci, name, NULL) >= 0) continue;
+      if (cci >= 0 && call_target(c, id, cci, name, 0, NULL) >= 0) continue;
     }
     /* Which def `copy` clones -- the spliced generic, or a program's own
        reopen -- was already decided in desugar_builtin_scalar_defs' name
@@ -16348,7 +16349,7 @@ int desugar_builtin_alias_calls(Compiler *c) {
       if (s && !s->is_cmethod) k = s->class_id;
     }
     if (k < 0 || k >= c->nclasses) continue;
-    int mi = comp_method_in_chain(c, k, nm, NULL);
+    int mi = call_target(c, id, k, nm, 0, NULL);
     if (mi < 0 || c->scopes[mi].def_node < 0) continue;
     const char *od = nt_str(nt, c->scopes[mi].def_node, "alias_of_builtin");
     if (!od || comp_method_in_chain(c, k, od, NULL) >= 0) continue;
@@ -21868,9 +21869,9 @@ static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int 
    the reader still called first, as Ruby evaluates the receiver first, and
    the store then made into the object it answered. Arguments that write the
    ivar themselves would make the two differ, and keep the call as written. */
-static const char *rdw_reader_ivar(Compiler *c, int cls, int cmeth, const char *mname) {
+static const char *rdw_reader_ivar(Compiler *c, int call, int cls, int cmeth, const char *mname) {
   const NodeTable *nt = c->nt;
-  int mi = cmeth ? comp_cmethod_in_chain(c, cls, mname, NULL) : comp_method_in_chain(c, cls, mname, NULL);
+  int mi = cmeth ? call_target(c, call, cls, mname, CT_CMETHOD, NULL) : call_target(c, call, cls, mname, 0, NULL);
   if (mi < 0) {
     if (cmeth) return NULL;
     int def_cls = -1, mix = -1;
@@ -21886,7 +21887,7 @@ static const char *rdw_reader_ivar(Compiler *c, int cls, int cmeth, const char *
   /* no class below this one answers the name otherwise */
   for (int k = 0; k < c->nclasses; k++) {
     if (k == m->class_id || !is_descendant(c, k, m->class_id)) continue;
-    if ((cmeth ? comp_cmethod_in_class : comp_method_in_class)(c, k, mname) >= 0) return NULL;
+    if (call_target(c, call, k, mname, cmeth ? CT_OWN | CT_CMETHOD : CT_OWN, NULL) >= 0) return NULL;
   }
   int n = 0; const int *st = nt_arr(nt, m->body, "body", &n);
   if (n != 1 || !st) return NULL;
@@ -21923,7 +21924,7 @@ int desugar_reader_index_write(Compiler *c) {
     const char *rn = nt_str(nt, recv, "name");
     Scope *sc = comp_scope_of(c, id);
     if (!rn || !sc || sc->class_id < 0) continue;
-    const char *iv = rdw_reader_ivar(c, sc->class_id, sc->is_cmethod, rn);
+    const char *iv = rdw_reader_ivar(c, recv, sc->class_id, sc->is_cmethod, rn);
     if (!iv) continue;
     char ivn[128]; snprintf(ivn, sizeof ivn, "%s", iv);
     int args = nt_ref(nt, id, "arguments");
@@ -23211,7 +23212,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
         ci = self_ci;
       else continue;
       if (!ffi_cls_is_lib(c, ci)) continue;
-      if (comp_cmethod_in_chain(c, ci, name, NULL) >= 0) continue;
+      if (call_target(c, id, ci, name, CT_CMETHOD, NULL) >= 0) continue;
       if (ffi_sclass_defines(c, ci, name)) continue;
       /* a nested class or constant written as a call (`Mod::Name`) is not one */
       if (name[strlen(name) - 1] == '=') continue;
@@ -23226,23 +23227,23 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
       changed = 1;
     }
     else {
-      if (comp_method_index(c, name) >= 0) continue;
+      if (call_target(c, id, -1, name, CT_TOP, NULL) >= 0) continue;
       int bk = body_cls ? body_cls[id] : -1;
       int obj = comp_class_index(c, "Object");
       if (bk >= 0) {
         /* a class-body statement: self is the class */
-        if (comp_cmethod_in_chain(c, bk, name, NULL) >= 0) continue;
+        if (call_target(c, id, bk, name, CT_CMETHOD, NULL) >= 0) continue;
         if (ffi_sclass_defines(c, bk, name)) continue;
       }
       else if (s && s->is_cmethod && s->class_id >= 0) {
-        if (comp_cmethod_in_chain(c, s->class_id, name, NULL) >= 0) continue;
+        if (call_target(c, id, s->class_id, name, CT_CMETHOD, NULL) >= 0) continue;
         if (ffi_sclass_defines(c, s->class_id, name)) continue;
       }
       else if (s && s->class_id >= 0) {
-        if (comp_method_in_chain(c, s->class_id, name, NULL) >= 0 ||
+        if (call_target(c, id, s->class_id, name, 0, NULL) >= 0 ||
             comp_reader_in_chain(c, s->class_id, name, NULL)) continue;
       }
-      if (obj >= 0 && comp_method_in_chain(c, obj, name, NULL) >= 0) continue;
+      if (obj >= 0 && call_target(c, id, obj, name, 0, NULL) >= 0) continue;
       Scope *reach_s = s;
       Scope body_s;
       int reach_ci = bk == -2 && (!s || s->class_id < 0) ? c->node_cbody[id] : bk;

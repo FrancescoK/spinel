@@ -240,7 +240,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       return bn > 0 && oint_kind(comp_ntype(c, bs[bn - 1]));
     }
     if ((sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec")) && blk >= 0 &&
-        ty_is_object(iert) && comp_method_in_chain(c, ty_object_class(iert), nm, NULL) < 0 &&
+        ty_is_object(iert) && call_target(c, node, ty_object_class(iert), nm, 0, NULL) < 0 &&
         nt_kind(nt, blk) == NK_BlockNode) {
       int bb = nt_ref(nt, blk, "body");
       int bn = 0; const int *bs = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
@@ -270,7 +270,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     else if (ty_is_object(rt)) {
       int cid = ty_object_class(rt);
       int mdef = -1, rdef = -1;
-      mi = comp_method_in_chain(c, cid, nm, &mdef);
+      mi = call_target(c, node, cid, nm, 0, &mdef);
       /* an attr reader is its ivar's read: the ivar's oint when the ivar
          carries a nil bit, the plain field otherwise (whatever the reader's
          own return mark says: the field has no other form) -- unless a
@@ -282,7 +282,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     }
     else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
       int rci = comp_class_index(c, nt_str(nt, r, "name"));
-      if (rci >= 0) mi = comp_cmethod_in_chain(c, rci, nm, NULL);
+      if (rci >= 0) mi = call_target(c, node, rci, nm, CT_CMETHOD, NULL);
     }
     /* `obj.class.m`: the switch over obj's class and the classes below it
        (emit_call_class_method_arms) */
@@ -291,7 +291,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       int x = nt_ref(nt, r, "receiver");
       TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
       if (nullable_int_value(c, node)) return 1;
-      if (ty_is_object(xt) && comp_cmethod_in_chain(c, ty_object_class(xt), nm, NULL) >= 0)
+      if (ty_is_object(xt) && call_target(c, node, ty_object_class(xt), nm, CT_CMETHOD, NULL) >= 0)
         return class_switch_arm_oint(c, ty_object_class(xt), nm);
     }
     /* a class or module value only the run time knows: the switch over the
@@ -336,7 +336,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
           rt != TY_BIGINT && rt != TY_RATIONAL && rt != TY_STRING && rt != TY_SYMBOL && rt != TY_TIME &&
           !ty_is_array(rt)) {
         int oc = comp_class_index(c, "Object");
-        int omi = oc >= 0 ? comp_method_in_chain(c, oc, nm, NULL) : -1;
+        int omi = oc >= 0 ? call_target(c, node, oc, nm, 0, NULL) : -1;
         if (omi >= 0) return method_ret_is_oint(&c->scopes[omi]);
       }
       int num_l = rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT || rt == TY_RATIONAL;
@@ -430,7 +430,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
         Scope *ss = comp_scope_of(c, node);
         if (ss && ss->is_cmethod) sgc = ss->class_id;
       }
-      if (sgc >= 0 && an2 == 0 && comp_method_in_chain(c, sgc, nm, NULL) < 0) {
+      if (sgc >= 0 && an2 == 0 && call_target(c, node, sgc, nm, 0, NULL) < 0) {
         ClassInfo *sgi = &c->classes[sgc];
         const char *rn = comp_resolve_cm_alias_at(c, sgc, nm, NULL);
         if (!rn) rn = nm;
@@ -874,7 +874,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
      A fresh-answering target must keep the ordinary conversion's copy.
      A nil to_str falls through to to_s; a nil to_s falls to fresh object
      text in the bridge, so neither may pick up an earlier publication. */
-  if (recv < 0 && is_string_class_name(nm) && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v)) {
+  if (recv < 0 && is_string_class_name(nm) && call_target(c, v, -1, nm, CT_TOP, NULL) < 0 && !bare_call_class_owned(c, v)) {
     int ac = 0;
     const int *av = call_args(nt, v, &ac);
     if (ac != 1 || nt_ref(nt, v, "block") >= 0) return 0;

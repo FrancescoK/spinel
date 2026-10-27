@@ -5,6 +5,7 @@
 #include "builtin_names.h"
 #include "codegen_poly.h"
 #include "value_pos.h"
+#include "call_plan.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -830,7 +831,7 @@ static int range_value_arm(const VpLeaf *leaf, void *ud) {
     const char *nm = nt_str(nt, node, "name");
     int recv = nt_ref(nt, node, "receiver"), mi = -1;
     if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, node, nm);
-    else if (ty_is_object(comp_ntype(c, recv))) mi = comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), nm, NULL);
+    else if (ty_is_object(comp_ntype(c, recv))) mi = call_target(c, node, ty_object_class(comp_ntype(c, recv)), nm, 0, NULL);
     return mi >= 0 && mi < c->nscopes && c->scopes[mi].ret_range;
   }
   default: return 0;
@@ -1709,7 +1710,7 @@ int comp_arysub_args_viewed(Compiler *c, int id, TyKind rt) {
   const char *n = nt_str(nt, id, "name");
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
-    return sp_streq(n, "puts") && comp_method_index(c, n) < 0;
+    return sp_streq(n, "puts") && call_target(c, id, -1, n, CT_TOP, NULL) < 0;
   int emb = ty_is_hash(rt) ? 1 : (rt == TY_STRING || rt == TY_STRBUF) ? 2 : 0;
   return (array_new_copies(rt) || emb) && arysub_call_flags(c, id, emb, 1);
 }
@@ -1721,7 +1722,7 @@ int comp_arysub_kernel_array(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *n = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
   if (!n || !sp_streq(n, "Array") || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0 ||
-      comp_method_index(c, n) >= 0) return -1;
+      call_target(c, id, -1, n, CT_TOP, NULL) >= 0) return -1;
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
@@ -3221,7 +3222,7 @@ static void cv_build(Compiler *c) {
       const char *cn = nt_str(nt, recv, "name");
       for (int k = 0; cn && k < nk && !plain; k++) {
         const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
-        plain = kn && sp_streq(seg ? seg + 1 : kn, cn) && comp_cmethod_in_chain(c, k, nm, NULL) >= 0;
+        plain = kn && sp_streq(seg ? seg + 1 : kn, cn) && call_target(c, n, k, nm, CT_CMETHOD, NULL) >= 0;
       }
     }
     if (!plain && blk < 0 && rk == NK_SelfNode) {
@@ -3231,7 +3232,7 @@ static void cv_build(Compiler *c) {
       Scope *sc = comp_scope_of(c, n);
       int k = sc ? sc->class_id : -1;
       int inst = sc && sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode && !sc->is_cmethod;
-      plain = k >= 0 && (comp_cmethod_in_chain(c, k, nm, NULL) >= 0 || (inst && comp_method_in_chain(c, k, nm, NULL) >= 0));
+      plain = k >= 0 && (call_target(c, n, k, nm, CT_CMETHOD, NULL) >= 0 || (inst && call_target(c, n, k, nm, 0, NULL) >= 0));
     }
     if (plain) nonval[recv] = 1;
   }
