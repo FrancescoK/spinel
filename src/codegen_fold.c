@@ -12577,7 +12577,7 @@ static void emit_disp_arm_assign(Compiler *c, const Scope *s, const char *call, 
   int arm_o = oint_kind(arm_ret) && method_ret_is_oint(s);
   /* a void dispatch's int temp is a dummy: an arm answering a value
      (a proc-form clone's box) is run for its effect */
-  if (method_is_void((Scope *)s) || ret == TY_VOID || ret == TY_NIL) {
+  if (method_is_void((Scope *)s) || !is_scalar_ret(ret)) {
     buf_printf(b, "(void)(%s); _t%d = %s; ", call, rtmp, g_disp_ro ? oint_nil(disp_ret) : default_value_from_compiler(c, disp_ret));
     return;
   }
@@ -13182,11 +13182,15 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
      `def run; validate; end` where each subclass overrides `validate`) would
      otherwise bind statically to the base impl and skip the override (#1443).
      The GCC statement-expression wrapper can't declare a `void` result, so a
-     void dispatch uses a dummy int temp (its value is discarded). */
-  int ret_is_void = (ret == TY_VOID || ret == TY_NIL);
+     void dispatch uses a dummy int temp (its value is discarded). Void is
+     what method_is_void calls it: no scalar return, so also a return no
+     arm types (`def m = exit`), whose functions are void too. Kept out of
+     the switch, it was called on the base's function, the override
+     skipped, and with no base method on none: the compiler crashed. */
+  int ret_is_void = !is_scalar_ret(ret);
   TyKind disp_ret = ret_is_void ? TY_INT : ret;
-  /* the switch, for a return it can carry */
-  int virtual = (is_scalar_ret(ret) || ret_is_void) && form >= CP_SWITCH;
+  /* the switch, for the dispatch the plan's form makes one */
+  int virtual = form >= CP_SWITCH;
   nd_stamp(g_nd_call_id, virtual ? ND_SWITCH : ND_DIRECT);
   if (!virtual && m) nd_callee(c, g_nd_call_id, mi, defcls, 0);
   g_disp_ro = virtual && oint_kind(disp_ret) && g_nd_call_id >= 0 &&
