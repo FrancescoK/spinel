@@ -6027,14 +6027,13 @@ static TyKind nil_write_type(TyKind cur) {
   return an_ty_holds_nil(cur) ? cur : TY_POLY;
 }
 
-static int gvar_name_cmp(const void *a, const void *b) {
-  return strcmp(*(const char *const *)a, *(const char *const *)b);
-}
-
 /* The first point at which something could read global gname, in the order
    the load phase runs (the load record): a read or update of it (also
    through an alias), or a call that may reach a method of the program,
-   whose body may read it. A definition form (a mixin, attr_*, a visibility
+   whose body may read it: one of a name the program defines a method by
+   anywhere, as the load record reads them (elab_names_method: a def's, an
+   alias's, an attr form's, a define_method's or an alias_method's, any name
+   when one is computed). A definition form (a mixin, attr_*, a visibility
    word, define_method, alias_method, ...) reaches one when the load record
    finds one it runs there (elab_form_runs: its own name's, or a hook it
    fires, Module#included and its kin). A method body runs only when
@@ -6055,26 +6054,18 @@ static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
       if (p.region > 0) return p;
       if (p.region == 0 && (best.region < 0 || p.seq < best.seq)) best = p;
     }
-  /* the program's methods by name, `new` standing for `initialize` */
-  const char **names = malloc(sizeof *names * (size_t)(c->nscopes + 1));
-  if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  int nn = 0;
-  for (int i = 1; i < c->nscopes; i++)
-    if (c->scopes[i].name) names[nn++] = c->scopes[i].name;
-  qsort(names, (size_t)nn, sizeof *names, gvar_name_cmp);
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     const char *nm = nt_str(nt, n, "name");
     if (!nm || elab_in_method_body(c, n)) continue;
     LoadPoint p = elab_point_from(c, n);
     if (p.region < 0 || (p.region == 0 && best.region == 0 && p.seq >= best.seq)) continue;
-    if (is_new_name(nm)) nm = "initialize";
+    if (is_new_name(nm)) nm = "initialize";   /* `new` runs `initialize` */
     if (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm) ? elab_form_runs(c, n) == ELAB_NO
-                                                                                 : !bsearch(&nm, names, (size_t)nn, sizeof *names, gvar_name_cmp))
+                                                                                 : !elab_names_method(c, nm))
       continue;
     if (p.region > 0) { best = p; break; }
     best = p;
   }
-  free(names);
   return best;
 }
 

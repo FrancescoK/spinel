@@ -1406,6 +1406,10 @@ static int lr_named(Compiler *c, const char *name) {
   const LoadRecord *r = c->lrec;
   return r->names_any || bsearch(&name, r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp) != NULL;
 }
+int elab_names_method(Compiler *c, const char *name) {
+  const LoadRecord *r = c->lrec;
+  return !r || (!r->recorded && !r->walk) || lr_named(c, name);
+}
 
 /* The Object/Class/Module tail lr_runs searches, as registered so far: the
    program's class of one is made where its header stands, and the
