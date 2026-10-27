@@ -11787,68 +11787,11 @@ static char *bc_join(const char *p, const char *leaf) {
   return s;
 }
 
-/* The standard library's top-level names: a program that requires one
-   reaches it from anywhere */
-static const char *const bc_stdlib_names[] = {
-  "Abbrev", "Addrinfo", "Base64", "BasicSocket", "Benchmark", "BigDecimal", "CGI", "CSV", "Coverage",
-  "DRb", "Date", "DateTime", "DelegateClass", "Delegator", "Digest", "ERB", "English", "Etc", "FFI",
-  "Fcntl", "Fiddle", "FileUtils", "Find", "Forwardable", "Gem", "GetoptLong", "IPAddr", "IPSocket",
-  "JSON", "Logger", "Matrix", "Minitest", "Monitor", "MonitorMixin", "Net", "Observable", "Open3",
-  "OpenSSL", "OpenStruct", "OptionParser", "PP", "PStore", "Prime", "Psych", "RbConfig", "Readline",
-  "Resolv", "Ripper", "SecureRandom", "Shellwords", "SimpleDelegator", "SingleForwardable", "Singleton",
-  "Socket", "StringIO", "StringScanner", "TCPServer", "TCPSocket", "TSort", "Tempfile", "Test", "Timeout",
-  "UDPSocket", "UNIXServer", "UNIXSocket", "URI", "Vector", "WeakRef", "YAML", "Zlib",
-  NULL
-};
-static int bc_stdlib_name(const char *n) {
-  for (int i = 0; bc_stdlib_names[i]; i++) if (sp_streq(bc_stdlib_names[i], n)) return 1;
-  return 0;
-}
 /* A standard library name no class or module of the runtime has: where
    the program defines it, it does so from Ruby source (a package's). */
 int stdlib_name_from_source(const char *n) {
-  return n && bc_stdlib_name(n) && !builtin_class_id(n) && !is_builtin_class_name(n) &&
+  return n && is_stdlib_const_name(n) && !builtin_class_id(n) && !is_builtin_class_name(n) &&
          !is_builtin_module_name(n) && !is_builtin_exception_name(n);
-}
-
-/* A name CRuby (or a library spinel provides) answers at the top level. */
-static int bc_toplevel_known(const char *n) {
-  static const char *const names[] = {
-    "ARGF", "ARGV", "ArgumentError", "Array", "BasicObject", "Binding", "Class", "ClosedQueueError",
-    "Comparable", "Complex", "ConditionVariable", "Data", "Dir", "ENV", "EOFError", "Encoding",
-    "EncodingError", "Enumerable", "Enumerator", "Errno", "Exception", "FalseClass", "Fiber", "FiberError",
-    "File", "FileTest", "Float", "FloatDomainError", "FrozenError", "GC", "Hash", "IO",
-    "IOError", "IndexError", "Integer", "Interrupt", "Kernel", "KeyError", "LoadError", "LocalJumpError",
-    "Marshal", "MatchData", "Math", "Method", "Module", "Mutex", "NameError", "NilClass",
-    "NoMatchingPatternError", "NoMatchingPatternKeyError", "NoMemoryError", "NoMethodError", "NotImplementedError", "Numeric", "Object", "ObjectSpace",
-    "Pathname", "Proc", "Process", "Queue", "RUBY_COPYRIGHT", "RUBY_DESCRIPTION", "RUBY_ENGINE", "RUBY_ENGINE_VERSION",
-    "RUBY_PATCHLEVEL", "RUBY_PLATFORM", "RUBY_RELEASE_DATE", "RUBY_REVISION", "RUBY_VERSION", "Ractor", "Random", "Range",
-    "RangeError", "Rational", "Refinement", "Regexp", "RegexpError", "Ruby", "RubyVM", "RuntimeError",
-    "STDERR", "STDIN", "STDOUT", "ScriptError", "SecurityError", "Set", "Signal", "SignalException",
-    "SizedQueue", "StandardError", "StopIteration", "String", "Struct", "Symbol", "SyntaxError", "SystemCallError",
-    "SystemExit", "SystemStackError", "TOPLEVEL_BINDING", "Thread", "ThreadError", "ThreadGroup", "Time", "TracePoint",
-    "TrueClass", "TypeError", "UnboundMethod", "UncaughtThrowError", "UnicodeNormalize", "Warning", "ZeroDivisionError",
-    NULL
-  };
-  if (!n) return 1;
-  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
-  if (bc_stdlib_name(n)) return 1;
-  return builtin_class_id(n) != 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
-         is_builtin_exception_name(n);
-}
-
-/* A builtin ancestor with no constants of its own (CRuby 4.0's
-   `K.constants - Object.constants` is empty): the user's reopenings are all
-   it can contribute. Any other builtin ancestor may answer the name itself. */
-static int bc_builtin_constless(const char *n) {
-  static const char *const names[] = {
-    "Object", "BasicObject", "Kernel", "Comparable", "Enumerable", "Array", "Hash", "String",
-    "Integer", "Numeric", "Struct", "Data", "Symbol", "Proc", "Range", "Module", "Class", "Time",
-    "Rational", "Dir", "Fiber", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "MatchData",
-    "Method", "UnboundMethod", "NilClass", "TrueClass", "FalseClass", "Signal", "Warning", NULL
-  };
-  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
-  return is_builtin_exception_name(n) && !strchr(n, ':');
 }
 
 /* mods by name: an open-addressed index of b->mods positions */
@@ -11929,8 +11872,8 @@ static int bc_anc(Bc *b, const char *k, const char *n, BcSet *seen, char **hit, 
   if (k[0] == '#') return BC_UNSURE;            /* a singleton class as an ancestor */
   int r = bc_own_table(b, k, n, hit);
   BcMod *m = bc_mod(b, k, 0);
-  int builtin = !strchr(k, ':') ? bc_toplevel_known(k) : is_builtin_exception_name(k);
-  if (builtin && !bc_builtin_constless(k)) r = bc_merge(r, BC_UNSURE);
+  int builtin = !strchr(k, ':') ? is_toplevel_const_name(k) : is_builtin_exception_name(k);
+  if (builtin && !is_constless_builtin_name(k)) r = bc_merge(r, BC_UNSURE);
   if (!m && !builtin) return bc_merge(r, BC_UNSURE);   /* not a namespace the program defines */
   int is_module = m ? m->is_module == 1 : is_builtin_module_const_name(k);
   if (m) {
@@ -12048,7 +11991,7 @@ static void bc_define(Bc *b, const char *full) {
   if (first == leaf - 1) {
     char head[256];
     snprintf(head, sizeof head, "%.*s", (int)(first - full), full);
-    if (bc_toplevel_known(head)) bc_add(&b->builtin_held, leaf + 1);
+    if (is_toplevel_const_name(head)) bc_add(&b->builtin_held, leaf + 1);
   }
 }
 
@@ -12163,7 +12106,7 @@ static int bc_const_missing_reaches(Bc *b, const char *top) {
 static void bc_check(Bc *b, int id, int in_defined) {
   const NodeTable *nt = b->nt;
   const char *n = nt_str(nt, id, "name");
-  if (!n || !bc_has(&b->nested, n) || bc_has(&b->defs, n) || bc_toplevel_known(n)) return;
+  if (!n || !bc_has(&b->nested, n) || bc_has(&b->defs, n) || is_toplevel_const_name(n)) return;
   char *hit = NULL;
   int r = bc_lookup(b, n, &hit);
   free(hit);
@@ -12304,7 +12247,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
         bc_define(b, full);
         BcMod *m = bc_mod(b, full, 1);
         m->is_module = is_mod;
-        if (!strchr(full, ':') && bc_toplevel_known(full)) m->builtin_reopen = 1;
+        if (!strchr(full, ':') && is_toplevel_const_name(full)) m->builtin_reopen = 1;
       }
       int sc = is_mod ? -1 : nt_ref(nt, id, "superclass");
       if (sc >= 0) {
