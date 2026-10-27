@@ -5966,18 +5966,13 @@ static int gvar_name_cmp(const void *a, const void *b) {
   return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-/* Is node n in a method body, which runs only when the method is called? */
-static int gvar_in_def(const int *par, const NodeTable *nt, int n) {
-  for (int a = par[n]; a >= 0; a = par[a]) if (nt_kind(nt, a) == NK_DefNode) return 1;
-  return 0;
-}
-
 /* The first point at which something could read global gname, in the order
    the load phase runs (the load record): a read or update of it (also
    through an alias), or a call that may reach a method of the program,
    whose body may read it. A definition form (a mixin, attr_*, a visibility
-   word, define_method, alias_method, ...) runs no code of the program's
-   unless the program defines a hook one runs. A method body runs only when
+   word, define_method, alias_method, ...) reaches one when the load record
+   finds one it runs there (elab_form_runs: its own name's, or a hook it
+   fires, Module#included and its kin). A method body runs only when
    it is called; a block or a lambda no earlier than the statement that
    makes it. Region -1 when nothing could; a point in a file no load places
    as soon as something there could, since no write is known to run
@@ -5986,12 +5981,11 @@ static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
   static const NodeKind rk[] = { NK_GlobalVariableReadNode, NK_GlobalVariableOperatorWriteNode,
                                  NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode };
   const NodeTable *nt = c->nt;
-  const int *par = comp_parent_map(c);
   LoadPoint best = { -1, -1 };
   for (int q = 0; q < 4; q++)
     NT_FOREACH_KIND(nt, rk[q], n) {
       const char *nm = nt_str(nt, n, "name");
-      if (!nm || !*nm || !sp_streq(comp_resolve_gvar(c, nm + 1), gname) || gvar_in_def(par, nt, n)) continue;
+      if (!nm || !*nm || !sp_streq(comp_resolve_gvar(c, nm + 1), gname) || elab_in_method_body(c, n)) continue;
       LoadPoint p = elab_point_from(c, n);
       if (p.region > 0) return p;
       if (p.region == 0 && (best.region < 0 || p.seq < best.seq)) best = p;
@@ -5999,20 +5993,19 @@ static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
   /* the program's methods by name, `new` standing for `initialize` */
   const char **names = malloc(sizeof *names * (size_t)(c->nscopes + 1));
   if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  int nn = 0, hooks = 0;
+  int nn = 0;
   for (int i = 1; i < c->nscopes; i++)
-    if (c->scopes[i].name) {
-      names[nn++] = c->scopes[i].name;
-      hooks |= is_definition_hook_name(c->scopes[i].name);
-    }
+    if (c->scopes[i].name) names[nn++] = c->scopes[i].name;
   qsort(names, (size_t)nn, sizeof *names, gvar_name_cmp);
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     const char *nm = nt_str(nt, n, "name");
-    if (!nm || (!hooks && (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm)))) continue;
+    if (!nm || elab_in_method_body(c, n)) continue;
     LoadPoint p = elab_point_from(c, n);
     if (p.region < 0 || (p.region == 0 && best.region == 0 && p.seq >= best.seq)) continue;
     if (is_new_name(nm)) nm = "initialize";
-    if (!bsearch(&nm, names, (size_t)nn, sizeof *names, gvar_name_cmp) || gvar_in_def(par, nt, n)) continue;
+    if (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm) ? elab_form_runs(c, n) == ELAB_NO
+                                                                                 : !bsearch(&nm, names, (size_t)nn, sizeof *names, gvar_name_cmp))
+      continue;
     if (p.region > 0) { best = p; break; }
     best = p;
   }
@@ -9099,7 +9092,8 @@ static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line)
   return seq;
 }
 /* ...and the write that sets the flag, after top-level statement `late`, in
-   its file's top level */
+   its file's top level, which the load record records (the global's
+   readers ask it) */
 static void mixin_guard_flag_write(Compiler *c, int late, const char *flag) {
   NodeTable *nt = (NodeTable *)c->nt;
   int f, rank;
@@ -9124,6 +9118,7 @@ static void mixin_guard_flag_write(Compiler *c, int late, const char *flag) {
   free(ns);
   comp_gvar_intern(c, flag + 1);
   comp_grow_node_arrays(c);
+  elab_record_write(c, w);
 }
 
 static void process_prepend_body(Compiler *c, int ci, int body) {

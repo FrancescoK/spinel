@@ -150,6 +150,7 @@ LoadPoint elab_point_of(Compiler *c, int node);
 int elab_point_may(Compiler *c, int node);
 LoadPoint elab_point_from(Compiler *c, int node);
 LoadPoint elab_point_done(Compiler *c, int node);
+int elab_in_method_body(Compiler *c, int node);
 int elab_cmp(LoadPoint a, LoadPoint b);
 int elab_order(Compiler *c, int a, int b);
 void elab_top_place(Compiler *c, int node, int *file, int *rank);
@@ -196,6 +197,13 @@ int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
    completed before p, on every path? (a constant: one the top level writes,
    Object's) */
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p);
+/* a write a pass adds after the record: stmt, a statement of the load
+   phase that writes a global or main's instance variable */
+void elab_record_write(Compiler *c, int stmt);
+/* does definition-form call node (attr_accessor, include, private :m, ...)
+   run code of the program's: a method of its own name, or a hook it fires
+   (included, method_added, ...) on the class receiving it, there? */
+int elab_form_runs(Compiler *c, int node);
 /* the bodies cls runs, in the order they run; *n their number */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
 /* the mixins run on cls (-1: main's, at a file's top level), one per

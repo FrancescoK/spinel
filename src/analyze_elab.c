@@ -69,7 +69,7 @@ typedef struct { int node, file, region, top, rank, depth, frame, last; unsigned
 typedef struct { const char *reader; long asked, differ; } LrCheck;
 enum { LR_CHECK_MAX = 16, LR_CHECK_SHOW = 100 };
 
-enum { LR_LATE = 1 };   /* runs later: in a method body, a lambda or a block kept to run later */
+enum { LR_LATE = 1, LR_BODY = 2 };   /* runs later: in a method body, a lambda or a block kept to run later; in a method body */
 
 struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
@@ -84,6 +84,9 @@ struct LoadRecord {
   int recorded;
   struct LrHist *hist; int nhist, chist, *hhead;
   struct LrClass *cls; int ncls;
+  int tail[3];               /* Class, Module and Object, past the singletons (lr_runs); -1 for one the program has not */
+  char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
+  unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -299,8 +302,6 @@ static int lr_defers(const NodeTable *nt, const int *par, int p) {
   return k == NK_DefNode || k == NK_LambdaNode || (k == NK_BlockNode && par[p] >= 0 && elab_block_runs(nt, par[p]) < 0);
 }
 
-static void lr_values_refresh(Compiler *c);
-
 static void elab_points_build(Compiler *c) {
   double t0 = sp_timing_now();
   LoadRecord *r = lr_get(c);
@@ -350,10 +351,10 @@ static void elab_points_build(Compiler *c) {
       int b = stack[--s], p = up[b];
       r->at[b] = r->at[p];
       if ((r->bits[p] & LR_LATE) || lr_defers(nt, up, p)) r->bits[b] |= LR_LATE;
+      if ((r->bits[p] & LR_BODY) || nt_kind(nt, p) == NK_DefNode) r->bits[b] |= LR_BODY;
     }
   }
   free(up); free(live); free(stack); free(w.entered);
-  if (r->recorded) lr_values_refresh(c);
   r->builds++;
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
 }
@@ -388,6 +389,12 @@ LoadPoint elab_point_from(Compiler *c, int node) {
 LoadPoint elab_point_done(Compiler *c, int node) {
   LoadPoint p = elab_point_of(c, node);
   return p.region < 0 ? p : (LoadPoint){ p.region, c->lrec->st[p.seq].last };
+}
+
+/* Is node in a method body, which runs only when the method is called? */
+int elab_in_method_body(Compiler *c, int node) {
+  LoadRecord *r = elab_fresh(c);
+  return node >= 0 && node < r->n && (r->bits[node] & LR_BODY);
 }
 
 /* Does node's statement run only under a condition (a branch, a loop body,
@@ -444,9 +451,11 @@ typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next; } LrHi
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup; unsigned char has_sup; } LrClass;
 enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2 };
 /* the histories that are not a method's or a variable's: a frame's bare
-   visibility words, keyed by the frame's node, and the code a class's
-   body ran that the record cannot follow, keyed as a constant owner */
-enum { LR_KEY_VIS = -5, LR_KEY_OPAQUE = -6 };
+   visibility words, keyed by the frame's node; the code a class's body ran
+   that the record cannot follow, keyed as a constant owner; and whether a
+   definition form runs code of the program's, keyed by its node (vis: the
+   answer, lr_form_runs) */
+enum { LR_KEY_VIS = -5, LR_KEY_OPAQUE = -6, LR_KEY_RUNS = -7 };
 
 static void *lr_grow(void *v, int *cap, int n, size_t sz) {
   if (n < *cap) return v;
@@ -648,6 +657,57 @@ static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, i
   lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL });
 }
 
+static void lr_form_runs(ElabRec *x, int node, int cls, const char *nm, const int *av, int ac, int sg, int may);
+
+static int lr_name_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+static void lr_name(LoadRecord *r, const char *name, const char *suffix) {
+  if (!name) { r->names_any = 1; return; }
+  r->names = lr_grow(r->names, &r->cnames, r->nnames, sizeof *r->names);
+  size_t len = strlen(name) + strlen(suffix) + 1;
+  char *d = malloc(len);
+  if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  snprintf(d, len, "%s%s", name, suffix);
+  r->names[r->nnames++] = d;
+}
+
+/* The names the program defines methods by, wherever it does (a statement
+   of the load phase, a class the record does not know, a method body or a
+   block run later): a def's, an alias's, an attr form's, a define_method's
+   or alias_method's. A definition whose name the record cannot read (a
+   computed one, a send of a definition form, an eval of a String) makes it
+   answer for any name. Taken once, as the record is made: the passes after
+   it rename methods (alias_capture_earlier_def) and add none of the
+   program's own. */
+static void lr_names_take(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  LoadRecord *r = c->lrec;
+  NT_FOREACH_KIND(nt, NK_DefNode, n) lr_name(r, nt_str(nt, n, "name"), "");
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, n) {
+    int nn = nt_ref(nt, n, "new_name");
+    lr_name(r, nn >= 0 ? vis_arg_name(nt, nn) : NULL, "");
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    const char *nm = nt_str(nt, n, "name");
+    int an = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (!nm || !ac) continue;
+    if (is_send_family(nm) || (is_code_eval_name(nm) && nt_ref(nt, n, "block") < 0)) {
+      const char *fn = vis_arg_name(nt, av[0]);
+      if (is_code_eval_name(nm) || !fn || is_method_naming_call(fn)) r->names_any = 1;
+    }
+    else if (is_attr_reader_family(nm) || is_attr_writer_family(nm))
+      for (int i = 0; i < ac; i++) {
+        if (is_attr_reader_family(nm)) lr_name(r, vis_arg_name(nt, av[i]), "");
+        if (is_attr_writer_family(nm)) lr_name(r, vis_arg_name(nt, av[i]), "=");
+      }
+    else if (is_define_method_name(nm) || is_define_singleton_method_name(nm) || is_alias_method_name(nm))
+      lr_name(r, vis_arg_name(nt, av[0]), "");
+  }
+  if (r->nnames > 1) qsort(r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp);
+}
+
 /* A call statement's definitions: attrs, aliases, visibility, mixins,
    define_method, undef_method / remove_method, on the class its receiver
    names. vs is the frame's visibility state. */
@@ -657,6 +717,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
   int sg, recv = nt_ref(nt, node, "receiver"), cls = lr_receiver(x, recv, fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   int bvis = visibility_of_name(nm), opaque = 0;
+  if (nm && (bvis || is_method_naming_call(nm) || is_mixin_call(nm))) lr_form_runs(x, node, cls, nm, av, ac, sg, may);
   if (bvis && !ac && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) {
     /* the frame's visibility from here on: kept by the frame's node, so
        also in a body whose class the record does not know */
@@ -787,15 +848,15 @@ static void lr_record_stmt(ElabRec *x, int e) {
   }
 }
 
-/* The writes of globals and main's instance variables, recorded again from
-   the statements as they stand whenever the map is rebuilt: passes after
-   the record write some (a mixin guard's flag), and their readers ask late
-   (the nil facts, the global slots) */
-static void lr_values_refresh(Compiler *c) {
+/* A write a pass adds to the load phase after the record (a mixin guard's
+   flag): stmt, a statement the walk reaches, written to a global or to
+   main's instance variable, recorded as the record records one */
+void elab_record_write(Compiler *c, int stmt) {
   LoadRecord *r = c->lrec;
-  for (int i = 0; i < r->nhist; i++)
-    if (r->hist[i].a == -2 - (int)ELAB_GVAR || r->hist[i].a == -2 - (int)ELAB_MAIN_IVAR) r->hist[i].n = 0;
-  for (int e = 0; e < r->nst; e++) lr_value_write(c, e);
+  if (!r || !r->recorded) return;
+  elab_fresh(c);
+  int e = stmt >= 0 && stmt < r->n ? r->at[stmt] : -1;
+  if (e >= 0 && !(r->bits[stmt] & LR_LATE) && r->st[e].node == stmt) lr_value_write(c, e);
 }
 
 static void elab_check_record(Compiler *c);
@@ -808,6 +869,9 @@ void elab_program(Compiler *c) {
   LoadRecord *r = elab_fresh(c);
   r->ncls = c->nclasses + 1;
   r->cls = calloc((size_t)r->ncls, sizeof *r->cls);
+  static const char *const tail[] = { "Class", "Module", "Object" };
+  for (int i = 0; i < 3; i++) r->tail[i] = comp_class_index(c, tail[i]);
+  lr_names_take(c);
   r->hhead = malloc(sizeof(int) * LR_BUCKETS);
   int nroots = nt_nroots(c->nt);
   ElabRec x = { c, r, malloc(sizeof(int) * (size_t)(r->nst + 1)), calloc((size_t)r->nst + 1, 1), calloc((size_t)r->nst + 1, 1),
@@ -925,9 +989,63 @@ int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);
 }
 
+/* ELAB_YES when either is, else ELAB_UNKNOWN when either is, else ELAB_NO
+   (an undef's LR_STOP: none) */
+static int lr_either(int a, int b) {
+  return a == ELAB_YES || b == ELAB_YES ? ELAB_YES : a == ELAB_UNKNOWN || b == ELAB_UNKNOWN ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+/* Does the program define a method `name` anywhere (lr_names_take)? */
+static int lr_named(Compiler *c, const char *name) {
+  const LoadRecord *r = c->lrec;
+  return r->names_any || bsearch(&name, r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp) != NULL;
+}
+
+/* Is a method of the program's what a call of `name` on class cls (main
+   for LR_MAIN) finds at p: along its singleton's ancestors, then Class's,
+   Module's and Object's own methods (main's top level's among them)? A
+   class the record does not know: by name. */
+static int lr_runs(Compiler *c, int cls, const char *name, LoadPoint p) {
+  if (cls < LR_MAIN) return lr_named(c, name) ? ELAB_UNKNOWN : ELAB_NO;
+  int o = lr_search(c, cls, 1, name, -1, p, 0, 0, NULL, 0);
+  for (int i = 0; i < 3 && o != ELAB_YES; i++)
+    if (c->lrec->tail[i] >= 0) o = lr_either(o, lr_search(c, c->lrec->tail[i], 0, name, -1, p, 0, 0, NULL, 0));
+  return o == ELAB_YES ? o : lr_either(o, lr_search(c, LR_MAIN, 0, name, -1, p, 0, 0, NULL, 0));
+}
+
+/* Does definition form `nm` at node, on class cls (sg: in its singleton),
+   run code of the program's: a method of the form's own name the call
+   finds, or a hook the form fires (definition_form_hooks) on the class it
+   receives, or for a mixin on the module? Kept for elab_form_runs. */
+static void lr_form_runs(ElabRec *x, int node, int cls, const char *nm, const int *av, int ac, int sg, int may) {
+  Compiler *c = x->c;
+  LoadPoint p = elab_point_of(c, node);
+  const char *hook[2];
+  int nh = ac ? definition_form_hooks(nm, sg, hook) : 0, mix = is_mixin_call(nm);
+  int o = lr_runs(c, cls, nm, p);
+  for (int i = 0; i < nh; i++)
+    for (int j = 0; j < (mix ? ac : 1); j++)
+      o = lr_either(o, lr_runs(c, mix ? lr_class_ref(c, av[j]) : cls, hook[i], p));
+  lr_version(x->r, LR_KEY_RUNS, node, "", (LrDef){ node, LR_OPAQUE, (unsigned char)o, (unsigned char)may, 0, NULL });
+}
+
+int elab_form_runs(Compiler *c, int node) {
+  if (!c->lrec || !c->lrec->recorded) return ELAB_UNKNOWN;
+  const LrHist *h = lr_hist(c->lrec, LR_KEY_RUNS, node, "", 0);
+  if (h && h->n) return h->v[h->n - 1].vis == ELAB_NO ? ELAB_NO : h->v[h->n - 1].may ? ELAB_UNKNOWN : h->v[h->n - 1].vis;
+  /* a form the record did not see as a statement (`private attr_reader
+     :x`): by name, kept for the next question */
+  const char *nm = nt_str(c->nt, node, "name"), *hook[2];
+  int o = nm && lr_named(c, nm);
+  for (int sg = 0; sg < 2 && !o; sg++)
+    for (int i = definition_form_hooks(nm, sg, hook) - 1; i >= 0 && !o; i--) o = lr_named(c, hook[i]);
+  o = o ? ELAB_UNKNOWN : ELAB_NO;
+  lr_version(c->lrec, LR_KEY_RUNS, node, "", (LrDef){ node, LR_OPAQUE, (unsigned char)o, 0, 0, NULL });
+  return o;
+}
+
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded) return ELAB_UNKNOWN;
-  elab_fresh(c);   /* the writes as of the tree as it stands (lr_values_refresh) */
   const LrHist *h = lr_hist(c->lrec, -2 - (int)kind, kind == ELAB_CONST ? lr_const_owner(LR_MAIN) : 0, name, 0);
   int unsure = 0;
   for (int i = 0; h && i < h->n; i++) {
@@ -1155,6 +1273,11 @@ void elab_dump(Compiler *c, FILE *out) {
     const LrHist *h = &r->hist[i];
     if (h->a == LR_KEY_VIS) fprintf(out, "visibility in #%d:", elab_point_of(c, h->b).seq);
     else if (h->a == LR_KEY_OPAQUE) fprintf(out, "opaque %s:", h->b >= 2 ? c->classes[h->b - 2].name : "main");
+    else if (h->a == LR_KEY_RUNS) {   /* only the forms that run the program's code */
+      if (h->n && h->v[h->n - 1].vis != ELAB_NO)
+        fprintf(out, "form #%d runs code%s\n", elab_point_of(c, h->b).seq, h->v[h->n - 1].vis == ELAB_YES && !h->v[h->n - 1].may ? "" : " (maybe)");
+      continue;
+    }
     else if (h->a < LR_MAIN) fprintf(out, "%s%s%s%s:", vars[-2 - h->a], h->b >= 2 ? c->classes[h->b - 2].name : "",
                                 h->b >= 2 ? "::" : h->b == 0 && h->a == -2 - (int)ELAB_CONST ? "?::" : "", h->name);
     else fprintf(out, "%s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);
@@ -1233,6 +1356,8 @@ void elab_free(Compiler *c) {
     free(r->hist[i].name); free(r->hist[i].v);
   }
   for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
+  for (int i = 0; i < r->nnames; i++) free(r->names[i]);
+  free(r->names);
   free(r->hist); free(r->hhead); free(r->cls);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
