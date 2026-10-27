@@ -47020,19 +47020,27 @@ static int def_params_all_optional(const NodeTable *nt, int pn) {
    `def` the program writes is taken for it. */
 /* Is the statement d a `def inspect(..)` / `def to_s(..)` that takes no argument
    it must be given, and has parameters to default? */
-static int noarg_display_def(const NodeTable *nt, int d) {
+static int noarg_display_def(const NodeTable *nt, const LowerCtx *lc, int d) {
   if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) return 0;
   const char *dn = nt_str(nt, d, "name");
   int pn = nt_ref(nt, d, "parameters");
-  return dn && (sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) && pn >= 0 && def_params_all_optional(nt, pn);
+  if (!(dn && (sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) && pn >= 0 && def_params_all_optional(nt, pn))) return 0;
+  /* the sibling already follows it: this def has been through */
+  int at = lower_stmt_at(nt, lc, d), bn = 0;
+  const int *bb = nt_arr(nt, lc->body, "body", &bn);
+  if (at + 1 < bn && nt_kind(nt, bb[at + 1]) == NK_DefNode && nt_ref(nt, bb[at + 1], "receiver") < 0) {
+    const char *sn = nt_str(nt, bb[at + 1], "name");
+    if (sn && !strncmp(sn, "__noarg ", 8) && sp_streq(sn + 8, dn)) return 0;
+  }
+  return 1;
 }
 int desugar_noarg_display_wrappers_left(Compiler *c, LowerCtx *lc, int id) {
-  return noarg_display_def(c->nt, id);
+  return noarg_display_def(c->nt, lc, id);
 }
 int desugar_noarg_display_wrappers_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int d = id;
-  if (!noarg_display_def(nt, d)) return 0;
+  if (!noarg_display_def(nt, lc, d)) return 0;
   int to_s = sp_streq(nt_str(nt, d, "name"), "to_s");
   long long line = nt_int(nt, d, "node_line", 0), file = nt_int(nt, d, "node_file", 0);
   int call = nt_new_node(nt, "CallNode");
