@@ -15848,6 +15848,8 @@ static int rename_repeated_param(Compiler *c, NodeTable *nt, int owner, int p, c
     }
   }
   nt_set_str(nt, p, "name", nn);
+  /* the repeat is renamed: a second run finds no repeat */
+  nt_node_set_int(nt, p, "flags", nt_int(nt, p, "flags", 0) & ~NT_PARAM_REPEATED);
   return 1;
 }
 
