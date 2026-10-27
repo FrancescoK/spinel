@@ -595,14 +595,16 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
   const char *nm = nt_str(nt, node, "name");
   int sg, recv = nt_ref(nt, node, "receiver"), cls = lr_receiver(x, recv, fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-  if (!nm || cls < LR_MAIN) return;
   int bvis = visibility_of_name(nm), opaque = 0;
-  int naming = bvis || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
-  if (bvis && !ac) {   /* the frame's visibility from here on */
+  if (bvis && !ac && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) {
+    /* the frame's visibility from here on: kept by the frame's node, so
+       also in a body whose class the record does not know */
     *vs = (unsigned char)bvis;
     lr_version(x->r, LR_KEY_VIS, fnode, "", (LrDef){ node, LR_VIS, (unsigned char)bvis, (unsigned char)may, 0, NULL });
     return;
   }
+  if (!nm || cls < LR_MAIN) return;
+  int naming = bvis || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
   /* `include A, B` puts A nearest the class (ancestors [C, A, B]), as
      `include B` then `include A` would, and so do prepend and extend: the
      arguments of a mixin are recorded last first */
