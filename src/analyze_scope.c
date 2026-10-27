@@ -550,10 +550,12 @@ void expand_struct_forwarding_super(Compiler *c) {
    identically by analyze and codegen); whether it is directly in the block
    of `Name = Struct.new(...) do ... end`, whose class register_structs
    makes only after the walk (fix_struct_block_scopes); and whether it is a
-   define_method of a `class << X` body, which defines a class method. */
+   define_method of a `class << X` body, which defines a class method; and
+   whether it is a file's top level (the root's statements), whose BEGIN
+   blocks run first. */
 typedef struct {
   int scope, cls, proc, dead;
-  int cbody, direct, struct_direct, dm_sclass;
+  int cbody, direct, struct_direct, dm_sclass, top;
 } WalkCtx;
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w);
@@ -1757,6 +1759,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   WalkCtx cw = { .scope = child, .cls = child_class, .proc = proc, .dead = dead,
                  .cbody = w.cbody, .direct = w.direct, .struct_direct = w.struct_direct };
   NodeKind wk = nt_kind(c->nt, id);
+  cw.top = wk == NK_ProgramNode;
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
     cw.struct_direct = 0;
   else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c, id) >= 0)
@@ -1784,13 +1787,15 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
     if (r >= 0) walk_scope_in(c, r, rw);
   }
-  int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0;
-    const int *ids = nt_arr_at(c->nt, id, i, &n);
-    for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope_in(c, ids[j], cw);
-  }
+  /* a file's BEGIN blocks first, as they run (pass 0), then the rest */
+  int na = nt_num_arrs(c->nt, id), begins = w.top && kind == NK_StatementsNode;
+  for (int pass = !begins; pass < 2; pass++)
+    for (int i = 0; i < na; i++) {
+      int n = 0;
+      const int *ids = nt_arr_at(c->nt, id, i, &n);
+      for (int j = 0; j < n; j++)
+        if (ids[j] >= 0 && (!begins || (nt_kind(c->nt, ids[j]) == NK_PreExecutionNode) == !pass)) walk_scope_in(c, ids[j], cw);
+    }
 }
 
 /* A walk of `id` from outside any class body */
