@@ -25269,11 +25269,15 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   /* A temp is rooted when something that runs after it may allocate: an
      argument, or a block the call runs. The test does not allocate, and a
      runtime method roots the receiver it is handed (as the String arms'
-     own nil guard leaves an unrooted receiver alone). */
+     own nil guard leaves an unrooted receiver alone). A program method
+     roots its parameters but not its self: a receiver it is handed is
+     rooted here, or the method's allocations collected it under the body
+     still reading it (`parent.coerce(s)`, with `parent` a fresh object). */
   int later_alloc = nt_ref(nt, id, "block") >= 0;
   int la_a = nt_ref(nt, id, "arguments"), la_an = 0;
   const int *la_av = la_a >= 0 ? nt_arr(nt, la_a, "arguments", &la_an) : NULL;
   for (int i = 0; i < la_an && !later_alloc; i++) later_alloc = operand_may_allocate(c, la_av[i]);
+  int recv_alloc = later_alloc || (r >= 0 && call_reaches_program_method(c, id));
   /* an argument that runs code and is not one of the operands held here
      (one past where they stop, or one held in parts) runs after all of them */
   int rest_runs = 0;
@@ -25379,9 +25383,10 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
         buf_printf(b, " _t%d = SP_STR_HDL(%s);", t, ob.p);
       else
       buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : ko ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
-      if (later_alloc && ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
-      else if (later_alloc && comp_ty_value_obj(c, ty[i])) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty[i], t, b); }
-      else if (later_alloc && needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+      int la = node[i] == r ? recv_alloc : later_alloc;
+      if (la && ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+      else if (la && comp_ty_value_obj(c, ty[i])) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty[i], t, b); }
+      else if (la && needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
       buf_puts(b, *lead ? "\n" : " ");
     }
     free(ob.p); free(op.p);
