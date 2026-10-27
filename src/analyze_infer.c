@@ -1389,6 +1389,9 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   /* the left operand of `||` is tested, whatever the operator answers */
   if (up.reach) return 0;
   if (ended == VPU_DROPPED || vp_up_loop(nt, &up) >= 0) return 1;
+  /* the last statement of the program or of a file it requires: nothing
+     reads a file's value */
+  if (ended == VPU_ENDED && nt_kind(nt, up.parent) == NK_ProgramNode) return 1;
   /* a begin's body beside an else, and an ensure clause, are run for their effect */
   if (vp_up_effect_clause(nt, &up)) return 1;
   int call = vp_up_block_call(nt, parent, &up);

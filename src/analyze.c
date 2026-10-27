@@ -51537,7 +51537,8 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
      the backstop above, after the last return pass). Lift ONLY returns that
      are still UNKNOWN: widening an established return here is what
      g_ret_no_new_poly deliberately prevents. Iterated so a caller whose tail
-     is such a call picks the type up too. */
+     is such a call picks the type up too. The top level (scope 0) has no
+     value, as infer_return_types has it. */
   for (int iter = 0; iter < 8; iter++) {
     int lifted = 0;
     /* A NIL return was read off a local the loop above just made poly:
@@ -51550,7 +51551,7 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
           !rs->ret_rbs_seeded && !rs->ret_specialized && !rs->cs_synth &&
           !rs->is_lowered_yield) { scope_set_ret(rs, TY_POLY); lifted = 1; }
     }
-    for (int s = 0; s < c->nscopes; s++) {
+    for (int s = 1; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       if (sc->body < 0) continue;
       if (sc->ret == TY_NIL && !sc->ret_rbs_seeded && !sc->ret_specialized &&
