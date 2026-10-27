@@ -11307,6 +11307,12 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
          holding a container keep their type. */
       if (unknown && mt != TY_INT && mt != TY_FLOAT && mt != TY_BOOL && mt != TY_SYMBOL && mt != TY_NIL &&
           !((mt == TY_STRING || mt == TY_STRBUF))) continue;
+      /* ...and with a value of such a kind: a nil member took an object's
+         type from a store that may be no Struct's (`@vars[name] =
+         VarInfo.new` on a Hash), and the writes of a String the member
+         really holds then found no arm for its class (#10346) */
+      if (unknown && vt != TY_INT && vt != TY_FLOAT && vt != TY_BOOL && vt != TY_SYMBOL && vt != TY_NIL &&
+          vt != TY_STRING && vt != TY_STRBUF && vt != TY_POLY) continue;
       if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
       TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
       if (merged != ci->ivar_types[m]) { ivar_set_type(ci, m, merged); changed = 1; }
