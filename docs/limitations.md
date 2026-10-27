@@ -1151,6 +1151,9 @@ any `Rational` whose value lands on a nanosecond -- is exact, and `to_s`,
 exactness (and, as its consequence, the `Rational`-form `#inspect` display
 CRuby uses for non-decimal sub-seconds) is lost.
 
+A local `Time` also accepts `+=` with a `Rational` offset. Whole
+nanoseconds are retained without converting the offset to a Float.
+
 #### Unboxed value types: identity IS the value
 
 `Complex`, `Rational`, and `Range` values are unboxed C structs with no

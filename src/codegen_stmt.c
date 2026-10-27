@@ -6661,8 +6661,20 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     Repr vr = repr_of(c, v);
     TyKind vt = vr.as_ty;
     int neg = sp_streq(op, "-");
-    /* a boxed operand (an Integer slot under --int-overflow=promote) reads
-       as the Integer the binary `t + n` reads it as */
+    if (!neg && vr.kind == RK_BOXED) {
+      const char *src = lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn);
+      buf_printf(b, "%s = sp_time_add_boxed(%s, ", lval, src);
+      emit_boxed(c, v, b);
+      buf_puts(b, ");\n");
+      return;
+    }
+    if (!neg && vt == TY_RATIONAL) {
+      const char *src = lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn);
+      buf_printf(b, "%s = sp_time_add_r(%s, ", lval, src);
+      emit_coerce(c, v, TY_RATIONAL, CO_CONVERT, "Time operator assignment", b);
+      buf_puts(b, ");\n");
+      return;
+    }
     if (vt == TY_INT || (g_promote_mode && vr.kind == RK_BOXED)) {
       buf_printf(b, "%s = %s(%s, ", lval, neg ? "sp_time_sub_i" : "sp_time_add_i", lval);
       if (vr.kind == RK_BOXED) emit_int_expr(c, v, b); else emit_expr(c, v, b);
