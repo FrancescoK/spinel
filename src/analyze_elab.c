@@ -196,8 +196,8 @@ static ElabPos elab_value_pos(const NodeTable *nt, int v, ElabPos q) {
    it as one (class_eval and kin, a class builder), is a frame of its own,
    which the statement opened; a branch, a loop's body and a rescue clause
    may not run, and the next arm of an elsif ladder or a rescue chain is
-   on the path; a value written under `||=` / `&&=`, or after `rescue`, may
-   not run; a block run at once by a call the record does not know (a
+   on the path; a value written under `||=` / `&&=`, after `rescue`, or the right side of `&&` and `||`, may
+   not run, as the right side of `&&` and `||` does; a block run at once by a call the record does not know (a
    program method may yield to it, or keep it) may not run, and an
    iterator's may run partly (zero times, or several). */
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
@@ -239,6 +239,9 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
     case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode:
       if (spine && ch == nt_ref(nt, p, "value")) return elab_value_pos(nt, ch, q);
+      break;
+    case NK_AndNode: case NK_OrNode:   /* the right side runs only if the left decides so: a lone expression, which may not run */
+      if (spine && ch == nt_ref(nt, p, "right")) { q.may = 1; return elab_body_pos(nt, ch, q); }
       break;
     case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
     case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
