@@ -9422,6 +9422,11 @@ static int desugar_sym_to_proc_call(Compiler *c) {
     nt_node_set_str(nt, id, "name", sym);
     nt_node_set_ref(nt, id, "receiver", av[0]);
     nt_node_set_ref(nt, id, "arguments", an > 1 ? rest : -1);
+    /* the `:m.to_proc` call is left in the node table, unreached; cut its
+       Symbol off so the to_proc -> lambda rewrite (desugar_enum_chain_shapes,
+       which visits every node id) cannot turn it into a lambda whose
+       parameters become locals and Symbols of the C */
+    nt_node_set_ref(nt, tp, "receiver", -1);
     comp_grow_node_arrays(c);
     c->nscope[rest] = c->nscope[id];
     changed = 1;
