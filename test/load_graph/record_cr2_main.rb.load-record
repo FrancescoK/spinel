@@ -23,14 +23,13 @@ r0 #20 f0 CallNode puts line 32
 r0 #21 f0 CallNode p line 33
 r0 #22 f0 CallNode puts line 34
 class TopHelper: body#1
-class M: body#3 include ?#4
+class M: body#3 include TopHelper#4
 class V: body#5
 class C: body#8 include V#9
 class Q: body#17 include M#18
 const TopHelper: write#1
 TopHelper#help: def#2 end=yes
 const M: write#3
-opaque M: opaque#4
 const V: write#5
 V#f: def#6 vis#7 private end=yes
 const C: write#8

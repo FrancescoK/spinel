@@ -457,7 +457,7 @@ static const char *lr_written_name(const NodeTable *nt, int cp) {
 }
 
 static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **out);
-static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, const LrDef **out, int depth);
+static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth);
 
 /* The class a constant's write or definition holds: a class or module
    header's (the scope walk's decision), a class builder's; else none known */
@@ -492,7 +492,7 @@ static int lr_class_ref(Compiler *c, int node) {
   if (k != NK_ConstantPathNode) return LR_UNKNOWN_CLASS;
   int par = nt_ref(nt, node, "parent"), pc = par < 0 ? LR_MAIN : lr_class_ref(c, par);
   LoadPoint p = elab_point_of(c, node);
-  if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
+  if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, pc == LR_MAIN, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
   return lr_class_of(c, d);
 }
 
@@ -852,8 +852,9 @@ int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p
 }
 
 /* The constants of cls and its ancestors at p: its own, its mixins' (the
-   last first), then its superclass's, and Object's after a class's */
-static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, const LrDef **out, int depth) {
+   last first), then its superclass's, and with top Object's after a
+   class's. A scoped read (`A::B`) leaves Object's out, as CRuby does. */
+static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(cls), name, 0), p, late, 0, out), unsure = 0;
@@ -863,12 +864,13 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
     const LrMixin *m = &k->mix[i];
     int b = m->kind == LR_EXTEND ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
     if (b == ELAB_NO) continue;
-    int mo = m->mod < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, out, depth + 1);
+    int mo = m->mod < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, top, out, depth + 1);
     if (mo == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
     if (mo != ELAB_NO) unsure = 1;
   }
   int sup = lr_super(c, cls);
-  o = sup >= LR_MAIN ? lr_const_in(c, sup, name, p, late, out, depth + 1) : ELAB_NO;
+  if (sup == LR_MAIN && !top) sup = LR_UNKNOWN_CLASS;
+  o = sup >= LR_MAIN ? lr_const_in(c, sup, name, p, late, top, out, depth + 1) : ELAB_NO;
   return unsure ? ELAB_UNKNOWN : o;
 }
 
@@ -903,7 +905,11 @@ static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **ou
     int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(ci), name, 0), p, late, 0, out);
     if (o != ELAB_NO) return o;
   }
-  return lr_const_in(c, first, name, p, late, out, 0);
+  /* then the innermost scope's ancestors, and Object's for a module too:
+     a lexical read falls back to Object */
+  int o = lr_const_in(c, first, name, p, late, 1, out, 0);
+  if (o == ELAB_NO && first != LR_MAIN && lr_super(c, first) == LR_UNKNOWN_CLASS) o = lr_const_in(c, LR_MAIN, name, p, late, 1, out, 0);
+  return o;
 }
 
 int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out) {
