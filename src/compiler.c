@@ -3652,6 +3652,15 @@ int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name) {
 int comp_lvw_next_sc(const Compiler *c, int w) {
   return (w >= 0 && w < c->lvws_count) ? c->lvws_next[w] : -1;
 }
+/* Does scope scope_idx write the local `name`? A non-empty chain alone
+   does not say: the other names in it are hash collisions. */
+int comp_lvw_any_sc(Compiler *c, int scope_idx, const char *name) {
+  for (int w = comp_lvw_first_sc(c, scope_idx, name); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(c->nt, w, "name");
+    if (c->nscope[w] == scope_idx && wn && sp_streq(wn, name)) return 1;
+  }
+  return 0;
+}
 
 /* Every CallNode in a scope, chained. The strbuf shape checks walked the
    whole node table per candidate local to find the calls of one scope; this

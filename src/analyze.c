@@ -3103,8 +3103,7 @@ static int ie_param_literals(Compiler *c, int blk, int cls) {
     if (!kw) return -1;
   }
   /* a write to it in the body could hand instance_exec another proc */
-  for (int w = comp_lvw_first_sc(c, (int)(sc - c->scopes), pn); w >= 0; w = comp_lvw_next_sc(c, w))
-    if (comp_scope_of(c, w) == sc) return 0;
+  if (comp_lvw_any_sc(c, (int)(sc - c->scopes), pn)) return 0;
   int traced = 1;
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     if (!sp_streq(nt_str(nt, u, "name"), sc->name)) continue;
@@ -14022,16 +14021,6 @@ static int narrowed_local_other_writes_fit(Compiler *c, int s, const char *nm, T
   return 1;
 }
 
-/* Does scope s write its local `name`? Its (scope, name) write chain also
-   holds other names whose hashes share the bucket. */
-static int scope_writes_local(Compiler *c, int s, const char *name) {
-  for (int w = comp_lvw_first_sc(c, s, name); w >= 0; w = comp_lvw_next_sc(c, w)) {
-    const char *wn = nt_str(c->nt, w, "name");
-    if (c->nscope[w] == s && wn && sp_streq(wn, name)) return 1;
-  }
-  return 0;
-}
-
 /* The parameter of a walk over a narrowed object array -- `xs.each { |x| }`,
    reverse_each, each_entry, each_with_index's first, map, collect and the
    filters -- binds an element, as `x = xs[i]` does in
@@ -14093,7 +14082,8 @@ static int narrow_walk_block_params(Compiler *c) {
       LocalVar *lv = &sc->locals[li];
       if (!lv->is_block_param || lv->rbs_seeded) continue;
       int gi = off[s] + li;
-      int fits = !bad[gi] && ty_is_object(elem[gi]) && !scope_writes_local(c, s, lv->name);
+      int fits = !bad[gi] && ty_is_object(elem[gi]) &&
+                 !comp_lvw_any_sc(c, s, lv->name);   /* not written in the body */
       /* a pin whose walk no longer qualifies (the array widened, another
          block binds the name) goes, and the parameter is the walk's boxed
          element again */
