@@ -41,5 +41,11 @@ int c_split_units(const char *pre_path, const char *out_dir, const CSplitOpts *o
    not a units.txt of someone else's that happens to be there. */
 int c_split_units_manifest(const char *path);
 void c_split_result_free(CSplitResult *res);
+/* The compile flags a split or unit build links its objects with:
+   `flags` without its `-mllvm <option>` pairs, which reach the code
+   generator only, and clang warns, once per pair, that a link of objects
+   does not use them (wasm32-wasi's sjlj lowering). malloc'd. */
+char *c_link_flags(const char *flags);
+
 
 #endif

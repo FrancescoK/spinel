@@ -446,8 +446,9 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
   if (rc == 0) {
     size_t ll = strlen(cmd) + (size_t)nparts * 4200 + 16;
     char *lk = malloc(ll);
-    size_t w = 0;
-    memcpy(lk, cmd, src_at); w = src_at;
+    char *lf = c_link_flags(flags);
+    size_t w = (size_t)snprintf(lk, ll, "%s", lf);
+    free(lf);
     for (int k = 0; k < nparts; k++) w += (size_t)snprintf(lk + w, ll - w, "'%s.o' ", parts[k]);
     snprintf(lk + w, ll - w, "%s", cmd + src_end);
     rc = system(lk);
@@ -530,7 +531,8 @@ static void usage(void) {
     "              none); `spinel bisect` searches the list for a wrong answer\n"
     "  --cc=CMD    C compiler (default: cc)\n"
     "  --jobs=N    compile the generated C as N units in parallel\n"
-    "              (default: split only a unit of 4 MB or more; --jobs=1 never)\n"
+    "              (default: split only a unit of 4 MB or more, and no wasm32-wasi\n"
+    "              module; --jobs=1 never)\n"
     "  --split-parts=M  With a split: cut M parts and compile them N at a time,\n"
     "              the biggest first (default: M = N)\n"
     "  --incremental  Development build: compile the C in units, reuse the cached\n"
@@ -725,10 +727,9 @@ static int incremental_opt(const char *a) {
 }
 /* After option parsing, before the frontend runs, so a refused combination
    leaves nothing half built: the modes that print or emit something other
-   than a native binary, and wasm32-wasi (never split), do not combine with
-   --incremental. Otherwise turns the unit pragmas on. 1: refused (said
-   why), 0: go on. */
-static int incremental_begin(int stdout_mode, int print_build, int emit_rbs, int emit_types, int emit_symbol_map, int target_wasi) {
+   than a binary do not combine with --incremental. Otherwise turns the
+   unit pragmas on. 1: refused (said why), 0: go on. */
+static int incremental_begin(int stdout_mode, int print_build, int emit_rbs, int emit_types, int emit_symbol_map) {
   if (inc_flags.bad) {
     fprintf(stderr, "spinel: --unit-bytes expects a size such as 256K or 1M, got '%s'\n", inc_flags.bad);
     return 1;
@@ -740,7 +741,7 @@ static int incremental_begin(int stdout_mode, int print_build, int emit_rbs, int
   const char *with = stdout_mode ? "-S" : print_build ? "--print-build" : emit_rbs ? "--emit-rbs"
                    : emit_types ? "--emit-types" : emit_symbol_map ? "--emit-symbol-map"
                    : g_ext_init_name ? "--ext-init" : g_ext_entries ? "--ext-entry" : g_ext_target ? "--ext"
-                   : target_wasi ? "--target=wasm32-wasi" : NULL;
+                   : NULL;
   if (with) {
     fprintf(stderr, "spinel: --incremental cannot be combined with %s\n", with);
     return 1;
@@ -836,16 +837,18 @@ static int cc_native_build(const char *cmd, size_t src_at, size_t src_end, const
   /* Unasked, only a large unit is split: a part cannot inline what another
      part defines, which cost optcarrot's 0.6 MB unit ~10% of its speed, and
      run time comes before build time. A unit this large is where cc's one
-     core is the build (campfire's 10 MB: 77 s whole, 36 s split). */
+     core is the build (campfire's 10 MB: 77 s whole, 36 s split). A
+     wasm32-wasi module splits only when --jobs asks: it was never split
+     before, and a module that got slower unasked would say nothing why. */
   if (cc_jobs == 0) {
     struct stat cst;
     cc_jobs = 1;
-    if (stat(c_path, &cst) == 0 && cst.st_size >= SPLIT_AUTO_BYTES) {
+    if (!target_wasi && stat(c_path, &cst) == 0 && cst.st_size >= SPLIT_AUTO_BYTES) {
       long nc = sysconf(_SC_NPROCESSORS_ONLN);
       cc_jobs = nc > 16 ? 16 : nc > 1 ? (int)nc : 1;
     }
   }
-  if (cc_jobs > 1 && !target_wasi)
+  if (cc_jobs > 1)
     cc_rc = cc_split_build(cmd, src_at, src_end, c_path, cc_jobs);
   if (cc_rc != 0 && !(cc_jobs > 1 && getenv("SPINEL_SPLIT_STRICT")))
     cc_rc = system(cmd);   /* the single unit, or the fallback */
@@ -1112,7 +1115,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "spinel: -E (run) cannot be combined with -o/-c/-S\n");
     return 2;
   }
-  if (incremental_begin(stdout_mode, print_build, emit_rbs, emit_types, emit_symbol_map, target_wasi)) return 1;
+  if (incremental_begin(stdout_mode, print_build, emit_rbs, emit_types, emit_symbol_map)) return 1;
 
   const char *ov_define = NULL;
   if (sp_streq(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";
@@ -1553,17 +1556,17 @@ int main(int argc, char **argv) {
      leaves out, wasi-libc's emulations of signals, mmap and process clocks,
      and setjmp/longjmp through the standard exception-handling instructions
      (the C compiler's default is the legacy encoding, which the engines
-     refuse). The main thread's stack is linear memory too; 8 MB is the
-     native default. */
+     refuse). */
   if (target_wasi) {
     snprintf(tmp, sizeof tmp, "-I\"%s%cwasi\" ", lib_dir, PATH_SEP); s_add(&cmd, tmp);
     { char wi[4096]; snprintf(wi, sizeof wi, "%s%cwasi", lib_dir, PATH_SEP); bi_put(&bi, "include", wi); }
     static const char *const wdefs[] = { "-D_WASI_EMULATED_SIGNAL", "-D_WASI_EMULATED_PROCESS_CLOCKS", "-D_WASI_EMULATED_GETPID", "-D_WASI_EMULATED_MMAN" };
     for (size_t wi = 0; wi < sizeof wdefs / sizeof wdefs[0]; wi++) { s_add(&cmd, wdefs[wi]); s_add(&cmd, " "); bi_put(&bi, "define", wdefs[wi]); }
-    static const char *const wcfl[] = { "-mllvm", "-wasm-enable-sjlj", "-mllvm", "-wasm-use-legacy-eh=false", "-Wl,-z,stack-size=8388608" };
+    static const char *const wcfl[] = { "-mllvm", "-wasm-enable-sjlj", "-mllvm", "-wasm-use-legacy-eh=false" };
     /* --exceptions=abort: no sjlj lowering (it is what needs the host's
-       exception handling) and the runtime's abort form of setjmp/longjmp; the first four flags are the sjlj lowering */
-    for (size_t wi = exc_abort ? 4 : 0; wi < sizeof wcfl / sizeof wcfl[0]; wi++) { s_add(&cmd, wcfl[wi]); s_add(&cmd, " "); bi_put(&bi, "cflag", wcfl[wi]); }
+       exception handling) and the runtime's abort form of setjmp/longjmp */
+    if (!exc_abort)
+      for (size_t wi = 0; wi < sizeof wcfl / sizeof wcfl[0]; wi++) { s_add(&cmd, wcfl[wi]); s_add(&cmd, " "); bi_put(&bi, "cflag", wcfl[wi]); }
     if (exc_abort) { s_add(&cmd, "-DSP_EXC_ABORT "); bi_put(&bi, "define", "-DSP_EXC_ABORT"); }
   }
 #if defined(_WIN32)
@@ -1688,6 +1691,11 @@ int main(int argc, char **argv) {
   s_add(&cmd, "-lm ");
   bi_put(&bi, "lib", "-lm");
   if (target_wasi) {
+    /* The main thread's stack is linear memory too; 8 MB is the native
+       default. A linker flag, so it follows the source: a split build
+       compiles each part with the flags before it, where clang warns that
+       a -Wl is unused. */
+    s_add(&cmd, "-Wl,-z,stack-size=8388608 "); bi_put(&bi, "lib", "-Wl,-z,stack-size=8388608");
     /* the emulations the defines above asked for, and sjlj's runtime */
     static const char *const wlibs[] = { "-lsetjmp", "-lwasi-emulated-signal", "-lwasi-emulated-process-clocks", "-lwasi-emulated-getpid", "-lwasi-emulated-mman" };
     /* --exceptions=abort leaves out the first, -lsetjmp */

@@ -388,15 +388,18 @@ static int inc_store(const IncBuild *b, const char *key, const char *obj) {
   return 0;
 }
 
-/* The link: the compile flags again (the shape the --jobs split links
-   with), every unit's object in units.txt order, then what followed the
-   source in the single-unit command (the runtime archive, --link inputs,
+/* The link: the compile flags again, less the code generator's -mllvm
+   pairs (c_link_flags, the shape the --jobs split links with), every
+   unit's object in units.txt order, then what followed the source in the
+   single-unit command (the runtime archive, --link inputs,
    -lm, the section GC flag, -o). The order depends on the text alone, so a
    build that hit links the same inputs as one that compiled them all. */
 static int inc_link(const IncBuild *b, const char *cmd, size_t src_end) {
   size_t ll = strlen(cmd) + (size_t)b->res.n * 4200 + 16;
   char *lk = malloc(ll);
-  size_t w = (size_t)snprintf(lk, ll, "%s", b->flags);
+  char *lf = c_link_flags(b->flags);
+  size_t w = (size_t)snprintf(lk, ll, "%s", lf);
+  free(lf);
   for (int k = 0; k < b->res.n; k++) {
     char obj[4096];
     inc_unit_obj(&b->res.units[k], obj, sizeof obj);

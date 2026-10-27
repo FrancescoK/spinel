@@ -143,7 +143,7 @@ rm -f "$T/desc.c"
 
 # --- 1 refusals ------------------------------------------------------------
 nref=0; bad=""
-for fl in -S --print-build --emit-rbs --emit-types --emit-symbol-map "--ext-init x" --target=wasm32-wasi; do
+for fl in -S --print-build --emit-rbs --emit-types --emit-symbol-map "--ext-init x"; do
   # shellcheck disable=SC2086
   "$SP" --incremental $fl "$P" -o "$T/ref" > "$T/ref.err" 2>&1
   r=$?
@@ -154,8 +154,8 @@ for fl in --unit-bytes=1M --cache-stats; do
   r=$?
   if [ $r = 1 ] && grep -q 'needs --incremental' "$T/ref.err"; then nref=$((nref + 1)); else bad="$bad [$fl alone rc=$r]"; fi
 done
-[ $nref = 9 ] && o=1 || o=0
-report "1 refusals" $o "$nref of 9 refused$bad"
+[ $nref = 8 ] && o=1 || o=0
+report "1 refusals" $o "$nref of 8 refused$bad"
 
 # --- 2 the default output is untouched -------------------------------------
 "$SP" "$P" -c --no-line-map -o "$T/plain.c" > "$T/plain.c.err" 2>&1
