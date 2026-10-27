@@ -610,7 +610,6 @@ int builtin_class_arity_spec(const char *cls, const char *m, int *min, int *max,
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
-int desugar_errno_aliases(Compiler *c);
 const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 void desugar_class_reopen(Compiler *c);
 int is_class_const(const NodeTable *nt, int id);   /* a `Class` constant read */
@@ -634,14 +633,9 @@ int fold_static_is_a(Compiler *c);
 int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
 int an_class_includes_enumerable(Compiler *c, int ci);
-int desugar_block_destructure_params(Compiler *c);
-int desugar_for_nonlocal_index(Compiler *c);
 int desugar_block_implicit_rest(Compiler *c);
-int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
-int desugar_anon_block_param(Compiler *c);
 int desugar_singleton_class_define_method(Compiler *c);
-int desugar_empty_hash_compare_by_identity(Compiler *c);
 int desugar_define_method_proc_arg(Compiler *c);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
@@ -650,8 +644,6 @@ int desugar_body_local_scopes(Compiler *c);
 int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
-int desugar_param_default_assigns_local(Compiler *c);
-int desugar_sort_by_with_index(Compiler *c);
 int desugar_enumerable_via_to_a(Compiler *c);
 int desugar_public_method(Compiler *c);
 int desugar_class_eval_value(Compiler *c);
@@ -663,18 +655,12 @@ int desugar_bare_class_self_calls(Compiler *c);
 int desugar_ie_bare_object_calls(Compiler *c);
 int desugar_bare_object_reopen_calls(Compiler *c);
 int desugar_descendant_reader_calls(Compiler *c);
-int desugar_match_predicate(Compiler *c);
 int desugar_masgn_store_evidence(Compiler *c);
-int desugar_blk_param_writes(Compiler *c);
-int desugar_rest_param_writes(Compiler *c);
-int desugar_yield_in_closure(Compiler *c);
 int desugar_index_assign_user_recv(Compiler *c);
 int desugar_index_assign_value(Compiler *c);
 int desugar_method_added_hook(Compiler *c);
 int desugar_io_console_modes(Compiler *c);
 int desugar_reader_index_write(Compiler *c);
-int desugar_const_attr_op_assign(Compiler *c);
-int desugar_safe_nav_attr_write(Compiler *c);
 int desugar_body_self_call(Compiler *c);
 int desugar_body_module_eval(Compiler *c);
 int desugar_extend_self(Compiler *c);
@@ -698,7 +684,76 @@ int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
 int desugar_static_class_eval(Compiler *c);
 int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
-void desugar_nil_block_arg(Compiler *c);
+
+/* ---- the lowering table (analyze_lower.c, #9898) ----
+   The rewrites the load stage makes are the rows of one table, run by one
+   driver. A row's visit rewrites the shape it eliminates at one node; its
+   left says whether that shape is at a node, for SPINEL_LOWER_CHECK. The
+   driver owns the loop: lower_run visits every node below the count at its
+   entry, in ascending id, those no root reaches included. */
+
+/* the rows, in the order the stage runs them */
+enum {
+  LW_NIL_BLOCK_ARG, LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_RESCUE_BLOCK_BODIES,
+  LW_MARK_SYM_PROC_BLOCKS, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES, LW_MARK_RANGE_LOCALS,
+  LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES, LW_REASSIGNED_BLOCK_PARAMS,
+  LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE, LW_SAFE_NAV_ATTR_WRITE,
+  LW_CONST_ATTR_OP_ASSIGN, LW_EMPTY_HASH_COMPARE_BY_IDENTITY, LW_NAME_ANON_BLOCK_KWREST, LW_RIGHTWARD_PATTERN,
+  LW_MATCH_PREDICATE, LW_SORT_BY_WITH_INDEX, LW_ANON_BLOCK_PARAM, LW_MULTI_VALUE_JUMP, LW_BLOCK_DESTRUCTURE_PARAMS,
+  LW_FOR_NONLOCAL_INDEX, LW_ENUM_FOR_WITH_ARGS, LW_ENUMERATOR_PRODUCE, LW_PARAM_DEFAULT_ASSIGNS_LOCAL,
+  LW__COUNT
+};
+
+typedef struct LowerCtx {
+  int check;                /* SPINEL_LOWER_CHECK=1: the rows are checked and the compile stops */
+  int findings;             /* what the check reported */
+  int rewrote[LW__COUNT];   /* per row, the nodes it rewrote (the check's report) */
+  int n0;                   /* the node count at the running row's entry */
+  /* scratch of the running row, zero at each run */
+  int serial;               /* the fresh-name counter of a run */
+  char **used;              /* names the program wrote that a row's invented ones must step past */
+  int nused;
+  int used_built;
+} LowerCtx;
+
+typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);
+
+void lower_begin(Compiler *c, LowerCtx *lc);
+void lower_run(Compiler *c, LowerCtx *lc, int row);
+void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
+
+/* the rows' functions, in the files that own the rewrites */
+LowerFn desugar_nil_block_arg_at, desugar_nil_block_arg_left;               /* analyze_desugar.c */
+LowerFn desugar_paren_block_arg_at, desugar_paren_block_arg_left;           /* analyze.c */
+LowerFn desugar_paren_operands_at, desugar_paren_operands_left;
+LowerFn desugar_send_class_makers_at, desugar_send_class_makers_left;
+LowerFn desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left;
+LowerFn mark_sym_proc_blocks_at;                                             /* analyze_desugar.c */
+LowerFn desugar_errno_aliases_at, desugar_errno_aliases_left;
+LowerFn desugar_paren_def_body_at, desugar_paren_def_body_left;
+LowerFn mark_match_ranges_at, mark_range_locals_at;
+LowerFn desugar_duplicate_underscore_params_at, desugar_duplicate_underscore_params_left;
+LowerFn desugar_encoding_queries_at, desugar_encoding_queries_left;
+LowerFn desugar_alias_method_string_names_at, desugar_alias_method_string_names_left;
+LowerFn desugar_reassigned_block_params_at, desugar_reassigned_block_params_left;
+LowerFn desugar_tap_value_write_at;                                          /* analyze.c */
+LowerFn desugar_blk_param_writes_at, desugar_blk_param_writes_left;         /* analyze_desugar.c */
+LowerFn desugar_rest_param_writes_at, desugar_rest_param_writes_left;
+LowerFn desugar_yield_in_closure_at, desugar_yield_in_closure_left;
+LowerFn desugar_safe_nav_attr_write_at, desugar_safe_nav_attr_write_left;
+LowerFn desugar_const_attr_op_assign_at, desugar_const_attr_op_assign_left;
+LowerFn desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left;
+LowerFn name_anon_block_kwrest_at, name_anon_block_kwrest_left;             /* analyze.c */
+LowerFn desugar_rightward_pattern_at, desugar_rightward_pattern_left;       /* analyze_desugar.c */
+LowerFn desugar_match_predicate_at, desugar_match_predicate_left;
+LowerFn desugar_sort_by_with_index_at, desugar_sort_by_with_index_left;
+LowerFn desugar_anon_block_param_at, desugar_anon_block_param_left;
+LowerFn desugar_multi_value_jump_at, desugar_multi_value_jump_left;
+LowerFn desugar_block_destructure_params_at, desugar_block_destructure_params_left;  /* analyze_pass.c */
+LowerFn desugar_for_nonlocal_index_at, desugar_for_nonlocal_index_left;
+LowerFn desugar_enum_for_with_args_at;                                       /* analyze.c */
+LowerFn desugar_enumerator_produce_at, desugar_enumerator_produce_left;
+LowerFn desugar_param_default_assigns_local_at;                              /* analyze_desugar.c */
 int desugar_compose_method_operand(Compiler *c);
 int desugar_mutator_receiver_value(Compiler *c);
 int desugar_method_curry(Compiler *c);
@@ -725,12 +780,10 @@ int desugar_dynamic_method(Compiler *c);
 int desugar_method_call_runtime_name(Compiler *c);
 int desugar_builtin_method_defined_conds(Compiler *c);
 int desugar_engine_branches(Compiler *c);
-int desugar_paren_def_body(Compiler *c);
 int desugar_conditional_defs(Compiler *c);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);
-int desugar_rightward_pattern(Compiler *c);
 int desugar_step_kwargs(Compiler *c);
 int desugar_defined_method_call(Compiler *c);
 int desugar_respond_to_probe(Compiler *c);
@@ -748,7 +801,6 @@ int desugar_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_enum_pair_lone_param(Compiler *c);
 int sym_block_values(Compiler *c, int id);
-void mark_sym_proc_blocks(Compiler *c);
 void enum_hop_yield_view(Compiler *c, int id, int hop);
 int sym_proc_poly_pair_view(Compiler *c, int id);
 int desugar_to_h_block(Compiler *c);
@@ -764,16 +816,11 @@ int desugar_const_ivar_access(Compiler *c);
 int desugar_class_eval_ivars(Compiler *c);
 int desugar_literal_undef_method(Compiler *c);
 int desugar_builtin_ivars(Compiler *c);
-void mark_match_ranges(Compiler *c);
-int desugar_duplicate_underscore_params(Compiler *c);
-int desugar_encoding_queries(Compiler *c);
-int desugar_alias_method_string_names(Compiler *c);
 int desugar_alias_method_values(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
 int desugar_builtin_alias_calls(Compiler *c);
 int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_readers_over_inherited_defs(Compiler *c);
-int desugar_reassigned_block_params(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);
 int desugar_singleton_class_meta(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
@@ -842,7 +889,6 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth, QCWri
 void qualify_colliding_consts(Compiler *c);
 void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
 void qualify_colliding_classes(Compiler *c);
-void name_anon_block_kwrest(Compiler *c);
 void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
 void expand_struct_forwarding_super(Compiler *c);

@@ -211,6 +211,8 @@ void nt_put_file(NodeTable *nt, int fid, const char *path);
    SOURCE_FILE and FILE header lines, then each node's N line followed by
    its S, I, F, R and A lines, in id order. --dump-ast writes it. */
 void nt_dump(const NodeTable *nt, FILE *out);
+/* A hash of every node's type, content and fields (SPINEL_LOWER_CHECK). */
+unsigned long long nt_content_hash(const NodeTable *nt);
 
 void nt_free(NodeTable *nt);
 /* Renumber the nodes to an order: order[k] is the id node k had (node_table.c). */

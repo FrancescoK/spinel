@@ -9193,12 +9193,12 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
    name the program wrote, not the slot the rename invented. EVERY parameter
    kind has to go through this -- rest, keyword, keyword-rest and block leaked
    the suffix while the positional ones were stripped (#4045). */
-static const char *param_public_name(const char *n) {
+static const char *param_public_name(const Compiler *c, const char *n) {
   if (!n) return n;
   if (!strncmp(n, "__blk_kwrest", 12)) return "**";   /* name_anon_block_kwrest */
   /* the slot of a parameter the body assigns (desugar_reassigned_block_params)
      stands for the name written, with or without the shadow rename's suffix */
-  size_t len = reassigned_param_written_len(n);
+  size_t len = reassigned_param_written_len(c, n);
   if (!n[len]) len = block_param_written_len(n);
   if (!n[len]) return n;
   { static char *buf; static size_t cap;   /* a name of any length: nothing is cut */
@@ -10083,7 +10083,7 @@ else if (orecv >= 0 && onm) {
            must not leak, and neither must a renamed local's suffix (#3679) */
         const char *rnm = nt_str(nt, ids[i], "name");
         pname[meta_count++] = (rnm && strncmp(rnm, "__destr_", 8) == 0)
-                                ? -1 : comp_sym_intern(c, param_public_name(rnm));
+                                ? -1 : comp_sym_intern(c, param_public_name(c, rnm));
       }
       ids = nt_arr(nt, pn, "optionals", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
@@ -10092,37 +10092,37 @@ else if (orecv >= 0 && onm) {
         pkind[meta_count] = "opt";
         { const char *onm = nt_str(nt, ids[i], "name");
           pname[meta_count++] = (onm && strncmp(onm, "__destr_", 8) == 0)
-                                  ? -1 : comp_sym_intern(c, param_public_name(onm)); }
+                                  ? -1 : comp_sym_intern(c, param_public_name(c, onm)); }
       }
       int rest = nt_ref(nt, pn, "rest");
       NodeKind rk = nt_kind(nt, rest);
       if (rk == NK_RestParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(nt_str(nt, rest, "name"));
+        const char *nm = param_public_name(c, nt_str(nt, rest, "name"));
         pkind[meta_count] = "rest";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "*");
       }
       ids = nt_arr(nt, pn, "posts", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
         pkind[meta_count] = pos_kind;
-        pname[meta_count++] = comp_sym_intern(c, param_public_name(nt_str(nt, ids[i], "name")));
+        pname[meta_count++] = comp_sym_intern(c, param_public_name(c, nt_str(nt, ids[i], "name")));
       }
       ids = nt_arr(nt, pn, "keywords", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
         NodeKind kk = nt_kind(nt, ids[i]);
         pkind[meta_count] = (kk == NK_OptionalKeywordParameterNode) ? "key" : "keyreq";
-        pname[meta_count++] = comp_sym_intern(c, param_public_name(nt_str(nt, ids[i], "name")));
+        pname[meta_count++] = comp_sym_intern(c, param_public_name(c, nt_str(nt, ids[i], "name")));
       }
       int kwrest = nt_ref(nt, pn, "keyword_rest");
       NodeKind kwty_k = nt_kind(nt, kwrest);
       if (kwty_k == NK_KeywordRestParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(nt_str(nt, kwrest, "name"));
+        const char *nm = param_public_name(c, nt_str(nt, kwrest, "name"));
         pkind[meta_count] = "keyrest";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "**");
       }
       int bpar = nt_ref(nt, pn, "block");
       NodeKind bk = nt_kind(nt, bpar);
       if (bk == NK_BlockParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(nt_str(nt, bpar, "name"));
+        const char *nm = param_public_name(c, nt_str(nt, bpar, "name"));
         pkind[meta_count] = "block";
         pname[meta_count++] = comp_sym_intern(c, nm ? nm : "&");
       }
@@ -10624,13 +10624,13 @@ else if (orecv >= 0 && onm) {
         buf_puts(pb, "    { static const char *const _pkw[] = {");
         for (int j = 0; j < nkw2; j++) {
           const char *kn = nt_str(nt, kwn[j], "name");
-          if (kn) buf_printf(pb, "\"%s\", ", param_public_name(kn));
+          if (kn) buf_printf(pb, "\"%s\", ", param_public_name(c, kn));
         }
         buf_puts(pb, "0}, *const _pkr[] = {");
         for (int j = 0; j < nkw2; j++) {
           const char *kn = nt_str(nt, kwn[j], "name");
           if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
-            buf_printf(pb, "\"%s\", ", param_public_name(kn));
+            buf_printf(pb, "\"%s\", ", param_public_name(c, kn));
         }
         buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
         /* judged without building anything on the path that binds: the
@@ -10643,7 +10643,7 @@ else if (orecv >= 0 && onm) {
             const char *kn = nt_str(nt, kwn[j], "name");
             if (kn && nt_kind(nt, kwn[j]) == NK_RequiredKeywordParameterNode)
               buf_printf(pb, " || !sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))",
-                         comp_sym_intern(c, param_public_name(kn)));
+                         comp_sym_intern(c, param_public_name(c, kn)));
           }
           buf_puts(pb, ")");
         }
@@ -10653,7 +10653,7 @@ else if (orecv >= 0 && onm) {
           for (int j = 0; j < nkw2; j++) {
             const char *kn = nt_str(nt, kwn[j], "name");
             if (!kn || nt_kind(nt, kwn[j]) != NK_RequiredKeywordParameterNode) continue;
-            char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(kn));
+            char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(c, kn));
             kw_names_add(miss, sizeof miss, &nm, iv);
           }
           kw_error_message(km, sizeof km, "missing", nm, miss);
@@ -10668,7 +10668,7 @@ else if (orecv >= 0 && onm) {
       int dv = (kpk == NK_OptionalKeywordParameterNode)
                  ? nt_ref(nt, kwn[j], "value") : -1;
       char key[128];
-      snprintf(key, sizeof key, "%s", param_public_name(kn));
+      snprintf(key, sizeof key, "%s", param_public_name(c, kn));
       int sym_id = comp_sym_intern(c, key);
       char cond[160], arg[128], missing[160];
       snprintf(cond, sizeof cond, "_sp_haskw && sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))", sym_id);
@@ -10699,7 +10699,7 @@ else if (orecv >= 0 && onm) {
         for (int j = 0; j < nkw3; j++) {
           const char *kn = nt_str(nt, kwn3[j], "name");
           if (kn) buf_printf(pb, "    sp_PolyPolyHash_delete((sp_PolyPolyHash *)_kwr_%s.v.p, sp_box_sym((sp_sym)%d));%c",
-                             krn, comp_sym_intern(c, param_public_name(kn)), 10);
+                             krn, comp_sym_intern(c, param_public_name(c, kn)), 10);
         }
       }
       else

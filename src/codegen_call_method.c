@@ -165,7 +165,7 @@ static void emit_method_desc_literal(Compiler *c, int mi, const char *sym, int u
       buf_printf(&d, m->pdefault[i] >= 0 ? "%s: ..." : "%s:", m->pnames[i]);
     else if (m->pdefault[i] >= 0) buf_printf(&d, "%s=...", m->pnames[i]);
     else /* a define_method block's assigned parameter: the name written, not its slot */
-      buf_printf(&d, "%.*s", (int)reassigned_param_written_len(m->pnames[i]), m->pnames[i]);
+      buf_printf(&d, "%.*s", (int)reassigned_param_written_len(c, m->pnames[i]), m->pnames[i]);
   }
   /* the block parameter, last, as CRuby renders it (`&blk`; `&` anonymous) */
   if (m->blk_param) buf_printf(&d, "%s&%s", m->nparams ? ", " : "", m->blk_param);

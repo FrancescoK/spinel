@@ -1610,6 +1610,11 @@ typedef struct {
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
   int *splat_views;
   int nsplat_views;
+  /* the slot names desugar_reassigned_block_params invents, each with the
+     length of the name it stands for (reassigned_param_written_len) */
+  char **rbp_slot_names;
+  size_t *rbp_slot_lens;
+  int nrbp_slots;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 

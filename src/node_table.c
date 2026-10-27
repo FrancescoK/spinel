@@ -258,6 +258,44 @@ static void dump_escaped(FILE *out, const char *s, size_t n) {
   }
 }
 
+/* A hash of what the nodes hold: each one's type, content and fields, in
+   id order. Two tables with the same hash are, for a check that compares a
+   table before and after a pass, the same. */
+static unsigned long long nt_hash_bytes(unsigned long long h, const void *p, size_t n) {
+  const unsigned char *b = p;
+  for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+  return h;
+}
+static unsigned long long nt_hash_str(unsigned long long h, const char *s) {
+  return s ? nt_hash_bytes(h, s, strlen(s) + 1) : nt_hash_bytes(h, "", 1);
+}
+unsigned long long nt_content_hash(const NodeTable *nt) {
+  unsigned long long h = 14695981039346656037ull;
+  h = nt_hash_bytes(h, &nt->count, sizeof nt->count);
+  for (int id = 0; id < nt->count; id++) {
+    const SpNode *nd = &nt->nodes[id];
+    h = nt_hash_str(h, nd->type);
+    h = nt_hash_str(h, nd->content);
+    for (int j = 0; j < nd->ns; j++) {
+      h = nt_hash_str(h, nd->s[j].key);
+      h = nt_hash_bytes(h, nd->s[j].val, nd->s[j].val_len);
+    }
+    for (int j = 0; j < nd->ni; j++) {
+      h = nt_hash_str(h, nd->i[j].key);
+      h = nt_hash_bytes(h, &nd->i[j].val, sizeof nd->i[j].val);
+    }
+    for (int j = 0; j < nd->nr; j++) {
+      h = nt_hash_str(h, nd->r[j].key);
+      h = nt_hash_bytes(h, &nd->r[j].ref, sizeof nd->r[j].ref);
+    }
+    for (int j = 0; j < nd->na; j++) {
+      h = nt_hash_str(h, nd->a[j].key);
+      h = nt_hash_bytes(h, nd->a[j].ids, sizeof(int) * (size_t)nd->a[j].n);
+    }
+  }
+  return h;
+}
+
 void nt_dump(const NodeTable *nt, FILE *out) {
   fprintf(out, "ROOT %d\n", nt->root_id);
   if (nt->source_file) {
