@@ -38,11 +38,13 @@ for t in test/analysis-forms/*.rb test/class_table_loop_*.rb; do
     if ! "$SP" $fl "$t" -o "$tmp/$b.$mode" >"$tmp/$b.cc" 2>&1; then
       echo "analysis-forms-test: FAIL ($t: $mode compile)"; sed -n 1,5p "$tmp/$b.cc"; ok=0; continue
     fi
-    $TO "$tmp/$b.$mode" >"$tmp/$b.out" 2>&1
+    $TO "$tmp/$b.$mode" >"$tmp/$b.out" 2>&1; rc=$?
+    [ $rc -eq 0 ] || { echo "analysis-forms-test: FAIL ($t: $mode run exits $rc)"; ok=0; }
     cmp -s "$tmp/$b.out" "$t.expected" ||
       { echo "analysis-forms-test: FAIL ($t: $mode output)"; diff -u "$t.expected" "$tmp/$b.out" | head -10; ok=0; }
     if [ $mode = plain ]; then
-      SPINEL_GC_STRESS=1 $TO "$tmp/$b.$mode" >"$tmp/$b.out" 2>&1
+      SPINEL_GC_STRESS=1 $TO "$tmp/$b.$mode" >"$tmp/$b.out" 2>&1; rc=$?
+      [ $rc -eq 0 ] || { echo "analysis-forms-test: FAIL ($t: run under SPINEL_GC_STRESS=1 exits $rc)"; ok=0; }
       cmp -s "$tmp/$b.out" "$t.expected" ||
         { echo "analysis-forms-test: FAIL ($t: output under SPINEL_GC_STRESS=1)"; diff -u "$t.expected" "$tmp/$b.out" | head -10; ok=0; }
     fi
