@@ -1514,7 +1514,7 @@ static int kr_is_visibility_marker(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 ||
       nt_ref(nt, st, "arguments") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
   const char *nm = nt_str(nt, st, "name");
-  return nm && (is_visibility_or_module_function(nm));
+  return nm && visibility_of_name(nm);
 }
 /* In a Kernel def's copy in Object, a bare call to another of the
    reopening's methods is a call on self: the Object method, not the
@@ -1598,7 +1598,7 @@ static int kernel_reopen_top(NodeTable *nt, int top, const char **names, int *nn
       const char *vm = nt_kind(nt, d) == NK_CallNode && nt_ref(nt, d, "receiver") < 0
                        ? nt_str(nt, d, "name") : NULL;
       int marker = kr_is_visibility_marker(nt, d);
-      if (objd && vm && is_visibility_or_module_function(vm) && nt_ref(nt, d, "block") < 0) {
+      if (objd && vm && visibility_of_name(vm) && nt_ref(nt, d, "block") < 0) {
         int cl = nt_clone_subtree(nt, d);
         if (cl >= 0) {
           if (sp_streq(vm, "module_function")) nt_node_set_str(nt, cl, "name", "private");
@@ -10184,7 +10184,7 @@ static int fwd_body_def(const NodeTable *nt, int st) {
   if (fwd_node_is(nt, st, "DefNode")) return st;
   if (!fwd_node_is(nt, st, "CallNode") || nt_ref(nt, st, "receiver") >= 0) return -1;
   const char *nm = nt_str(nt, st, "name");
-  if (!nm || !(is_visibility_or_module_function(nm))) return -1;
+  if (!nm || !visibility_of_name(nm)) return -1;
   int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
   return an == 1 && fwd_node_is(nt, av[0], "DefNode") ? av[0] : -1;
 }
@@ -10947,7 +10947,7 @@ static int dm_stmt_call(NodeTable *nt, int s) {
   int args = nt_ref(nt, s, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (nm && nt_ref(nt, s, "receiver") < 0 && an == 1 && nt_kind(nt, av[0]) == NK_CallNode &&
-      is_visibility_name(nm))
+      visibility_of_name(nm) > BVIS_MODULE_FUNCTION)
     return av[0];
   return s;
 }
@@ -11705,7 +11705,7 @@ typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; i
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
-  const int *av = nm && is_visibility_name(nm)
+  const int *av = nm && visibility_of_name(nm) > BVIS_MODULE_FUNCTION
                   ? nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an) : NULL;
   return an == 1 && nt_kind(nt, av[0]) == NK_DefNode ? av[0] : -1;
 }
@@ -11727,7 +11727,7 @@ static int cdef_alias(const NodeTable *nt, int id, int *nw) {
     int args = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (sp_streq(nt_str(nt, id, "name"), "alias_method") && an == 2) { od = av[1]; *nw = av[0]; }
-    else if (is_visibility_name(nt_str(nt, id, "name")) && an == 1) return cdef_alias(nt, av[0], nw);
+    else if (visibility_of_name(nt_str(nt, id, "name")) > BVIS_MODULE_FUNCTION && an == 1) return cdef_alias(nt, av[0], nw);
   }
   NodeKind ok = od >= 0 ? nt_kind(nt, od) : NK_NilNode, nk = *nw >= 0 ? nt_kind(nt, *nw) : NK_NilNode;
   return (ok == NK_SymbolNode || ok == NK_StringNode) && (nk == NK_SymbolNode || nk == NK_StringNode) ? od : -1;
@@ -21491,7 +21491,7 @@ int desugar_builtin_ivars(Compiler *c) {
       int d = nb[k];
       /* `private def m ...`: the def is the call's argument */
       if (nt_kind(nt, d) == NK_CallNode && nt_str(nt, d, "name") &&
-          is_visibility_or_module_function(nt_str(nt, d, "name"))) {
+          visibility_of_name(nt_str(nt, d, "name"))) {
         int an = nt_ref(nt, d, "arguments"), ac = 0;
         const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
         d = ac == 1 ? av[0] : -1;
@@ -24183,7 +24183,7 @@ static int sce_program_owns_class_eval(const NodeTable *nt) {
 static int sce_bare_visibility(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "arguments") >= 0) return 0;
   const char *m = nt_str(nt, st, "name");
-  return m && (is_visibility_or_module_function(m));
+  return m && visibility_of_name(m);
 }
 /* `m(&nil)` passes no block: it is the blockless call. The `&nil` stayed a
    block argument, and each arm that only asks "is there a block" took the

@@ -1149,7 +1149,7 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     const char *vn = nt_str(nt, s, "name");
     int va = nt_ref(nt, s, "arguments");
     int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
-    if (vn && is_visibility_name(vn) &&
+    if (vn && visibility_of_name(vn) > BVIS_MODULE_FUNCTION &&
         vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0) {
       c->nscope[s] = scope_idx;
       c->node_cbody[s] = g_cbody_class_id;
@@ -2086,7 +2086,7 @@ void register_module_functions(Compiler *c) {
 }
 
 /* Method name carried by a `private`/`public`/`protected` symbol/string arg. */
-static const char *vis_arg_name(const NodeTable *nt, int arg) {
+const char *vis_arg_name(const NodeTable *nt, int arg) {
   const char *aty = nt_type(nt, arg);
   NodeKind ak = nt_kind(nt, arg);
   if (!aty) return NULL;
@@ -3817,7 +3817,7 @@ void fix_struct_block_scopes(Compiler *c) {
         const char *vn = nt_str(nt, dn, "name");
         int va = nt_ref(nt, dn, "arguments");
         int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
-        if (vn && is_visibility_name(vn) &&
+        if (vn && visibility_of_name(vn) > BVIS_MODULE_FUNCTION &&
             vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
           dn = vv[0];
       }
@@ -3993,7 +3993,7 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
          call's argument is the attr call (#4922) */
       const char *vn = nt_str(nt, s, "name");
       if (vn && nt_ref(nt, s, "receiver") < 0 &&
-          is_visibility_name(vn)) {
+          visibility_of_name(vn) > BVIS_MODULE_FUNCTION) {
         int va = nt_ref(nt, s, "arguments");
         int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
         for (int q = 0; q < vc; q++)
@@ -4688,7 +4688,7 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       const char *nm = nt_str(nt, s, "name");
       /* `private alias_method :a, :b` defines the alias it wraps */
       if (nm && nt_ref(nt, s, "receiver") < 0 &&
-          is_visibility_name(nm)) {
+          visibility_of_name(nm) > BVIS_MODULE_FUNCTION) {
         int pa = nt_ref(nt, s, "arguments");
         int pn = 0;
         const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;

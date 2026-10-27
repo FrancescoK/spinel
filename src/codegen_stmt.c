@@ -18985,7 +18985,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       /* These are class-body declarations handled at analysis time; skip.
          Exception: a visibility call naming a method the class does not
          define raises NameError when the body executes, per CRuby. */
-      if (is_visibility_name(nm)) {
+      if (visibility_of_name(nm) > BVIS_MODULE_FUNCTION) {
         int vcid = g_class_body_id >= 0 ? g_class_body_id
                  : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
         if (vcid >= 0) {
