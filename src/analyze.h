@@ -148,6 +148,8 @@ typedef struct { int region, seq; } LoadPoint;
 typedef struct LoadRecord LoadRecord;
 LoadPoint elab_point_of(Compiler *c, int node);
 int elab_point_may(Compiler *c, int node);
+LoadPoint elab_point_from(Compiler *c, int node);
+LoadPoint elab_point_done(Compiler *c, int node);
 int elab_cmp(LoadPoint a, LoadPoint b);
 int elab_order(Compiler *c, int a, int b);
 void elab_top_place(Compiler *c, int node, int *file, int *rank);
@@ -190,8 +192,9 @@ void elab_program(Compiler *c);
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
 /* is module mod in the ancestors of cls (of its singleton when sg) at p? */
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
-/* was a non-nil value written to the variable before p? (a constant: one
-   the top level writes, Object's) */
+/* was a non-nil value written to the variable before p: a write that
+   completed before p, on every path? (a constant: one the top level writes,
+   Object's) */
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p);
 /* the bodies cls runs, in the order they run; *n their number */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);

@@ -148,41 +148,21 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   }
 }
 
-/* Where node `target` sits under n: 0 not there, 1 outside any block,
-   lambda or method body, 2 inside one (it may run later). */
-static int cplan_node_place(const NodeTable *nt, int n, int target, int inner, int depth) {
-  if (n < 0 || depth > 400) return 0;
-  if (n == target) return inner ? 2 : 1;
-  NodeKind k = nt_kind(nt, n);
-  int in = inner || k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode;
-  for (int i = 0; i < nt_num_refs(nt, n); i++) {
-    int r = cplan_node_place(nt, nt_ref_at(nt, n, i), target, in, depth + 1);
-    if (r) return r;
-  }
-  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
-    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) {
-      int r = cplan_node_place(nt, ids[j], target, in, depth + 1);
-      if (r) return r;
-    }
+/* Is node id inside a block, a lambda or a method body (it may run later)? */
+static int cplan_in_closure(Compiler *c, int id) {
+  const int *par = comp_parent_map(c);
+  for (int a = par[id]; a >= 0; a = par[a]) {
+    NodeKind k = nt_kind(c->nt, a);
+    if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode) return 1;
   }
   return 0;
 }
-/* Does call `id` run, at the program's top level, ahead of the statement
-   that defines method mi? There the name is still the builtin's. The
-   top-level statements are read in load order, each placed file's after the
-   load that first runs it (prog_top_seq; the entry's alone under the inline
-   model). */
+/* Does call `id`, outside any block, lambda or method body, run ahead of
+   the statement that defines method mi, in the order the load phase runs
+   (the load record)? There the name is still the builtin's. */
 static int cplan_called_before_def(Compiler *c, int id, int mi) {
-  const NodeTable *nt = c->nt;
-  int dn = c->scopes[mi].def_node, n = 0, r = 0;
-  int *sv = dn >= 0 ? prog_top_seq(c, &n, NULL) : NULL;
-  for (int i = 0; i < n; i++) {
-    if (cplan_node_place(nt, sv[i], dn, 0, 0)) break;
-    if (cplan_node_place(nt, sv[i], id, 0, 0) == 1) { r = 1; break; }
-  }
-  free(sv);
-  return r;
+  int dn = c->scopes[mi].def_node;
+  return dn >= 0 && !cplan_in_closure(c, id) && elab_cmp(elab_point_of(c, id), elab_point_of(c, dn)) == PROG_BEFORE;
 }
 /* --share-strings: does call `id`, with a literal block, still reach the
    builtin rather than String reopening mi's yielding method of its name,

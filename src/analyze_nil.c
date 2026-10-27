@@ -176,32 +176,13 @@ static int nf_expr(NF *f, int v);
 static int nf_elem_tracked(TyKind t);
 static int nf_elem(NF *f, int v, int depth);
 
-/* the statement list of a program, directly under its ProgramNode */
-static int nf_is_program_list(NF *f, int n) {
-  int p = n >= 0 ? f->par[n] : -1;
-  NodeKind k = nt_kind(f->nt, p);
-  return nt_kind(f->nt, n) == NK_StatementsNode && k == NK_ProgramNode;
-}
-
-/* Does a statement of the program's own list, ahead of the one holding
-   read rd, write the name (a write of kind wk)? A top-level read outside a
-   block runs after it; anything else cannot be shown to. */
-static int nf_written_before(NF *f, int rd, NodeKind wk, const char *name) {
-  const NodeTable *nt = f->nt;
-  if (!prog_is_top_scope(f->c, comp_scope_of(f->c, rd))) return 0;
-  int top = rd;
-  for (; top >= 0 && f->par[top] >= 0 && !nf_is_program_list(f, f->par[top]); top = f->par[top]) {
-    NodeKind k = nt_kind(nt, f->par[top]);
-    if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode) return 0;
-  }
-  if (top < 0 || f->par[top] < 0) return 0;
-  int bn = 0; const int *b = nt_arr(nt, f->par[top], "body", &bn);
-  for (int i = 0; i < bn && b[i] != top; i++) {
-    int w = nt_paren_single(nt, b[i]);
-    const char *wn = nt_kind(nt, w) == wk ? nt_str(nt, w, "name") : NULL;
-    if (wn && sp_streq(wn, name)) return 1;
-  }
-  return 0;
+/* Was the variable written a non-nil value before read rd runs, on every
+   path of the load phase (the load record)? A read in a method body, a
+   lambda or a block run later runs at no known point: no write can be
+   shown to run first. A nil write is a source of the slot's own. */
+static int nf_written_before(NF *f, int rd, ElabVar kind, const char *name) {
+  LoadPoint p = elab_point_of(f->c, rd);
+  return p.region >= 0 && elab_written_before(f->c, kind, name, p) == ELAB_YES;
 }
 
 /* The user method call node id reaches (cplan_user_fresh), asked once: the
@@ -1295,10 +1276,10 @@ static int nf_expr_uncached(NF *f, int v) {
     if (c->nilnarrow && c->nilnarrow[v] != TY_UNKNOWN) { f->guarded = 1; return NFW_NONE; }
     Scope *s = comp_scope_of(c, v);
     const char *ivn = nt_str(nt, v, "name");
-    /* the main object's ivar: nil until a top-level statement above writes it */
+    /* the main object's ivar: nil until a write the load phase runs ahead of the read */
     if (prog_is_top_scope(c, s) && ivn) {
       int w = nf_ivar_slot(f, NF_TOP_IVAR, ivn)->wr;
-      return w ? w : nf_written_before(f, v, NK_InstanceVariableWriteNode, ivn) ? NFW_NONE : NFW_GLOBAL;
+      return w ? w : nf_written_before(f, v, ELAB_MAIN_IVAR, ivn) ? NFW_NONE : NFW_GLOBAL;
     }
     if (!s || s->is_cmethod || s->class_id < 0) return NFW_IVAR;   /* a class-level ivar */
     return nf_ivar(f, s->class_id, ivn);
@@ -1908,12 +1889,12 @@ void an_nil_facts(Compiler *c) {
   }
   /* globals are nil until their first write, which a method reading one
      cannot be shown to follow: an object global read in a method or a
-     block may be nil (top-level reads ahead of every write too) */
+     block run later may be nil (a load-phase read ahead of every write too) */
   NT_FOREACH_KIND(nt, NK_GlobalVariableReadNode, r) {
     const char *gn = nt_str(nt, r, "name");
     LocalVar *g = gn && gn[0] == '$' ? comp_gvar(c, comp_resolve_gvar(c, gn + 1)) : NULL;
     if (!g || !nf_open(g->obj_may_nil) || !nf_tracked(c, g->type)) continue;
-    if (!nf_written_before(&f, r, NK_GlobalVariableWriteNode, gn)) nf_set(&f, &g->obj_may_nil, NFW_GLOBAL);
+    if (!nf_written_before(&f, r, ELAB_GVAR, gn + 1)) nf_set(&f, &g->obj_may_nil, NFW_GLOBAL);
   }
   int **yields, *nyields, **rets, *nrets;
   nf_collect(&f, NK_YieldNode, &yields, &nyields);

@@ -57,8 +57,13 @@ int g_dump_load_record = 0;
    file root) holding it, and rank, on that one, its place in the order
    prog_order reads: each file's statements in their list order, a placed
    file's right after its load (a BEGIN block keeps its place in the list
-   there; the walk runs it first). -1 outside region 0. */
-typedef struct { int node, file, region, top, rank, depth, frame; unsigned char may; } LrStmt;
+   there; the walk runs it first). -1 outside region 0. last is the last
+   statement of the bodies it runs, which run before it completes. partial:
+   it runs at once if at all, but maybe not at all or cut short (in an
+   iterator's block, which may run no time, or a begin body with rescue
+   clauses, where a raise skips the rest): a write there is on no path for
+   sure. */
+typedef struct { int node, file, region, top, rank, depth, frame, last; unsigned char may, partial; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -95,8 +100,9 @@ typedef struct { Compiler *c; LoadRecord *r; unsigned char *entered; int region,
 
 /* Where the walk stands: the file, the top-level statement holding it,
    the statement whose body opened the class frame it is in (-1: main's),
-   whether it may not run, and its nesting for the dump. */
-typedef struct { int file, top, frame, may, depth; } ElabAt;
+   whether it may not run, its nesting for the dump, and whether it may run
+   partly (LrStmt.partial). */
+typedef struct { int file, top, frame, may, depth, partial; } ElabAt;
 
 static int lr_add(ElabWalk *w, int node, ElabAt at) {
   LoadRecord *r = w->r;
@@ -106,7 +112,8 @@ static int lr_add(ElabWalk *w, int node, ElabAt at) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, at.file, w->region, at.top < 0 ? k : at.top, -1, at.depth, at.frame, (unsigned char)at.may };
+  r->st[k] = (LrStmt){ node, at.file, w->region, at.top < 0 ? k : at.top, -1, at.depth, at.frame, k, (unsigned char)at.may,
+                       (unsigned char)at.partial };
   r->at[node] = k;
   return k;
 }
@@ -126,7 +133,9 @@ static void elab_body(ElabWalk *w, int body, int e, ElabAt at) {
   if (nt_kind(nt, body) == NK_StatementsNode) v = nt_arr(nt, body, "body", &n);
   for (int k = 0; k < n; k++) {
     if (v[k] < 0 || w->r->at[v[k]] != -2) continue;   /* a subtree two lists share: once */
-    elab_inner(w, v[k], lr_add(w, v[k], at), at);
+    int s = lr_add(w, v[k], at);
+    elab_inner(w, v[k], s, at);
+    w->r->st[s].last = w->r->nst - 1;
   }
 }
 
@@ -205,7 +214,9 @@ static void elab_inner(ElabWalk *w, int s, int e, ElabAt at) {
       elab_maybe(w, nt_ref(nt, s, "statements"), e, at);
       break;
     case NK_BeginNode: {
-      elab_body(w, nt_ref(nt, s, "statements"), e, at);
+      ElabAt body = at;
+      body.partial |= nt_ref(nt, s, "rescue_clause") >= 0;
+      elab_body(w, nt_ref(nt, s, "statements"), e, body);
       for (int r = nt_ref(nt, s, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
         elab_maybe(w, nt_ref(nt, r, "statements"), e, at);
       int el = nt_ref(nt, s, "else_clause"), en = nt_ref(nt, s, "ensure_clause");
@@ -236,6 +247,7 @@ static void elab_inner(ElabWalk *w, int s, int e, ElabAt at) {
       if (b < 0 || nt_kind(nt, b) != NK_BlockNode || runs < 0) break;
       if (runs == 0) at.may = 1;
       in.may = at.may;
+      if (!elab_opens_frame(nt, s)) at.partial = 1;   /* an iterator's: zero times, or several */
       elab_body(w, nt_ref(nt, b, "body"), e, elab_opens_frame(nt, s) ? in : at);
       break;
     }
@@ -252,7 +264,7 @@ static void elab_file(ElabWalk *w, int f) {
   int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0;
   w->entered[f] = 1;
   if (root < 0 || w->r->at[root] != -2) return;
-  ElabAt at = { f, -1, -1, 0, 0 };
+  ElabAt at = { f, -1, -1, 0, 0, 0 };
   int e = lr_add(w, root, at);
   w->r->st[e].rank = w->region == 0 ? w->rank++ : -1;
   if (st >= 0) w->r->at[st] = e;
@@ -262,6 +274,7 @@ static void elab_file(ElabWalk *w, int f) {
       int b = lr_add(w, v[k], at);
       ElabAt in = at; in.top = b;
       elab_inner(w, v[k], b, in);
+      w->r->st[b].last = w->r->nst - 1;
     }
   for (int k = 0; k < n; k++) {
     if (v[k] < 0) continue;
@@ -271,6 +284,7 @@ static void elab_file(ElabWalk *w, int f) {
       s = lr_add(w, v[k], at);
       ElabAt in = at; in.top = s;
       elab_inner(w, v[k], s, in);
+      w->r->st[s].last = w->r->nst - 1;
     }
     if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? w->rank++ : -1;
     int t = prog_ordered_load(c, v[k]);
@@ -284,6 +298,8 @@ static int lr_defers(const NodeTable *nt, const int *par, int p) {
   NodeKind k = nt_kind(nt, p);
   return k == NK_DefNode || k == NK_LambdaNode || (k == NK_BlockNode && par[p] >= 0 && elab_block_runs(nt, par[p]) < 0);
 }
+
+static void lr_values_refresh(Compiler *c);
 
 static void elab_points_build(Compiler *c) {
   double t0 = sp_timing_now();
@@ -302,17 +318,42 @@ static void elab_points_build(Compiler *c) {
   elab_file(&w, 0);
   for (int f = 1; f < nroots; f++)   /* the files no load places, a region each */
     if (!w.entered[f] && nt_root(nt, f) >= 0) { w.region = r->nregion++; elab_file(&w, f); }
-  for (int id = 0; id < n; id++) {   /* the rest from their nearest walked statement */
-    int s = 0, a = id;
-    while (r->at[a] == -2 && par[a] >= 0) { stack[s++] = a; a = par[a]; }
-    if (r->at[a] == -2) r->at[a] = -1;
-    while (s > 0) {
-      int b = stack[--s], p = par[b];
-      r->at[b] = r->at[p];
-      if ((r->bits[p] & LR_LATE) || lr_defers(nt, par, p)) r->bits[b] |= LR_LATE;
+  /* The rest from their nearest walked statement, up each node's parent:
+     the parent map's, unless no file's root reaches that one (a node a
+     desugaring left hung nowhere still holds the child it shares with its
+     replacement), then the one the walk down from the roots first reaches
+     the node through. */
+  int *up = malloc(sizeof(int) * (size_t)(n ? n : 1));
+  unsigned char *live = calloc((size_t)(n ? n : 1), 1);
+  if (!up || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int sp = 0;
+  for (int f = 0; f < nroots; f++) {
+    int rt = nt_root(nt, f);
+    if (rt >= 0 && rt < n && !live[rt]) { live[rt] = 1; up[rt] = par[rt]; stack[sp++] = rt; }
+  }
+  while (sp > 0) {
+    int p = stack[--sp], nr = nt_num_refs(nt, p), na = nt_num_arrs(nt, p);
+    for (int i = 0; i < nr + na; i++) {
+      int m = 1, one = i < nr ? nt_ref_at(nt, p, i) : -1;
+      const int *v = i < nr ? &one : nt_arr_at(nt, p, i - nr, &m);
+      for (int j = 0; j < m; j++)
+        if (v[j] >= 0 && v[j] < n && !live[v[j]]) { live[v[j]] = 1; up[v[j]] = p; stack[sp++] = v[j]; }
     }
   }
-  free(stack); free(w.entered);
+  for (int id = 0; id < n; id++)
+    if (!live[id] || par[id] < 0 || live[par[id]]) up[id] = par[id];
+  for (int id = 0; id < n; id++) {
+    int s = 0, a = id;
+    while (r->at[a] == -2 && up[a] >= 0) { stack[s++] = a; a = up[a]; }
+    if (r->at[a] == -2) r->at[a] = -1;
+    while (s > 0) {
+      int b = stack[--s], p = up[b];
+      r->at[b] = r->at[p];
+      if ((r->bits[p] & LR_LATE) || lr_defers(nt, up, p)) r->bits[b] |= LR_LATE;
+    }
+  }
+  free(up); free(live); free(stack); free(w.entered);
+  if (r->recorded) lr_values_refresh(c);
   r->builds++;
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
 }
@@ -330,6 +371,23 @@ LoadPoint elab_point_of(Compiler *c, int node) {
   int e = node >= 0 && node < r->n ? r->at[node] : -1;
   if (e < 0 || (r->bits[node] & LR_LATE)) return (LoadPoint){ -1, -1 };
   return (LoadPoint){ r->st[e].region, e };
+}
+
+/* The point from which node can run: its statement's, and for a node in a
+   method body, a lambda or a block run later, that of the statement that
+   defines or makes it, which runs first. Region -1 under no file. */
+LoadPoint elab_point_from(Compiler *c, int node) {
+  LoadRecord *r = elab_fresh(c);
+  int e = node >= 0 && node < r->n ? r->at[node] : -1;
+  return e < 0 ? (LoadPoint){ -1, -1 } : (LoadPoint){ r->st[e].region, e };
+}
+
+/* The point at which node's statement completes: the last statement of
+   the bodies it runs (a class body, a block run at once in its value), or
+   its own. Region -1 where elab_point_of has no point. */
+LoadPoint elab_point_done(Compiler *c, int node) {
+  LoadPoint p = elab_point_of(c, node);
+  return p.region < 0 ? p : (LoadPoint){ p.region, c->lrec->st[p.seq].last };
 }
 
 /* Does node's statement run only under a condition (a branch, a loop body,
@@ -581,6 +639,11 @@ static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
    a constant's by name and the class whose body (lexical scope) writes it,
    as lr_const_owner numbers it (0: not known) */
 static int lr_const_owner(int cls) { return cls >= LR_MAIN ? cls + 2 : 0; }
+/* Is a written value nil: none, a nil, or the nil a chain of writes ends
+   in (`$a = @b = nil`)? */
+static int lr_nil_value(const NodeTable *nt, int v) {
+  return v < 0 || nt_kind(nt, v) == NK_NilNode || comp_nil_chain_bottom(nt, v) >= 0;
+}
 static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, int node, int nilv, int may) {
   lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL });
 }
@@ -649,12 +712,38 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     lr_version(x->r, LR_KEY_OPAQUE, lr_const_owner(cls), "", (LrDef){ node, LR_OPAQUE, 0, (unsigned char)may, 0, NULL });
 }
 
+/* A write of a global or of main's instance variable by statement e (in
+   main's frame, a file's top level), on every path unless it may not run
+   or may run partly (LrStmt.partial) */
+static void lr_value_write(Compiler *c, int e) {
+  const NodeTable *nt = c->nt;
+  LoadRecord *r = c->lrec;
+  const LrStmt *s = &r->st[e];
+  int node = s->node, may = s->may || s->partial;
+  NodeKind k = nt_kind(nt, node);
+  switch (k) {
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode:   /* `$a = $b = v` writes both */
+      for (int w = node; w >= 0 && (nt_kind(nt, w) == NK_GlobalVariableWriteNode || w == node); w = nt_ref(nt, w, "value")) {
+        const char *gn = nt_str(nt, w, "name");
+        int v = nt_ref(nt, w, "value");
+        if (gn && *gn) lr_write(r, ELAB_GVAR, 0, gn + 1, node, lr_nil_value(nt, v), may || k == NK_GlobalVariableOrWriteNode);
+      }
+      break;
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: {
+      int v = nt_ref(nt, node, "value");
+      if (s->frame < 0) lr_write(r, ELAB_MAIN_IVAR, 0, nt_str(nt, node, "name"), node, lr_nil_value(nt, v), may || k == NK_InstanceVariableOrWriteNode);
+      break;
+    }
+    default: break;
+  }
+}
+
 /* What statement e defines or writes, in its frame */
 static void lr_record_stmt(ElabRec *x, int e) {
   const NodeTable *nt = x->c->nt;
   LoadRecord *r = x->r;
   const LrStmt *s = &r->st[e];
-  int node = s->node, f = s->frame, may = s->may;
+  int node = s->node, f = s->frame, may = s->may, wmay = s->may || s->partial;
   int fc = f >= 0 ? x->fc[f] : LR_MAIN, fs = f >= 0 ? x->fs[f] : 0;
   unsigned char *vs = f >= 0 ? &x->vs[f] : &x->vmain[s->file];
   NodeKind k = nt_kind(nt, node);
@@ -690,24 +779,23 @@ static void lr_record_stmt(ElabRec *x, int e) {
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may); break;
     case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: {   /* in its lexical scope */
       int v = nt_ref(nt, node, "value");
-      lr_write(r, ELAB_CONST, lr_const_owner(lr_cref(x->c, e)), lr_written_name(nt, node), node, v < 0 || nt_kind(nt, v) == NK_NilNode,
-               may || k == NK_ConstantOrWriteNode);
+      lr_write(r, ELAB_CONST, lr_const_owner(lr_cref(x->c, e)), lr_written_name(nt, node), node, lr_nil_value(nt, v),
+               wmay || k == NK_ConstantOrWriteNode);
       break;
     }
-    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode:   /* `$a = $b = v` writes both */
-      for (int w = node; w >= 0 && (nt_kind(nt, w) == NK_GlobalVariableWriteNode || w == node); w = nt_ref(nt, w, "value")) {
-        const char *gn = nt_str(nt, w, "name");
-        int v = nt_ref(nt, w, "value");
-        if (gn && *gn) lr_write(r, ELAB_GVAR, 0, gn + 1, node, v < 0 || nt_kind(nt, v) == NK_NilNode, may || k == NK_GlobalVariableOrWriteNode);
-      }
-      break;
-    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: {
-      int v = nt_ref(nt, node, "value");
-      if (f < 0) lr_write(r, ELAB_MAIN_IVAR, 0, nt_str(nt, node, "name"), node, v < 0 || nt_kind(nt, v) == NK_NilNode, may || k == NK_InstanceVariableOrWriteNode);
-      break;
-    }
-    default: break;
+    default: lr_value_write(x->c, e); break;
   }
+}
+
+/* The writes of globals and main's instance variables, recorded again from
+   the statements as they stand whenever the map is rebuilt: passes after
+   the record write some (a mixin guard's flag), and their readers ask late
+   (the nil facts, the global slots) */
+static void lr_values_refresh(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  for (int i = 0; i < r->nhist; i++)
+    if (r->hist[i].a == -2 - (int)ELAB_GVAR || r->hist[i].a == -2 - (int)ELAB_MAIN_IVAR) r->hist[i].n = 0;
+  for (int e = 0; e < r->nst; e++) lr_value_write(c, e);
 }
 
 static void elab_check_record(Compiler *c);
@@ -839,12 +927,13 @@ int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
 
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded) return ELAB_UNKNOWN;
+  elab_fresh(c);   /* the writes as of the tree as it stands (lr_values_refresh) */
   const LrHist *h = lr_hist(c->lrec, -2 - (int)kind, kind == ELAB_CONST ? lr_const_owner(LR_MAIN) : 0, name, 0);
   int unsure = 0;
   for (int i = 0; h && i < h->n; i++) {
     const LrDef *v = &h->v[i];
     int o = p.region < 0 ? (v->may || elab_point_of(c, v->node).region != 0 ? PROG_UNKNOWN : PROG_BEFORE)
-                         : elab_cmp(elab_point_of(c, v->node), p);
+                         : elab_cmp(elab_point_done(c, v->node), p);
     if (o == PROG_UNKNOWN) unsure = 1;
     else if (o == PROG_BEFORE && !v->nil) { if (!v->may) return ELAB_YES; unsure = 1; }
   }
@@ -1012,9 +1101,7 @@ void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const i
 }
 
 /* The readers the histories will answer for, asked once the record is
-   made: class_body_list's bodies of each class against the record's, and
-   gvar_seeded_before_read against "a non-nil write before the first read
-   the load phase runs". */
+   made: class_body_list's bodies of each class against the record's. */
 static void elab_check_record(Compiler *c) {
   LoadRecord *r = c->lrec;
   int *bci = NULL, *bnode = NULL, nb = class_body_list(c, &bci, &bnode);
@@ -1035,33 +1122,6 @@ static void elab_check_record(Compiler *c) {
       fprintf(stderr, "spinel-elab-check: bodies class=%s reader=%d record=%d\n", c->classes[ci].name, nr, no);
   }
   free(bci); free(bnode);
-  /* the first read of each written global the load phase runs */
-  LoadPoint *first = malloc(sizeof *first * (size_t)(r->nhist ? r->nhist : 1));
-  if (!first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int i = 0; i < r->nhist; i++) first[i] = (LoadPoint){ -1, -1 };
-  for (int id = 0; id < c->nt->count; id++) {
-    NodeKind k = nt_kind(c->nt, id);
-    if (k != NK_GlobalVariableReadNode && k != NK_GlobalVariableOperatorWriteNode &&
-        k != NK_GlobalVariableOrWriteNode && k != NK_GlobalVariableAndWriteNode) continue;
-    const char *gn = nt_str(c->nt, id, "name");
-    LrHist *h = gn && *gn ? lr_hist(r, -2 - (int)ELAB_GVAR, 0, gn + 1, 0) : NULL;
-    LoadPoint q = elab_point_of(c, id);
-    if (!h || q.region < 0) continue;
-    LoadPoint *m = &first[h - r->hist];
-    if (m->region < 0 || elab_cmp(q, *m) == PROG_BEFORE) *m = q;
-  }
-  for (int i = 0; i < r->nhist; i++) {
-    if (r->hist[i].a != -2 - (int)ELAB_GVAR) continue;
-    int now = gvar_seeded_before_read(c, r->hist[i].name);
-    int rec = elab_written_before(c, ELAB_GVAR, r->hist[i].name, first[i]) == ELAB_YES;
-    LrCheck *f = lr_family(r, "gvar_seeded_before_read");
-    f->asked++;
-    if (now == rec) continue;
-    f->differ++;
-    if (r->shown++ < LR_CHECK_SHOW)
-      fprintf(stderr, "spinel-elab-check: seeded $%s now=%d record=%d\n", r->hist[i].name, now, rec);
-  }
-  free(first);
 }
 
 /* ---- --dump-load-record ---- */
