@@ -2172,6 +2172,9 @@ static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   int o = snprintf(cmd, sizeof cmd, "addr2line -e '%s'", exe);
   for (int i = 0; i < n && o < (int)sizeof cmd - 32; i++)
     o += snprintf(cmd + o, sizeof cmd - (size_t)o, " 0x%lx", (unsigned long)((uintptr_t)buf[i] - 1 - bias));
+  /* (a host without addr2line: the shell's complaint is not the program's
+     output, and the frames go without lines, as atos's below) */
+  if (o < (int)sizeof cmd - 16) snprintf(cmd + o, sizeof cmd - (size_t)o, " 2>/dev/null");
   FILE *p = popen(cmd, "r");
   if (!p) return;
   char line[2048];
