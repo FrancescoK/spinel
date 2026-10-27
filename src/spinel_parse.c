@@ -3606,19 +3606,17 @@ static char *sp_rewrite_dead_requires(SpSrcFile *f, size_t code_len, SpNodeList 
        (a variable node of the file's tree), so a name is looked up where
        this compiler looks;
      - no call is named load or autoload (a call node of the tree);
-     - every require and require_relative written was resolved: a file read,
-       one read before, or a feature the runtime provides. One left as a
-       raise or a warning, blanked as unreachable, or past where the scan
-       gave up counts as written and not resolved; one a rewrite made sets
-       the flag itself.
+     - every require and require_relative call of the tree was resolved: a
+       file read, one read before, or a feature the runtime provides. One
+       left as a raise or a warning, blanked as unreachable, or past where
+       the scan gave up counts as written and not resolved, and under
+       --load-model=graph so does a LoadNode that names no file; one a
+       rewrite made sets the flag itself.
    The text the class macros write (sp_expand_class_macros) is parsed once
-   they have, for the same nodes: the parts a macro joins need not spell
-   one. The flag is final when the parser returns.
-   The first two are read from the tree, so the word in a comment or a
-   string sets nothing. The requires are still counted as words, not parsed
-   (sp_require_count), and no character of the code is passed over: one in a
-   string or in a comment sets the flag, and all that gives up is an
-   optimisation. Declared extern in compiler.h. */
+   they have, for the load and load-path nodes: the parts a macro joins need
+   not spell one. The flag is final when the parser returns.
+   All of it is read from the trees, so the word in a comment or a string
+   sets nothing. Declared extern in compiler.h. */
 int g_require_unread = 0;
 /* The features this program was compiled with, as each require and
    require_relative names it: a require whose path is known only at run
@@ -3637,32 +3635,14 @@ static void sp_note_required_feature(const char *name) {
 }
 static int sp_req_written = 0, sp_req_resolved = 0;
 
-static int sp_req_word_at(const char *p, const char *w, size_t n) {
-  return strncmp(p, w, n) == 0 && !sp_req_ident_char(p[n]);
-}
-
-static void sp_require_count(const char *text, size_t len) {
-  for (const char *p = text; p < text + len; p++) {
-    if (*p != 'r' || (p > text && sp_req_ident_char(p[-1]))) continue;
-    if (sp_req_word_at(p, "require", 7) || sp_req_word_at(p, "require_relative", 16)) sp_req_written++;
-  }
-}
-
-/* Does the name `id` make a program load a file this compiler did not read:
-   a call named load or autoload (`call`), or a variable that is the load
-   path or the loaded features? */
-static int sp_pm_name_loads(const pm_parser_t *parser, pm_constant_id_t id, int call) {
-  const pm_constant_t *nm = pm_constant_pool_id_to_constant(&parser->constant_pool, id);
-  char name[32];   /* (every name asked below is shorter) */
-  if (nm->length >= sizeof name) return 0;
-  memcpy(name, nm->start, nm->length);
-  name[nm->length] = '\0';
-  if (call) return is_load_name(name) || is_autoload_name(name);
-  return is_load_path_global(name) || is_loaded_features_global(name);
-}
+/* The names of one file's tree that bear on g_require_unread: a call named
+   load or autoload, a variable that is the load path or the loaded features
+   (either sets the flag), and a call named require or require_relative
+   (counted in sp_req_written when `count`). */
+typedef struct { const pm_parser_t *parser; int count; } SpLoadSites;
 
 static bool sp_load_sites_visit(const pm_node_t *node, void *data) {
-  const pm_parser_t *parser = data;
+  const SpLoadSites *w = data;
   pm_constant_id_t id;
   int call = 0;
   switch (PM_NODE_TYPE(node)) {
@@ -3675,16 +3655,28 @@ static bool sp_load_sites_visit(const pm_node_t *node, void *data) {
     case PM_GLOBAL_VARIABLE_AND_WRITE_NODE: id = ((const pm_global_variable_and_write_node_t *)node)->name; break;
     default: return true;
   }
-  if (sp_pm_name_loads(parser, id, call)) g_require_unread = 1;
+  const pm_constant_t *nm = pm_constant_pool_id_to_constant(&w->parser->constant_pool, id);
+  char name[32];   /* (every name asked below is shorter) */
+  if (nm->length >= sizeof name) return true;
+  memcpy(name, nm->start, nm->length);
+  name[nm->length] = '\0';
+  if (!call) {
+    if (is_load_path_global(name) || is_loaded_features_global(name)) g_require_unread = 1;
+  }
+  else if (is_load_name(name) || is_autoload_name(name)) g_require_unread = 1;
+  else if (w->count && is_require_name(name)) sp_req_written++;
   return !g_require_unread;
 }
 
-/* Set g_require_unread when the tree of a file (or of the text a macro wrote)
-   calls load or autoload, or reads or writes the load path or the loaded
-   features. A name the program computes is not found here: the analysis
-   reads a `send(:load)` or a `method(:load)` as a name given by value. */
-static void sp_load_sites_note(const pm_parser_t *parser, const pm_node_t *root) {
-  if (!g_require_unread && root) pm_visit_node(root, sp_load_sites_visit, (void *)parser);
+/* Read the tree of a file (or of the text a macro wrote): set
+   g_require_unread when it calls load or autoload, or reads or writes the
+   load path or the loaded features, and with `count` add its require and
+   require_relative calls to sp_req_written. A name the program computes is
+   not found here: the analysis reads a `send(:load)` or a `method(:load)` as
+   a name given by value. Once the flag is set the count is moot. */
+static void sp_load_sites_note(const pm_parser_t *parser, const pm_node_t *root, int count) {
+  SpLoadSites w = { parser, count };
+  if (!g_require_unread && root) pm_visit_node(root, sp_load_sites_visit, &w);
 }
 
 /* ---- a require that runs later than the program start ----
@@ -5084,8 +5076,7 @@ static char *resolve_requires(SpLoadGraph *g, const char *source, const char *so
   int file_fsl = sp_src_file_fsl(&file);
   sp_src_file_warn_encoding(&file);
   size_t code_len = sp_src_file_code_len(&file);
-  sp_require_count(source, code_len);
-  sp_load_sites_note(&file.parser, file.root);
+  sp_load_sites_note(&file.parser, file.root, 1);
   /* computed requires spelling a literal path (#5700), then autoloads with
      a literal path (#5696): each answers a fresh copy of what it reads */
   SpNodeList blanked = { NULL, 0, 0 };
@@ -5626,7 +5617,7 @@ static char *sp_prepend_require(char *source, const char *exe_path, const char *
   char *ns = (char *)malloc(sl + hl + 1);
   if (!ns) return source;
   memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
-  sp_require_count(head, strlen(head));
+  sp_req_written++;   /* (the head is one require) */
   sp_src_lex_drop();
   free(source);
   ns = resolve_plain_requires(NULL, ns, exe_path, fsl, fsl_n);
@@ -7079,8 +7070,7 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
      them; a builtins/ file is the compiler's own, as the inline model's
      splice of it is */
   if (!(*sp_load_flags(g, f) & SP_FILE_BUILTIN)) {
-    sp_require_count(text, sp_src_file_code_len(&r->src));
-    sp_load_sites_note(&r->src.parser, r->src.root);
+    sp_load_sites_note(&r->src.parser, r->src.root, 1);
   }
   g_parser = &r->src.parser;
   const pm_node_t *root = r->src.root;
@@ -7650,7 +7640,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
       if (!g_require_unread) {
         SpSrcFile wrote;
         sp_src_file_parse(&wrote, mx, NULL);
-        sp_load_sites_note(&wrote.parser, wrote.root);
+        sp_load_sites_note(&wrote.parser, wrote.root, 0);
         sp_src_file_free(&wrote);
       }
       free(source); source = mx;

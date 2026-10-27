@@ -1298,9 +1298,10 @@ static int builtin_name_in(const char *name, const char *const *names) {
 int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
 int is_load_name(const char *n) { return sp_streq(n, "load"); }
+int is_require_name(const char *n) { return sp_streq(n, "require") || sp_streq(n, "require_relative"); }
 int is_autoload_name(const char *n) { return sp_streq(n, "autoload"); }
 int is_file_load_name(const char *n) {
-  return n && (sp_streq(n, "require") || sp_streq(n, "require_relative") || sp_streq(n, "load") || is_autoload_name(n));
+  return n && (is_require_name(n) || is_load_name(n) || is_autoload_name(n));
 }
 /* A LoadNode's `how` (spinel_parse.c, sp_load_resolve) that names no file
    at compile time: one not there (LoadError when it runs, for the feature
