@@ -15675,16 +15675,32 @@ void emit_synth_line_marker(Buf *b) {
   g_lm_last_depth = 0;
 }
 
-/* A require standing as a statement under --load-model=graph (#9898): the
-   load of the file it names, which runs the file's top level (sp_file_N_top,
-   emit_file_tops) the first time. A file that only defines things has
-   nothing to run, and its load, whose value is unused, is nothing; nor is a
-   require the runtime provides or a core no-op. */
+/* A require under --load-model=graph (#9898), as the runtime's
+   Kernel#require or Kernel#require_relative (lib/spinel_rt.h), named for
+   the method the call makes so a backtrace shows the load's frame as CRuby
+   does: it runs the file's top level (sp_file_N_top, emit_file_tops) the
+   first time and answers whether it did. One that names no file raises
+   LoadError for the feature it was given, wherever it stands. */
+void emit_load_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int f = (int)nt_int(nt, id, "target_file", -1);
+  buf_printf(b, "sp_Kernel_%s(", mc(nt_str(nt, id, "method")));
+  if (is_load_how_missing(nt_str(nt, id, "how"))) {
+    emit_str_literal(b, nt_str(nt, id, "feature"));
+    buf_puts(b, ", NULL, NULL)");
+  }
+  else buf_printf(b, "NULL, &sp_loaded_%d, sp_file_%d_top)", f, f);
+}
+/* ... standing as a statement. A file that only defines things has nothing
+   to run, and its load, whose value is unused, is nothing; nor is a require
+   the runtime provides or a core no-op. */
 static void emit_load_stmt(Compiler *c, int id, Buf *b, int indent) {
   int f = (int)nt_int(c->nt, id, "target_file", -1);
-  if (f < 0 || prog_defines_only(c, f)) return;
+  if (!is_load_how_missing(nt_str(c->nt, id, "how")) && (f < 0 || prog_defines_only(c, f))) return;
   emit_indent(b, indent);
-  buf_printf(b, "(void)sp_load_file(&sp_loaded_%d, sp_file_%d_top);\n", f, f);
+  buf_puts(b, "(void)");
+  emit_load_call(c, id, b);
+  buf_puts(b, ";\n");
 }
 
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {

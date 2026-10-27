@@ -37,6 +37,9 @@ sp_StrArray *sp_get_loaded_features(void);
    written or as the end of a longer path (`File.join(__dir__, "x")`), with
    or without its ".rb". */
 void sp_require_computed(const char *path, const char *const *features, int n);
+/* The LoadError of a require that loads nothing, as CRuby raises it: the
+   message names the feature, and LoadError#path answers it. */
+SP_NORETURN void sp_raise_load_error(const char *feature);
 
 /* $LOAD_PATH (`$:`, `$-I`): an Array of Strings the program reads and
    changes. It starts empty: requires are resolved when the program is

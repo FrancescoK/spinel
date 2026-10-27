@@ -985,6 +985,8 @@ static inline const char *sp_env_chk(const char *s, int value) {
    sp_exc_stage_recv lives in the generated TU; the ctor transfers the staged
    value onto the raised exception's xrecv slot. */
 void sp_exc_stage_recv(sp_RbVal v);
+/* LoadError#path, KeyError#key and the other carried values (sp_exc_apply_staged) */
+void sp_exc_stage_key(sp_RbVal v);
 /* the raise itself, in lib/sp_cold.c: the message carries the receiver's
    inspect, as CRuby's does ("can't modify frozen Array: [1, 2]") */
 SP_NORETURN void sp_raise_frozen_array_rv(sp_RbVal v);

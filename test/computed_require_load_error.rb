@@ -2,7 +2,8 @@
 # LoadError for a file the program was not compiled with, as CRuby does
 # for one it cannot find; one the program was compiled with (it is compiled
 # with every file it requires) is already loaded. It answered as if it had
-# loaded anything, so a `rescue LoadError` fallback never ran.
+# loaded anything, so a `rescue LoadError` fallback never ran. The
+# LoadError's path is the feature the require was given, as in CRuby.
 require_relative "computed_require_lib/helper"
 require "set"
 
@@ -11,7 +12,7 @@ def load_adapter(name)
   require path
   :loaded
 rescue LoadError => e
-  e.message
+  [e.message, e.path]
 end
 
 def already(path)

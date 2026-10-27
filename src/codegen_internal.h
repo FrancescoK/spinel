@@ -1251,6 +1251,8 @@ int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_stmt(Compiler *c, int id, Buf *b, int indent);
+/* A require under --load-model=graph, as its value (codegen_stmt.c) */
+void emit_load_call(Compiler *c, int id, Buf *b);
 /* The statements of parentheses v that run before `tail`, the node their
    value comes from (through nested parentheses: vp_one's answer), into b,
    in order (codegen_fold.c). */

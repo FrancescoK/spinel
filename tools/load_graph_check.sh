@@ -10,12 +10,16 @@
 # its own: every test/load_graph program with an .expected prints what
 # CRuby prints and exits as CRuby does, 0 unless a `# spinel: exit N` line
 # in its first lines gives N (the others are the files they require).
-# What graph mode does not compile yet it refuses by name: a require below
-# a file's top level or one naming no file, an autoload, a load of the
-# entry file, an END block or a write of main's instance variable in a
-# required file, and a prepend after a require of a file that runs code. A
-# required file that only defines things costs no C. The load record's
-# points of a program with a .load-record are those it lists.
+# A require that names no file raises LoadError when it runs, and a
+# --debug build reports a required file's frames as CRuby does
+# (`<top (required)>`, `Kernel#require_relative`). What graph mode does not
+# compile yet it refuses by name: a require below a file's top level or one
+# whose path is computed, an autoload, a load of the entry file, an END
+# block or a write of main's instance variable in a required file, and a
+# prepend after a require of a file that runs code. A required file that
+# only defines things costs no C.
+# The load record's points of a program with a .load-record are those it
+# lists.
 #
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
@@ -121,6 +125,43 @@ else
   fail "bt did not compile"
 fi
 
+# A required file's top level is CRuby's `<top (required)>` frame in its own
+# file, and the load below it `Kernel#require` / `Kernel#require_relative` at
+# the requiring line, through two levels: in caller(0) at a file's top
+# level, in an uncaught raise's report, and in the report of the LoadError
+# of a require that names no file. (Lines where the platform reads them.)
+# frames WANT GOT: each line of GOT, from the last `/` on, matches WANT's
+frames() {
+  sed 's|^.*/||' "$2" | paste "$1" - | while IFS='	' read -r w g; do
+    printf '%s\n' "$g" | grep -q "^$w\$" || echo "want $w, got $g"; done
+}
+mkdir "$tmp/frames"
+printf 'puts "a"\nrequire "frames_b"\n' > "$tmp/frames/a.rb"
+printf 'def helper\n  raise ArgumentError, "bad"\nend\nhere = caller(0)\nputs here\nhelper if ARGV.empty?\nrequire "frames_none"\n' > "$tmp/frames/frames_b.rb"
+printf 'puts "main"\nrequire_relative "a"\n' > "$tmp/frames/main.rb"
+if "$SPINEL" --load-model=graph --debug --no-inline-hot -I "$tmp/frames" "$tmp/frames/main.rb" -o "$tmp/frames/bin" >/dev/null 2>&1; then
+  "$tmp/frames/bin" > "$tmp/frames/out" 2>"$tmp/frames/err"
+  "$tmp/frames/bin" x >/dev/null 2>"$tmp/frames/lerr"
+  n='\([0-9]*:\)\{0,1\}'; n2=$n n4=$n n6=$n n7=$n
+  case "$(uname -s)" in Linux|Darwin) n2=2: n4=4: n6=6: n7=7:;; esac
+  below="a.rb:${n2}in .Kernel#require'
+a.rb:${n2}in .<top (required)>'
+main.rb:${n2}in .Kernel#require_relative'
+main.rb:${n2}in .<main>'"
+  printf '%s\n' "frames_b.rb:${n4}in .<top (required)>'" "$below" > "$tmp/frames/want"
+  sed -n '3,$p' "$tmp/frames/out" > "$tmp/frames/got"
+  frames "$tmp/frames/want" "$tmp/frames/got" > "$tmp/frames/bad"
+  [ -s "$tmp/frames/bad" ] && { fail "caller(0) at a required file's top level"; cat "$tmp/frames/bad"; }
+  printf '%s\n' "frames_b.rb:${n2}in .helper': bad (ArgumentError)" "frames_b.rb:${n6}in .<top (required)>'" "$below" > "$tmp/frames/want"
+  frames "$tmp/frames/want" "$tmp/frames/err" > "$tmp/frames/bad"
+  [ -s "$tmp/frames/bad" ] && { fail "an uncaught raise in a required file's method"; cat "$tmp/frames/bad"; }
+  printf '%s\n' "frames_b.rb:${n7}in .Kernel#require': cannot load such file -- frames_none (LoadError)" "frames_b.rb:${n7}in .<top (required)>'" "$below" > "$tmp/frames/want"
+  frames "$tmp/frames/want" "$tmp/frames/lerr" > "$tmp/frames/bad"
+  [ -s "$tmp/frames/bad" ] && { fail "the LoadError of a require that names no file"; cat "$tmp/frames/bad"; }
+else
+  fail "frames did not compile"
+fi
+
 # refused NAME MESSAGE: $tmp/NAME/main.rb refuses with MESSAGE
 refused() {
   if "$SPINEL" --load-model=graph "$tmp/$1/main.rb" -o "$tmp/$1/bin" >"$tmp/$1/out" 2>&1; then
@@ -134,7 +175,7 @@ printf 'puts "lib"\n' > "$tmp/in_method/lib.rb"
 printf 'def setup\n  require_relative "lib"\nend\nsetup\n' > "$tmp/in_method/main.rb"
 refused in_method "loads only a require that is a statement of a file's top level"
 printf 'name = ARGV.first || "lib"\nrequire name\n' > "$tmp/computed/main.rb"
-refused computed "loads only a require that names a file at compile time"
+refused computed "loads only a require whose path is known at compile time"
 printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"
 printf 'autoload :Lib, File.join(__dir__, "lib")\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "an autoload's file"
@@ -184,7 +225,7 @@ mkdir "$tmp/lean"
 printf 'class Shape\n  def initialize(side) = @side = side\nend\n' > "$tmp/lean/lib.rb"
 printf 'require_relative "lib"\nputs 1\n' > "$tmp/lean/main.rb"
 if "$SPINEL" --load-model=graph -c "$tmp/lean/main.rb" -o "$tmp/lean/out.c" >/dev/null 2>&1; then
-  ! grep -qE 'sp_file_[0-9]+_top|sp_load_file\(|sp_sym_names' "$tmp/lean/out.c" ||
+  ! grep -qE 'sp_file_[0-9]+_top|sp_Kernel_require|sp_sym_names' "$tmp/lean/out.c" ||
     fail "a file that only defines things costs C"
 else
   fail "lean did not compile"
