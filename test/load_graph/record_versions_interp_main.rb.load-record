@@ -9,4 +9,4 @@ class Gauge: body#1 body#3
 entity Gauge: owner main leaf Gauge
 const Gauge: write#1
 Gauge#level: def#2 def#4 end=yes
-versions Gauge#level: def#2..#4 over=def#2, def#4..end; 2 of the name
+versions Gauge#level: def#2..#4 seen=def#2 idle, def#4..end seen=def#4; 2 of the name

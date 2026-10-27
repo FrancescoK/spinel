@@ -300,12 +300,24 @@ void elab_check_visibility(Compiler *c);   /* SPINEL_ELAB_CHECK: after all scope
    when node is no version there or has no point, or the next version may
    not run or runs in another region */
 int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end);
-/* the version of cls's method `name` (singleton when sg) live at every
-   point from p0 up to p1, as elab_method_at answers it: ELAB_UNKNOWN when
-   something recorded in between could change the answer (a version of
-   the name on cls's chain, a mixin of a module that may have it, code the
-   record cannot follow), or when p0 has no point or is not before p1 */
-int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p0, LoadPoint p1, const LrDef **out);
+/* The statements over which a call may run, [from, to): its own, or the
+   outermost body around it that runs again (wraps: a loop's body, an
+   iterator's block); in a method body, from the def with a point around it
+   on, up to the next version of a replaced one whose body runs only in its
+   interval (closed), else to its region's end; in a block kept to run
+   later, from the statement that makes it on. ELAB_UNKNOWN when the call
+   has no point there (a file the load graph does not place). */
+typedef struct { LoadPoint from, to; unsigned char closed, wraps; } ElabWindow;
+int elab_call_window(Compiler *c, int id, ElabWindow *w);
+/* the versions of cls's method `name` (singleton when sg) a call running
+   over window w can reach, each once, into out[0..cap) (NULL: none): the
+   one live over each stretch of w between changes of the name on cls's
+   chain where a statement may run code of the program's (for an instance
+   method once an instance can exist), the one at an open w's end, and the
+   only one when nothing changes. How many; -1 when the record cannot tell
+   (a version that may not run or runs elsewhere, a mixin of a module that
+   may have the name or code the record cannot follow, inside w). */
+int elab_method_span(Compiler *c, int cls, const char *name, int sg, const ElabWindow *w, const LrDef **out, int cap);
 /* can the program run code the record has not seen: a load whose target
    it could not resolve (a computed path, a load the parse left)? */
 int elab_runs_unseen(Compiler *c);

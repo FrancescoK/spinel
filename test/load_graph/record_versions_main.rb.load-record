@@ -35,6 +35,6 @@ Tally.up: def#6 def#8 end=yes
 Tally.kept: def#9 def#12 end=yes
 const Box: write#15
 Box#get: def#16 def#19 def#21 end=yes
-versions Tally.up: def#6..#8 over=def#6, def#8..end; 2 of the name
-versions Tally.kept: def#9..#12 over=def#9, def#12..end; 2 of the name, named
-versions Box#get: def#16..#19 over=unknown, def#19..#21 over=def#19, def#21..end; 4 of the name
+versions Tally.up: def#6..#8 seen=def#6 idle, def#8..end seen=def#8; 2 of the name
+versions Tally.kept: def#9..#12 seen=def#9 idle, def#12..end seen=def#12; 2 of the name, named
+versions Box#get: def#16..#19 seen=unknown, def#19..#21 seen=def#19 idle, def#21..end seen=def#21; 4 of the name

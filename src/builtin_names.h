@@ -274,6 +274,7 @@ int is_const_set_name(const char *n); /* const_set */
 int is_const_query_name(const char *n); /* const_get const_defined? const_source_location */
 int is_constants_list_name(const char *n); /* constants */
 int is_definition_hook_name(const char *n); /* inherited included extended prepended method_added singleton_method_added const_added */
+int is_method_missing_name(const char *n); /* method_missing respond_to_missing?: what a call of a name an object has no method by runs */
 int definition_form_hooks(const char *form, int sg, const char **out); /* the hooks a definition form fires: included for include, method_added for attr_accessor, ... (up to 2) */
 int is_const_missing_name(const char *n); /* const_missing */
 int is_const_table_def_name(const char *n); /* __const_get__ __const_defined__ */

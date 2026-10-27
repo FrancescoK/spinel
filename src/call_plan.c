@@ -743,8 +743,9 @@ static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const
 }
 /* The version of `name` call id runs, when the method has more than one
    (#9898): a call at a load point gets the version live there; one in a
-   replaced version's body, the version live over that body's interval
-   when the record proves the body runs only inside it, else (as for a
+   replaced version's body, the one version it can reach over that body's
+   interval (elab_method_span) when the record proves the body runs only
+   inside it (elab_call_window), else (as for a
    receiverless or self call of its own name) that version itself; any
    other call, the last version, which for an alias is the version it
    captured. mi, the table's answer (the last version), where the record
@@ -752,16 +753,16 @@ static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const
 static int ct_version_at(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
   int sg = (flags & CT_CMETHOD) != 0, rcls = flags & CT_TOP ? -1 : cls, vi = -1, dc = -1;
   const LrDef *d = NULL;
-  LoadPoint p = elab_point_of(c, id), end;
+  LoadPoint p = elab_point_of(c, id);
+  ElabWindow w;
   int def = p.region >= 0 ? -1 : elab_body_def(c, id);
   const Scope *v = def >= 0 ? comp_scope_of(c, id) : NULL;
   if (v && (v->def_node != def || !v->replaced)) v = NULL;
   if (p.region >= 0) {
     if (elab_method_at(c, rcls, name, sg, p, &d) == ELAB_YES) vi = ct_def_version(c, rcls, name, sg, d, &dc);
   }
-  else if (v && elab_version_end(c, v->class_id, v->name, v->is_cmethod, def, &end) == ELAB_YES &&
-           !elab_version_captured(c, v->name) && elab_runs_with(c, id, def) &&
-           elab_method_over(c, rcls, name, sg, elab_point_of(c, def), end, &d) == ELAB_YES)
+  else if (v && elab_call_window(c, id, &w) == ELAB_YES && w.closed &&
+           elab_method_span(c, rcls, name, sg, &w, &d, 1) == 1 && d)
     vi = ct_def_version(c, rcls, name, sg, d, &dc);
   else if (v && sp_streq(name, v->name) && rcls == v->class_id && sg == v->is_cmethod) {
     int recv = nt_kind(c->nt, id) == NK_CallNode ? nt_ref(c->nt, id, "receiver") : -2;

@@ -701,6 +701,10 @@ int definition_form_hooks(const char *form, int sg, const char **out) {
   return 0;
 }
 
+int is_method_missing_name(const char *n) {
+  return n && (sp_streq(n, "method_missing") || sp_streq(n, "respond_to_missing?"));
+}
+
 int is_const_missing_name(const char *n) {
   return sp_streq(n, "const_missing");
 }
