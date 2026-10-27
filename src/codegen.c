@@ -19145,12 +19145,6 @@ static void ext_generate_cruby_shim(Compiler *c) {
 }
 
 
-static int cmp_int_pair(const void *a, const void *b) {
-  const int *x = a, *y = b;
-  if (x[0] != y[0]) return x[0] < y[0] ? -1 : 1;
-  return x[1] < y[1] ? -1 : x[1] > y[1];
-}
-
 static int exc_text_method(Compiler *c, int i, int want_message, int *dcls) {
   int dmsg = -1, dtos = -1;
   int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
@@ -19529,35 +19523,14 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
        separately from the includes that follow the class (#2702). */
     int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
-    /* One pass over every class/module body (class_body_list, a Struct.new
-       block included), in source order so each class sees its includes in
-       the order they run. Scanning the whole table once per class was
-       O(classes * N) and dominated codegen on class-heavy programs. */
-    {
-      int *bcls, *bbody;
-      int nbodies = class_body_list(c, &bcls, &bbody);
-      int (*bord)[2] = malloc((size_t)(nbodies > 0 ? nbodies : 1) * sizeof *bord);
-      if (!bord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      /* The order of a class's bodies is the analysis's fact, which the
-         elaborator records (part 3b of #9898); until then codegen sorts:
-         class_body_list puts the definition first, which is not source order
-         where a later body is the def_node (`class CC < Object`). Node ids
-         order one file; across files the program module does (prog_sort). */
-      if (prog_has_files(c)) {
-        int *ix = malloc(sizeof(int) * (size_t)(nbodies > 0 ? nbodies : 1));
-        if (!ix) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        for (int bi = 0; bi < nbodies; bi++) ix[bi] = bi;
-        prog_sort(c, ix, nbodies, bbody);
-        for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[ix[bi]]; bord[bi][1] = bcls[ix[bi]]; }
-        free(ix);
-      }
-      else {
-        for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
-        qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
-      }
+    /* Each class's bodies (a Struct.new block included), in the order they
+       run (the load record's), so each class sees its includes in the
+       order they run. */
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      int nbodies = 0;
+      const LrOpen *bodies = elab_class_bodies(c, ci, &nbodies);
       for (int bx = 0; bx < nbodies; bx++) {
-        int ci = bord[bx][1];
-        int body2 = bord[bx][0];
+        int body2 = bodies[bx].body;
         int bn2 = 0;
         const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
         for (int k2 = 0; k2 < bn2; k2++) {
@@ -19605,9 +19578,6 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
           }
         }
       }
-      free(bord);
-      free(bcls);
-      free(bbody);
     }
     /* An `obj.extend(Mod)` records its membership on the synthesized singleton
        subclass rather than as an `include` statement in a class body, so the
