@@ -1,0 +1,17 @@
+load record: 11 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 LoadNode line 5
+r0 #2 f1 ProgramNode line 2
+r0 #3 f1 ModuleNode Gauge line 2
+  r0 #4 f1 DefNode unit line 3
+r0 #5 f0 ModuleNode Gauge line 6
+  r0 #6 f0 DefNode level line 7
+r0 #7 f0 ModuleNode Gauge line 9
+  r0 #8 f0 DefNode level line 10
+r0 #9 f0 CallNode p line 12
+r0 #10 f0 CallNode p line 13
+class Gauge: body#3 body#5 body#7
+const Gauge: write#3
+Gauge.unit: def#4 end=yes
+Gauge.level: def#6 def#8 end=yes
+versions Gauge.level: def#6..#8 over=def#6, def#8..end; 2 of the name

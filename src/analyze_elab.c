@@ -1469,6 +1469,30 @@ void elab_dump(Compiler *c, FILE *out) {
       fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
     fputc('\n', out);
   }
+  /* a history with two versions or more: each one's interval, up to the
+     next version, and the version its own name reaches over it; the
+     versions of the name in every history; whether the program names it */
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    int nv = 0;
+    for (int j = 0; h->a >= LR_MAIN && j < h->n; j++) nv += lr_is_version(&h->v[j]);
+    if (nv < 2) continue;
+    fprintf(out, "versions %s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);
+    for (int j = 0, k = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      if (!lr_is_version(v)) continue;
+      LoadPoint end;
+      int e = elab_version_end(c, h->a, h->name, h->b, v->node, &end);
+      fprintf(out, "%s %s#%d", k++ ? "," : "", kinds[v->kind], elab_point_of(c, v->node).seq);
+      if (e != ELAB_YES) { fprintf(out, "..%s", e == ELAB_NO ? "end" : "?"); continue; }
+      const LrDef *d = NULL;
+      int o = elab_method_over(c, h->a, h->name, h->b, elab_point_of(c, v->node), end, &d);
+      fprintf(out, "..#%d over=", end.seq);
+      if (o == ELAB_YES && d) fprintf(out, "%s#%d", kinds[d->kind], elab_point_of(c, d->node).seq);
+      else fputs(o == ELAB_NO ? "none" : "unknown", out);
+    }
+    fprintf(out, "; %d of the name%s\n", elab_method_versions(c, h->name), elab_version_captured(c, h->name) ? ", named" : "");
+  }
 }
 
 /* The record's visibility of each instance method at the end of the load
