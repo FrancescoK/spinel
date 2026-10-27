@@ -23,10 +23,11 @@
 # invents (#9898 named appended nodes by origin): a program that differs is
 # compared again with every identifier that holds a digit and that no
 # runtime header declares numbered in the order it first appears, in code
-# and string literals alike (the symbol table spells local names), and with
-# the symbol table's hash slots, which hash those names, left out. It counts
-# as identical when only such names differ; a renamed runtime call, a
-# number or any other byte still differs.
+# and in the symbol table's names (they spell local names), and with the
+# symbol table's hash slots, which hash those names, left out once they are
+# checked against the names. It counts as identical when only such names
+# differ; a renamed runtime call, a number, a wrong hash slot, any other
+# string literal or any other byte still differs.
 #
 # A reference of the same revision and flags built for another corpus is
 # reused: only the programs the change of corpus can reach are compiled
@@ -214,9 +215,45 @@ if [ -n "${CIDENT_NAMES-}" ]; then
   find lib -name '*.h' -exec cat {} + | perl -ne 'print "$_\n" for /\b[A-Za-z_]\w*/g' | LC_ALL=C sort -u > "$RTIDS"
 fi
 export RTIDS
-names_seq() { perl -0777 -pe 'BEGIN { open my $f, "<", $ENV{RTIDS} or die; chomp(my @w = <$f>); %rt = map { $_ => 1 } @w; %n = (); $k = 0 }
-  s/(sp_sym_htab\[\d+\] = \{)[^}]*\}/$1}/g;
-  s/(?<![\\\w])([A-Za-z_]\w*)/my $w = $1; $w =~ \/\d\/ && !$rt{$w} ? "N" . ($n{$w} \/\/= $k++) : $w/ge'; }
+# names_seq: the comparison CIDENT_NAMES=1 makes. The symbol table's hash
+# slots are rebuilt from the file's own sp_sym_names with codegen's layout
+# (sym_hash_n; the smallest power of two from 8 up that is at least twice the
+# names; linear probing; hash << 32 | id + 1) and left out only when they
+# match (a name holding a NUL is read from its _sym_N object); a table that
+# does not match, or whose names cannot all be read, gets a mark no other
+# file has, so the file differs. Identifiers are then renamed in code and
+# comments, and inside string literals only in the sp_sym_names initializer,
+# which spells local names; every other literal is compared byte for byte.
+names_seq() { perl -0777 -pe '
+  BEGIN { open my $f, "<", $ENV{RTIDS} or die; chomp(my @w = <$f>); %rt = map { $_ => 1 } @w; %n = (); $k = 0;
+    %ce = (n => "\n", t => "\t", r => "\r", a => "\a", b => "\b", f => "\f", v => "\x0b") }
+  sub cesc { my $e = shift; $e =~ /^[0-7]/ ? chr(oct $e) : $e =~ /^x/ ? chr(hex substr($e, 1)) : $ce{$e} // $e }
+  sub cstr { my ($s, $o) = (shift, ""); while ($s =~ /"((?:[^"\\]|\\.)*)"/g) { my $t = $1;
+      $t =~ s/\\([0-7]{1,3}|x[0-9a-fA-F]+|.)/cesc($1)/ge;
+      $o .= $t } $o }
+  sub symh { my $h = 2166136261; $h = (($h ^ $_) * 16777619) & 0xffffffff for unpack "C*", shift;
+    $h ^= $h >> 16; $h = ($h * 0x7feb352d) & 0xffffffff; $h ^ ($h >> 15) }
+  sub ren { my $w = shift; $w =~ /\d/ && !$rt{$w} ? "N" . ($n{$w} //= $k++) : $w }
+  sub ren_all { my $t = shift; $t =~ s/(?<![\\\w])([A-Za-z_]\w*)/ren($1)/ge; $t }
+  my $ok = 0;
+  if (/sp_sym_names\[(\d+)\] = \{((?:"(?:[^"\\]|\\.)*"|[^"])*?)\};/) {
+    my ($ns, $init, @nm) = ($1, $2);
+    my %bin; $bin{$1} = substr(cstr($3), 0, $2) while /_sym_(\d+) = \{ \{ NULL, \d+, (\d+), 0 \}, 0xf1, ((?:"(?:[^"\\]|\\.)*")+) \};/g;
+    while ($init =~ /\(&\(((?:\s*"(?:[^"\\]|\\.)*")+)\)\[1\]\)|_sym_(\d+)\.d/g) { push @nm, defined $2 ? $bin{$2} : substr(cstr($1), 1) }
+    if (@nm == $ns && !grep { !defined } @nm) {
+      my $hsz = 8; $hsz <<= 1 while $hsz < 2 * $ns;
+      my @ht = (0) x $hsz;
+      for my $i (0 .. $#nm) { my $h = symh($nm[$i]); my $j = $h & ($hsz - 1);
+        $j = ($j + 1) & ($hsz - 1) while $ht[$j]; $ht[$j] = ($h << 32) | ($i + 1) }
+      my @want = map { $_ ? sprintf("0x%016xull", $_) : "0" } @ht;
+      $ok = /sp_sym_htab\[(\d+)\] = \{([^}]*)\}/ && $1 == $hsz && join(",", split /\s*,\s*/, $2) eq join(",", @want);
+    }
+  }
+  if ($ok) { s/(sp_sym_htab\[\d+\] = \{)[^}]*\}/$1}/ }
+  else { s/(sp_sym_htab\[\d+\] = \{)/$1 . "\/* not checked " . rand() . " *\/"/e }
+  my ($s0, $e0) = /sp_sym_names\[\d+\] = \{(?:"(?:[^"\\]|\\.)*"|[^"])*?\};/ ? ($-[0], $+[0]) : (-1, -1);
+  s{(/\*.*?\*/|//[^\n]*)|("(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27)|(?<![\\\w])([A-Za-z_]\w*)}
+   {defined $1 ? ren_all($1) : defined $2 ? ($-[0] >= $s0 && $-[0] < $e0 ? ren_all($2) : $2) : ren($3)}gse'; }
 same=0; renamed=0; diffn=0; refch=0; refused=0; fresh=0
 for f in $(list); do
   key=$(printf "%s" "$f" | tr "/" "_")
