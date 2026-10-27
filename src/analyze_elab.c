@@ -58,7 +58,7 @@ int g_dump_load_record = 0;
    prog_order reads: each file's statements in their list order, a placed
    file's right after its load (a BEGIN block keeps its place in the list
    there; the walk runs it first). -1 outside region 0. */
-typedef struct { int node, file, region, top, rank, depth; unsigned char may; } LrStmt;
+typedef struct { int node, file, region, top, rank, depth, frame; unsigned char may; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -75,6 +75,10 @@ struct LoadRecord {
   int check, shown;
   LrCheck fam[LR_CHECK_MAX];
   double ms; int builds;
+  /* the histories (elab_program) */
+  int recorded;
+  struct LrHist *hist; int nhist, chist, *hhead;
+  struct LrClass *cls; int ncls;
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -89,7 +93,12 @@ static LoadRecord *lr_get(Compiler *c) {
 
 typedef struct { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank; } ElabWalk;
 
-static int lr_add(ElabWalk *w, int node, int file, int top, int may, int depth) {
+/* Where the walk stands: the file, the top-level statement holding it,
+   the statement whose body opened the class frame it is in (-1: main's),
+   whether it may not run, and its nesting for the dump. */
+typedef struct { int file, top, frame, may, depth; } ElabAt;
+
+static int lr_add(ElabWalk *w, int node, ElabAt at) {
   LoadRecord *r = w->r;
   if (r->nst == r->cst) {
     r->cst = r->cst ? r->cst * 2 : 256;
@@ -97,26 +106,27 @@ static int lr_add(ElabWalk *w, int node, int file, int top, int may, int depth) 
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, file, w->region, top < 0 ? k : top, -1, depth, (unsigned char)may };
+  r->st[k] = (LrStmt){ node, at.file, w->region, at.top < 0 ? k : at.top, -1, at.depth, at.frame, (unsigned char)at.may };
   r->at[node] = k;
   return k;
 }
 
-static void elab_inner(ElabWalk *w, int s, int file, int top, int may, int depth);
+static void elab_inner(ElabWalk *w, int s, int e, ElabAt at);
 
 /* The statements of a body that runs here: a statement list, or a body
-   with rescue clauses (a BeginNode), whose parts elab_inner walks. */
-static void elab_body(ElabWalk *w, int body, int file, int top, int may, int depth) {
+   with rescue clauses (a BeginNode), whose parts elab_inner walks. e is
+   the statement whose body it is. */
+static void elab_body(ElabWalk *w, int body, int e, ElabAt at) {
   const NodeTable *nt = w->c->nt;
   if (body < 0) return;
-  if (nt_kind(nt, body) == NK_BeginNode) { elab_inner(w, body, file, top, may, depth); return; }
+  at.depth++;
+  if (nt_kind(nt, body) == NK_BeginNode) { at.depth--; elab_inner(w, body, e, at); return; }
   int n = 1;
   const int *v = &body;   /* a body of one expression is its one statement */
   if (nt_kind(nt, body) == NK_StatementsNode) v = nt_arr(nt, body, "body", &n);
   for (int k = 0; k < n; k++) {
     if (v[k] < 0 || w->r->at[v[k]] != -2) continue;   /* a subtree two lists share: once */
-    lr_add(w, v[k], file, top, may, depth);
-    elab_inner(w, v[k], file, top, may, depth);
+    elab_inner(w, v[k], lr_add(w, v[k], at), at);
   }
 }
 
@@ -135,74 +145,98 @@ static int elab_block_runs(const NodeTable *nt, int call) {
   return is_eval_exec_family(nm) || is_class_builder(rn, nm) || iter_row_named(nm) ? 1 : 0;
 }
 
-/* A written value's blocks: a call's, or the parts of `x rescue y` */
-static void elab_value(ElabWalk *w, int v, int file, int top, int may, int depth) {
-  NodeKind k = v >= 0 ? nt_kind(w->c->nt, v) : NK_NilNode;
-  if (k == NK_CallNode || k == NK_RescueModifierNode) elab_inner(w, v, file, top, may, depth);
+/* Does the block of `call` run as a class body (a frame): class_eval and
+   the other eval and exec forms, a class builder's block? */
+static int elab_opens_frame(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  int rv = nt_ref(nt, call, "receiver");
+  const char *rn = rv >= 0 && nt_kind(nt, rv) == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
+  return nm && (is_eval_exec_family(nm) || is_class_builder(rn, nm));
 }
 
-/* The bodies inside statement s that run while s does. */
-static void elab_inner(ElabWalk *w, int s, int file, int top, int may, int depth) {
+/* A written value's blocks: a call's, or the parts of `x rescue y` */
+static void elab_value(ElabWalk *w, int v, int e, ElabAt at) {
+  NodeKind k = v >= 0 ? nt_kind(w->c->nt, v) : NK_NilNode;
+  if (k == NK_CallNode || k == NK_RescueModifierNode) elab_inner(w, v, e, at);
+}
+
+/* A body under a condition: its statements may not run */
+static void elab_maybe(ElabWalk *w, int body, int e, ElabAt at) {
+  at.may = 1;
+  elab_body(w, body, e, at);
+}
+
+/* The bodies inside statement e's node s that run while it does. A class
+   body, and the block of a call that runs it as one (class_eval and kin,
+   a class builder), is a frame of its own: e opened it. */
+static void elab_inner(ElabWalk *w, int s, int e, ElabAt at) {
   const NodeTable *nt = w->c->nt;
   if (s < 0) return;
+  ElabAt in = at;
+  in.frame = e;
   switch (nt_kind(nt, s)) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      elab_body(w, nt_ref(nt, s, "body"), file, top, may, depth + 1);
+      elab_body(w, nt_ref(nt, s, "body"), e, in);
       break;
     case NK_PreExecutionNode:
-      elab_body(w, nt_ref(nt, s, "statements"), file, top, may, depth + 1);
+      elab_body(w, nt_ref(nt, s, "statements"), e, at);
       break;
     case NK_ParenthesesNode:
-      elab_body(w, nt_ref(nt, s, "body"), file, top, may, depth + 1);
+      elab_body(w, nt_ref(nt, s, "body"), e, at);
       break;
     case NK_IfNode: case NK_UnlessNode: {   /* an elsif ladder as a loop */
       int b = s;
       while (b >= 0 && (nt_kind(nt, b) == NK_IfNode || nt_kind(nt, b) == NK_UnlessNode)) {
-        elab_body(w, nt_ref(nt, b, "statements"), file, top, 1, depth + 1);
+        elab_maybe(w, nt_ref(nt, b, "statements"), e, at);
         b = nt_kind(nt, b) == NK_IfNode ? nt_ref(nt, b, "subsequent") : nt_ref(nt, b, "else_clause");
       }
-      if (b >= 0) elab_body(w, nt_ref(nt, b, "statements"), file, top, 1, depth + 1);
+      if (b >= 0) elab_maybe(w, nt_ref(nt, b, "statements"), e, at);
       break;
     }
     case NK_CaseNode: case NK_CaseMatchNode: {
       int n = 0;
       const int *v = nt_arr(nt, s, "conditions", &n);
-      for (int k = 0; k < n; k++) elab_body(w, nt_ref(nt, v[k], "statements"), file, top, 1, depth + 1);
-      int e = nt_ref(nt, s, "else_clause");
-      if (e >= 0) elab_body(w, nt_ref(nt, e, "statements"), file, top, 1, depth + 1);
+      for (int k = 0; k < n; k++) elab_maybe(w, nt_ref(nt, v[k], "statements"), e, at);
+      int el = nt_ref(nt, s, "else_clause");
+      if (el >= 0) elab_maybe(w, nt_ref(nt, el, "statements"), e, at);
       break;
     }
     case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
-      elab_body(w, nt_ref(nt, s, "statements"), file, top, 1, depth + 1);
+      elab_maybe(w, nt_ref(nt, s, "statements"), e, at);
       break;
     case NK_BeginNode: {
-      elab_body(w, nt_ref(nt, s, "statements"), file, top, may, depth + 1);
+      elab_body(w, nt_ref(nt, s, "statements"), e, at);
       for (int r = nt_ref(nt, s, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
-        elab_body(w, nt_ref(nt, r, "statements"), file, top, 1, depth + 1);
-      int e = nt_ref(nt, s, "else_clause"), en = nt_ref(nt, s, "ensure_clause");
-      if (e >= 0) elab_body(w, nt_ref(nt, e, "statements"), file, top, 1, depth + 1);
-      if (en >= 0) elab_body(w, nt_ref(nt, en, "statements"), file, top, may, depth + 1);
+        elab_maybe(w, nt_ref(nt, r, "statements"), e, at);
+      int el = nt_ref(nt, s, "else_clause"), en = nt_ref(nt, s, "ensure_clause");
+      if (el >= 0) elab_maybe(w, nt_ref(nt, el, "statements"), e, at);
+      if (en >= 0) elab_body(w, nt_ref(nt, en, "statements"), e, at);
       break;
     }
     /* `X = Class.new(B) do ... end`; under `||=` / `&&=` the value may not run */
     case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
     case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ClassVariableWriteNode:
-      elab_value(w, nt_ref(nt, s, "value"), file, top, may, depth);
+      elab_value(w, nt_ref(nt, s, "value"), e, at);
       break;
     case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
     case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
     case NK_ConstantAndWriteNode: case NK_ConstantPathAndWriteNode: case NK_LocalVariableAndWriteNode:
     case NK_InstanceVariableAndWriteNode: case NK_GlobalVariableAndWriteNode: case NK_ClassVariableAndWriteNode:
-      elab_value(w, nt_ref(nt, s, "value"), file, top, 1, depth);
+      at.may = 1;
+      elab_value(w, nt_ref(nt, s, "value"), e, at);
       break;
-    case NK_RescueModifierNode:   /* `x rescue y`: y may not run */
-      elab_value(w, nt_ref(nt, s, "expression"), file, top, may, depth);
-      elab_value(w, nt_ref(nt, s, "rescue_expression"), file, top, 1, depth);
+    case NK_RescueModifierNode: {   /* `x rescue y`: y may not run */
+      elab_value(w, nt_ref(nt, s, "expression"), e, at);
+      at.may = 1;
+      elab_value(w, nt_ref(nt, s, "rescue_expression"), e, at);
       break;
+    }
     case NK_CallNode: {
       int b = nt_ref(nt, s, "block"), runs = elab_block_runs(nt, s);
       if (b < 0 || nt_kind(nt, b) != NK_BlockNode || runs < 0) break;
-      elab_body(w, nt_ref(nt, b, "body"), file, top, may || runs == 0, depth + 1);
+      if (runs == 0) at.may = 1;
+      in.may = at.may;
+      elab_body(w, nt_ref(nt, b, "body"), e, elab_opens_frame(nt, s) ? in : at);
       break;
     }
     default: break;
@@ -218,22 +252,25 @@ static void elab_file(ElabWalk *w, int f) {
   int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0;
   w->entered[f] = 1;
   if (root < 0 || w->r->at[root] != -2) return;
-  int e = lr_add(w, root, f, -1, 0, 0);
+  ElabAt at = { f, -1, -1, 0, 0 };
+  int e = lr_add(w, root, at);
   w->r->st[e].rank = w->region == 0 ? w->rank++ : -1;
   if (st >= 0) w->r->at[st] = e;
   const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
   for (int k = 0; k < n; k++)
     if (v[k] >= 0 && nt_kind(nt, v[k]) == NK_PreExecutionNode && w->r->at[v[k]] == -2) {
-      int b = lr_add(w, v[k], f, -1, 0, 0);
-      elab_inner(w, v[k], f, b, 0, 0);
+      int b = lr_add(w, v[k], at);
+      ElabAt in = at; in.top = b;
+      elab_inner(w, v[k], b, in);
     }
   for (int k = 0; k < n; k++) {
     if (v[k] < 0) continue;
     int s = w->r->at[v[k]];
     if (nt_kind(nt, v[k]) != NK_PreExecutionNode) {
       if (s != -2) continue;
-      s = lr_add(w, v[k], f, -1, 0, 0);
-      elab_inner(w, v[k], f, s, 0, 0);
+      s = lr_add(w, v[k], at);
+      ElabAt in = at; in.top = s;
+      elab_inner(w, v[k], s, in);
     }
     if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? w->rank++ : -1;
     int t = prog_ordered_load(c, v[k]);
@@ -338,6 +375,346 @@ long long elab_sort_key(Compiler *c, int node) {
   return ((long long)(e >= 0 ? e : INT_MAX) << 32) | (unsigned)node;
 }
 
+/* ---- the histories ----
+   elab_program records each definition at its statement as the load phase
+   runs them, in seq order, in the frame its statement's body opens: the
+   class (or singleton class) a class body, `class << x` or class_eval
+   block runs in, main's at a file's top level. */
+typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next; } LrHist;   /* a: class, or -2 - ElabVar; b: singleton */
+typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND } LrMixKind;
+typedef struct { int node, kind, mod; } LrMixin;   /* mod: the module's class, -2 one the record does not know */
+typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix; } LrClass;
+enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2 };
+
+static void *lr_grow(void *v, int *cap, int n, size_t sz) {
+  if (n < *cap) return v;
+  *cap = *cap ? *cap * 2 : 8;
+  v = realloc(v, sz * (size_t)*cap);
+  if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return v;
+}
+
+static unsigned lr_hash(int a, int b, const char *name) {
+  unsigned h = (unsigned)a * 31u + (unsigned)b * 7u;
+  for (const char *q = name; *q; q++) h = h * 33u + (unsigned char)*q;
+  return h % LR_BUCKETS;
+}
+
+static LrHist *lr_hist(LoadRecord *r, int a, int b, const char *name, int make) {
+  if (!name || !r->hhead) return NULL;
+  unsigned h = lr_hash(a, b, name);
+  for (int i = r->hhead[h]; i >= 0; i = r->hist[i].next)
+    if (r->hist[i].a == a && r->hist[i].b == b && sp_streq(r->hist[i].name, name)) return &r->hist[i];
+  if (!make) return NULL;
+  r->hist = lr_grow(r->hist, &r->chist, r->nhist, sizeof *r->hist);
+  LrHist *x = &r->hist[r->nhist];
+  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h] };
+  if (!x->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  r->hhead[h] = r->nhist++;
+  return x;
+}
+
+static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
+  LrHist *x = lr_hist(r, a, b, name, 1);
+  if (!x) return;
+  if (d.target && !(d.target = strdup(d.target))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  x->v = lr_grow(x->v, &x->cap, x->n, sizeof *x->v);
+  x->v[x->n++] = d;
+}
+
+/* cls's history (LR_MAIN: main's, Object's), NULL past the record's classes */
+static LrClass *lr_class(LoadRecord *r, int cls) {
+  return cls >= LR_MAIN && cls + 1 < r->ncls ? &r->cls[cls + 1] : NULL;
+}
+
+/* The class a constant names, LR_UNKNOWN_CLASS when none */
+static int lr_class_named(Compiler *c, int node) {
+  const char *nm = node >= 0 ? nt_str(c->nt, node, "name") : NULL;
+  int ci = nm ? comp_class_index(c, nm) : -1;
+  return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
+}
+
+/* The class a call's receiver names: none or self, the frame's; a
+   constant, its class (not singleton) */
+static int lr_receiver(Compiler *c, int recv, int fc, int fs, int *sg) {
+  NodeKind k = recv >= 0 ? nt_kind(c->nt, recv) : NK_SelfNode;
+  *sg = k == NK_SelfNode ? fs : 0;
+  if (k == NK_SelfNode) return fc;
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? lr_class_named(c, recv) : LR_UNKNOWN_CLASS;
+}
+
+typedef struct { Compiler *c; LoadRecord *r; int *fc; unsigned char *fs, *vs; } ElabRec;
+
+/* The frame entry e's body opens: its class in fc[e], singleton in fs[e];
+   for any other statement, the frame it stands in. */
+static void lr_frame(ElabRec *x, int e) {
+  const NodeTable *nt = x->c->nt;
+  const LrStmt *s = &x->r->st[e];
+  int f = s->frame, node = s->node, cls = f >= 0 ? x->fc[f] : LR_MAIN, sg = f >= 0 ? x->fs[f] : 0;
+  NodeKind k = nt_kind(nt, node);
+  int call = k == NK_CallNode ? node : nt_ref(nt, node, "value");
+  x->vs[e] = BVIS_PUBLIC;
+  if (k == NK_ClassNode || k == NK_ModuleNode) { cls = lr_class_named(x->c, nt_ref(nt, node, "constant_path")); sg = 0; }
+  else if (k == NK_SingletonClassNode) {
+    int ex = nt_ref(nt, node, "expression");
+    cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_named(x->c, ex);
+    sg = 1;
+  }
+  else if (k == NK_ConstantWriteNode && class_def_body(x->c, node) >= 0) {
+    cls = comp_class_index(x->c, nt_str(nt, node, "name")); sg = 0;
+    if (cls < 0) cls = LR_UNKNOWN_CLASS;
+  }
+  else if (k == NK_LocalVariableWriteNode && class_def_body(x->c, node) >= 0) {
+    cls = LR_UNKNOWN_CLASS; sg = 0;
+    for (int ci = 0; ci < x->c->nclasses; ci++) if (x->c->classes[ci].def_node == node) cls = ci;
+  }
+  else if (call >= 0 && nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") >= 0 && elab_opens_frame(nt, call)) {
+    const char *nm = nt_str(nt, call, "name");
+    int rsg;
+    cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x->c, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
+    sg = is_instance_eval_family(nm) ? 1 : 0;
+  }
+  if (cls < LR_MAIN) cls = LR_UNKNOWN_CLASS;
+  x->fc[e] = cls; x->fs[e] = (unsigned char)sg;
+}
+
+/* A visibility word's SP_VIS_* (module_function: private) */
+static unsigned char lr_vis(int bvis) {
+  return bvis == BVIS_PRIVATE || bvis == BVIS_MODULE_FUNCTION ? SP_VIS_PRIVATE : bvis == BVIS_PROTECTED ? SP_VIS_PROTECTED : SP_VIS_PUBLIC;
+}
+
+/* A method version of (cls, sg, name) by node, under the frame's
+   visibility state bvis; a module_function one also copies it to the
+   singleton */
+static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, LrKind kind, int bvis, int may, const char *target) {
+  if (cls < LR_MAIN || !name) return;
+  lr_version(x->r, cls, sg, name, (LrDef){ node, (unsigned char)kind, sg ? SP_VIS_PUBLIC : lr_vis(bvis), (unsigned char)may, 0, target });
+  if (!sg && bvis == BVIS_MODULE_FUNCTION)
+    lr_version(x->r, cls, 1, name, (LrDef){ node, LR_COPY, SP_VIS_PUBLIC, (unsigned char)may, 0, name });
+}
+
+static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
+  int recv = nt_ref(x->c->nt, def, "receiver"), sg = fs, cls = fc;
+  if (recv >= 0) { cls = lr_receiver(x->c, recv, fc, 1, &sg); sg = 1; }
+  lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
+}
+
+/* A write of a variable: a global's or main's instance variable's by name,
+   a constant's by name and the class whose body (lexical scope) writes it,
+   as lr_const_owner numbers it (0: not known) */
+static int lr_const_owner(int cls) { return cls >= LR_MAIN ? cls + 2 : 0; }
+static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, int node, int nilv, int may) {
+  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL });
+}
+
+/* A call statement's definitions: attrs, aliases, visibility, mixins,
+   define_method, undef_method / remove_method, on the class its receiver
+   names. vs is the frame's visibility state. */
+static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int may) {
+  const NodeTable *nt = x->c->nt;
+  const char *nm = nt_str(nt, node, "name");
+  int sg, cls = lr_receiver(x->c, nt_ref(nt, node, "receiver"), fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (!nm || cls < LR_MAIN) return;
+  int bvis = visibility_of_name(nm);
+  if (bvis && !ac) { *vs = (unsigned char)bvis; return; }
+  for (int i = 0; i < ac; i++) {
+    const char *an_ = vis_arg_name(nt, av[i]);
+    if (bvis && nt_kind(nt, av[i]) == NK_DefNode) lr_def(x, av[i], cls, sg, bvis, may);
+    else if (bvis) lr_method(x, cls, sg, an_, node, LR_VIS, bvis, may, NULL);
+    else if (is_attr_reader_family(nm) || is_attr_writer_family(nm)) {
+      if (is_attr_reader_family(nm)) lr_method(x, cls, sg, an_, node, LR_READER, *vs, may, NULL);
+      char w[256];
+      if (an_ && is_attr_writer_family(nm) && snprintf(w, sizeof w, "%s=", an_) < (int)sizeof w)
+        lr_method(x, cls, sg, w, node, LR_WRITER, *vs, may, NULL);
+    }
+    else if (is_mixin_call(nm)) {
+      LrClass *k = lr_class(x->r, cls);
+      if (!k) continue;
+      k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
+      k->mix[k->nmix++] = (LrMixin){ node, is_include_name(nm) ? LR_INCLUDE : is_prepend_name(nm) ? LR_PREPEND : LR_EXTEND,
+                                     nt_kind(nt, av[i]) == NK_ConstantReadNode || nt_kind(nt, av[i]) == NK_ConstantPathNode ? lr_class_named(x->c, av[i]) : LR_UNKNOWN_CLASS };
+    }
+    else if (is_undef_method_name(nm) || is_remove_method_name(nm))
+      lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
+  }
+  if ((is_define_method_name(nm) || is_define_singleton_method_name(nm)) && ac > 0)
+    lr_method(x, cls, sg || is_define_singleton_method_name(nm), vis_arg_name(nt, av[0]), node, LR_DEFINE_METHOD, *vs, may, NULL);
+  if (is_alias_method_name(nm) && ac == 2)
+    lr_method(x, cls, sg, vis_arg_name(nt, av[0]), node, LR_ALIAS, *vs, may, vis_arg_name(nt, av[1]));
+}
+
+/* What statement e defines or writes, in its frame */
+static void lr_record_stmt(ElabRec *x, int e) {
+  const NodeTable *nt = x->c->nt;
+  LoadRecord *r = x->r;
+  const LrStmt *s = &r->st[e];
+  int node = s->node, f = s->frame, may = s->may;
+  int fc = f >= 0 ? x->fc[f] : LR_MAIN, fs = f >= 0 ? x->fs[f] : 0;
+  unsigned char *vs = f >= 0 ? &x->vs[f] : &x->vs[r->nst];
+  NodeKind k = nt_kind(nt, node);
+  lr_frame(x, e);
+  if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) &&
+      x->fc[e] >= 0 && x->fc[e] != fc) {   /* a body the class runs */
+    LrClass *kc = lr_class(r, x->fc[e]);
+    int body = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "body") : class_def_body(x->c, node);
+    if (kc) { kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open); kc->open[kc->nopen++] = (LrOpen){ node, body }; }
+  }
+  switch (k) {
+    case NK_DefNode: lr_def(x, node, fc, fs, *vs, may); break;
+    case NK_AliasMethodNode: {
+      int nn = nt_ref(nt, node, "new_name"), on = nt_ref(nt, node, "old_name");
+      lr_method(x, fc, fs, nn >= 0 ? vis_arg_name(nt, nn) : NULL, node, LR_ALIAS, *vs, may, on >= 0 ? vis_arg_name(nt, on) : NULL);
+      break;
+    }
+    case NK_UndefNode: {
+      int n = 0;
+      const int *v = nt_arr(nt, node, "names", &n);
+      for (int i = 0; i < n; i++) lr_method(x, fc, fs, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
+      break;
+    }
+    case NK_CallNode: lr_call(x, node, fc, fs, vs, may); break;
+    case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: {
+      int v = nt_ref(nt, node, "value");
+      lr_write(r, ELAB_CONST, lr_const_owner(fc), nt_str(nt, node, "name"), node, v < 0 || nt_kind(nt, v) == NK_NilNode, may || k == NK_ConstantOrWriteNode);
+      break;
+    }
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode:   /* `$a = $b = v` writes both */
+      for (int w = node; w >= 0 && (nt_kind(nt, w) == NK_GlobalVariableWriteNode || w == node); w = nt_ref(nt, w, "value")) {
+        const char *gn = nt_str(nt, w, "name");
+        int v = nt_ref(nt, w, "value");
+        if (gn && *gn) lr_write(r, ELAB_GVAR, 0, gn + 1, node, v < 0 || nt_kind(nt, v) == NK_NilNode, may || k == NK_GlobalVariableOrWriteNode);
+      }
+      break;
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: {
+      int v = nt_ref(nt, node, "value");
+      if (f < 0) lr_write(r, ELAB_MAIN_IVAR, 0, nt_str(nt, node, "name"), node, v < 0 || nt_kind(nt, v) == NK_NilNode, may || k == NK_InstanceVariableOrWriteNode);
+      break;
+    }
+    default: break;
+  }
+}
+
+static void elab_check_record(Compiler *c);
+
+/* The scope walk of each file's top level (prog_walk_files), then the
+   record of what the load phase defines, in the order it runs. */
+void elab_program(Compiler *c) {
+  prog_walk_files(c);
+  double t0 = sp_timing_now();   /* the record's own cost, the map's build included */
+  LoadRecord *r = elab_fresh(c);
+  r->ncls = c->nclasses + 1;
+  r->cls = calloc((size_t)r->ncls, sizeof *r->cls);
+  r->hhead = malloc(sizeof(int) * LR_BUCKETS);
+  ElabRec x = { c, r, malloc(sizeof(int) * (size_t)(r->nst + 1)), calloc((size_t)r->nst + 1, 1), calloc((size_t)r->nst + 1, 1) };
+  if (!r->cls || !r->hhead || !x.fc || !x.fs || !x.vs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < LR_BUCKETS; b++) r->hhead[b] = -1;
+  x.vs[r->nst] = BVIS_PRIVATE;   /* main's methods are Object's private ones */
+  for (int e = 0; e < r->nst; e++) lr_record_stmt(&x, e);
+  free(x.fc); free(x.fs); free(x.vs);
+  r->recorded = 1;
+  sp_timing_end(t0, "an_elab_record", "");
+  if (r->check) elab_check_record(c);
+}
+
+/* ---- the queries ---- */
+/* The live version of history h at p (late: as of the load's end):
+   ELAB_YES, ELAB_NO (none: ask on), LR_STOP (undefined here), ELAB_UNKNOWN. */
+enum { LR_STOP = 3 };
+static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, const LrDef **out) {
+  int unsure = 0;
+  for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
+    const LrDef *v = &h->v[i];
+    if (v->kind == LR_VIS) continue;
+    if (!late) {
+      int o = elab_cmp(elab_point_of(c, v->node), p);
+      if (o == PROG_UNKNOWN) { unsure = 1; continue; }
+      if (o != PROG_BEFORE) continue;
+      if (v->may) { unsure = 1; continue; }
+    }
+    if (out) *out = v;
+    return unsure ? ELAB_UNKNOWN : v->kind == LR_UNDEF ? LR_STOP : v->kind == LR_REMOVE ? ELAB_NO : ELAB_YES;
+  }
+  return unsure ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+/* Did mixin m of a class happen before p? ELAB_YES / NO / UNKNOWN */
+static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late, int may) {
+  if (late) return ELAB_YES;
+  int o = elab_cmp(elab_point_of(c, m->node), p);
+  return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
+}
+
+/* The search of `name` (or, with name NULL, of module `mod`) along cls's
+   ancestors at p: its prepends (the last first), cls, its includes (the
+   last first), then its superclass; a singleton's own methods, its extends,
+   then the superclass's singleton. */
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, const LrDef **out, int depth) {
+  LoadRecord *r = c->lrec;
+  if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
+  if (!name && cls == mod && !sg) return ELAB_YES;
+  const LrClass *k = lr_class(r, cls);
+  int unsure = 0;
+  for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
+    if (pass == 1) {
+      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, out) : ELAB_NO;
+      if (o == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
+      if (o == LR_STOP) return unsure ? ELAB_UNKNOWN : ELAB_NO;
+      if (o == ELAB_UNKNOWN) unsure = 1;
+      continue;
+    }
+    for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
+      const LrMixin *m = &k->mix[i];
+      int want = sg ? LR_EXTEND : pass == 0 ? LR_PREPEND : LR_INCLUDE;
+      if (m->kind != want || (sg && pass == 0)) continue;
+      int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
+      if (b == ELAB_NO) continue;
+      int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, out, depth + 1);
+      if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
+      if (o != ELAB_NO) unsure = 1;
+    }
+  }
+  /* a class's chain ends at Object, whose methods main's top level defines
+     (main's own singleton is not Object's) */
+  int sup = cls >= 0 && cls < c->nclasses ? c->classes[cls].parent : -1;
+  if (!sg && sup < 0 && cls >= 0 && cls < c->nclasses &&
+      (c->classes[cls].def_node < 0 || nt_kind(c->nt, c->classes[cls].def_node) != NK_ModuleNode)) sup = LR_MAIN;
+  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, out, depth + 1) : ELAB_NO;
+  return o == ELAB_NO ? (unsure ? ELAB_UNKNOWN : ELAB_NO) : unsure ? ELAB_UNKNOWN : o;
+}
+
+int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out) {
+  if (out) *out = NULL;
+  if (!c->lrec || !c->lrec->recorded || !name) return ELAB_UNKNOWN;
+  int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, out, 0);
+  return o == LR_STOP ? ELAB_NO : o;
+}
+
+int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
+  if (!c->lrec || !c->lrec->recorded || mod < 0) return ELAB_UNKNOWN;
+  return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, NULL, 0);
+}
+
+int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p) {
+  if (!c->lrec || !c->lrec->recorded) return ELAB_UNKNOWN;
+  const LrHist *h = lr_hist(c->lrec, -2 - (int)kind, kind == ELAB_CONST ? lr_const_owner(LR_MAIN) : 0, name, 0);
+  int unsure = 0;
+  for (int i = 0; h && i < h->n; i++) {
+    const LrDef *v = &h->v[i];
+    int o = p.region < 0 ? (v->may || elab_point_of(c, v->node).region != 0 ? PROG_UNKNOWN : PROG_BEFORE)
+                         : elab_cmp(elab_point_of(c, v->node), p);
+    if (o == PROG_UNKNOWN) unsure = 1;
+    else if (o == PROG_BEFORE && !v->nil) { if (!v->may) return ELAB_YES; unsure = 1; }
+  }
+  return unsure ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n) {
+  const LrClass *k = c->lrec ? lr_class(c->lrec, cls) : NULL;
+  *n = k ? k->nopen : 0;
+  return k ? k->open : NULL;
+}
+
 /* ---- SPINEL_ELAB_CHECK ---- */
 int elab_check_on(Compiler *c) { return lr_get(c)->check; }
 
@@ -392,6 +769,59 @@ void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const i
   fprintf(stderr, "spinel-elab-check: sort n=%d moved=%d at=%d now=%s record=%s\n", n, moved, first, da, db);
 }
 
+/* The readers the histories will answer for, asked once the record is
+   made: class_body_list's bodies of each class against the record's, and
+   gvar_seeded_before_read against "a non-nil write before the first read
+   the load phase runs". */
+static void elab_check_record(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  int *bci = NULL, *bnode = NULL, nb = class_body_list(c, &bci, &bnode);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int nr = 0, no = 0, same = 1, k = 0;
+    const LrOpen *o = elab_class_bodies(c, ci, &no);
+    for (int i = 0; i < nb; i++) if (bci[i] == ci && bnode[i] >= 0) nr++;
+    if (!nr && !no) continue;
+    for (int i = 0; i < nb && same; i++)
+      if (bci[i] == ci && bnode[i] >= 0) { while (k < no && o[k].body < 0) k++; same = k < no && o[k++].body == bnode[i]; }
+    while (same && k < no && o[k].body < 0) k++;
+    same = same && k == no;
+    LrCheck *f = lr_family(r, "class_body_list");
+    f->asked++;
+    if (same) continue;
+    f->differ++;
+    if (r->shown++ < LR_CHECK_SHOW)
+      fprintf(stderr, "spinel-elab-check: bodies class=%s reader=%d record=%d\n", c->classes[ci].name, nr, no);
+  }
+  free(bci); free(bnode);
+  /* the first read of each written global the load phase runs */
+  LoadPoint *first = malloc(sizeof *first * (size_t)(r->nhist ? r->nhist : 1));
+  if (!first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < r->nhist; i++) first[i] = (LoadPoint){ -1, -1 };
+  for (int id = 0; id < c->nt->count; id++) {
+    NodeKind k = nt_kind(c->nt, id);
+    if (k != NK_GlobalVariableReadNode && k != NK_GlobalVariableOperatorWriteNode &&
+        k != NK_GlobalVariableOrWriteNode && k != NK_GlobalVariableAndWriteNode) continue;
+    const char *gn = nt_str(c->nt, id, "name");
+    LrHist *h = gn && *gn ? lr_hist(r, -2 - (int)ELAB_GVAR, 0, gn + 1, 0) : NULL;
+    LoadPoint q = elab_point_of(c, id);
+    if (!h || q.region < 0) continue;
+    LoadPoint *m = &first[h - r->hist];
+    if (m->region < 0 || elab_cmp(q, *m) == PROG_BEFORE) *m = q;
+  }
+  for (int i = 0; i < r->nhist; i++) {
+    if (r->hist[i].a != -2 - (int)ELAB_GVAR) continue;
+    int now = gvar_seeded_before_read(c, r->hist[i].name);
+    int rec = elab_written_before(c, ELAB_GVAR, r->hist[i].name, first[i]) == ELAB_YES;
+    LrCheck *f = lr_family(r, "gvar_seeded_before_read");
+    f->asked++;
+    if (now == rec) continue;
+    f->differ++;
+    if (r->shown++ < LR_CHECK_SHOW)
+      fprintf(stderr, "spinel-elab-check: seeded $%s now=%d record=%d\n", r->hist[i].name, now, rec);
+  }
+  free(first);
+}
+
 /* ---- --dump-load-record ---- */
 void elab_dump(Compiler *c, FILE *out) {
   LoadRecord *r = elab_fresh(c);
@@ -403,6 +833,38 @@ void elab_dump(Compiler *c, FILE *out) {
     const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, s->node, "name");
     fprintf(out, "%*sr%d #%d%s f%d %s%s%s line %d\n", 2 * s->depth, "", s->region, e, s->may ? " may" : "",
             s->file, nt_type(nt, s->node), nm ? " " : "", nm ? nm : "", (int)nt_int(nt, s->node, "node_line", 0));
+  }
+  if (!r->recorded) return;
+  static const char *const kinds[] = { "def", "define_method", "reader", "writer", "alias", "copy", "undef", "remove", "vis", "write" };
+  static const char *const mixes[] = { "include", "extend", "prepend" };
+  static const char *const vars[] = { "$", "main ", "const " };
+  for (int ci = LR_MAIN; ci + 1 < r->ncls; ci++) {
+    const LrClass *k = lr_class(r, ci);
+    if (!k->nopen && !k->nmix) continue;
+    fprintf(out, "class %s:", ci == LR_MAIN ? "main" : c->classes[ci].name);
+    for (int i = 0; i < k->nopen; i++) fprintf(out, " body#%d", elab_point_of(c, k->open[i].node).seq);
+    for (int i = 0; i < k->nmix; i++)
+      fprintf(out, " %s %s#%d", mixes[k->mix[i].kind], k->mix[i].mod >= 0 ? c->classes[k->mix[i].mod].name : "?",
+              elab_point_of(c, k->mix[i].node).seq);
+    fputc('\n', out);
+  }
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->a < LR_MAIN) fprintf(out, "%s%s%s%s:", vars[-2 - h->a], h->b >= 2 ? c->classes[h->b - 2].name : "",
+                                h->b >= 2 ? "::" : h->b == 0 && h->a == -2 - (int)ELAB_CONST ? "?::" : "", h->name);
+    else fprintf(out, "%s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);
+    for (int j = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      fprintf(out, " %s#%d%s%s", kinds[v->kind], elab_point_of(c, v->node).seq, v->may ? " may" : "", v->nil ? " nil" : "");
+      if (v->kind == LR_ALIAS && v->target) {   /* the version the alias takes, as the query answers it */
+        const LrDef *d = NULL;
+        int o = elab_method_at(c, h->a, v->target, h->b, elab_point_of(c, v->node), &d);
+        if (o == ELAB_YES && d) fprintf(out, " (%s: %s#%d)", v->target, kinds[d->kind], elab_point_of(c, d->node).seq);
+        else fprintf(out, " (%s: %s)", v->target, o == ELAB_NO ? "none" : "unknown");
+      }
+      if (v->kind != LR_WRITE && v->vis != SP_VIS_PUBLIC) fprintf(out, " %s", v->vis == SP_VIS_PRIVATE ? "private" : "protected");
+    }
+    fputc('\n', out);
   }
 }
 
@@ -416,6 +878,12 @@ void elab_free(Compiler *c) {
   }
   for (int i = 0; r->check && i < LR_CHECK_MAX && r->fam[i].reader; i++)
     fprintf(stderr, "spinel-elab-check: family=\"%s\" asked=%ld differ=%ld\n", r->fam[i].reader, r->fam[i].asked, r->fam[i].differ);
+  for (int i = 0; i < r->nhist; i++) {
+    for (int j = 0; j < r->hist[i].n; j++) free((char *)r->hist[i].v[j].target);
+    free(r->hist[i].name); free(r->hist[i].v);
+  }
+  for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
+  free(r->hist); free(r->hhead); free(r->cls);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }

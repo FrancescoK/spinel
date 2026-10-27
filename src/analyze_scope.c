@@ -2086,7 +2086,7 @@ void register_module_functions(Compiler *c) {
 }
 
 /* Method name carried by a `private`/`public`/`protected` symbol/string arg. */
-static const char *vis_arg_name(const NodeTable *nt, int arg) {
+const char *vis_arg_name(const NodeTable *nt, int arg) {
   const char *aty = nt_type(nt, arg);
   NodeKind ak = nt_kind(nt, arg);
   if (!aty) return NULL;

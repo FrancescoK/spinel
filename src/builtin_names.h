@@ -384,6 +384,9 @@ int is_builtin_module_const_name(const char *n);
 int is_untabled_native_class_name(const char *n);
 
 int is_define_method_name(const char *n); /* define_method */
+int is_define_singleton_method_name(const char *n); /* define_singleton_method */
+int is_undef_method_name(const char *n);  /* undef_method */
+int is_remove_method_name(const char *n); /* remove_method */
 int is_alias_method_name(const char *n);  /* alias_method */
 /* The operations a String Array (whose elements are handles) answers
    itself, by name, argument count and block (0 none, 1 a literal block, 2

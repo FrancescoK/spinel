@@ -23,3 +23,13 @@ r0 #20 f0 CallNode helper line 21
   r0 #21 may f0 CallNode puts line 21
 r0 #22 f0 CallNode puts line 22
 r0 #23 f0 CallNode puts line 23
+class Shape: body#6 body#9
+Shape#initialize: def#7
+Shape#w: reader#10
+Shape#h: reader#10
+Shape#odd#__cond1: def#14 may
+$__cond_def1: write#15 may
+Shape#odd: def#16
+const Shape::KEEP: write#17
+Shape#area: def#18
+main#helper: def#19 private

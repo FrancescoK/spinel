@@ -1,0 +1,55 @@
+load record: 35 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ModuleNode Loud line 7
+  r0 #2 f0 DefNode say line 8
+r0 #3 f0 ClassNode Speaker line 10
+  r0 #4 f0 DefNode say line 11
+  r0 #5 f0 CallNode private line 12
+  r0 #6 f0 DefNode secret line 13
+  r0 #7 f0 CallNode public line 14
+  r0 #8 f0 CallNode attr_accessor line 15
+  r0 #9 f0 DefNode inherited line 16
+r0 #10 f0 LoadNode line 18
+r0 #11 f1 ProgramNode line 1
+r0 #12 f1 ModuleNode Quiet line 1
+  r0 #13 f1 DefNode say line 2
+r0 #14 f1 ClassNode Speaker line 4
+  r0 #15 f1 CallNode include line 5
+r0 #16 f0 ClassNode Speaker line 19
+  r0 #17 f0 CallNode alias_method line 20
+  r0 #18 f0 CallNode include line 21
+  r0 #19 f0 CallNode define_method line 22
+  r0 #20 f0 CallNode protected line 23
+  r0 #21 f0 SingletonClassNode line 24
+    r0 #22 f0 DefNode make line 25
+r0 #23 f0 ModuleNode Util line 28
+  r0 #24 f0 CallNode module_function line 29
+  r0 #25 f0 DefNode twice line 30
+r0 #26 f0 GlobalVariableWriteNode $level line 32
+r0 #27 f0 InstanceVariableWriteNode @main_ivar line 33
+r0 #28 f0 ConstantWriteNode LIMIT line 34
+r0 #29 f0 LocalVariableWriteNode s line 35
+r0 #30 f0 CallNode puts line 36
+r0 #31 f0 CallNode puts line 37
+r0 #32 f0 CallNode puts line 38
+r0 #33 f0 CallNode puts line 39
+r0 #34 f0 CallNode puts line 40
+class Loud: body#1
+class Speaker: body#3 body#14 body#16 include Quiet#15 include Loud#18
+class Quiet: body#12
+class Util: body#23
+Loud#say: def#2
+Speaker#say: def#4
+Speaker#secret: def#6 private vis#20 protected
+Speaker#volume: reader#8
+Speaker#volume=: writer#8
+Speaker.inherited: def#9
+Quiet#say: def#13
+Speaker#shout: alias#17 (say: def#4)
+Speaker#hum: define_method#19
+Speaker.make: def#22
+Util#twice: def#25 private
+Util.twice: copy#25
+$level: write#26
+main @main_ivar: write#27
+const LIMIT: write#28

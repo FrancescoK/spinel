@@ -158,6 +158,41 @@ void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const i
 void elab_dump(Compiler *c, FILE *out);
 void elab_free(Compiler *c);
 extern int g_dump_load_record;   /* --dump-load-record */
+/* The load record's histories (analyze_elab.c), recorded by elab_program,
+   which takes the scope walk's place: a method's versions by (class,
+   singleton, name), with class -1 for main's (Object's) methods; a class's
+   bodies (LrOpen) and mixins; the writes of globals (named without `$`),
+   main's instance variables and constants. A version keeps its node and
+   reads its point from the map (elab_point_of), so a rebuilt map moves
+   none. The queries answer ELAB_YES / ELAB_NO / ELAB_UNKNOWN as of point
+   p: what a statement in another region, or one that may not run, did
+   before p is UNKNOWN. A p with no point (a method body) asks as of the
+   end of the load phase. */
+enum { ELAB_NO, ELAB_YES, ELAB_UNKNOWN };
+typedef enum { LR_DEF, LR_DEFINE_METHOD, LR_READER, LR_WRITER, LR_ALIAS, LR_COPY, LR_UNDEF, LR_REMOVE, LR_VIS, LR_WRITE } LrKind;
+typedef struct {
+  int node;
+  unsigned char kind;   /* LrKind */
+  unsigned char vis;    /* SP_VIS_*, for a method version */
+  unsigned char may;    /* recorded under a condition: may not have run */
+  unsigned char nil;    /* a write of nil */
+  const char *target;   /* an alias's or a copy's original name */
+} LrDef;
+typedef struct { int node, body; } LrOpen;
+typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
+void elab_program(Compiler *c);
+/* the version of cls's method `name` (singleton when sg) live at p, through
+   its ancestors as they stood at p; *out (when asked) the version found. A
+   hook (`inherited`, `included`, `method_added`, ...) is asked as the
+   singleton method it is: sg = 1. */
+int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
+/* is module mod in the ancestors of cls (of its singleton when sg) at p? */
+int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
+/* was a non-nil value written to the variable before p? (a constant: one
+   the top level writes, Object's) */
+int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p);
+/* the bodies cls runs, in the order they run; *n their number */
+const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

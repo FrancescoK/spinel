@@ -160,7 +160,7 @@ int is_async_code_entry(const char *recv, const char *n) {
    Enumerator's generator (`Enumerator.new`). */
 int is_deferred_block_call(const char *recv, const char *n) {
   if (!n) return 0;
-  if (is_proc_constructor(n) || is_define_method_name(n) || sp_streq(n, "define_singleton_method") ||
+  if (is_proc_constructor(n) || is_define_method_name(n) || is_define_singleton_method_name(n) ||
       sp_streq(n, "at_exit") || is_async_code_entry(recv, n)) return 1;
   if (!recv) return 0;
   return ((sp_streq(recv, "Proc") || sp_streq(recv, "Enumerator")) && sp_streq(n, "new")) ||
@@ -1557,6 +1557,9 @@ int is_alias_method_name(const char *n) { return n && sp_streq(n, "alias_method"
 int is_define_method_name(const char *n) {
   return n && sp_streq(n, "define_method");
 }
+int is_define_singleton_method_name(const char *n) { return n && sp_streq(n, "define_singleton_method"); }
+int is_undef_method_name(const char *n) { return n && sp_streq(n, "undef_method"); }
+int is_remove_method_name(const char *n) { return n && sp_streq(n, "remove_method"); }
 
 /* node types with no NodeKind of their own, as nt_type spells them */
 int is_arguments_node_type(const char *t) { return t && sp_streq(t, "ArgumentsNode"); }
