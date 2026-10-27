@@ -824,6 +824,7 @@ static int *g_ct_n, *g_ct_off, g_ct_cap;
 static int *g_ct_pool, g_ct_npool, g_ct_poolcap;
 static int *g_ct_idx, g_ct_nidx;
 static Compiler *g_ct_c;
+static unsigned g_ct_drops;   /* (cplan_targets_drops) */
 
 static const Compiler *g_ct_sort_c;
 static int ct_idx_cmp(const void *a, const void *b) {
@@ -834,10 +835,12 @@ static int ct_idx_cmp(const void *a, const void *b) {
 }
 
 void cplan_targets_drop(void) {
+  g_ct_drops++;
   for (int i = 0; i < g_ct_cap; i++) g_ct_n[i] = CT_NONE;
   g_ct_npool = 0;
   g_ct_nidx = -1;
 }
+unsigned cplan_targets_drops(void) { return g_ct_drops; }
 
 static void ct_index_build(Compiler *c) {
   free(g_ct_idx);
@@ -1049,7 +1052,7 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
     g_ct_off = (int *)realloc(g_ct_off, (size_t)ncap * sizeof *g_ct_off);
     for (int i = fresh ? 0 : g_ct_cap; i < ncap; i++) g_ct_n[i] = CT_NONE;
     g_ct_cap = ncap;
-    if (fresh) { g_ct_npool = 0; g_ct_nidx = -1; }
+    if (fresh) { g_ct_npool = 0; g_ct_nidx = -1; g_ct_drops++; }
     g_ct_c = c;
   }
   if (g_ct_n[id] == CT_NONE) {
