@@ -45169,14 +45169,34 @@ static int arysub_cnew_kept(Compiler *c, int k) {
    descendant's): a super with no block of its own passes that block on.
    Only a `new` on a constant naming another class, a builtin's, or a bare
    `new` in another class's class method is known not to. */
+/* Whether argument list args passes a `**` splat. */
+static int arysub_args_kwsplat(const NodeTable *nt, int args) {
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    if (nt_kind(nt, av[i]) == NK_AssocSplatNode) return 1;
+    if (nt_kind(nt, av[i]) != NK_KeywordHashNode) continue;
+    int en = 0;
+    const int *ev = nt_arr(nt, av[i], "elements", &en);
+    for (int j = 0; j < en; j++) if (nt_kind(nt, ev[j]) == NK_AssocSplatNode) return 1;
+  }
+  return 0;
+}
 static int arysub_new_gets_block(Compiler *c, int k) {
   static const char *const other[] = { "Array", "Hash", "String", "Struct", "Class", "Module",
     "Thread", "Proc", "Enumerator", "Fiber", "Data", "Set", "Mutex", "Queue", "Ractor", NULL };
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (nt_ref(nt, id, "block") < 0) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
+    /* (`T.method(:new)` hands the Method on, and its call may take a block) */
+    if ((sp_streq(nm, "method") || sp_streq(nm, "public_method")) && nt_ref(nt, id, "arguments") >= 0) {
+      int an = 0;
+      const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+      if (an > 0 && (nt_kind(nt, av[0]) != NK_SymbolNode ||
+                     (nt_str(nt, av[0], "value") && sp_streq(nt_str(nt, av[0], "value"), "new")))) return 1;
+    }
+    if (nt_ref(nt, id, "block") < 0) continue;
     if (sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__")) {
       int args = nt_ref(nt, id, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -45247,6 +45267,8 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
       return;
     }
   }
+  /* (a `**` splat among the arguments is left to Class#new) */
+  if (init == 2 && arysub_args_kwsplat(nt, args)) return;
   /* (a block of its own in a self.new that a block may reach as well is
      left to Class#new) */
   if (init == 2 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && arysub_new_gets_block(c, s->class_id)) return;

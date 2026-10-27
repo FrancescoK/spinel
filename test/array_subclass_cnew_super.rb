@@ -98,3 +98,9 @@ class S1 < String
   def self.new(s) = super(s + "!")
 end
 p S1.new("hi"), S1.new("hi").class
+
+# a `**` splat is left to Class#new
+class KW < Array
+  def self.new(**kw) = super(**kw)
+end
+p KW.new, KW.new.class
