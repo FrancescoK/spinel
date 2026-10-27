@@ -6425,16 +6425,23 @@ static void sp_inline_rbs_free(void) {}
    of the graph, whose index it answers: a file of the graph (added the first
    time), the runtime's native stand-in, a core no-op, nothing (warned at
    compile time, LoadError when it runs), or a path computed when it runs. */
+/* What a require_relative of `path` in file `from` names: the path from the
+   file's own directory, as CRuby expands it (before any ".rb"). */
+static void sp_load_rel_path(const SpLoadGraph *g, int from, const char *path, char *out, size_t cap) {
+  char *dir = strdup(g->file[from]), *sl = dir ? strrchr(dir, '/') : NULL;
+  if (!dir) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  if (sl) *sl = 0;
+  snprintf(out, cap, path[0] == '/' ? "%s%s" : "%s/%s", path[0] == '/' ? "" : dir, path);
+  free(dir);
+  sp_normalize_dots(out);
+}
+
 static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const char *path, int line) {
   int rel = method && strcmp(method, "require_relative") == 0, how = SP_LOAD_NONE, tier = 0;
   char found[1024];
   if (!path) how = SP_LOAD_RUNTIME;
   else if (rel) {
-    char *dir = strdup(g->file[from]), *sl = strrchr(dir, '/');
-    if (sl) *sl = 0;
-    snprintf(found, sizeof found, path[0] == '/' ? "%s%s" : "%s/%s", path[0] == '/' ? "" : dir, path);
-    free(dir);
-    sp_normalize_dots(found);
+    sp_load_rel_path(g, from, path, found, sizeof found);
     size_t fl = strlen(found);
     if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
     if (sp_lib_file(found)) how = SP_LOAD_FILE;
@@ -7071,6 +7078,15 @@ static void sp_graph_site_take(int id, const pm_node_t *call) {
     e->node = id;
     emit_str(id, "how", how_name[e->how]);
     if (e->to >= 0) emit_int(id, "target_file", e->to);
+    /* one that names no file: the feature its LoadError names, the path
+       as written for a require, from the file's directory for a
+       require_relative */
+    if (e->how == SP_LOAD_NONE) {
+      char feature[1024];
+      if (e->plain) snprintf(feature, sizeof feature, "%s", e->name);
+      else sp_load_rel_path(g_flat_sites.g, e->from, e->name, feature, sizeof feature);
+      emit_str(id, "feature", feature);
+    }
     return;
   }
 }

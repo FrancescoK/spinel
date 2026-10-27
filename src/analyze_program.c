@@ -320,8 +320,8 @@ static int prog_root_of(const Compiler *c, const int *parent, int id) {
        loads when that code runs (part 3c);
      - a require of the program's own entry file, which CRuby runs again as
        a new file since `$0` is not a loaded feature;
-     - one that names no file at compile time: LoadError when it runs
-       (part 4);
+     - one whose path is computed when it runs: its file is chosen among
+       the candidates then (part 4);
      - an autoload: its file loads at the constant's first reference
        (part 4);
      - in a required file, an END block, registered when its statement
@@ -341,12 +341,15 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, id, "--load-model=graph loads an autoload's file at its constant's first reference only later, for now");
     }
     else if (k == NK_LoadNode) {
-      if (!nt_int(nt, id, "boot", 0) && !prog_is_root_stmts(c, parent[id]))
+      /* (one that names no file runs no file's top level: it raises
+         LoadError wherever it stands) */
+      const char *how = nt_str(nt, id, "how");
+      if (!nt_int(nt, id, "boot", 0) && !is_load_how_missing(how) && !prog_is_root_stmts(c, parent[id]))
         unsupported_feature(c, id, "--load-model=graph loads only a require that is a statement of a file's top level, for now");
       if (nt_int(nt, id, "target_file", -1) == 0)
         unsupported_feature(c, id, "--load-model=graph does not load the program's own entry file again, for now");
-      if (is_load_how_unresolved(nt_str(nt, id, "how")))
-        unsupported_feature(c, id, "--load-model=graph loads only a require that names a file at compile time, for now");
+      if (is_load_how_computed(how))
+        unsupported_feature(c, id, "--load-model=graph loads only a require whose path is known at compile time, for now");
     }
     else if (k == NK_PostExecutionNode) {
       int r = prog_root_of(c, parent, id);

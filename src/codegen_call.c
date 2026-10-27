@@ -4801,9 +4801,8 @@ const char *exc_gated_acc_fn(const char *name) {
     {"signo", "sp_exc_signo_acc"}, {"signm", "sp_exc_signm_acc"},
     {"errno", "sp_exc_errno_acc"}, {"name", "sp_exc_name_acc"},
     {"error_code", "sp_exc_error_code_acc"},
-    /* LoadError#path: a require is resolved at compile time, so no
-       LoadError the program raises carries a path -- nil, as a LoadError
-       raised by hand answers in CRuby */
+    /* LoadError#path: the feature of a require that loaded nothing, and
+       nil for a LoadError raised by hand, as in CRuby */
     {"path", "sp_exc_path_acc"},
     {NULL, NULL}
   };

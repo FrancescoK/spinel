@@ -1159,11 +1159,11 @@ sp_RbVal sp_exc_receiver_acc(sp_Exception *e) {SP_GC_ROOT(e);
   if (e && !e->has_recv) sp_raise_cls("ArgumentError", "no receiver is available");
   return e->xrecv;
 }
-/* LoadError#path: no LoadError the program raises carries one (a require is
-   resolved at compile time), so nil -- what one raised by hand answers */
+/* LoadError#path: the feature a require that loaded nothing was given
+   (sp_raise_load_error); nil for one raised by hand, as in CRuby */
 sp_RbVal sp_exc_path_acc(sp_Exception *e) {SP_GC_ROOT(e);
   sp_exc_acc_gate(e, "LoadError", "path");
-  return sp_box_nil();
+  return e->has_key ? e->xkey : sp_box_nil();
 }
 sp_RbVal sp_exc_args_acc(sp_Exception *e) {SP_GC_ROOT(e);
   sp_exc_acc_gate(e, "NoMethodError", "args");

@@ -10,12 +10,14 @@
 # its own: every test/load_graph program with an .expected prints what
 # CRuby prints and exits as CRuby does, 0 unless a `# spinel: exit N` line
 # in its first lines gives N (the others are the files they require).
-# What graph mode does not compile yet it refuses by name: a require below
-# a file's top level or one naming no file, an autoload, a load of the
-# entry file, an END block or a write of main's instance variable in a
-# required file, and a prepend after a require of a file that runs code. A
-# required file that only defines things costs no C. The load record's
-# points of a program with a .load-record are those it lists.
+# A require that names no file raises LoadError when it runs. What graph
+# mode does not compile yet it refuses by name: a require below a file's
+# top level or one whose path is computed, an autoload, a load of the entry
+# file, an END block or a write of main's instance variable in a required
+# file, and a prepend after a require of a file that runs code. A required
+# file that only defines things costs no C.
+# The load record's points of a program with a .load-record are those it
+# lists.
 #
 # Each case below is a program (`program NAME SOURCE LIB...`: main.rb from
 # SOURCE, and LIB.rb for each LIB, printing its name) and what its
@@ -133,7 +135,7 @@ printf 'puts "lib"\n' > "$tmp/in_method/lib.rb"
 printf 'def setup\n  require_relative "lib"\nend\nsetup\n' > "$tmp/in_method/main.rb"
 refused in_method "loads only a require that is a statement of a file's top level"
 printf 'name = ARGV.first || "lib"\nrequire name\n' > "$tmp/computed/main.rb"
-refused computed "loads only a require that names a file at compile time"
+refused computed "loads only a require whose path is known at compile time"
 printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"
 printf 'autoload :Lib, File.join(__dir__, "lib")\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "an autoload's file"

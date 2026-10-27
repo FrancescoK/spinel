@@ -1,0 +1,9 @@
+[:fallback, "cannot load such file -- load_error_no_such_lib", "load_error_no_such_lib"]
+false
+LoadError
+"cannot load such file -- load_error_last_lib"
+true
+true
+true
+nil
+done

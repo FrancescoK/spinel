@@ -7323,7 +7323,7 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
     if (sp_streq(name, "result")) { *out = TY_POLY; return 1; }          /* StopIteration#result, nil otherwise */
     if (sp_streq(name, "errno")) { *out = TY_POLY; return 1; }           /* SystemCallError#errno: the Errno:: class's number, nil for the parent (#4560) */
     if (sp_streq(name, "name")) { *out = TY_POLY; return 1; }            /* NameError#name, nil otherwise */
-    if (sp_streq(name, "path")) { *out = TY_POLY; return 1; }            /* LoadError#path: nil (no runtime-raised LoadError carries one) */
+    if (sp_streq(name, "path")) { *out = TY_POLY; return 1; }            /* LoadError#path: a String, or nil for one raised by hand */
     if (is_copy_alias(name)) { *out = rt; return 1; }  /* a copy keeps the (subclass) type */
     if (sp_streq(name, "key") || sp_streq(name, "receiver") || sp_streq(name, "args") ||
         sp_streq(name, "reason") || sp_streq(name, "exit_value") ||

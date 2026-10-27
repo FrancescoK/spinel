@@ -4780,7 +4780,13 @@ void sp_require_computed(const char *path, const char *const *features, int n) {
     if (memcmp(path + pl - fl, f, fl) != 0) continue;
     if (fl == pl || path[pl - fl - 1] == '/') return;
   }
-  sp_raise_cls("LoadError", sp_sprintf("cannot load such file -- %s", path));
+  sp_raise_load_error(path);
+}
+SP_NORETURN void sp_raise_load_error(const char *feature) {
+  const char *f = sp_sprintf("%s", feature ? feature : "");
+  SP_GC_ROOT_STR(f);
+  sp_exc_stage_key(sp_box_str(f));
+  sp_raise_cls("LoadError", sp_sprintf("cannot load such file -- %s", f));
 }
 sp_StrArray *sp_get_loaded_features(void) {
   if (!sp_loaded_features_cache) sp_loaded_features_cache = sp_StrArray_new();

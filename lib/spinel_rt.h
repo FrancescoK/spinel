@@ -20879,9 +20879,11 @@ static sp_mutex *sp_poly_mutex_recv(sp_RbVal v) {
    false. The file counts as loaded before its top level runs, so a require
    of it from inside its own load answers false too, and no longer once its
    top level raises (or a throw or break leaves it), so a later require runs
-   it again, as CRuby drops a feature whose load failed. Answers whether this
-   call ran the file. */
-static int sp_load_file(int *loaded, void (*top)(void)) {
+   it again, as CRuby drops a feature whose load failed. A require that names
+   no file (top NULL) raises CRuby's LoadError for the feature it was given.
+   Answers whether this call ran the file. */
+static int sp_load_file(const char *feature, int *loaded, void (*top)(void)) {
+  if (!top) sp_raise_load_error(feature);
   if (*loaded) return 0;
   *loaded = 1;
   const char *ecls = NULL, *emsg = NULL; void *eobj = NULL;
