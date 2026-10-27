@@ -255,12 +255,13 @@ int mv_call(const char *name, Mv r, int argc, Mv a0, Mv *out) {
   case MVOP_NOT: *out = mv_nil(); out->k = mv_truthy(r) ? MV_FALSE : MV_TRUE; return 1;
   case MVOP_TO_S: {
     if (r.k == MV_ARR) return 0;
+    if (r.k == MV_STR) { *out = r; return 1; }   /* String#to_s answers the String itself */
     MvBuf b = {0}; mv_to_s(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p);
     return 1;
   }
   case MVOP_TO_SYM:
     if (r.k != MV_STR && r.k != MV_SYM) return 0;
-    *out = r; out->k = MV_SYM;
+    *out = r; out->k = MV_SYM; out->frozen = out->lit = 0;
     return 1;
   case MVOP_INSPECT: {
     if (!mv_inspect_exact(r)) return 0;

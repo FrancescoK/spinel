@@ -47,8 +47,11 @@
    `H.each_pair` with a block of two parameters, H a constant the body
    assigned a Hash literal of literal keys and values earlier. A class it
    makes must be named by a const_set before anything else uses it, and gets
-   instance variables only before then; a String it writes out is one the
-   table spells and the loop froze (written out, it is a frozen literal).
+   instance variables only before then. A String it writes out is a frozen
+   literal's (the table's under the frozen-string-literal pragma), written
+   as that literal, or one the loop made, written as a new unfrozen String;
+   an object the loop made (such a String, an Array) is written at one place
+   only, since each place's node is a new object (ct_objects_written_once).
    Anything else leaves the loop as written.
 
    Until the inline load model goes (#9898's last part), its text expansion
@@ -399,17 +402,53 @@ static int ct_spellable(const CtEnv *e, const int *named, CtVal v) {
   if (v.k == CT_CLASS) return named[v.cls];
   switch (v.mv.k) {
   case MV_UNDEF: return 0;
-  /* a String the code computes is a new unfrozen object in CRuby; one the
-     table spells and the loop froze is that frozen String */
-  case MV_STR: return v.lit && v.frozen;
+  /* a frozen literal's String is the literal of its bytes, and one the loop
+     made is a new unfrozen String: a node spells either. Not a table's
+     unfrozen element, nor a String the loop made and froze */
+  case MV_STR: return v.mv.lit == v.mv.frozen;
   case MV_ARR:
     for (int i = 0; i < v.mv.n; i++) {
       CtVal x; memset(&x, 0, sizeof x); x.mv = v.mv.a[i];
-      if (x.mv.k == MV_STR || !ct_spellable(e, named, x)) return 0;
+      if (!ct_spellable(e, named, x)) return 0;
     }
     return 1;
   default: return 1;
   }
+}
+
+/* the identities of the objects the loop made that value v holds (a String
+   or an Array: a node spells each as a new object) onto *ids */
+static void ct_made_objects(Mv v, const void ***ids, int *n, int *cap) {
+  const void *id = v.k == MV_STR && !v.lit ? (const void *)v.s : v.k == MV_ARR ? (const void *)v.a : NULL;
+  if (!id) return;
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 16;
+    *ids = realloc(*ids, sizeof(void *) * (size_t)*cap);
+    if (!*ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  (*ids)[(*n)++] = id;
+  for (int i = 0; v.k == MV_ARR && i < v.n; i++) ct_made_objects(v.a[i], ids, n, cap);
+}
+
+static int ct_ptr_cmp(const void *a, const void *b) {
+  const char *x = *(const char *const *)a, *y = *(const char *const *)b;
+  return x < y ? -1 : x > y;
+}
+
+/* Is every object the loop made written at one place? Each place writes a
+   new object, where CRuby's places would hold the one the loop made. */
+static int ct_objects_written_once(const CtEnv *e) {
+  const void **ids = NULL;
+  int n = 0, cap = 0, ok = 1;
+  for (int i = 0; i < e->nfx; i++) {
+    const CtFx *f = &e->fx[i];
+    if (f->k == CT_FX_INDEX_SET) ct_made_objects(f->key.mv, &ids, &n, &cap);
+    if (f->k != CT_FX_CLASS_NEW && !f->names) ct_made_objects(f->val.mv, &ids, &n, &cap);
+  }
+  if (n > 1) qsort(ids, (size_t)n, sizeof *ids, ct_ptr_cmp);
+  for (int i = 1; i < n && ok; i++) ok = ids[i] != ids[i - 1];
+  free(ids);
+  return ok;
 }
 
 static int ct_node(NodeTable *nt, const char *type) {
@@ -437,7 +476,7 @@ static int ct_value_node(NodeTable *nt, const CtEnv *e, CtVal v) {
   case MV_STR:
     id = ct_node(nt, "StringNode");
     nt_node_set_str(nt, id, "content", v.mv.s);
-    nt_node_set_int(nt, id, "fzl", 1);
+    if (v.mv.frozen) nt_node_set_int(nt, id, "fzl", 1);
     return id;
   case MV_SYM: id = ct_node(nt, "SymbolNode"); nt_node_set_str(nt, id, "value", v.mv.s); return id;
   default: {
@@ -476,7 +515,10 @@ static int ct_effects_writable(const NodeTable *nt, const int *parent, const CtE
   for (int i = 0; i < e->nfx && ok; i++) {
     const CtFx *f = &e->fx[i];
     if (f->k == CT_FX_IVAR_SET) ok = !named[f->cls] && ct_spellable(e, named, f->val);
-    else if (f->k == CT_FX_INDEX_SET) ok = ct_spellable(e, named, f->key) && ct_spellable(e, named, f->val);
+    /* a String key the loop made is stored as a frozen copy if the receiver
+       is a Hash (and as itself if not): which is not known here */
+    else if (f->k == CT_FX_INDEX_SET)
+      ok = ct_spellable(e, named, f->key) && !(f->key.mv.k == MV_STR && !f->key.mv.lit) && ct_spellable(e, named, f->val);
     else if (f->k == CT_FX_CONST_SET) {
       for (int j = 0; j < i && ok; j++) if (e->fx[j].k == CT_FX_CONST_SET && ct_eq(e->fx[j].name, f->name)) ok = 0;
       size_t len = strlen(outer) + strlen(f->name) + 3;
@@ -488,6 +530,7 @@ static int ct_effects_writable(const NodeTable *nt, const int *parent, const CtE
     }
   }
   for (int k = 0; k < e->ncls && ok; k++) ok = named[k];   /* a class left anonymous is a run-time value */
+  if (ok) ok = ct_objects_written_once(e);
   if (ok) ok = !ct_const_given_elsewhere(nt, parent, full, nfull, loop);
   for (int i = 0; i < nfull; i++) free(full[i]);
   free(full); free(named);
@@ -586,8 +629,11 @@ static int ct_try_loop(NodeTable *nt, int **parent, int *pcount, const int *befo
     ct_env_new_call(&e);
     CtVal kv, vv;
     memset(&kv, 0, sizeof kv); memset(&vv, 0, sizeof vv);
-    kv.mv = keys[k]; kv.frozen = 1; kv.lit = nt_kind(nt, nt_ref(nt, el[k], "key")) == NK_StringNode;
-    vv.mv = vals[k]; vv.lit = nt_kind(nt, nt_ref(nt, el[k], "value")) == NK_StringNode;
+    /* a String key is the frozen literal of its bytes (a Hash literal's are,
+       pragma or not); a String value is the table's element */
+    kv.mv = keys[k]; vv.mv = vals[k];
+    if (kv.mv.k == MV_STR) kv.mv.frozen = kv.mv.lit = 1;
+    if (vv.mv.k == MV_STR) vv.mv.lit = 1;
     ok = nt_str(nt, req[0], "name") && nt_str(nt, req[1], "name") &&
          ct_env_set(&e, nt_str(nt, req[0], "name"), kv) && ct_env_set(&e, nt_str(nt, req[1], "name"), vv) &&
          ct_exec(nt, &e, body);

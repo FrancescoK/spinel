@@ -1,6 +1,7 @@
 # A String the loop computes is a new, unfrozen object in CRuby, so
-# `M::N1 << "!"` works there. Written out as a literal it would be frozen,
-# so the loop stays as written, which Spinel refuses.
+# `M::N1 << "!"` works there. The inline model's text pass would write it
+# out frozen, so it leaves the loop as written, which Spinel refuses. The
+# analysis answers it (test/analysis-forms/, the same name).
 module M
   class Base; end
   T = { 1 => "O ne" }

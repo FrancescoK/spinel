@@ -1745,10 +1745,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/table_loop_class_path_defined.rb:9: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_computed_string_value.rb [default] rc=1
-spinel: test/reject/table_loop_computed_string_value.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: test/reject/table_loop_computed_string_value.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_computed_string_value.rb [promote] rc=1
-spinel: test/reject/table_loop_computed_string_value.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: test/reject/table_loop_computed_string_value.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_hash_each_redefined.rb [default] rc=1
 spinel: test/reject/table_loop_hash_each_redefined.rb:11: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
@@ -1773,6 +1773,24 @@ spinel: test/reject/table_loop_inherited_hook.rb:10: unsupported call: node N (C
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_inherited_hook.rb [promote] rc=1
 spinel: test/reject/table_loop_inherited_hook.rb:10: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_array_written_twice.rb [default] rc=1
+spinel: test/reject/table_loop_made_array_written_twice.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_array_written_twice.rb [promote] rc=1
+spinel: test/reject/table_loop_made_array_written_twice.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_string_frozen.rb [default] rc=1
+spinel: test/reject/table_loop_made_string_frozen.rb:10: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_string_frozen.rb [promote] rc=1
+spinel: test/reject/table_loop_made_string_frozen.rb:10: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_string_written_twice.rb [default] rc=1
+spinel: test/reject/table_loop_made_string_written_twice.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_made_string_written_twice.rb [promote] rc=1
+spinel: test/reject/table_loop_made_string_written_twice.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_name_defined_elsewhere.rb [default] rc=1
 spinel: test/reject/table_loop_name_defined_elsewhere.rb:10: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6

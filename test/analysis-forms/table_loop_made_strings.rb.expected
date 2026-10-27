@@ -1,0 +1,16 @@
+"x!"
+false
+true
+"abcd"
+true
+true
+"x"
+true
+true
+["x", "x?", 1]
+true
+false
+false
+"y!?"
+["x", "x?!", 1]
+["y", "y?", 2]

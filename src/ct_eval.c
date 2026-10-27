@@ -151,6 +151,16 @@ static int ct_parts(const NodeTable *nt, CtEnv *e, int node, MvBuf *b) {
   return 1;
 }
 
+/* is interpolated String `node` adjacent literals only ("a" "b") */
+static int ct_literal_fold(const NodeTable *nt, int node) {
+  int pn = 0;
+  const int *parts = nt_arr(nt, node, "parts", &pn);
+  for (int i = 0; i < pn; i++)
+    if (nt_kind(nt, parts[i]) != NK_StringNode &&
+        (nt_kind(nt, parts[i]) != NK_InterpolatedStringNode || !ct_literal_fold(nt, parts[i]))) return 0;
+  return 1;
+}
+
 /* `Class.new(Constant)` without a block: a class of the evaluation's own */
 static int ct_class_new(const NodeTable *nt, CtEnv *e, int call, CtVal *out) {
   int rv = nt_ref(nt, call, "receiver"), argc = 0;
@@ -208,6 +218,9 @@ int ct_eval(const NodeTable *nt, CtEnv *e, int node, CtVal *out) {
     const char *t = nt_str(nt, node, str ? "content" : "value");
     if (!t) return 0;
     out->mv = mv_str(t, strlen(t), str ? MV_STR : MV_SYM);
+    /* a frozen literal is the literal of its bytes; an unfrozen one (the
+       file's pragma off) a new String each time it runs */
+    out->mv.frozen = out->mv.lit = str && nt_int(nt, node, "fzl", 0) != 0;
     return 1;
   }
   case NK_InterpolatedStringNode: case NK_InterpolatedSymbolNode: {
@@ -215,6 +228,9 @@ int ct_eval(const NodeTable *nt, CtEnv *e, int node, CtVal *out) {
     int ok = ct_parts(nt, e, node, &b);
     if (ok) out->mv = mv_str(b.p ? b.p : "", b.len, nt_kind(nt, node) == NK_InterpolatedStringNode ? MV_STR : MV_SYM);
     free(b.p);
+    /* adjacent literals ("a" "b") are one literal, frozen as a literal is */
+    if (ok && nt_kind(nt, node) == NK_InterpolatedStringNode && ct_literal_fold(nt, node))
+      out->mv.frozen = out->mv.lit = nt_int(nt, node, "fzl", 0) != 0;
     return ok;
   }
   case NK_ArrayNode: {
@@ -328,13 +344,16 @@ static int ct_exec_call(const NodeTable *nt, CtEnv *e, int call) {
     return 1;
   }
   if (!self_recv && argc == 0 && is_freeze_name(name)) {
-    /* a value the code holds: a String frozen here keeps its literal (lit) */
+    /* a value the code holds: a String frozen here keeps its literal (lit).
+       One the evaluation made may be held by other locals too, which this
+       local's value would not tell: not followed. */
     CtVal r;
-    if (!ct_eval(nt, e, rv, &r) || r.k != CT_VALUE || (r.mv.k != MV_STR && r.mv.k != MV_INT && r.mv.k != MV_SYM)) return 0;
+    if (!ct_eval(nt, e, rv, &r) || r.k != CT_VALUE || (r.mv.k != MV_STR && r.mv.k != MV_INT && r.mv.k != MV_SYM) ||
+        (r.mv.k == MV_STR && !r.mv.lit && !r.mv.frozen)) return 0;
     ct_env_ran(e, ct_class_of(r.mv), name);
     if (nt_kind(nt, rv) == NK_LocalVariableReadNode && nt_str(nt, rv, "name")) {
       CtVal *lv = ct_lookup(e, nt_str(nt, rv, "name"));
-      if (lv) lv->frozen = 1;
+      if (lv) lv->mv.frozen = 1;
     }
     return 1;
   }

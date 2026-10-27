@@ -40,9 +40,9 @@ typedef enum {
   CT_CLASS       /* the class `cls` the evaluation made (CtEnv.cls) */
 } CtKind;
 
-/* lit: a String the program spells as a literal (a table key or value);
-   frozen: frozen by the code (a Hash's String key is). */
-typedef struct { CtKind k; Mv mv; int node; int cls; int lit, frozen; } CtVal;
+/* A String value's object -- frozen or not, a literal's or the
+   evaluation's own -- is the value's (Mv.frozen, Mv.lit). */
+typedef struct { CtKind k; Mv mv; int node; int cls; } CtVal;
 
 /* a class `Class.new(parent)` made: `parent` is the constant node; `name`
    is NULL until a const_set names it */
