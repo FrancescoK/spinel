@@ -12351,6 +12351,16 @@ static int own_enum_generic(NodeTable *nt, int def) {
   return copy;
 }
 
+/* mark[] the nodes of the subtree at id (ids below n) */
+static void bi_mark_subtree(const NodeTable *nt, int id, unsigned char *mark, int n) {
+  if (id < 0 || id >= n || mark[id]) return;
+  mark[id] = 1;
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) bi_mark_subtree(nt, nd->r[j].ref, mark, n);
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++) bi_mark_subtree(nt, nd->a[j].ids[k], mark, n);
+}
+
 int desugar_builtins(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -12481,11 +12491,16 @@ int desugar_builtins(Compiler *c) {
      of its own once the clone is made, as the walk reaches the table's end.
      One shared among the copies would carry every site's types at once. A
      call back to a method its copy sits in (a recursion) calls that copy.
-     The own generics' own calls are left alone: only the copies run. */
+     The generics' own calls are left alone: only the copies run, and a copy
+     made for a call in a generic was a method nothing calls. */
+  unsigned char *in_generic = (unsigned char *)calloc((size_t)n0 + 1, 1);
+  if (!in_generic) { free(gdef); free(nb); return 0; }
+  for (int i = 0; i < sp_builtin_enum_names_n; i++)
+    if (gdef[i] >= 0 && gdef[i] < own_lo) bi_mark_subtree(nt, gdef[i], in_generic, n0);
   for (int id = 0; id < nt->count; id++) {
     if (id == own_lo) id = n0;
     if (id >= nt->count) break;
-    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_kind(nt, id) != NK_CallNode || (id < n0 && in_generic[id])) continue;
     const char *cn0 = nt_str(nt, id, "name");
     /* `enum.with_object(memo)` is renamed to each_with_object by the
        Enumerator desugar inside the fixpoint, after this pass: give it its
@@ -12549,6 +12564,7 @@ int desugar_builtins(Compiler *c) {
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
     nb[nbn++] = copy;
   }
+  free(in_generic);
   nt_node_set_arr(nt, top, "body", nb, nbn);
   for (int i = 0; i < sp_builtin_enum_names_n; i++) if (gdef[i] >= 0) nt_subtree_blank(nt, gdef[i]);
   comp_grow_node_arrays(c);
