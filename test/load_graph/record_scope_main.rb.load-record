@@ -1,0 +1,48 @@
+load record: 27 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ModuleNode Helper line 7
+  r0 #2 f0 DefNode from line 8
+r0 #3 f0 ModuleNode Outer line 10
+  r0 #4 f0 ModuleNode Outer__Helper line 11
+    r0 #5 f0 DefNode from line 12
+  r0 #6 f0 ClassNode Thing line 14
+    r0 #7 f0 CallNode include line 15
+r0 #8 f0 LoadNode line 18
+r0 #9 f1 ProgramNode line 1
+r0 #10 f1 ModuleNode Outer line 1
+  r0 #11 f1 ClassNode Thing line 2
+    r0 #12 f1 DefNode extra line 3
+r0 #13 f0 ClassNode Other line 19
+  r0 #14 f0 CallNode include line 20
+r0 #15 f0 ClassNode Macro line 22
+  r0 #16 f0 DefNode prop line 23
+  r0 #17 f0 CallNode prop line 24
+  r0 #18 f0 CallNode send line 25
+  r0 #19 f0 CallNode private line 26
+  r0 #20 f0 DefNode hidden line 27
+  r0 #21 f0 CallNode public line 28
+  r0 #22 f0 DefNode shown line 29
+r0 #23 f0 CallNode puts line 31
+r0 #24 f0 CallNode puts line 32
+r0 #25 f0 CallNode puts line 33
+r0 #26 f0 CallNode puts line 34
+class Helper: body#1
+class Outer: body#3 body#10
+class Outer__Helper: body#4
+class Thing: body#6 body#11 include Outer__Helper#7
+class Other: body#13 include Outer__Helper#14
+class Macro: body#15
+const Helper: write#1
+Helper#from: def#2
+const Outer: write#3
+const Outer::Helper: write#4
+Outer__Helper#from: def#5
+const Outer::Thing: write#6
+Thing#extra: def#12
+const Other: write#13
+const Macro: write#15
+Macro.prop: def#16
+opaque Macro: opaque#17 opaque#18
+visibility in #15: vis#19 private vis#21 public
+Macro#hidden: def#20 private
+Macro#shown: def#22

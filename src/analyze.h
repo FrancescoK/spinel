@@ -169,11 +169,11 @@ extern int g_dump_load_record;   /* --dump-load-record */
    before p is UNKNOWN. A p with no point (a method body) asks as of the
    end of the load phase. */
 enum { ELAB_NO, ELAB_YES, ELAB_UNKNOWN };
-typedef enum { LR_DEF, LR_DEFINE_METHOD, LR_READER, LR_WRITER, LR_ALIAS, LR_COPY, LR_UNDEF, LR_REMOVE, LR_VIS, LR_WRITE } LrKind;
+typedef enum { LR_DEF, LR_DEFINE_METHOD, LR_READER, LR_WRITER, LR_ALIAS, LR_COPY, LR_UNDEF, LR_REMOVE, LR_VIS, LR_WRITE, LR_OPAQUE } LrKind;
 typedef struct {
   int node;
   unsigned char kind;   /* LrKind */
-  unsigned char vis;    /* SP_VIS_*, for a method version */
+  unsigned char vis;    /* SP_VIS_*, for a method version; BVIS_*, for a bare visibility word */
   unsigned char may;    /* recorded under a condition: may not have run */
   unsigned char nil;    /* a write of nil */
   const char *target;   /* an alias's or a copy's original name */
@@ -193,6 +193,22 @@ int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p);
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p);
 /* the bodies cls runs, in the order they run; *n their number */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
+/* what constant `name`, read at node, resolves to there: its lexical scopes'
+   own constants, innermost first, then the innermost one's ancestors and
+   Object's; *out the write or class definition found */
+int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out);
+/* the visibility a `def` at node would take from its body: the last bare
+   `public` / `private` / `protected` / `module_function` before it in the
+   same body (BVIS_*), a class body's public and a file's top level's
+   private by default; 0 when not known */
+int elab_body_visibility_at(Compiler *c, int node);
+/* method `name`'s visibility on cls (singleton when sg) at p: SP_VIS_*,
+   -1 when not known or not defined */
+int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
+/* did code the record cannot follow (a send, an eval of a String, a mixin
+   of a module it does not know, a computed method name, a method of the
+   program its body calls) run on cls before p? */
+int elab_opaque_before(Compiler *c, int cls, LoadPoint p);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

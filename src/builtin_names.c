@@ -1098,6 +1098,13 @@ int is_initialize_name(const char *n) {
   return sp_streq(n, "initialize");
 }
 
+/* The methods CRuby makes private wherever they are defined:
+   initialize, its copy forms, and respond_to_missing? */
+int is_implicitly_private_name(const char *n) {
+  return n && (is_initialize_family(n) || sp_streq(n, "initialize_clone") || sp_streq(n, "initialize_dup") ||
+               sp_streq(n, "respond_to_missing?"));
+}
+
 int is_initialize_family(const char *n) {
   return sp_streq(n, "initialize_copy") || sp_streq(n, "initialize");
 }

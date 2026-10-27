@@ -38,16 +38,22 @@ class Loud: body#1
 class Speaker: body#3 body#14 body#16 include Quiet#15 include Loud#18
 class Quiet: body#12
 class Util: body#23
+const Loud: write#1
 Loud#say: def#2
+const Speaker: write#3
 Speaker#say: def#4
+visibility in #3: vis#5 private vis#7 public
 Speaker#secret: def#6 private vis#20 protected
 Speaker#volume: reader#8
 Speaker#volume=: writer#8
 Speaker.inherited: def#9
+const Quiet: write#12
 Quiet#say: def#13
 Speaker#shout: alias#17 (say: def#4)
 Speaker#hum: define_method#19
 Speaker.make: def#22
+const Util: write#23
+visibility in #23: vis#24 module_function
 Util#twice: def#25 private
 Util.twice: copy#25
 $level: write#26

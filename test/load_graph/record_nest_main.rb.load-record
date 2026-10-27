@@ -23,8 +23,13 @@ class A: body#1
 class A__Inner: body#2 body#11
 class B: body#4
 class B__Inner: body#5
+const A: write#1
+const A::Inner: write#2
 A__Inner#who: def#3
+const B: write#4
+const B::Inner: write#5
 B__Inner#who: def#6
+visibility in #8: vis#9 public
 main#lib_helper: def#10
 A__Inner#more: def#12
 main#entry_helper: def#13 private
