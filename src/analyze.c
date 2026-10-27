@@ -19394,44 +19394,74 @@ static int scope_calls_itself(Compiler *c, int mi) {
   return 0;
 }
 
+/* The ivars each scope writes with a value that seeds the slot (any
+   write, but a plain `nil` assigned by `@x = nil`), sorted per scope: one
+   walk of the ivar write kinds. ctor_writes_ivar scanned every node of the
+   program for each class and ivar, classes * ivars * nodes (#10325). Built
+   again when the node table changes. */
+static const NodeTable *cw_nt; static unsigned cw_ver; static int cw_count, cw_ns;
+static int *cw_off;            /* per scope: start in cw_names, cw_off[ns] the end */
+static const char **cw_names;
+
+static int cw_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void cw_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind K[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+                                NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+                                NK_InstanceVariableTargetNode };
+  int ns = c->nscopes > 0 ? c->nscopes : 1;
+  free(cw_off); free(cw_names);
+  cw_off = calloc((size_t)ns + 1, sizeof(int));
+  int total = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1) {
+      for (int s = 0, acc = 0; s <= ns; s++) { int k = cw_off[s]; cw_off[s] = acc; acc += k; }
+      cw_names = malloc(sizeof(char *) * (size_t)(total + 1));
+    }
+    int *fill = pass == 1 ? calloc((size_t)ns + 1, sizeof(int)) : NULL;
+    for (int q = 0; q < 5; q++)
+      NT_FOREACH_KIND(nt, K[q], id) {
+        int s = id < c->node_cap ? c->nscope[id] : -1;
+        const char *wn = nt_str(nt, id, "name");
+        if (s < 0 || s >= ns || !wn) continue;
+        /* A ctor write of a plain `nil` literal does not SEED the slot with a
+           concrete value -- it explicitly leaves it nil. If every other write
+           (elsewhere) is a scalar, the slot is nullable and must widen to poly,
+           so a nil-only ctor write must not block the poly backstop (#3143).
+           A non-nil write, or any operator/or/and/target write, does seed. */
+        if (K[q] == NK_InstanceVariableWriteNode && nt_kind(nt, nt_ref(nt, id, "value")) == NK_NilNode) continue;
+        if (pass == 0) { cw_off[s]++; total++; }
+        else cw_names[cw_off[s] + fill[s]++] = wn;
+      }
+    free(fill);
+  }
+  for (int s = 0; s < ns; s++)
+    qsort(cw_names + cw_off[s], (size_t)(cw_off[s + 1] - cw_off[s]), sizeof(char *), cw_cmp);
+  cw_nt = nt; cw_ver = nt->version; cw_count = nt->count; cw_ns = ns;
+}
+
+/* Does scope mi write @<ivname> with a value that seeds it? */
+static int scope_seeds_ivar(Compiler *c, int mi, const char *ivname) {
+  const NodeTable *nt = c->nt;
+  if (cw_nt != nt || cw_ver != nt->version || cw_count != nt->count || cw_ns < c->nscopes) cw_build(c);
+  if (mi < 0 || mi >= cw_ns) return 0;
+  const char *key = ivname;
+  return bsearch(&key, cw_names + cw_off[mi], (size_t)(cw_off[mi + 1] - cw_off[mi]),
+                 sizeof(char *), cw_cmp) != NULL;
+}
+
 /* Does any `initialize` in ci's chain write @<name>? A ctor that exists but
    never assigns a given ivar leaves it nil on a fresh instance, same as no
    ctor at all -- so the nil-backstop below must key on the actual write, not
    on the mere presence of an initialize (#3136). */
 static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
-  NodeTable *nt = (NodeTable *)c->nt;
   for (int k = ci; k >= 0; k = c->classes[k].parent) {
     int mi = comp_method_in_class(c, k, "initialize");
-    if (mi < 0) continue;
-    int def = c->scopes[mi].def_node;
-    if (def < 0) continue;
-    /* scan the whole ctor subtree for a write to this ivar */
-    for (int id = 0; id < nt->count; id++) {
-      if (c->nscope[id] != mi) continue;
-      const char *ty = nt_type(nt, id);
-      NodeKind ty_k = nt_kind(nt, id);
-      if (!ty) continue;
-      if (ty_k == NK_InstanceVariableWriteNode ||
-          ty_k == NK_InstanceVariableOperatorWriteNode ||
-          ty_k == NK_InstanceVariableOrWriteNode ||
-          ty_k == NK_InstanceVariableAndWriteNode ||
-          ty_k == NK_InstanceVariableTargetNode) {
-        const char *wn = nt_str(nt, id, "name");
-        if (wn && sp_streq(wn, ivname)) {
-          /* A ctor write of a plain `nil` literal does not SEED the slot with a
-             concrete value -- it explicitly leaves it nil. If every other write
-             (elsewhere) is a scalar, the slot is nullable and must widen to poly,
-             so a nil-only ctor write must not block the poly backstop (#3143).
-             A non-nil write, or any operator/or/and/target write, does seed. */
-          if (ty_k == NK_InstanceVariableWriteNode) {
-            int wv = nt_ref(nt, id, "value");
-            NodeKind vk = nt_kind(nt, wv);
-            if (vk == NK_NilNode) continue;
-          }
-          return 1;
-        }
-      }
-    }
+    if (mi < 0 || c->scopes[mi].def_node < 0) continue;
+    if (scope_seeds_ivar(c, mi, ivname)) return 1;
   }
   return 0;
 }
