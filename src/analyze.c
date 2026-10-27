@@ -45012,6 +45012,9 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   else src = arysub_builtin_call(c, id, comp_arysub_builtin(c, k), "new", args, blk);
   if (alloc < 0 || src < 0) return;
   arysub_set_call(c, id, alloc, "replace", arysub_args(c, id, &src, 1), -1);
+  /* Array's and Hash's own construction: a `replace` of the class's own is
+     never called */
+  nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
 }
 
 /* The calls a splat's length dispatch built from nodes m0 on, of a call into

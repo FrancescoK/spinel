@@ -3388,6 +3388,11 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            local to the universally-boxed PolyPoly hash, and so does a boxed
            other, which holds whichever variant the value really is. */
         TyKind ot = infer_type(c, argv[0]);
+        /* another Hash subclass instance holds its class's Hash */
+        if (ty_is_object(ot) && comp_ary_is_hash(c, ty_object_class(ot))) {
+          ot = comp_ary_kind(c, ty_object_class(ot));
+          if (ot == TY_UNKNOWN) continue;
+        }
         if (recv < 0 || (!ty_is_hash(ot) && ot != TY_POLY)) continue;
         /* a Hash subclass instance's Hash is its class's: another variant
            widens the class's Hash, as it does a local's (`H.new(7)` is

@@ -38,3 +38,35 @@ p t[2]
 t2 = S.new { |_, k| "k#{k}" }
 p t2[9]
 p S.new(3).size
+
+# a class's own replace is not called by new
+class R < Hash
+  def replace(o)
+    puts "own replace"
+    super
+  end
+end
+r = R.new(7)
+p r[:x]
+r[:a] = 1
+p r
+
+class RA < Array
+  def replace(o)
+    puts "own replace"
+    super
+  end
+end
+p RA.new(2, 0)
+
+# replace with another Hash subclass's instance of another kind
+class P < Hash; end
+class Q < Hash; end
+pp1 = P.new
+pp1[:a] = 1
+q = Q.new
+q["x"] = "y"
+pp1.replace(q)
+p pp1, pp1.class, pp1["x"]
+pp1[:n] = 5
+p pp1[:n] + 1
