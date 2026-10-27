@@ -317,6 +317,7 @@ int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
 int is_include_name(const char *n);
 int is_prepend_name(const char *n);
+int is_load_name(const char *n);
 int is_autoload_name(const char *n);
 int is_file_load_name(const char *n);    /* require require_relative load autoload: a call that runs a file's text */
 int is_load_how_missing(const char *how);
