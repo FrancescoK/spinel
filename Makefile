@@ -5503,8 +5503,10 @@ IE_FORWARD_LIMIT ?= 2.5
 # scan that compares ids before names: scope_is_shadowed's scan of every
 # later scope, per class at every poly dispatch, was 11% of gen.sh 400's
 # instructions, and answering it from a table (285b5a8ba) moved this leg
-# from 6.40x to 6.39x.
-SCALE_CODEGEN_LIMIT ?= 6.9
+# from 6.40x to 6.39x. Dropping the share rule's wait rounds (#10325) cut the
+# work at both sizes (100: -7.5%, 400: -5.3%) and so raised the ratio from
+# 6.77x to 6.93x: the superlinear part left is a larger share of less work.
+SCALE_CODEGEN_LIMIT ?= 7.0
 # The argument binder's and the block-parameter typing's scaling: the call
 # shapes they plan site by site (test/scale/call_shapes.sh), compiled to C at
 # N=25 and N=100 units. A buffer method a whole name group defines behind a
