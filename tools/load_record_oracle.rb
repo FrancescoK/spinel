@@ -187,7 +187,9 @@ def spinel_events(spinel, prog, inline)
   if inline
     files[0] = File.expand_path(prog).b
   else
-    _, graph = run(spinel, "--load-model=graph", "--dump-load-graph", prog)
+    ok, graph = run(spinel, "--load-model=graph", "--dump-load-graph", prog)
+    # without the graph no entry has a file, and every one would be dropped
+    return [nil, graph.lines.last.to_s.strip.then { |l| l.empty? ? $?.to_s : l }, false] unless ok
     graph.scan(/^file (\d+) (.*)$/) { files[$1.to_i] = $2 }
   end
   own = %w[builtins packages].map { |d| File.join(File.dirname(File.expand_path(spinel)), d, "").b }
