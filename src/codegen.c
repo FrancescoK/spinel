@@ -1157,22 +1157,25 @@ void conv_hold_end(int tmp) {
   buf_printf(&g_conv_hold->b, "; SP_GC_ROOT(_t%d); ", tmp);
 }
 
-static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, const char *conv, Buf *b);
-static void emit_obj_conv_call(Compiler *c, int node, TyKind t, int def, const char *conv, Buf *b) {
+/* The conversion call of node's object to method mi (from class def, its
+   receiver's cast), as the lookup that chose it found it: asked again from
+   def, a method the class has only through an alias of an inherited one
+   (`alias to_str name` in a subclass) is not there. */
+static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, int mi_c, const char *conv, Buf *b);
+static void emit_obj_conv_call(Compiler *c, int node, TyKind t, int def, int mi, const char *conv, Buf *b) {
   int tmp;
   /* an Integer answer needs no root, so #to_int renders inline -- still a
      conversion for the operand-order gate's count */
   if (sp_streq(conv, "to_int")) g_conv_emitted++;
   Buf *hb = sp_streq(conv, "to_int") ? NULL : conv_hold_begin(b, &tmp);
-  if (!hb) { emit_obj_conv_call_inline(c, node, t, def, conv, b); return; }
-  emit_obj_conv_call_inline(c, node, t, def, conv, hb);
+  if (!hb) { emit_obj_conv_call_inline(c, node, t, def, mi, conv, b); return; }
+  emit_obj_conv_call_inline(c, node, t, def, mi, conv, hb);
   conv_hold_end(tmp);
 }
-static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, const char *conv, Buf *b) {
+static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, int mi_c, const char *conv, Buf *b) {
   /* a boxed answer is judged, not merely read: a conversion that hands back
      something of the wrong kind is CRuby's TypeError, which is what these
      two raise -- the same judgement the bridge row makes for its own half */
-  int mi_c = comp_method_in_chain(c, def, conv, NULL);
   const char *unbox = NULL;
   /* Sharing can narrow a boxed conversion result to a nullable String;
      keep its result check when that representation changes. */
@@ -1233,8 +1236,9 @@ static int emit_obj_conv(Compiler *c, int node, const char *conv, TyKind want,
     buf_puts(b, "))");
     return 1;
   }
-  if (obj_conv_method(c, t, conv, want, &def) >= 0) {
-    emit_obj_conv_call(c, node, t, def, conv, b);
+  int mi = obj_conv_method(c, t, conv, want, &def);
+  if (mi >= 0) {
+    emit_obj_conv_call(c, node, t, def, mi, conv, b);
     return 1;
   }
   /* The class is static and settled here, so a missing #to_str / #to_int is
@@ -1902,11 +1906,12 @@ void emit_path_expr(Compiler *c, int node, Buf *b) {
   int cid = ty_is_object(t) ? ty_object_class(t) : -1;
   if (cid >= 0 && cid < c->nclasses && !c->classes[cid].is_native_class) {
     int def = -1;
-    if (obj_conv_method_typed(c, t, "to_path", TY_STRING, &def) >= 0) {
-      emit_obj_conv_call(c, node, t, def, "to_path", b);
+    int mi = obj_conv_method_typed(c, t, "to_path", TY_STRING, &def);
+    if (mi >= 0) {
+      emit_obj_conv_call(c, node, t, def, mi, "to_path", b);
       return;
     }
-    int mi = comp_method_in_chain(c, cid, "to_path", &def);
+    mi = comp_method_in_chain(c, cid, "to_path", &def);
     if (mi >= 0) {
       /* a #to_path the analysis could not pin to String -- one backed by an
          accessor, or with a nil branch -- answers a boxed value. CRuby checks
@@ -1917,7 +1922,7 @@ void emit_path_expr(Compiler *c, int node, Buf *b) {
         int tmp; Buf *hb = conv_hold_begin(b, &tmp);
         Buf *ob = hb ? hb : b;
         buf_puts(ob, "sp_poly_arg_str_chk(");
-        emit_obj_conv_call_inline(c, node, t, def, "to_path", ob);
+        emit_obj_conv_call_inline(c, node, t, def, mi, "to_path", ob);
         buf_puts(ob, ")");
         if (hb) conv_hold_end(tmp);
         return;
