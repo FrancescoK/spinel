@@ -1,0 +1,11 @@
+load record: 9 points, 1 regions
+r0 #0 f0 ProgramNode line 3
+r0 #1 f0 IfNode line 3
+  r0 #2 may f0 LoadNode line 3
+r0 #3 may f1 ProgramNode line 1
+r0 #4 may f1 BeginNode line 1
+  r0 #5 may f1 CallNode p line 2
+  r0 #6 may f1 CallNode p line 4
+r0 #7 f0 ConstantWriteNode LIMIT line 4
+r0 #8 f0 CallNode p line 5
+const LIMIT: write#7
