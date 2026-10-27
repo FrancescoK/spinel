@@ -67,7 +67,7 @@ static int emit_exception_object_accessor(Compiler *c, int id, int recv, const c
      every other exception the Object method, as CRuby's lookup reaches
      Object for them. Both answers ride boxed. The accessor alone raised
      NoMethodError for a RuntimeError. */
-  int xom = argc == 0 && nt_ref(nt, id, "block") < 0 ? cplan_exc_object_method(c, name) : -1;
+  int xom = argc == 0 && nt_ref(nt, id, "block") < 0 ? cplan_exc_object_method(c, id, name) : -1;
   if (xom >= 0) {
     int xt = ++g_tmp;
     const BuiltinOp *op = bop_find(TY_EXCEPTION, name, argc, 0);

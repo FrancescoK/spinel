@@ -2983,8 +2983,7 @@ TyKind dispatch_ret_over(Compiler *c, int cid, const char *name, int cmeth, int 
   int nd = 0;
   const int *ds = comp_descendants(c, cid, &nd);
   for (int i = 0; i < nd; i++) {
-    int kmi = cmeth ? call_target(c, call_id, ds[i], name, CT_CMETHOD, NULL)
-                    : call_target(c, call_id, ds[i], name, 0, NULL);
+    int kmi = call_target(c, call_id, ds[i], name, cmeth ? CT_CMETHOD : 0, NULL);
     if (kmi < 0 || kmi == base_mi) continue;
     r = ty_unify(r, call_id >= 0 && c->scopes[kmi].yields ? method_call_ret(c, kmi, call_id)
                                                           : (TyKind)c->scopes[kmi].ret);

@@ -6209,8 +6209,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
         int nd = 0; const int *ds = comp_descendants(c, self->class_id, &nd);
         for (int di = 0; di < nd; di++) {
           int k = ds[di];
-          int dmi = self->is_cmethod ? call_target(c, id, k, name, CT_OWN | CT_CMETHOD, NULL)
-                                     : call_target(c, id, k, name, CT_OWN, NULL);
+          int dmi = call_target(c, id, k, name, CT_OWN | (self->is_cmethod ? CT_CMETHOD : 0), NULL);
           if (dmi < 0) continue;
           if (!found) an_user_call_record(c, id, dmi, self->is_cmethod ? UC_CMETH : UC_INST, self->class_id);
           r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
@@ -7325,7 +7324,7 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
     if (sp_streq(name, "cause")) { *out = TY_EXCEPTION; return 1; }      /* the threaded cause, nil if none */
     /* A gated accessor can fall through to the program's Object method. */
     if (rt == TY_EXCEPTION && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        cplan_exc_object_method(c, name) >= 0) {
+        cplan_exc_object_method(c, id, name) >= 0) {
       /* codegen emits the accessor's row as one arm of the call, beside the
          Object method, so the call is recorded under that row */
       an_bop_find(c, id, rt, name, argc, 0);
@@ -8897,8 +8896,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (bmi < 0 && ie_class_of(c, id) < 0 && an_bare_call_class_owned(c, id)) {
       Scope *osc = comp_scope_of(c, id);
       int ocls = osc ? osc->class_id : -1;
-      int omi = osc && osc->is_cmethod ? call_target(c, id, ocls, name, CT_CMETHOD, NULL)
-                                       : call_target(c, id, ocls, name, 0, NULL);
+      int omi = call_target(c, id, ocls, name, osc && osc->is_cmethod ? CT_CMETHOD : 0, NULL);
       /* the same answer the implicit-self arm below gives, overrides
          included: codegen's dispatch switches over every descendant's
          override, so the type must hold each of their returns. Answering
