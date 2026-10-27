@@ -43571,10 +43571,13 @@ static void refuse_mixin_after_calls(Compiler *c) {
     LoadPoint pm = elab_point_of(c, ev[e].node);
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       /* a call in a top-level statement that ran ahead of the mixin's, in a
-         method body too (the statement defining it) */
+         method body too (the statement defining it); one in a file of
+         another region, whose points the record does not order against
+         the mixin's, may run ahead of it */
       int f, rank;
       elab_top_place(c, id, &f, &rank);
-      if (rank < 0 || rank >= jrank) continue;
+      int other = f >= 0 && rank < 0;
+      if (!other && (rank < 0 || rank >= jrank)) continue;
       const char *name = nt_str(nt, id, "name");
       if (!name) continue;
       /* an arm of a lowered `send` is no statement of the program: which
@@ -43589,8 +43592,9 @@ static void refuse_mixin_after_calls(Compiler *c) {
       /* a method body runs ahead of the mixin only under a statement that
          runs after both its def and the class's first body, which made the
          class whose object it is called on; one ahead of either may store a
-         block that calls it, but a later statement runs that block */
-      if (in_def && !mixin_runs_between(run, nrun, rank > orank ? rank : orank, jrank)) continue;
+         block that calls it, but a later statement runs that block. One
+         in a file of another region may run at any time. */
+      if (in_def && !other && !mixin_runs_between(run, nrun, rank > orank ? rank : orank, jrank)) continue;
       /* the classes the receiver can be an object of: its type's, or for a
          receiverless call in an instance method, self's */
       TyKind rt = TY_UNKNOWN;
