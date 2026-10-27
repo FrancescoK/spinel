@@ -14047,8 +14047,7 @@ void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg
    calls the class's own conversion. */
 static int try_convert_arysub(Compiler *c, int arg, int emb, Buf *b) {
   TyKind at = comp_ntype(c, arg);
-  if (!ty_is_object(at) || comp_ary_root(c, ty_object_class(at)) < 0 ||
-      comp_arysub_emb(c, ty_object_class(at)) != emb) return 0;
+  if (comp_ty_ary_root(c, at) < 0 || comp_arysub_emb(c, ty_object_class(at)) != emb) return 0;
   emit_boxed(c, arg, b);
   return 1;
 }
