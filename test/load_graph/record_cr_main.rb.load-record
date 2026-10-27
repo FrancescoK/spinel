@@ -1,0 +1,36 @@
+load record: 19 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ClassNode Foo line 7
+r0 #2 f0 RescueModifierNode line 9
+  r0 #3 f0 DefNode bar line 10
+r0 #4 f0 ModuleNode A line 12
+  r0 #5 f0 DefNode who line 13
+r0 #6 f0 ModuleNode B line 15
+  r0 #7 f0 DefNode who line 16
+r0 #8 f0 ClassNode C line 18
+  r0 #9 f0 CallNode include line 19
+  r0 #10 f0 CallNode alias_method line 20
+r0 #11 f0 ClassNode D line 22
+  r0 #12 f0 IfNode line 23
+    r0 #13 may f0 CallNode define_method line 24
+  r0 #14 f0 DefNode sure line 26
+r0 #15 f0 CallNode puts line 28
+r0 #16 f0 CallNode p line 29
+r0 #17 f0 CallNode puts line 30
+r0 #18 f0 CallNode puts line 31
+class Foo: body#1
+class A: body#4
+class B: body#6
+class C: body#8 include A#9 include B#9
+class D: body#11
+const Foo: write#1
+Foo#bar: def#3
+const A: write#4
+A#who: def#5
+const B: write#6
+B#who: def#7
+const C: write#8
+C#first_who: alias#10 (who: def#7)
+const D: write#11
+D#maybe: define_method#13 may
+D#sure: def#14

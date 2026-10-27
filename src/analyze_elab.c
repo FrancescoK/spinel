@@ -506,6 +506,20 @@ static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
 }
 
 
+/* The call whose block opens the frame of a statement: the statement's
+   own call, a written value's, or either side of `x rescue y`; -1 for
+   none, and LR_UNKNOWN_CLASS when both sides of a rescue modifier open
+   one, which the walk gives the statement's one frame */
+static int lr_frame_call(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  int v = k == NK_CallNode || k == NK_RescueModifierNode ? node : nt_ref(nt, node, "value");
+  int a = v, b = -1;
+  if (v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode) { a = nt_ref(nt, v, "expression"); b = nt_ref(nt, v, "rescue_expression"); }
+  int fa = a >= 0 && nt_kind(nt, a) == NK_CallNode && nt_ref(nt, a, "block") >= 0 && elab_opens_frame(nt, a);
+  int fb = b >= 0 && nt_kind(nt, b) == NK_CallNode && nt_ref(nt, b, "block") >= 0 && elab_opens_frame(nt, b);
+  return fa && fb ? LR_UNKNOWN_CLASS : fa ? a : fb ? b : -1;
+}
+
 /* The frame entry e's body opens: its class in fc[e], singleton in fs[e];
    for any other statement, the frame it stands in. */
 static void lr_frame(ElabRec *x, int e) {
@@ -513,7 +527,7 @@ static void lr_frame(ElabRec *x, int e) {
   const LrStmt *s = &x->r->st[e];
   int f = s->frame, node = s->node, cls = f >= 0 ? x->fc[f] : LR_MAIN, sg = f >= 0 ? x->fs[f] : 0;
   NodeKind k = nt_kind(nt, node);
-  int call = k == NK_CallNode ? node : nt_ref(nt, node, "value");
+  int call = lr_frame_call(nt, node);
   x->vs[e] = BVIS_PUBLIC;
   if (k == NK_ClassNode || k == NK_ModuleNode) { cls = lr_class_opened(x->c, node); sg = 0; }
   else if (k == NK_SingletonClassNode) {
@@ -526,7 +540,8 @@ static void lr_frame(ElabRec *x, int e) {
     cls = LR_UNKNOWN_CLASS; sg = 0;
     for (int ci = 0; ci < x->c->nclasses; ci++) if (x->c->classes[ci].def_node == node) cls = ci;
   }
-  else if (call >= 0 && nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") >= 0 && elab_opens_frame(nt, call)) {
+  else if (call == LR_UNKNOWN_CLASS) { cls = LR_UNKNOWN_CLASS; sg = 0; }
+  else if (call >= 0) {
     const char *nm = nt_str(nt, call, "name");
     int rsg;
     cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
