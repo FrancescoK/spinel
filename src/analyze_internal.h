@@ -374,7 +374,8 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    is in (e, its seq; -1 where no record is made) and how that statement
    runs -- its file, the top-level statement holding it, the statement whose
    body opened its class frame (-1: main's), its nesting for the dump,
-   whether it may not run or may run partly (may, partial) -- and what the
+   whether it may not run or may run partly (may, partial), the statement
+   around it whose body may run again (rep, LrStmt.rep) -- and what the
    node is to it (kind, EP_*). A statement's node and the nodes on its path
    to the bodies it runs (EP_SPINE: a branch, a rescue clause, a written
    value's call, a block run at once) lead to those bodies: a statement
@@ -383,7 +384,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
    keeps it to run later, so that its nodes are late. */
 typedef struct {
-  int e, file, top, frame, depth;
+  int e, file, top, frame, depth, rep;
   unsigned char may, partial, kind, bits, defer;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };

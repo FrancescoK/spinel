@@ -62,8 +62,10 @@ int g_dump_load_record = 0;
    it runs at once if at all, but maybe not at all or cut short (in an
    iterator's block, which may run no time, or a begin body with rescue
    clauses, where a raise skips the rest): a write there is on no path for
-   sure. */
-typedef struct { int node, file, region, top, rank, depth, frame, last; unsigned char may, partial; } LrStmt;
+   sure. rep: the nearest statement around it whose body may run more than
+   once (a loop, an iterator's block, a begin body a rescue may retry), -1
+   for none: a statement after it in that body may also run before it. */
+typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -147,7 +149,7 @@ static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->may, pos->partial };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial };
   r->at[node] = k;
   pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
@@ -226,7 +228,11 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       break;
     case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhenNode: case NK_InNode: case NK_RescueNode:
     case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
-      if (spine && ch == nt_ref(nt, p, "statements")) { q.may = 1; return elab_body_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "statements")) {
+        q.may = 1;
+        if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) q.rep = pp->e;
+        return elab_body_pos(nt, ch, q);
+      }
       if (spine && (((k == NK_IfNode || k == NK_RescueNode) && ch == nt_ref(nt, p, "subsequent")) ||
                     (k == NK_UnlessNode && ch == nt_ref(nt, p, "else_clause"))))
         q.kind = EP_SPINE;
@@ -237,6 +243,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_BeginNode:
       if (spine && ch == nt_ref(nt, p, "statements")) {
         q.partial |= nt_ref(nt, p, "rescue_clause") >= 0;
+        if (nt_ref(nt, p, "rescue_clause") >= 0) q.rep = pp->e;   /* `retry` runs it again */
         return elab_body_pos(nt, ch, q);
       }
       if (spine) q.kind = EP_SPINE;   /* its rescue clauses, else and ensure */
@@ -266,7 +273,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       q.kind = EP_SPINE;
       if (runs == 0) q.may = 1;
       if (elab_opens_frame(nt, p)) q.frame = pp->e;
-      else q.partial = 1;
+      else { q.partial = 1; q.rep = pp->e; }   /* an iterator's: zero times, or several */
       break;
     }
     default: break;
@@ -394,7 +401,7 @@ static void elab_sites_in(const NodeTable *nt, int id, ElabPos pos, void (*fn)(v
   }
 }
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud) {
-  ElabPos at = { .e = 0, .top = -1, .frame = -1, .kind = EP_NEW };
+  ElabPos at = { .e = 0, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW };
   elab_sites_in(c->nt, stmt, at, fn, ud);
 }
 
@@ -416,7 +423,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     c->nscope[root] = sc; c->node_cbody[root] = -1;
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
-  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .kind = EP_NEW }, rp = at;
+  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW }, rp = at;
   if (site) { at.may = rp.may = site->may; at.partial = rp.partial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
@@ -1547,12 +1554,29 @@ static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, i
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
 }
 
+/* May node's statement, which comes after p, also run before p: is it in
+   a body around p that runs again (LrStmt.rep), or in the body of a loop
+   whose condition p is? */
+static int lr_runs_again(Compiler *c, int node, LoadPoint p) {
+  LoadRecord *r = c->lrec;
+  LoadPoint q = elab_point_of(c, node);
+  if (p.region < 0 || elab_cmp(p, q) != PROG_BEFORE) return 0;
+  NodeKind k = nt_kind(c->nt, r->st[p.seq].node);
+  for (int e = k == NK_WhileNode || k == NK_UntilNode ? p.seq : r->st[p.seq].rep; e >= 0; e = r->st[e].rep)
+    if (q.seq <= r->st[e].last) return 1;
+  return 0;
+}
+
 /* ...of a method: an undef stops the search (LR_STOP), a removal passes it
-   on; a visibility change (`private :m`) counts only when vis asks for it */
+   on; a visibility change (`private :m`) counts only when vis asks for it.
+   An entry after p that may run before it on the body's next run leaves
+   the answer unknown. */
 static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, int vis, const LrDef **out) {
   const LrDef *v = NULL;
   int o = lr_last_before(c, h, p, late, !vis, &v);
   if (out && v) *out = v;
+  for (int i = late || p.region < 0 || !h ? 0 : h->n; i > 0; i--)
+    if ((vis || h->v[i - 1].kind != LR_VIS) && lr_runs_again(c, h->v[i - 1].node, p)) return ELAB_UNKNOWN;
   return o != ELAB_YES ? o : v->kind == LR_UNDEF ? LR_STOP : v->kind == LR_REMOVE ? ELAB_NO : ELAB_YES;
 }
 
@@ -1569,9 +1593,11 @@ static int lr_super(Compiler *c, int cls) {
 }
 
 /* Did mixin m of a class happen before p (late: in the load phase)?
-   ELAB_YES / NO / UNKNOWN */
+   ELAB_YES / NO / UNKNOWN; unknown too for one after p that may run
+   before it on a body's next run */
 static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late, int may) {
   int o = late ? (elab_point_of(c, m->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, m->node), p);
+  if (!late && lr_runs_again(c, m->node, p)) return ELAB_UNKNOWN;
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
@@ -1687,11 +1713,12 @@ static int lr_in_ancestry(Compiler *c, int cls, int sg, int k, LoadPoint p) {
 }
 
 /* Does node's statement run strictly between p0 and p1, or is it not
-   known not to? */
+   known not to (one after p1 that a body around p0 runs again)? */
 static int lr_inside(Compiler *c, int node, LoadPoint p0, LoadPoint p1) {
   LoadPoint q = elab_point_of(c, node);
   int a = elab_cmp(p0, q), b = elab_cmp(q, p1);
-  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE);
+  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE) ||
+         (b == PROG_AFTER && lr_runs_again(c, node, p0));
 }
 
 /* The version of cls's `name` live at every point from p0 up to p1: the
