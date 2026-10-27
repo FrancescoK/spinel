@@ -23766,8 +23766,12 @@ static ShareHolder *slot_holders(Compiler *c, int *out_n) {
   return hs;
 }
 
+/* share_default_apply's last answer was the wait below: the types moved
+   since the round before, and the rule waits a round for them to hold still */
+static int g_share_waited;
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   unsigned d_in = 0;
+  g_share_waited = 0;
   if (in_fixpoint) {
     /* types that moved since the last round: ask for one more round, which
        applies the rule if they then hold still. The re-narrow loop clears
@@ -23777,7 +23781,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
        skipped every other iteration, so the promoted slots alternated and
        the loop ran to its round cap. */
     d_in = share_types_digest(c);
-    if (d_in != c->share_sig && d_in != c->share_in_sig) { c->share_sig = d_in; return 1; }
+    if (d_in != c->share_sig && d_in != c->share_in_sig) { c->share_sig = d_in; g_share_waited = 1; return 1; }
   }
   share_facts_build(c);
   int changed = one_reflect_widen(c), any = 0;
@@ -49739,7 +49743,9 @@ static void an_phase_infer_fixpoint(Compiler *c) {
        first feeds the settled type into ivar inference. */
     ch |= AN_PASS("infer_global_const_types", infer_global_const_types(c));
     ch |= AN_PASS("infer_multiwrite_const_types", infer_multiwrite_const_types(c));
-    ch |= AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
+    /* (kept apart until the round's end: see below) */
+    int pss_ch = AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
+    int pss_waited = g_share_waited;
     ch |= AN_PASS("promote_dyncall_string_args", promote_dyncall_string_args(c));
     ch |= AN_PASS("promote_spread_string_args", promote_spread_string_args(c));
     ch |= AN_PASS("promote_forwarded_rest_args", promote_forwarded_rest_args(c));
@@ -49749,6 +49755,14 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("infer_inherited_ivars", infer_inherited_ivars(c));
     ch |= AN_PASS("infer_return_types", infer_return_types(c));
     ch |= AN_PASS("backprop_hash_return_types", backprop_hash_return_types(c));
+    /* A round whose one change was the share rule's wait (the types moved in
+       the round before, and it waited for them to hold still) has just seen
+       them hold still: every other pass found nothing. The rule is applied
+       now, where the next round would have spent all of its passes finding
+       the same before it (#10325). */
+    if (!ch && pss_ch && pss_waited)
+      pss_ch = AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
+    ch |= pss_ch;
     if (!ch) {
       /* Converged with the ambiguous guesses held at bottom. Clear the flag
          and keep going: a slot whose evidence never arrived is genuinely
