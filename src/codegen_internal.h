@@ -1970,6 +1970,7 @@ const char *bigint_arith_fn(const char *op);
    (one live result at a time -- fine since each use is consumed inline). */
 const char *mc(const char *name);
 void mc_resolve_clashes(Compiler *c);   /* before any method is named (codegen_program) */
+void mc_number_versions(Compiler *c);   /* the replaced method versions' numbers, ahead of mc_resolve_clashes */
 /* The class stem to compose a REOPENED builtin's method name with: the
    plain c_name, or one with an `_oc` suffix where the runtime already has a
    function of that exact spelling (sp_String_length). */

@@ -6769,12 +6769,26 @@ static int mc_name_fixed(const char *nm) {
    class method, sp_<stem>_<name> for an instance method (mc_reopen_cls's
    stem). Every site that names a method's function spells it here, from
    the method, never from a name: two methods of one name are two
-   functions. The answer stays valid for the next seven spellings. */
+   functions. A replaced version (Scope.version_n) is spelled from its
+   name and its number: `f__redef<n>` at the top level, `m#redef<n>` in a
+   class (mc_number_versions). The answer stays valid for the next seven
+   spellings. */
 const char *mc_method(Compiler *c, const Scope *s) {
-  if (s->c_name) return mc_ring_setf(c, "sp_%s", s->c_name);
-  if (s->class_id < 0) return mc_ring_setf(c, "sp_%s", mc_top(c, s->name));
-  if (s->is_cmethod) return mc_ring_setf(c, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
-  return mc_ring_setf(c, "sp_%s_%s", mc_reopen_cls(c, s->class_id, s->name), mc(s->name));
+  const char *name = s->name, *out;
+  char *vname = NULL;
+  if (s->version_n) {
+    const char *fmt = s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
+    int vn = snprintf(NULL, 0, fmt, s->name, s->version_n);
+    if (vn < 0 || !(vname = malloc((size_t)vn + 1))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    snprintf(vname, (size_t)vn + 1, fmt, s->name, s->version_n);
+    name = vname;
+  }
+  if (s->c_name) out = mc_ring_setf(c, "sp_%s", s->c_name);
+  else if (s->class_id < 0) out = mc_ring_setf(c, "sp_%s", mc_top(c, name));
+  else if (s->is_cmethod) out = mc_ring_setf(c, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(name));
+  else out = mc_ring_setf(c, "sp_%s_%s", mc_reopen_cls(c, s->class_id, name), mc(name));
+  free(vname);
+  return out;
 }
 /* mc_method's answers live in eight slots, each grown to the name set in
    it: a name is as long as its class's, and a fixed slot cut a long
@@ -6797,6 +6811,40 @@ const char *mc_ring_setf(Compiler *c, const char *fmt, ...) {
   vsnprintf(c->mc_ring[k], (size_t)n + 1, fmt, ap);
   va_end(ap);
   return c->mc_ring[k];
+}
+/* Numbers the replaced method versions codegen emits, for their C names
+   (mc_method). Top-level ones: those the main file's statements define, in
+   statement order whether emitted or not, then the other emitted ones,
+   each number skipping a `f__redef<n>` the program defines itself. A
+   class's: the emitted ones, in scope order. */
+static void mc_number_top_version(Compiler *c, Scope *s, int *serial) {
+  char to[300];
+  for (;;) {
+    int taken = 0;
+    snprintf(to, sizeof to, "%s__redef%d", s->name, ++*serial);
+    NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
+      const char *dn = nt_str(c->nt, d, "name");
+      if (dn && sp_streq(dn, to)) { taken = 1; break; }
+    }
+    if (!taken) break;
+  }
+  s->version_n = *serial;
+}
+void mc_number_versions(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, nt->root_id, "statements"), n = 0, top = 0, cls = 0;
+  const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int i = 0; i < n; i++) {
+    if (nt_kind(nt, st[i]) != NK_DefNode || nt_ref(nt, st[i], "receiver") >= 0) continue;
+    int s = comp_method_version(c, -1, nt_str(nt, st[i], "name"), 0, st[i], NULL);
+    if (s >= 0 && c->scopes[s].replaced && !c->scopes[s].version_n) mc_number_top_version(c, &c->scopes[s], &top);
+  }
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->replaced || !sc->reachable || sc->version_n) continue;
+    if (sc->class_id < 0) mc_number_top_version(c, sc, &top);
+    else sc->version_n = ++cls;
+  }
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
   return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
