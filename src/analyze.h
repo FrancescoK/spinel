@@ -225,6 +225,12 @@ int elab_runs_with(Compiler *c, int node, int def);
 /* the def node whose body holds node, with no class body or other def
    between; -1 for none */
 int elab_body_def(Compiler *c, int node);
+/* call_target's questions about call id read the record's facts as its
+   first such question found them (analyze_elab.c): 1 when the frame is in,
+   until elab_plan_leave; 0 for a node it cannot place */
+int elab_plan_enter(Compiler *c, int id);
+void elab_plan_leave(Compiler *c);
+void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc);   /* SPINEL_ELAB_CHECK */
 /* where the version recorded at def node `node` in cls's history of `name`
    (singleton when sg) is replaced: ELAB_YES with *end the next version's
    point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN

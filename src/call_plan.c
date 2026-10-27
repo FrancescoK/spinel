@@ -723,7 +723,7 @@ static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const
    other call, the last version, which for an alias is the version it
    captured. mi, the table's answer (the last version), where the record
    cannot tell. */
-static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
+static int ct_version_at(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
   int sg = (flags & CT_CMETHOD) != 0, rcls = flags & CT_TOP ? -1 : cls, vi = -1, dc = -1;
   const LrDef *d = NULL;
   LoadPoint p = elab_point_of(c, id), end;
@@ -748,6 +748,18 @@ static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned f
      a scope no def made (a define_method's) passes over */
   if (vi < 0 || (!c->scopes[vi].replaced && scope_is_shadowed(c, vi))) return mi;
   if (def_class && !(flags & CT_TOP)) *def_class = dc;
+  return vi;
+}
+/* ...asked in the record's frame for the call plan (elab_plan_enter): the
+   version is decided from the facts the record had for the call when the
+   plan first asked, not from a map rebuilt per ask */
+static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
+  int framed = elab_plan_enter(c, id), dc = def_class ? *def_class : -1, now = dc;
+  int vi = ct_version_at(c, id, cls, name, flags, mi, def_class ? &dc : NULL);
+  if (framed) elab_plan_leave(c);
+  if (framed && elab_check_on(c))   /* the map as it is, for check mode */
+    elab_check_version(c, id, vi, dc, ct_version_at(c, id, cls, name, flags, mi, def_class ? &now : NULL), now);
+  if (def_class) *def_class = dc;
   return vi;
 }
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {

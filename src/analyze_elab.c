@@ -83,6 +83,12 @@ struct LoadRecord {
   int check, shown;
   LrCheck fam[LR_CHECK_MAX];
   double ms; int builds;
+  /* the call plan's frame (elab_plan_enter): the map one build made, swapped
+     in while call_target asks its questions, with the parents it climbed */
+  struct LrPlan { LrStmt *st; int nst, cst, *at; unsigned char *bits; int n, ncap; } plan;
+  int *up;                   /* [n] the parent each node's point was climbed from */
+  int *plan_par, plan_depth;
+  unsigned char plan_made;
   /* the histories (elab_program) */
   int recorded;
   int frontier;              /* the statements recorded so far, in seq order: while the walk records, a query at p is complete for p.seq <= frontier (lr_ready) */
@@ -525,7 +531,8 @@ static void elab_points_walk(Compiler *c, int reg) {
   }
   if (was) lr_check_map(c, was, wbits);
   free(was); free(wbits);
-  free(up); free(live); free(stack); free(w.entered);
+  free(r->up); r->up = up;
+  free(live); free(stack); free(w.entered);
   r->builds++;
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
 }
@@ -534,8 +541,78 @@ static void elab_points_walk(Compiler *c, int reg) {
    except while the registration's walk makes it */
 static LoadRecord *elab_fresh(Compiler *c) {
   LoadRecord *r = lr_get(c);
-  if (!r->walk && (!r->at || r->n != c->nt->count || r->ver != c->nt->version)) elab_points_walk(c, 0);
+  if (!r->walk && !r->plan_depth && (!r->at || r->n != c->nt->count || r->ver != c->nt->version)) elab_points_walk(c, 0);
   return r;
+}
+
+/* ---- the call plan's frame ----
+   Which version a call binds to is the call plan's decision (call_target),
+   made from the record's facts about the call: its point, the def whose
+   body holds it, whether it runs whenever that body runs, and the points
+   of the histories' entries. The passes ask it again and again, and append
+   nodes between the asks, so a map rebuilt per ask made each such pass
+   quadratic in the program (#10422). The facts are decided once instead:
+   the first ask copies the map and its parent map, and every later ask
+   reads that copy (elab_plan_enter). A node appended since takes the facts
+   of the node it was first linked under (nt_origin), as the climb would
+   place it there; a copy (a clone) has no such place, and asks the map as
+   it is. SPINEL_ELAB_CHECK asks each call's version of the map as it is too
+   (elab_check_version). */
+static void lr_plan_swap(LoadRecord *r) {
+  struct LrPlan live = { r->st, r->nst, r->cst, r->at, r->bits, r->n, r->ncap };
+  r->st = r->plan.st; r->nst = r->plan.nst; r->cst = r->plan.cst; r->at = r->plan.at;
+  r->bits = r->plan.bits; r->n = r->plan.n; r->ncap = r->plan.ncap;
+  r->plan = live;
+}
+static void *lr_dup(const void *v, size_t sz) {
+  void *d = malloc(sz ? sz : 1);
+  if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (sz) memcpy(d, v, sz);
+  return d;
+}
+/* Inside the frame: node id, appended since the copy, placed where it was
+   first linked; past a chain of 64 such links the map as it is answers */
+static int lr_plan_place(Compiler *c, int id, int depth) {
+  LoadRecord *r = c->lrec;
+  if (id < r->n && r->at[id] != -2) return 1;
+  char how = 0; int a = 0, k = 0; unsigned pass = 0;
+  int o = depth < 64 ? nt_origin(c->nt, id, &how, &a, &pass, &k) : -1;
+  if (o < 0 || how == 'c' || !lr_plan_place(c, o, depth + 1)) return 0;
+  int cap = r->ncap, n0 = r->n;
+  lr_fit(r, id + 1);
+  if (r->ncap != cap && !(r->plan_par = realloc(r->plan_par, sizeof(int) * (size_t)r->ncap))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  for (int i = n0; i < r->n; i++) r->plan_par[i] = -1;
+  r->at[id] = r->at[o]; r->plan_par[id] = o;
+  r->bits[id] = (unsigned char)(((r->bits[o] & LR_LATE) || lr_defers(c->nt, r->plan_par, o) ? LR_LATE : 0) |
+                                ((r->bits[o] & LR_BODY) || nt_kind(c->nt, o) == NK_DefNode ? LR_BODY : 0));
+  return 1;
+}
+/* Swaps the frame in for call_target's questions about call id: 1 when it
+   did (elab_plan_leave swaps it out), 0 for a node the copy cannot place,
+   which is asked of the map as it is */
+int elab_plan_enter(Compiler *c, int id) {
+  LoadRecord *r = lr_get(c);
+  if (!r->plan_made) {
+    elab_fresh(c);
+    r->plan.st = lr_dup(r->st, sizeof *r->st * (size_t)r->nst); r->plan.nst = r->plan.cst = r->nst;
+    r->plan.at = lr_dup(r->at, sizeof(int) * (size_t)r->ncap);
+    r->plan.bits = lr_dup(r->bits, (size_t)r->ncap);
+    r->plan.n = r->n; r->plan.ncap = r->ncap;
+    r->plan_par = lr_dup(r->up, sizeof(int) * (size_t)r->n);
+    r->plan_par = realloc(r->plan_par, sizeof(int) * (size_t)r->ncap);
+    r->plan_made = 1;
+  }
+  if (!r->plan_depth) lr_plan_swap(r);
+  r->plan_depth++;
+  if (lr_plan_place(c, id, 0)) return 1;
+  elab_plan_leave(c);
+  return 0;
+}
+void elab_plan_leave(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (!--r->plan_depth) lr_plan_swap(r);
 }
 
 /* The point at which node's statement runs; region -1 (no point) for a
@@ -1517,24 +1594,37 @@ void elab_mark_versions(Compiler *c) {
   free(keys);
 }
 
+/* The parents elab_body_def and elab_runs_with climb: those the map
+   placed each node through, the frame's inside it (elab_plan_enter). The
+   parent map can answer a node a desugaring left hung nowhere, which still
+   holds a child it shares with the node that replaced it. */
+static const int *lr_parents(Compiler *c, int *n) {
+  LoadRecord *r = elab_fresh(c);
+  *n = r->n;
+  return r->plan_depth ? r->plan_par : r->up;
+}
+
 /* The def node whose body holds node, with no class body or other def
    between; -1 for none. */
-int elab_body_def(Compiler *c, int node) {
-  const int *par = comp_parent_map(c);
-  int n = c->nt->count;
+static int lr_body_def(const NodeTable *nt, const int *par, int n, int node) {
   for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
-    NodeKind k = nt_kind(c->nt, p);
+    NodeKind k = nt_kind(nt, p);
     if (k == NK_DefNode) return p;
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return -1;
   }
   return -1;
 }
+int elab_body_def(Compiler *c, int node) {
+  int n;
+  const int *par = lr_parents(c, &n);
+  return lr_body_def(c->nt, par, n, node);
+}
 
 /* Does node run whenever the body of def node `def` runs: is it in that
    body with no lambda, nested def or block kept to run later between? */
 int elab_runs_with(Compiler *c, int node, int def) {
-  const int *par = comp_parent_map(c);
-  int n = c->nt->count;
+  int n;
+  const int *par = lr_parents(c, &n);
   for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
     if (p == def) return 1;
     if (lr_defers(c->nt, par, p)) return 0;
@@ -2343,6 +2433,23 @@ static void lr_check_map(Compiler *c, const int *was, const unsigned char *wbits
   }
 }
 
+/* The version call_target decided for call id in the call plan's frame
+   (vi, found from class dc) against the one the map as it is answers (now,
+   from ndc), asked while the pass that appends nodes then runs. A
+   lowering that moves a call so that its version changes shows here. */
+void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc) {
+  LoadRecord *r = lr_get(c);
+  LrCheck *f = lr_family(r, "the call plan's versions");
+  f->asked++;
+  if (vi == now && dc == ndc) return;
+  f->differ++;
+  if (r->shown++ >= LR_CHECK_SHOW) return;
+  char d[96];
+  lr_node_desc(c, id, d, sizeof d);
+  fprintf(stderr, "spinel-elab-check: plan pass=%s node=%s version=%d/%d class=%d/%d (plan/now)\n",
+          c->nt->pass ? c->nt->pass : "-", d, vi, now, dc, ndc);
+}
+
 /* The record as --dump-load-record prints it */
 static char *lr_dump_text(Compiler *c) {
   FILE *f = tmpfile();
@@ -2509,6 +2616,7 @@ void elab_free(Compiler *c) {
   for (int i = 0; r->check && i < LR_CHECK_MAX && r->fam[i].reader; i++)
     fprintf(stderr, "spinel-elab-check: family=\"%s\" asked=%ld differ=%ld\n", r->fam[i].reader, r->fam[i].asked, r->fam[i].differ);
   lr_record_drop(r);
+  free(r->plan.st); free(r->plan.at); free(r->plan.bits); free(r->plan_par); free(r->up);
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
   free(r->names); free(r->reopens);
