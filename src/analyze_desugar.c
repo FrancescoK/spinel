@@ -22147,7 +22147,7 @@ int desugar_index_assign_value(Compiler *c) {
     }
     /* a class-level `self.[]=` of a class a constant (or a local that
        holds one class) names, as the class method call resolves it */
-    if (!user) user = class_recv_user_cmethod(c, recv, "[]=") >= 0;
+    if (!user) user = class_recv_user_cmethod(c, id, recv, "[]=") >= 0;
     if (!user) continue;
     if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     /* a detached store (desugar_masgn_store_evidence's type evidence) has no parent */
