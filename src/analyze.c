@@ -2689,29 +2689,33 @@ static int bp_rename_slot(const Compiler *c, const char *name) {
   return -1;
 }
 
-static void bp_rename_insert(Compiler *c, char *name, size_t len) {
+static void bp_rename_insert(Compiler *c, char *name, size_t len, int blk) {
   unsigned i = sp_strhash(name) & c->bp_mask;
   while (c->bp_name[i]) i = (i + 1) & c->bp_mask;
   c->bp_name[i] = name;
   c->bp_len[i] = len;
+  c->bp_blk[i] = blk;
 }
 
-static void bp_rename_record(Compiler *c, const char *name, size_t len) {
+static void bp_rename_record(Compiler *c, const char *name, size_t len, int blk) {
   int s = bp_rename_slot(c, name);
-  if (s >= 0) { c->bp_len[s] = len; return; }
+  if (s >= 0) { c->bp_len[s] = len; c->bp_blk[s] = blk; return; }
   unsigned ocap = c->bp_name ? c->bp_mask + 1 : 0;
   if ((unsigned)(c->nbp + 1) * 2 > ocap) {
     char **on = c->bp_name;
     size_t *ol = c->bp_len;
+    int *ob = c->bp_blk;
     unsigned cap = ocap ? ocap * 2 : 64;
     c->bp_name = calloc(cap, sizeof(char *));
     c->bp_len = calloc(cap, sizeof(size_t));
+    c->bp_blk = calloc(cap, sizeof(int));
     c->bp_mask = cap - 1;
-    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i]);
+    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(c, on[i], ol[i], ob[i]);
     free(on);
     free(ol);
+    free(ob);
   }
-  bp_rename_insert(c, strdup(name), len);
+  bp_rename_insert(c, strdup(name), len, blk);
   c->nbp++;
 }
 
@@ -2747,6 +2751,13 @@ static int bp_user_uses(Compiler *c, const char *name) {
   return 0;
 }
 
+/* Is `name` one block_param_invent_name made for block `blk`? The record
+   says: it holds each invented name with its block. */
+int block_param_made_for(const Compiler *c, const char *name, int blk) {
+  int s = bp_rename_slot(c, name);
+  return s >= 0 && c->bp_blk[s] == blk;
+}
+
 /* Invent the slot name for the parameter `written` of block `blk` and record
    it, stepping past a name the program already uses. The caller frees it. */
 char *block_param_invent_name(Compiler *c, const char *written, int blk) {
@@ -2759,7 +2770,7 @@ char *block_param_invent_name(Compiler *c, const char *written, int blk) {
   snprintf(buf, n, "%s__b%s%s", written, p, tag);
   for (int k = 1; bp_user_uses(c, buf); k++)
     snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
-  bp_rename_record(c, buf, strlen(written));
+  bp_rename_record(c, buf, strlen(written), blk);
   return buf;
 }
 
@@ -5202,7 +5213,7 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
   for (char *tok = strtok_r(locs, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
     char *newn = NULL;
     const char *emit = tok;
-    if (!params_bind_name(nt, pn, tok) &&
+    if (!params_bind_name(nt, pn, tok) && !block_param_made_for(c, tok, L) &&
         name_written_outside(nt, tok, ix, inbody, gen)) {
       newn = block_param_invent_name(c, tok, L);
       blkp_rewrite_refs(c, body, tok, newn);
@@ -5744,6 +5755,8 @@ int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
       int pnode = ii < rn ? reqs[ii] : extras[ii - rn];
       const char *p = nt_str(nt, pnode, "name");
       if (!p) continue;
+      /* a parameter this block has already been given a slot name for keeps it */
+      if (block_param_made_for(c, p, L)) continue;
       /* collision: the name is used outside this block's body -- as a local
          write/read or as another block's parameter (param-vs-param, e.g. two
          inject folds sharing `|a, b|` with different element types). Both pollute

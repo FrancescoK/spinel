@@ -1614,10 +1614,11 @@ typedef struct {
   size_t *rbp_slot_lens;
   int nrbp_slots;
   /* the names the shadow rename invents for block parameters, each with the
-     length of the name the program wrote (block_param_written_len): an open
-     table of mask+1 slots, nbp used */
+     length of the name the program wrote (block_param_written_len) and the
+     block it was invented for: an open table of mask+1 slots, nbp used */
   char **bp_name;
   size_t *bp_len;
+  int *bp_blk;    /* the block each was invented for (block_param_made_for) */
   unsigned bp_mask;
   int nbp;
   /* the names the program wrote that hold `__bp` or `__bq`, collected when

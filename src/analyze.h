@@ -666,6 +666,7 @@ int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const Compiler *c, const char *name);
 size_t reassigned_param_written_len(const Compiler *c, const char *name);
 int block_param_is_renamed(const Compiler *c, const char *name);
+int block_param_made_for(const Compiler *c, const char *name, int blk);   /* an invented name of that block */
 char *block_param_invent_name(Compiler *c, const char *written, int blk);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 TyKind ie_kwhash_computed_type(Compiler *c, int kwhash);
