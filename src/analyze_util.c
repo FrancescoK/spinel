@@ -1883,10 +1883,13 @@ TyKind scan_throw_type(Compiler *c, const char *tag) {
   /* Program-wide: a throw can reach its catch through any number of method
      frames, so the catch's value type must unify with every throw that can
      target it. A literal tag on both sides that differs is provably
-     unreachable; a non-literal tag on either side always participates. */
+     unreachable; a non-literal tag on either side always participates.
+     The throws are the calls named throw, in node order as the kind walk
+     met them: each catch's inference walked every call of the program. */
   const NodeTable *nt = c->nt;
   TyKind result = TY_UNKNOWN;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+  for (int id = an_calls_named_first(c, "throw"); id >= 0; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "throw") || nt_ref(nt, id, "receiver") >= 0) continue;
     int v = nt_ref(nt, id, "arguments");
