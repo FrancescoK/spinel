@@ -79,6 +79,13 @@ typedef struct {
      which version leaves out. infer_type keeps an earlier query's answers
      only while neither it nor version has moved (#8852). */
   unsigned long edits;
+  /* Per node (node_table.c): the scratch nt_clone_subtree marks its
+     subtree with (a node is in the clone being made while its mark is
+     clone_gen), kept from clone to clone so a clone costs its subtree, not
+     the table. */
+  struct NtAux *aux;
+  int aux_cap;
+  unsigned clone_gen;
 } NodeTable;
 
 /* The roots of the program's files, entry first (see file_roots). */

@@ -82,6 +82,21 @@ static void node_add_arr(SpNode *nd, const char *key, size_t klen, int *ids, int
   nd->na++;
 }
 
+/* A node's entry in nt->aux (node_table.h), the array first extended to
+   it: a new entry is unmarked. */
+struct NtAux { unsigned mark; int to; };
+static struct NtAux *nt_aux(NodeTable *nt, int id) {
+  if (id >= nt->aux_cap) {
+    int cap = nt->aux_cap ? nt->aux_cap : 1024;
+    while (cap <= id) { if (cap > INT_MAX / 2) nt_oom(); cap *= 2; }
+    struct NtAux *g = realloc(nt->aux, sizeof *g * (size_t)cap);
+    if (!g) nt_oom();
+    for (int i = nt->aux_cap; i < cap; i++) g[i] = (struct NtAux){ 0, -1 };
+    nt->aux = g; nt->aux_cap = cap;
+  }
+  return &nt->aux[id];
+}
+
 /* ---- filling the table (the parser's walk) ---- */
 
 NodeTable *nt_new_table(void) {
@@ -199,14 +214,26 @@ void nt_dump(const NodeTable *nt, FILE *out) {
   }
 }
 
-/* Collect the subtree node ids reachable from `id` via ref + array fields. */
-static void nt_clone_collect(NodeTable *nt, int id, char *seen, int *list, int *n) {
-  if (id < 0 || id >= nt->count || seen[id]) return;
-  seen[id] = 1; list[(*n)++] = id;
+/* Collect the subtree node ids reachable from `id` via ref + array fields,
+   each marked as in the clone being made. */
+static void nt_clone_collect(NodeTable *nt, int id, int **list, int *n, int *cap) {
+  if (id < 0 || id >= nt->count || nt->aux[id].mark == nt->clone_gen) return;
+  nt->aux[id].mark = nt->clone_gen;
+  if (*n == *cap) {
+    int *g = realloc(*list, sizeof(int) * (size_t)(*cap *= 2));
+    if (!g) nt_oom();
+    *list = g;
+  }
+  (*list)[(*n)++] = id;
   SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) nt_clone_collect(nt, nd->r[j].ref, seen, list, n);
+  for (int j = 0; j < nd->nr; j++) nt_clone_collect(nt, nd->r[j].ref, list, n, cap);
   for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) nt_clone_collect(nt, nd->a[j].ids[k], seen, list, n);
+    for (int k = 0; k < nd->a[j].n; k++) nt_clone_collect(nt, nd->a[j].ids[k], list, n, cap);
+}
+
+/* A field's node id in the clone: its copy for a node of the subtree */
+static int nt_clone_map(const NodeTable *nt, int base, int id) {
+  return id >= 0 && id < base && nt->aux[id].mark == nt->clone_gen ? nt->aux[id].to : id;
 }
 
 /* Retype every node of the subtree at `id` to a NilNode: a desugar that
@@ -232,19 +259,25 @@ void nt_subtree_blank(NodeTable *nt, int id) {
    arrays (Compiler.ntype / .nscope) to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root) {
   if (root < 0 || root >= nt->count) return -1;
-  char *seen = calloc((size_t)nt->count, 1);
-  if (!seen) nt_oom();
-  int *list = nt_alloc(sizeof(int) * (size_t)nt->count);
-  int sn = 0;
-  nt_clone_collect(nt, root, seen, list, &sn);
-  free(seen);
   int base = nt->count;
-  int *map = nt_alloc(sizeof(int) * (size_t)base);
-  for (int i = 0; i < base; i++) map[i] = -1;
-  for (int i = 0; i < sn; i++) map[list[i]] = base + i;
-  SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)(base + sn));
-  if (!grown) nt_oom();
-  nt->nodes = grown;
+  nt_aux(nt, base - 1);
+  if (++nt->clone_gen == 0) {   /* wrapped: no mark may look current */
+    for (int i = 0; i < nt->aux_cap; i++) nt->aux[i].mark = 0;
+    nt->clone_gen = 1;
+  }
+  int cap = 64, sn = 0;
+  int *list = nt_alloc(sizeof(int) * (size_t)cap);
+  nt_clone_collect(nt, root, &list, &sn, &cap);
+  for (int i = 0; i < sn; i++) nt->aux[list[i]].to = base + i;
+  /* by doubling, as nt_new_node grows it: a resize to the count each time
+     copied the whole table per clone */
+  if (base + sn > nt->node_cap) {
+    int nc = nt->node_cap > (base + sn) / 2 ? nt->node_cap * 2 : base + sn;
+    SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)nc);
+    if (!grown) nt_oom();
+    nt->nodes = grown;
+    nt->node_cap = nc;
+  }
   memset(&nt->nodes[base], 0, sizeof(SpNode) * (size_t)sn);
   for (int i = 0; i < sn; i++) {
     SpNode *src = &nt->nodes[list[i]];
@@ -266,8 +299,7 @@ int nt_clone_subtree(NodeTable *nt, int root) {
       for (int j = 0; j < src->nr; j++) {
         dst->r[j].key = dup_n(src->r[j].key, strlen(src->r[j].key));
         dst->r[j].disc = src->r[j].disc;
-        int rf = src->r[j].ref;
-        dst->r[j].ref = (rf >= 0 && rf < base && map[rf] >= 0) ? map[rf] : rf;
+        dst->r[j].ref = nt_clone_map(nt, base, src->r[j].ref);
       } }
     dst->na = dst->ca = src->na;
     if (src->na) { dst->a = nt_alloc(sizeof(SpArrField) * (size_t)src->na);
@@ -276,18 +308,13 @@ int nt_clone_subtree(NodeTable *nt, int root) {
         dst->a[j].disc = src->a[j].disc;
         dst->a[j].n = src->a[j].n;
         dst->a[j].ids = nt_alloc(sizeof(int) * (size_t)src->a[j].n);
-        for (int k = 0; k < src->a[j].n; k++) {
-          int e = src->a[j].ids[k];
-          dst->a[j].ids[k] = (e >= 0 && e < base && map[e] >= 0) ? map[e] : e;
-        }
+        for (int k = 0; k < src->a[j].n; k++) dst->a[j].ids[k] = nt_clone_map(nt, base, src->a[j].ids[k]);
       } }
   }
-  int newroot = map[root];
   nt->count = base + sn;
   nt->version++; nt->edits++; nt->clone_version++;
-  nt->node_cap = nt->count;  /* realloc above sized the array exactly */
-  free(list); free(map);
-  return newroot;
+  free(list);
+  return base;   /* the root is the first node collected */
 }
 
 /* ---- synthetic node construction ---- */
@@ -478,6 +505,7 @@ void nt_free(NodeTable *nt) {
   free(nt->files);
   free(nt->file_defers);
   free(nt->file_roots);
+  free(nt->aux);
   free(nt);
 }
 
