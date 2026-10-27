@@ -2080,10 +2080,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       name[0] && name[strlen(name) - 1] != '?' && name[strlen(name) - 1] != '!' &&
       !poly_builtin_zero_arg_name(name))
     { *out = TY_POLY; return 1; }
-  /* ... and so are size, length, count and empty?, which an OpenStruct does
-     not define, where one can reach the receiver (cls_fact_may_ostruct): the
-     member, or nil, joins what the classes' methods and the containers
-     answer. Elsewhere they keep the Integer the others give. */
+  /* ... and so are the builtins' names an OpenStruct reads as a member
+     (ostruct_member_name: size, first, max, ...), where one can reach the
+     receiver (cls_fact_may_ostruct): the member, or nil, joins what the
+     classes' methods and the containers answer. Elsewhere they keep the
+     type the others give. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       ostruct_member_name(name) && cls_fact_may_ostruct(c, recv))
     { *out = TY_POLY; return 1; }

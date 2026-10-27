@@ -2270,6 +2270,11 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
     if (cf_scalar_answer(nm)) {
       cf_add_set(f, v, cf_bv_set(f));
       cf_kval(f, v);
+      /* an OpenStruct reads such a name as its member (ostruct_member_name),
+         whose value is one of its contents (an OpenStruct of a parsed
+         document's, `doc.size.max`) */
+      int rs = recv_el >= 0 ? cf_set_of(f, recv_el) : CF_EMPTY;
+      if (rs != CF_EMPTY && (rs == CF_ALL || f->pool[rs].os) && ostruct_member_name(nm)) cf_load(f, recv_el, v);
       return;
     }
     if (cf_element_answer(nm)) {
@@ -3598,6 +3603,14 @@ static void cf_call(CF *f, int v) {
     if (sp_streq(nm, "new") || sp_streq(nm, "allocate") || ((k->is_struct || k->is_data) && sp_streq(nm, "[]"))) {
       cf_construct(f, v, x, argv, argc, blk, nm);
       return;
+    }
+    /* JSON.parse(s, object_class: OpenStruct) makes every object of the
+       document an OpenStruct (json_parse_ostruct_opts): the answer is one,
+       and so is what it holds; a member read answers its receiver's values
+       (the builtin rule), which reaches the nested ones */
+    if (argc == 2 && sp_streq(nm, "parse") && k->name && sp_streq(k->name, "JSON") && json_parse_ostruct_opts(c, argv[1])) {
+      cf_add_set(f, v, cf_os_set(f));
+      if (f->directed) { int o = cf_el_obj(f, v); if (o >= 0) cf_add_set(f, f->obj_cont[o], cf_os_set(f)); }
     }
     int cm = call_target(c, v, x, nm, CT_CMETHOD, NULL);
     if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) return;
