@@ -9485,6 +9485,17 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   /* one a hoist around the call ran already reads its temp: a class
      value's arms bind what the dispatch hoisted */
   if (arg_ran_first(x, 0)) return;
+  /* a Range literal runs its ends first and stays a literal over their
+     temps: the arms that index by a literal read its ends, not the Range,
+     and ran them again after the Range's temp */
+  int rn = nt_paren_single(nt, x);
+  if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
+    for (int e = 0; e < 2; e++) {
+      int end = nt_ref(nt, rn, e ? "right" : "left");
+      if (end >= 0) emit_arg_first(c, end, rebound, b);
+    }
+    return;
+  }
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
   TyKind at = repr_of(c, x).as_ty;
