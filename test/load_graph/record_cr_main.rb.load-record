@@ -1,0 +1,48 @@
+load record: 25 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 ClassNode Foo line 8
+r0 #2 f0 RescueModifierNode line 10
+  r0 #3 f0 DefNode bar line 11
+r0 #4 f0 ModuleNode A line 13
+  r0 #5 f0 DefNode who line 14
+  r0 #6 f0 ModuleNode A__Kind line 15
+    r0 #7 f0 DefNode kind line 16
+r0 #8 f0 ModuleNode B line 19
+  r0 #9 f0 DefNode who line 20
+  r0 #10 f0 ModuleNode B__Kind line 21
+    r0 #11 f0 DefNode kind line 22
+r0 #12 f0 ClassNode C line 25
+  r0 #13 f0 CallNode include line 26
+  r0 #14 f0 CallNode alias_method line 27
+  r0 #15 f0 CallNode include line 28
+r0 #16 f0 ClassNode D line 30
+  r0 #17 f0 IfNode line 31
+    r0 #18 may f0 CallNode define_method line 32
+  r0 #19 f0 DefNode sure line 34
+r0 #20 f0 CallNode puts line 36
+r0 #21 f0 CallNode p line 37
+r0 #22 f0 CallNode puts line 38
+r0 #23 f0 CallNode puts line 39
+r0 #24 f0 CallNode puts line 40
+class Foo: body#1
+class A: body#4
+class A__Kind: body#6
+class B: body#8
+class B__Kind: body#10
+class C: body#12 include B#13 include A#13 include A__Kind#15
+class D: body#16
+const Foo: write#1
+Foo#bar: def#3 end=yes
+const A: write#4
+A#who: def#5 end=yes
+const A::Kind: write#6
+A__Kind#kind: def#7 end=yes
+const B: write#8
+B#who: def#9 end=yes
+const B::Kind: write#10
+B__Kind#kind: def#11 end=yes
+const C: write#12
+C#first_who: alias#14 (who: def#5) end=yes
+const D: write#16
+D#maybe: define_method#18 may end=unknown
+D#sure: def#19 end=yes

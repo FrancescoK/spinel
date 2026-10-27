@@ -1,0 +1,40 @@
+load record: 23 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ModuleNode TopHelper line 7
+  r0 #2 f0 DefNode help line 8
+r0 #3 f0 ModuleNode M line 10
+  r0 #4 f0 CallNode include line 11
+r0 #5 f0 ModuleNode V line 13
+  r0 #6 f0 DefNode f line 14
+  r0 #7 f0 CallNode private line 15
+r0 #8 f0 ClassNode C line 17
+  r0 #9 f0 CallNode include line 18
+  r0 #10 f0 CallNode alias_method line 19
+  r0 #11 f0 DefNode call_g line 20
+r0 #12 f0 ConstantWriteNode Pt line 22
+  r0 #13 f0 CallNode private line 23
+  r0 #14 f0 DefNode secret line 24
+  r0 #15 f0 CallNode public line 25
+  r0 #16 f0 DefNode shown line 26
+r0 #17 f0 ClassNode Q line 28
+  r0 #18 f0 CallNode include line 29
+r0 #19 f0 CallNode puts line 31
+r0 #20 f0 CallNode puts line 32
+r0 #21 f0 CallNode p line 33
+r0 #22 f0 CallNode puts line 34
+class TopHelper: body#1
+class M: body#3 include TopHelper#4
+class V: body#5
+class C: body#8 include V#9
+class Q: body#17 include M#18
+const TopHelper: write#1
+TopHelper#help: def#2 end=yes
+const M: write#3
+const V: write#5
+V#f: def#6 vis#7 private end=yes
+const C: write#8
+C#g: alias#10 (f: def#6) private end=yes
+C#call_g: def#11 end=yes
+const Pt: write#12
+visibility in #12: vis#13 private vis#15 public
+const Q: write#17

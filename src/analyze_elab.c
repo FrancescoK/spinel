@@ -457,12 +457,12 @@ static const char *lr_written_name(const NodeTable *nt, int cp) {
 }
 
 static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **out);
-static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, const LrDef **out, int depth);
+static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth);
 
 /* The class a constant's write or definition holds: a class or module
    header's (the scope walk's decision), a class builder's; else none known */
 static int lr_cref(Compiler *c, int e);
-static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, const LrDef **out, int depth);
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 
 static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
@@ -492,7 +492,7 @@ static int lr_class_ref(Compiler *c, int node) {
   if (k != NK_ConstantPathNode) return LR_UNKNOWN_CLASS;
   int par = nt_ref(nt, node, "parent"), pc = par < 0 ? LR_MAIN : lr_class_ref(c, par);
   LoadPoint p = elab_point_of(c, node);
-  if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
+  if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, pc == LR_MAIN, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
   return lr_class_of(c, d);
 }
 
@@ -506,6 +506,20 @@ static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
 }
 
 
+/* The call whose block opens the frame of a statement: the statement's
+   own call, a written value's, or either side of `x rescue y`; -1 for
+   none, and LR_UNKNOWN_CLASS when both sides of a rescue modifier open
+   one, which the walk gives the statement's one frame */
+static int lr_frame_call(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  int v = k == NK_CallNode || k == NK_RescueModifierNode ? node : nt_ref(nt, node, "value");
+  int a = v, b = -1;
+  if (v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode) { a = nt_ref(nt, v, "expression"); b = nt_ref(nt, v, "rescue_expression"); }
+  int fa = a >= 0 && nt_kind(nt, a) == NK_CallNode && nt_ref(nt, a, "block") >= 0 && elab_opens_frame(nt, a);
+  int fb = b >= 0 && nt_kind(nt, b) == NK_CallNode && nt_ref(nt, b, "block") >= 0 && elab_opens_frame(nt, b);
+  return fa && fb ? LR_UNKNOWN_CLASS : fa ? a : fb ? b : -1;
+}
+
 /* The frame entry e's body opens: its class in fc[e], singleton in fs[e];
    for any other statement, the frame it stands in. */
 static void lr_frame(ElabRec *x, int e) {
@@ -513,7 +527,7 @@ static void lr_frame(ElabRec *x, int e) {
   const LrStmt *s = &x->r->st[e];
   int f = s->frame, node = s->node, cls = f >= 0 ? x->fc[f] : LR_MAIN, sg = f >= 0 ? x->fs[f] : 0;
   NodeKind k = nt_kind(nt, node);
-  int call = k == NK_CallNode ? node : nt_ref(nt, node, "value");
+  int call = lr_frame_call(nt, node);
   x->vs[e] = BVIS_PUBLIC;
   if (k == NK_ClassNode || k == NK_ModuleNode) { cls = lr_class_opened(x->c, node); sg = 0; }
   else if (k == NK_SingletonClassNode) {
@@ -526,7 +540,8 @@ static void lr_frame(ElabRec *x, int e) {
     cls = LR_UNKNOWN_CLASS; sg = 0;
     for (int ci = 0; ci < x->c->nclasses; ci++) if (x->c->classes[ci].def_node == node) cls = ci;
   }
-  else if (call >= 0 && nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") >= 0 && elab_opens_frame(nt, call)) {
+  else if (call == LR_UNKNOWN_CLASS) { cls = LR_UNKNOWN_CLASS; sg = 0; }
+  else if (call >= 0) {
     const char *nm = nt_str(nt, call, "name");
     int rsg;
     cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
@@ -580,15 +595,22 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
   const char *nm = nt_str(nt, node, "name");
   int sg, recv = nt_ref(nt, node, "receiver"), cls = lr_receiver(x, recv, fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-  if (!nm || cls < LR_MAIN) return;
   int bvis = visibility_of_name(nm), opaque = 0;
-  int naming = bvis || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
-  if (bvis && !ac) {   /* the frame's visibility from here on */
+  if (bvis && !ac && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) {
+    /* the frame's visibility from here on: kept by the frame's node, so
+       also in a body whose class the record does not know */
     *vs = (unsigned char)bvis;
     lr_version(x->r, LR_KEY_VIS, fnode, "", (LrDef){ node, LR_VIS, (unsigned char)bvis, (unsigned char)may, 0, NULL });
     return;
   }
-  for (int i = 0; i < ac; i++) {
+  if (!nm || cls < LR_MAIN) return;
+  int naming = bvis || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
+  /* `include A, B` puts A nearest the class (ancestors [C, A, B]), as
+     `include B` then `include A` would, and so do prepend and extend: the
+     arguments of a mixin are recorded last first */
+  int mix = is_mixin_call(nm);
+  for (int j = 0; j < ac; j++) {
+    int i = mix ? ac - 1 - j : j;
     const char *an_ = vis_arg_name(nt, av[i]);
     if (!an_ && nt_kind(nt, av[i]) != NK_DefNode && naming && (!dm || i == 0)) opaque = 1;   /* a computed name */
     if (bvis && nt_kind(nt, av[i]) == NK_DefNode) lr_def(x, av[i], cls, sg, bvis, may);
@@ -599,7 +621,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       if (an_ && is_attr_writer_family(nm) && snprintf(w, sizeof w, "%s=", an_) < (int)sizeof w)
         lr_method(x, cls, sg, w, node, LR_WRITER, *vs, may, NULL);
     }
-    else if (is_mixin_call(nm)) {
+    else if (mix) {
       LrClass *k = lr_class(x->r, cls);
       int mod = lr_class_ref(x->c, av[i]);
       opaque |= mod < 0;
@@ -618,12 +640,12 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
      String, or a method of the program called on the class (its singleton
      method, from its body or through its constant) or from its body (a
      top-level one) */
-  if (!naming && !is_mixin_call(nm)) {
+  if (!naming && !mix) {
     LoadPoint p = elab_point_of(x->c, node);
     int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
     opaque = is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
-             (!sg && lr_search(x->c, cls, 1, nm, -1, p, 0, NULL, 0) != ELAB_NO) ||
-             (bare && lr_search(x->c, LR_MAIN, 0, nm, -1, p, 0, NULL, 0) != ELAB_NO);
+             (!sg && lr_search(x->c, cls, 1, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO) ||
+             (bare && lr_search(x->c, LR_MAIN, 0, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO);
   }
   if (opaque && cls >= 0)
     lr_version(x->r, LR_KEY_OPAQUE, lr_const_owner(cls), "", (LrDef){ node, LR_OPAQUE, 0, (unsigned char)may, 0, NULL });
@@ -722,28 +744,28 @@ enum { LR_STOP = 3 };
 /* The last entry of history h before p (late: of the load phase), in *out
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
-   one. skip_vis passes over the visibility versions of a method. */
+   one -- at the load phase's end too, as elab_written_before answers.
+   skip_vis passes over the visibility versions of a method. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if (skip_vis && v->kind == LR_VIS) continue;
-    if (!late) {
-      int o = elab_cmp(elab_point_of(c, v->node), p);
-      if (o == PROG_UNKNOWN) { unsure = 1; continue; }
-      if (o != PROG_BEFORE) continue;
-      if (v->may) { unsure = 1; continue; }
-    }
+    int o = late ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
+    if (o == PROG_UNKNOWN) { unsure = 1; continue; }
+    if (o != PROG_BEFORE) continue;
+    if (v->may) { unsure = 1; continue; }
     if (out) *out = v;
     return unsure ? ELAB_UNKNOWN : ELAB_YES;
   }
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
 }
 
-/* ...of a method: an undef stops the search (LR_STOP), a removal passes it on */
-static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, const LrDef **out) {
+/* ...of a method: an undef stops the search (LR_STOP), a removal passes it
+   on; a visibility change (`private :m`) counts only when vis asks for it */
+static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, int vis, const LrDef **out) {
   const LrDef *v = NULL;
-  int o = lr_last_before(c, h, p, late, 1, &v);
+  int o = lr_last_before(c, h, p, late, !vis, &v);
   if (out && v) *out = v;
   return o != ELAB_YES ? o : v->kind == LR_UNDEF ? LR_STOP : v->kind == LR_REMOVE ? ELAB_NO : ELAB_YES;
 }
@@ -760,18 +782,19 @@ static int lr_super(Compiler *c, int cls) {
   return d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? LR_UNKNOWN_CLASS : LR_MAIN;
 }
 
-/* Did mixin m of a class happen before p? ELAB_YES / NO / UNKNOWN */
+/* Did mixin m of a class happen before p (late: in the load phase)?
+   ELAB_YES / NO / UNKNOWN */
 static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late, int may) {
-  if (late) return ELAB_YES;
-  int o = elab_cmp(elab_point_of(c, m->node), p);
+  int o = late ? (elab_point_of(c, m->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, m->node), p);
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
 /* The search of `name` (or, with name NULL, of module `mod`) along cls's
    ancestors at p: its prepends (the last first), cls, its includes (the
    last first), then its superclass; a singleton's own methods, its extends,
-   then the superclass's singleton. */
-static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, const LrDef **out, int depth) {
+   then the superclass's singleton. With vis, an ancestor's visibility
+   change of the name is found as well, for the visibility it gives. */
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
@@ -779,7 +802,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   int unsure = 0;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
-      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, out) : ELAB_NO;
+      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, vis, out) : ELAB_NO;
       if (o == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o == LR_STOP) return unsure ? ELAB_UNKNOWN : ELAB_NO;
       if (o == ELAB_UNKNOWN) unsure = 1;
@@ -791,7 +814,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
       if (m->kind != want || (sg && pass == 0)) continue;
       int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
       if (b == ELAB_NO) continue;
-      int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, out, depth + 1);
+      int o = m->mod < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o != ELAB_NO) unsure = 1;
     }
@@ -800,20 +823,20 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
      (main's own singleton is not Object's) */
   int sup = lr_super(c, cls);
   if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
-  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, out, depth + 1) : ELAB_NO;
+  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, vis, out, depth + 1) : ELAB_NO;
   return o == ELAB_NO ? (unsure ? ELAB_UNKNOWN : ELAB_NO) : unsure ? ELAB_UNKNOWN : o;
 }
 
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
   if (!c->lrec || !c->lrec->recorded || !name) return ELAB_UNKNOWN;
-  int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, out, 0);
+  int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, 0, out, 0);
   return o == LR_STOP ? ELAB_NO : o;
 }
 
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   if (!c->lrec || !c->lrec->recorded || mod < 0) return ELAB_UNKNOWN;
-  return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, NULL, 0);
+  return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);
 }
 
 int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p) {
@@ -831,8 +854,9 @@ int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p
 }
 
 /* The constants of cls and its ancestors at p: its own, its mixins' (the
-   last first), then its superclass's, and Object's after a class's */
-static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, const LrDef **out, int depth) {
+   last first), then its superclass's, and with top Object's after a
+   class's. A scoped read (`A::B`) leaves Object's out, as CRuby does. */
+static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(cls), name, 0), p, late, 0, out), unsure = 0;
@@ -842,12 +866,13 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
     const LrMixin *m = &k->mix[i];
     int b = m->kind == LR_EXTEND ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
     if (b == ELAB_NO) continue;
-    int mo = m->mod < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, out, depth + 1);
+    int mo = m->mod < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, top, out, depth + 1);
     if (mo == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
     if (mo != ELAB_NO) unsure = 1;
   }
   int sup = lr_super(c, cls);
-  o = sup >= LR_MAIN ? lr_const_in(c, sup, name, p, late, out, depth + 1) : ELAB_NO;
+  if (sup == LR_MAIN && !top) sup = LR_UNKNOWN_CLASS;
+  o = sup >= LR_MAIN ? lr_const_in(c, sup, name, p, late, top, out, depth + 1) : ELAB_NO;
   return unsure ? ELAB_UNKNOWN : o;
 }
 
@@ -882,7 +907,11 @@ static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **ou
     int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(ci), name, 0), p, late, 0, out);
     if (o != ELAB_NO) return o;
   }
-  return lr_const_in(c, first, name, p, late, out, 0);
+  /* then the innermost scope's ancestors, and Object's for a module too:
+     a lexical read falls back to Object */
+  int o = lr_const_in(c, first, name, p, late, 1, out, 0);
+  if (o == ELAB_NO && first != LR_MAIN && lr_super(c, first) == LR_UNKNOWN_CLASS) o = lr_const_in(c, LR_MAIN, name, p, late, 1, out, 0);
+  return o;
 }
 
 int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out) {
@@ -903,15 +932,11 @@ int elab_body_visibility_at(Compiler *c, int node) {
 }
 
 /* elab_method_vis_at's answer, also while the record is being made: the
-   last version or visibility change of the class's own before p, else the
-   version its ancestors give */
+   last version or visibility change of the name along the class's
+   ancestors before p */
 static int lr_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p) {
   const LrDef *d = NULL;
-  int o = lr_last_before(c, lr_hist(c->lrec, cls, sg, name, 0), p, p.region < 0, 0, &d);
-  if (o == ELAB_UNKNOWN || (o == ELAB_YES && d->kind == LR_UNDEF)) return -1;
-  if (o == ELAB_YES && d->kind != LR_REMOVE) return d->vis;
-  d = NULL;
-  return lr_search(c, cls, sg, name, -1, p, p.region < 0, &d, 0) == ELAB_YES && d ? d->vis : -1;
+  return lr_search(c, cls, sg, name, -1, p, p.region < 0, 1, &d, 0) == ELAB_YES && d ? d->vis : -1;
 }
 int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p) {
   return c->lrec && c->lrec->recorded ? lr_vis_at(c, cls, name, sg, p) : -1;
@@ -1081,6 +1106,8 @@ void elab_dump(Compiler *c, FILE *out) {
       if (h->a == LR_KEY_VIS) fprintf(out, " %s", v->vis < 5 ? words[v->vis] : "?");
       else if (v->kind != LR_WRITE && v->kind != LR_OPAQUE && v->vis != SP_VIS_PUBLIC) fprintf(out, " %s", v->vis == SP_VIS_PRIVATE ? "private" : "protected");
     }
+    if (h->a >= LR_MAIN)   /* what a query from a method body gets: as of the load phase's end */
+      fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
     fputc('\n', out);
   }
 }
@@ -1102,6 +1129,27 @@ static void elab_check_visibility(Compiler *c) {
     f->differ++;
     if (r->shown++ < LR_CHECK_SHOW)
       fprintf(stderr, "spinel-elab-check: visibility %s#%s now=%d record=%d\n", c->classes[h->a].name, h->name, now, rec);
+  }
+  /* ...and of each method a class has only from a module it includes,
+     against the visibility the class table finds up the class's chain */
+  for (int ci = 0; ci < c->nclasses && ci + 1 < r->ncls; ci++) {
+    const LrClass *k = lr_class(r, ci);
+    for (int j = 0; j < k->nmix; j++) {
+      if (k->mix[j].mod < 0 || k->mix[j].kind == LR_EXTEND) continue;
+      for (int i = 0; i < r->nhist; i++) {
+        const LrHist *h = &r->hist[i];
+        if (h->a != k->mix[j].mod || h->b || lr_hist(r, ci, 0, h->name, 0)) continue;
+        int rec = elab_method_vis_at(c, ci, h->name, 0, (LoadPoint){ -1, -1 }), now = comp_method_vis_in_chain(c, ci, h->name);
+        if (rec < 0) continue;
+        LrCheck *f = lr_family(r, "method visibility through a mixin");
+        f->asked++;
+        if (rec == now) continue;
+        f->differ++;
+        if (r->shown++ < LR_CHECK_SHOW)
+          fprintf(stderr, "spinel-elab-check: visibility %s#%s (from %s) now=%d record=%d\n", c->classes[ci].name, h->name,
+                  c->classes[h->a].name, now, rec);
+      }
+    }
   }
 }
 

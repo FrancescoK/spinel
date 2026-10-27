@@ -39,23 +39,23 @@ class Speaker: body#3 body#14 body#16 include Quiet#15 include Loud#18
 class Quiet: body#12
 class Util: body#23
 const Loud: write#1
-Loud#say: def#2
+Loud#say: def#2 end=yes
 const Speaker: write#3
-Speaker#say: def#4
+Speaker#say: def#4 end=yes
 visibility in #3: vis#5 private vis#7 public
-Speaker#secret: def#6 private vis#20 protected
-Speaker#volume: reader#8
-Speaker#volume=: writer#8
-Speaker.inherited: def#9
+Speaker#secret: def#6 private vis#20 protected end=yes
+Speaker#volume: reader#8 end=yes
+Speaker#volume=: writer#8 end=yes
+Speaker.inherited: def#9 end=yes
 const Quiet: write#12
-Quiet#say: def#13
-Speaker#shout: alias#17 (say: def#4)
-Speaker#hum: define_method#19
-Speaker.make: def#22
+Quiet#say: def#13 end=yes
+Speaker#shout: alias#17 (say: def#4) end=yes
+Speaker#hum: define_method#19 end=yes
+Speaker.make: def#22 end=yes
 const Util: write#23
 visibility in #23: vis#24 module_function
-Util#twice: def#25 private
-Util.twice: copy#25
+Util#twice: def#25 private end=yes
+Util.twice: copy#25 end=yes
 $level: write#26
 main @main_ivar: write#27
 const LIMIT: write#28
