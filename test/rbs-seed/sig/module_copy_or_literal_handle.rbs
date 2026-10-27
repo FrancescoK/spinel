@@ -1,0 +1,3 @@
+class WidgetOrLit
+  def note: (?untyped label) -> untyped
+end
